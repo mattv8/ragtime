@@ -187,6 +187,7 @@ import type {
   ConversationBranchSearchResponse,
   ProviderPromptDebugListResponse,
   ProviderPromptDebugRecord,
+  UserSpaceBridgeStatus,
   CopilotAuthStatusResponse,
   CopilotDevicePollRequest,
   CopilotDevicePollResponse,
@@ -5915,6 +5916,23 @@ export const api = {
       `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/tab-state${queryString ? `?${queryString}` : ''}`,
     );
     return handleResponse<UserSpaceWorkspaceTabStateResponse>(response);
+  },
+
+  async getUserSpaceBridgeCredentialStatus(workspaceId: string): Promise<UserSpaceBridgeStatus> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/bridge-credentials/status`,
+    );
+    return handleResponse<UserSpaceBridgeStatus>(response);
+  },
+
+  async refreshUserSpaceBridgeCredentials(workspaceId: string): Promise<UserSpaceBridgeStatus> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/bridge-credentials/refresh`,
+      {
+        method: 'POST',
+      },
+    );
+    return handleResponse<UserSpaceBridgeStatus>(response);
   },
 
   async restartUserSpaceRuntimeDevserver(

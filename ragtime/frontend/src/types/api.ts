@@ -4162,6 +4162,26 @@ export interface UserSpaceRuntimeSessionResponse {
   session?: UserSpaceRuntimeSession | null;
 }
 
+export type UserSpaceBridgeStatusState =
+  | 'healthy'
+  | 'not_running'
+  | 'missing'
+  | 'expired'
+  | 'invalid'
+  | 'session_mismatch'
+  | 'unavailable';
+
+export interface UserSpaceBridgeStatus {
+  state: UserSpaceBridgeStatusState;
+  bridge_url?: string | null;
+  token_session_id?: string | null;
+  current_session_id?: string | null;
+  issued_at?: string | null;
+  expires_at?: string | null;
+  last_success_at?: string | null;
+  detail?: string | null;
+}
+
 export interface UserSpaceRuntimeStatusResponse {
   workspace_id: string;
   session_state: UserSpaceRuntimeSessionState;
@@ -4177,6 +4197,7 @@ export interface UserSpaceRuntimeStatusResponse {
   runtime_operation_phase?: UserSpaceRuntimeOperationPhase | null;
   runtime_operation_started_at?: string | null;
   runtime_operation_updated_at?: string | null;
+  bridge_status?: UserSpaceBridgeStatus | null;
 }
 
 export interface UserSpaceWorkspaceTabStateResponse {

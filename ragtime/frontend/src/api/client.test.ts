@@ -703,3 +703,64 @@ describe('workspace sqlite inspector owner routing', () => {
     );
   });
 });
+
+describe('workspace bridge credential client requests', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('gets bridge credential status for a workspace runtime session', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        state: 'expired',
+        bridge_url: 'https://bridge.example',
+        token_session_id: 'session-old',
+        current_session_id: 'session-new',
+        issued_at: '2026-08-05T18:00:00Z',
+        expires_at: '2026-08-05T19:00:00Z',
+        last_success_at: '2026-08-05T18:30:00Z',
+        detail: 'Bridge credentials expired.',
+      }),
+    );
+
+    const result = await api.getUserSpaceBridgeCredentialStatus('workspace/123');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/userspace/runtime/workspaces/workspace%2F123/bridge-credentials/status',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+    expect(result.state).toBe('expired');
+    expect(result.detail).toBe('Bridge credentials expired.');
+  });
+
+  it('posts to refresh bridge credentials for a workspace runtime session', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        state: 'healthy',
+        bridge_url: 'https://bridge.example',
+        token_session_id: 'session-new',
+        current_session_id: 'session-new',
+        issued_at: '2026-08-05T19:00:00Z',
+        expires_at: '2026-08-05T20:00:00Z',
+        last_success_at: '2026-08-05T19:01:00Z',
+        detail: null,
+      }),
+    );
+
+    const result = await api.refreshUserSpaceBridgeCredentials('workspace/123');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/userspace/runtime/workspaces/workspace%2F123/bridge-credentials/refresh',
+      expect.objectContaining({ method: 'POST', credentials: 'include' }),
+    );
+    expect(result.state).toBe('healthy');
+    expect(result.token_session_id).toBe('session-new');
+  });
+});

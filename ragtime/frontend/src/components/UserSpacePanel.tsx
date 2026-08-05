@@ -113,6 +113,7 @@ import type {
   UserSpaceArtifactType,
   UserSpaceAvailableTool,
   UserSpaceBrowserSurface,
+  UserSpaceBridgeStatus,
   UserSpaceCollabMessage,
   UserSpaceCollabPresenceUser,
   UserSpaceFileInfo,
@@ -749,6 +750,69 @@ function formatSnapshotTimestamp(value: string): string {
   });
 }
 
+function getBridgeStatusLabel(bridgeStatus: UserSpaceBridgeStatus): string {
+  switch (bridgeStatus.state) {
+    case 'healthy':
+      return 'Bridge healthy';
+    case 'not_running':
+      return 'Bridge not running';
+    case 'missing':
+      return 'Bridge missing';
+    case 'expired':
+      return 'Bridge expired';
+    case 'invalid':
+      return 'Bridge invalid';
+    case 'session_mismatch':
+      return 'Bridge session mismatch';
+    case 'unavailable':
+      return 'Bridge unavailable';
+    default:
+      return 'Bridge status';
+  }
+}
+
+function getBridgeStatusPillClass(bridgeStatus: UserSpaceBridgeStatus): string {
+  switch (bridgeStatus.state) {
+    case 'healthy':
+      return 'userspace-status-pill-muted';
+    case 'not_running':
+      return 'userspace-status-pill-warning';
+    case 'missing':
+    case 'expired':
+    case 'invalid':
+    case 'session_mismatch':
+      return 'userspace-status-pill-danger';
+    case 'unavailable':
+    default:
+      return 'userspace-status-pill-warning';
+  }
+}
+
+function getBridgeStatusDetail(bridgeStatus: UserSpaceBridgeStatus): string | null {
+  if (bridgeStatus.state === 'healthy') {
+    return null;
+  }
+
+  const parts: string[] = [];
+  const detail = bridgeStatus.detail?.trim();
+  if (detail) {
+    parts.push(detail);
+  }
+  if (bridgeStatus.expires_at) {
+    const expiresAt = parseUtcTimestamp(bridgeStatus.expires_at);
+    const isExpired =
+      bridgeStatus.state === 'expired' || (expiresAt !== null && expiresAt.getTime() <= Date.now());
+    parts.push(
+      `${isExpired ? 'Expired' : 'Expires'} ${formatSnapshotTimestamp(bridgeStatus.expires_at)}`,
+    );
+  }
+  if (bridgeStatus.last_success_at) {
+    parts.push(`Last success ${formatSnapshotTimestamp(bridgeStatus.last_success_at)}`);
+  }
+
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 function getSnapshotDiffFileKey(snapshotId: string, filePath: string): string {
   return `${snapshotId}:${filePath}`;
 }
@@ -1045,6 +1109,7 @@ export function UserSpacePanel({
   } | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<UserSpaceRuntimeStatusResponse | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
+  const [refreshingBridgeCredentials, setRefreshingBridgeCredentials] = useState(false);
   const [activeRightTab, setActiveRightTab] = useState<'preview' | 'console'>('preview');
   const [collabReadOnly, setCollabReadOnly] = useState(false);
   const [collabVersion, setCollabVersion] = useState(0);
@@ -2382,6 +2447,12 @@ export function UserSpacePanel({
   const showRestartRuntimeButton = runtimeDisplayState === 'running';
   const showStopRuntimeButton =
     runtimeDisplayState === 'running' || runtimeDisplayState === 'starting';
+  const bridgeStatus = runtimeStatus?.bridge_status ?? null;
+  const bridgeStatusLabel = bridgeStatus ? getBridgeStatusLabel(bridgeStatus) : null;
+  const bridgeStatusDetail = bridgeStatus ? getBridgeStatusDetail(bridgeStatus) : null;
+  const bridgeStatusPillClass = bridgeStatus ? getBridgeStatusPillClass(bridgeStatus) : null;
+  const showRefreshBridgeCredentialsButton =
+    bridgeStatus !== null && bridgeStatus.state !== 'not_running';
   const allUsersById = useMemo(() => new Map(allUsers.map((user) => [user.id, user])), [allUsers]);
 
   const formatUserLabel = useCallback(
@@ -5054,6 +5125,20 @@ export function UserSpacePanel({
       setError(err instanceof Error ? err.message : 'Failed to restart runtime');
     } finally {
       setRuntimeBusy(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, refreshActiveWorkspaceState]);
+
+  const handleRefreshBridgeCredentials = useCallback(async () => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setRefreshingBridgeCredentials(true);
+    try {
+      await api.refreshUserSpaceBridgeCredentials(activeWorkspaceId);
+      await refreshActiveWorkspaceState();
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to refresh bridge credentials');
+    } finally {
+      setRefreshingBridgeCredentials(false);
     }
   }, [activeWorkspaceId, canEditWorkspace, refreshActiveWorkspaceState]);
 
@@ -8971,6 +9056,21 @@ export function UserSpacePanel({
                     : runtimeDisplayState}
               </span>
             )}
+            {bridgeStatus && bridgeStatusLabel && bridgeStatusPillClass && (
+              <>
+                <span
+                  className={`userspace-status-pill ${bridgeStatusPillClass}`}
+                  title={bridgeStatus.bridge_url || bridgeStatusLabel}
+                >
+                  {bridgeStatusLabel}
+                </span>
+                {bridgeStatusDetail && (
+                  <span className="userspace-muted" title={bridgeStatusDetail}>
+                    {bridgeStatusDetail}
+                  </span>
+                )}
+              </>
+            )}
           </div>
 
           {activeWorkspaceId && (
@@ -9000,7 +9100,7 @@ export function UserSpacePanel({
                 <button
                   className="btn btn-secondary btn-sm btn-icon"
                   onClick={handleStartRuntime}
-                  disabled={runtimeBusy}
+                  disabled={runtimeBusy || refreshingBridgeCredentials}
                   title="Start runtime"
                 >
                   {runtimeBusy ? (
@@ -9014,7 +9114,7 @@ export function UserSpacePanel({
                 <button
                   className="btn btn-secondary btn-sm btn-icon"
                   onClick={handleRestartRuntime}
-                  disabled={runtimeBusy}
+                  disabled={runtimeBusy || refreshingBridgeCredentials}
                   title="Restart runtime"
                 >
                   {runtimeBusy ? (
@@ -9028,7 +9128,7 @@ export function UserSpacePanel({
                 <button
                   className="btn btn-secondary btn-sm btn-icon"
                   onClick={handleStopRuntime}
-                  disabled={runtimeBusy}
+                  disabled={runtimeBusy || refreshingBridgeCredentials}
                   title="Stop runtime"
                 >
                   {runtimeBusy ? (
@@ -9036,6 +9136,18 @@ export function UserSpacePanel({
                   ) : (
                     <Square size={14} />
                   )}
+                </button>
+              )}
+              {showRefreshBridgeCredentialsButton && (
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleRefreshBridgeCredentials}
+                  disabled={runtimeBusy || refreshingBridgeCredentials}
+                  title="Refresh bridge credentials"
+                >
+                  {refreshingBridgeCredentials
+                    ? 'Refreshing bridge credentials…'
+                    : 'Refresh bridge credentials'}
                 </button>
               )}
             </div>
