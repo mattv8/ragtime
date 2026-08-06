@@ -102,9 +102,7 @@ class _FakeBroker:
         )
 
     def fingerprint_operations(self, operations: Sequence[cross_workspace_sqlite_mod.MutationOperation]) -> str:
-        return cross_workspace_sqlite_mod.CrossWorkspaceSqliteBroker(
-            cross_workspace_sqlite_mod.CrossWorkspaceSqlitePolicy()
-        ).fingerprint_operations(operations)
+        return cross_workspace_sqlite_mod.CrossWorkspaceSqliteBroker(cross_workspace_sqlite_mod.CrossWorkspaceSqlitePolicy()).fingerprint_operations(operations)
 
     async def query(self, workspace_files_dir: Path, sql: str, *, parameters: object = None, max_rows: int = 200):
         self.query_calls.append(

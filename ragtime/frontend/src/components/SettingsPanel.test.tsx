@@ -421,7 +421,9 @@ beforeEach(() => {
           ? payload.tool_skills_enabled
           : current.tool_skills_enabled,
       max_iterations:
-        typeof payload.max_iterations === 'number' ? payload.max_iterations : current.max_iterations,
+        typeof payload.max_iterations === 'number'
+          ? payload.max_iterations
+          : current.max_iterations,
       max_tool_output_chars:
         typeof payload.max_tool_output_chars === 'number'
           ? payload.max_tool_output_chars
@@ -439,7 +441,9 @@ beforeEach(() => {
           ? payload.mcp_default_route_password !== ''
           : current.has_mcp_default_password,
       faiss_search_concurrency_mode:
-        payload.faiss_search_concurrency_mode === 'global' ? 'global' : current.faiss_search_concurrency_mode,
+        payload.faiss_search_concurrency_mode === 'global'
+          ? 'global'
+          : current.faiss_search_concurrency_mode,
       updated_at: null,
     };
   });
