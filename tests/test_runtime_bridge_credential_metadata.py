@@ -17,7 +17,7 @@ def _jwt_segment(payload: dict[str, object]) -> str:
 
 
 def _unsigned_jwt(payload: dict[str, object]) -> str:
-    header = {"alg": "HS256", "typ": "JWT"}
+    header: dict[str, object] = {"alg": "HS256", "typ": "JWT"}
     return f"{_jwt_segment(header)}.{_jwt_segment(payload)}.signature"
 
 

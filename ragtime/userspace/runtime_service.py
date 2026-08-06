@@ -11,7 +11,7 @@ import socket
 import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, cast
+from typing import Any, Callable, TypedDict, cast
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
@@ -62,6 +62,16 @@ from ragtime.userspace.service import userspace_service
 from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
 
 logger = get_logger(__name__)
+
+
+class _RuntimeBridgeStatusBaseKwargs(TypedDict):
+    bridge_url: str | None
+    token_session_id: str | None
+    current_session_id: str | None
+    issued_at: datetime | None
+    expires_at: datetime | None
+    last_success_at: datetime | None
+
 
 _RUNTIME_CAPABILITY_TTL_SECONDS = 900
 _RUNTIME_PREVIEW_BOOTSTRAP_TTL_SECONDS = 300
@@ -605,11 +615,7 @@ class UserSpaceRuntimeService:
         ).hexdigest()
         now_ts = _time.monotonic()
         async with self._runtime_bridge_auth_failure_audit_lock:
-            expired_keys = [
-                key
-                for key, expiry in self._runtime_bridge_auth_failure_audit_dedupe.items()
-                if expiry <= now_ts
-            ]
+            expired_keys = [key for key, expiry in self._runtime_bridge_auth_failure_audit_dedupe.items() if expiry <= now_ts]
             for key in expired_keys:
                 self._runtime_bridge_auth_failure_audit_dedupe.pop(key, None)
             existing_expiry = self._runtime_bridge_auth_failure_audit_dedupe.get(dedupe_key)
@@ -777,7 +783,7 @@ class UserSpaceRuntimeService:
         expires_at = self._parse_runtime_bridge_datetime(raw_credential.get("expires_at"))
         last_success_at = await self._get_latest_runtime_bridge_success_at(session.workspace_id, session.id)
 
-        base_kwargs = {
+        base_kwargs: _RuntimeBridgeStatusBaseKwargs = {
             "bridge_url": bridge_url,
             "token_session_id": token_session_id,
             "current_session_id": session.id,

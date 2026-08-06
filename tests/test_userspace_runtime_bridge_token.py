@@ -196,7 +196,10 @@ class RuntimeBridgeTokenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 401)
         self.assertEqual(ctx.exception.detail, "Runtime bridge session mismatch")
         audit.assert_awaited_once()
-        payload = audit.await_args.kwargs["payload"]
+        await_args = audit.await_args
+        self.assertIsNotNone(await_args)
+        assert await_args is not None
+        payload = await_args.kwargs["payload"]
         self.assertEqual(payload["reason"], "session_mismatch")
         self.assertEqual(payload["workspace_id"], "ws-1")
         self.assertEqual(payload["token_session_id"], "sess-stale")
