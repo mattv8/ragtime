@@ -4140,6 +4140,10 @@ textarea:focus {
   margin-bottom: var(--space-md);
 }
 
+.userspace-agent-access-note {
+  margin: 0 0 var(--space-md);
+}
+
 .userspace-agent-access-info {
   flex: 1;
   min-width: 0;
@@ -4156,8 +4160,28 @@ textarea:focus {
 
 .userspace-agent-access-grant-top {
   display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.userspace-agent-access-control-row {
+  display: flex;
   align-items: center;
   gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.userspace-agent-access-control-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  min-width: 92px;
+}
+
+.userspace-agent-access-toggle {
+  width: fit-content;
+  max-width: 100%;
+  flex-wrap: wrap;
 }
 
 .userspace-agent-access-workspace-id {

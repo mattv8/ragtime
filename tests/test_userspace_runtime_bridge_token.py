@@ -57,6 +57,7 @@ class RuntimeBridgeTokenTests(unittest.IsolatedAsyncioTestCase):
         stopped = mock.Mock()
         stopped.state = "stopped"
         stopped.workspaceId = "ws-1"
+        stopped.leasedByUserId = "user-1"
         with mock.patch.object(
             self.service,
             "_get_runtime_session_record",
@@ -68,6 +69,7 @@ class RuntimeBridgeTokenTests(unittest.IsolatedAsyncioTestCase):
         other = mock.Mock()
         other.state = "running"
         other.workspaceId = "ws-2"
+        other.leasedByUserId = "user-1"
         with mock.patch.object(
             self.service,
             "_get_runtime_session_record",
@@ -84,11 +86,27 @@ class RuntimeBridgeTokenTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException):
                 await self.service.verify_runtime_bridge_token(token)
 
+    async def test_verify_rejects_empty_lease_session(self) -> None:
+        token = self.service.build_runtime_bridge_token("ws-1", "sess-1")
+        active = mock.Mock()
+        active.state = "running"
+        active.workspaceId = "ws-1"
+        active.leasedByUserId = "   "
+        with mock.patch.object(
+            self.service,
+            "_get_runtime_session_record",
+            mock.AsyncMock(return_value=active),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                await self.service.verify_runtime_bridge_token(token)
+        self.assertEqual(ctx.exception.status_code, 401)
+
     async def test_verify_accepts_active_session(self) -> None:
         token = self.service.build_runtime_bridge_token("ws-1", "sess-1")
         active = mock.Mock()
         active.state = "running"
         active.workspaceId = "ws-1"
+        active.leasedByUserId = "user-7"
         with mock.patch.object(
             self.service,
             "_get_runtime_session_record",
@@ -97,3 +115,4 @@ class RuntimeBridgeTokenTests(unittest.IsolatedAsyncioTestCase):
             claims = await self.service.verify_runtime_bridge_token(token)
         self.assertEqual(claims["workspace_id"], "ws-1")
         self.assertEqual(claims["session_id"], "sess-1")
+        self.assertEqual(claims["leased_by_user_id"], "user-7")

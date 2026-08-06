@@ -159,12 +159,25 @@ class PlanningContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("enc::", dumped)
 
     async def test_builder_contract_matches_internal_prompts(self) -> None:
-        from ragtime.userspace.planning_contract import build_builder_contract, continuity_rules
+        from ragtime.userspace.planning_contract import (
+            PLANNING_CONTRACT_VERSION,
+            build_builder_contract,
+            continuity_rules,
+        )
 
         contract = build_builder_contract(sqlite_persistence_mode="include", has_live_data_tools=True)
         joined = "\n".join(contract["rules"])
+        self.assertEqual(PLANNING_CONTRACT_VERSION, "2")
+        self.assertEqual(contract["contract_version"], "2")
         self.assertIn("$PORT", joined)
         self.assertIn("0.0.0.0", joined)
+        self.assertIn("Shared SQLite access runs from server code only", joined)
+        self.assertIn("target-owner grant", joined)
+        self.assertIn("owner workspace keeps schema and migrations", joined)
+        self.assertNotIn("/sqlite/query", joined)
+        self.assertNotIn("/sqlite/mutate", joined)
+        self.assertNotIn("RAGTIME_BRIDGE_TOKEN", joined)
+        self.assertNotIn("Authorization: Bearer", joined)
         for rule in _WORKSPACE_CONTINUITY_EXISTING_RULES:
             self.assertIn(rule.lstrip("- ").strip(), contract["rules"])
         self.assertEqual(continuity_rules(), [r.lstrip("- ").strip() for r in _WORKSPACE_CONTINUITY_EXISTING_RULES])

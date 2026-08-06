@@ -3309,6 +3309,7 @@ export interface UpdateUserSpaceWorkspaceMembersRequest {
 }
 
 export type WorkspaceAgentGrantMode = 'read' | 'read_write';
+export type WorkspaceSqliteGrantMode = 'none' | 'read' | 'read_write';
 
 export interface WorkspaceAgentGrant {
   id: string;
@@ -3317,6 +3318,7 @@ export interface WorkspaceAgentGrant {
   target_workspace_id: string;
   target_workspace_name?: string | null;
   access_mode: WorkspaceAgentGrantMode;
+  sqlite_access_mode: WorkspaceSqliteGrantMode;
   granted_by_user_id: string;
   granted_by_username?: string | null;
   expires_at?: string | null;
@@ -3327,6 +3329,7 @@ export interface WorkspaceAgentGrant {
 export interface UpsertWorkspaceAgentGrantRequest {
   target_workspace_id: string;
   access_mode: WorkspaceAgentGrantMode;
+  sqlite_access_mode?: WorkspaceSqliteGrantMode;
 }
 
 export interface RevokeWorkspaceAgentGrantResponse {

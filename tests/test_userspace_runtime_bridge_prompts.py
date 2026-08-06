@@ -24,7 +24,9 @@ class RuntimeBridgePromptTests(unittest.TestCase):
         text = build_userspace_entrypoint_nudge(self._status(), is_default_static=False)
         self.assertIn("RAGTIME_BRIDGE_URL", text)
         self.assertIn("RAGTIME_BRIDGE_TOKEN", text)
-        self.assertIn("execute-component", text)
+        self.assertIn("/execute-component", text)
+        self.assertIn("/sqlite/query", text)
+        self.assertIn("/sqlite/mutate", text)
         self.assertIn(
             "SERVER lane (this bridge, bearer token): follows Workspace Tools access policy.",
             text,
@@ -48,10 +50,28 @@ class RuntimeBridgePromptTests(unittest.TestCase):
         )
         self.assertIn('"request": {"query": "SELECT ... LIMIT 100"}', text)
         self.assertIn('"request": {"method": "GET", "path": "/customers"}', text)
+        self.assertIn('database_name: "app.sqlite3"', text)
+        self.assertIn("parameterized SQL", text)
+        self.assertIn("positional-list or named-dict `parameters`", text)
+        self.assertIn("max_rows` up to 500", text)
+        self.assertIn("`columns`, `rows`, `row_count`, and `truncated`", text)
+        self.assertIn("1..500 structured `insert`, `upsert`, `update`, or `delete` operations", text)
+        self.assertIn("The bridge does not accept raw writable SQL", text)
+        self.assertIn("The target owner must grant Shared SQLite access", text)
+        self.assertIn("Read grants allow queries; Read / Write grants allow structured mutations", text)
+        self.assertIn("source membership plus target viewer membership for query", text)
+        self.assertIn("target editor membership for mutation", text)
+        self.assertIn("The target workspace owns `.ragtime/db/migrations/*.sql` and all DDL", text)
+        self.assertIn("Consumers cannot run DDL, PRAGMA, ATTACH, or extension loading", text)
+        self.assertIn("Handle HTTP 409 as busy, 504 as timeout, and 503 as audit unavailable", text)
+        self.assertIn("A 503 audit failure occurs before writes and is safe to retry", text)
+        self.assertIn("Do not blindly retry other mutation failures", text)
+        self.assertIn("server code only", text)
         self.assertNotIn(
             "Runtime bridge component calls are enforced as read-only and platform-limited; do not attempt writes through this bridge.",
             text,
         )
+        self.assertNotIn("window.__ragtime_context", text)
 
     def test_static_framework_keeps_browser_bridge_guidance_only(self) -> None:
         text = build_userspace_entrypoint_nudge(
@@ -59,6 +79,8 @@ class RuntimeBridgePromptTests(unittest.TestCase):
             is_default_static=True,
         )
         self.assertNotIn("RAGTIME_BRIDGE_URL", text)
+        self.assertNotIn("/sqlite/query", text)
+        self.assertNotIn("/sqlite/mutate", text)
         self.assertIn("context.components", text)
 
     def test_missing_entrypoint_output_unchanged(self) -> None:
@@ -67,3 +89,5 @@ class RuntimeBridgePromptTests(unittest.TestCase):
             is_default_static=False,
         )
         self.assertNotIn("RAGTIME_BRIDGE_URL", text)
+        self.assertNotIn("/sqlite/query", text)
+        self.assertNotIn("/sqlite/mutate", text)

@@ -1226,6 +1226,17 @@ browser modules:
 - The runtime token is the backend service identity; backend mutation routes must enforce their own authz/authn and must never expose that token to browser code.
 - The browser bridge (`context.components[...]`) still works and remains correct
   for static-page reads; prefer the server bridge for backend routes and data APIs.
+
+### Shared SQLite cross-workspace reference
+- Use Shared SQLite from server code only. Call `POST {RAGTIME_BRIDGE_URL}/sqlite/query` or `POST {RAGTIME_BRIDGE_URL}/sqlite/mutate` with `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN`. Never send the bridge token, raw credentials, or server bridge calls to browser code.
+- Query contract: `POST {RAGTIME_BRIDGE_URL}/sqlite/query` with `target_workspace_id`, fixed `database_name: "app.sqlite3"`, parameterized SQL, positional-list or named-dict `parameters`, and `max_rows` up to 500. Responses include `columns`, `rows`, `row_count`, and `truncated`.
+- Example query: `{"target_workspace_id": "ws_target", "database_name": "app.sqlite3", "sql": "SELECT * FROM orders WHERE customer_id = :customer_id LIMIT 100", "parameters": {"customer_id": "<customer_id>"}, "max_rows": 100}`.
+- Mutation contract: `POST {RAGTIME_BRIDGE_URL}/sqlite/mutate` with a target and 1..500 structured `insert`, `upsert`, `update`, or `delete` operations. Use `table`, `values`, nonempty `where` for update/delete, and `conflict_columns` for upsert. The bridge does not accept raw writable SQL.
+- Example mutate payload: `{"target_workspace_id": "ws_target", "database_name": "app.sqlite3", "operations": [{"kind": "update", "table": "orders", "values": {"status": "<status>"}, "where": {"id": "<order_id>"}}]}`.
+- Access rules: The target owner must grant Shared SQLite access. Read grants allow queries; Read / Write grants allow structured mutations.
+- Membership rules: The runtime's leased user must keep source membership plus target viewer membership for query or target editor membership for mutation.
+- Schema rules: The target workspace owns `.ragtime/db/migrations/*.sql` and all DDL. Consumers cannot run DDL, PRAGMA, ATTACH, or extension loading.
+- Failure handling: Handle HTTP 409 as busy, 504 as timeout, and 503 as audit unavailable. A 503 audit failure occurs before writes and is safe to retry. Do not blindly retry other mutation failures.
 """.strip()
 
 # Nudge for missing/default entrypoint – lightweight suggestion style.

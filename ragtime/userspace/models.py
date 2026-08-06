@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ragtime.indexer.models import WorkspaceChatStateResponse
 
@@ -164,6 +164,7 @@ class WorkspaceMember(BaseModel):
 
 
 WorkspaceAgentGrantMode = Literal["read", "read_write"]
+WorkspaceSqliteGrantMode = Literal["none", "read", "read_write"]
 
 
 class WorkspaceAgentGrant(BaseModel):
@@ -179,6 +180,7 @@ class WorkspaceAgentGrant(BaseModel):
     target_workspace_id: str
     target_workspace_name: str | None = None
     access_mode: WorkspaceAgentGrantMode = "read"
+    sqlite_access_mode: WorkspaceSqliteGrantMode = "none"
     granted_by_user_id: str
     granted_by_username: str | None = None
     expires_at: datetime | None = None
@@ -197,6 +199,14 @@ class UpsertWorkspaceAgentGrantRequest(BaseModel):
             "Access mode for cross-workspace agent operations. 'read' allows "
             "list/read/search/screenshot only. 'read_write' additionally "
             "allows file mutations and terminal commands."
+        ),
+    )
+    sqlite_access_mode: WorkspaceSqliteGrantMode | None = Field(
+        default=None,
+        description=(
+            "Optional SQLite access mode for cross-workspace agent operations. "
+            "When omitted, existing grants preserve their SQLite setting and new "
+            "grants default to 'none'."
         ),
     )
 
@@ -1839,6 +1849,90 @@ class SqliteInspectorSqlQueryResponse(BaseModel):
     rows: list[dict[str, Any]] = Field(default_factory=list)
     row_count: int = 0
     truncated: bool = False
+
+
+RuntimeBridgeSqliteDatabaseName = Literal["app.sqlite3"]
+RuntimeBridgeSqliteMutationKind = Literal["insert", "upsert", "update", "delete"]
+
+
+class RuntimeBridgeSqliteQueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_workspace_id: str = Field(min_length=1)
+    database_name: RuntimeBridgeSqliteDatabaseName = "app.sqlite3"
+    sql: str = Field(min_length=1)
+    parameters: list[Any] | dict[str, Any] | None = None
+    max_rows: int = Field(default=200, ge=1, le=500)
+
+    @field_validator("database_name", mode="before")
+    @classmethod
+    def _normalize_database_name(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class RuntimeBridgeSqliteQueryResponse(BaseModel):
+    target_workspace_id: str
+    database_name: RuntimeBridgeSqliteDatabaseName = "app.sqlite3"
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    row_count: int = 0
+    truncated: bool = False
+
+
+class RuntimeBridgeSqliteMutationOperation(BaseModel):
+    kind: RuntimeBridgeSqliteMutationKind
+    table: str = Field(min_length=1)
+    values: dict[str, Any] | None = None
+    where: dict[str, Any] | None = None
+    conflict_columns: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _validate_shape(self) -> "RuntimeBridgeSqliteMutationOperation":
+        has_values = bool(self.values)
+        has_where = bool(self.where)
+        has_conflict_columns = bool(self.conflict_columns)
+        if self.kind == "insert":
+            if not has_values or has_where or has_conflict_columns:
+                raise ValueError("insert operations require values and do not accept where or conflict_columns")
+        elif self.kind == "upsert":
+            if not has_values or not has_conflict_columns or has_where:
+                raise ValueError("upsert operations require values and conflict_columns and do not accept where")
+        elif self.kind == "update":
+            if not has_values or not has_where or has_conflict_columns:
+                raise ValueError("update operations require values and where and do not accept conflict_columns")
+        elif self.kind == "delete" and (not has_where or has_values or has_conflict_columns):
+            raise ValueError("delete operations require where and do not accept values or conflict_columns")
+        return self
+
+
+class RuntimeBridgeSqliteMutationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_workspace_id: str = Field(min_length=1)
+    database_name: RuntimeBridgeSqliteDatabaseName = "app.sqlite3"
+    operations: list[RuntimeBridgeSqliteMutationOperation] = Field(min_length=1, max_length=500)
+
+    @field_validator("database_name", mode="before")
+    @classmethod
+    def _normalize_mutation_database_name(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class RuntimeBridgeSqliteMutationOperationResponse(BaseModel):
+    kind: RuntimeBridgeSqliteMutationKind
+    rowcount: int
+    lastrowid: int | None = None
+
+
+class RuntimeBridgeSqliteMutationResponse(BaseModel):
+    target_workspace_id: str
+    database_name: RuntimeBridgeSqliteDatabaseName = "app.sqlite3"
+    operations: list[RuntimeBridgeSqliteMutationOperationResponse] = Field(default_factory=list)
+    fingerprint: str
 
 
 class SqliteInspectorRowMutationRequest(BaseModel):

@@ -593,6 +593,12 @@ class UserSpaceRuntimeService:
         ):
             raise HTTPException(status_code=401, detail="Runtime bridge session is not active")
 
+        leased_by_user_id = str(getattr(session, "leasedByUserId", "") or "").strip()
+        if not leased_by_user_id:
+            raise HTTPException(status_code=401, detail="Runtime bridge session is not active")
+
+        claims["leased_by_user_id"] = leased_by_user_id
+
         return claims
 
     async def consume_preview_grant(self, claims: dict[str, Any]) -> None:

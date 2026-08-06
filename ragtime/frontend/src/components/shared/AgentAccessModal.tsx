@@ -5,10 +5,12 @@ import type {
   UserSpaceWorkspace,
   WorkspaceAgentGrant,
   WorkspaceAgentGrantMode,
+  WorkspaceSqliteGrantMode,
 } from '@/types';
 
 type AgentAccessWorkspaceOption = Pick<UserSpaceWorkspace, 'id' | 'name'> & {
   canGrantReadWrite?: boolean;
+  canGrantSqlite?: boolean;
 };
 
 interface AgentAccessModalProps {
@@ -34,6 +36,12 @@ function grantModeLabel(mode: WorkspaceAgentGrantMode): string {
   return mode === 'read_write' ? 'Read / Write' : 'Read Only';
 }
 
+function sqliteModeLabel(mode: WorkspaceSqliteGrantMode): string {
+  if (mode === 'read_write') return 'Read / Write';
+  if (mode === 'read') return 'Read';
+  return 'None';
+}
+
 export function AgentAccessModal({
   isOpen,
   onClose,
@@ -48,6 +56,7 @@ export function AgentAccessModal({
 }: AgentAccessModalProps) {
   const [targetWorkspaceId, setTargetWorkspaceId] = useState('');
   const [accessMode, setAccessMode] = useState<WorkspaceAgentGrantMode>('read');
+  const [sqliteAccessMode, setSqliteAccessMode] = useState<WorkspaceSqliteGrantMode>('none');
 
   const workspaceOptions = useMemo(
     () =>
@@ -58,6 +67,9 @@ export function AgentAccessModal({
   );
   const targetCanGrantReadWrite =
     workspaceOptions.find((workspace) => workspace.id === targetWorkspaceId)?.canGrantReadWrite ??
+    false;
+  const targetCanGrantSqlite =
+    workspaceOptions.find((workspace) => workspace.id === targetWorkspaceId)?.canGrantSqlite ??
     false;
 
   useEffect(() => {
@@ -72,6 +84,7 @@ export function AgentAccessModal({
       return current;
     });
     setAccessMode('read');
+    setSqliteAccessMode('none');
   }, [isOpen, workspaceOptions]);
 
   useEffect(() => {
@@ -90,10 +103,19 @@ export function AgentAccessModal({
     if (!targetWorkspaceId) {
       return;
     }
-    await onUpsert({
+    const request: UpsertWorkspaceAgentGrantRequest = {
       target_workspace_id: targetWorkspaceId,
       access_mode: accessMode,
-    });
+    };
+    if (targetCanGrantSqlite) {
+      request.sqlite_access_mode = sqliteAccessMode;
+    }
+    await onUpsert(request);
+  };
+
+  const handleTargetWorkspaceChange = (workspaceId: string) => {
+    setTargetWorkspaceId(workspaceId);
+    setSqliteAccessMode('none');
   };
 
   if (!isOpen) {
@@ -124,6 +146,10 @@ export function AgentAccessModal({
               can access.
             </small>
           </div>
+          <p className="userspace-agent-access-note userspace-muted" role="note">
+            A SQLite grant covers all data in app.sqlite3, including future data. Only the target
+            workspace owner can change it.
+          </p>
 
           {loading ? (
             <p className="userspace-muted">Loading agent grants...</p>
@@ -145,6 +171,10 @@ export function AgentAccessModal({
                       workspaceOptions.find(
                         (workspace) => workspace.id === grant.target_workspace_id,
                       )?.canGrantReadWrite ?? grant.access_mode === 'read_write';
+                    const grantTargetCanGrantSqlite =
+                      workspaceOptions.find(
+                        (workspace) => workspace.id === grant.target_workspace_id,
+                      )?.canGrantSqlite ?? false;
                     return (
                       <div
                         key={grant.target_workspace_id}
@@ -154,14 +184,29 @@ export function AgentAccessModal({
                           <div className="userspace-agent-access-info">
                             <span>{targetLabel}</span>
                           </div>
+                          <button
+                            className="chat-action-btn"
+                            onClick={() => void onRevoke(grant.target_workspace_id)}
+                            title={`Revoke ${grantModeLabel(grant.access_mode).toLowerCase()} access`}
+                            disabled={
+                              disabled ||
+                              (!grantTargetCanGrantSqlite && grant.sqlite_access_mode !== 'none')
+                            }
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                        <div className="userspace-agent-access-control-row">
+                          <span className="userspace-agent-access-control-label">File/runtime</span>
                           <div
-                            className="userspace-member-role-toggle"
+                            className="userspace-member-role-toggle userspace-agent-access-toggle"
                             role="group"
-                            aria-label={`Access mode for ${targetLabel}`}
+                            aria-label={`File/runtime access for ${targetLabel}`}
                           >
                             <button
                               type="button"
                               className={`userspace-member-role-option ${grant.access_mode === 'read' ? 'active' : ''}`}
+                              aria-pressed={grant.access_mode === 'read'}
                               onClick={() =>
                                 void onUpsert({
                                   target_workspace_id: grant.target_workspace_id,
@@ -175,6 +220,7 @@ export function AgentAccessModal({
                             <button
                               type="button"
                               className={`userspace-member-role-option ${grant.access_mode === 'read_write' ? 'active' : ''}`}
+                              aria-pressed={grant.access_mode === 'read_write'}
                               onClick={() =>
                                 void onUpsert({
                                   target_workspace_id: grant.target_workspace_id,
@@ -186,14 +232,35 @@ export function AgentAccessModal({
                               Read / Write
                             </button>
                           </div>
-                          <button
-                            className="chat-action-btn"
-                            onClick={() => void onRevoke(grant.target_workspace_id)}
-                            title={`Revoke ${grantModeLabel(grant.access_mode).toLowerCase()} access`}
-                            disabled={disabled}
+                        </div>
+                        <div className="userspace-agent-access-control-row">
+                          <span className="userspace-agent-access-control-label">
+                            Shared SQLite
+                          </span>
+                          <div
+                            className="userspace-member-role-toggle userspace-agent-access-toggle"
+                            role="group"
+                            aria-label={`Shared SQLite access for ${targetLabel}`}
                           >
-                            <X size={14} />
-                          </button>
+                            {(['none', 'read', 'read_write'] as const).map((mode) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                className={`userspace-member-role-option ${grant.sqlite_access_mode === mode ? 'active' : ''}`}
+                                aria-pressed={grant.sqlite_access_mode === mode}
+                                onClick={() =>
+                                  void onUpsert({
+                                    target_workspace_id: grant.target_workspace_id,
+                                    access_mode: grant.access_mode,
+                                    sqlite_access_mode: mode,
+                                  })
+                                }
+                                disabled={disabled || !grantTargetCanGrantSqlite}
+                              >
+                                {sqliteModeLabel(mode)}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                         <div className="userspace-agent-access-workspace-id">
                           <small className="userspace-muted">
@@ -213,7 +280,7 @@ export function AgentAccessModal({
                 <select
                   id="userspace-agent-target-select"
                   value={targetWorkspaceId}
-                  onChange={(event) => setTargetWorkspaceId(event.target.value)}
+                  onChange={(event) => handleTargetWorkspaceChange(event.target.value)}
                   disabled={
                     workspaceOptions.length === 0 ||
                     Boolean(savingTargetId) ||
@@ -234,11 +301,12 @@ export function AgentAccessModal({
                 <div
                   className="userspace-member-role-toggle userspace-agent-access-create-toggle"
                   role="group"
-                  aria-label="New grant access mode"
+                  aria-label="New grant file/runtime access"
                 >
                   <button
                     type="button"
                     className={`userspace-member-role-option ${accessMode === 'read' ? 'active' : ''}`}
+                    aria-pressed={accessMode === 'read'}
                     onClick={() => setAccessMode('read')}
                     disabled={
                       workspaceOptions.length === 0 ||
@@ -251,6 +319,7 @@ export function AgentAccessModal({
                   <button
                     type="button"
                     className={`userspace-member-role-option ${accessMode === 'read_write' ? 'active' : ''}`}
+                    aria-pressed={accessMode === 'read_write'}
                     onClick={() => setAccessMode('read_write')}
                     disabled={
                       workspaceOptions.length === 0 ||
@@ -261,6 +330,29 @@ export function AgentAccessModal({
                   >
                     Read / Write
                   </button>
+                </div>
+                <div
+                  className="userspace-member-role-toggle userspace-agent-access-create-toggle"
+                  role="group"
+                  aria-label="New grant Shared SQLite access"
+                >
+                  {(['none', 'read', 'read_write'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={`userspace-member-role-option ${sqliteAccessMode === mode ? 'active' : ''}`}
+                      aria-pressed={sqliteAccessMode === mode}
+                      onClick={() => setSqliteAccessMode(mode)}
+                      disabled={
+                        workspaceOptions.length === 0 ||
+                        !targetCanGrantSqlite ||
+                        Boolean(savingTargetId) ||
+                        Boolean(revokingTargetId)
+                      }
+                    >
+                      {sqliteModeLabel(mode)}
+                    </button>
+                  ))}
                 </div>
                 <small className="userspace-muted">
                   Read allows listing, reading, and screenshots. Read / Write also allows file edits

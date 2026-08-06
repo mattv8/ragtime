@@ -1747,6 +1747,14 @@ enum WorkspaceAgentGrantMode {
   @@map("workspace_agent_grant_mode")
 }
 
+enum WorkspaceSqliteGrantMode {
+  none
+  read
+  read_write
+
+  @@map("workspace_sqlite_grant_mode")
+}
+
 /// Grant from a source workspace's agent to access another (target) workspace's
 /// runtime files. The grant is owned/managed by the target workspace owner.
 model WorkspaceAgentGrant {
@@ -1754,6 +1762,7 @@ model WorkspaceAgentGrant {
   sourceWorkspaceId String                  @map("source_workspace_id")
   targetWorkspaceId String                  @map("target_workspace_id")
   accessMode        WorkspaceAgentGrantMode @default(read) @map("access_mode")
+  sqliteAccessMode  WorkspaceSqliteGrantMode @default(none) @map("sqlite_access_mode")
   grantedByUserId   String                  @map("granted_by_user_id")
   expiresAt         DateTime?               @map("expires_at")
   createdAt         DateTime                @default(now()) @map("created_at")

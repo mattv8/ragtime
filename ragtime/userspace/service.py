@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 import time as _time
 import zipfile
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
@@ -129,6 +130,17 @@ from ragtime.userspace.cloud_mounts import (
     google_drive_scope_error_message,
     has_google_drive_scope,
 )
+from ragtime.userspace.cross_workspace_sqlite import (
+    AuditIdentityContext as CrossWorkspaceSqliteAuditIdentityContext,
+)
+from ragtime.userspace.cross_workspace_sqlite import (
+    CrossWorkspaceSqliteBroker,
+    CrossWorkspaceSqliteError,
+    CrossWorkspaceSqlitePolicy,
+)
+from ragtime.userspace.cross_workspace_sqlite import (
+    MutationOperation as CrossWorkspaceSqliteMutationOperation,
+)
 from ragtime.userspace.models import (
     ArtifactType,
     BrowseCloudMountSourceRequest,
@@ -159,6 +171,11 @@ from ragtime.userspace.models import (
     MountSourceUnavailableKind,
     PaginatedWorkspacesResponse,
     RenameUserSpaceObjectStorageObjectRequest,
+    RuntimeBridgeSqliteMutationOperationResponse,
+    RuntimeBridgeSqliteMutationRequest,
+    RuntimeBridgeSqliteMutationResponse,
+    RuntimeBridgeSqliteQueryRequest,
+    RuntimeBridgeSqliteQueryResponse,
     RuntimeOperationPhase,
     RuntimeRestartBatchTaskPhase,
     RuntimeRestartWorkspacePhase,
@@ -253,6 +270,7 @@ from ragtime.userspace.models import (
     WorkspaceScmProvider,
     WorkspaceScmRemoteRole,
     WorkspaceShareSlugAvailabilityResponse,
+    WorkspaceSqliteGrantMode,
     WorkspaceSqliteImportTaskPhase,
     WorkspaceToolOptionState,
 )
@@ -459,6 +477,19 @@ class _ShareAuthorizationResult(TypedDict, total=False):
     expires_at: datetime | None
     granted_role: str
     can_edit: bool
+
+
+class _RuntimeBridgeSqliteAuthorizationResult(TypedDict, total=False):
+    grant_id: str
+    sqlite_access_mode: WorkspaceSqliteGrantMode
+
+
+class _RuntimeBridgeSqliteRateLimitBucket:
+    __slots__ = ("timestamps", "last_active")
+
+    def __init__(self) -> None:
+        self.timestamps: deque[float] = deque()
+        self.last_active: float = 0.0
 
 
 class _GitCommandResult:
@@ -1111,6 +1142,13 @@ _WORKSPACE_OBJECT_STORAGE_DEFAULT_BUCKET_ENV_KEY = "RAGTIME_OBJECT_STORAGE_DEFAU
 _WORKSPACE_OBJECT_STORAGE_FORCE_PATH_STYLE_ENV_KEY = "RAGTIME_OBJECT_STORAGE_FORCE_PATH_STYLE"
 _WORKSPACE_OBJECT_STORAGE_REGION_ENV_KEY = "RAGTIME_OBJECT_STORAGE_REGION"
 _WORKSPACE_OBJECT_STORAGE_ENABLED_ENV_KEY = "RAGTIME_OBJECT_STORAGE_ENABLED"
+_RUNTIME_BRIDGE_SQLITE_FORBIDDEN_DETAIL = "Cross-workspace SQLite access denied"
+_RUNTIME_BRIDGE_SQLITE_RATE_LIMIT_DETAIL = "Cross-workspace SQLite rate limit exceeded"
+_RUNTIME_BRIDGE_SQLITE_SOURCE_EQUALS_TARGET_DETAIL = "Source and target workspaces must differ"
+_RUNTIME_BRIDGE_SQLITE_RATE_LIMIT_MAX_CALLS = 120
+_RUNTIME_BRIDGE_SQLITE_RATE_LIMIT_WINDOW_SECONDS = 60.0
+_RUNTIME_BRIDGE_SQLITE_RATE_LIMIT_MAX_KEYS = 10_000
+_RUNTIME_BRIDGE_SQLITE_AUDIT_EVENT_TYPE = "runtime_bridge_sqlite"
 
 # ---------------------------------------------------------------------------
 # Node framework detection from command strings
@@ -1414,6 +1452,7 @@ class UserSpaceService:
         self._sqlite_import_tasks_dir.mkdir(parents=True, exist_ok=True)
         self._execution_proofs: dict[str, dict[str, _ExecutionProofRecord]] = {}
         self._live_data_execution_warnings: dict[str, _LiveDataExecutionWarningRecord] = {}
+        self._runtime_bridge_sqlite_rate_limits: dict[tuple[str, str], _RuntimeBridgeSqliteRateLimitBucket] = {}
         # TTL-cached entrypoint status per workspace: {workspace_id: (EntrypointStatus, timestamp)}
         self._entrypoint_status_cache: dict[str, tuple[EntrypointStatus, float]] = {}
         # Short-lived file list cache: {workspace_id: (result, include_dirs, timestamp)}
@@ -14654,6 +14693,19 @@ class UserSpaceService:
             return "read_write"
         return "read"
 
+    @staticmethod
+    def _normalize_sqlite_grant_mode(value: Any) -> WorkspaceSqliteGrantMode:
+        raw = value if isinstance(value, str) else str(getattr(value, "value", value) or "")
+        if raw == "read_write":
+            return "read_write"
+        if raw == "read":
+            return "read"
+        return "none"
+
+    @staticmethod
+    def _workspace_user_is_owner(workspace: UserSpaceWorkspace, user_id: str) -> bool:
+        return workspace.owner_user_id == user_id
+
     def _agent_grant_from_record(
         self,
         record: Any,
@@ -14669,6 +14721,7 @@ class UserSpaceService:
             target_workspace_id=str(getattr(record, "targetWorkspaceId", "") or ""),
             target_workspace_name=target_workspace_name,
             access_mode=self._normalize_agent_grant_mode(getattr(record, "accessMode", "read")),
+            sqlite_access_mode=self._normalize_sqlite_grant_mode(getattr(record, "sqliteAccessMode", "none")),
             granted_by_user_id=str(getattr(record, "grantedByUserId", "") or ""),
             granted_by_username=granted_by_username,
             expires_at=getattr(record, "expiresAt", None),
@@ -14701,6 +14754,243 @@ class UserSpaceService:
         if required_role == "owner":
             return role == "owner"
         return False
+
+    @staticmethod
+    def _coerce_workspace_role_value(value: Any) -> WorkspaceRole | None:
+        raw = value if isinstance(value, str) else str(getattr(value, "value", value) or "")
+        if raw in {"owner", "editor", "viewer"}:
+            return cast(WorkspaceRole, raw)
+        return None
+
+    def _runtime_bridge_cross_workspace_sqlite_broker(self) -> CrossWorkspaceSqliteBroker:
+        return CrossWorkspaceSqliteBroker(CrossWorkspaceSqlitePolicy())
+
+    def _consume_runtime_bridge_sqlite_rate_limit(self, session_id: str, target_workspace_id: str) -> None:
+        now = _time.monotonic()
+        window_start = now - _RUNTIME_BRIDGE_SQLITE_RATE_LIMIT_WINDOW_SECONDS
+        key = (session_id, target_workspace_id)
+        stale_keys: list[tuple[str, str]] = []
+        least_recent_key: tuple[str, str] | None = None
+        least_recent_at: float | None = None
+
+        for existing_key, existing_bucket in list(self._runtime_bridge_sqlite_rate_limits.items()):
+            while existing_bucket.timestamps and existing_bucket.timestamps[0] <= window_start:
+                existing_bucket.timestamps.popleft()
+            if not existing_bucket.timestamps:
+                stale_keys.append(existing_key)
+                continue
+            if least_recent_at is None or existing_bucket.last_active < least_recent_at:
+                least_recent_at = existing_bucket.last_active
+                least_recent_key = existing_key
+
+        for stale_key in stale_keys:
+            self._runtime_bridge_sqlite_rate_limits.pop(stale_key, None)
+
+        bucket = self._runtime_bridge_sqlite_rate_limits.get(key)
+        if bucket is None:
+            if len(self._runtime_bridge_sqlite_rate_limits) >= _RUNTIME_BRIDGE_SQLITE_RATE_LIMIT_MAX_KEYS:
+                eviction_key = least_recent_key
+                if eviction_key is None and self._runtime_bridge_sqlite_rate_limits:
+                    eviction_key = next(iter(self._runtime_bridge_sqlite_rate_limits))
+                if eviction_key is not None:
+                    self._runtime_bridge_sqlite_rate_limits.pop(eviction_key, None)
+            bucket = _RuntimeBridgeSqliteRateLimitBucket()
+            self._runtime_bridge_sqlite_rate_limits[key] = bucket
+
+        while bucket.timestamps and bucket.timestamps[0] <= window_start:
+            bucket.timestamps.popleft()
+        if len(bucket.timestamps) >= _RUNTIME_BRIDGE_SQLITE_RATE_LIMIT_MAX_CALLS:
+            raise HTTPException(status_code=429, detail=_RUNTIME_BRIDGE_SQLITE_RATE_LIMIT_DETAIL)
+        bucket.timestamps.append(now)
+        bucket.last_active = now
+
+    @staticmethod
+    def _runtime_bridge_sqlite_http_error_code(exc: HTTPException) -> str:
+        if exc.status_code == 400:
+            return "source_equals_target"
+        if exc.status_code == 429:
+            return "rate_limited"
+        return "forbidden"
+
+    def _build_runtime_bridge_sqlite_audit_payload(
+        self,
+        *,
+        source_workspace_id: str,
+        target_workspace_id: str,
+        session_id: str,
+        leased_by_user_id: str,
+        operation: Literal["query", "mutate"],
+        grant_id: str | None = None,
+        sqlite_access_mode: WorkspaceSqliteGrantMode | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "source_workspace_id": source_workspace_id,
+            "target_workspace_id": target_workspace_id,
+            "session_id": session_id,
+            "leased_by_user_id": leased_by_user_id,
+            "operation": operation,
+        }
+        if grant_id:
+            payload["grant_id"] = grant_id
+        if sqlite_access_mode is not None:
+            payload["grant_mode"] = sqlite_access_mode
+        return payload
+
+    async def _record_runtime_bridge_sqlite_event_best_effort(
+        self,
+        *,
+        workspace_id: str,
+        user_id: str,
+        session_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        try:
+            await self._record_runtime_audit_event(
+                workspace_id,
+                user_id,
+                _RUNTIME_BRIDGE_SQLITE_AUDIT_EVENT_TYPE,
+                payload,
+                session_id=session_id,
+            )
+        except Exception:  # noqa: BLE001 - audit is best effort
+            logger.exception(
+                "Failed to record runtime bridge SQLite audit event for workspace %s",
+                workspace_id,
+            )
+
+    async def _audit_runtime_bridge_sqlite_denied(
+        self,
+        *,
+        source_workspace_id: str,
+        target_workspace_id: str,
+        session_id: str,
+        leased_by_user_id: str,
+        operation: Literal["query", "mutate"],
+        error_code: str,
+        sql_digest: str | None = None,
+        fingerprint: str | None = None,
+        operation_count: int | None = None,
+        grant_id: str | None = None,
+        sqlite_access_mode: WorkspaceSqliteGrantMode | None = None,
+    ) -> None:
+        payload = self._build_runtime_bridge_sqlite_audit_payload(
+            source_workspace_id=source_workspace_id,
+            target_workspace_id=target_workspace_id,
+            session_id=session_id,
+            leased_by_user_id=leased_by_user_id,
+            operation=operation,
+            grant_id=grant_id,
+            sqlite_access_mode=sqlite_access_mode,
+        )
+        payload.update(
+            {
+                "phase": "denied",
+                "status": "denied",
+                "error_code": error_code,
+            }
+        )
+        if sql_digest is not None:
+            payload["sql_digest"] = sql_digest
+        if fingerprint is not None:
+            payload["fingerprint"] = fingerprint
+        if operation_count is not None:
+            payload["operation_count"] = operation_count
+        await self._record_runtime_bridge_sqlite_event_best_effort(
+            workspace_id=source_workspace_id,
+            user_id=leased_by_user_id,
+            session_id=session_id,
+            payload=payload,
+        )
+
+    async def _load_workspace_role_without_admin_bypass(
+        self,
+        db: Any,
+        *,
+        workspace_id: str,
+        user_id: str,
+    ) -> WorkspaceRole | None:
+        workspace = await db.workspace.find_unique(where={"id": workspace_id})
+        if workspace is None:
+            return None
+        if str(getattr(workspace, "ownerUserId", "") or "") == user_id:
+            return "owner"
+        member_model = getattr(db, "workspacemember", None)
+        if member_model is None:
+            return None
+        member = await member_model.find_first(where={"workspaceId": workspace_id, "userId": user_id})
+        if member is None:
+            return None
+        return self._coerce_workspace_role_value(getattr(member, "role", None))
+
+    async def _authorize_runtime_bridge_cross_workspace_sqlite(
+        self,
+        *,
+        source_workspace_id: str,
+        target_workspace_id: str,
+        leased_by_user_id: str,
+        require_target_role: Literal["viewer", "editor"],
+        require_sqlite_mode: Literal["read", "read_write"],
+    ) -> _RuntimeBridgeSqliteAuthorizationResult:
+        if target_workspace_id == source_workspace_id:
+            raise HTTPException(status_code=400, detail=_RUNTIME_BRIDGE_SQLITE_SOURCE_EQUALS_TARGET_DETAIL)
+
+        db = await get_db()
+        source_role = await self._load_workspace_role_without_admin_bypass(
+            db,
+            workspace_id=source_workspace_id,
+            user_id=leased_by_user_id,
+        )
+        if not self._workspace_role_allows(source_role, "viewer"):
+            raise HTTPException(status_code=403, detail=_RUNTIME_BRIDGE_SQLITE_FORBIDDEN_DETAIL)
+
+        target_role = await self._load_workspace_role_without_admin_bypass(
+            db,
+            workspace_id=target_workspace_id,
+            user_id=leased_by_user_id,
+        )
+        if not self._workspace_role_allows(target_role, require_target_role):
+            raise HTTPException(status_code=403, detail=_RUNTIME_BRIDGE_SQLITE_FORBIDDEN_DETAIL)
+
+        model = self._workspace_agent_grant_model(db)
+        if model is None:
+            raise HTTPException(status_code=403, detail=_RUNTIME_BRIDGE_SQLITE_FORBIDDEN_DETAIL)
+        grant = await model.find_first(
+            where={
+                "sourceWorkspaceId": source_workspace_id,
+                "targetWorkspaceId": target_workspace_id,
+            }
+        )
+        if grant is None:
+            raise HTTPException(status_code=403, detail=_RUNTIME_BRIDGE_SQLITE_FORBIDDEN_DETAIL)
+
+        expires_at = getattr(grant, "expiresAt", None)
+        if expires_at is not None and coerce_utc_datetime(expires_at) < utc_now():
+            raise HTTPException(status_code=403, detail=_RUNTIME_BRIDGE_SQLITE_FORBIDDEN_DETAIL)
+
+        sqlite_access_mode = self._normalize_sqlite_grant_mode(getattr(grant, "sqliteAccessMode", "none"))
+        allowed_modes = {"read", "read_write"} if require_sqlite_mode == "read" else {"read_write"}
+        if sqlite_access_mode not in allowed_modes:
+            raise HTTPException(status_code=403, detail=_RUNTIME_BRIDGE_SQLITE_FORBIDDEN_DETAIL)
+
+        return {
+            "grant_id": str(getattr(grant, "id", "") or ""),
+            "sqlite_access_mode": sqlite_access_mode,
+        }
+
+    @staticmethod
+    def _build_runtime_bridge_sqlite_mutation_operations(
+        request: RuntimeBridgeSqliteMutationRequest,
+    ) -> list[CrossWorkspaceSqliteMutationOperation]:
+        return [
+            CrossWorkspaceSqliteMutationOperation(
+                kind=operation.kind,
+                table=operation.table,
+                values=operation.values,
+                where=operation.where,
+                conflict_columns=operation.conflict_columns,
+            )
+            for operation in request.operations
+        ]
 
     async def list_workspace_agent_grants(
         self,
@@ -14797,6 +15087,8 @@ class UserSpaceService:
             )
 
         access_mode: WorkspaceAgentGrantMode = "read_write" if request.access_mode == "read_write" else "read"
+        sqlite_mode_explicitly_set = "sqlite_access_mode" in request.model_fields_set
+        requested_sqlite_access_mode = self._normalize_sqlite_grant_mode(request.sqlite_access_mode)
 
         source_workspace = await self._enforce_workspace_access(
             source_workspace_id,
@@ -14825,6 +15117,15 @@ class UserSpaceService:
                 "targetWorkspaceId": target_workspace_id,
             }
         )
+        sqlite_access_mode = (
+            requested_sqlite_access_mode if sqlite_mode_explicitly_set else self._normalize_sqlite_grant_mode(getattr(existing, "sqliteAccessMode", "none"))
+        )
+
+        if sqlite_mode_explicitly_set and not self._workspace_user_is_owner(target_workspace, user_id):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the target workspace owner can change SQLite access for a cross-workspace agent grant",
+            )
 
         now = utc_now()
         if existing is None:
@@ -14833,6 +15134,7 @@ class UserSpaceService:
                     "sourceWorkspaceId": source_workspace_id,
                     "targetWorkspaceId": target_workspace_id,
                     "accessMode": access_mode,
+                    "sqliteAccessMode": sqlite_access_mode,
                     "grantedByUserId": user_id,
                     "createdAt": now,
                     "updatedAt": now,
@@ -14844,6 +15146,7 @@ class UserSpaceService:
                 where={"id": existing.id},
                 data={
                     "accessMode": access_mode,
+                    **({"sqliteAccessMode": sqlite_access_mode} if sqlite_mode_explicitly_set else {}),
                     "grantedByUserId": user_id,
                     "updatedAt": now,
                 },
@@ -14856,6 +15159,7 @@ class UserSpaceService:
                 "source_workspace_id": source_workspace_id,
                 "target_workspace_id": target_workspace_id,
                 "access_mode": access_mode,
+                "sqlite_access_mode": sqlite_access_mode,
             }
             await self._record_runtime_audit_event(
                 source_workspace_id,
@@ -14901,26 +15205,41 @@ class UserSpaceService:
             return False
 
         access_mode = self._normalize_agent_grant_mode(getattr(existing, "accessMode", "read"))
-        allowed = False
-        try:
-            await self._enforce_workspace_access(
-                source_workspace_id,
-                user_id,
-                required_role="editor",
-                is_admin=is_admin,
-            )
-            allowed = True
-        except HTTPException as exc:
-            if exc.status_code not in {403, 404}:
-                raise
+        sqlite_access_mode = self._normalize_sqlite_grant_mode(getattr(existing, "sqliteAccessMode", "none"))
 
-        if not allowed:
-            await self._enforce_workspace_access(
+        if sqlite_access_mode != "none":
+            target_workspace = await self._enforce_workspace_access(
                 target_workspace_id,
                 user_id,
-                required_role="editor" if access_mode == "read_write" else "viewer",
+                required_role="viewer",
                 is_admin=is_admin,
             )
+            if not self._workspace_user_is_owner(target_workspace, user_id):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only the target workspace owner can revoke a cross-workspace agent grant with SQLite access",
+                )
+        else:
+            allowed = False
+            try:
+                await self._enforce_workspace_access(
+                    source_workspace_id,
+                    user_id,
+                    required_role="editor",
+                    is_admin=is_admin,
+                )
+                allowed = True
+            except HTTPException as exc:
+                if exc.status_code not in {403, 404}:
+                    raise
+
+            if not allowed:
+                await self._enforce_workspace_access(
+                    target_workspace_id,
+                    user_id,
+                    required_role="editor" if access_mode == "read_write" else "viewer",
+                    is_admin=is_admin,
+                )
 
         await model.delete(where={"id": existing.id})
 
@@ -14928,6 +15247,7 @@ class UserSpaceService:
             audit_payload = {
                 "source_workspace_id": source_workspace_id,
                 "target_workspace_id": target_workspace_id,
+                "sqlite_access_mode": sqlite_access_mode,
             }
             await self._record_runtime_audit_event(
                 source_workspace_id,
@@ -21466,6 +21786,330 @@ class UserSpaceService:
             tool_type=result.tool_type,
         )
         return result.response
+
+    async def query_runtime_bridge_sqlite(
+        self,
+        *,
+        workspace_id: str,
+        session_id: str,
+        leased_by_user_id: str,
+        request: RuntimeBridgeSqliteQueryRequest,
+    ) -> RuntimeBridgeSqliteQueryResponse:
+        target_workspace_id = request.target_workspace_id.strip()
+        sql_digest = hashlib.sha256(request.sql.encode("utf-8")).hexdigest()
+        try:
+            self._consume_runtime_bridge_sqlite_rate_limit(session_id, target_workspace_id)
+        except HTTPException as exc:
+            if exc.status_code == 429:
+                await self._audit_runtime_bridge_sqlite_denied(
+                    source_workspace_id=workspace_id,
+                    target_workspace_id=target_workspace_id,
+                    session_id=session_id,
+                    leased_by_user_id=leased_by_user_id,
+                    operation="query",
+                    error_code="rate_limited",
+                    sql_digest=sql_digest,
+                )
+            raise
+
+        authorization: _RuntimeBridgeSqliteAuthorizationResult | None = None
+        try:
+            authorization = await self._authorize_runtime_bridge_cross_workspace_sqlite(
+                source_workspace_id=workspace_id,
+                target_workspace_id=target_workspace_id,
+                leased_by_user_id=leased_by_user_id,
+                require_target_role="viewer",
+                require_sqlite_mode="read",
+            )
+        except HTTPException as exc:
+            if exc.status_code in {400, 403}:
+                await self._audit_runtime_bridge_sqlite_denied(
+                    source_workspace_id=workspace_id,
+                    target_workspace_id=target_workspace_id,
+                    session_id=session_id,
+                    leased_by_user_id=leased_by_user_id,
+                    operation="query",
+                    error_code=self._runtime_bridge_sqlite_http_error_code(exc),
+                    sql_digest=sql_digest,
+                )
+            raise
+
+        broker = self._runtime_bridge_cross_workspace_sqlite_broker()
+        files_dir = self._workspace_files_dir(target_workspace_id)
+        started_at = _time.monotonic()
+        try:
+            result = await broker.query(
+                files_dir,
+                request.sql,
+                parameters=request.parameters,
+                max_rows=request.max_rows,
+            )
+        except CrossWorkspaceSqliteError as exc:
+            payload = self._build_runtime_bridge_sqlite_audit_payload(
+                source_workspace_id=workspace_id,
+                target_workspace_id=target_workspace_id,
+                session_id=session_id,
+                leased_by_user_id=leased_by_user_id,
+                operation="query",
+                grant_id=authorization.get("grant_id"),
+                sqlite_access_mode=authorization.get("sqlite_access_mode"),
+            )
+            payload.update(
+                {
+                    "phase": "outcome",
+                    "status": "failed",
+                    "sql_digest": sql_digest,
+                    "row_count": 0,
+                    "duration_ms": int((_time.monotonic() - started_at) * 1000),
+                    "error_code": exc.code,
+                }
+            )
+            await self._record_runtime_bridge_sqlite_event_best_effort(
+                workspace_id=target_workspace_id,
+                user_id=leased_by_user_id,
+                session_id=session_id,
+                payload=payload,
+            )
+            raise
+        except Exception:
+            payload = self._build_runtime_bridge_sqlite_audit_payload(
+                source_workspace_id=workspace_id,
+                target_workspace_id=target_workspace_id,
+                session_id=session_id,
+                leased_by_user_id=leased_by_user_id,
+                operation="query",
+                grant_id=authorization.get("grant_id"),
+                sqlite_access_mode=authorization.get("sqlite_access_mode"),
+            )
+            payload.update(
+                {
+                    "phase": "outcome",
+                    "status": "failed",
+                    "sql_digest": sql_digest,
+                    "row_count": 0,
+                    "duration_ms": int((_time.monotonic() - started_at) * 1000),
+                    "error_code": "query_failed",
+                }
+            )
+            await self._record_runtime_bridge_sqlite_event_best_effort(
+                workspace_id=target_workspace_id,
+                user_id=leased_by_user_id,
+                session_id=session_id,
+                payload=payload,
+            )
+            raise
+
+        payload = self._build_runtime_bridge_sqlite_audit_payload(
+            source_workspace_id=workspace_id,
+            target_workspace_id=target_workspace_id,
+            session_id=session_id,
+            leased_by_user_id=leased_by_user_id,
+            operation="query",
+            grant_id=authorization.get("grant_id"),
+            sqlite_access_mode=authorization.get("sqlite_access_mode"),
+        )
+        payload.update(
+            {
+                "phase": "outcome",
+                "status": "succeeded",
+                "sql_digest": sql_digest,
+                "row_count": result.row_count,
+                "duration_ms": int((_time.monotonic() - started_at) * 1000),
+                "error_code": None,
+            }
+        )
+        await self._record_runtime_bridge_sqlite_event_best_effort(
+            workspace_id=target_workspace_id,
+            user_id=leased_by_user_id,
+            session_id=session_id,
+            payload=payload,
+        )
+        return RuntimeBridgeSqliteQueryResponse(
+            target_workspace_id=target_workspace_id,
+            database_name=request.database_name,
+            columns=result.columns,
+            rows=result.rows,
+            row_count=result.row_count,
+            truncated=result.truncated,
+        )
+
+    async def mutate_runtime_bridge_sqlite(
+        self,
+        *,
+        workspace_id: str,
+        session_id: str,
+        leased_by_user_id: str,
+        request: RuntimeBridgeSqliteMutationRequest,
+    ) -> RuntimeBridgeSqliteMutationResponse:
+        target_workspace_id = request.target_workspace_id.strip()
+        broker = self._runtime_bridge_cross_workspace_sqlite_broker()
+        operations = self._build_runtime_bridge_sqlite_mutation_operations(request)
+        fingerprint = broker.fingerprint_operations(operations)
+        operation_count = len(operations)
+        try:
+            self._consume_runtime_bridge_sqlite_rate_limit(session_id, target_workspace_id)
+        except HTTPException as exc:
+            if exc.status_code == 429:
+                await self._audit_runtime_bridge_sqlite_denied(
+                    source_workspace_id=workspace_id,
+                    target_workspace_id=target_workspace_id,
+                    session_id=session_id,
+                    leased_by_user_id=leased_by_user_id,
+                    operation="mutate",
+                    error_code="rate_limited",
+                    fingerprint=fingerprint,
+                    operation_count=operation_count,
+                )
+            raise
+
+        authorization: _RuntimeBridgeSqliteAuthorizationResult | None = None
+        try:
+            authorization = await self._authorize_runtime_bridge_cross_workspace_sqlite(
+                source_workspace_id=workspace_id,
+                target_workspace_id=target_workspace_id,
+                leased_by_user_id=leased_by_user_id,
+                require_target_role="editor",
+                require_sqlite_mode="read_write",
+            )
+        except HTTPException as exc:
+            if exc.status_code in {400, 403}:
+                await self._audit_runtime_bridge_sqlite_denied(
+                    source_workspace_id=workspace_id,
+                    target_workspace_id=target_workspace_id,
+                    session_id=session_id,
+                    leased_by_user_id=leased_by_user_id,
+                    operation="mutate",
+                    error_code=self._runtime_bridge_sqlite_http_error_code(exc),
+                    fingerprint=fingerprint,
+                    operation_count=operation_count,
+                )
+            raise
+
+        files_dir = self._workspace_files_dir(target_workspace_id)
+        started_at = _time.monotonic()
+        base_payload = self._build_runtime_bridge_sqlite_audit_payload(
+            source_workspace_id=workspace_id,
+            target_workspace_id=target_workspace_id,
+            session_id=session_id,
+            leased_by_user_id=leased_by_user_id,
+            operation="mutate",
+            grant_id=authorization.get("grant_id"),
+            sqlite_access_mode=authorization.get("sqlite_access_mode"),
+        )
+
+        async def _audit_intent(intent: Any) -> bool:
+            payload = dict(base_payload)
+            payload.update(
+                {
+                    "phase": "intent",
+                    "fingerprint": intent.fingerprint,
+                    "operation_count": intent.operation_count,
+                }
+            )
+            return await self._record_runtime_audit_event(
+                target_workspace_id,
+                leased_by_user_id,
+                _RUNTIME_BRIDGE_SQLITE_AUDIT_EVENT_TYPE,
+                payload,
+                session_id=session_id,
+            )
+
+        async def _audit_outcome(outcome: Any) -> None:
+            payload = dict(base_payload)
+            payload.update(
+                {
+                    "phase": "outcome",
+                    "fingerprint": outcome.fingerprint,
+                    "operation_count": outcome.operation_count,
+                    "status": outcome.status,
+                    "error_code": outcome.error_code,
+                    "duration_ms": int((_time.monotonic() - started_at) * 1000),
+                }
+            )
+            await self._record_runtime_bridge_sqlite_event_best_effort(
+                workspace_id=target_workspace_id,
+                user_id=leased_by_user_id,
+                session_id=session_id,
+                payload=payload,
+            )
+
+        result = await broker.mutate(
+            files_dir,
+            operations,
+            audit_context=CrossWorkspaceSqliteAuditIdentityContext(
+                actor_id=leased_by_user_id,
+                request_id=session_id,
+            ),
+            audit_intent_callback=_audit_intent,
+            audit_outcome_callback=_audit_outcome,
+        )
+
+        try:
+            await broker.checkpoint(files_dir)
+        except Exception as exc:  # noqa: BLE001 - committed mutation must still succeed
+            logger.exception(
+                "Runtime bridge SQLite checkpoint failed for workspace %s",
+                target_workspace_id,
+            )
+            payload = dict(base_payload)
+            payload.update(
+                {
+                    "phase": "post_commit_failure",
+                    "fingerprint": result.fingerprint,
+                    "operation_count": len(result.operations),
+                    "status": "committed",
+                    "error_code": "checkpoint_failed",
+                }
+            )
+            await self._record_runtime_bridge_sqlite_event_best_effort(
+                workspace_id=target_workspace_id,
+                user_id=leased_by_user_id,
+                session_id=session_id,
+                payload=payload,
+            )
+        else:
+            try:
+                await self.create_snapshot(
+                    target_workspace_id,
+                    leased_by_user_id,
+                    "Runtime bridge SQLite mutation",
+                    auto_sync_to_scm=False,
+                )
+            except Exception:  # noqa: BLE001 - committed mutation must still succeed
+                logger.exception(
+                    "Runtime bridge SQLite snapshot failed for workspace %s",
+                    target_workspace_id,
+                )
+                payload = dict(base_payload)
+                payload.update(
+                    {
+                        "phase": "post_commit_failure",
+                        "fingerprint": result.fingerprint,
+                        "operation_count": len(result.operations),
+                        "status": "committed",
+                        "error_code": "snapshot_failed",
+                    }
+                )
+                await self._record_runtime_bridge_sqlite_event_best_effort(
+                    workspace_id=target_workspace_id,
+                    user_id=leased_by_user_id,
+                    session_id=session_id,
+                    payload=payload,
+                )
+
+        return RuntimeBridgeSqliteMutationResponse(
+            target_workspace_id=target_workspace_id,
+            database_name=request.database_name,
+            operations=[
+                RuntimeBridgeSqliteMutationOperationResponse(
+                    kind=operation.kind,
+                    rowcount=operation.rowcount,
+                    lastrowid=operation.lastrowid,
+                )
+                for operation in result.operations
+            ],
+            fingerprint=result.fingerprint,
+        )
 
     async def _execute_shared_component_for_workspace_id(
         self,

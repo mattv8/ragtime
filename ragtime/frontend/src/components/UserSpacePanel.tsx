@@ -11840,6 +11840,7 @@ export function UserSpacePanel({
           availableWorkspaces={agentGrantWorkspaces.map((workspace) => ({
             ...workspace,
             canGrantReadWrite: canEditUserSpaceWorkspace(workspace, currentUser),
+            canGrantSqlite: workspace.owner_user_id === currentUser?.id,
           }))}
           grants={agentGrants}
           onUpsert={handleUpsertAgentGrant}

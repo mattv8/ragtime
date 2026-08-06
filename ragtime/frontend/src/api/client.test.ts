@@ -330,3 +330,82 @@ describe('HTTP API OAuth client request shapes', () => {
     );
   });
 });
+
+describe('workspace agent grant client request shapes', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('serializes an explicit sqlite_access_mode when present', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'grant-1',
+        source_workspace_id: 'ws-source',
+        target_workspace_id: 'ws-target',
+        target_workspace_name: 'Target',
+        access_mode: 'read',
+        sqlite_access_mode: 'read_write',
+        granted_by_user_id: 'user-1',
+        created_at: '2026-08-05T12:00:00Z',
+        updated_at: '2026-08-05T12:00:00Z',
+      }),
+    );
+
+    await api.upsertUserSpaceWorkspaceAgentGrant('ws-source', {
+      target_workspace_id: 'ws-target',
+      access_mode: 'read',
+      sqlite_access_mode: 'read_write',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/userspace/workspaces/ws-source/agent-grants',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          target_workspace_id: 'ws-target',
+          access_mode: 'read',
+          sqlite_access_mode: 'read_write',
+        }),
+      }),
+    );
+  });
+
+  it('preserves omission when sqlite_access_mode is absent', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'grant-1',
+        source_workspace_id: 'ws-source',
+        target_workspace_id: 'ws-target',
+        target_workspace_name: 'Target',
+        access_mode: 'read_write',
+        sqlite_access_mode: 'read',
+        granted_by_user_id: 'user-1',
+        created_at: '2026-08-05T12:00:00Z',
+        updated_at: '2026-08-05T12:00:00Z',
+      }),
+    );
+
+    await api.upsertUserSpaceWorkspaceAgentGrant('ws-source', {
+      target_workspace_id: 'ws-target',
+      access_mode: 'read_write',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/userspace/workspaces/ws-source/agent-grants',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          target_workspace_id: 'ws-target',
+          access_mode: 'read_write',
+        }),
+      }),
+    );
+  });
+});
