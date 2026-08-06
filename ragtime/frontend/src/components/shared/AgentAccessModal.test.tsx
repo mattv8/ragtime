@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -39,7 +39,7 @@ function renderModal({
   onUpsert?: ReturnType<typeof vi.fn>;
   onRevoke?: ReturnType<typeof vi.fn>;
 } = {}) {
-  render(
+  const renderResult = render(
     <AgentAccessModal
       isOpen
       onClose={vi.fn()}
@@ -51,7 +51,7 @@ function renderModal({
     />,
   );
 
-  return { onUpsert, onRevoke };
+  return { ...renderResult, onUpsert, onRevoke };
 }
 
 function getGrantRow(targetName: string): HTMLElement {
@@ -74,7 +74,7 @@ afterEach(() => {
 });
 
 describe('AgentAccessModal', () => {
-  it('renders the SQLite warning, accessible toggle groups, and fixture modes for none/read/read_write', () => {
+  it('renders one combined help note, keeps existing-row labels and groups, and removes add-form permission controls', () => {
     renderModal({
       grants: [
         createGrant({
@@ -104,15 +104,23 @@ describe('AgentAccessModal', () => {
       ],
     });
 
-    expect(screen.getByRole('note').textContent).toContain(
-      'A SQLite grant covers all data in app.sqlite3, including future data. Only the target workspace owner can change it.',
+    expect(screen.getByRole('note').textContent).toBe(
+      "Allow this workspace's agent to use file/runtime tools in another workspace you can access. A SQLite grant covers all data in app.sqlite3, including future data. Only the target workspace owner can change it.",
     );
+    expect(
+      screen.queryAllByText(
+        'A SQLite grant covers all data in app.sqlite3, including future data. Only the target workspace owner can change it.',
+      ),
+    ).toHaveLength(0);
+    expect(screen.getByText('Target workspace')).not.toBeNull();
 
     const modal = document.querySelector('.userspace-agent-access-modal');
     expect(modal).not.toBeNull();
 
     const alphaRow = getGrantRow('Alpha');
     expect(alphaRow.querySelector('.userspace-agent-access-control-row')).not.toBeNull();
+    expect(within(alphaRow).getByText('File/runtime')).not.toBeNull();
+    expect(within(alphaRow).getByText('Shared SQLite')).not.toBeNull();
     const alphaSqliteGroup = within(alphaRow).getByRole('group', {
       name: 'Shared SQLite access for Alpha',
     });
@@ -145,9 +153,26 @@ describe('AgentAccessModal', () => {
         .getByRole('button', { name: 'Read / Write' })
         .getAttribute('aria-pressed'),
     ).toBe('true');
+
+    const newGrantSection = screen
+      .getByLabelText('Target workspace')
+      .closest('.userspace-agent-access-add-row');
+    expect(newGrantSection).not.toBeNull();
+    if (!(newGrantSection instanceof HTMLElement)) {
+      throw new Error('Missing new grant section');
+    }
+    expect(
+      within(newGrantSection).queryByRole('group', { name: 'New grant file/runtime access' }),
+    ).toBeNull();
+    expect(
+      within(newGrantSection).queryByRole('group', { name: 'New grant Shared SQLite access' }),
+    ).toBeNull();
+    expect(within(newGrantSection).queryByText('File/runtime')).toBeNull();
+    expect(within(newGrantSection).queryByText('Shared SQLite')).toBeNull();
+    expect(within(newGrantSection).queryByText(/choose the permissions/i)).toBeNull();
   });
 
-  it('lets an owner change SQLite mode while preserving the current file mode', async () => {
+  it('keeps existing-grant edits local until Save is clicked and preserves the current file mode', async () => {
     const user = userEvent.setup();
     const { onUpsert } = renderModal({
       grants: [
@@ -167,8 +192,17 @@ describe('AgentAccessModal', () => {
     const sqliteGroup = within(row).getByRole('group', {
       name: 'Shared SQLite access for Owner Target',
     });
+    const saveButton = within(row).getByRole('button', { name: 'Save grant for Owner Target' });
+
+    expect((saveButton as HTMLButtonElement).disabled).toBe(true);
+    expect(saveButton.classList.contains('btn-sm')).toBe(true);
 
     await user.click(within(sqliteGroup).getByRole('button', { name: 'Read / Write' }));
+
+    expect(onUpsert).not.toHaveBeenCalled();
+    expect((saveButton as HTMLButtonElement).disabled).toBe(false);
+
+    await user.click(saveButton);
 
     expect(onUpsert).toHaveBeenCalledWith({
       target_workspace_id: 'ws-owner',
@@ -177,7 +211,7 @@ describe('AgentAccessModal', () => {
     });
   });
 
-  it('omits sqlite_access_mode during file-mode edits and keeps the current SQLite state visible', async () => {
+  it('enables Save only while a row draft differs and persists the full owner-capable draft on Save', async () => {
     const user = userEvent.setup();
     const { onUpsert } = renderModal({
       grants: [
@@ -200,12 +234,26 @@ describe('AgentAccessModal', () => {
     const sqliteGroup = within(row).getByRole('group', {
       name: 'Shared SQLite access for Owner Target',
     });
+    const saveButton = within(row).getByRole('button', { name: 'Save grant for Owner Target' });
+
+    expect((saveButton as HTMLButtonElement).disabled).toBe(true);
+    expect(saveButton.classList.contains('btn-sm')).toBe(true);
 
     await user.click(within(fileGroup).getByRole('button', { name: 'Read / Write' }));
+
+    expect(onUpsert).not.toHaveBeenCalled();
+    expect((saveButton as HTMLButtonElement).disabled).toBe(false);
+
+    await user.click(within(fileGroup).getByRole('button', { name: 'Read' }));
+    expect((saveButton as HTMLButtonElement).disabled).toBe(true);
+
+    await user.click(within(fileGroup).getByRole('button', { name: 'Read / Write' }));
+    await user.click(saveButton);
 
     expect(onUpsert).toHaveBeenCalledWith({
       target_workspace_id: 'ws-owner',
       access_mode: 'read_write',
+      sqlite_access_mode: 'read_write',
     });
     expect(
       within(sqliteGroup)
@@ -214,7 +262,80 @@ describe('AgentAccessModal', () => {
     ).toBe('true');
   });
 
-  it('shows current SQLite mode to a non-owner, disables SQLite changes, and blocks revoke when SQLite access exists', () => {
+  it('resynchronizes a dirty row draft when the persisted grant changes after rerender', async () => {
+    const user = userEvent.setup();
+    const onUpsert = vi.fn().mockResolvedValue(undefined);
+    const onRevoke = vi.fn().mockResolvedValue(undefined);
+    const initialGrant = createGrant({
+      target_workspace_id: 'ws-owner',
+      target_workspace_name: 'Owner Target',
+      access_mode: 'read',
+      sqlite_access_mode: 'none',
+    });
+    const updatedGrant = createGrant({
+      target_workspace_id: 'ws-owner',
+      target_workspace_name: 'Owner Target',
+      access_mode: 'read_write',
+      sqlite_access_mode: 'read',
+      updated_at: '2026-08-06T12:00:00Z',
+    });
+    const { rerender } = renderModal({
+      grants: [initialGrant],
+      availableWorkspaces: [
+        { id: 'ws-owner', name: 'Owner Target', canGrantReadWrite: true, canGrantSqlite: true },
+      ],
+      onUpsert,
+      onRevoke,
+    });
+
+    const row = getGrantRow('Owner Target');
+    const fileGroup = within(row).getByRole('group', {
+      name: 'File/runtime access for Owner Target',
+    });
+    const saveButton = within(row).getByRole('button', { name: 'Save grant for Owner Target' });
+
+    await user.click(within(fileGroup).getByRole('button', { name: 'Read / Write' }));
+    expect((saveButton as HTMLButtonElement).disabled).toBe(false);
+
+    rerender(
+      <AgentAccessModal
+        isOpen
+        onClose={vi.fn()}
+        sourceWorkspace={SOURCE_WORKSPACE}
+        availableWorkspaces={[
+          { id: 'ws-owner', name: 'Owner Target', canGrantReadWrite: true, canGrantSqlite: true },
+        ]}
+        grants={[updatedGrant]}
+        onUpsert={onUpsert}
+        onRevoke={onRevoke}
+      />,
+    );
+
+    const rerenderedRow = getGrantRow('Owner Target');
+    const rerenderedFileGroup = within(rerenderedRow).getByRole('group', {
+      name: 'File/runtime access for Owner Target',
+    });
+    const rerenderedSqliteGroup = within(rerenderedRow).getByRole('group', {
+      name: 'Shared SQLite access for Owner Target',
+    });
+    const rerenderedSaveButton = within(rerenderedRow).getByRole('button', {
+      name: 'Save grant for Owner Target',
+    });
+
+    expect(
+      within(rerenderedFileGroup)
+        .getByRole('button', { name: 'Read / Write' })
+        .getAttribute('aria-pressed'),
+    ).toBe('true');
+    expect(
+      within(rerenderedSqliteGroup)
+        .getByRole('button', { name: 'Read' })
+        .getAttribute('aria-pressed'),
+    ).toBe('true');
+    expect((rerenderedSaveButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('shows current SQLite mode to a non-owner, disables SQLite changes, and preserves revoke restrictions', () => {
     renderModal({
       grants: [
         createGrant({
@@ -265,19 +386,63 @@ describe('AgentAccessModal', () => {
     ).toBe(false);
   });
 
-  it('omits sqlite_access_mode when a non-owner adds or updates a file-only grant', async () => {
+  it('uses a blank placeholder, disables granted targets, and enables Add only for valid ungranted targets', async () => {
     const user = userEvent.setup();
     const { onUpsert } = renderModal({
+      grants: [
+        createGrant({
+          target_workspace_id: 'ws-granted',
+          target_workspace_name: 'Already Granted',
+        }),
+      ],
       availableWorkspaces: [
+        {
+          id: 'ws-granted',
+          name: 'Already Granted',
+          canGrantReadWrite: true,
+          canGrantSqlite: true,
+        },
         { id: 'ws-member', name: 'Member Target', canGrantReadWrite: true, canGrantSqlite: false },
       ],
     });
 
-    const sqliteGroup = screen.getByRole('group', { name: 'New grant Shared SQLite access' });
-    const sqliteButtons = within(sqliteGroup).getAllByRole('button');
-    expect(sqliteButtons.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    const targetSelect = screen.getByLabelText('Target workspace') as HTMLSelectElement;
+    const addButton = screen.getByRole('button', { name: 'Add grant' });
+    const footer = document.querySelector('.modal-footer');
 
-    await user.click(screen.getByRole('button', { name: 'Add / Update Grant' }));
+    expect(
+      (screen.getByRole('option', { name: 'Select a workspace...' }) as HTMLOptionElement).value,
+    ).toBe('');
+    expect(targetSelect.value).toBe('');
+    expect((addButton as HTMLButtonElement).disabled).toBe(true);
+    expect(footer).not.toBeNull();
+    if (!(footer instanceof HTMLElement)) {
+      throw new Error('Missing modal footer');
+    }
+    expect(within(footer).getByRole('button', { name: 'Close' })).toBe(
+      screen.getByRole('button', { name: 'Close' }),
+    );
+    expect(within(footer).getByRole('button', { name: 'Add grant' })).toBe(addButton);
+    expect(
+      within(footer)
+        .getAllByRole('button')
+        .map((button) => button.textContent?.trim()),
+    ).toEqual(['Close', 'Add grant']);
+    expect(
+      (
+        screen.getByRole('option', {
+          name: 'Already Granted (already granted)',
+        }) as HTMLOptionElement
+      ).disabled,
+    ).toBe(true);
+    expect(screen.queryByRole('group', { name: 'New grant file/runtime access' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'New grant Shared SQLite access' })).toBeNull();
+
+    await user.selectOptions(targetSelect, 'ws-member');
+
+    expect((addButton as HTMLButtonElement).disabled).toBe(false);
+
+    await user.click(addButton);
 
     expect(onUpsert).toHaveBeenCalledWith({
       target_workspace_id: 'ws-member',
@@ -285,7 +450,7 @@ describe('AgentAccessModal', () => {
     });
   });
 
-  it('includes sqlite_access_mode for an owned target and resets the local SQLite choice when switching targets', async () => {
+  it('submits the least-privilege payload for an owned target and resets the target to the placeholder after Add succeeds', async () => {
     const user = userEvent.setup();
     const { onUpsert } = renderModal({
       availableWorkspaces: [
@@ -294,27 +459,90 @@ describe('AgentAccessModal', () => {
       ],
     });
 
-    const sqliteGroup = screen.getByRole('group', { name: 'New grant Shared SQLite access' });
+    const targetSelect = screen.getByLabelText('Target workspace') as HTMLSelectElement;
+    await user.selectOptions(targetSelect, 'ws-zulu');
+
+    await user.click(screen.getByRole('button', { name: 'Add grant' }));
+
+    expect(onUpsert).toHaveBeenLastCalledWith({
+      target_workspace_id: 'ws-zulu',
+      access_mode: 'read',
+    });
+    await waitFor(() => {
+      expect(targetSelect.value).toBe('');
+    });
+  });
+
+  it('keeps a persisted read_write mode active when write capability is unavailable and does not mark the row dirty', () => {
+    renderModal({
+      grants: [
+        createGrant({
+          target_workspace_id: 'ws-limited',
+          target_workspace_name: 'Limited Target',
+          access_mode: 'read_write',
+          sqlite_access_mode: 'none',
+        }),
+      ],
+      availableWorkspaces: [
+        {
+          id: 'ws-limited',
+          name: 'Limited Target',
+          canGrantReadWrite: false,
+          canGrantSqlite: true,
+        },
+      ],
+    });
+
+    const row = getGrantRow('Limited Target');
+    const fileGroup = within(row).getByRole('group', {
+      name: 'File/runtime access for Limited Target',
+    });
+
+    expect(
+      within(fileGroup).getByRole('button', { name: 'Read / Write' }).getAttribute('aria-pressed'),
+    ).toBe('true');
+    expect(
+      (
+        within(row).getByRole('button', {
+          name: 'Save grant for Limited Target',
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
+
+  it('retains a dirty draft after a rejected Save and surfaces an in-modal error', async () => {
+    const user = userEvent.setup();
+    const onUpsert = vi.fn().mockRejectedValue(new Error('Save failed'));
+    renderModal({
+      grants: [
+        createGrant({
+          target_workspace_id: 'ws-owner',
+          target_workspace_name: 'Owner Target',
+          access_mode: 'read',
+          sqlite_access_mode: 'read',
+        }),
+      ],
+      availableWorkspaces: [
+        { id: 'ws-owner', name: 'Owner Target', canGrantReadWrite: true, canGrantSqlite: true },
+      ],
+      onUpsert,
+    });
+
+    const row = getGrantRow('Owner Target');
+    const sqliteGroup = within(row).getByRole('group', {
+      name: 'Shared SQLite access for Owner Target',
+    });
+    const saveButton = within(row).getByRole('button', { name: 'Save grant for Owner Target' });
+
     await user.click(within(sqliteGroup).getByRole('button', { name: 'Read / Write' }));
+    await user.click(saveButton);
+
+    expect(await within(row).findByText('Save failed')).not.toBeNull();
+    expect((saveButton as HTMLButtonElement).disabled).toBe(false);
     expect(
       within(sqliteGroup)
         .getByRole('button', { name: 'Read / Write' })
         .getAttribute('aria-pressed'),
     ).toBe('true');
-
-    await user.selectOptions(screen.getByLabelText('Target workspace'), 'ws-zulu');
-
-    expect(
-      within(sqliteGroup).getByRole('button', { name: 'None' }).getAttribute('aria-pressed'),
-    ).toBe('true');
-
-    await user.click(within(sqliteGroup).getByRole('button', { name: 'Read' }));
-    await user.click(screen.getByRole('button', { name: 'Add / Update Grant' }));
-
-    expect(onUpsert).toHaveBeenLastCalledWith({
-      target_workspace_id: 'ws-zulu',
-      access_mode: 'read',
-      sqlite_access_mode: 'read',
-    });
   });
 });

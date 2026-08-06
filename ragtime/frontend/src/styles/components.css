@@ -4163,6 +4163,15 @@ textarea:focus {
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.userspace-agent-access-grant-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .userspace-agent-access-control-row {
@@ -4202,8 +4211,21 @@ textarea:focus {
   gap: var(--space-xs);
 }
 
-.userspace-agent-access-create-toggle {
-  width: fit-content;
+.userspace-agent-access-row-error {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-error);
+}
+
+@media (max-width: 640px) {
+  .userspace-agent-access-modal .modal-footer {
+    flex-wrap: wrap;
+  }
+
+  .userspace-agent-access-modal .modal-footer .btn {
+    flex: 1 1 0;
+    min-width: 0;
+  }
 }
 
 .userspace-member-row select {
