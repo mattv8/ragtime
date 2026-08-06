@@ -67,6 +67,7 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
     pip install --upgrade pip && \
     python /tmp/install_deps_from_pyproject.py /runtime/pyproject.toml runtime /tmp/requirements.runtime.txt && \
     pip install -r /tmp/requirements.runtime.txt && \
+    python -c "import anydoc; assert callable(anydoc.to_markdown_bytes); assert anydoc.format_from_extension('csv') is not None" && \
     pip install poetry pipenv uv && \
     curl -fsSL https://bun.sh/install | bash
 
@@ -74,6 +75,7 @@ COPY runtime/ /runtime/runtime/
 RUN mkdir -p /runtime/ragtime/core
 COPY ragtime/__init__.py /runtime/ragtime/__init__.py
 COPY ragtime/core/__init__.py /runtime/ragtime/core/__init__.py
+COPY ragtime/core/document_conversion.py /runtime/ragtime/core/document_conversion.py
 COPY ragtime/core/file_constants.py /runtime/ragtime/core/file_constants.py
 COPY docker/entrypoint.runtime.sh /entrypoint.runtime.sh
 

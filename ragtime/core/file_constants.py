@@ -108,27 +108,36 @@ UNPARSEABLE_BINARY_EXTENSIONS: set[str] = {
 # =============================================================================
 # PARSEABLE DOCUMENT EXTENSIONS
 # =============================================================================
-# Documents that require special parsers (PDF, Office, OpenDocument, etc.).
-# Both the filesystem indexer and git/upload indexer can parse these using
-# document_parser.py extractors.
-PARSEABLE_DOCUMENT_EXTENSIONS: set[str] = {
-    # Office documents
+# AnyDoc README-supported document formats. Keep this as the canonical
+# AnyDoc taxonomy so parser-facing sets can reuse it without local drift.
+ANYDOC_DOCUMENT_EXTENSIONS: set[str] = {
     ".pdf",
     ".doc",
     ".docx",
+    ".docm",
+    ".ppt",
+    ".pps",
+    ".pot",
+    ".pptx",
+    ".pptm",
+    ".ppsx",
+    ".ppsm",
     ".xls",
     ".xlsx",
-    ".ppt",
-    ".pptx",
-    # OpenDocument
+    ".xlsm",
+    ".xlsb",
     ".odt",
     ".ods",
     ".odp",
-    # Rich text
     ".rtf",
-    # Ebooks
     ".epub",
-    # Email
+    ".csv",
+}
+
+# Documents that require special parsers (PDF, Office, OpenDocument, etc.).
+# Both the filesystem indexer and git/upload indexer can parse these using
+# document_parser.py extractors.
+PARSEABLE_DOCUMENT_EXTENSIONS: set[str] = ANYDOC_DOCUMENT_EXTENSIONS | {
     ".eml",
     ".msg",
 }
@@ -180,22 +189,7 @@ NEVER_SUGGEST_EXCLUDE_EXTENSIONS: set[str] = {
     ".txt",
     ".md",
     ".rst",
-    ".csv",
-    # Office documents - parsed by document_parser.py
-    ".pdf",
-    ".doc",
-    ".docx",
-    ".xls",
-    ".xlsx",
-    ".ppt",
-    ".pptx",
-    # OpenDocument formats
-    ".odt",
-    ".ods",
-    ".odp",
-    ".rtf",
-    # Ebooks
-    ".epub",
+    *ANYDOC_DOCUMENT_EXTENSIONS,
     # Email
     ".eml",
     ".msg",
@@ -485,10 +479,18 @@ LANG_MAPPING: dict[str, str | None] = {
     ".pdf": None,
     ".doc": None,
     ".docx": None,
+    ".docm": None,
     ".xls": None,
     ".xlsx": None,
+    ".xlsm": None,
+    ".xlsb": None,
     ".ppt": None,
     ".pptx": None,
+    ".pps": None,
+    ".pot": None,
+    ".pptm": None,
+    ".ppsx": None,
+    ".ppsm": None,
     ".rtf": None,
     # OpenDocument
     ".odt": None,

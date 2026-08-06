@@ -4,7 +4,6 @@ import asyncio
 import base64
 import hashlib
 import html
-import io
 import json
 import logging
 import os
@@ -3211,17 +3210,23 @@ class WorkerService:
     @staticmethod
     def _extract_pdf_text(content: bytes) -> str:
         try:
-            from pypdf import PdfReader
-        except ImportError:
-            raise RuntimeError("Runtime PDF extraction dependency pypdf is not installed")
+            from ragtime.core.document_conversion import convert_document_bytes
+        except ImportError as exc:
+            raise RuntimeError("Runtime document conversion adapter is not available") from exc
 
-        reader = PdfReader(io.BytesIO(content))
-        text_parts: list[str] = []
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text_parts.append(page_text)
-        return "\n\n".join(text_parts)
+        result = convert_document_bytes(content, ".pdf")
+        failure = getattr(result, "failure", None)
+        if failure is None:
+            return str(getattr(result, "text", "") or "")
+
+        failure_name = getattr(failure, "name", None) or str(failure)
+        if failure_name == "UNSUPPORTED":
+            return ""
+
+        detail = str(getattr(result, "detail", "") or "").strip()
+        if detail:
+            raise RuntimeError(detail)
+        raise RuntimeError(f"Document conversion failed ({failure_name})")
 
     async def read_pdf(
         self,

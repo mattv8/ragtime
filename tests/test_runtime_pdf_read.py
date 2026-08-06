@@ -1,4 +1,7 @@
+import sys
 import unittest
+from enum import Enum
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -22,7 +25,29 @@ def _patch_async_client(transport: httpx.MockTransport):
     )
 
 
+class _FakeConversionFailure(Enum):
+    UNSUPPORTED = "unsupported"
+    OTHER = "other"
+
+
+def _patch_document_converter(*, text: str = "", failure: _FakeConversionFailure | None = None, detail: str | None = None):
+    module = SimpleNamespace(
+        convert_document_bytes=lambda content, suffix: SimpleNamespace(
+            text=text,
+            failure=failure,
+            detail=detail,
+        )
+    )
+    return patch.dict(sys.modules, {"ragtime.core.document_conversion": module})
+
+
 class RuntimePdfReadTests(unittest.IsolatedAsyncioTestCase):
+    def test_extract_pdf_text_uses_document_converter_markdown(self):
+        with _patch_document_converter(text="# Title\n\nConverted body"):
+            text = WorkerService._extract_pdf_text(b"%PDF-1.4\nconverted")
+
+        self.assertEqual(text, "# Title\n\nConverted body")
+
     async def test_extracts_requested_range(self):
         service = WorkerService()
 
@@ -124,6 +149,47 @@ class RuntimePdfReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status_code, 403)
         self.assertIn("Access Denied", result.body_preview)
         self.assertIn("denied", result.error.lower())
+
+    async def test_returns_empty_when_document_converter_reports_unsupported(self):
+        service = WorkerService()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/pdf"},
+                content=b"%PDF-1.4\nunsupported pdf bytes",
+            )
+
+        transport = httpx.MockTransport(handler)
+        with _patch_async_client(transport), _patch_document_converter(failure=_FakeConversionFailure.UNSUPPORTED):
+            result = await service.read_pdf(RuntimePdfReadRequest(url="https://example.com/image-only.pdf"))
+
+        self.assertEqual(result.status, "empty")
+        self.assertEqual(result.failure_mode, "empty_pdf_text")
+
+    async def test_returns_pdf_extract_error_for_document_converter_failures(self):
+        service = WorkerService()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/pdf"},
+                content=b"%PDF-1.4\nproblem pdf bytes",
+            )
+
+        transport = httpx.MockTransport(handler)
+        with (
+            _patch_async_client(transport),
+            _patch_document_converter(
+                failure=_FakeConversionFailure.OTHER,
+                detail="OCR backend unavailable",
+            ),
+        ):
+            result = await service.read_pdf(RuntimePdfReadRequest(url="https://example.com/problem.pdf"))
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.failure_mode, "pdf_extract_error")
+        self.assertIn("OCR backend unavailable", result.error)
 
 
 if __name__ == "__main__":
