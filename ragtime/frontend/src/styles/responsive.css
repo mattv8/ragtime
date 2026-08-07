@@ -259,7 +259,6 @@
   .userspace-sqlite-step-header,
   .userspace-sqlite-step-header-inline,
   .userspace-sqlite-step-actions,
-  .userspace-sqlite-group-header,
   .userspace-sqlite-card,
   .userspace-sqlite-card-actions {
     flex-wrap: wrap;

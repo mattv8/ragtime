@@ -6,7 +6,6 @@ import {
   Download,
   FileText,
   Filter,
-  Link2,
   Loader2,
   PlusCircle,
   RefreshCw,
@@ -52,8 +51,41 @@ interface WorkspaceSqliteInspectorModalProps {
 
 type InspectorDatabaseSummary = SqliteInspectorDatabaseSummary;
 
-function asInspectorDatabase(database: SqliteInspectorDatabaseSummary): InspectorDatabaseSummary {
-  return database;
+type LegacyInspectorDatabaseSummary = Pick<
+  SqliteInspectorDatabaseSummary,
+  'name' | 'relative_path' | 'size_bytes' | 'table_count' | 'last_modified_ms'
+> &
+  Partial<
+    Pick<
+      SqliteInspectorDatabaseSummary,
+      | 'owner_workspace_id'
+      | 'owner_workspace_name'
+      | 'ownership'
+      | 'access_mode'
+      | 'persistence_mode'
+      | 'initialized'
+    >
+  >;
+
+function normalizeInspectorDatabase(
+  database: SqliteInspectorDatabaseSummary | LegacyInspectorDatabaseSummary,
+  options: {
+    workspaceId: string | null;
+    workspaceName?: string;
+    canEdit: boolean;
+    persistenceMode: 'include' | 'exclude';
+  },
+): InspectorDatabaseSummary {
+  return {
+    ...database,
+    owner_workspace_id: database.owner_workspace_id ?? options.workspaceId ?? '',
+    owner_workspace_name:
+      database.owner_workspace_name ?? options.workspaceName ?? 'This workspace',
+    ownership: database.ownership ?? 'owned',
+    access_mode: database.access_mode ?? (options.canEdit ? 'read_write' : 'read'),
+    persistence_mode: database.persistence_mode ?? options.persistenceMode,
+    initialized: database.initialized ?? true,
+  };
 }
 
 function databaseKey(
@@ -300,6 +332,28 @@ export function WorkspaceSqliteInspectorModal({
   const [newRowValues, setNewRowValues] = useState<Record<string, string>>({});
   const [savingRow, setSavingRow] = useState(false);
 
+  const normalizeDatabase = useCallback(
+    (
+      database: SqliteInspectorDatabaseSummary | LegacyInspectorDatabaseSummary,
+      nextPersistenceMode: 'include' | 'exclude',
+    ) =>
+      normalizeInspectorDatabase(database, {
+        workspaceId,
+        workspaceName,
+        canEdit,
+        persistenceMode: nextPersistenceMode,
+      }),
+    [canEdit, workspaceId, workspaceName],
+  );
+
+  const normalizeDatabases = useCallback(
+    (
+      nextDatabases: Array<SqliteInspectorDatabaseSummary | LegacyInspectorDatabaseSummary>,
+      nextPersistenceMode: 'include' | 'exclude',
+    ) => nextDatabases.map((database) => normalizeDatabase(database, nextPersistenceMode)),
+    [normalizeDatabase],
+  );
+
   const reset = useCallback(() => {
     setStep('databases');
     setDatabases([]);
@@ -328,7 +382,7 @@ export function WorkspaceSqliteInspectorModal({
     setLoadingDatabases(true);
     try {
       const result = await api.listUserSpaceSqliteDatabases(workspaceId);
-      setDatabases(result.databases.map(asInspectorDatabase));
+      setDatabases(normalizeDatabases(result.databases, result.persistence_mode));
       setDefaultDatabaseName(result.default_database_name);
       setPersistenceMode(result.persistence_mode);
       setTotalBytes(result.total_bytes);
@@ -337,7 +391,7 @@ export function WorkspaceSqliteInspectorModal({
     } finally {
       setLoadingDatabases(false);
     }
-  }, [toastError, workspaceId]);
+  }, [normalizeDatabases, toastError, workspaceId]);
 
   const loadTables = useCallback(
     async (database: InspectorDatabaseSummary) => {
@@ -349,7 +403,7 @@ export function WorkspaceSqliteInspectorModal({
           database.name,
           database.owner_workspace_id,
         );
-        setSelectedDatabase(asInspectorDatabase(result.database));
+        setSelectedDatabase(normalizeDatabase(result.database, result.persistence_mode));
         setTables(result.tables);
         setPersistenceMode(result.persistence_mode);
       } catch (err) {
@@ -358,7 +412,7 @@ export function WorkspaceSqliteInspectorModal({
         setLoadingTables(false);
       }
     },
-    [toastError, workspaceId],
+    [normalizeDatabase, toastError, workspaceId],
   );
 
   const loadRows = useCallback(
@@ -419,12 +473,12 @@ export function WorkspaceSqliteInspectorModal({
     events.addEventListener('databases', (event) => {
       try {
         const result = JSON.parse((event as MessageEvent).data) as {
-          databases: SqliteInspectorDatabaseSummary[];
+          databases: Array<SqliteInspectorDatabaseSummary | LegacyInspectorDatabaseSummary>;
           default_database_name: string;
           persistence_mode: 'include' | 'exclude';
           total_bytes: number;
         };
-        const nextDatabases = result.databases.map(asInspectorDatabase);
+        const nextDatabases = normalizeDatabases(result.databases, result.persistence_mode);
         setDatabases(nextDatabases);
         setDefaultDatabaseName(result.default_database_name);
         setPersistenceMode(result.persistence_mode);
@@ -438,7 +492,7 @@ export function WorkspaceSqliteInspectorModal({
       }
     });
     return () => events.close();
-  }, [isOpen, workspaceId]);
+  }, [isOpen, normalizeDatabases, workspaceId]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -491,7 +545,7 @@ export function WorkspaceSqliteInspectorModal({
           {},
           ownerWorkspaceId,
         );
-        const nextDatabase = asInspectorDatabase(result.database);
+        const nextDatabase = normalizeDatabase(result.database, result.persistence_mode);
         // Pre-fetch the destination data before transitioning so the new step
         // renders fully populated.
         await Promise.all([loadDatabases(), loadTables(nextDatabase)]);
@@ -511,6 +565,7 @@ export function WorkspaceSqliteInspectorModal({
       toastSuccess,
       toastError,
       workspaceId,
+      normalizeDatabase,
     ],
   );
 
@@ -616,7 +671,7 @@ export function WorkspaceSqliteInspectorModal({
           formData,
           targetDatabase.owner_workspace_id,
         );
-        const nextDatabase = asInspectorDatabase(result.database);
+        const nextDatabase = normalizeDatabase(result.database, persistenceMode);
         handlePromotionFlag(result.mode_promoted, nextDatabase.owner_workspace_id, nextDatabase);
         toastSuccess(`Imported ${result.database.name}`);
         await loadDatabases();
@@ -638,6 +693,8 @@ export function WorkspaceSqliteInspectorModal({
       toastError,
       toastSuccess,
       workspaceId,
+      normalizeDatabase,
+      persistenceMode,
     ],
   );
 
@@ -1342,19 +1399,19 @@ export function WorkspaceSqliteInspectorModal({
               canEdit={canEdit}
               onInitialize={handleInitializeDatabase}
               onImportDefault={() =>
-                handleRequestImportDatabase({
-                  name: defaultDatabaseName,
-                  relative_path: `.ragtime/db/${defaultDatabaseName}`,
-                  size_bytes: 0,
-                  table_count: 0,
-                  last_modified_ms: null,
-                  owner_workspace_id: workspaceId ?? '',
-                  owner_workspace_name: workspaceName ?? 'This workspace',
-                  ownership: 'owned',
-                  access_mode: canEdit ? 'read_write' : 'read',
-                  persistence_mode: persistenceMode,
-                  initialized: false,
-                })
+                handleRequestImportDatabase(
+                  normalizeDatabase(
+                    {
+                      name: defaultDatabaseName,
+                      relative_path: `.ragtime/db/${defaultDatabaseName}`,
+                      size_bytes: 0,
+                      table_count: 0,
+                      last_modified_ms: null,
+                      initialized: false,
+                    },
+                    persistenceMode,
+                  ),
+                )
               }
               onOpen={handleOpenDatabase}
               onExport={handleExportDatabase}
@@ -1479,9 +1536,9 @@ function DatabasesStep({
   onImport,
   onDelete,
 }: DatabasesStepProps) {
-  const ownedDatabases = databases.filter((database) => database.ownership === 'owned');
-  const linkedDatabases = databases.filter((database) => database.ownership === 'linked');
-  const hasDefault = ownedDatabases.some((d) => d.name === defaultDatabaseName);
+  const hasDefault = databases.some(
+    (database) => database.ownership === 'owned' && database.name === defaultDatabaseName,
+  );
 
   const renderDatabaseCard = (db: InspectorDatabaseSummary) => {
     const canMutate = db.access_mode === 'read_write';
@@ -1494,23 +1551,21 @@ function DatabasesStep({
       >
         <button type="button" className="userspace-sqlite-card-main" onClick={() => onOpen(db)}>
           <div className="userspace-sqlite-card-title">
-            {isLinked ? <Link2 size={16} /> : <Database size={16} />}
+            <Database size={16} />
             <span>{db.name}</span>
-            <span
-              className={`userspace-sqlite-card-badge ${
-                db.ownership === 'owned'
-                  ? ''
-                  : db.access_mode === 'read_write'
+            {isLinked ? (
+              <span
+                className={`userspace-sqlite-card-badge ${
+                  db.access_mode === 'read_write'
                     ? 'userspace-sqlite-access-badge--write'
                     : 'userspace-sqlite-access-badge--read'
-              }`.trim()}
-            >
-              {db.ownership === 'owned' ? 'Owned' : getDatabaseAccessLabel(db.access_mode)}
-            </span>
+                }`.trim()}
+                title={db.owner_workspace_name}
+              >
+                {db.owner_workspace_name}
+              </span>
+            ) : null}
           </div>
-          {isLinked && (
-            <div className="userspace-sqlite-card-owner">Linked from {db.owner_workspace_name}</div>
-          )}
           <div className="userspace-sqlite-card-meta">
             {db.initialized ? (
               <>
@@ -1519,11 +1574,25 @@ function DatabasesStep({
                 </span>
                 <span>{formatBytes(db.size_bytes)}</span>
                 {db.last_modified_ms != null ? (
-                  <span>Modified {formatTimestamp(db.last_modified_ms)}</span>
+                  <span className="userspace-sqlite-card-modified">
+                    Modified {formatTimestamp(db.last_modified_ms)}
+                  </span>
+                ) : null}
+                {isLinked ? (
+                  <span className="userspace-sqlite-card-source">
+                    Linked from {db.owner_workspace_name}
+                  </span>
                 ) : null}
               </>
             ) : (
-              <span>Not initialized</span>
+              <>
+                <span>Not initialized</span>
+                {isLinked ? (
+                  <span className="userspace-sqlite-card-source">
+                    Linked from {db.owner_workspace_name}
+                  </span>
+                ) : null}
+              </>
             )}
           </div>
         </button>
@@ -1618,32 +1687,7 @@ function DatabasesStep({
           )}
         </div>
       ) : (
-        <div className="userspace-sqlite-group-stack">
-          <section className="userspace-sqlite-group">
-            <div className="userspace-sqlite-group-header">
-              <h5>Workspace databases</h5>
-            </div>
-            {ownedDatabases.length > 0 ? (
-              <div className="userspace-sqlite-card-grid">
-                {ownedDatabases.map(renderDatabaseCard)}
-              </div>
-            ) : (
-              <div className="userspace-sqlite-empty-row">No workspace databases.</div>
-            )}
-          </section>
-          <section className="userspace-sqlite-group">
-            <div className="userspace-sqlite-group-header">
-              <h5>Linked databases</h5>
-            </div>
-            {linkedDatabases.length > 0 ? (
-              <div className="userspace-sqlite-card-grid">
-                {linkedDatabases.map(renderDatabaseCard)}
-              </div>
-            ) : (
-              <div className="userspace-sqlite-empty-row">No linked databases.</div>
-            )}
-          </section>
-        </div>
+        <div className="userspace-sqlite-card-grid">{databases.map(renderDatabaseCard)}</div>
       )}
     </div>
   );

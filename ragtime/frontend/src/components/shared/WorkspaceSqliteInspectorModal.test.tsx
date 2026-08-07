@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -70,6 +70,11 @@ type InspectorDatabase = {
   initialized: boolean;
 };
 
+type LegacyInspectorDatabase = Pick<
+  InspectorDatabase,
+  'name' | 'relative_path' | 'size_bytes' | 'table_count' | 'last_modified_ms'
+>;
+
 const owned: InspectorDatabase = {
   name: 'app.sqlite3',
   relative_path: '.ragtime/db/app.sqlite3',
@@ -103,6 +108,14 @@ const linkedWriteMissing: InspectorDatabase = {
   access_mode: 'read_write',
   persistence_mode: 'exclude',
   initialized: false,
+};
+
+const legacyOwned: LegacyInspectorDatabase = {
+  name: 'app.sqlite3',
+  relative_path: '.ragtime/db/app.sqlite3',
+  size_bytes: 0,
+  table_count: 0,
+  last_modified_ms: 1_786_032_000_000,
 };
 
 const listResponse = {
@@ -194,37 +207,69 @@ describe('WorkspaceSqliteInspectorModal', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders grouped workspace and linked database sections with ownership text and missing-state copy', async () => {
+  it('renders one unified database grid with owned and linked cards', async () => {
+    apiMock.listUserSpaceSqliteDatabases.mockResolvedValue({
+      ...listResponse,
+      databases: [legacyOwned, linkedRead, linkedWriteMissing],
+    });
     renderModal();
 
-    const workspaceHeading = await screen.findByRole('heading', { name: 'Workspace databases' });
-    const linkedHeading = screen.getByRole('heading', { name: 'Linked databases' });
+    await screen.findAllByRole('button', { name: /^app\.sqlite3/i });
 
-    const workspaceSection = workspaceHeading.closest('section');
-    const linkedSection = linkedHeading.closest('section');
+    expect(screen.queryByRole('heading', { name: 'Workspace databases' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Linked databases' })).toBeNull();
+    expect(screen.getByText('0 tables')).toBeTruthy();
+    expect(screen.getByText('0 B')).toBeTruthy();
+    expect(screen.queryByText('Owned')).toBeNull();
+    expect(screen.queryByText('Read only')).toBeNull();
+    expect(screen.queryByText('Read / Write')).toBeNull();
+    expect(screen.getByText('Linked from Reporting')).toBeTruthy();
+    expect(screen.getByText('Linked from Operations')).toBeTruthy();
+    expect(screen.getByText('Not initialized')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /^app\.sqlite3/i })).toHaveLength(3);
 
-    expect(workspaceSection).not.toBeNull();
-    expect(linkedSection).not.toBeNull();
-    expect(within(workspaceSection as HTMLElement).getByText('Owned')).toBeTruthy();
-    expect(within(linkedSection as HTMLElement).getByText('Read only')).toBeTruthy();
-    expect(within(linkedSection as HTMLElement).getByText('Read / Write')).toBeTruthy();
-    expect(within(linkedSection as HTMLElement).getByText('Linked from Reporting')).toBeTruthy();
-    expect(within(linkedSection as HTMLElement).getByText('Linked from Operations')).toBeTruthy();
-    expect(within(linkedSection as HTMLElement).getByText('Not initialized')).toBeTruthy();
+    const cards = screen.getAllByRole('button', { name: /^app\.sqlite3/i });
+    const ownedCard = cards[0]?.closest('.userspace-sqlite-card');
+    expect(ownedCard).toBeTruthy();
+    expect(ownedCard?.querySelector('.userspace-sqlite-card-badge')).toBeNull();
+
+    const reportingCard = screen
+      .getByText('Linked from Reporting')
+      .closest('.userspace-sqlite-card');
+    expect(reportingCard).toBeTruthy();
+    expect(reportingCard?.querySelector('.lucide-database')).toBeTruthy();
+    expect(reportingCard?.querySelector('.lucide-link-2')).toBeNull();
+    const modifiedSpans = screen.getAllByText(/^Modified /i);
+    expect(modifiedSpans.length).toBeGreaterThan(0);
+    modifiedSpans.forEach((modifiedSpan) => {
+      expect(modifiedSpan.classList.contains('userspace-sqlite-card-modified')).toBe(true);
+    });
+    const reportingSource = screen.getByText('Linked from Reporting');
+    const reportingMeta = reportingSource.closest('.userspace-sqlite-card-meta');
+    expect(reportingMeta).toBeTruthy();
+    const reportingModified = reportingMeta?.querySelector('.userspace-sqlite-card-modified');
+    expect(reportingModified).toBeTruthy();
+    const reportingBadge = reportingCard?.querySelector('.userspace-sqlite-card-badge');
+    expect(reportingBadge?.textContent).toBe('Reporting');
+    expect(reportingBadge?.getAttribute('title')).toBe('Reporting');
+    expect(reportingSource.classList.contains('userspace-sqlite-card-source')).toBe(true);
+    expect(reportingModified?.nextElementSibling).toBe(reportingSource);
+    expect(reportingMeta?.lastElementChild).toBe(reportingSource);
+
+    const operationsCard = screen
+      .getByText('Linked from Operations')
+      .closest('.userspace-sqlite-card');
+    expect(operationsCard).toBeTruthy();
+    const operationsBadge = operationsCard?.querySelector('.userspace-sqlite-card-badge');
+    expect(operationsBadge?.textContent).toBe('Operations');
+    expect(operationsBadge?.getAttribute('title')).toBe('Operations');
   });
 
   it('routes linked reads through the owner workspace, keeps read-only access visible, and reconciles SSE by owner-aware key', async () => {
     const user = userEvent.setup();
     renderModal();
 
-    const linkedSection = (
-      await screen.findByRole('heading', { name: 'Linked databases' })
-    ).closest('section');
-    expect(linkedSection).not.toBeNull();
-
-    await user.click(
-      within(linkedSection as HTMLElement).getAllByRole('button', { name: /app\.sqlite3/i })[0],
-    );
+    await user.click((await screen.findAllByRole('button', { name: /^app\.sqlite3/i }))[1]);
 
     await waitFor(() => {
       expect(apiMock.listUserSpaceSqliteTables).toHaveBeenCalledWith(
@@ -264,18 +309,39 @@ describe('WorkspaceSqliteInspectorModal', () => {
     expect(screen.queryByText(/Linked from Source Workspace/i)).toBeNull();
   });
 
+  it('normalizes legacy owned database summaries for table loading and editing controls', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteDatabases.mockResolvedValue({
+      ...listResponse,
+      databases: [legacyOwned, linkedRead],
+    });
+    apiMock.listUserSpaceSqliteTables.mockResolvedValue({
+      ...tableListResponse,
+      database: legacyOwned,
+    });
+
+    renderModal();
+
+    await user.click((await screen.findAllByRole('button', { name: /^app\.sqlite3/i }))[0]);
+
+    await waitFor(() => {
+      expect(apiMock.listUserSpaceSqliteTables).toHaveBeenCalledWith(
+        'source-ws',
+        'app.sqlite3',
+        'source-ws',
+      );
+    });
+
+    expect(screen.getByRole('button', { name: /New table/i })).toBeTruthy();
+    expect(screen.getByTitle('Import CSV')).toBeTruthy();
+    expect(screen.getByTitle('Drop table')).toBeTruthy();
+  });
+
   it('opens missing linked read-write databases without table loading and exposes initialize and import actions', async () => {
     const user = userEvent.setup();
     renderModal();
 
-    const linkedSection = (
-      await screen.findByRole('heading', { name: 'Linked databases' })
-    ).closest('section');
-    expect(linkedSection).not.toBeNull();
-
-    await user.click(
-      within(linkedSection as HTMLElement).getAllByRole('button', { name: /app\.sqlite3/i })[1],
-    );
+    await user.click((await screen.findAllByRole('button', { name: /^app\.sqlite3/i }))[2]);
 
     await waitFor(() => {
       expect(screen.getByText(/Linked from Operations/i)).toBeTruthy();
