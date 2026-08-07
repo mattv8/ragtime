@@ -24,14 +24,17 @@ Dirs & patterns
   ```python
   from starlette.requests import Request
 
+
   def _build_request(path: str) -> Request:
-      return Request({
-          "type": "http",
-          "method": "GET",
-          "path": path,
-          "headers": [(b"host", b"ragtime.dev")],
-          "scheme": "https",
-      })
+      return Request(
+          {
+              "type": "http",
+              "method": "GET",
+              "path": path,
+              "headers": [(b"host", b"ragtime.dev")],
+              "scheme": "https",
+          }
+      )
   ```
 
 ## Boundaries and Isolation
@@ -44,6 +47,7 @@ Dirs & patterns
 import unittest
 from types import SimpleNamespace
 from unittest import mock
+
 
 class MyFeatureTests(unittest.IsolatedAsyncioTestCase):
     async def test_does_behavior(self) -> None:
