@@ -26,11 +26,11 @@ class RuntimeBridgePromptTests(unittest.TestCase):
 
     def test_valid_server_entrypoint_includes_bridge_guidance(self) -> None:
         text = build_userspace_entrypoint_nudge(self._status(), is_default_static=False)
-        self.assertIn("RAGTIME_BRIDGE_URL", text)
-        self.assertIn("RAGTIME_BRIDGE_TOKEN", text)
-        self.assertIn("/execute-component", text)
+        self.assertIn("`RAGTIME_BRIDGE_URL`", text)
+        self.assertIn("`RAGTIME_BRIDGE_TOKEN`", text)
+        self.assertIn("`{RAGTIME_BRIDGE_URL}/execute-component`", text)
         self.assertIn(
-            "SERVER lane (this bridge, bearer token): follows Workspace Tools access policy.",
+            "SERVER execution surface (this bridge, bearer token): follows Workspace Tools access policy.",
             text,
         )
         self.assertIn(
@@ -40,6 +40,10 @@ class RuntimeBridgePromptTests(unittest.TestCase):
         self.assertNotIn("global tool config permits writes", text)
         self.assertIn(
             "ALWAYS read-only, regardless of the workspace write toggle.",
+            text,
+        )
+        self.assertIn(
+            "BROWSER execution surface (`context.components[...].execute()` in preview/shared pages):",
             text,
         )
         self.assertIn(
@@ -88,6 +92,73 @@ class RuntimeBridgePromptTests(unittest.TestCase):
         self.assertNotIn("/sqlite/query", prompt)
         self.assertNotIn("/sqlite/mutate", prompt)
 
+    def test_userspace_prompt_combines_data_boundaries_matrix(self) -> None:
+        local_only = build_userspace_mode_prompt_addition(
+            include_sqlite_persistence=True,
+            has_live_data_tools=True,
+            shared_sqlite_databases=[],
+        )
+        shared_only = build_userspace_mode_prompt_addition(
+            include_sqlite_persistence=False,
+            has_live_data_tools=False,
+            shared_sqlite_databases=[
+                {
+                    "workspace_id": "ws_target",
+                    "workspace_name": "Target Workspace",
+                    "database_name": "app.sqlite3",
+                    "access_mode": "read",
+                }
+            ],
+        )
+        both = build_userspace_mode_prompt_addition(
+            include_sqlite_persistence=True,
+            has_live_data_tools=True,
+            shared_sqlite_databases=[
+                {
+                    "workspace_id": "ws_target",
+                    "workspace_name": "Target Workspace",
+                    "database_name": "app.sqlite3",
+                    "access_mode": "read_write",
+                }
+            ],
+        )
+        neither = build_userspace_mode_prompt_addition(
+            include_sqlite_persistence=False,
+            has_live_data_tools=False,
+            shared_sqlite_databases=[],
+        )
+        include_without_live_tools = build_userspace_mode_prompt_addition(
+            include_sqlite_persistence=True,
+            has_live_data_tools=False,
+            shared_sqlite_databases=[],
+        )
+
+        self.assertIn("#### Data and persistence boundaries", local_only)
+        self.assertIn("##### Lane A - Live tool data", local_only)
+        self.assertIn("##### Lane B - Primary workspace SQLite", local_only)
+        self.assertNotIn("##### Shared SQLite target workspaces", local_only)
+
+        self.assertIn("#### Data and persistence boundaries", shared_only)
+        self.assertNotIn("##### Lane A - Live tool data", shared_only)
+        self.assertNotIn("##### Lane B - Primary workspace SQLite", shared_only)
+        self.assertIn("##### Shared SQLite target workspaces", shared_only)
+        self.assertNotIn("Every schema change requires a new numbered migration file", shared_only)
+
+        self.assertIn("#### Data and persistence boundaries", both)
+        self.assertLess(both.index("##### Lane A - Live tool data"), both.index("##### Lane B - Primary workspace SQLite"))
+        self.assertLess(both.index("##### Lane B - Primary workspace SQLite"), both.index("##### Shared SQLite target workspaces"))
+        self.assertIn("These sections define responsibilities, not mandatory work in every turn.", both)
+        self.assertIn("Shared SQLite is not a third persistence lane", both)
+        self.assertIn("`/sqlite/query` and `/sqlite/mutate` are only for cross-workspace access", both)
+        self.assertIn("Browser code must call an app-owned server route", both)
+        self.assertIn("must never call bridge endpoints directly or receive `RAGTIME_BRIDGE_TOKEN`", both)
+
+        self.assertNotIn("#### Data and persistence boundaries", neither)
+
+        self.assertIn("#### Data and persistence boundaries", include_without_live_tools)
+        self.assertNotIn("##### Lane A - Live tool data", include_without_live_tools)
+        self.assertIn("##### Lane B - Primary workspace SQLite", include_without_live_tools)
+
     def test_shared_sqlite_prompt_fragment_lists_targets_with_sanitized_permissions(self) -> None:
         accessible_databases = [
             {
@@ -110,9 +181,11 @@ class RuntimeBridgePromptTests(unittest.TestCase):
             shared_sqlite_databases=accessible_databases,
         )
 
+        self.assertIn("##### Shared SQLite target workspaces", fragment)
         self.assertIn("Use Shared SQLite from server code only", fragment)
         self.assertIn("A server-backed entrypoint is required", fragment)
         self.assertNotIn("Contract body examples include", fragment)
+        self.assertIn("Shared SQLite is not a third persistence lane", fragment)
         self.assertIn('database_name: "app.sqlite3"', fragment)
         self.assertIn("parameterized SQL", fragment)
         self.assertIn("positional-list or named-dict `parameters`", fragment)
@@ -129,6 +202,9 @@ class RuntimeBridgePromptTests(unittest.TestCase):
         self.assertIn("Handle HTTP 409 as busy, 504 as timeout, and 503 as audit unavailable", fragment)
         self.assertIn("A 503 audit failure occurs before writes and is safe to retry", fragment)
         self.assertIn("Do not blindly retry other mutation failures", fragment)
+        self.assertIn("`/sqlite/query` and `/sqlite/mutate` are only for cross-workspace access", fragment)
+        self.assertIn("Browser code must call an app-owned server route", fragment)
+        self.assertIn("must never call bridge endpoints directly or receive `RAGTIME_BRIDGE_TOKEN`", fragment)
         self.assertLess(fragment.index("ws_alpha"), fragment.index("ws_beta"))
         self.assertIn('- Workspace: "Alpha Workspace', fragment)
         self.assertIn('- Workspace: "Beta Workspace \\"ops\\""', fragment)

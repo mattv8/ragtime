@@ -194,7 +194,12 @@ No tools configured. Answer from indexed knowledge sources only (code, documenta
         self.assertIn("If required keys are missing, create placeholder env vars", prompt)
         self.assertIn("### Workspace\n\n- Existing app.", prompt)
         self.assertIn("Persistent User Space dashboards must be live-wired", prompt)
-        self.assertIn("Two-lane persistence contract", prompt)
+        self.assertIn("#### Data and persistence boundaries", prompt)
+        self.assertIn("##### Lane A - Live tool data", prompt)
+        self.assertIn("##### Lane B - Primary workspace SQLite", prompt)
+        self.assertIn("Use the approved execution surface for the current entrypoint", prompt)
+        self.assertIn("Primary workspace SQLite is accessed directly from server code at `.ragtime/db/app.sqlite3`", prompt)
+        self.assertNotIn("Two-lane persistence contract", prompt)
 
     def test_userspace_prompt_selective_availability_names_only_visible_tools(self) -> None:
         prompt = build_userspace_mode_prompt_addition(

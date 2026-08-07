@@ -9227,7 +9227,11 @@ fieldset legend.legend-with-status .legend-divider {
 }
 .userspace-sqlite-card-modified,
 .userspace-sqlite-card-source {
-  flex-basis: 100%;
+  flex: 1 1 100%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .userspace-sqlite-linked-banner {
   padding: var(--space-sm) var(--space-md);

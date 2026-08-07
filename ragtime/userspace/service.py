@@ -23679,19 +23679,19 @@ SELECT json_build_object(
             files_dir.mkdir(parents=True, exist_ok=True)
         source_role = await self._load_workspace_role_without_admin_bypass(db, workspace_id=source_workspace_id, user_id=user_id)
         target_role = await self._load_workspace_role_without_admin_bypass(db, workspace_id=resolved_owner_workspace_id, user_id=user_id)
-        access_mode = self._effective_cross_workspace_sqlite_access_mode(
+        linked_access_mode = self._effective_cross_workspace_sqlite_access_mode(
             source_role=source_role,
             target_role=target_role,
             sqlite_access_mode=authorization.get("sqlite_access_mode", "none"),
         )
-        if access_mode is None:
+        if linked_access_mode is None:
             raise HTTPException(status_code=403, detail=_RUNTIME_BRIDGE_SQLITE_FORBIDDEN_DETAIL)
         summary = self._build_sqlite_inspector_database_summary(
             database_name=database_name,
             owner_workspace_id=resolved_owner_workspace_id,
             owner_workspace_name=str(getattr(workspace_record, "name", "") or ""),
             ownership="linked",
-            access_mode=cast(SqliteInspectorDatabaseAccessMode, access_mode),
+            access_mode=cast(SqliteInspectorDatabaseAccessMode, linked_access_mode),
             persistence_mode=self._sqlite_persistence_mode_from_record(workspace_record),
             database_summary=await self._load_sqlite_database_summary(files_dir, database_name),
         )

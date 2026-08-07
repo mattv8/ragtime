@@ -13,6 +13,7 @@ _prompts = util.module_from_spec(_SPEC)
 _MODULE_STUB_NAMES = [
     "ragtime.core",
     "ragtime.core.entrypoint_status",
+    "ragtime.core.type_coercion",
     "ragtime.core.user_identity",
 ]
 _original_modules = {name: sys.modules.get(name) for name in _MODULE_STUB_NAMES}
@@ -20,6 +21,15 @@ try:
     fake_core_package = types.ModuleType("ragtime.core")
     fake_entrypoint_module = types.ModuleType("ragtime.core.entrypoint_status")
     setattr(fake_entrypoint_module, "EntrypointStatus", object)
+    fake_type_coercion_module = types.ModuleType("ragtime.core.type_coercion")
+    setattr(
+        fake_type_coercion_module,
+        "coerce_nonnegative_int_metadata",
+        lambda value, default=0: max(
+            0,
+            int(value) if str(value).strip().lstrip("-").isdigit() else default,
+        ),
+    )
     fake_user_identity_module = types.ModuleType("ragtime.core.user_identity")
     setattr(
         fake_user_identity_module,
@@ -31,6 +41,7 @@ try:
     )
     sys.modules["ragtime.core"] = fake_core_package
     sys.modules["ragtime.core.entrypoint_status"] = fake_entrypoint_module
+    sys.modules["ragtime.core.type_coercion"] = fake_type_coercion_module
     sys.modules["ragtime.core.user_identity"] = fake_user_identity_module
     _SPEC.loader.exec_module(_prompts)
 finally:
@@ -115,6 +126,13 @@ class UserSpaceTurnReminderTests(unittest.TestCase):
 
         self.assertNotIn("runtime_status_reminder_line", reminder)
         self.assertNotIn("Current runtime blocker", reminder)
+
+    def test_sqlite_turn_reminder_uses_conditional_language(self) -> None:
+        reminder = build_userspace_turn_reminder(include_sqlite_persistence=True)
+
+        self.assertIn("when selected tools are part of the requested feature", reminder)
+        self.assertIn("when local schema needs change", reminder)
+        self.assertNotIn("ensure this delivery includes both live data wiring", reminder)
 
 
 if __name__ == "__main__":

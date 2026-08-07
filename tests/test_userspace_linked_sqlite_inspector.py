@@ -36,9 +36,7 @@ class _FakeWorkspaceTable:
         if row is None:
             return None
         members = [
-            SimpleNamespace(userId=user_id, role=role)
-            for (member_workspace_id, user_id), role in self.roles.items()
-            if member_workspace_id == workspace_id
+            SimpleNamespace(userId=user_id, role=role) for (member_workspace_id, user_id), role in self.roles.items() if member_workspace_id == workspace_id
         ]
         return SimpleNamespace(
             id=workspace_id,
@@ -376,9 +374,7 @@ class LinkedSqliteInspectorServiceTests(unittest.IsolatedAsyncioTestCase):
                 "source-ws", "viewer-user", "app.sqlite3", "select id, name from items", owner_workspace_id="target-ws"
             )
             exported_db = await self.service.export_sqlite_database("source-ws", "viewer-user", "app.sqlite3", owner_workspace_id="target-ws")
-            exported_csv = await self.service.export_sqlite_table_csv(
-                "source-ws", "viewer-user", "app.sqlite3", "items", owner_workspace_id="target-ws"
-            )
+            exported_csv = await self.service.export_sqlite_table_csv("source-ws", "viewer-user", "app.sqlite3", "items", owner_workspace_id="target-ws")
 
         self.assertEqual(summary.owner_workspace_id, "target-ws")
         self.assertEqual(summary.access_mode, "read")
@@ -404,12 +400,8 @@ class LinkedSqliteInspectorServiceTests(unittest.IsolatedAsyncioTestCase):
             for patcher in self._patch_common(fake_db, workspace_rows):
                 stack.enter_context(patcher)
             denied_calls = [
-                lambda: self.service.initialize_sqlite_database(
-                    "source-ws", "viewer-user", database_name="app.sqlite3", owner_workspace_id="target-ws"
-                ),
-                lambda: self.service.import_sqlite_database(
-                    "source-ws", "viewer-user", "app.sqlite3", upload_path, owner_workspace_id="target-ws"
-                ),
+                lambda: self.service.initialize_sqlite_database("source-ws", "viewer-user", database_name="app.sqlite3", owner_workspace_id="target-ws"),
+                lambda: self.service.import_sqlite_database("source-ws", "viewer-user", "app.sqlite3", upload_path, owner_workspace_id="target-ws"),
                 lambda: self.service.delete_sqlite_database("source-ws", "viewer-user", "app.sqlite3", owner_workspace_id="target-ws"),
                 lambda: self.service.create_sqlite_table(
                     "source-ws",
@@ -431,15 +423,11 @@ class LinkedSqliteInspectorServiceTests(unittest.IsolatedAsyncioTestCase):
                 lambda: self.service.import_sqlite_table_csv(
                     "source-ws", "viewer-user", "app.sqlite3", "items", "id,name\n1,Ada\n", owner_workspace_id="target-ws"
                 ),
-                lambda: self.service.insert_sqlite_row(
-                    "source-ws", "viewer-user", "app.sqlite3", "items", {"id": 2}, owner_workspace_id="target-ws"
-                ),
+                lambda: self.service.insert_sqlite_row("source-ws", "viewer-user", "app.sqlite3", "items", {"id": 2}, owner_workspace_id="target-ws"),
                 lambda: self.service.update_sqlite_row(
                     "source-ws", "viewer-user", "app.sqlite3", "items", {"id": 1}, {"name": "Grace"}, owner_workspace_id="target-ws"
                 ),
-                lambda: self.service.delete_sqlite_row(
-                    "source-ws", "viewer-user", "app.sqlite3", "items", {"id": 1}, owner_workspace_id="target-ws"
-                ),
+                lambda: self.service.delete_sqlite_row("source-ws", "viewer-user", "app.sqlite3", "items", {"id": 1}, owner_workspace_id="target-ws"),
             ]
             for call in denied_calls:
                 with self.assertRaises(HTTPException) as raised:
@@ -447,9 +435,7 @@ class LinkedSqliteInspectorServiceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(raised.exception.status_code, 403)
 
             with self.assertRaises(HTTPException) as linked_name_error:
-                await self.service.initialize_sqlite_database(
-                    "source-ws", "viewer-user", database_name="custom.sqlite3", owner_workspace_id="target-ws"
-                )
+                await self.service.initialize_sqlite_database("source-ws", "viewer-user", database_name="custom.sqlite3", owner_workspace_id="target-ws")
             self.assertEqual(linked_name_error.exception.status_code, 404)
 
     async def test_linked_read_write_operations_mutate_target_promote_target_and_audit(self) -> None:
@@ -494,9 +480,7 @@ class LinkedSqliteInspectorServiceTests(unittest.IsolatedAsyncioTestCase):
                 [sqlite_inspector_helpers.TableAlteration(op="rename_table", new_table_name="records")],
                 owner_workspace_id="target-ws",
             )
-            dropped_promoted = await self.service.drop_sqlite_table(
-                "source-ws", "editor-user", "app.sqlite3", "records", owner_workspace_id="target-ws"
-            )
+            dropped_promoted = await self.service.drop_sqlite_table("source-ws", "editor-user", "app.sqlite3", "records", owner_workspace_id="target-ws")
             await self.service.delete_sqlite_database("source-ws", "editor-user", "app.sqlite3", owner_workspace_id="target-ws")
             initialized_summary, _ = await self.service.initialize_sqlite_database(
                 "source-ws", "editor-user", database_name="app.sqlite3", owner_workspace_id="target-ws"
@@ -504,9 +488,7 @@ class LinkedSqliteInspectorServiceTests(unittest.IsolatedAsyncioTestCase):
             imported_database, _ = await self.service.import_sqlite_database(
                 "source-ws", "editor-user", "app.sqlite3", upload_path, owner_workspace_id="target-ws"
             )
-            linked_summary, linked_tables = await self.service.list_sqlite_tables(
-                "source-ws", "editor-user", "app.sqlite3", owner_workspace_id="target-ws"
-            )
+            linked_summary, linked_tables = await self.service.list_sqlite_tables("source-ws", "editor-user", "app.sqlite3", owner_workspace_id="target-ws")
 
         self.assertTrue(promoted)
         self.assertEqual(created_table.name, "items")
