@@ -4559,8 +4559,13 @@ export function UserSpacePanel({
   const refreshSqliteHasTables = useCallback(async (workspaceId: string) => {
     try {
       const result = await api.listUserSpaceSqliteDatabases(workspaceId);
-      const appDb = result.databases.find((d) => d.name === result.default_database_name);
-      setSqliteHasTables(!!appDb && appDb.table_count > 0);
+      setSqliteHasTables(
+        result.databases.some(
+          (database) =>
+            (database as { initialized?: boolean }).initialized !== false &&
+            database.table_count > 0,
+        ),
+      );
     } catch {
       setSqliteHasTables(false);
     }
@@ -4586,14 +4591,17 @@ export function UserSpacePanel({
     }
   }, [activeWorkspaceId, refreshSqliteHasTables]);
 
-  const handleSqlitePersistencePromoted = useCallback(() => {
-    if (!activeWorkspaceId) return;
-    setWorkspaces((current) =>
-      current.map((ws) =>
-        ws.id === activeWorkspaceId ? { ...ws, sqlite_persistence_mode: 'include' } : ws,
-      ),
-    );
-  }, [activeWorkspaceId]);
+  const handleSqlitePersistencePromoted = useCallback(
+    (workspaceId: string) => {
+      if (!activeWorkspaceId || workspaceId !== activeWorkspaceId) return;
+      setWorkspaces((current) =>
+        current.map((ws) =>
+          ws.id === activeWorkspaceId ? { ...ws, sqlite_persistence_mode: 'include' } : ws,
+        ),
+      );
+    },
+    [activeWorkspaceId],
+  );
 
   const handleWorkspaceScmSyncComplete = useCallback(
     async (response: UserSpaceWorkspaceScmSyncResponse) => {
@@ -8226,7 +8234,7 @@ export function UserSpacePanel({
 
   const sqliteInspectorButtonTitle = sqliteHasTables
     ? 'Open SQLite Inspector'
-    : 'SQLite database is empty — open the inspector to initialize tables';
+    : 'Accessible SQLite databases are empty — open the inspector to initialize tables';
   const formattedError = useMemo(() => formatUserSpaceErrorMessage(error), [error]);
   const liveDataWarningMessage = runtimeStatus?.live_data_warning?.trim() || null;
   const visibleLiveDataWarningMessage =
@@ -9078,7 +9086,7 @@ export function UserSpacePanel({
               getToolStatusBadge={getWorkspaceToolStatusBadge}
             />
             <button
-              className={`btn btn-sm btn-icon userspace-toolbar-action-btn ${sqliteHasTables ? 'btn-primary' : 'btn-secondary'}`}
+              className={`btn btn-sm btn-icon userspace-toolbar-action-btn ${sqliteHasTables ? 'btn-primary' : 'btn-secondary'} ${activeWorkspace?.sqlite_persistence_mode === 'exclude' ? 'userspace-sqlite-mode-excluded' : ''}`.trim()}
               onClick={handleOpenSqliteInspector}
               disabled={!activeWorkspaceId}
               title={sqliteInspectorButtonTitle}

@@ -481,6 +481,12 @@ async function downloadBlobResponse(
   window.URL.revokeObjectURL(url);
 }
 
+function withSqliteOwner(path: string, ownerWorkspaceId?: string): string {
+  if (!ownerWorkspaceId) return path;
+  const params = new URLSearchParams({ owner_workspace_id: ownerWorkspaceId });
+  return `${path}?${params.toString()}`;
+}
+
 function startNativeDownload(url: string): void {
   const iframe = document.createElement('iframe');
   iframe.hidden = true;
@@ -4227,9 +4233,13 @@ export const api = {
   async initializeUserSpaceSqliteDatabase(
     workspaceId: string,
     request: SqliteInspectorInitializeRequest = {},
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorInitializeResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases`,
+        ownerWorkspaceId,
+      ),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4242,17 +4252,28 @@ export const api = {
   async deleteUserSpaceSqliteDatabase(
     workspaceId: string,
     databaseName: string,
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorDeleteDatabaseResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}`,
+        ownerWorkspaceId,
+      ),
       { method: 'DELETE' },
     );
     return handleResponse<SqliteInspectorDeleteDatabaseResponse>(response);
   },
 
-  async exportUserSpaceSqliteDatabase(workspaceId: string, databaseName: string): Promise<void> {
+  async exportUserSpaceSqliteDatabase(
+    workspaceId: string,
+    databaseName: string,
+    ownerWorkspaceId?: string,
+  ): Promise<void> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/export`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/export`,
+        ownerWorkspaceId,
+      ),
     );
     await downloadBlobResponse(response, `${databaseName}.sqlite3`, 'Database export failed');
   },
@@ -4261,9 +4282,13 @@ export const api = {
     workspaceId: string,
     databaseName: string,
     formData: FormData,
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorImportDatabaseResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/import`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/import`,
+        ownerWorkspaceId,
+      ),
       { method: 'POST', body: formData },
     );
     return handleResponse<SqliteInspectorImportDatabaseResponse>(response);
@@ -4272,9 +4297,13 @@ export const api = {
   async listUserSpaceSqliteTables(
     workspaceId: string,
     databaseName: string,
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorTableListResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables`,
+        ownerWorkspaceId,
+      ),
     );
     return handleResponse<SqliteInspectorTableListResponse>(response);
   },
@@ -4283,9 +4312,13 @@ export const api = {
     workspaceId: string,
     databaseName: string,
     request: SqliteInspectorCreateTableRequest,
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorCreateTableResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables`,
+        ownerWorkspaceId,
+      ),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4299,9 +4332,13 @@ export const api = {
     workspaceId: string,
     databaseName: string,
     tableName: string,
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorTableSchemaResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/schema`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/schema`,
+        ownerWorkspaceId,
+      ),
     );
     return handleResponse<SqliteInspectorTableSchemaResponse>(response);
   },
@@ -4311,9 +4348,13 @@ export const api = {
     databaseName: string,
     tableName: string,
     request: SqliteInspectorAlterTableRequest,
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorAlterTableResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/schema`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/schema`,
+        ownerWorkspaceId,
+      ),
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -4327,9 +4368,13 @@ export const api = {
     workspaceId: string,
     databaseName: string,
     tableName: string,
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorDropTableResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}`,
+        ownerWorkspaceId,
+      ),
       { method: 'DELETE' },
     );
     return handleResponse<SqliteInspectorDropTableResponse>(response);
@@ -4339,9 +4384,13 @@ export const api = {
     workspaceId: string,
     databaseName: string,
     tableName: string,
+    ownerWorkspaceId?: string,
   ): Promise<void> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/export`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/export`,
+        ownerWorkspaceId,
+      ),
     );
     await downloadBlobResponse(response, `${tableName}.csv`, 'Table export failed');
   },
@@ -4351,9 +4400,13 @@ export const api = {
     databaseName: string,
     tableName: string,
     formData: FormData,
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorImportTableResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/import`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/import`,
+        ownerWorkspaceId,
+      ),
       { method: 'POST', body: formData },
     );
     return handleResponse<SqliteInspectorImportTableResponse>(response);
@@ -4364,12 +4417,14 @@ export const api = {
     databaseName: string,
     tableName: string,
     params: SqliteInspectorRowListParams = {},
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorRowPage> {
     const search = new URLSearchParams();
     if (params.limit !== undefined) search.set('limit', String(params.limit));
     if (params.offset !== undefined) search.set('offset', String(params.offset));
     if (params.order_by) search.set('order_by', params.order_by);
     if (params.order_direction) search.set('order_direction', params.order_direction);
+    if (ownerWorkspaceId) search.set('owner_workspace_id', ownerWorkspaceId);
     const qs = search.toString();
     const response = await apiFetch(
       `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/rows${qs ? `?${qs}` : ''}`,
@@ -4382,9 +4437,13 @@ export const api = {
     databaseName: string,
     tableName: string,
     request: SqliteInspectorRowMutationRequest,
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorRowMutationResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/rows`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/rows`,
+        ownerWorkspaceId,
+      ),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4399,9 +4458,13 @@ export const api = {
     databaseName: string,
     tableName: string,
     request: SqliteInspectorRowUpdateRequest,
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorRowMutationResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/rows`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/rows`,
+        ownerWorkspaceId,
+      ),
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -4416,9 +4479,13 @@ export const api = {
     databaseName: string,
     tableName: string,
     request: SqliteInspectorRowDeleteRequest,
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorRowDeleteResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/rows`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/rows`,
+        ownerWorkspaceId,
+      ),
       {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
@@ -4432,9 +4499,13 @@ export const api = {
     workspaceId: string,
     databaseName: string,
     request: SqliteInspectorSqlQueryRequest,
+    ownerWorkspaceId?: string,
   ): Promise<SqliteInspectorSqlQueryResponse> {
     const response = await apiFetch(
-      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/query`,
+      withSqliteOwner(
+        `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/query`,
+        ownerWorkspaceId,
+      ),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

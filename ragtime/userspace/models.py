@@ -1702,12 +1702,22 @@ class SqliteInspectorForeignKeyInfo(BaseModel):
     on_delete: str
 
 
+SqliteInspectorDatabaseOwnership = Literal["owned", "linked"]
+SqliteInspectorDatabaseAccessMode = Literal["read", "read_write"]
+
+
 class SqliteInspectorDatabaseSummary(BaseModel):
     name: str
     relative_path: str
     size_bytes: int
     table_count: int
-    last_modified_ms: int
+    last_modified_ms: int | None
+    owner_workspace_id: str
+    owner_workspace_name: str
+    ownership: SqliteInspectorDatabaseOwnership
+    access_mode: SqliteInspectorDatabaseAccessMode
+    persistence_mode: SqlitePersistenceMode
+    initialized: bool = True
 
 
 class SqliteInspectorDatabaseListResponse(BaseModel):

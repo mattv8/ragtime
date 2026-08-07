@@ -255,6 +255,32 @@
     min-width: auto;
   }
 
+  .userspace-sqlite-breadcrumb-row,
+  .userspace-sqlite-step-header,
+  .userspace-sqlite-step-header-inline,
+  .userspace-sqlite-step-actions,
+  .userspace-sqlite-group-header,
+  .userspace-sqlite-card,
+  .userspace-sqlite-card-actions {
+    flex-wrap: wrap;
+  }
+
+  .userspace-sqlite-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .userspace-sqlite-card-actions {
+    justify-content: flex-start;
+  }
+
+  .userspace-sqlite-linked-banner {
+    line-height: var(--leading-relaxed);
+  }
+
+  .userspace-sqlite-column-row {
+    grid-template-columns: 1fr;
+  }
+
   /* Index items */
   .index-item {
     flex-direction: column;

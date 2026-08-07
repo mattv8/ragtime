@@ -4861,8 +4861,17 @@ export interface SqliteInspectorDatabaseSummary {
   relative_path: string;
   size_bytes: number;
   table_count: number;
-  last_modified_ms: number;
+  last_modified_ms: number | null;
+  owner_workspace_id: string;
+  owner_workspace_name: string;
+  ownership: SqliteInspectorDatabaseOwnership;
+  access_mode: SqliteInspectorDatabaseAccessMode;
+  persistence_mode: 'include' | 'exclude';
+  initialized: boolean;
 }
+
+export type SqliteInspectorDatabaseOwnership = 'owned' | 'linked';
+export type SqliteInspectorDatabaseAccessMode = 'read' | 'read_write';
 
 export interface SqliteInspectorDatabaseListResponse {
   workspace_id: string;

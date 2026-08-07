@@ -8,7 +8,14 @@ vi.mock('@uiw/react-codemirror', () => ({
   default: () => <div data-testid="code-editor" />,
 }));
 
-const { previewApiMock } = vi.hoisted(() => ({
+const {
+  previewApiMock,
+  panelToastMock,
+  availableModelsMock,
+  diffHoverTimersMock,
+  workspaceChatSearchMock,
+  workspaceScmActivityMock,
+} = vi.hoisted(() => ({
   previewApiMock: {
     listUserSpaceWorkspaces: vi.fn(),
     getUserSpaceWorkspace: vi.fn(),
@@ -34,14 +41,33 @@ const { previewApiMock } = vi.hoisted(() => ({
     deleteUserSpaceWorkspaceShareLink: vi.fn(),
     subscribeUserSpaceWorkspaceShareLinkAnalytics: vi.fn(),
   },
+  panelToastMock: [[], { error: vi.fn(), success: vi.fn(), info: vi.fn() }],
+  availableModelsMock: {
+    refresh: vi.fn(),
+    awaitReady: vi.fn().mockResolvedValue(undefined),
+  },
+  diffHoverTimersMock: {
+    registerHoverTarget: vi.fn(),
+    clearHoverTarget: vi.fn(),
+    dismiss: vi.fn(),
+  },
+  workspaceChatSearchMock: {
+    query: '',
+    setQuery: vi.fn(),
+    results: [],
+    activeIndex: -1,
+    setActiveIndex: vi.fn(),
+    clear: vi.fn(),
+  },
+  workspaceScmActivityMock: { hasActivity: false, syncState: null },
 }));
+
+let latestSqliteInspectorModalProps: unknown = null;
+let sqliteInspectorModalRender: (props: unknown) => unknown = () => null;
 
 vi.mock('@/api', () => ({ api: previewApiMock, ApiError: class ApiError extends Error {} }));
 vi.mock('@/contexts/AvailableModelsContext', () => ({
-  useAvailableModels: () => ({
-    refresh: vi.fn(),
-    awaitReady: vi.fn().mockResolvedValue(undefined),
-  }),
+  useAvailableModels: () => availableModelsMock,
 }));
 vi.mock('@/utils/codemirrorLanguage', () => ({
   useCodeMirrorLanguageExtension: () => null,
@@ -50,21 +76,10 @@ vi.mock('@/utils/useUserSpaceToolHealthEvents', () => ({
   useUserSpaceToolHealthEvents: () => undefined,
 }));
 vi.mock('@/utils/useDiffHoverTimers', () => ({
-  useDiffHoverTimers: () => ({
-    registerHoverTarget: vi.fn(),
-    clearHoverTarget: vi.fn(),
-    dismiss: vi.fn(),
-  }),
+  useDiffHoverTimers: () => diffHoverTimersMock,
 }));
 vi.mock('@/utils/useWorkspaceChatSearch', () => ({
-  useWorkspaceChatSearch: () => ({
-    query: '',
-    setQuery: vi.fn(),
-    results: [],
-    activeIndex: -1,
-    setActiveIndex: vi.fn(),
-    clear: vi.fn(),
-  }),
+  useWorkspaceChatSearch: () => workspaceChatSearchMock,
 }));
 vi.mock('./ChatPanel', () => ({
   ChatPanel: () => <div data-testid="chat-panel" />,
@@ -76,14 +91,17 @@ vi.mock('./shared/FileDiffOverlay', () => ({
   FileDiffOverlay: () => null,
 }));
 vi.mock('./shared/Toast', () => ({
-  useToast: () => [[], { error: vi.fn(), success: vi.fn(), info: vi.fn() }],
+  useToast: () => panelToastMock,
   ToastContainer: () => null,
 }));
 vi.mock('./shared/UserSpaceEnvVarsModal', () => ({
   UserSpaceEnvVarsModal: () => null,
 }));
 vi.mock('./shared/WorkspaceSqliteInspectorModal', () => ({
-  WorkspaceSqliteInspectorModal: () => null,
+  WorkspaceSqliteInspectorModal: (props: unknown) => {
+    latestSqliteInspectorModalProps = props;
+    return sqliteInspectorModalRender(props);
+  },
 }));
 vi.mock('./shared/WorkspaceObjectStorageExplorer', () => ({
   WorkspaceObjectStorageExplorer: () => null,
@@ -117,8 +135,10 @@ vi.mock('./shared/ShareLinkModal', () => ({
     ) : null,
 }));
 vi.mock('./WorkspaceScmWizard', () => ({
-  useWorkspaceScmWizardActivity: () => ({ hasActivity: false, syncState: null }),
-  WorkspaceScmWizard: () => null,
+  useWorkspaceScmWizardActivity: () => workspaceScmActivityMock,
+  WorkspaceScmWizard: ({ workspace }: { workspace?: { sqlite_persistence_mode?: string } }) => (
+    <div data-testid="workspace-scm-mode">{workspace?.sqlite_persistence_mode ?? 'missing'}</div>
+  ),
 }));
 vi.mock('./shared/AdminWorkspaceModal', () => ({ default: () => null }));
 vi.mock('./shared/AgentAccessButton', () => ({ AgentAccessButton: () => null }));
@@ -232,6 +252,28 @@ const SHARE_LINKS_RESPONSE = {
   ],
 } as const;
 
+const SQLITE_LIST_RESPONSE = {
+  workspace_id: 'ws-1',
+  databases: [
+    {
+      name: 'app.sqlite3',
+      relative_path: '.ragtime/db/app.sqlite3',
+      size_bytes: 1024,
+      table_count: 0,
+      last_modified_ms: 1_786_032_000_000,
+      owner_workspace_id: 'ws-1',
+      owner_workspace_name: 'Workspace One',
+      ownership: 'owned',
+      access_mode: 'read_write',
+      persistence_mode: 'exclude',
+      initialized: true,
+    },
+  ],
+  total_bytes: 1024,
+  default_database_name: 'app.sqlite3',
+  persistence_mode: 'exclude',
+} as const;
+
 function setLayoutCookie(rightPaneCollapsed: boolean): void {
   document.cookie = `userspace_layout_${encodeURIComponent(CURRENT_USER.id)}=${encodeURIComponent(
     JSON.stringify({
@@ -325,7 +367,10 @@ beforeEach(() => {
     users: [],
     read_only: false,
   });
-  previewApiMock.listUserSpaceSqliteDatabases.mockResolvedValue([]);
+  previewApiMock.listUserSpaceSqliteDatabases.mockResolvedValue({
+    ...SQLITE_LIST_RESPONSE,
+    databases: SQLITE_LIST_RESPONSE.databases.map((database) => ({ ...database })),
+  });
   previewApiMock.listUserSpaceAvailableTools.mockResolvedValue([]);
   previewApiMock.listUserSpaceToolGroups.mockResolvedValue([]);
   previewApiMock.listWorkspaceMounts.mockResolvedValue([]);
@@ -376,6 +421,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  latestSqliteInspectorModalProps = null;
+  sqliteInspectorModalRender = () => null;
   cleanup();
 });
 
@@ -533,5 +580,62 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       'share-1',
     );
     expect(previewApiMock.listUserSpaceWorkspaceShareLinks).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats linked databases with tables as activating the SQLite inspector toolbar state', async () => {
+    previewApiMock.listUserSpaceSqliteDatabases.mockResolvedValueOnce({
+      ...SQLITE_LIST_RESPONSE,
+      databases: [
+        { ...SQLITE_LIST_RESPONSE.databases[0], table_count: 0 },
+        {
+          ...SQLITE_LIST_RESPONSE.databases[0],
+          owner_workspace_id: 'linked-ws',
+          owner_workspace_name: 'Reporting',
+          ownership: 'linked',
+          access_mode: 'read',
+          table_count: 3,
+        },
+      ],
+    });
+
+    await renderPanelWithRuntimeOverlay(false);
+
+    await waitFor(() => {
+      const button = screen.getByLabelText('Open SQLite inspector');
+      expect(button.getAttribute('title')).toBe('Open SQLite Inspector');
+      expect(button.className.includes('btn-primary')).toBe(true);
+    });
+  });
+
+  it('does not promote the active source workspace when a linked target promotion is reported', async () => {
+    const user = userEvent.setup();
+    sqliteInspectorModalRender = (props: unknown) => {
+      const { isOpen, onPersistencePromoted } = props as {
+        isOpen: boolean;
+        onPersistencePromoted?: (workspaceId: string) => void;
+      };
+      return isOpen ? (
+        <button type="button" onClick={() => onPersistencePromoted?.('linked-ws')}>
+          Trigger linked promotion
+        </button>
+      ) : null;
+    };
+
+    await renderPanelWithRuntimeOverlay(false);
+
+    const openInspectorButton = screen.getByLabelText('Open SQLite inspector');
+    await user.click(openInspectorButton);
+    await user.click(screen.getByRole('button', { name: 'Trigger linked promotion' }));
+
+    expect(latestSqliteInspectorModalProps).toEqual(
+      expect.objectContaining({
+        workspaceId: 'ws-1',
+        onPersistencePromoted: expect.any(Function),
+      }),
+    );
+    const openInspectorButtonAfter = screen.getByLabelText('Open SQLite inspector');
+    expect(openInspectorButtonAfter.className.includes('userspace-sqlite-mode-excluded')).toBe(
+      true,
+    );
   });
 });

@@ -6,6 +6,7 @@ import {
   Download,
   FileText,
   Filter,
+  Link2,
   Loader2,
   PlusCircle,
   RefreshCw,
@@ -46,7 +47,27 @@ interface WorkspaceSqliteInspectorModalProps {
   workspaceName?: string;
   canEdit: boolean;
   onClose: () => void;
-  onPersistencePromoted?: () => void;
+  onPersistencePromoted?: (workspaceId: string) => void;
+}
+
+type InspectorDatabaseSummary = SqliteInspectorDatabaseSummary;
+
+function asInspectorDatabase(database: SqliteInspectorDatabaseSummary): InspectorDatabaseSummary {
+  return database;
+}
+
+function databaseKey(
+  database: Pick<InspectorDatabaseSummary, 'owner_workspace_id' | 'name'>,
+): string {
+  return `${database.owner_workspace_id}:${database.name}`;
+}
+
+function getDatabaseAccessLabel(accessMode: SqliteInspectorDatabaseSummary['access_mode']): string {
+  return accessMode === 'read_write' ? 'Read / Write' : 'Read only';
+}
+
+function isDatabaseWritable(database: InspectorDatabaseSummary | null): boolean {
+  return database?.access_mode === 'read_write';
 }
 
 function formatBytes(bytes: number): string {
@@ -244,15 +265,13 @@ export function WorkspaceSqliteInspectorModal({
   const [pendingDatabaseImportName, setPendingDatabaseImportName] = useState<string | null>(null);
   const [pendingTableImportName, setPendingTableImportName] = useState<string | null>(null);
   const [step, setStep] = useState<WizardStep>('databases');
-  const [databases, setDatabases] = useState<SqliteInspectorDatabaseSummary[]>([]);
+  const [databases, setDatabases] = useState<InspectorDatabaseSummary[]>([]);
   const [defaultDatabaseName, setDefaultDatabaseName] = useState<string>('app.sqlite3');
   const [persistenceMode, setPersistenceMode] = useState<'include' | 'exclude'>('include');
   const [totalBytes, setTotalBytes] = useState<number>(0);
   const [loadingDatabases, setLoadingDatabases] = useState(false);
 
-  const [selectedDatabase, setSelectedDatabase] = useState<SqliteInspectorDatabaseSummary | null>(
-    null,
-  );
+  const [selectedDatabase, setSelectedDatabase] = useState<InspectorDatabaseSummary | null>(null);
   const [tables, setTables] = useState<SqliteInspectorTableSummary[]>([]);
   const [loadingTables, setLoadingTables] = useState(false);
 
@@ -309,7 +328,7 @@ export function WorkspaceSqliteInspectorModal({
     setLoadingDatabases(true);
     try {
       const result = await api.listUserSpaceSqliteDatabases(workspaceId);
-      setDatabases(result.databases);
+      setDatabases(result.databases.map(asInspectorDatabase));
       setDefaultDatabaseName(result.default_database_name);
       setPersistenceMode(result.persistence_mode);
       setTotalBytes(result.total_bytes);
@@ -321,12 +340,16 @@ export function WorkspaceSqliteInspectorModal({
   }, [toastError, workspaceId]);
 
   const loadTables = useCallback(
-    async (database: SqliteInspectorDatabaseSummary) => {
+    async (database: InspectorDatabaseSummary) => {
       if (!workspaceId) return;
       setLoadingTables(true);
       try {
-        const result = await api.listUserSpaceSqliteTables(workspaceId, database.name);
-        setSelectedDatabase(result.database);
+        const result = await api.listUserSpaceSqliteTables(
+          workspaceId,
+          database.name,
+          database.owner_workspace_id,
+        );
+        setSelectedDatabase(asInspectorDatabase(result.database));
         setTables(result.tables);
         setPersistenceMode(result.persistence_mode);
       } catch (err) {
@@ -339,14 +362,22 @@ export function WorkspaceSqliteInspectorModal({
   );
 
   const loadRows = useCallback(
-    async (databaseName: string, tableName: string, offset: number, limit: number) => {
+    async (
+      database: InspectorDatabaseSummary,
+      tableName: string,
+      offset: number,
+      limit: number,
+    ) => {
       if (!workspaceId) return;
       setLoadingRows(true);
       try {
-        const result = await api.listUserSpaceSqliteRows(workspaceId, databaseName, tableName, {
-          offset,
-          limit,
-        });
+        const result = await api.listUserSpaceSqliteRows(
+          workspaceId,
+          database.name,
+          tableName,
+          { offset, limit },
+          database.owner_workspace_id,
+        );
         setRowPage(result);
         setRowOffset(result.offset);
         setRowLimit(result.limit);
@@ -360,14 +391,15 @@ export function WorkspaceSqliteInspectorModal({
   );
 
   const loadSchema = useCallback(
-    async (databaseName: string, tableName: string) => {
+    async (database: InspectorDatabaseSummary, tableName: string) => {
       if (!workspaceId) return;
       setLoadingSchema(true);
       try {
         const result = await api.getUserSpaceSqliteTableSchema(
           workspaceId,
-          databaseName,
+          database.name,
           tableName,
+          database.owner_workspace_id,
         );
         setTableSchema(result.schema);
       } catch (err) {
@@ -392,13 +424,14 @@ export function WorkspaceSqliteInspectorModal({
           persistence_mode: 'include' | 'exclude';
           total_bytes: number;
         };
-        setDatabases(result.databases);
+        const nextDatabases = result.databases.map(asInspectorDatabase);
+        setDatabases(nextDatabases);
         setDefaultDatabaseName(result.default_database_name);
         setPersistenceMode(result.persistence_mode);
         setTotalBytes(result.total_bytes);
         setSelectedDatabase((current) => {
           if (!current) return current;
-          return result.databases.find((db) => db.name === current.name) ?? current;
+          return nextDatabases.find((db) => databaseKey(db) === databaseKey(current)) ?? current;
         });
       } catch {
         // Ignore malformed event payloads; the normal request path still reports errors.
@@ -416,42 +449,81 @@ export function WorkspaceSqliteInspectorModal({
   }, [isOpen, loadDatabases, reset]);
 
   const handlePromotionFlag = useCallback(
-    (promoted: boolean) => {
+    (
+      promoted: boolean,
+      promotedWorkspaceId: string,
+      nextDatabase?: InspectorDatabaseSummary | null,
+    ) => {
       if (!promoted) return;
-      setPersistenceMode('include');
-      onPersistencePromoted?.();
+      if (nextDatabase) {
+        setSelectedDatabase({ ...nextDatabase, persistence_mode: 'include' });
+      } else if (selectedDatabase && selectedDatabase.owner_workspace_id === promotedWorkspaceId) {
+        setSelectedDatabase({ ...selectedDatabase, persistence_mode: 'include' });
+      }
+      setDatabases((current) =>
+        current.map((database) =>
+          database.owner_workspace_id === promotedWorkspaceId
+            ? { ...database, persistence_mode: 'include' }
+            : database,
+        ),
+      );
+      if (promotedWorkspaceId === workspaceId) {
+        setPersistenceMode('include');
+      }
+      onPersistencePromoted?.(promotedWorkspaceId);
       toastSuccess(
         'Two-lane persistence enabled: SQLite changes will be included in workspace snapshots.',
       );
     },
-    [onPersistencePromoted, toastSuccess],
+    [onPersistencePromoted, selectedDatabase, toastSuccess, workspaceId],
   );
 
-  const handleInitializeDatabase = useCallback(async () => {
-    if (!workspaceId || !canEdit) return;
-    try {
-      const result = await api.initializeUserSpaceSqliteDatabase(workspaceId, {});
-      // Pre-fetch the destination data before transitioning so the new step
-      // renders fully populated.
-      await Promise.all([loadDatabases(), loadTables(result.database)]);
-      handlePromotionFlag(result.mode_promoted);
-      toastSuccess(`Initialized ${result.database.name}`);
-      setStep('database');
-    } catch (err) {
-      toastError(err instanceof Error ? err.message : 'Failed to initialize database');
-    }
-  }, [
-    canEdit,
-    handlePromotionFlag,
-    loadDatabases,
-    loadTables,
-    toastSuccess,
-    toastError,
-    workspaceId,
-  ]);
+  const handleInitializeDatabase = useCallback(
+    async (database?: InspectorDatabaseSummary | null) => {
+      if (!workspaceId) return;
+      const targetDatabase = database ?? selectedDatabase;
+      const ownerWorkspaceId = targetDatabase?.owner_workspace_id;
+      const canWrite = targetDatabase ? isDatabaseWritable(targetDatabase) : canEdit;
+      if (!canWrite) return;
+      try {
+        const result = await api.initializeUserSpaceSqliteDatabase(
+          workspaceId,
+          {},
+          ownerWorkspaceId,
+        );
+        const nextDatabase = asInspectorDatabase(result.database);
+        // Pre-fetch the destination data before transitioning so the new step
+        // renders fully populated.
+        await Promise.all([loadDatabases(), loadTables(nextDatabase)]);
+        handlePromotionFlag(result.mode_promoted, nextDatabase.owner_workspace_id, nextDatabase);
+        toastSuccess(`Initialized ${result.database.name}`);
+        setStep('database');
+      } catch (err) {
+        toastError(err instanceof Error ? err.message : 'Failed to initialize database');
+      }
+    },
+    [
+      canEdit,
+      handlePromotionFlag,
+      loadDatabases,
+      loadTables,
+      selectedDatabase,
+      toastSuccess,
+      toastError,
+      workspaceId,
+    ],
+  );
 
   const handleOpenDatabase = useCallback(
-    async (database: SqliteInspectorDatabaseSummary) => {
+    async (database: InspectorDatabaseSummary) => {
+      setSelectedDatabase(database);
+      if (!database.initialized) {
+        setTables([]);
+        setTableSchema(null);
+        setRowPage(null);
+        setStep('database');
+        return;
+      }
       await loadTables(database);
       setStep('database');
     },
@@ -463,8 +535,8 @@ export function WorkspaceSqliteInspectorModal({
       if (!selectedDatabase) return;
       // Fetch rows + schema before navigating so the table view never flashes empty.
       await Promise.all([
-        loadRows(selectedDatabase.name, table.name, 0, DEFAULT_ROW_PAGE_SIZE),
-        loadSchema(selectedDatabase.name, table.name),
+        loadRows(selectedDatabase, table.name, 0, DEFAULT_ROW_PAGE_SIZE),
+        loadSchema(selectedDatabase, table.name),
       ]);
       setSelectedTableName(table.name);
       setTableSubTab('rows');
@@ -477,24 +549,43 @@ export function WorkspaceSqliteInspectorModal({
   );
 
   const handleDeleteDatabase = useCallback(
-    async (database: SqliteInspectorDatabaseSummary) => {
-      if (!workspaceId || !canEdit) return;
+    async (database: InspectorDatabaseSummary) => {
+      if (!workspaceId || !isDatabaseWritable(database)) return;
       try {
-        await api.deleteUserSpaceSqliteDatabase(workspaceId, database.name);
+        await api.deleteUserSpaceSqliteDatabase(
+          workspaceId,
+          database.name,
+          database.owner_workspace_id,
+        );
         toastSuccess(`Deleted ${database.name}`);
+        if (selectedDatabase && databaseKey(selectedDatabase) === databaseKey(database)) {
+          setSelectedDatabase({
+            ...database,
+            initialized: false,
+            table_count: 0,
+            size_bytes: 0,
+            last_modified_ms: null,
+          });
+          setTables([]);
+          setStep('databases');
+        }
         await loadDatabases();
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to delete database');
       }
     },
-    [canEdit, loadDatabases, toastSuccess, toastError, workspaceId],
+    [loadDatabases, selectedDatabase, toastSuccess, toastError, workspaceId],
   );
 
   const handleExportDatabase = useCallback(
-    async (database: SqliteInspectorDatabaseSummary) => {
+    async (database: InspectorDatabaseSummary) => {
       if (!workspaceId) return;
       try {
-        await api.exportUserSpaceSqliteDatabase(workspaceId, database.name);
+        await api.exportUserSpaceSqliteDatabase(
+          workspaceId,
+          database.name,
+          database.owner_workspace_id,
+        );
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to export database');
       }
@@ -502,30 +593,34 @@ export function WorkspaceSqliteInspectorModal({
     [toastError, workspaceId],
   );
 
-  const handleRequestImportDatabase = useCallback(
-    (databaseName: string) => {
-      if (!canEdit) return;
-      setPendingDatabaseImportName(databaseName);
-      databaseImportInputRef.current?.click();
-    },
-    [canEdit],
-  );
+  const handleRequestImportDatabase = useCallback((database: InspectorDatabaseSummary) => {
+    if (!isDatabaseWritable(database)) return;
+    setSelectedDatabase(database);
+    setPendingDatabaseImportName(databaseKey(database));
+    databaseImportInputRef.current?.click();
+  }, []);
 
   const handleDatabaseImportFile = useCallback(
     async (file: File | null) => {
-      if (!workspaceId || !canEdit || !pendingDatabaseImportName || !file) return;
+      if (!workspaceId || !pendingDatabaseImportName || !file) return;
+      const targetDatabase = databases.find(
+        (database) => databaseKey(database) === pendingDatabaseImportName,
+      );
+      if (!targetDatabase || !isDatabaseWritable(targetDatabase)) return;
       const formData = new FormData();
       formData.append('database_file', file);
       try {
         const result = await api.importUserSpaceSqliteDatabase(
           workspaceId,
-          pendingDatabaseImportName,
+          targetDatabase.name,
           formData,
+          targetDatabase.owner_workspace_id,
         );
-        handlePromotionFlag(result.mode_promoted);
+        const nextDatabase = asInspectorDatabase(result.database);
+        handlePromotionFlag(result.mode_promoted, nextDatabase.owner_workspace_id, nextDatabase);
         toastSuccess(`Imported ${result.database.name}`);
         await loadDatabases();
-        await loadTables(result.database);
+        await loadTables(nextDatabase);
         setStep('database');
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to import database');
@@ -535,7 +630,7 @@ export function WorkspaceSqliteInspectorModal({
       }
     },
     [
-      canEdit,
+      databases,
       handlePromotionFlag,
       loadDatabases,
       loadTables,
@@ -547,7 +642,7 @@ export function WorkspaceSqliteInspectorModal({
   );
 
   const handleCreateTable = useCallback(async () => {
-    if (!workspaceId || !canEdit || !selectedDatabase) return;
+    if (!workspaceId || !selectedDatabase || !isDatabaseWritable(selectedDatabase)) return;
     setCreatingTable(true);
     try {
       const cleanColumns: SqliteInspectorColumnSpec[] = newTableColumns
@@ -559,11 +654,20 @@ export function WorkspaceSqliteInspectorModal({
           default_value: c.default_value?.trim() || undefined,
         }))
         .filter((c) => c.name);
-      const result = await api.createUserSpaceSqliteTable(workspaceId, selectedDatabase.name, {
-        name: newTableName.trim(),
-        columns: cleanColumns,
-      });
-      handlePromotionFlag(result.mode_promoted);
+      const result = await api.createUserSpaceSqliteTable(
+        workspaceId,
+        selectedDatabase.name,
+        {
+          name: newTableName.trim(),
+          columns: cleanColumns,
+        },
+        selectedDatabase.owner_workspace_id,
+      );
+      handlePromotionFlag(
+        result.mode_promoted,
+        selectedDatabase.owner_workspace_id,
+        selectedDatabase,
+      );
       toastSuccess(`Created table ${result.table.name}`);
       setShowCreateTableForm(false);
       setNewTableName('');
@@ -575,7 +679,6 @@ export function WorkspaceSqliteInspectorModal({
       setCreatingTable(false);
     }
   }, [
-    canEdit,
     handlePromotionFlag,
     loadTables,
     newTableColumns,
@@ -588,36 +691,38 @@ export function WorkspaceSqliteInspectorModal({
 
   const handleDropTable = useCallback(
     async (table: SqliteInspectorTableSummary) => {
-      if (!workspaceId || !canEdit || !selectedDatabase) return;
+      if (!workspaceId || !selectedDatabase || !isDatabaseWritable(selectedDatabase)) return;
       try {
         const result = await api.dropUserSpaceSqliteTable(
           workspaceId,
           selectedDatabase.name,
           table.name,
+          selectedDatabase.owner_workspace_id,
         );
-        handlePromotionFlag(result.mode_promoted);
+        handlePromotionFlag(
+          result.mode_promoted,
+          selectedDatabase.owner_workspace_id,
+          selectedDatabase,
+        );
         toastSuccess(`Dropped table ${table.name}`);
         await loadTables(selectedDatabase);
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to drop table');
       }
     },
-    [
-      canEdit,
-      handlePromotionFlag,
-      loadTables,
-      selectedDatabase,
-      toastSuccess,
-      toastError,
-      workspaceId,
-    ],
+    [handlePromotionFlag, loadTables, selectedDatabase, toastSuccess, toastError, workspaceId],
   );
 
   const handleExportTable = useCallback(
     async (table: SqliteInspectorTableSummary) => {
       if (!workspaceId || !selectedDatabase) return;
       try {
-        await api.exportUserSpaceSqliteTable(workspaceId, selectedDatabase.name, table.name);
+        await api.exportUserSpaceSqliteTable(
+          workspaceId,
+          selectedDatabase.name,
+          table.name,
+          selectedDatabase.owner_workspace_id,
+        );
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to export table');
       }
@@ -627,16 +732,23 @@ export function WorkspaceSqliteInspectorModal({
 
   const handleRequestImportTable = useCallback(
     (tableName: string) => {
-      if (!canEdit) return;
+      if (!selectedDatabase || !isDatabaseWritable(selectedDatabase)) return;
       setPendingTableImportName(tableName);
       tableImportInputRef.current?.click();
     },
-    [canEdit],
+    [selectedDatabase],
   );
 
   const handleTableImportFile = useCallback(
     async (file: File | null) => {
-      if (!workspaceId || !canEdit || !selectedDatabase || !pendingTableImportName || !file) return;
+      if (
+        !workspaceId ||
+        !selectedDatabase ||
+        !pendingTableImportName ||
+        !file ||
+        !isDatabaseWritable(selectedDatabase)
+      )
+        return;
       const formData = new FormData();
       formData.append('csv_file', file);
       try {
@@ -645,13 +757,18 @@ export function WorkspaceSqliteInspectorModal({
           selectedDatabase.name,
           pendingTableImportName,
           formData,
+          selectedDatabase.owner_workspace_id,
         );
-        handlePromotionFlag(result.mode_promoted);
+        handlePromotionFlag(
+          result.mode_promoted,
+          selectedDatabase.owner_workspace_id,
+          selectedDatabase,
+        );
         toastSuccess(`Imported rows into ${result.table.name}`);
         await loadTables(selectedDatabase);
         if (selectedTableName === pendingTableImportName) {
-          await loadRows(selectedDatabase.name, pendingTableImportName, rowOffset, rowLimit);
-          await loadSchema(selectedDatabase.name, pendingTableImportName);
+          await loadRows(selectedDatabase, pendingTableImportName, rowOffset, rowLimit);
+          await loadSchema(selectedDatabase, pendingTableImportName);
         }
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to import table');
@@ -661,7 +778,6 @@ export function WorkspaceSqliteInspectorModal({
       }
     },
     [
-      canEdit,
       handlePromotionFlag,
       loadRows,
       loadSchema,
@@ -678,7 +794,14 @@ export function WorkspaceSqliteInspectorModal({
   );
 
   const handleSaveNewRow = useCallback(async () => {
-    if (!workspaceId || !canEdit || !selectedDatabase || !selectedTableName || !tableSchema) return;
+    if (
+      !workspaceId ||
+      !selectedDatabase ||
+      !selectedTableName ||
+      !tableSchema ||
+      !isDatabaseWritable(selectedDatabase)
+    )
+      return;
     setSavingRow(true);
     try {
       const values: Record<string, unknown> = {};
@@ -695,12 +818,17 @@ export function WorkspaceSqliteInspectorModal({
         selectedDatabase.name,
         selectedTableName,
         { values },
+        selectedDatabase.owner_workspace_id,
       );
-      handlePromotionFlag(result.mode_promoted);
+      handlePromotionFlag(
+        result.mode_promoted,
+        selectedDatabase.owner_workspace_id,
+        selectedDatabase,
+      );
       toastSuccess('Row inserted');
       setShowAddRowForm(false);
       setNewRowValues({});
-      await loadRows(selectedDatabase.name, selectedTableName, rowOffset, rowLimit);
+      await loadRows(selectedDatabase, selectedTableName, rowOffset, rowLimit);
       await loadTables(selectedDatabase);
     } catch (err) {
       toastError(err instanceof Error ? err.message : 'Failed to insert row');
@@ -708,7 +836,6 @@ export function WorkspaceSqliteInspectorModal({
       setSavingRow(false);
     }
   }, [
-    canEdit,
     handlePromotionFlag,
     loadRows,
     loadTables,
@@ -744,7 +871,13 @@ export function WorkspaceSqliteInspectorModal({
 
   const handleUpdateCell = useCallback(
     async (originalRow: Record<string, unknown>, colName: string, newValue: unknown) => {
-      if (!workspaceId || !canEdit || !selectedDatabase || !selectedTableName || !tableSchema)
+      if (
+        !workspaceId ||
+        !selectedDatabase ||
+        !selectedTableName ||
+        !tableSchema ||
+        !isDatabaseWritable(selectedDatabase)
+      )
         return;
       try {
         const rowKey = buildRowKey(originalRow, tableSchema.columns);
@@ -756,17 +889,21 @@ export function WorkspaceSqliteInspectorModal({
             row_key: rowKey,
             values: { [colName]: newValue },
           },
+          selectedDatabase.owner_workspace_id,
         );
-        handlePromotionFlag(result.mode_promoted);
+        handlePromotionFlag(
+          result.mode_promoted,
+          selectedDatabase.owner_workspace_id,
+          selectedDatabase,
+        );
         toastSuccess('Cell updated');
-        await loadRows(selectedDatabase.name, selectedTableName, rowOffset, rowLimit);
+        await loadRows(selectedDatabase, selectedTableName, rowOffset, rowLimit);
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to update cell');
       }
     },
     [
       buildRowKey,
-      canEdit,
       handlePromotionFlag,
       loadRows,
       rowLimit,
@@ -782,7 +919,13 @@ export function WorkspaceSqliteInspectorModal({
 
   const handleDeleteRow = useCallback(
     async (row: Record<string, unknown>) => {
-      if (!workspaceId || !canEdit || !selectedDatabase || !selectedTableName || !tableSchema)
+      if (
+        !workspaceId ||
+        !selectedDatabase ||
+        !selectedTableName ||
+        !tableSchema ||
+        !isDatabaseWritable(selectedDatabase)
+      )
         return;
       try {
         const rowKey = buildRowKey(row, tableSchema.columns);
@@ -791,10 +934,15 @@ export function WorkspaceSqliteInspectorModal({
           selectedDatabase.name,
           selectedTableName,
           { row_key: rowKey },
+          selectedDatabase.owner_workspace_id,
         );
-        handlePromotionFlag(result.mode_promoted);
+        handlePromotionFlag(
+          result.mode_promoted,
+          selectedDatabase.owner_workspace_id,
+          selectedDatabase,
+        );
         toastSuccess('Row deleted');
-        await loadRows(selectedDatabase.name, selectedTableName, rowOffset, rowLimit);
+        await loadRows(selectedDatabase, selectedTableName, rowOffset, rowLimit);
         await loadTables(selectedDatabase);
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to delete row');
@@ -802,7 +950,6 @@ export function WorkspaceSqliteInspectorModal({
     },
     [
       buildRowKey,
-      canEdit,
       handlePromotionFlag,
       loadRows,
       loadTables,
@@ -819,7 +966,13 @@ export function WorkspaceSqliteInspectorModal({
 
   const handleBulkDeleteRows = useCallback(
     async (rows: Record<string, unknown>[]) => {
-      if (!workspaceId || !canEdit || !selectedDatabase || !selectedTableName || !tableSchema)
+      if (
+        !workspaceId ||
+        !selectedDatabase ||
+        !selectedTableName ||
+        !tableSchema ||
+        !isDatabaseWritable(selectedDatabase)
+      )
         return;
       try {
         for (const row of rows) {
@@ -829,10 +982,11 @@ export function WorkspaceSqliteInspectorModal({
             selectedDatabase.name,
             selectedTableName,
             { row_key: rowKey },
+            selectedDatabase.owner_workspace_id,
           );
         }
         toastSuccess(`Deleted ${rows.length} row${rows.length === 1 ? '' : 's'}`);
-        await loadRows(selectedDatabase.name, selectedTableName, rowOffset, rowLimit);
+        await loadRows(selectedDatabase, selectedTableName, rowOffset, rowLimit);
         await loadTables(selectedDatabase);
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to delete rows');
@@ -840,7 +994,6 @@ export function WorkspaceSqliteInspectorModal({
     },
     [
       buildRowKey,
-      canEdit,
       loadRows,
       loadTables,
       rowLimit,
@@ -856,7 +1009,13 @@ export function WorkspaceSqliteInspectorModal({
 
   const handleDropColumn = useCallback(
     async (columnName: string) => {
-      if (!workspaceId || !canEdit || !selectedDatabase || !selectedTableName) return;
+      if (
+        !workspaceId ||
+        !selectedDatabase ||
+        !selectedTableName ||
+        !isDatabaseWritable(selectedDatabase)
+      )
+        return;
       try {
         const alterations: SqliteInspectorAlterationStep[] = [
           { op: 'drop_column', column_name: columnName },
@@ -866,17 +1025,21 @@ export function WorkspaceSqliteInspectorModal({
           selectedDatabase.name,
           selectedTableName,
           { alterations },
+          selectedDatabase.owner_workspace_id,
         );
-        handlePromotionFlag(result.mode_promoted);
+        handlePromotionFlag(
+          result.mode_promoted,
+          selectedDatabase.owner_workspace_id,
+          selectedDatabase,
+        );
         setTableSchema(result.schema);
         toastSuccess(`Dropped column ${columnName}`);
-        await loadRows(selectedDatabase.name, selectedTableName, rowOffset, rowLimit);
+        await loadRows(selectedDatabase, selectedTableName, rowOffset, rowLimit);
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to drop column');
       }
     },
     [
-      canEdit,
       handlePromotionFlag,
       loadRows,
       rowLimit,
@@ -891,7 +1054,13 @@ export function WorkspaceSqliteInspectorModal({
 
   const handleAddColumn = useCallback(
     async (spec: SqliteInspectorColumnSpec) => {
-      if (!workspaceId || !canEdit || !selectedDatabase || !selectedTableName) return;
+      if (
+        !workspaceId ||
+        !selectedDatabase ||
+        !selectedTableName ||
+        !isDatabaseWritable(selectedDatabase)
+      )
+        return;
       try {
         const alterations: SqliteInspectorAlterationStep[] = [{ op: 'add_column', column: spec }];
         const result = await api.alterUserSpaceSqliteTable(
@@ -899,17 +1068,21 @@ export function WorkspaceSqliteInspectorModal({
           selectedDatabase.name,
           selectedTableName,
           { alterations },
+          selectedDatabase.owner_workspace_id,
         );
-        handlePromotionFlag(result.mode_promoted);
+        handlePromotionFlag(
+          result.mode_promoted,
+          selectedDatabase.owner_workspace_id,
+          selectedDatabase,
+        );
         setTableSchema(result.schema);
         toastSuccess(`Added column ${spec.name}`);
-        await loadRows(selectedDatabase.name, selectedTableName, rowOffset, rowLimit);
+        await loadRows(selectedDatabase, selectedTableName, rowOffset, rowLimit);
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to add column');
       }
     },
     [
-      canEdit,
       handlePromotionFlag,
       loadRows,
       rowLimit,
@@ -926,10 +1099,10 @@ export function WorkspaceSqliteInspectorModal({
     async (columnName: string, newColumnName: string) => {
       if (
         !workspaceId ||
-        !canEdit ||
         !selectedDatabase ||
         !selectedTableName ||
-        columnName === newColumnName
+        columnName === newColumnName ||
+        !isDatabaseWritable(selectedDatabase)
       )
         return;
       try {
@@ -941,17 +1114,21 @@ export function WorkspaceSqliteInspectorModal({
           selectedDatabase.name,
           selectedTableName,
           { alterations },
+          selectedDatabase.owner_workspace_id,
         );
-        handlePromotionFlag(result.mode_promoted);
+        handlePromotionFlag(
+          result.mode_promoted,
+          selectedDatabase.owner_workspace_id,
+          selectedDatabase,
+        );
         setTableSchema(result.schema);
         toastSuccess(`Renamed column ${columnName}`);
-        await loadRows(selectedDatabase.name, selectedTableName, rowOffset, rowLimit);
+        await loadRows(selectedDatabase, selectedTableName, rowOffset, rowLimit);
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to rename column');
       }
     },
     [
-      canEdit,
       handlePromotionFlag,
       loadRows,
       rowLimit,
@@ -968,10 +1145,10 @@ export function WorkspaceSqliteInspectorModal({
     async (column: SqliteInspectorColumnInfo, newType: SqliteInspectorColumnType) => {
       if (
         !workspaceId ||
-        !canEdit ||
         !selectedDatabase ||
         !selectedTableName ||
-        column.type === newType
+        column.type === newType ||
+        !isDatabaseWritable(selectedDatabase)
       )
         return;
       try {
@@ -993,17 +1170,21 @@ export function WorkspaceSqliteInspectorModal({
           selectedDatabase.name,
           selectedTableName,
           { alterations },
+          selectedDatabase.owner_workspace_id,
         );
-        handlePromotionFlag(result.mode_promoted);
+        handlePromotionFlag(
+          result.mode_promoted,
+          selectedDatabase.owner_workspace_id,
+          selectedDatabase,
+        );
         setTableSchema(result.schema);
         toastSuccess(`Changed ${column.name} to ${newType}`);
-        await loadRows(selectedDatabase.name, selectedTableName, rowOffset, rowLimit);
+        await loadRows(selectedDatabase, selectedTableName, rowOffset, rowLimit);
       } catch (err) {
         toastError(err instanceof Error ? err.message : 'Failed to change column type');
       }
     },
     [
-      canEdit,
       handlePromotionFlag,
       loadRows,
       rowLimit,
@@ -1020,10 +1201,15 @@ export function WorkspaceSqliteInspectorModal({
     if (!workspaceId || !selectedDatabase || !sqlText.trim()) return;
     setSqlRunning(true);
     try {
-      const result = await api.queryUserSpaceSqliteDatabase(workspaceId, selectedDatabase.name, {
-        sql: sqlText,
-        max_rows: 200,
-      });
+      const result = await api.queryUserSpaceSqliteDatabase(
+        workspaceId,
+        selectedDatabase.name,
+        {
+          sql: sqlText,
+          max_rows: 200,
+        },
+        selectedDatabase.owner_workspace_id,
+      );
       setSqlResult(result);
     } catch (err) {
       toastError(err instanceof Error ? err.message : 'Failed to run query');
@@ -1038,7 +1224,10 @@ export function WorkspaceSqliteInspectorModal({
     ];
     if (step !== 'databases' && selectedDatabase) {
       parts.push({
-        label: dbDisplayName(selectedDatabase.name),
+        label:
+          selectedDatabase.ownership === 'linked'
+            ? `${selectedDatabase.owner_workspace_name} · ${dbDisplayName(selectedDatabase.name)}`
+            : dbDisplayName(selectedDatabase.name),
         onClick: () => setStep('database'),
       });
     }
@@ -1047,6 +1236,12 @@ export function WorkspaceSqliteInspectorModal({
     }
     return parts;
   }, [selectedDatabase, selectedTableName, step]);
+
+  const selectedDatabaseCanWrite = isDatabaseWritable(selectedDatabase);
+  const effectivePersistenceMode = selectedDatabase?.persistence_mode ?? persistenceMode;
+  const linkedBannerText = selectedDatabase
+    ? `Linked from ${selectedDatabase.owner_workspace_name} · ${getDatabaseAccessLabel(selectedDatabase.access_mode)}${selectedDatabase.access_mode === 'read_write' ? ` · Changes affect the ${selectedDatabase.owner_workspace_name} workspace.` : ''}`
+    : null;
 
   if (!isOpen) {
     return null;
@@ -1127,12 +1322,13 @@ export function WorkspaceSqliteInspectorModal({
         </div>
 
         <div className="modal-body userspace-sqlite-body">
-          {persistenceMode === 'exclude' && (
+          {effectivePersistenceMode === 'exclude' && (
             <div className="userspace-sqlite-banner">
               <Sparkles size={14} />
               <span>
-                This workspace currently excludes SQLite from snapshots. The first edit will switch
-                it to two-lane persistence (include).
+                {selectedDatabase?.ownership === 'linked'
+                  ? `${selectedDatabase.owner_workspace_name} currently excludes SQLite from snapshots. The first edit will switch that workspace to two-lane persistence (include).`
+                  : 'This workspace currently excludes SQLite from snapshots. The first edit will switch it to two-lane persistence (include).'}
               </span>
             </div>
           )}
@@ -1145,7 +1341,21 @@ export function WorkspaceSqliteInspectorModal({
               loading={loadingDatabases}
               canEdit={canEdit}
               onInitialize={handleInitializeDatabase}
-              onImportDefault={() => handleRequestImportDatabase(defaultDatabaseName)}
+              onImportDefault={() =>
+                handleRequestImportDatabase({
+                  name: defaultDatabaseName,
+                  relative_path: `.ragtime/db/${defaultDatabaseName}`,
+                  size_bytes: 0,
+                  table_count: 0,
+                  last_modified_ms: null,
+                  owner_workspace_id: workspaceId ?? '',
+                  owner_workspace_name: workspaceName ?? 'This workspace',
+                  ownership: 'owned',
+                  access_mode: canEdit ? 'read_write' : 'read',
+                  persistence_mode: persistenceMode,
+                  initialized: false,
+                })
+              }
               onOpen={handleOpenDatabase}
               onExport={handleExportDatabase}
               onImport={handleRequestImportDatabase}
@@ -1158,7 +1368,8 @@ export function WorkspaceSqliteInspectorModal({
               database={selectedDatabase}
               tables={tables}
               loading={loadingTables}
-              canEdit={canEdit}
+              canEdit={selectedDatabaseCanWrite}
+              linkedBannerText={selectedDatabase.ownership === 'linked' ? linkedBannerText : null}
               showCreateForm={showCreateTableForm}
               onShowCreateForm={() => setShowCreateTableForm(true)}
               onCancelCreateForm={() => setShowCreateTableForm(false)}
@@ -1173,6 +1384,9 @@ export function WorkspaceSqliteInspectorModal({
               onExportTable={handleExportTable}
               onImportTable={handleRequestImportTable}
               onDropTable={handleDropTable}
+              onInitializeDatabase={() => void handleInitializeDatabase(selectedDatabase)}
+              onImportDatabase={() => handleRequestImportDatabase(selectedDatabase)}
+              onExportDatabase={() => void handleExportDatabase(selectedDatabase)}
               sqlText={sqlText}
               onSqlTextChange={setSqlText}
               sqlResult={sqlResult}
@@ -1184,6 +1398,7 @@ export function WorkspaceSqliteInspectorModal({
           {step === 'table' && selectedDatabase && selectedTableName && (
             <TableStep
               databaseName={selectedDatabase.name}
+              linkedBannerText={selectedDatabase.ownership === 'linked' ? linkedBannerText : null}
               tableName={selectedTableName}
               subTab={tableSubTab}
               onSubTabChange={setTableSubTab}
@@ -1193,11 +1408,11 @@ export function WorkspaceSqliteInspectorModal({
               rowLimit={rowLimit}
               onChangeOffset={(next) => {
                 setRowOffset(next);
-                void loadRows(selectedDatabase.name, selectedTableName, next, rowLimit);
+                void loadRows(selectedDatabase, selectedTableName, next, rowLimit);
               }}
               schema={tableSchema}
               loadingSchema={loadingSchema}
-              canEdit={canEdit}
+              canEdit={selectedDatabaseCanWrite}
               showAddRowForm={showAddRowForm}
               onShowAddRowForm={() => {
                 setNewRowValues({});
@@ -1212,13 +1427,13 @@ export function WorkspaceSqliteInspectorModal({
               onDeleteRow={handleDeleteRow}
               onBulkDeleteRows={handleBulkDeleteRows}
               onRefreshRows={() =>
-                loadRows(selectedDatabase.name, selectedTableName, rowOffset, rowLimit)
+                loadRows(selectedDatabase, selectedTableName, rowOffset, rowLimit)
               }
               onAddColumn={handleAddColumn}
               onRenameColumn={handleRenameColumn}
               onChangeColumnType={handleChangeColumnType}
               onDropColumn={handleDropColumn}
-              onRefreshSchema={() => loadSchema(selectedDatabase.name, selectedTableName)}
+              onRefreshSchema={() => loadSchema(selectedDatabase, selectedTableName)}
               sqlText={sqlText}
               onSqlTextChange={setSqlText}
               sqlResult={sqlResult}
@@ -1238,17 +1453,17 @@ export function WorkspaceSqliteInspectorModal({
 // ---------------------------------------------------------------------------
 
 interface DatabasesStepProps {
-  databases: SqliteInspectorDatabaseSummary[];
+  databases: InspectorDatabaseSummary[];
   defaultDatabaseName: string;
   totalBytes: number;
   loading: boolean;
   canEdit: boolean;
-  onInitialize: () => void;
+  onInitialize: (database?: InspectorDatabaseSummary | null) => void;
   onImportDefault: () => void;
-  onOpen: (db: SqliteInspectorDatabaseSummary) => void;
-  onExport: (db: SqliteInspectorDatabaseSummary) => void;
-  onImport: (databaseName: string) => void;
-  onDelete: (db: SqliteInspectorDatabaseSummary) => void;
+  onOpen: (db: InspectorDatabaseSummary) => void;
+  onExport: (db: InspectorDatabaseSummary) => void;
+  onImport: (database: InspectorDatabaseSummary) => void;
+  onDelete: (db: InspectorDatabaseSummary) => void;
 }
 
 function DatabasesStep({
@@ -1264,19 +1479,119 @@ function DatabasesStep({
   onImport,
   onDelete,
 }: DatabasesStepProps) {
-  const hasDefault = databases.some((d) => d.name === defaultDatabaseName);
+  const ownedDatabases = databases.filter((database) => database.ownership === 'owned');
+  const linkedDatabases = databases.filter((database) => database.ownership === 'linked');
+  const hasDefault = ownedDatabases.some((d) => d.name === defaultDatabaseName);
+
+  const renderDatabaseCard = (db: InspectorDatabaseSummary) => {
+    const canMutate = db.access_mode === 'read_write';
+    const isLinked = db.ownership === 'linked';
+
+    return (
+      <div
+        key={databaseKey(db)}
+        className={`userspace-sqlite-card${isLinked ? ' userspace-sqlite-card--linked' : ''}`}
+      >
+        <button type="button" className="userspace-sqlite-card-main" onClick={() => onOpen(db)}>
+          <div className="userspace-sqlite-card-title">
+            {isLinked ? <Link2 size={16} /> : <Database size={16} />}
+            <span>{db.name}</span>
+            <span
+              className={`userspace-sqlite-card-badge ${
+                db.ownership === 'owned'
+                  ? ''
+                  : db.access_mode === 'read_write'
+                    ? 'userspace-sqlite-access-badge--write'
+                    : 'userspace-sqlite-access-badge--read'
+              }`.trim()}
+            >
+              {db.ownership === 'owned' ? 'Owned' : getDatabaseAccessLabel(db.access_mode)}
+            </span>
+          </div>
+          {isLinked && (
+            <div className="userspace-sqlite-card-owner">Linked from {db.owner_workspace_name}</div>
+          )}
+          <div className="userspace-sqlite-card-meta">
+            {db.initialized ? (
+              <>
+                <span>
+                  {db.table_count} table{db.table_count === 1 ? '' : 's'}
+                </span>
+                <span>{formatBytes(db.size_bytes)}</span>
+                {db.last_modified_ms != null ? (
+                  <span>Modified {formatTimestamp(db.last_modified_ms)}</span>
+                ) : null}
+              </>
+            ) : (
+              <span>Not initialized</span>
+            )}
+          </div>
+        </button>
+        <div className="userspace-sqlite-card-actions">
+          {db.initialized ? (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm btn-icon"
+              onClick={() => onExport(db)}
+              title="Export database"
+            >
+              <Download size={14} />
+            </button>
+          ) : null}
+          {canMutate ? (
+            db.initialized ? (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm btn-icon"
+                  onClick={() => onImport(db)}
+                  title="Import database"
+                >
+                  <Upload size={14} />
+                </button>
+                <DeleteConfirmButton
+                  onDelete={() => onDelete(db)}
+                  className="btn btn-danger btn-sm"
+                  title="Delete database"
+                  buttonText="Delete"
+                />
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => onInitialize(db)}
+                >
+                  <PlusCircle size={14} /> Initialize {db.name}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => onImport(db)}
+                >
+                  <Upload size={14} /> Import database
+                </button>
+              </>
+            )
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="userspace-sqlite-step">
       <div className="userspace-sqlite-step-header">
         <div>
-          <h4>Databases</h4>
+          <h4>Accessible SQLite databases</h4>
           <p className="field-help">
             Files under <code>.ragtime/db/</code>. Total size: {formatBytes(totalBytes)}.
           </p>
         </div>
         <div className="userspace-sqlite-step-actions">
           {!hasDefault && canEdit && (
-            <button type="button" className="btn btn-primary btn-sm" onClick={onInitialize}>
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => onInitialize()}>
               <PlusCircle size={14} /> Initialize {defaultDatabaseName}
             </button>
           )}
@@ -1297,62 +1612,37 @@ function DatabasesStep({
           <Database size={24} />
           <p>No databases yet.</p>
           {canEdit && (
-            <button type="button" className="btn btn-primary btn-sm" onClick={onInitialize}>
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => onInitialize()}>
               <PlusCircle size={14} /> Initialize {defaultDatabaseName}
             </button>
           )}
         </div>
       ) : (
-        <div className="userspace-sqlite-card-grid">
-          {databases.map((db) => (
-            <div key={db.name} className="userspace-sqlite-card">
-              <button
-                type="button"
-                className="userspace-sqlite-card-main"
-                onClick={() => onOpen(db)}
-              >
-                <div className="userspace-sqlite-card-title">
-                  <Database size={16} />
-                  <span>{db.name}</span>
-                </div>
-                <div className="userspace-sqlite-card-meta">
-                  <span>
-                    {db.table_count} table{db.table_count === 1 ? '' : 's'}
-                  </span>
-                  <span>{formatBytes(db.size_bytes)}</span>
-                  <span>Modified {formatTimestamp(db.last_modified_ms)}</span>
-                </div>
-              </button>
-              <div className="userspace-sqlite-card-actions">
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm btn-icon"
-                  onClick={() => onExport(db)}
-                  title="Export database"
-                >
-                  <Download size={14} />
-                </button>
-                {canEdit && (
-                  <>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm btn-icon"
-                      onClick={() => onImport(db.name)}
-                      title="Import database"
-                    >
-                      <Upload size={14} />
-                    </button>
-                    <DeleteConfirmButton
-                      onDelete={() => onDelete(db)}
-                      className="btn btn-danger btn-sm"
-                      title="Delete database"
-                      buttonText="Delete"
-                    />
-                  </>
-                )}
-              </div>
+        <div className="userspace-sqlite-group-stack">
+          <section className="userspace-sqlite-group">
+            <div className="userspace-sqlite-group-header">
+              <h5>Workspace databases</h5>
             </div>
-          ))}
+            {ownedDatabases.length > 0 ? (
+              <div className="userspace-sqlite-card-grid">
+                {ownedDatabases.map(renderDatabaseCard)}
+              </div>
+            ) : (
+              <div className="userspace-sqlite-empty-row">No workspace databases.</div>
+            )}
+          </section>
+          <section className="userspace-sqlite-group">
+            <div className="userspace-sqlite-group-header">
+              <h5>Linked databases</h5>
+            </div>
+            {linkedDatabases.length > 0 ? (
+              <div className="userspace-sqlite-card-grid">
+                {linkedDatabases.map(renderDatabaseCard)}
+              </div>
+            ) : (
+              <div className="userspace-sqlite-empty-row">No linked databases.</div>
+            )}
+          </section>
         </div>
       )}
     </div>
@@ -1360,10 +1650,11 @@ function DatabasesStep({
 }
 
 interface DatabaseStepProps {
-  database: SqliteInspectorDatabaseSummary;
+  database: InspectorDatabaseSummary;
   tables: SqliteInspectorTableSummary[];
   loading: boolean;
   canEdit: boolean;
+  linkedBannerText: string | null;
   showCreateForm: boolean;
   onShowCreateForm: () => void;
   onCancelCreateForm: () => void;
@@ -1378,6 +1669,9 @@ interface DatabaseStepProps {
   onExportTable: (table: SqliteInspectorTableSummary) => void;
   onImportTable: (tableName: string) => void;
   onDropTable: (table: SqliteInspectorTableSummary) => void;
+  onInitializeDatabase: () => void;
+  onImportDatabase: () => void;
+  onExportDatabase: () => void;
   sqlText: string;
   onSqlTextChange: (sql: string) => void;
   sqlResult: SqliteInspectorSqlQueryResponse | null;
@@ -1390,6 +1684,7 @@ function DatabaseStep({
   tables,
   loading,
   canEdit,
+  linkedBannerText,
   showCreateForm,
   onShowCreateForm,
   onCancelCreateForm,
@@ -1404,6 +1699,9 @@ function DatabaseStep({
   onExportTable,
   onImportTable,
   onDropTable,
+  onInitializeDatabase,
+  onImportDatabase,
+  onExportDatabase,
   sqlText,
   onSqlTextChange,
   sqlResult,
@@ -1427,15 +1725,31 @@ function DatabaseStep({
       <div className="userspace-sqlite-step-header userspace-sqlite-step-header-inline">
         <div>
           <div className="userspace-sqlite-meta">
-            <span>
-              {database.table_count} table{database.table_count === 1 ? '' : 's'}
-            </span>
-            <span>{formatBytes(database.size_bytes)}</span>
+            {database.initialized ? (
+              <>
+                <span>
+                  {database.table_count} table{database.table_count === 1 ? '' : 's'}
+                </span>
+                <span>{formatBytes(database.size_bytes)}</span>
+              </>
+            ) : (
+              <span>Not initialized</span>
+            )}
             <code className="userspace-sqlite-meta-path">{database.relative_path}</code>
           </div>
         </div>
         <div className="userspace-sqlite-step-actions">
-          {subTab === 'tables' && (
+          {database.initialized && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm btn-icon"
+              onClick={onExportDatabase}
+              title="Export database"
+            >
+              <Download size={14} />
+            </button>
+          )}
+          {database.initialized && subTab === 'tables' && (
             <>
               <button
                 type="button"
@@ -1472,7 +1786,32 @@ function DatabaseStep({
         </div>
       </div>
 
-      {showCreateForm && (
+      {linkedBannerText ? (
+        <div className="userspace-sqlite-linked-banner">{linkedBannerText}</div>
+      ) : null}
+
+      {!database.initialized ? (
+        <div className="userspace-sqlite-empty">
+          <Database size={24} />
+          <p>Not initialized</p>
+          {canEdit ? (
+            <div className="userspace-sqlite-step-actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={onInitializeDatabase}
+              >
+                <PlusCircle size={14} /> Initialize {database.name}
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={onImportDatabase}>
+                <Upload size={14} /> Import database
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {database.initialized && showCreateForm && (
         <div className="userspace-sqlite-form">
           <div className="form-row">
             <label className="field-label">Table name</label>
@@ -1573,87 +1912,89 @@ function DatabaseStep({
         </div>
       )}
 
-      {subTab === 'console' ? (
-        <SqlConsolePane
-          sqlText={sqlText}
-          onSqlTextChange={onSqlTextChange}
-          result={sqlResult}
-          running={sqlRunning}
-          onRun={onRunSql}
-        />
-      ) : (
-        <>
-          {loading && !tables.length ? (
-            <div className="userspace-sqlite-empty">
-              <Loader2 size={16} className="spinning" /> Loading…
-            </div>
-          ) : tables.length === 0 ? (
-            <div className="userspace-sqlite-empty">
-              <TableIcon size={24} />
-              <p>This database has no tables yet.</p>
-            </div>
-          ) : (
-            <div className="userspace-sqlite-card-grid">
-              {tables.map((table) => (
-                <div key={table.name} className="userspace-sqlite-card">
-                  <button
-                    type="button"
-                    className="userspace-sqlite-card-main"
-                    onClick={() => onOpenTable(table)}
-                  >
-                    <div className="userspace-sqlite-card-title">
-                      <TableIcon size={16} />
-                      <span>{table.name}</span>
-                      {table.type === 'view' && (
-                        <span className="userspace-sqlite-card-badge">view</span>
-                      )}
-                    </div>
-                    <div className="userspace-sqlite-card-meta">
-                      <span>
-                        {table.row_count} row{table.row_count === 1 ? '' : 's'}
-                      </span>
-                    </div>
-                  </button>
-                  <div className="userspace-sqlite-card-actions">
+      {database.initialized &&
+        (subTab === 'console' ? (
+          <SqlConsolePane
+            sqlText={sqlText}
+            onSqlTextChange={onSqlTextChange}
+            result={sqlResult}
+            running={sqlRunning}
+            onRun={onRunSql}
+          />
+        ) : (
+          <>
+            {loading && !tables.length ? (
+              <div className="userspace-sqlite-empty">
+                <Loader2 size={16} className="spinning" /> Loading…
+              </div>
+            ) : tables.length === 0 ? (
+              <div className="userspace-sqlite-empty">
+                <TableIcon size={24} />
+                <p>This database has no tables yet.</p>
+              </div>
+            ) : (
+              <div className="userspace-sqlite-card-grid">
+                {tables.map((table) => (
+                  <div key={table.name} className="userspace-sqlite-card">
                     <button
                       type="button"
-                      className="btn btn-secondary btn-sm btn-icon"
-                      onClick={() => onExportTable(table)}
-                      title="Export table"
+                      className="userspace-sqlite-card-main"
+                      onClick={() => onOpenTable(table)}
                     >
-                      <Download size={14} />
+                      <div className="userspace-sqlite-card-title">
+                        <TableIcon size={16} />
+                        <span>{table.name}</span>
+                        {table.type === 'view' && (
+                          <span className="userspace-sqlite-card-badge">view</span>
+                        )}
+                      </div>
+                      <div className="userspace-sqlite-card-meta">
+                        <span>
+                          {table.row_count} row{table.row_count === 1 ? '' : 's'}
+                        </span>
+                      </div>
                     </button>
-                    {canEdit && table.type === 'table' && (
-                      <>
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm btn-icon"
-                          onClick={() => onImportTable(table.name)}
-                          title="Import CSV"
-                        >
-                          <Upload size={14} />
-                        </button>
-                        <DeleteConfirmButton
-                          onDelete={() => onDropTable(table)}
-                          className="btn btn-danger btn-sm"
-                          title="Drop table"
-                          buttonText="Drop"
-                        />
-                      </>
-                    )}
+                    <div className="userspace-sqlite-card-actions">
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm btn-icon"
+                        onClick={() => onExportTable(table)}
+                        title="Export table"
+                      >
+                        <Download size={14} />
+                      </button>
+                      {canEdit && table.type === 'table' && (
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm btn-icon"
+                            onClick={() => onImportTable(table.name)}
+                            title="Import CSV"
+                          >
+                            <Upload size={14} />
+                          </button>
+                          <DeleteConfirmButton
+                            onDelete={() => onDropTable(table)}
+                            className="btn btn-danger btn-sm"
+                            title="Drop table"
+                            buttonText="Drop"
+                          />
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      )}
+                ))}
+              </div>
+            )}
+          </>
+        ))}
     </div>
   );
 }
 
 interface TableStepProps {
   databaseName: string;
+  linkedBannerText: string | null;
   tableName: string;
   subTab: TableSubTab;
   onSubTabChange: (tab: TableSubTab) => void;
@@ -1694,6 +2035,7 @@ interface TableStepProps {
 function TableStep(props: TableStepProps) {
   const {
     databaseName,
+    linkedBannerText,
     tableName,
     subTab,
     onSubTabChange,
@@ -1764,6 +2106,10 @@ function TableStep(props: TableStepProps) {
           </button>
         </div>
       </div>
+
+      {linkedBannerText ? (
+        <div className="userspace-sqlite-linked-banner">{linkedBannerText}</div>
+      ) : null}
 
       {subTab === 'rows' ? (
         <RowsPane

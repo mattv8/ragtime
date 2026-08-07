@@ -180,6 +180,9 @@ from ragtime.userspace.models import (
     RuntimeRestartBatchTaskPhase,
     RuntimeRestartWorkspacePhase,
     ShareAccessMode,
+    SqliteInspectorDatabaseAccessMode,
+    SqliteInspectorDatabaseOwnership,
+    SqliteInspectorDatabaseSummary,
     SqlitePersistenceMode,
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
@@ -23375,18 +23378,261 @@ SELECT json_build_object(
             files_dir.mkdir(parents=True, exist_ok=True)
         return files_dir, promoted
 
+    @staticmethod
+    def _normalize_sqlite_owner_workspace_id(source_workspace_id: str, owner_workspace_id: str | None) -> str:
+        candidate = str(owner_workspace_id or "").strip()
+        if not candidate or candidate == source_workspace_id:
+            return source_workspace_id
+        return candidate
+
+    @staticmethod
+    def _sqlite_persistence_mode_from_record(record: Any) -> SqlitePersistenceMode:
+        return cast(
+            SqlitePersistenceMode,
+            _normalize_sqlite_persistence_mode(
+                str(
+                    getattr(
+                        record,
+                        "sqlitePersistenceMode",
+                        getattr(record, "sqlite_persistence_mode", "include"),
+                    )
+                    or "include"
+                )
+            ),
+        )
+
+    @staticmethod
+    def _sqlite_inspector_access_mode_for_owned_role(
+        role: WorkspaceRole | None,
+        *,
+        is_admin: bool,
+    ) -> SqliteInspectorDatabaseAccessMode:
+        if is_admin or UserSpaceService._workspace_role_allows(role, "editor"):
+            return "read_write"
+        return "read"
+
+    @staticmethod
+    def _build_sqlite_inspector_database_summary(
+        *,
+        database_name: str,
+        owner_workspace_id: str,
+        owner_workspace_name: str,
+        ownership: SqliteInspectorDatabaseOwnership,
+        access_mode: SqliteInspectorDatabaseAccessMode,
+        persistence_mode: SqlitePersistenceMode,
+        database_summary: sqlite_inspector_helpers.DatabaseSummary | None,
+    ) -> SqliteInspectorDatabaseSummary:
+        if database_summary is None:
+            return SqliteInspectorDatabaseSummary(
+                name=database_name,
+                relative_path=f"{sqlite_inspector_helpers.MANAGED_DB_DIRNAME}/{database_name}",
+                size_bytes=0,
+                table_count=0,
+                last_modified_ms=None,
+                owner_workspace_id=owner_workspace_id,
+                owner_workspace_name=owner_workspace_name,
+                ownership=ownership,
+                access_mode=access_mode,
+                persistence_mode=persistence_mode,
+                initialized=False,
+            )
+        return SqliteInspectorDatabaseSummary(
+            name=database_summary.name,
+            relative_path=database_summary.relative_path,
+            size_bytes=database_summary.size_bytes,
+            table_count=database_summary.table_count,
+            last_modified_ms=database_summary.last_modified_ms,
+            owner_workspace_id=owner_workspace_id,
+            owner_workspace_name=owner_workspace_name,
+            ownership=ownership,
+            access_mode=access_mode,
+            persistence_mode=persistence_mode,
+            initialized=True,
+        )
+
+    async def _load_sqlite_database_summary(
+        self,
+        files_dir: Path,
+        database_name: str,
+    ) -> sqlite_inspector_helpers.DatabaseSummary | None:
+        databases, _ = await asyncio.to_thread(sqlite_inspector_helpers.list_databases, files_dir)
+        return next((database for database in databases if database.name == database_name), None)
+
+    async def _record_linked_sqlite_mutation_best_effort(
+        self,
+        *,
+        source_workspace_id: str,
+        target_workspace_id: str,
+        user_id: str,
+        grant_id: str | None,
+        operation: str,
+    ) -> None:
+        if not grant_id:
+            return
+        try:
+            await self._record_runtime_audit_event(
+                target_workspace_id,
+                user_id,
+                "sqlite_inspector.linked_mutation",
+                {
+                    "source_workspace_id": source_workspace_id,
+                    "target_workspace_id": target_workspace_id,
+                    "grant_id": grant_id,
+                    "operation": operation,
+                    "database_name": sqlite_inspector_helpers.DEFAULT_DATABASE_NAME,
+                },
+            )
+        except Exception:
+            logger.exception("Failed to record linked SQLite inspector audit event for workspace %s", target_workspace_id)
+
+    async def _resolve_sqlite_inspector_database(
+        self,
+        source_workspace_id: str,
+        user_id: str,
+        database_name: str,
+        *,
+        owner_workspace_id: str | None,
+        require_write: bool,
+        is_admin: bool,
+        promote_mode: bool = False,
+        ensure_files_dir: bool = False,
+    ) -> tuple[Path, bool, SqliteInspectorDatabaseSummary, str | None]:
+        resolved_owner_workspace_id = self._normalize_sqlite_owner_workspace_id(source_workspace_id, owner_workspace_id)
+        db = await get_db()
+
+        if resolved_owner_workspace_id == source_workspace_id:
+            workspace = await self._enforce_workspace_access(
+                source_workspace_id,
+                user_id,
+                required_role="editor" if require_write else None,
+                is_admin=is_admin,
+            )
+            promoted = False
+            if promote_mode:
+                promoted = await self._ensure_sqlite_mode_included(source_workspace_id)
+                workspace.sqlite_persistence_mode = "include"
+            files_dir = self._workspace_files_dir(source_workspace_id)
+            if ensure_files_dir:
+                files_dir.mkdir(parents=True, exist_ok=True)
+            role = None if is_admin else await self._load_workspace_role_without_admin_bypass(db, workspace_id=source_workspace_id, user_id=user_id)
+            access_mode = self._sqlite_inspector_access_mode_for_owned_role(role, is_admin=is_admin)
+            summary = self._build_sqlite_inspector_database_summary(
+                database_name=database_name,
+                owner_workspace_id=source_workspace_id,
+                owner_workspace_name=workspace.name,
+                ownership="owned",
+                access_mode=access_mode,
+                persistence_mode=cast(SqlitePersistenceMode, workspace.sqlite_persistence_mode),
+                database_summary=await self._load_sqlite_database_summary(files_dir, database_name),
+            )
+            return files_dir, promoted, summary, None
+
+        if database_name != sqlite_inspector_helpers.DEFAULT_DATABASE_NAME:
+            raise HTTPException(status_code=404, detail="Linked database not found")
+
+        authorization = await self._authorize_runtime_bridge_cross_workspace_sqlite(
+            source_workspace_id=source_workspace_id,
+            target_workspace_id=resolved_owner_workspace_id,
+            leased_by_user_id=user_id,
+            require_target_role="editor" if require_write else "viewer",
+            require_sqlite_mode="read_write" if require_write else "read",
+        )
+        workspace_record = await db.workspace.find_unique(where={"id": resolved_owner_workspace_id})
+        if workspace_record is None:
+            raise HTTPException(status_code=404, detail="Linked database not found")
+        promoted = False
+        if promote_mode:
+            promoted = await self._ensure_sqlite_mode_included(resolved_owner_workspace_id)
+            setattr(workspace_record, "sqlitePersistenceMode", "include")
+            setattr(workspace_record, "sqlite_persistence_mode", "include")
+        files_dir = self._workspace_files_dir(resolved_owner_workspace_id)
+        if ensure_files_dir:
+            files_dir.mkdir(parents=True, exist_ok=True)
+        source_role = await self._load_workspace_role_without_admin_bypass(db, workspace_id=source_workspace_id, user_id=user_id)
+        target_role = await self._load_workspace_role_without_admin_bypass(db, workspace_id=resolved_owner_workspace_id, user_id=user_id)
+        access_mode = self._effective_cross_workspace_sqlite_access_mode(
+            source_role=source_role,
+            target_role=target_role,
+            sqlite_access_mode=authorization.get("sqlite_access_mode", "none"),
+        )
+        if access_mode is None:
+            raise HTTPException(status_code=403, detail=_RUNTIME_BRIDGE_SQLITE_FORBIDDEN_DETAIL)
+        summary = self._build_sqlite_inspector_database_summary(
+            database_name=database_name,
+            owner_workspace_id=resolved_owner_workspace_id,
+            owner_workspace_name=str(getattr(workspace_record, "name", "") or ""),
+            ownership="linked",
+            access_mode=cast(SqliteInspectorDatabaseAccessMode, access_mode),
+            persistence_mode=self._sqlite_persistence_mode_from_record(workspace_record),
+            database_summary=await self._load_sqlite_database_summary(files_dir, database_name),
+        )
+        return files_dir, promoted, summary, authorization.get("grant_id")
+
     async def list_sqlite_databases(
         self,
         workspace_id: str,
         user_id: str,
         *,
         is_admin: bool = False,
-    ) -> tuple[list[sqlite_inspector_helpers.DatabaseSummary], int, str]:
+    ) -> tuple[list[SqliteInspectorDatabaseSummary], int, str]:
         workspace = await self._enforce_workspace_access(workspace_id, user_id, is_admin=is_admin)
         files_dir = self._workspace_files_dir(workspace_id)
-        databases, total_bytes = await asyncio.to_thread(sqlite_inspector_helpers.list_databases, files_dir)
+        databases, _ = await asyncio.to_thread(sqlite_inspector_helpers.list_databases, files_dir)
         mode = _normalize_sqlite_persistence_mode(workspace.sqlite_persistence_mode)
-        return databases, total_bytes, mode
+        db = await get_db()
+        role = None if is_admin else await self._load_workspace_role_without_admin_bypass(db, workspace_id=workspace_id, user_id=user_id)
+        access_mode = self._sqlite_inspector_access_mode_for_owned_role(role, is_admin=is_admin)
+        owned_summaries = [
+            self._build_sqlite_inspector_database_summary(
+                database_name=database.name,
+                owner_workspace_id=workspace_id,
+                owner_workspace_name=workspace.name,
+                ownership="owned",
+                access_mode=access_mode,
+                persistence_mode=cast(SqlitePersistenceMode, mode),
+                database_summary=database,
+            )
+            for database in sorted(databases, key=lambda item: item.name.casefold())
+        ]
+        linked_targets = await self.list_accessible_cross_workspace_sqlite_targets(workspace_id, user_id)
+        if not linked_targets:
+            total_bytes = sum(summary.size_bytes for summary in owned_summaries if summary.initialized)
+            return owned_summaries, total_bytes, mode
+
+        target_workspace_ids = [target["workspace_id"] for target in linked_targets]
+        target_records: dict[str, Any] = {}
+        workspace_model = getattr(db, "workspace", None)
+        if workspace_model is not None and hasattr(workspace_model, "find_many"):
+            for record in await workspace_model.find_many(where={"id": {"in": target_workspace_ids}}):
+                target_records[str(getattr(record, "id", "") or "")] = record
+        else:
+            for target_workspace_id in target_workspace_ids:
+                record = await db.workspace.find_unique(where={"id": target_workspace_id})
+                if record is not None:
+                    target_records[target_workspace_id] = record
+
+        linked_summaries: list[SqliteInspectorDatabaseSummary] = []
+        for target in linked_targets:
+            target_workspace_id = target["workspace_id"]
+            record = target_records.get(target_workspace_id)
+            if record is None:
+                continue
+            target_files_dir = self._workspace_files_dir(target_workspace_id)
+            linked_summaries.append(
+                self._build_sqlite_inspector_database_summary(
+                    database_name=sqlite_inspector_helpers.DEFAULT_DATABASE_NAME,
+                    owner_workspace_id=target_workspace_id,
+                    owner_workspace_name=target["workspace_name"],
+                    ownership="linked",
+                    access_mode=cast(SqliteInspectorDatabaseAccessMode, target["access_mode"]),
+                    persistence_mode=self._sqlite_persistence_mode_from_record(record),
+                    database_summary=await self._load_sqlite_database_summary(target_files_dir, sqlite_inspector_helpers.DEFAULT_DATABASE_NAME),
+                )
+            )
+
+        all_summaries = owned_summaries + linked_summaries
+        total_bytes = sum(summary.size_bytes for summary in all_summaries if summary.initialized)
+        return all_summaries, total_bytes, mode
 
     async def initialize_sqlite_database(
         self,
@@ -23394,20 +23640,40 @@ SELECT json_build_object(
         user_id: str,
         *,
         database_name: str | None = None,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
-    ) -> tuple[sqlite_inspector_helpers.DatabaseSummary, bool]:
-        files_dir, promoted = await self._prepare_sqlite_workspace(
+    ) -> tuple[SqliteInspectorDatabaseSummary, bool]:
+        resolved_database_name = database_name or sqlite_inspector_helpers.DEFAULT_DATABASE_NAME
+        files_dir, promoted, database_context, grant_id = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            resolved_database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=True,
             is_admin=is_admin,
-            required_role="editor",
             promote_mode=True,
             ensure_files_dir=True,
         )
-        summary = await asyncio.to_thread(
+        database_summary = await asyncio.to_thread(
             sqlite_inspector_helpers.initialize_database,
             files_dir,
-            database_name or sqlite_inspector_helpers.DEFAULT_DATABASE_NAME,
+            resolved_database_name,
+        )
+        summary = self._build_sqlite_inspector_database_summary(
+            database_name=database_summary.name,
+            owner_workspace_id=database_context.owner_workspace_id,
+            owner_workspace_name=database_context.owner_workspace_name,
+            ownership=database_context.ownership,
+            access_mode=database_context.access_mode,
+            persistence_mode=database_context.persistence_mode,
+            database_summary=database_summary,
+        )
+        await self._record_linked_sqlite_mutation_best_effort(
+            source_workspace_id=workspace_id,
+            target_workspace_id=summary.owner_workspace_id,
+            user_id=user_id,
+            grant_id=grant_id,
+            operation="initialize_database",
         )
         return summary, promoted
 
@@ -23417,15 +23683,27 @@ SELECT json_build_object(
         user_id: str,
         database_name: str,
         *,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> None:
-        files_dir, _ = await self._prepare_sqlite_workspace(
+        files_dir, _, summary, grant_id = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=True,
             is_admin=is_admin,
-            required_role="editor",
         )
+        if not summary.initialized:
+            raise HTTPException(status_code=404, detail="Database not found")
         await asyncio.to_thread(sqlite_inspector_helpers.delete_database, files_dir, database_name)
+        await self._record_linked_sqlite_mutation_best_effort(
+            source_workspace_id=workspace_id,
+            target_workspace_id=summary.owner_workspace_id,
+            user_id=user_id,
+            grant_id=grant_id,
+            operation="delete_database",
+        )
 
     async def export_sqlite_database(
         self,
@@ -23433,13 +23711,19 @@ SELECT json_build_object(
         user_id: str,
         database_name: str,
         *,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> Path:
-        files_dir, _ = await self._prepare_sqlite_workspace(
+        files_dir, _, summary, _ = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=False,
             is_admin=is_admin,
         )
+        if not summary.initialized:
+            raise HTTPException(status_code=404, detail="Database not found")
         return await asyncio.to_thread(sqlite_inspector_helpers.export_database_copy, files_dir, database_name)
 
     async def import_sqlite_database(
@@ -23449,20 +23733,39 @@ SELECT json_build_object(
         database_name: str,
         source_path: Path,
         *,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
-    ) -> tuple[sqlite_inspector_helpers.DatabaseSummary, bool]:
-        files_dir, promoted = await self._prepare_sqlite_workspace(
+    ) -> tuple[SqliteInspectorDatabaseSummary, bool]:
+        files_dir, promoted, database_context, grant_id = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=True,
             is_admin=is_admin,
-            required_role="editor",
             promote_mode=True,
         )
-        summary = await asyncio.to_thread(
+        database_summary = await asyncio.to_thread(
             sqlite_inspector_helpers.import_database_file,
             files_dir,
             database_name,
             source_path,
+        )
+        summary = self._build_sqlite_inspector_database_summary(
+            database_name=database_summary.name,
+            owner_workspace_id=database_context.owner_workspace_id,
+            owner_workspace_name=database_context.owner_workspace_name,
+            ownership=database_context.ownership,
+            access_mode=database_context.access_mode,
+            persistence_mode=database_context.persistence_mode,
+            database_summary=database_summary,
+        )
+        await self._record_linked_sqlite_mutation_best_effort(
+            source_workspace_id=workspace_id,
+            target_workspace_id=summary.owner_workspace_id,
+            user_id=user_id,
+            grant_id=grant_id,
+            operation="import_database",
         )
         return summary, promoted
 
@@ -23472,19 +23775,21 @@ SELECT json_build_object(
         user_id: str,
         database_name: str,
         *,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> tuple[
-        sqlite_inspector_helpers.DatabaseSummary,
+        SqliteInspectorDatabaseSummary,
         list[sqlite_inspector_helpers.TableSummary],
     ]:
-        files_dir, _ = await self._prepare_sqlite_workspace(
+        files_dir, _, summary, _ = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=False,
             is_admin=is_admin,
         )
-        databases, _ = await asyncio.to_thread(sqlite_inspector_helpers.list_databases, files_dir)
-        summary = next((d for d in databases if d.name == database_name), None)
-        if summary is None:
+        if not summary.initialized:
             raise HTTPException(status_code=404, detail="Database not found")
         tables = await asyncio.to_thread(sqlite_inspector_helpers.list_tables, files_dir, database_name)
         return summary, tables
@@ -23498,13 +23803,16 @@ SELECT json_build_object(
         columns: list[sqlite_inspector_helpers.ColumnDefinition],
         *,
         without_rowid: bool = False,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> tuple[sqlite_inspector_helpers.TableSummary, bool]:
-        files_dir, promoted = await self._prepare_sqlite_workspace(
+        files_dir, promoted, database_context, grant_id = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=True,
             is_admin=is_admin,
-            required_role="editor",
             promote_mode=True,
             ensure_files_dir=True,
         )
@@ -23516,6 +23824,13 @@ SELECT json_build_object(
             columns,
             without_rowid=without_rowid,
         )
+        await self._record_linked_sqlite_mutation_best_effort(
+            source_workspace_id=workspace_id,
+            target_workspace_id=database_context.owner_workspace_id,
+            user_id=user_id,
+            grant_id=grant_id,
+            operation="create_table",
+        )
         return summary, promoted
 
     async def get_sqlite_table_schema(
@@ -23525,13 +23840,19 @@ SELECT json_build_object(
         database_name: str,
         table_name: str,
         *,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> sqlite_inspector_helpers.TableSchema:
-        files_dir, _ = await self._prepare_sqlite_workspace(
+        files_dir, _, summary, _ = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=False,
             is_admin=is_admin,
         )
+        if not summary.initialized:
+            raise HTTPException(status_code=404, detail="Database not found")
         return await asyncio.to_thread(
             sqlite_inspector_helpers.get_table_schema,
             files_dir,
@@ -23547,13 +23868,16 @@ SELECT json_build_object(
         table_name: str,
         alterations: list[sqlite_inspector_helpers.TableAlteration],
         *,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> tuple[sqlite_inspector_helpers.TableSchema, bool]:
-        files_dir, promoted = await self._prepare_sqlite_workspace(
+        files_dir, promoted, database_context, grant_id = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=True,
             is_admin=is_admin,
-            required_role="editor",
             promote_mode=True,
         )
         schema = await asyncio.to_thread(
@@ -23562,6 +23886,13 @@ SELECT json_build_object(
             database_name,
             table_name,
             alterations,
+        )
+        await self._record_linked_sqlite_mutation_best_effort(
+            source_workspace_id=workspace_id,
+            target_workspace_id=database_context.owner_workspace_id,
+            user_id=user_id,
+            grant_id=grant_id,
+            operation="alter_table",
         )
         return schema, promoted
 
@@ -23572,13 +23903,16 @@ SELECT json_build_object(
         database_name: str,
         table_name: str,
         *,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> bool:
-        files_dir, promoted = await self._prepare_sqlite_workspace(
+        files_dir, promoted, database_context, grant_id = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=True,
             is_admin=is_admin,
-            required_role="editor",
             promote_mode=True,
         )
         await asyncio.to_thread(
@@ -23586,6 +23920,13 @@ SELECT json_build_object(
             files_dir,
             database_name,
             table_name,
+        )
+        await self._record_linked_sqlite_mutation_best_effort(
+            source_workspace_id=workspace_id,
+            target_workspace_id=database_context.owner_workspace_id,
+            user_id=user_id,
+            grant_id=grant_id,
+            operation="drop_table",
         )
         return promoted
 
@@ -23596,13 +23937,19 @@ SELECT json_build_object(
         database_name: str,
         table_name: str,
         *,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> str:
-        files_dir, _ = await self._prepare_sqlite_workspace(
+        files_dir, _, summary, _ = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=False,
             is_admin=is_admin,
         )
+        if not summary.initialized:
+            raise HTTPException(status_code=404, detail="Database not found")
         return await asyncio.to_thread(
             sqlite_inspector_helpers.export_table_csv,
             files_dir,
@@ -23619,13 +23966,16 @@ SELECT json_build_object(
         csv_text: str,
         *,
         replace: bool = False,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> tuple[sqlite_inspector_helpers.TableSummary, bool]:
-        files_dir, promoted = await self._prepare_sqlite_workspace(
+        files_dir, promoted, database_context, grant_id = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=True,
             is_admin=is_admin,
-            required_role="editor",
             promote_mode=True,
         )
         summary = await asyncio.to_thread(
@@ -23635,6 +23985,13 @@ SELECT json_build_object(
             table_name,
             csv_text,
             replace=replace,
+        )
+        await self._record_linked_sqlite_mutation_best_effort(
+            source_workspace_id=workspace_id,
+            target_workspace_id=database_context.owner_workspace_id,
+            user_id=user_id,
+            grant_id=grant_id,
+            operation="import_table",
         )
         return summary, promoted
 
@@ -23649,13 +24006,19 @@ SELECT json_build_object(
         offset: int = 0,
         order_by: str | None = None,
         order_direction: str = "asc",
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> sqlite_inspector_helpers.RowPage:
-        files_dir, _ = await self._prepare_sqlite_workspace(
+        files_dir, _, summary, _ = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=False,
             is_admin=is_admin,
         )
+        if not summary.initialized:
+            raise HTTPException(status_code=404, detail="Database not found")
         return await asyncio.to_thread(
             sqlite_inspector_helpers.list_rows,
             files_dir,
@@ -23675,13 +24038,16 @@ SELECT json_build_object(
         table_name: str,
         values: dict[str, Any],
         *,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> tuple[dict[str, Any], bool]:
-        files_dir, promoted = await self._prepare_sqlite_workspace(
+        files_dir, promoted, summary, grant_id = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=True,
             is_admin=is_admin,
-            required_role="editor",
             promote_mode=True,
         )
         row = await asyncio.to_thread(
@@ -23690,6 +24056,13 @@ SELECT json_build_object(
             database_name,
             table_name,
             values,
+        )
+        await self._record_linked_sqlite_mutation_best_effort(
+            source_workspace_id=workspace_id,
+            target_workspace_id=summary.owner_workspace_id,
+            user_id=user_id,
+            grant_id=grant_id,
+            operation="insert_row",
         )
         return row, promoted
 
@@ -23702,13 +24075,16 @@ SELECT json_build_object(
         row_key: dict[str, Any],
         values: dict[str, Any],
         *,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> tuple[dict[str, Any], bool]:
-        files_dir, promoted = await self._prepare_sqlite_workspace(
+        files_dir, promoted, summary, grant_id = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=True,
             is_admin=is_admin,
-            required_role="editor",
             promote_mode=True,
         )
         row = await asyncio.to_thread(
@@ -23718,6 +24094,13 @@ SELECT json_build_object(
             table_name,
             row_key,
             values,
+        )
+        await self._record_linked_sqlite_mutation_best_effort(
+            source_workspace_id=workspace_id,
+            target_workspace_id=summary.owner_workspace_id,
+            user_id=user_id,
+            grant_id=grant_id,
+            operation="update_row",
         )
         return row, promoted
 
@@ -23729,13 +24112,16 @@ SELECT json_build_object(
         table_name: str,
         row_key: dict[str, Any],
         *,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> bool:
-        files_dir, promoted = await self._prepare_sqlite_workspace(
+        files_dir, promoted, summary, grant_id = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=True,
             is_admin=is_admin,
-            required_role="editor",
             promote_mode=True,
         )
         await asyncio.to_thread(
@@ -23744,6 +24130,13 @@ SELECT json_build_object(
             database_name,
             table_name,
             row_key,
+        )
+        await self._record_linked_sqlite_mutation_best_effort(
+            source_workspace_id=workspace_id,
+            target_workspace_id=summary.owner_workspace_id,
+            user_id=user_id,
+            grant_id=grant_id,
+            operation="delete_row",
         )
         return promoted
 
@@ -23755,13 +24148,19 @@ SELECT json_build_object(
         sql: str,
         *,
         max_rows: int = 200,
+        owner_workspace_id: str | None = None,
         is_admin: bool = False,
     ) -> sqlite_inspector_helpers.QueryResult:
-        files_dir, _ = await self._prepare_sqlite_workspace(
+        files_dir, _, summary, _ = await self._resolve_sqlite_inspector_database(
             workspace_id,
             user_id,
+            database_name,
+            owner_workspace_id=owner_workspace_id,
+            require_write=False,
             is_admin=is_admin,
         )
+        if not summary.initialized:
+            raise HTTPException(status_code=404, detail="Database not found")
         return await asyncio.to_thread(
             sqlite_inspector_helpers.execute_readonly_query,
             files_dir,
