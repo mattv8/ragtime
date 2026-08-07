@@ -487,6 +487,12 @@ class _RuntimeBridgeSqliteAuthorizationResult(TypedDict, total=False):
     sqlite_access_mode: WorkspaceSqliteGrantMode
 
 
+class _EffectiveCrossWorkspaceSqliteAccess(TypedDict):
+    target_workspace_id: str
+    workspace_name: str
+    access_mode: Literal["read", "read_write"]
+
+
 class _RuntimeBridgeSqliteRateLimitBucket:
     __slots__ = ("timestamps", "last_active")
 
@@ -14925,6 +14931,126 @@ class UserSpaceService:
             return None
         return self._coerce_workspace_role_value(getattr(member, "role", None))
 
+    def _effective_cross_workspace_sqlite_access_mode(
+        self,
+        *,
+        source_role: WorkspaceRole | None,
+        target_role: WorkspaceRole | None,
+        sqlite_access_mode: WorkspaceSqliteGrantMode,
+    ) -> Literal["read", "read_write"] | None:
+        if not self._workspace_role_allows(source_role, "viewer"):
+            return None
+        if not self._workspace_role_allows(target_role, "viewer"):
+            return None
+        if sqlite_access_mode == "read_write":
+            if self._workspace_role_allows(target_role, "editor"):
+                return "read_write"
+            return "read"
+        if sqlite_access_mode == "read":
+            return "read"
+        return None
+
+    async def list_accessible_cross_workspace_sqlite_targets(
+        self,
+        source_workspace_id: str,
+        leased_by_user_id: str,
+    ) -> list[dict[str, str]]:
+        db = await get_db()
+        source_role = await self._load_workspace_role_without_admin_bypass(
+            db,
+            workspace_id=source_workspace_id,
+            user_id=leased_by_user_id,
+        )
+        if not self._workspace_role_allows(source_role, "viewer"):
+            return []
+
+        model = self._workspace_agent_grant_model(db)
+        if model is None:
+            return []
+
+        grants = await model.find_many(
+            where={"sourceWorkspaceId": source_workspace_id},
+            order={"targetWorkspaceId": "asc"},
+        )
+        if not grants:
+            return []
+
+        now = utc_now()
+        candidate_grants: list[tuple[str, WorkspaceSqliteGrantMode]] = []
+        for grant in grants:
+            target_workspace_id = str(getattr(grant, "targetWorkspaceId", "") or "")
+            if not target_workspace_id or target_workspace_id == source_workspace_id:
+                continue
+            expires_at = getattr(grant, "expiresAt", None)
+            if expires_at is not None and coerce_utc_datetime(expires_at) < now:
+                continue
+            sqlite_access_mode = self._normalize_sqlite_grant_mode(getattr(grant, "sqliteAccessMode", "none"))
+            if sqlite_access_mode == "none":
+                continue
+            candidate_grants.append((target_workspace_id, sqlite_access_mode))
+        if not candidate_grants:
+            return []
+
+        target_workspace_ids = sorted({target_workspace_id for target_workspace_id, _sqlite_access_mode in candidate_grants})
+
+        workspace_model = getattr(db, "workspace", None)
+        workspace_map: dict[str, Any] = {}
+        if workspace_model is not None and hasattr(workspace_model, "find_many"):
+            workspaces = await workspace_model.find_many(where={"id": {"in": target_workspace_ids}})
+            workspace_map = {str(getattr(workspace, "id", "") or ""): workspace for workspace in workspaces}
+        else:
+            for target_workspace_id in target_workspace_ids:
+                workspace = await db.workspace.find_unique(where={"id": target_workspace_id})
+                if workspace is not None:
+                    workspace_map[target_workspace_id] = workspace
+
+        member_model = getattr(db, "workspacemember", None)
+        member_roles: dict[str, WorkspaceRole | None] = {}
+        if member_model is not None and hasattr(member_model, "find_many"):
+            memberships = await member_model.find_many(
+                where={
+                    "workspaceId": {"in": target_workspace_ids},
+                    "userId": leased_by_user_id,
+                }
+            )
+            member_roles = {
+                str(getattr(member, "workspaceId", "") or ""): self._coerce_workspace_role_value(getattr(member, "role", None)) for member in memberships
+            }
+
+        accessible_targets: list[_EffectiveCrossWorkspaceSqliteAccess] = []
+        for target_workspace_id, sqlite_access_mode in candidate_grants:
+            workspace = workspace_map.get(target_workspace_id)
+            if workspace is None:
+                continue
+            target_role = member_roles.get(target_workspace_id)
+            if target_role is None and str(getattr(workspace, "ownerUserId", "") or "") == leased_by_user_id:
+                target_role = "owner"
+            effective_access_mode = self._effective_cross_workspace_sqlite_access_mode(
+                source_role=source_role,
+                target_role=target_role,
+                sqlite_access_mode=sqlite_access_mode,
+            )
+            if effective_access_mode is None:
+                continue
+            accessible_targets.append(
+                {
+                    "target_workspace_id": target_workspace_id,
+                    "workspace_name": str(getattr(workspace, "name", "") or ""),
+                    "access_mode": effective_access_mode,
+                }
+            )
+
+        accessible_targets.sort(key=lambda item: (item["workspace_name"].casefold(), item["target_workspace_id"]))
+        return [
+            {
+                "workspace_id": item["target_workspace_id"],
+                "workspace_name": item["workspace_name"],
+                "database_name": "app.sqlite3",
+                "access_mode": item["access_mode"],
+            }
+            for item in accessible_targets
+        ]
+
     async def _authorize_runtime_bridge_cross_workspace_sqlite(
         self,
         *,
@@ -14943,8 +15069,6 @@ class UserSpaceService:
             workspace_id=source_workspace_id,
             user_id=leased_by_user_id,
         )
-        if not self._workspace_role_allows(source_role, "viewer"):
-            raise HTTPException(status_code=403, detail=_RUNTIME_BRIDGE_SQLITE_FORBIDDEN_DETAIL)
 
         target_role = await self._load_workspace_role_without_admin_bypass(
             db,
@@ -14971,8 +15095,13 @@ class UserSpaceService:
             raise HTTPException(status_code=403, detail=_RUNTIME_BRIDGE_SQLITE_FORBIDDEN_DETAIL)
 
         sqlite_access_mode = self._normalize_sqlite_grant_mode(getattr(grant, "sqliteAccessMode", "none"))
+        effective_access_mode = self._effective_cross_workspace_sqlite_access_mode(
+            source_role=source_role,
+            target_role=target_role,
+            sqlite_access_mode=sqlite_access_mode,
+        )
         allowed_modes = {"read", "read_write"} if require_sqlite_mode == "read" else {"read_write"}
-        if sqlite_access_mode not in allowed_modes:
+        if effective_access_mode not in allowed_modes:
             raise HTTPException(status_code=403, detail=_RUNTIME_BRIDGE_SQLITE_FORBIDDEN_DETAIL)
 
         return {

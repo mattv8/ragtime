@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TypedDict
+from typing import Any, TypedDict
 from unittest import mock
 
 from fastapi import HTTPException
@@ -55,6 +55,17 @@ class _FakeWorkspaceTable:
             return None
         return SimpleNamespace(id=workspace_id, ownerUserId=row.owner_user_id, name=row.name)
 
+    async def find_many(self, *, where: dict[str, Any] | None = None, order: dict[str, str] | None = None) -> list[SimpleNamespace]:
+        workspace_ids = {str(value) for value in (where or {}).get("id", {}).get("in", [])}
+        rows = [
+            SimpleNamespace(id=workspace_id, ownerUserId=row.owner_user_id, name=row.name)
+            for workspace_id, row in self.rows.items()
+            if not workspace_ids or workspace_id in workspace_ids
+        ]
+        if order == {"name": "asc"}:
+            rows.sort(key=lambda row: (str(row.name), str(row.id)))
+        return rows
+
 
 class _FakeWorkspaceMemberTable:
     def __init__(self, roles: dict[tuple[str, str], str]) -> None:
@@ -68,6 +79,15 @@ class _FakeWorkspaceMemberTable:
         if role is None:
             return None
         return SimpleNamespace(workspaceId=key[0], userId=key[1], role=role)
+
+    async def find_many(self, *, where: dict[str, Any] | None = None) -> list[SimpleNamespace]:
+        workspace_ids = {str(value) for value in (where or {}).get("workspaceId", {}).get("in", [])}
+        user_id = str((where or {}).get("userId") or "")
+        return [
+            SimpleNamespace(workspaceId=workspace_id, userId=member_user_id, role=role)
+            for (workspace_id, member_user_id), role in self.roles.items()
+            if (not workspace_ids or workspace_id in workspace_ids) and (not user_id or member_user_id == user_id)
+        ]
 
 
 class _FakeGrantTable:
@@ -83,6 +103,13 @@ class _FakeGrantTable:
             ) == str(where.get("targetWorkspaceId") or ""):
                 return row
         return None
+
+    async def find_many(self, *, where: dict[str, object] | None = None, order: dict[str, str] | None = None) -> list[SimpleNamespace]:
+        source_workspace_id = str((where or {}).get("sourceWorkspaceId") or "")
+        rows = [row for row in self.rows if not source_workspace_id or str(getattr(row, "sourceWorkspaceId", "") or "") == source_workspace_id]
+        if order == {"targetWorkspaceId": "asc"}:
+            rows.sort(key=lambda row: str(getattr(row, "targetWorkspaceId", "") or ""))
+        return rows
 
 
 class _FakeUserTable:
@@ -199,6 +226,204 @@ class RuntimeBridgeCrossWorkspaceSqliteServiceTests(unittest.IsolatedAsyncioTest
             accessMode="read",
             sqliteAccessMode=sqlite_access_mode,
             expiresAt=expires_at,
+        )
+
+    async def test_list_accessible_cross_workspace_sqlite_targets_filters_denied_and_expired_grants(self) -> None:
+        fake_db = self._db(
+            roles={
+                ("source-ws", "leased-user"): "viewer",
+                ("target-read", "leased-user"): "viewer",
+                ("target-write", "leased-user"): "editor",
+                ("target-expired", "leased-user"): "editor",
+                ("target-none", "leased-user"): "editor",
+            },
+            grant_rows=[
+                SimpleNamespace(
+                    id="grant-read",
+                    sourceWorkspaceId="source-ws",
+                    targetWorkspaceId="target-read",
+                    accessMode="none",
+                    sqliteAccessMode="read",
+                    expiresAt=None,
+                ),
+                SimpleNamespace(
+                    id="grant-write",
+                    sourceWorkspaceId="source-ws",
+                    targetWorkspaceId="target-write",
+                    accessMode="read",
+                    sqliteAccessMode="read_write",
+                    expiresAt=None,
+                ),
+                SimpleNamespace(
+                    id="grant-expired",
+                    sourceWorkspaceId="source-ws",
+                    targetWorkspaceId="target-expired",
+                    accessMode="read_write",
+                    sqliteAccessMode="read_write",
+                    expiresAt=_NOW - timedelta(seconds=1),
+                ),
+                SimpleNamespace(
+                    id="grant-none",
+                    sourceWorkspaceId="source-ws",
+                    targetWorkspaceId="target-none",
+                    accessMode="read_write",
+                    sqliteAccessMode="none",
+                    expiresAt=None,
+                ),
+            ],
+            workspace_rows={
+                "source-ws": _WorkspaceRow(owner_user_id="owner-source", name="Source"),
+                "target-read": _WorkspaceRow(owner_user_id="owner-target-read", name="Alpha"),
+                "target-write": _WorkspaceRow(owner_user_id="owner-target-write", name="Beta"),
+                "target-expired": _WorkspaceRow(owner_user_id="owner-target-expired", name="Gamma"),
+                "target-none": _WorkspaceRow(owner_user_id="owner-target-none", name="Delta"),
+            },
+        )
+        with ExitStack() as stack:
+            for patcher in self._patch_common(fake_db):
+                stack.enter_context(patcher)
+            stack.enter_context(mock.patch("ragtime.userspace.service.utc_now", return_value=_NOW))
+            targets = await self.service.list_accessible_cross_workspace_sqlite_targets(
+                source_workspace_id="source-ws",
+                leased_by_user_id="leased-user",
+            )
+
+        self.assertEqual(
+            targets,
+            [
+                {
+                    "workspace_id": "target-read",
+                    "workspace_name": "Alpha",
+                    "database_name": "app.sqlite3",
+                    "access_mode": "read",
+                },
+                {
+                    "workspace_id": "target-write",
+                    "workspace_name": "Beta",
+                    "database_name": "app.sqlite3",
+                    "access_mode": "read_write",
+                },
+            ],
+        )
+
+    async def test_list_accessible_cross_workspace_sqlite_targets_omits_missing_memberships_and_admin_without_membership(self) -> None:
+        fake_db = self._db(
+            roles={
+                ("target-viewer", "leased-user"): "viewer",
+                ("target-editor", "leased-user"): "editor",
+            },
+            grant_rows=[
+                SimpleNamespace(
+                    id="grant-viewer",
+                    sourceWorkspaceId="source-ws",
+                    targetWorkspaceId="target-viewer",
+                    accessMode="read_write",
+                    sqliteAccessMode="read_write",
+                    expiresAt=None,
+                ),
+                SimpleNamespace(
+                    id="grant-editor",
+                    sourceWorkspaceId="source-ws",
+                    targetWorkspaceId="target-editor",
+                    accessMode="read",
+                    sqliteAccessMode="read",
+                    expiresAt=None,
+                ),
+            ],
+            workspace_rows={
+                "source-ws": _WorkspaceRow(owner_user_id="owner-source", name="Source"),
+                "target-viewer": _WorkspaceRow(owner_user_id="owner-target-viewer", name="Viewer Target"),
+                "target-editor": _WorkspaceRow(owner_user_id="owner-target-editor", name="Editor Target"),
+            },
+        )
+        with ExitStack() as stack:
+            for patcher in self._patch_common(fake_db):
+                stack.enter_context(patcher)
+            stack.enter_context(mock.patch("ragtime.userspace.service.utc_now", return_value=_NOW))
+            missing_source = await self.service.list_accessible_cross_workspace_sqlite_targets(
+                source_workspace_id="source-ws",
+                leased_by_user_id="leased-user",
+            )
+            admin_without_membership = await self.service.list_accessible_cross_workspace_sqlite_targets(
+                source_workspace_id="source-ws",
+                leased_by_user_id="admin-user",
+            )
+
+        self.assertEqual(missing_source, [])
+        self.assertEqual(admin_without_membership, [])
+
+    async def test_list_accessible_cross_workspace_sqlite_targets_is_deterministic_and_degrades_viewer_write_grants(self) -> None:
+        fake_db = self._db(
+            roles={
+                ("source-ws", "leased-user"): "viewer",
+                ("target-z", "leased-user"): "editor",
+                ("target-a", "leased-user"): "viewer",
+                ("target-b", "leased-user"): "editor",
+            },
+            grant_rows=[
+                SimpleNamespace(
+                    id="grant-z",
+                    sourceWorkspaceId="source-ws",
+                    targetWorkspaceId="target-z",
+                    accessMode="read",
+                    sqliteAccessMode="read_write",
+                    expiresAt=None,
+                ),
+                SimpleNamespace(
+                    id="grant-a",
+                    sourceWorkspaceId="source-ws",
+                    targetWorkspaceId="target-a",
+                    accessMode="read_write",
+                    sqliteAccessMode="read_write",
+                    expiresAt=None,
+                ),
+                SimpleNamespace(
+                    id="grant-b",
+                    sourceWorkspaceId="source-ws",
+                    targetWorkspaceId="target-b",
+                    accessMode="none",
+                    sqliteAccessMode="read",
+                    expiresAt=None,
+                ),
+            ],
+            workspace_rows={
+                "source-ws": _WorkspaceRow(owner_user_id="owner-source", name="Source"),
+                "target-z": _WorkspaceRow(owner_user_id="owner-target-z", name="Zulu"),
+                "target-a": _WorkspaceRow(owner_user_id="owner-target-a", name="Alpha"),
+                "target-b": _WorkspaceRow(owner_user_id="owner-target-b", name="Beta"),
+            },
+        )
+        with ExitStack() as stack:
+            for patcher in self._patch_common(fake_db):
+                stack.enter_context(patcher)
+            stack.enter_context(mock.patch("ragtime.userspace.service.utc_now", return_value=_NOW))
+            targets = await self.service.list_accessible_cross_workspace_sqlite_targets(
+                source_workspace_id="source-ws",
+                leased_by_user_id="leased-user",
+            )
+
+        self.assertEqual(
+            targets,
+            [
+                {
+                    "workspace_id": "target-a",
+                    "workspace_name": "Alpha",
+                    "database_name": "app.sqlite3",
+                    "access_mode": "read",
+                },
+                {
+                    "workspace_id": "target-b",
+                    "workspace_name": "Beta",
+                    "database_name": "app.sqlite3",
+                    "access_mode": "read",
+                },
+                {
+                    "workspace_id": "target-z",
+                    "workspace_name": "Zulu",
+                    "database_name": "app.sqlite3",
+                    "access_mode": "read_write",
+                },
+            ],
         )
 
     def _patch_common(self, fake_db: SimpleNamespace) -> tuple[mock._patch, ...]:
@@ -448,6 +673,7 @@ class RuntimeBridgeCrossWorkspaceSqliteServiceTests(unittest.IsolatedAsyncioTest
                 request=query_request,
             )
             self.assertEqual(query_response.row_count, 1)
+            self.assertEqual(self.audit_events[-1]["payload"]["grant_mode"], "read_write")
             with self.assertRaises(HTTPException) as raised:
                 await self.service.mutate_runtime_bridge_sqlite(
                     workspace_id="source-ws",

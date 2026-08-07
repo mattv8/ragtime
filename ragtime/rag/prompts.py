@@ -17,6 +17,7 @@ The system prompt is composed of these sections in order:
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Mapping, Optional, Sequence
@@ -925,6 +926,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - As complexity grows, split concerns into stable `dashboard/*` subpaths such as components, data, charts, and styles.
 - For multi-page or multi-route apps, keep clear page names, shared layout components, and clean module boundaries.
 {sqlite_persistence_block}
+{shared_sqlite_fragment}
 
 #### Optional platform primitives
 
@@ -976,6 +978,7 @@ def build_userspace_mode_prompt_addition(
     has_live_data_tools: bool = True,
     workspace_continuity: str = "",
     available_tool_names: set[str] | None = None,
+    shared_sqlite_databases: list[dict[str, str]] | None = None,
 ) -> str:
     """Build userspace prompt additions with optional SQLite guidance and workspace continuity.
 
@@ -996,14 +999,10 @@ def build_userspace_mode_prompt_addition(
 
     return _build_userspace_mode_prompt_template(available_tool_names).format(
         sqlite_persistence_block=(_USERSPACE_SQLITE_PERSISTENCE_BLOCK if include_sqlite_persistence else ""),
+        shared_sqlite_fragment=build_shared_sqlite_prompt_fragment(shared_sqlite_databases or []),
         data_wiring_block=data_wiring_block,
         workspace_continuity=workspace_continuity,
     )
-
-
-USERSPACE_MODE_PROMPT_ADDITION = build_userspace_mode_prompt_addition(
-    include_sqlite_persistence=True,
-)
 
 
 _CHAT_DIAGNOSTICS_PROMPT_HEADER = """
@@ -1226,18 +1225,59 @@ browser modules:
 - The runtime token is the backend service identity; backend mutation routes must enforce their own authz/authn and must never expose that token to browser code.
 - The browser bridge (`context.components[...]`) still works and remains correct
   for static-page reads; prefer the server bridge for backend routes and data APIs.
-
-### Shared SQLite cross-workspace reference
-- Use Shared SQLite from server code only. Call `POST {RAGTIME_BRIDGE_URL}/sqlite/query` or `POST {RAGTIME_BRIDGE_URL}/sqlite/mutate` with `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN`. Never send the bridge token, raw credentials, or server bridge calls to browser code.
-- Query contract: `POST {RAGTIME_BRIDGE_URL}/sqlite/query` with `target_workspace_id`, fixed `database_name: "app.sqlite3"`, parameterized SQL, positional-list or named-dict `parameters`, and `max_rows` up to 500. Responses include `columns`, `rows`, `row_count`, and `truncated`.
-- Example query: `{"target_workspace_id": "ws_target", "database_name": "app.sqlite3", "sql": "SELECT * FROM orders WHERE customer_id = :customer_id LIMIT 100", "parameters": {"customer_id": "<customer_id>"}, "max_rows": 100}`.
-- Mutation contract: `POST {RAGTIME_BRIDGE_URL}/sqlite/mutate` with a target and 1..500 structured `insert`, `upsert`, `update`, or `delete` operations. Use `table`, `values`, nonempty `where` for update/delete, and `conflict_columns` for upsert. The bridge does not accept raw writable SQL.
-- Example mutate payload: `{"target_workspace_id": "ws_target", "database_name": "app.sqlite3", "operations": [{"kind": "update", "table": "orders", "values": {"status": "<status>"}, "where": {"id": "<order_id>"}}]}`.
-- Access rules: The target owner must grant Shared SQLite access. Read grants allow queries; Read / Write grants allow structured mutations.
-- Membership rules: The runtime's leased user must keep source membership plus target viewer membership for query or target editor membership for mutation.
-- Schema rules: The target workspace owns `.ragtime/db/migrations/*.sql` and all DDL. Consumers cannot run DDL, PRAGMA, ATTACH, or extension loading.
-- Failure handling: Handle HTTP 409 as busy, 504 as timeout, and 503 as audit unavailable. A 503 audit failure occurs before writes and is safe to retry. Do not blindly retry other mutation failures.
 """.strip()
+
+_SHARED_SQLITE_WORKSPACE_NAME_MAX_CHARS = 120
+
+
+def _sanitize_shared_sqlite_workspace_name(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(normalized) > _SHARED_SQLITE_WORKSPACE_NAME_MAX_CHARS:
+        normalized = normalized[: _SHARED_SQLITE_WORKSPACE_NAME_MAX_CHARS - 1].rstrip() + "…"
+    return json.dumps(normalized or "Unnamed workspace")
+
+
+def build_shared_sqlite_prompt_fragment(accessible_databases: list[dict[str, str]]) -> str:
+    """Build the Shared SQLite guidance fragment for accessible cross-workspace targets."""
+
+    if not accessible_databases:
+        return ""
+
+    sorted_targets = sorted(
+        accessible_databases,
+        key=lambda item: (
+            str(item.get("workspace_id", "") or ""),
+            str(item.get("workspace_name", "") or ""),
+            str(item.get("access_mode", "") or ""),
+        ),
+    )
+    target_lines: list[str] = []
+    for target in sorted_targets:
+        access_mode = "Read / Write" if target.get("access_mode") == "read_write" else "Read"
+        target_lines.extend(
+            [
+                f"- Workspace: {_sanitize_shared_sqlite_workspace_name(target.get('workspace_name', ''))}",
+                f"- target_workspace_id: `{target.get('workspace_id', '')}`",
+                "- database_name: `app.sqlite3`",
+                f"- effective_permission: {access_mode}",
+            ]
+        )
+
+    return (
+        "\n\n### Shared SQLite cross-workspace reference\n"
+        "- Use Shared SQLite from server code only. Call `POST {RAGTIME_BRIDGE_URL}/sqlite/query` or `POST {RAGTIME_BRIDGE_URL}/sqlite/mutate` with `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN`. Never send the bridge token, raw credentials, or server bridge calls to browser code.\n"
+        "- A server-backed entrypoint is required for this access. Static or missing entrypoints cannot execute these server bridge calls until you add backend/server code.\n"
+        '- Query contract: `POST {RAGTIME_BRIDGE_URL}/sqlite/query` with `target_workspace_id`, fixed `database_name: "app.sqlite3"`, parameterized SQL, positional-list or named-dict `parameters`, and `max_rows` up to 500. Responses include `columns`, `rows`, `row_count`, and `truncated`.\n'
+        '- Example query: `{"target_workspace_id": "ws_target", "database_name": "app.sqlite3", "sql": "SELECT * FROM orders WHERE customer_id = :customer_id LIMIT 100", "parameters": {"customer_id": "<customer_id>"}, "max_rows": 100}`.\n'
+        "- Mutation contract: `POST {RAGTIME_BRIDGE_URL}/sqlite/mutate` with a target and 1..500 structured `insert`, `upsert`, `update`, or `delete` operations. Use `table`, `values`, nonempty `where` for update/delete, and `conflict_columns` for upsert. The bridge does not accept raw writable SQL.\n"
+        '- Example mutate payload: `{"target_workspace_id": "ws_target", "database_name": "app.sqlite3", "operations": [{"kind": "update", "table": "orders", "values": {"status": "<status>"}, "where": {"id": "<order_id>"}}]}`.\n'
+        "- Access rules: The target owner must grant Shared SQLite access. Read grants allow queries; Read / Write grants allow structured mutations.\n"
+        "- Membership rules: The runtime's leased user must keep source membership plus target viewer membership for query or target editor membership for mutation.\n"
+        "- Schema rules: The target workspace owns `.ragtime/db/migrations/*.sql` and all DDL. Consumers cannot run DDL, PRAGMA, ATTACH, or extension loading.\n"
+        "- Failure handling: Handle HTTP 409 as busy, 504 as timeout, and 503 as audit unavailable. A 503 audit failure occurs before writes and is safe to retry. Do not blindly retry other mutation failures.\n"
+        "- Accessible targets:\n" + "\n".join(target_lines) + "\n"
+    )
+
 
 # Nudge for missing/default entrypoint – lightweight suggestion style.
 _USERSPACE_ENTRYPOINT_MISSING_NUDGE = """
@@ -1297,6 +1337,11 @@ def build_userspace_entrypoint_nudge(
     if status.framework != "static":
         prompt += "\n\n" + _USERSPACE_RUNTIME_BRIDGE_BLOCK
     return prompt
+
+
+USERSPACE_MODE_PROMPT_ADDITION = build_userspace_mode_prompt_addition(
+    include_sqlite_persistence=True,
+)
 
 
 def build_index_system_prompt(index_metadata: List[dict]) -> str:

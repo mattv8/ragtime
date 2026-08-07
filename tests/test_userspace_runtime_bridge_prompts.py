@@ -1,7 +1,11 @@
 import unittest
 
 from ragtime.core.entrypoint_status import EntrypointState, EntrypointStatus
-from ragtime.rag.prompts import build_userspace_entrypoint_nudge
+from ragtime.rag.prompts import (
+    build_shared_sqlite_prompt_fragment,
+    build_userspace_entrypoint_nudge,
+    build_userspace_mode_prompt_addition,
+)
 
 
 class RuntimeBridgePromptTests(unittest.TestCase):
@@ -25,8 +29,6 @@ class RuntimeBridgePromptTests(unittest.TestCase):
         self.assertIn("RAGTIME_BRIDGE_URL", text)
         self.assertIn("RAGTIME_BRIDGE_TOKEN", text)
         self.assertIn("/execute-component", text)
-        self.assertIn("/sqlite/query", text)
-        self.assertIn("/sqlite/mutate", text)
         self.assertIn(
             "SERVER lane (this bridge, bearer token): follows Workspace Tools access policy.",
             text,
@@ -48,25 +50,8 @@ class RuntimeBridgePromptTests(unittest.TestCase):
             "The runtime token is the backend service identity; backend mutation routes must enforce their own authz/authn and must never expose that token to browser code.",
             text,
         )
-        self.assertIn('"request": {"query": "SELECT ... LIMIT 100"}', text)
-        self.assertIn('"request": {"method": "GET", "path": "/customers"}', text)
-        self.assertIn('database_name: "app.sqlite3"', text)
-        self.assertIn("parameterized SQL", text)
-        self.assertIn("positional-list or named-dict `parameters`", text)
-        self.assertIn("max_rows` up to 500", text)
-        self.assertIn("`columns`, `rows`, `row_count`, and `truncated`", text)
-        self.assertIn("1..500 structured `insert`, `upsert`, `update`, or `delete` operations", text)
-        self.assertIn("The bridge does not accept raw writable SQL", text)
-        self.assertIn("The target owner must grant Shared SQLite access", text)
-        self.assertIn("Read grants allow queries; Read / Write grants allow structured mutations", text)
-        self.assertIn("source membership plus target viewer membership for query", text)
-        self.assertIn("target editor membership for mutation", text)
-        self.assertIn("The target workspace owns `.ragtime/db/migrations/*.sql` and all DDL", text)
-        self.assertIn("Consumers cannot run DDL, PRAGMA, ATTACH, or extension loading", text)
-        self.assertIn("Handle HTTP 409 as busy, 504 as timeout, and 503 as audit unavailable", text)
-        self.assertIn("A 503 audit failure occurs before writes and is safe to retry", text)
-        self.assertIn("Do not blindly retry other mutation failures", text)
-        self.assertIn("server code only", text)
+        self.assertNotIn("/sqlite/query", text)
+        self.assertNotIn("/sqlite/mutate", text)
         self.assertNotIn(
             "Runtime bridge component calls are enforced as read-only and platform-limited; do not attempt writes through this bridge.",
             text,
@@ -91,3 +76,67 @@ class RuntimeBridgePromptTests(unittest.TestCase):
         self.assertNotIn("RAGTIME_BRIDGE_URL", text)
         self.assertNotIn("/sqlite/query", text)
         self.assertNotIn("/sqlite/mutate", text)
+
+    def test_shared_sqlite_prompt_fragment_omits_guidance_for_empty_inventory(self) -> None:
+        self.assertEqual(build_shared_sqlite_prompt_fragment([]), "")
+
+        prompt = build_userspace_mode_prompt_addition(
+            include_sqlite_persistence=False,
+            shared_sqlite_databases=[],
+        )
+
+        self.assertNotIn("/sqlite/query", prompt)
+        self.assertNotIn("/sqlite/mutate", prompt)
+
+    def test_shared_sqlite_prompt_fragment_lists_targets_with_sanitized_permissions(self) -> None:
+        accessible_databases = [
+            {
+                "workspace_id": "ws_beta",
+                "workspace_name": 'Beta\nWorkspace\t"ops"',
+                "database_name": "app.sqlite3",
+                "access_mode": "read_write",
+            },
+            {
+                "workspace_id": "ws_alpha",
+                "workspace_name": "Alpha\r\nWorkspace" + (" x" * 120),
+                "database_name": "app.sqlite3",
+                "access_mode": "read",
+            },
+        ]
+
+        fragment = build_shared_sqlite_prompt_fragment(accessible_databases)
+        prompt = build_userspace_mode_prompt_addition(
+            include_sqlite_persistence=False,
+            shared_sqlite_databases=accessible_databases,
+        )
+
+        self.assertIn("Use Shared SQLite from server code only", fragment)
+        self.assertIn("A server-backed entrypoint is required", fragment)
+        self.assertNotIn("Contract body examples include", fragment)
+        self.assertIn('database_name: "app.sqlite3"', fragment)
+        self.assertIn("parameterized SQL", fragment)
+        self.assertIn("positional-list or named-dict `parameters`", fragment)
+        self.assertIn("max_rows` up to 500", fragment)
+        self.assertIn("`columns`, `rows`, `row_count`, and `truncated`", fragment)
+        self.assertIn("1..500 structured `insert`, `upsert`, `update`, or `delete` operations", fragment)
+        self.assertIn("The bridge does not accept raw writable SQL", fragment)
+        self.assertIn("The target owner must grant Shared SQLite access", fragment)
+        self.assertIn("Read grants allow queries; Read / Write grants allow structured mutations", fragment)
+        self.assertIn("source membership plus target viewer membership for query", fragment)
+        self.assertIn("target editor membership for mutation", fragment)
+        self.assertIn("The target workspace owns `.ragtime/db/migrations/*.sql` and all DDL", fragment)
+        self.assertIn("Consumers cannot run DDL, PRAGMA, ATTACH, or extension loading", fragment)
+        self.assertIn("Handle HTTP 409 as busy, 504 as timeout, and 503 as audit unavailable", fragment)
+        self.assertIn("A 503 audit failure occurs before writes and is safe to retry", fragment)
+        self.assertIn("Do not blindly retry other mutation failures", fragment)
+        self.assertLess(fragment.index("ws_alpha"), fragment.index("ws_beta"))
+        self.assertIn('- Workspace: "Alpha Workspace', fragment)
+        self.assertIn('- Workspace: "Beta Workspace \\"ops\\""', fragment)
+        self.assertIn("- target_workspace_id: `ws_alpha`", fragment)
+        self.assertIn("- target_workspace_id: `ws_beta`", fragment)
+        self.assertIn("- database_name: `app.sqlite3`", fragment)
+        self.assertIn("- effective_permission: Read", fragment)
+        self.assertIn("- effective_permission: Read / Write", fragment)
+        self.assertNotIn("Beta\nWorkspace", fragment)
+        self.assertNotIn("Alpha\r", fragment)
+        self.assertIn(fragment, prompt)
