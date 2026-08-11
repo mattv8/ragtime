@@ -1,9 +1,30 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@xterm/xterm', () => ({ Terminal: class {} }));
-vi.mock('@xterm/addon-fit', () => ({ FitAddon: class {} }));
+vi.mock('@xterm/xterm', () => ({
+  Terminal: class {
+    loadAddon() {}
+    open() {}
+    dispose() {}
+    onData() {
+      return { dispose() {} };
+    }
+    onResize() {
+      return { dispose() {} };
+    }
+    write() {}
+    writeln() {}
+    clear() {}
+    resize() {}
+    focus() {}
+  },
+}));
+vi.mock('@xterm/addon-fit', () => ({
+  FitAddon: class {
+    fit() {}
+  },
+}));
 vi.mock('@uiw/react-codemirror', () => ({
   default: () => <div data-testid="code-editor" />,
 }));
@@ -156,8 +177,38 @@ vi.mock('./Popover', () => ({
   Popover: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   DisabledPopover: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
+vi.mock('./UserSpaceStatusOverlay', () => ({
+  UserSpaceStatusOverlay: ({
+    items,
+    extraClassName = '',
+  }: {
+    items: Array<{ id: string; content: React.ReactNode }>;
+    extraClassName?: string;
+  }) => (
+    <div
+      className={`userspace-status-overlay${extraClassName ? ` ${extraClassName}` : ''}`}
+      role="status"
+    >
+      {items.map((item) => (
+        <div key={item.id}>{item.content}</div>
+      ))}
+    </div>
+  ),
+}));
 vi.mock('./UserSpaceArtifactPreview', () => ({
-  UserSpaceArtifactPreview: () => <div data-testid="preview-frame" />,
+  UserSpaceArtifactPreview: ({
+    runtimePreviewUrl,
+    runtimeAuthorizationPending,
+  }: {
+    runtimePreviewUrl?: string;
+    runtimeAuthorizationPending?: boolean;
+  }) => (
+    <div
+      data-testid="preview-frame"
+      data-preview-url={runtimePreviewUrl ?? ''}
+      data-preview-pending={runtimeAuthorizationPending ? 'true' : 'false'}
+    />
+  ),
 }));
 
 import {
@@ -285,6 +336,22 @@ const SQLITE_LIST_RESPONSE = {
   persistence_mode: 'exclude',
 } as const;
 
+const EDITOR_USER = {
+  ...CURRENT_USER,
+  id: 'editor-1',
+  username: 'editor',
+  display_name: 'Editor',
+  role: 'user',
+} as const;
+
+const VIEWER_USER = {
+  ...CURRENT_USER,
+  id: 'viewer-1',
+  username: 'viewer',
+  display_name: 'Viewer',
+  role: 'user',
+} as const;
+
 function isoAtOffsetFromNow(offsetMs: number): string {
   return new Date(Date.now() + offsetMs).toISOString();
 }
@@ -300,6 +367,29 @@ function setLayoutCookie(rightPaneCollapsed: boolean): void {
       editorChatCollapsedSide: null,
     }),
   )}; path=/`;
+}
+
+function buildWorkspaceForMember(
+  userId: string,
+  role: 'editor' | 'viewer',
+  overrides: Partial<typeof WORKSPACE> = {},
+) {
+  return {
+    ...WORKSPACE,
+    owner_user_id: 'owner-1',
+    members: [{ user_id: userId, role }],
+    ...overrides,
+  };
+}
+
+function createDeferredPromise<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 async function renderPanelWithRuntimeOverlay(rightPaneCollapsed: boolean) {
@@ -659,10 +749,7 @@ describe('UserSpacePanel workspace tool descriptions', () => {
   });
 
   it('shows unhealthy bridge status details to viewers without a refresh action', async () => {
-    const viewerWorkspace = {
-      ...WORKSPACE,
-      owner_user_id: 'owner-1',
-    };
+    const viewerWorkspace = buildWorkspaceForMember(VIEWER_USER.id, 'viewer');
     previewApiMock.listUserSpaceWorkspaces.mockResolvedValue({
       items: [{ ...viewerWorkspace }],
       total: 1,
@@ -688,13 +775,7 @@ describe('UserSpacePanel workspace tool descriptions', () => {
 
     render(
       <UserSpacePanel
-        currentUser={{
-          ...CURRENT_USER,
-          id: 'viewer-1',
-          username: 'viewer',
-          display_name: 'Viewer',
-          role: 'user',
-        }}
+        currentUser={{ ...VIEWER_USER }}
       />,
     );
 
@@ -751,7 +832,7 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       2,
     );
     expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('button', { name: 'Refresh bridge credentials' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Refresh bridge credentials' })).toBeNull();
   });
 
   it('automatically refreshes an expired bridge credential for an editable workspace', async () => {
@@ -860,153 +941,302 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     expect(screen.queryByText(/Expired /)).toBeNull();
   });
 
-  it('shows editors a bridge refresh action in the runtime controls', async () => {
-    await renderPanelWithRuntimeOverlay(false);
+  it('does not render a manual bridge refresh control for admins, editors, or viewers', async () => {
+    const scenarios = [
+      {
+        user: { ...CURRENT_USER },
+        workspace: { ...WORKSPACE },
+      },
+      {
+        user: { ...EDITOR_USER },
+        workspace: buildWorkspaceForMember(EDITOR_USER.id, 'editor'),
+      },
+      {
+        user: { ...VIEWER_USER },
+        workspace: buildWorkspaceForMember(VIEWER_USER.id, 'viewer'),
+      },
+    ];
 
-    expect(screen.getByRole('button', { name: 'Refresh bridge credentials' })).toBeTruthy();
+    for (const scenario of scenarios) {
+      previewApiMock.listUserSpaceWorkspaces.mockResolvedValueOnce({
+        items: [{ ...scenario.workspace }],
+        total: 1,
+      });
+      previewApiMock.getUserSpaceWorkspace.mockResolvedValueOnce({ ...scenario.workspace });
+      previewApiMock.getUserSpaceWorkspaceTabState.mockResolvedValueOnce({
+        workspace_id: scenario.workspace.id,
+        runtime_status: { ...STARTING_RUNTIME_STATUS, devserver_running: true },
+        chat_state: { ...DEFAULT_CHAT_STATE },
+      });
+
+      render(<UserSpacePanel currentUser={scenario.user} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Bridge healthy')).toBeTruthy();
+      });
+      expect(screen.queryByRole('button', { name: 'Refresh bridge credentials' })).toBeNull();
+
+      cleanup();
+    }
   });
 
-  it('hides the bridge refresh action when the runtime is not running', async () => {
-    previewApiMock.getUserSpaceWorkspaceTabState.mockResolvedValue({
+  it('retries preview launch after 2 seconds without mounting the iframe URL and clears the error on success', async () => {
+    vi.useFakeTimers();
+    previewApiMock.launchUserSpacePreview
+      .mockRejectedValueOnce(new Error('Preview launch failed'))
+      .mockResolvedValueOnce({
+        workspace_id: WORKSPACE.id,
+        preview_url: 'http://preview.test/retried-session',
+        preview_origin: 'http://preview.test',
+        expires_at: '2026-07-15T00:00:00Z',
+        preview_warning: null,
+      });
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(previewApiMock.launchUserSpacePreview).toHaveBeenCalledTimes(1);
+
+    const previewFrame = screen.getByTestId('preview-frame');
+    expect(previewFrame.getAttribute('data-preview-url')).toBe('');
+    expect(previewFrame.getAttribute('data-preview-pending')).toBe('true');
+    expect(screen.getByText('Preview launch failed')).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_999);
+    });
+    expect(previewApiMock.launchUserSpacePreview).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(previewApiMock.launchUserSpacePreview.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByTestId('preview-frame').getAttribute('data-preview-url')).toBe(
+      'http://preview.test/retried-session',
+    );
+    expect(screen.getByTestId('preview-frame').getAttribute('data-preview-pending')).toBe('false');
+    expect(screen.queryByText('Preview launch failed')).toBeNull();
+  });
+
+  it('keeps an unrelated general error visible after preview retry succeeds', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2099-08-05T18:00:00Z'));
+    const nearExpiry = isoAtOffsetFromNow(4 * 60 * 1000);
+    previewApiMock.launchUserSpacePreview
+      .mockRejectedValueOnce(new Error('Preview launch failed'))
+      .mockResolvedValueOnce({
+        workspace_id: WORKSPACE.id,
+        preview_url: 'http://preview.test/retried-session',
+        preview_origin: 'http://preview.test',
+        expires_at: '2026-07-15T00:00:00Z',
+        preview_warning: null,
+      });
+    previewApiMock.getUserSpaceWorkspaceTabState.mockImplementation(async () => ({
       workspace_id: WORKSPACE.id,
       runtime_status: {
         ...STARTING_RUNTIME_STATUS,
-        session_state: 'stopped',
+        devserver_running: true,
         bridge_status: {
           ...STARTING_RUNTIME_STATUS.bridge_status,
-          state: 'not_running',
-          detail: 'Runtime session is not running.',
+          expires_at: nearExpiry,
         },
       },
       chat_state: { ...DEFAULT_CHAT_STATE },
+    }));
+    previewApiMock.refreshUserSpaceBridgeCredentials.mockRejectedValueOnce(
+      new Error('Automatic bridge refresh failed'),
+    );
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      await Promise.resolve();
     });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_999);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('preview-frame').getAttribute('data-preview-url')).toBe(
+      'http://preview.test/retried-session',
+    );
+    expect(screen.queryByText('Preview launch failed')).toBeNull();
+    expect(screen.getByText('Automatic bridge refresh failed')).toBeTruthy();
+  });
+
+  it('clears preview launch errors when leaving Preview and lets later console errors surface', async () => {
+    previewApiMock.launchUserSpacePreview.mockRejectedValueOnce(new Error('Preview launch failed'));
+    previewApiMock.authorizeUserSpaceBrowserSurfaces.mockImplementation(
+      async (_workspaceId: string, surfaces: string[]) => {
+        if (surfaces.includes('runtime_pty')) {
+          throw new Error('Console authorization failed');
+        }
+        return {
+          authorizations: [
+            {
+              surface: 'collab',
+              expires_at: '2026-07-15T00:00:00Z',
+            },
+          ],
+        };
+      },
+    );
 
     render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Bridge not running')).toBeTruthy();
+      expect(screen.getByText('Preview launch failed')).toBeTruthy();
     });
 
-    expect(screen.queryByRole('button', { name: 'Refresh bridge credentials' })).toBeNull();
-  });
-
-  it('refreshes bridge credentials, disables runtime actions while busy, and reloads workspace state', async () => {
-    let releaseRefresh!: () => void;
-    const refreshGate = new Promise<void>((resolve) => {
-      releaseRefresh = resolve;
+    await act(async () => {
+      (screen.getByRole('tab', { name: 'Console' }) as HTMLButtonElement).click();
     });
-    previewApiMock.getUserSpaceWorkspaceTabState
-      .mockResolvedValueOnce({
-        workspace_id: WORKSPACE.id,
-        runtime_status: {
-          ...STARTING_RUNTIME_STATUS,
-          bridge_status: {
-            ...STARTING_RUNTIME_STATUS.bridge_status,
-            state: 'session_mismatch',
-            token_session_id: 'session-old',
-            current_session_id: 'session-1',
-            expires_at: '2099-08-05T19:00:00Z',
-            detail: 'Bridge session mismatch.',
-          },
-        },
-        chat_state: { ...DEFAULT_CHAT_STATE },
-      })
-      .mockResolvedValueOnce({
-        workspace_id: WORKSPACE.id,
-        runtime_status: {
-          ...STARTING_RUNTIME_STATUS,
-          devserver_running: true,
-          bridge_status: {
-            ...STARTING_RUNTIME_STATUS.bridge_status,
-            state: 'healthy',
-            token_session_id: 'session-1',
-            current_session_id: 'session-1',
-            detail: null,
-          },
-        },
-        chat_state: { ...DEFAULT_CHAT_STATE },
-      });
-    previewApiMock.refreshUserSpaceBridgeCredentials.mockImplementationOnce(async () => {
-      await refreshGate;
-      return {
-        state: 'healthy' as const,
-        bridge_url: 'https://bridge.example',
-        token_session_id: 'session-1',
-        current_session_id: 'session-1',
-        issued_at: '2026-08-05T18:00:00Z',
-        expires_at: '2026-08-05T19:00:00Z',
-        last_success_at: '2026-08-05T18:45:00Z',
-        detail: null,
-      };
-    });
-
-    await renderPanelWithRuntimeOverlay(false);
-    const tabStateCallsBeforeRefresh =
-      previewApiMock.getUserSpaceWorkspaceTabState.mock.calls.length;
-
-    const refreshButton = screen.getByRole('button', { name: 'Refresh bridge credentials' });
-    const stopButton = screen.getByTitle('Stop runtime');
-
-    fireEvent.click(refreshButton);
-
-    expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledWith('ws-1');
-    await waitFor(() => {
-      expect(
-        (
-          screen.getByRole('button', {
-            name: 'Refreshing bridge credentials…',
-          }) as HTMLButtonElement
-        ).disabled,
-      ).toBe(true);
-    });
-    expect((stopButton as HTMLButtonElement).disabled).toBe(true);
-
-    releaseRefresh();
 
     await waitFor(() => {
-      expect(screen.getByText('Bridge healthy')).toBeTruthy();
+      expect(screen.getByText('Console authorization failed')).toBeTruthy();
     });
-    expect(previewApiMock.getUserSpaceWorkspaceTabState.mock.calls.length).toBeGreaterThan(
-      tabStateCallsBeforeRefresh,
-    );
-    expect(
-      (screen.getByRole('button', { name: 'Refresh bridge credentials' }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(false);
+    expect(screen.queryByText('Preview launch failed')).toBeNull();
   });
 
-  it('shows a refresh error and re-enables bridge controls when the refresh fails', async () => {
-    previewApiMock.getUserSpaceWorkspaceTabState.mockResolvedValue({
+  it('surfaces automatic bridge-refresh failures for near-expiry credentials without a manual button', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2099-08-05T18:00:00Z'));
+
+    const nearExpiry = isoAtOffsetFromNow(4 * 60 * 1000);
+    previewApiMock.getUserSpaceWorkspaceTabState.mockImplementation(async () => ({
       workspace_id: WORKSPACE.id,
       runtime_status: {
         ...STARTING_RUNTIME_STATUS,
+        devserver_running: true,
         bridge_status: {
           ...STARTING_RUNTIME_STATUS.bridge_status,
-          state: 'invalid',
-          detail: 'Bridge credentials are invalid.',
+          expires_at: nearExpiry,
         },
       },
       chat_state: { ...DEFAULT_CHAT_STATE },
-    });
+    }));
     previewApiMock.refreshUserSpaceBridgeCredentials.mockRejectedValueOnce(
-      new Error('Refresh bridge failed'),
+      new Error('Automatic bridge refresh failed'),
     );
 
-    await renderPanelWithRuntimeOverlay(false);
-    const tabStateCallsBeforeRefresh =
-      previewApiMock.getUserSpaceWorkspaceTabState.mock.calls.length;
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh bridge credentials' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Refresh bridge failed')).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      await Promise.resolve();
     });
-    expect(
-      (screen.getByRole('button', { name: 'Refresh bridge credentials' }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(false);
-    expect(previewApiMock.getUserSpaceWorkspaceTabState.mock.calls.length).toBe(
-      tabStateCallsBeforeRefresh,
+
+    expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledWith('ws-1');
+    expect(screen.getByText('Automatic bridge refresh failed')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Refresh bridge credentials' })).toBeNull();
+  });
+
+  it('cancels pending preview retries on workspace switch and ignores stale launch responses', async () => {
+    vi.useFakeTimers();
+
+    const firstLaunch = createDeferredPromise<{
+      workspace_id: string;
+      preview_url: string;
+      preview_origin: string;
+      expires_at: string;
+      preview_warning: null;
+    }>();
+    const workspaceTwo = {
+      ...WORKSPACE,
+      id: 'ws-2',
+      name: 'Workspace Two',
+      created_at: '2026-07-15T00:00:00Z',
+      updated_at: '2026-07-15T00:00:00Z',
+    };
+
+    previewApiMock.listUserSpaceWorkspaces.mockResolvedValue({
+      items: [{ ...WORKSPACE }, { ...workspaceTwo }],
+      total: 2,
+    });
+    previewApiMock.getUserSpaceWorkspace.mockResolvedValue({ ...workspaceTwo });
+    previewApiMock.launchUserSpacePreview.mockImplementation((workspaceId: string) => {
+      if (workspaceId === 'ws-1') {
+        return firstLaunch.promise;
+      }
+      return Promise.resolve({
+        workspace_id: 'ws-2',
+        preview_url: 'http://preview.test/ws-2-session',
+        preview_origin: 'http://preview.test',
+        expires_at: '2026-07-15T00:00:00Z',
+        preview_warning: null,
+      });
+    });
+
+    const { rerender } = render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(previewApiMock.launchUserSpacePreview).toHaveBeenCalledWith(
+      'ws-1',
+      expect.any(Object),
     );
+
+    rerender(
+      <UserSpacePanel
+        currentUser={{ ...CURRENT_USER }}
+        openWorkspaceRequest={{ workspaceId: 'ws-2', requestId: 1 }}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(previewApiMock.launchUserSpacePreview).toHaveBeenCalledWith(
+      'ws-2',
+      expect.any(Object),
+    );
+    expect(screen.getByTestId('preview-frame').getAttribute('data-preview-url')).toBe(
+      'http://preview.test/ws-2-session',
+    );
+    const ws1LaunchCallsBeforeRetryWindow = previewApiMock.launchUserSpacePreview.mock.calls.filter(
+      ([workspaceId]) => workspaceId === 'ws-1',
+    ).length;
+
+    firstLaunch.resolve({
+      workspace_id: 'ws-1',
+      preview_url: 'http://preview.test/stale-ws-1-session',
+      preview_origin: 'http://preview.test',
+      expires_at: '2026-07-15T00:00:00Z',
+      preview_warning: null,
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(screen.getByTestId('preview-frame').getAttribute('data-preview-url')).toBe(
+      'http://preview.test/ws-2-session',
+    );
+    expect(
+      previewApiMock.launchUserSpacePreview.mock.calls.filter(([workspaceId]) => workspaceId === 'ws-1')
+        .length,
+    ).toBe(ws1LaunchCallsBeforeRetryWindow);
   });
 });

@@ -84,6 +84,10 @@ _RUNTIME_PREVIEW_GRANT_KIND = "userspace_preview_grant"
 _RUNTIME_PREVIEW_SESSION_KIND = "userspace_preview_session"
 _RUNTIME_BRIDGE_TOKEN_KIND = "userspace_runtime_bridge"
 _RUNTIME_BRIDGE_TOKEN_TTL_SECONDS = 14400
+_RUNTIME_BRIDGE_REFRESH_LEAD_SECONDS = 300
+# Prevent synchronized preview retries from causing restart storms after a
+# failed bridge recovery attempt.
+_RUNTIME_BRIDGE_RECOVERY_COOLDOWN_SECONDS = 120
 _RUNTIME_BRIDGE_ACTIVE_SESSION_STATES = {"starting", "running"}
 # Full mounted base path for the runtime-bridge execute route in
 # ragtime/userspace/runtime_routes.py.
@@ -150,6 +154,9 @@ class UserSpaceRuntimeService:
         self._preview_base_domains: set[str] = set()
         self._preview_upstream_cache: dict[str, _PreviewUpstreamCacheEntry] = {}
         self._provider_status_cache: dict[str, _ProviderStatusCacheEntry] = {}
+        self._workspace_preview_bridge_readiness_locks: dict[str, asyncio.Lock] = {}
+        self._workspace_preview_bridge_readiness_locks_lock = asyncio.Lock()
+        self._workspace_preview_bridge_last_recovery_attempt_ts: dict[str, float] = {}
         self._runtime_bridge_auth_failure_audit_dedupe: dict[str, float] = {}
         self._runtime_bridge_auth_failure_audit_lock = asyncio.Lock()
         self._runtime_mount_spec_signatures: dict[str, str] = {}
@@ -516,7 +523,8 @@ class UserSpaceRuntimeService:
         control_plane_origin: str,
         session_expires_at: datetime | None = None,
     ) -> tuple[str, datetime, UserSpacePreviewWarning | None]:
-        await self.ensure_workspace_preview_session(workspace_id, user_id)
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        await self._ensure_workspace_preview_bridge_ready(session)
         preview_origin, preview_warning = await self._describe_preview_launch(
             workspace_id=workspace_id,
             control_plane_origin=control_plane_origin,
@@ -812,6 +820,110 @@ class UserSpaceRuntimeService:
             )
         return UserSpaceRuntimeBridgeStatus(state="healthy", **base_kwargs)
 
+    async def _get_workspace_preview_bridge_readiness_lock(
+        self,
+        workspace_id: str,
+    ) -> asyncio.Lock:
+        async with self._workspace_preview_bridge_readiness_locks_lock:
+            existing = self._workspace_preview_bridge_readiness_locks.get(workspace_id)
+            if existing is None:
+                existing = asyncio.Lock()
+                self._workspace_preview_bridge_readiness_locks[workspace_id] = existing
+            return existing
+
+    @staticmethod
+    def _bridge_recovery_monotonic() -> float:
+        return _time.monotonic()
+
+    @staticmethod
+    def _workspace_preview_bridge_status_needs_recovery(
+        status: UserSpaceRuntimeBridgeStatus,
+    ) -> bool:
+        if status.state != "healthy":
+            return True
+        expires_at = status.expires_at
+        if expires_at is None:
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        refresh_deadline = utc_now() + timedelta(seconds=_RUNTIME_BRIDGE_REFRESH_LEAD_SECONDS)
+        return expires_at <= refresh_deadline
+
+    async def _get_workspace_preview_bridge_status(
+        self,
+        session: UserSpaceRuntimeSession,
+    ) -> UserSpaceRuntimeBridgeStatus:
+        provider_status = await self._runtime_provider_get_status(
+            session.provider_session_id,
+            max_age_seconds=0,
+            allow_stale_on_error=False,
+        )
+        return await self._get_runtime_bridge_status_for_session(session, provider_status)
+
+    @staticmethod
+    def _workspace_preview_bridge_not_ready_detail(
+        status: UserSpaceRuntimeBridgeStatus,
+    ) -> str:
+        if status.state == "healthy":
+            return (
+                "Runtime bridge credentials are too close to expiry for preview launch "
+                f"(must be more than {_RUNTIME_BRIDGE_REFRESH_LEAD_SECONDS} seconds from expiry)"
+            )
+        return f"Runtime bridge credentials are not ready for preview launch: {status.detail or status.state}"
+
+    async def _ensure_workspace_preview_bridge_ready(
+        self,
+        session: UserSpaceRuntimeSession,
+    ) -> None:
+        status = await self._get_workspace_preview_bridge_status(session)
+        if not self._workspace_preview_bridge_status_needs_recovery(status):
+            return
+
+        workspace_lock = await self._get_workspace_preview_bridge_readiness_lock(session.workspace_id)
+        async with workspace_lock:
+            status = await self._get_workspace_preview_bridge_status(session)
+            if not self._workspace_preview_bridge_status_needs_recovery(status):
+                return
+
+            now_ts = self._bridge_recovery_monotonic()
+            last_attempt_ts = self._workspace_preview_bridge_last_recovery_attempt_ts.get(session.workspace_id)
+            if last_attempt_ts is not None:
+                remaining_seconds = _RUNTIME_BRIDGE_RECOVERY_COOLDOWN_SECONDS - (now_ts - last_attempt_ts)
+                if remaining_seconds > 0:
+                    retry_after_seconds = max(1, int(remaining_seconds + 0.999999))
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Runtime bridge recovery is cooling down; retry preview launch shortly",
+                        headers={"Retry-After": str(retry_after_seconds)},
+                    )
+
+            self._workspace_preview_bridge_last_recovery_attempt_ts[session.workspace_id] = now_ts
+
+            await self.restart_runtime_env_vars_and_wait(
+                session.workspace_id,
+                timeout_seconds=60.0,
+            )
+
+            active = await self._get_active_session_row(session.workspace_id)
+            if active is None:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Runtime session is no longer active after bridge refresh",
+                )
+            refreshed_session = self._to_runtime_session(active)
+            if refreshed_session.id != session.id:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Runtime session changed during bridge refresh",
+                )
+
+            refreshed_status = await self._get_workspace_preview_bridge_status(refreshed_session)
+            if self._workspace_preview_bridge_status_needs_recovery(refreshed_status):
+                raise HTTPException(
+                    status_code=502,
+                    detail=self._workspace_preview_bridge_not_ready_detail(refreshed_status),
+                )
+
     async def get_runtime_bridge_status(
         self,
         workspace_id: str,
@@ -838,10 +950,8 @@ class UserSpaceRuntimeService:
         user_id: str,
     ) -> UserSpaceRuntimeBridgeStatus:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
-        await self.restart_runtime_env_vars_and_wait(
-            workspace_id,
-            timeout_seconds=60.0,
-        )
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        await self._ensure_workspace_preview_bridge_ready(session)
         return await self.get_runtime_bridge_status(workspace_id, user_id)
 
     async def consume_preview_grant(self, claims: dict[str, Any]) -> None:
@@ -2093,7 +2203,8 @@ class UserSpaceRuntimeService:
         path: str = "/",
         parent_origin: str | None = None,
     ) -> UserSpacePreviewLaunchResponse:
-        await self.ensure_workspace_preview_session(workspace_id, user_id)
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        await self._ensure_workspace_preview_bridge_ready(session)
         return await self._build_workspace_preview_launch_response(
             workspace_id=workspace_id,
             subject_user_id=user_id,

@@ -634,6 +634,7 @@ const USERSPACE_BROWSER_AUTH_REFRESH_LEAD_MS = 60_000;
 const USERSPACE_BRIDGE_CREDENTIAL_REFRESH_LEAD_MS = 5 * 60_000;
 const USERSPACE_BRIDGE_CREDENTIAL_REFRESH_COOLDOWN_MS = 60_000;
 const USERSPACE_PREVIEW_LAUNCH_REFRESH_LEAD_MS = 60_000;
+const USERSPACE_PREVIEW_LAUNCH_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 30_000] as const;
 const SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES = 20;
 
 const setContextLineHighlightEffect = StateEffect.define<Array<{ from: number }>>();
@@ -1061,6 +1062,7 @@ export function UserSpacePanel({
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewLaunchError, setPreviewLaunchError] = useState<string | null>(null);
   const [_success, setSuccess] = useState<string | null>(null);
   const [dismissedLiveDataWarningSignature, setDismissedLiveDataWarningSignature] = useState<
     string | null
@@ -1452,15 +1454,21 @@ export function UserSpacePanel({
   const launchPreviewSurface = useCallback(
     async (
       workspaceId: string,
-      options?: { clearOnError?: boolean; updateFrameUrl?: boolean },
+      options?: {
+        clearOnError?: boolean;
+        keepAuthorizationPendingOnError?: boolean;
+        updateFrameUrl?: boolean;
+      },
     ): Promise<string> => {
       const requestId = ++previewLaunchRequestIdRef.current;
       const clearOnError = options?.clearOnError !== false;
+      const keepAuthorizationPendingOnError = options?.keepAuthorizationPendingOnError === true;
       // updateFrameUrl=false is used by routine session-warming refreshes so we
       // mint a fresh bootstrap grant (preview cookie) without changing the
       // iframe `src`/key, which would remount the iframe and destroy any
       // in-flight live-data executions inside the running workspace app.
       const updateFrameUrl = options?.updateFrameUrl !== false;
+      let succeeded = false;
       const isCurrentRequest = () =>
         requestId === previewLaunchRequestIdRef.current &&
         activeWorkspaceIdRef.current === workspaceId;
@@ -1483,6 +1491,7 @@ export function UserSpacePanel({
           setPreviewOrigin(response.preview_origin);
         }
         onPreviewWarningChange?.(response.preview_warning ?? null);
+        succeeded = true;
         return response.preview_url;
       } catch (err) {
         previewLaunchExpiresAtMsRef.current = 0;
@@ -1492,7 +1501,11 @@ export function UserSpacePanel({
         }
         throw err;
       } finally {
-        if (isCurrentRequest() && updateFrameUrl) {
+        if (
+          isCurrentRequest() &&
+          updateFrameUrl &&
+          (succeeded || !keepAuthorizationPendingOnError)
+        ) {
           setPreviewAuthorizationPending(false);
         }
       }
@@ -1513,13 +1526,22 @@ export function UserSpacePanel({
     // Reopening Preview remounts the iframe. The bootstrap URL is single-use,
     // so always mint a fresh launch before the next iframe mount consumes it.
     previewLaunchExpiresAtMsRef.current = 0;
+    previewLaunchRequestIdRef.current += 1;
     setError(null);
+    setPreviewLaunchError(null);
     setPreviewFrameUrl(null);
+    setPreviewOrigin(null);
     setPreviewAuthorizationPending(true);
-    void launchPreviewSurface(activeWorkspaceId).catch((err) => {
-      setError(err instanceof Error ? err.message : 'Failed to launch preview access');
-    });
-  }, [activeRightTab, activeWorkspaceId, launchPreviewSurface]);
+    setPreviewRefreshCounter((value) => value + 1);
+  }, [activeRightTab, activeWorkspaceId]);
+
+  useEffect(() => {
+    if (activeRightTab === 'preview' || previewLaunchError === null) {
+      return;
+    }
+
+    setPreviewLaunchError(null);
+  }, [activeRightTab, previewLaunchError]);
 
   const handlePreviewSessionExpired = useCallback(() => {
     const now = Date.now();
@@ -2475,8 +2497,6 @@ export function UserSpacePanel({
   const bridgeStatusLabel = bridgeStatus ? getBridgeStatusLabel(bridgeStatus) : null;
   const bridgeStatusDetail = bridgeStatus ? getBridgeStatusDetail(bridgeStatus) : null;
   const bridgeStatusPillClass = bridgeStatus ? getBridgeStatusPillClass(bridgeStatus) : null;
-  const showRefreshBridgeCredentialsButton =
-    bridgeStatus !== null && bridgeStatus.state !== 'not_running';
   const allUsersById = useMemo(() => new Map(allUsers.map((user) => [user.id, user])), [allUsers]);
 
   const formatUserLabel = useCallback(
@@ -5152,7 +5172,7 @@ export function UserSpacePanel({
     }
   }, [activeWorkspaceId, canEditWorkspace, refreshActiveWorkspaceState]);
 
-  const handleRefreshBridgeCredentials = useCallback(async (): Promise<boolean> => {
+  const refreshBridgeCredentials = useCallback(async (): Promise<boolean> => {
     if (!activeWorkspaceId || !canEditWorkspace) return false;
     setRefreshingBridgeCredentials(true);
     try {
@@ -5220,7 +5240,7 @@ export function UserSpacePanel({
       lastAttemptedKey: attemptKey,
     };
 
-    void handleRefreshBridgeCredentials().then((succeeded) => {
+    void refreshBridgeCredentials().then((succeeded) => {
       const latestWorkspaceRefreshState = bridgeCredentialAutoRefreshStateRef.current;
       if (
         !latestWorkspaceRefreshState ||
@@ -5241,7 +5261,7 @@ export function UserSpacePanel({
     activeWorkspaceId,
     bridgeStatus,
     canEditWorkspace,
-    handleRefreshBridgeCredentials,
+    refreshBridgeCredentials,
     refreshingBridgeCredentials,
     runtimeBusy,
     runtimeStatus?.session_state,
@@ -5307,6 +5327,7 @@ export function UserSpacePanel({
       browserSurfaceAuthExpiryRef.current = {};
       previousRuntimeDisplayStateRef.current = null;
       setError(null);
+      setPreviewLaunchError(null);
       setRuntimeStatus(null);
       setActiveWorkspaceChatSnapshot(null);
       setPreviewFrameUrl(null);
@@ -5320,6 +5341,7 @@ export function UserSpacePanel({
     browserSurfaceAuthExpiryRef.current = {};
     previousRuntimeDisplayStateRef.current = null;
     setError(null);
+    setPreviewLaunchError(null);
     setRuntimeStatus(null);
     setActiveWorkspaceChatSnapshot(null);
     setPreviewFrameUrl(null);
@@ -5328,20 +5350,44 @@ export function UserSpacePanel({
   }, [activeWorkspaceId]);
 
   useEffect(() => {
-    if (!activeWorkspaceId) {
+    if (!activeWorkspaceId || activeRightTab !== 'preview') {
       return;
     }
 
     let cancelled = false;
+    let retryTimer: number | null = null;
+    let attempt = 0;
+
+    const scheduleRetry = () => {
+      const delayMs =
+        USERSPACE_PREVIEW_LAUNCH_RETRY_DELAYS_MS[
+          Math.min(attempt, USERSPACE_PREVIEW_LAUNCH_RETRY_DELAYS_MS.length - 1)
+        ];
+      attempt += 1;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        if (!cancelled) {
+          void launchPreview();
+        }
+      }, delayMs);
+    };
+
     const launchPreview = async () => {
       try {
-        const previewUrl = await launchPreviewSurface(activeWorkspaceId);
+        const previewUrl = await launchPreviewSurface(activeWorkspaceId, {
+          keepAuthorizationPendingOnError: true,
+        });
         if (cancelled || !previewUrl) {
           return;
         }
+        setPreviewLaunchError(null);
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to launch preview access');
+          setPreviewLaunchError(
+            err instanceof Error ? err.message : 'Failed to launch preview access',
+          );
+          setPreviewAuthorizationPending(true);
+          scheduleRetry();
         }
       }
     };
@@ -5349,8 +5395,11 @@ export function UserSpacePanel({
     void launchPreview();
     return () => {
       cancelled = true;
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+      }
     };
-  }, [activeWorkspaceId, launchPreviewSurface, previewRefreshCounter]);
+  }, [activeRightTab, activeWorkspaceId, launchPreviewSurface, previewRefreshCounter]);
 
   useEffect(() => {
     if (!activeWorkspaceId) {
@@ -8425,7 +8474,10 @@ export function UserSpacePanel({
   const sqliteInspectorButtonTitle = sqliteHasTables
     ? 'Open SQLite Inspector'
     : 'Accessible SQLite databases are empty — open the inspector to initialize tables';
-  const formattedError = useMemo(() => formatUserSpaceErrorMessage(error), [error]);
+  const formattedError = useMemo(() => {
+    const activeError = activeRightTab === 'preview' ? previewLaunchError ?? error : error;
+    return formatUserSpaceErrorMessage(activeError);
+  }, [activeRightTab, error, previewLaunchError]);
   const liveDataWarningMessage = runtimeStatus?.live_data_warning?.trim() || null;
   const visibleLiveDataWarningMessage =
     liveDataWarningMessage && previewNotice?.message.trim() !== liveDataWarningMessage
@@ -9241,18 +9293,6 @@ export function UserSpacePanel({
                   ) : (
                     <Square size={14} />
                   )}
-                </button>
-              )}
-              {showRefreshBridgeCredentialsButton && (
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={handleRefreshBridgeCredentials}
-                  disabled={runtimeBusy || refreshingBridgeCredentials}
-                  title="Refresh bridge credentials"
-                >
-                  {refreshingBridgeCredentials
-                    ? 'Refreshing bridge credentials…'
-                    : 'Refresh bridge credentials'}
                 </button>
               )}
             </div>
