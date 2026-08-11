@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -200,9 +200,9 @@ const STARTING_RUNTIME_STATUS = {
     bridge_url: 'https://bridge.example',
     token_session_id: 'session-1',
     current_session_id: 'session-1',
-    issued_at: '2026-08-05T18:00:00Z',
-    expires_at: '2026-08-05T19:00:00Z',
-    last_success_at: '2026-08-05T18:30:00Z',
+    issued_at: '2099-08-05T18:00:00Z',
+    expires_at: '2099-08-05T19:00:00Z',
+    last_success_at: '2099-08-05T18:30:00Z',
     detail: null,
   },
 } as const;
@@ -284,6 +284,10 @@ const SQLITE_LIST_RESPONSE = {
   default_database_name: 'app.sqlite3',
   persistence_mode: 'exclude',
 } as const;
+
+function isoAtOffsetFromNow(offsetMs: number): string {
+  return new Date(Date.now() + offsetMs).toISOString();
+}
 
 function setLayoutCookie(rightPaneCollapsed: boolean): void {
   document.cookie = `userspace_layout_${encodeURIComponent(CURRENT_USER.id)}=${encodeURIComponent(
@@ -434,6 +438,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.clearAllMocks();
   latestSqliteInspectorModalProps = null;
   sqliteInspectorModalRender = () => null;
@@ -697,10 +702,132 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       expect(screen.getByText('Bridge expired')).toBeTruthy();
     });
 
+    expect(previewApiMock.refreshUserSpaceBridgeCredentials).not.toHaveBeenCalled();
     expect(screen.getByText(/Bridge credentials expired\./)).toBeTruthy();
     expect(screen.getByText(/Expired /)).toBeTruthy();
     expect(screen.getByText(/Last success /)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Refresh bridge credentials' })).toBeNull();
+  });
+
+  it('automatically refreshes near-expiry bridge credentials for editable workspaces and reloads workspace state', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2099-08-05T18:00:00Z'));
+
+    const nearExpiry = isoAtOffsetFromNow(4 * 60 * 1000);
+    const refreshedExpiry = isoAtOffsetFromNow(65 * 60 * 1000);
+
+    previewApiMock.getUserSpaceWorkspaceTabState.mockImplementation(async () => ({
+      workspace_id: WORKSPACE.id,
+      runtime_status: {
+        ...STARTING_RUNTIME_STATUS,
+        devserver_running: true,
+        bridge_status: {
+          ...STARTING_RUNTIME_STATUS.bridge_status,
+          expires_at: nearExpiry,
+        },
+      },
+      chat_state: { ...DEFAULT_CHAT_STATE },
+    }));
+    previewApiMock.refreshUserSpaceBridgeCredentials.mockResolvedValueOnce({
+      ...STARTING_RUNTIME_STATUS.bridge_status,
+      expires_at: refreshedExpiry,
+      last_success_at: refreshedExpiry,
+    });
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledTimes(1);
+    expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledWith('ws-1');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(previewApiMock.getUserSpaceWorkspaceTabState.mock.calls.length).toBeGreaterThanOrEqual(
+      2,
+    );
+    expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'Refresh bridge credentials' })).toBeTruthy();
+  });
+
+  it('automatically refreshes an expired bridge credential for an editable workspace', async () => {
+    previewApiMock.getUserSpaceWorkspaceTabState.mockResolvedValue({
+      workspace_id: WORKSPACE.id,
+      runtime_status: {
+        ...STARTING_RUNTIME_STATUS,
+        devserver_running: true,
+        bridge_status: {
+          ...STARTING_RUNTIME_STATUS.bridge_status,
+          state: 'expired',
+          expires_at: '2000-08-05T19:00:00Z',
+          detail: 'Runtime bridge credential has expired',
+        },
+      },
+      chat_state: { ...DEFAULT_CHAT_STATE },
+    });
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await waitFor(() => {
+      expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledTimes(1);
+    });
+    expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledWith('ws-1');
+  });
+
+  it('retries a failed automatic refresh only after the 60-second cooldown while the credential stays unchanged', async () => {
+    vi.useFakeTimers();
+    const initialNow = new Date('2099-08-05T18:00:00Z');
+    vi.setSystemTime(initialNow);
+
+    const nearExpiry = isoAtOffsetFromNow(4 * 60 * 1000);
+    const refreshedExpiry = isoAtOffsetFromNow(65 * 60 * 1000);
+
+    previewApiMock.getUserSpaceWorkspaceTabState.mockImplementation(async () => ({
+      workspace_id: WORKSPACE.id,
+      runtime_status: {
+        ...STARTING_RUNTIME_STATUS,
+        devserver_running: true,
+        bridge_status: {
+          ...STARTING_RUNTIME_STATUS.bridge_status,
+          expires_at: nearExpiry,
+        },
+      },
+      chat_state: { ...DEFAULT_CHAT_STATE },
+    }));
+    previewApiMock.refreshUserSpaceBridgeCredentials
+      .mockRejectedValueOnce(new Error('Refresh bridge failed'))
+      .mockResolvedValueOnce({
+        ...STARTING_RUNTIME_STATUS.bridge_status,
+        expires_at: refreshedExpiry,
+        last_success_at: refreshedExpiry,
+      });
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50_000);
+    });
+    expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(new Date(initialNow.getTime() + 60_000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledTimes(2);
   });
 
   it('labels a future invalid bridge expiry as Expires instead of Expired', async () => {

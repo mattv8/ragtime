@@ -631,6 +631,8 @@ const USERSPACE_WORKSPACE_DUPLICATE_TASK_POLL_INTERVAL_MS = 1000;
 const USERSPACE_MOUNT_SYNC_POLL_INTERVAL_MS = 1200;
 const USERSPACE_RUNTIME_BACKGROUND_POLL_INTERVAL_MS = 30000;
 const USERSPACE_BROWSER_AUTH_REFRESH_LEAD_MS = 60_000;
+const USERSPACE_BRIDGE_CREDENTIAL_REFRESH_LEAD_MS = 5 * 60_000;
+const USERSPACE_BRIDGE_CREDENTIAL_REFRESH_COOLDOWN_MS = 60_000;
 const USERSPACE_PREVIEW_LAUNCH_REFRESH_LEAD_MS = 60_000;
 const SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES = 20;
 
@@ -811,6 +813,27 @@ function getBridgeStatusDetail(bridgeStatus: UserSpaceBridgeStatus): string | nu
   }
 
   return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+function getBridgeCredentialRefreshAttemptKey(
+  workspaceId: string,
+  bridgeStatus: UserSpaceBridgeStatus,
+): string {
+  return [
+    workspaceId,
+    bridgeStatus.state,
+    bridgeStatus.token_session_id,
+    bridgeStatus.current_session_id,
+    bridgeStatus.issued_at,
+    bridgeStatus.expires_at,
+  ].join('::');
+}
+
+interface BridgeCredentialAutoRefreshState {
+  workspaceId: string;
+  lastAttemptedAt: number;
+  lastAttemptedKey: string | null;
+  lastSuccessfulKey: string | null;
 }
 
 function getSnapshotDiffFileKey(snapshotId: string, filePath: string): string {
@@ -1364,6 +1387,7 @@ export function UserSpacePanel({
   const browserSurfaceAuthExpiryRef = useRef<Partial<Record<UserSpaceBrowserSurface, number>>>({});
   const previewLaunchExpiresAtMsRef = useRef(0);
   const previousRuntimeDisplayStateRef = useRef<string | null>(null);
+  const bridgeCredentialAutoRefreshStateRef = useRef<BridgeCredentialAutoRefreshState | null>(null);
   const refreshRuntimeStatusPendingRef = useRef(false);
   const refreshRuntimeStatusPendingIncludeRef = useRef<boolean>(true);
   const latestQueuedWorkspaceCreateTaskIdRef = useRef<string | null>(null);
@@ -5128,19 +5152,100 @@ export function UserSpacePanel({
     }
   }, [activeWorkspaceId, canEditWorkspace, refreshActiveWorkspaceState]);
 
-  const handleRefreshBridgeCredentials = useCallback(async () => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
+  const handleRefreshBridgeCredentials = useCallback(async (): Promise<boolean> => {
+    if (!activeWorkspaceId || !canEditWorkspace) return false;
     setRefreshingBridgeCredentials(true);
     try {
       await api.refreshUserSpaceBridgeCredentials(activeWorkspaceId);
       await refreshActiveWorkspaceState();
       setError(null);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to refresh bridge credentials');
+      return false;
     } finally {
       setRefreshingBridgeCredentials(false);
     }
   }, [activeWorkspaceId, canEditWorkspace, refreshActiveWorkspaceState]);
+
+  useEffect(() => {
+    if (
+      !activeWorkspaceId ||
+      !canEditWorkspace ||
+      !bridgeStatus ||
+      runtimeStatus?.session_state !== 'running' ||
+      runtimeBusy ||
+      refreshingBridgeCredentials
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    const expiresAtMs = bridgeStatus.expires_at ? parseUtcTimestampMs(bridgeStatus.expires_at) : 0;
+    const shouldRefreshBridgeCredentials =
+      bridgeStatus.state === 'expired' ||
+      (bridgeStatus.state === 'healthy' &&
+        expiresAtMs > 0 &&
+        expiresAtMs <= now + USERSPACE_BRIDGE_CREDENTIAL_REFRESH_LEAD_MS);
+
+    if (!shouldRefreshBridgeCredentials) {
+      return;
+    }
+
+    const attemptKey = getBridgeCredentialRefreshAttemptKey(activeWorkspaceId, bridgeStatus);
+    const workspaceRefreshState =
+      bridgeCredentialAutoRefreshStateRef.current?.workspaceId === activeWorkspaceId
+        ? bridgeCredentialAutoRefreshStateRef.current
+        : {
+            workspaceId: activeWorkspaceId,
+            lastAttemptedAt: 0,
+            lastAttemptedKey: null,
+            lastSuccessfulKey: null,
+          };
+
+    if (workspaceRefreshState.lastSuccessfulKey === attemptKey) {
+      return;
+    }
+
+    if (
+      workspaceRefreshState.lastAttemptedAt > 0 &&
+      now - workspaceRefreshState.lastAttemptedAt < USERSPACE_BRIDGE_CREDENTIAL_REFRESH_COOLDOWN_MS
+    ) {
+      return;
+    }
+
+    bridgeCredentialAutoRefreshStateRef.current = {
+      ...workspaceRefreshState,
+      lastAttemptedAt: now,
+      lastAttemptedKey: attemptKey,
+    };
+
+    void handleRefreshBridgeCredentials().then((succeeded) => {
+      const latestWorkspaceRefreshState = bridgeCredentialAutoRefreshStateRef.current;
+      if (
+        !latestWorkspaceRefreshState ||
+        latestWorkspaceRefreshState.workspaceId !== activeWorkspaceId ||
+        latestWorkspaceRefreshState.lastAttemptedKey !== attemptKey
+      ) {
+        return;
+      }
+
+      if (succeeded) {
+        bridgeCredentialAutoRefreshStateRef.current = {
+          ...latestWorkspaceRefreshState,
+          lastSuccessfulKey: attemptKey,
+        };
+      }
+    });
+  }, [
+    activeWorkspaceId,
+    bridgeStatus,
+    canEditWorkspace,
+    handleRefreshBridgeCredentials,
+    refreshingBridgeCredentials,
+    runtimeBusy,
+    runtimeStatus?.session_state,
+  ]);
 
   useEffect(() => {
     void refreshActiveWorkspaceState();
