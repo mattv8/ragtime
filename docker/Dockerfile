@@ -261,8 +261,14 @@ RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     && npm ci --loglevel=error \
     && npx playwright install --with-deps chromium
 
+# Claude Code 2.1.113+ uses a native AVX binary; legacy images need the last JS release.
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
-    npm install -g @anthropic-ai/claude-code@2.1.186
+    if [ "$LEGACY_CPU" = "1" ]; then \
+        npm install -g @anthropic-ai/claude-code@2.1.112; \
+    else \
+        npm install -g @anthropic-ai/claude-code@2.1.186; \
+    fi \
+    && claude --version
 
 # Copy application code (includes indexer module)
 COPY ragtime/ /ragtime/ragtime/

@@ -12,13 +12,14 @@ from typing import Any
 
 from ragtime.rag.prompts import _WORKSPACE_CONTINUITY_EXISTING_RULES
 
-PLANNING_CONTRACT_VERSION = "1"
+PLANNING_CONTRACT_VERSION = "2"
 
 _STATIC_BUILDER_RULES: list[str] = [
     "The runtime entrypoint lives in .ragtime/runtime-entrypoint.json; launch commands must use $PORT and bind 0.0.0.0.",
     "When the workspace has selected data tools, dashboards must be wired to live tool data; hardcoded/mock datasets are rejected by validation.",
     "Browser-side live data (context.components[...].execute) is always read-only; writes only happen from workspace server code via the runtime bridge, subject to workspace write policy.",
     "SQLite local persistence (.ragtime/db/app.sqlite3 with numbered migrations) supplements live data for local app state; it never replaces live dashboard datasets.",
+    "Shared SQLite access runs from server code only, needs an explicit target-owner grant, and the owner workspace keeps schema and migrations.",
     "Match the app theme using runtime CSS variables/tokens; avoid hardcoded palettes and custom font stacks.",
     "The preview iframe is cross-origin; workspace code must never read context from window.parent or window.top.",
 ]

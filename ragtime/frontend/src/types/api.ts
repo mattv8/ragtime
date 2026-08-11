@@ -3309,6 +3309,7 @@ export interface UpdateUserSpaceWorkspaceMembersRequest {
 }
 
 export type WorkspaceAgentGrantMode = 'read' | 'read_write';
+export type WorkspaceSqliteGrantMode = 'none' | 'read' | 'read_write';
 
 export interface WorkspaceAgentGrant {
   id: string;
@@ -3317,6 +3318,7 @@ export interface WorkspaceAgentGrant {
   target_workspace_id: string;
   target_workspace_name?: string | null;
   access_mode: WorkspaceAgentGrantMode;
+  sqlite_access_mode: WorkspaceSqliteGrantMode;
   granted_by_user_id: string;
   granted_by_username?: string | null;
   expires_at?: string | null;
@@ -3327,6 +3329,7 @@ export interface WorkspaceAgentGrant {
 export interface UpsertWorkspaceAgentGrantRequest {
   target_workspace_id: string;
   access_mode: WorkspaceAgentGrantMode;
+  sqlite_access_mode?: WorkspaceSqliteGrantMode;
 }
 
 export interface RevokeWorkspaceAgentGrantResponse {
@@ -4159,6 +4162,26 @@ export interface UserSpaceRuntimeSessionResponse {
   session?: UserSpaceRuntimeSession | null;
 }
 
+export type UserSpaceBridgeStatusState =
+  | 'healthy'
+  | 'not_running'
+  | 'missing'
+  | 'expired'
+  | 'invalid'
+  | 'session_mismatch'
+  | 'unavailable';
+
+export interface UserSpaceBridgeStatus {
+  state: UserSpaceBridgeStatusState;
+  bridge_url?: string | null;
+  token_session_id?: string | null;
+  current_session_id?: string | null;
+  issued_at?: string | null;
+  expires_at?: string | null;
+  last_success_at?: string | null;
+  detail?: string | null;
+}
+
 export interface UserSpaceRuntimeStatusResponse {
   workspace_id: string;
   session_state: UserSpaceRuntimeSessionState;
@@ -4174,6 +4197,7 @@ export interface UserSpaceRuntimeStatusResponse {
   runtime_operation_phase?: UserSpaceRuntimeOperationPhase | null;
   runtime_operation_started_at?: string | null;
   runtime_operation_updated_at?: string | null;
+  bridge_status?: UserSpaceBridgeStatus | null;
 }
 
 export interface UserSpaceWorkspaceTabStateResponse {
@@ -4858,8 +4882,17 @@ export interface SqliteInspectorDatabaseSummary {
   relative_path: string;
   size_bytes: number;
   table_count: number;
-  last_modified_ms: number;
+  last_modified_ms: number | null;
+  owner_workspace_id: string;
+  owner_workspace_name: string;
+  ownership: SqliteInspectorDatabaseOwnership;
+  access_mode: SqliteInspectorDatabaseAccessMode;
+  persistence_mode: 'include' | 'exclude';
+  initialized: boolean;
 }
+
+export type SqliteInspectorDatabaseOwnership = 'owned' | 'linked';
+export type SqliteInspectorDatabaseAccessMode = 'read' | 'read_write';
 
 export interface SqliteInspectorDatabaseListResponse {
   workspace_id: string;

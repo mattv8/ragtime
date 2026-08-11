@@ -330,3 +330,437 @@ describe('HTTP API OAuth client request shapes', () => {
     );
   });
 });
+
+describe('workspace agent grant client request shapes', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('serializes an explicit sqlite_access_mode when present', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'grant-1',
+        source_workspace_id: 'ws-source',
+        target_workspace_id: 'ws-target',
+        target_workspace_name: 'Target',
+        access_mode: 'read',
+        sqlite_access_mode: 'read_write',
+        granted_by_user_id: 'user-1',
+        created_at: '2026-08-05T12:00:00Z',
+        updated_at: '2026-08-05T12:00:00Z',
+      }),
+    );
+
+    await api.upsertUserSpaceWorkspaceAgentGrant('ws-source', {
+      target_workspace_id: 'ws-target',
+      access_mode: 'read',
+      sqlite_access_mode: 'read_write',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/userspace/workspaces/ws-source/agent-grants',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          target_workspace_id: 'ws-target',
+          access_mode: 'read',
+          sqlite_access_mode: 'read_write',
+        }),
+      }),
+    );
+  });
+
+  it('preserves omission when sqlite_access_mode is absent', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'grant-1',
+        source_workspace_id: 'ws-source',
+        target_workspace_id: 'ws-target',
+        target_workspace_name: 'Target',
+        access_mode: 'read_write',
+        sqlite_access_mode: 'read',
+        granted_by_user_id: 'user-1',
+        created_at: '2026-08-05T12:00:00Z',
+        updated_at: '2026-08-05T12:00:00Z',
+      }),
+    );
+
+    await api.upsertUserSpaceWorkspaceAgentGrant('ws-source', {
+      target_workspace_id: 'ws-target',
+      access_mode: 'read_write',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/userspace/workspaces/ws-source/agent-grants',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          target_workspace_id: 'ws-target',
+          access_mode: 'read_write',
+        }),
+      }),
+    );
+  });
+});
+
+describe('workspace sqlite inspector owner routing', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    {
+      name: 'initializes a database with owner selection',
+      run: async () => {
+        fetchMock.mockResolvedValueOnce(
+          jsonResponse({
+            workspace_id: 'source-ws',
+            database: {
+              name: 'app.sqlite3',
+              relative_path: '.ragtime/db/app.sqlite3',
+              size_bytes: 0,
+              table_count: 0,
+              last_modified_ms: null,
+              owner_workspace_id: 'target/ws',
+              owner_workspace_name: 'Target',
+              ownership: 'linked',
+              access_mode: 'read_write',
+              persistence_mode: 'exclude',
+              initialized: false,
+            },
+            mode_promoted: false,
+            persistence_mode: 'exclude',
+          }),
+        );
+
+        await api.initializeUserSpaceSqliteDatabase(
+          'source-ws',
+          { database_name: 'app.sqlite3' },
+          'target/ws',
+        );
+      },
+      expectedUrl:
+        '/indexes/userspace/workspaces/source-ws/sqlite/databases?owner_workspace_id=target%2Fws',
+      expectedOptions: expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ database_name: 'app.sqlite3' }),
+      }),
+    },
+    {
+      name: 'imports a database with owner selection',
+      run: async () => {
+        fetchMock.mockResolvedValueOnce(
+          jsonResponse({
+            workspace_id: 'source-ws',
+            database: {
+              name: 'app.sqlite3',
+              relative_path: '.ragtime/db/app.sqlite3',
+              size_bytes: 0,
+              table_count: 0,
+              last_modified_ms: null,
+              owner_workspace_id: 'target/ws',
+              owner_workspace_name: 'Target',
+              ownership: 'linked',
+              access_mode: 'read_write',
+              persistence_mode: 'exclude',
+              initialized: true,
+            },
+            mode_promoted: false,
+          }),
+        );
+
+        await api.importUserSpaceSqliteDatabase(
+          'source-ws',
+          'app.sqlite3',
+          new FormData(),
+          'target/ws',
+        );
+      },
+      expectedUrl:
+        '/indexes/userspace/workspaces/source-ws/sqlite/databases/app.sqlite3/import?owner_workspace_id=target%2Fws',
+      expectedOptions: expect.objectContaining({ method: 'POST', body: expect.any(FormData) }),
+    },
+    {
+      name: 'lists tables with owner selection',
+      run: async () => {
+        fetchMock.mockResolvedValueOnce(
+          jsonResponse({
+            workspace_id: 'source-ws',
+            database: {
+              name: 'app.sqlite3',
+              relative_path: '.ragtime/db/app.sqlite3',
+              size_bytes: 0,
+              table_count: 0,
+              last_modified_ms: null,
+              owner_workspace_id: 'target/ws',
+              owner_workspace_name: 'Target',
+              ownership: 'linked',
+              access_mode: 'read',
+              persistence_mode: 'exclude',
+              initialized: true,
+            },
+            tables: [],
+            persistence_mode: 'exclude',
+            mode_promoted: false,
+          }),
+        );
+
+        await api.listUserSpaceSqliteTables('source-ws', 'app.sqlite3', 'target/ws');
+      },
+      expectedUrl:
+        '/indexes/userspace/workspaces/source-ws/sqlite/databases/app.sqlite3/tables?owner_workspace_id=target%2Fws',
+      expectedOptions: expect.objectContaining({ credentials: 'include' }),
+    },
+    {
+      name: 'imports a table with owner selection',
+      run: async () => {
+        fetchMock.mockResolvedValueOnce(
+          jsonResponse({
+            workspace_id: 'source-ws',
+            database_name: 'app.sqlite3',
+            table: { name: 'items', type: 'table', row_count: 1 },
+            mode_promoted: false,
+          }),
+        );
+
+        await api.importUserSpaceSqliteTable(
+          'source-ws',
+          'app.sqlite3',
+          'items',
+          new FormData(),
+          'target/ws',
+        );
+      },
+      expectedUrl:
+        '/indexes/userspace/workspaces/source-ws/sqlite/databases/app.sqlite3/tables/items/import?owner_workspace_id=target%2Fws',
+      expectedOptions: expect.objectContaining({ method: 'POST', body: expect.any(FormData) }),
+    },
+    {
+      name: 'patches a row with owner selection',
+      run: async () => {
+        fetchMock.mockResolvedValueOnce(
+          jsonResponse({
+            workspace_id: 'source-ws',
+            database_name: 'app.sqlite3',
+            table_name: 'items',
+            row: { id: 1 },
+            mode_promoted: false,
+          }),
+        );
+
+        await api.updateUserSpaceSqliteRow(
+          'source-ws',
+          'app.sqlite3',
+          'items',
+          { row_key: { id: 1 }, values: { name: 'updated' } },
+          'target/ws',
+        );
+      },
+      expectedUrl:
+        '/indexes/userspace/workspaces/source-ws/sqlite/databases/app.sqlite3/tables/items/rows?owner_workspace_id=target%2Fws',
+      expectedOptions: expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ row_key: { id: 1 }, values: { name: 'updated' } }),
+      }),
+    },
+    {
+      name: 'deletes a row with owner selection',
+      run: async () => {
+        fetchMock.mockResolvedValueOnce(
+          jsonResponse({
+            workspace_id: 'source-ws',
+            database_name: 'app.sqlite3',
+            table_name: 'items',
+            deleted: true,
+            mode_promoted: false,
+          }),
+        );
+
+        await api.deleteUserSpaceSqliteRow(
+          'source-ws',
+          'app.sqlite3',
+          'items',
+          { row_key: { id: 1 } },
+          'target/ws',
+        );
+      },
+      expectedUrl:
+        '/indexes/userspace/workspaces/source-ws/sqlite/databases/app.sqlite3/tables/items/rows?owner_workspace_id=target%2Fws',
+      expectedOptions: expect.objectContaining({
+        method: 'DELETE',
+        body: JSON.stringify({ row_key: { id: 1 } }),
+      }),
+    },
+    {
+      name: 'queries a database with owner selection',
+      run: async () => {
+        fetchMock.mockResolvedValueOnce(
+          jsonResponse({
+            workspace_id: 'source-ws',
+            database_name: 'app.sqlite3',
+            columns: ['id'],
+            rows: [{ id: 1 }],
+            row_count: 1,
+            truncated: false,
+          }),
+        );
+
+        await api.queryUserSpaceSqliteDatabase(
+          'source-ws',
+          'app.sqlite3',
+          { sql: 'select * from items' },
+          'target/ws',
+        );
+      },
+      expectedUrl:
+        '/indexes/userspace/workspaces/source-ws/sqlite/databases/app.sqlite3/query?owner_workspace_id=target%2Fws',
+      expectedOptions: expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ sql: 'select * from items' }),
+      }),
+    },
+  ])('$name', async ({ run, expectedUrl, expectedOptions }) => {
+    await run();
+
+    expect(fetchMock).toHaveBeenLastCalledWith(expectedUrl, expectedOptions);
+  });
+
+  it('appends owner selection to existing row pagination query parameters', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        workspace_id: 'source-ws',
+        database_name: 'app.sqlite3',
+        table_name: 'items',
+        columns: [],
+        rows: [],
+        total: 0,
+        limit: 25,
+        offset: 10,
+      }),
+    );
+
+    await api.listUserSpaceSqliteRows(
+      'source-ws',
+      'app.sqlite3',
+      'items',
+      {
+        limit: 25,
+        offset: 10,
+        order_by: 'id',
+        order_direction: 'desc',
+      },
+      'target/ws',
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/userspace/workspaces/source-ws/sqlite/databases/app.sqlite3/tables/items/rows?limit=25&offset=10&order_by=id&order_direction=desc&owner_workspace_id=target%2Fws',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+  });
+
+  it('preserves owned URLs when owner selection is omitted', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        workspace_id: 'source-ws',
+        database: {
+          name: 'app.sqlite3',
+          relative_path: '.ragtime/db/app.sqlite3',
+          size_bytes: 12,
+          table_count: 1,
+          last_modified_ms: 123,
+          owner_workspace_id: 'source-ws',
+          owner_workspace_name: 'Source',
+          ownership: 'owned',
+          access_mode: 'read_write',
+          persistence_mode: 'include',
+          initialized: true,
+        },
+        tables: [],
+        persistence_mode: 'include',
+        mode_promoted: false,
+      }),
+    );
+
+    await api.listUserSpaceSqliteTables('source-ws', 'app.sqlite3');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/userspace/workspaces/source-ws/sqlite/databases/app.sqlite3/tables',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+  });
+});
+
+describe('workspace bridge credential client requests', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('gets bridge credential status for a workspace runtime session', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        state: 'expired',
+        bridge_url: 'https://bridge.example',
+        token_session_id: 'session-old',
+        current_session_id: 'session-new',
+        issued_at: '2026-08-05T18:00:00Z',
+        expires_at: '2026-08-05T19:00:00Z',
+        last_success_at: '2026-08-05T18:30:00Z',
+        detail: 'Bridge credentials expired.',
+      }),
+    );
+
+    const result = await api.getUserSpaceBridgeCredentialStatus('workspace/123');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/userspace/runtime/workspaces/workspace%2F123/bridge-credentials/status',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+    expect(result.state).toBe('expired');
+    expect(result.detail).toBe('Bridge credentials expired.');
+  });
+
+  it('posts to refresh bridge credentials for a workspace runtime session', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        state: 'healthy',
+        bridge_url: 'https://bridge.example',
+        token_session_id: 'session-new',
+        current_session_id: 'session-new',
+        issued_at: '2026-08-05T19:00:00Z',
+        expires_at: '2026-08-05T20:00:00Z',
+        last_success_at: '2026-08-05T19:01:00Z',
+        detail: null,
+      }),
+    );
+
+    const result = await api.refreshUserSpaceBridgeCredentials('workspace/123');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/userspace/runtime/workspaces/workspace%2F123/bridge-credentials/refresh',
+      expect.objectContaining({ method: 'POST', credentials: 'include' }),
+    );
+    expect(result.state).toBe('healthy');
+    expect(result.token_session_id).toBe('session-new');
+  });
+});

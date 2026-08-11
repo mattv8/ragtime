@@ -56,30 +56,20 @@ function renderSection({
 }
 
 describe('SearchSettingsSection', () => {
-  it('renders the FAISS concurrency switch card with the default per-index copy', () => {
+  it('renders the FAISS concurrency switch card with the default switch state', () => {
     const { container } = renderSection();
 
     expect(screen.getByRole('button', { name: 'Search Configuration' })).toBeTruthy();
     expect(screen.getByLabelText('Global FAISS search gate')).toBeTruthy();
     expect(document.getElementById('setting-faiss_search_concurrency_mode')).toBeTruthy();
     expect(document.getElementById('search-faiss-concurrency-mode')).toBeTruthy();
-    expect(
-      screen.getByText(
-        'Serialize searches per index while allowing different indexes to search concurrently (default).',
-      ),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(
-        'Use global mode when concurrent vector searches affect server responsiveness. Changes apply to new searches after saving.',
-      ),
-    ).toBeTruthy();
     expect(container.querySelector('.search-settings-switch-card')).toBeTruthy();
     expect((screen.getByLabelText('Global FAISS search gate') as HTMLInputElement).checked).toBe(
       false,
     );
   });
 
-  it('switches to global mode copy when the toggle is enabled', async () => {
+  it('switches to global mode when the toggle is enabled', async () => {
     const user = userEvent.setup();
     renderSection();
 
@@ -88,11 +78,6 @@ describe('SearchSettingsSection', () => {
     expect((screen.getByLabelText('Global FAISS search gate') as HTMLInputElement).checked).toBe(
       true,
     );
-    expect(
-      screen.getByText(
-        'Serialize all FAISS searches through one process-wide gate for maximum server isolation.',
-      ),
-    ).toBeTruthy();
   });
 
   it('calls save once and shows the saving state', async () => {

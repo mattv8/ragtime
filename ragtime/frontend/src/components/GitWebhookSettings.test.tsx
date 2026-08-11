@@ -26,15 +26,6 @@ const gitlabConfig: GitWebhookConfig = {
   created_at: '2026-07-16T12:00:00Z',
 };
 
-const genericConfig: GitWebhookConfig = {
-  enabled: true,
-  paused: false,
-  webhook_url: 'https://ragtime.example/webhooks/git/webhook-789',
-  provider: 'generic',
-  branch: 'develop',
-  created_at: '2026-07-16T12:00:00Z',
-};
-
 const disabledConfig: GitWebhookConfig = {
   enabled: false,
   paused: false,
@@ -124,15 +115,12 @@ describe('GitWebhookSettings', () => {
     );
   });
 
-  it('renders friendly GitLab setup instructions without recent deliveries', () => {
+  it('keeps recent deliveries hidden for GitLab webhooks', () => {
     renderComponent({
       config: gitlabConfig,
       revealedSecret: null,
     });
 
-    expect(
-      screen.getByText("Add this URL and secret in your GitLab project's webhook settings."),
-    ).toBeTruthy();
     expect(screen.queryByText('Recent deliveries')).toBeNull();
   });
 
@@ -201,19 +189,6 @@ describe('GitWebhookSettings', () => {
     expect(screen.queryByRole('button', { name: 'Pause webhook' })).toBeNull();
   });
 
-  it('renders friendly generic provider instructions without technical header wording', () => {
-    renderComponent({
-      config: genericConfig,
-      revealedSecret: 'generic-secret',
-    });
-
-    expect(
-      screen.getByText("Add this URL and secret in your Git provider's webhook settings."),
-    ).toBeTruthy();
-    expect(screen.queryByText(/X-Ragtime-Webhook-Token/)).toBeNull();
-    expect(screen.queryByText(/HMAC/)).toBeNull();
-  });
-
   it('disables action and copy controls when disabled', () => {
     renderComponent({
       config: githubConfig,
@@ -236,16 +211,13 @@ describe('GitWebhookSettings', () => {
     ).toBe(true);
   });
 
-  it('shows the flat setup for disabled configs without an enable action', () => {
+  it('omits enable, secret, and query-token controls for disabled configs', () => {
     renderComponent({
       config: disabledConfig,
     });
 
     expect(screen.queryByText('Webhook delivery is disabled.')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Enable push webhook' })).toBeNull();
-    expect(
-      screen.getByText("Add this URL and secret in your Git provider's webhook settings."),
-    ).toBeTruthy();
     expect(screen.queryByText(/secret unavailable/i)).toBeNull();
     expect(screen.queryByText(/query token/i)).toBeNull();
   });

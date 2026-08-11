@@ -74,18 +74,18 @@ from pydantic import BaseModel, Field
 
 
 class MyToolInput(BaseModel):
-  query: str = Field(description="What to search or process")
+    query: str = Field(description="What to search or process")
 
 
 async def execute_my_tool(query: str) -> str:
-  return f"Processed: {query}"
+    return f"Processed: {query}"
 
 
 my_tool_tool = StructuredTool.from_function(
-  coroutine=execute_my_tool,
-  name="my_tool",
-  description="Describe when this tool should be used.",
-  args_schema=MyToolInput,
+    coroutine=execute_my_tool,
+    name="my_tool",
+    description="Describe when this tool should be used.",
+    args_schema=MyToolInput,
 )
 ```
 

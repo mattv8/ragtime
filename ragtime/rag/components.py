@@ -14891,6 +14891,7 @@ class RAGComponents:
         allowed_tool_config_ids: list[str] | None = None
         prompt_additions = ""
         include_sqlite_persistence = False
+        shared_sqlite_databases: list[dict[str, str]] = []
         userspace_env_var_turn_hint = ""
         userspace_runtime_status_turn_hint = ""
         userspace_diagnostics_turn_hint = ""
@@ -15150,6 +15151,43 @@ class RAGComponents:
                 accessible_workspace_modes=accessible_workspace_modes,
             )
 
+            try:
+                runtime_session_response = await userspace_runtime_service.get_runtime_session(
+                    workspace_id,
+                    request_user_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve runtime session for shared SQLite prompt context %s/%s: %s",
+                    workspace_id,
+                    request_user_id,
+                    _format_exception_message(exc),
+                )
+            else:
+                leased_by_user_id = request_user_id
+                runtime_session = getattr(runtime_session_response, "session", None)
+                if runtime_session is not None:
+                    leased_by_user_id = str(getattr(runtime_session, "leased_by_user_id", "") or "").strip()
+                    if not leased_by_user_id:
+                        logger.warning(
+                            "Omitting shared SQLite prompt targets for workspace %s because the active runtime session has no leased user identity.",
+                            workspace_id,
+                        )
+                        leased_by_user_id = ""
+                if leased_by_user_id:
+                    try:
+                        shared_sqlite_databases = await userspace_service.list_accessible_cross_workspace_sqlite_targets(
+                            workspace_id,
+                            leased_by_user_id,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to resolve shared SQLite prompt targets for workspace %s and prompt identity %s: %s",
+                            workspace_id,
+                            leased_by_user_id,
+                            _format_exception_message(exc),
+                        )
+
             subagent_private_prompt = (workspace_context or {}).get(SUBAGENT_PRIVATE_PROMPT_CONTEXT_KEY)
             if isinstance(subagent_private_prompt, str) and subagent_private_prompt.strip():
                 prompt_additions += "\n\n" + subagent_private_prompt.strip()
@@ -15237,6 +15275,7 @@ class RAGComponents:
                     has_live_data_tools=bool(allowed_tool_config_ids),
                     workspace_continuity=continuity_ctx,
                     available_tool_names=available_userspace_tool_names,
+                    shared_sqlite_databases=shared_sqlite_databases,
                 )
                 + prompt_additions
             )

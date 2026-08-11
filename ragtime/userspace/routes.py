@@ -2788,16 +2788,11 @@ async def get_latest_workspace_sqlite_import_task(
 # ---------------------------------------------------------------------------
 
 
-def _serialize_inspector_database(
-    summary: sqlite_inspector_helpers.DatabaseSummary,
-) -> SqliteInspectorDatabaseSummary:
-    return SqliteInspectorDatabaseSummary(
-        name=summary.name,
-        relative_path=summary.relative_path,
-        size_bytes=summary.size_bytes,
-        table_count=summary.table_count,
-        last_modified_ms=summary.last_modified_ms,
-    )
+def _resolved_sqlite_owner_workspace_id(workspace_id: str, owner_workspace_id: str | None) -> str:
+    candidate = str(owner_workspace_id or "").strip()
+    if not candidate or candidate == workspace_id:
+        return workspace_id
+    return candidate
 
 
 def _serialize_inspector_table(
@@ -2921,7 +2916,7 @@ async def _sqlite_database_list_payload(
     )
     return SqliteInspectorDatabaseListResponse(
         workspace_id=workspace_id,
-        databases=[_serialize_inspector_database(d) for d in databases],
+        databases=databases,
         total_bytes=total_bytes,
         default_database_name=sqlite_inspector_helpers.DEFAULT_DATABASE_NAME,
         persistence_mode=("exclude" if mode == "exclude" else "include"),
@@ -2984,6 +2979,7 @@ async def stream_workspace_sqlite_database_events(
 async def initialize_workspace_sqlite_database(
     workspace_id: str,
     request: SqliteInspectorInitializeRequest = Body(default_factory=SqliteInspectorInitializeRequest),
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -2991,14 +2987,19 @@ async def initialize_workspace_sqlite_database(
         workspace_id,
         user.id,
         database_name=request.database_name,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
-    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"initialize database {summary.name}")
+    await _snapshot_after_sqlite_mutation(
+        _resolved_sqlite_owner_workspace_id(workspace_id, owner_workspace_id),
+        user.id,
+        f"initialize database {summary.name}",
+    )
     return SqliteInspectorInitializeResponse(
         workspace_id=workspace_id,
-        database=_serialize_inspector_database(summary),
+        database=summary,
         mode_promoted=promoted,
-        persistence_mode="include",
+        persistence_mode=summary.persistence_mode,
     )
 
 
@@ -3009,6 +3010,7 @@ async def initialize_workspace_sqlite_database(
 async def delete_workspace_sqlite_database(
     workspace_id: str,
     database_name: str,
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3016,9 +3018,14 @@ async def delete_workspace_sqlite_database(
         workspace_id,
         user.id,
         database_name,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
-    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"delete database {database_name}")
+    await _snapshot_after_sqlite_mutation(
+        _resolved_sqlite_owner_workspace_id(workspace_id, owner_workspace_id),
+        user.id,
+        f"delete database {database_name}",
+    )
     return SqliteInspectorDeleteDatabaseResponse(
         workspace_id=workspace_id,
         database_name=database_name,
@@ -3029,6 +3036,7 @@ async def delete_workspace_sqlite_database(
 async def export_workspace_sqlite_database(
     workspace_id: str,
     database_name: str,
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3036,6 +3044,7 @@ async def export_workspace_sqlite_database(
         workspace_id,
         user.id,
         database_name,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
     return FileResponse(
@@ -3054,6 +3063,7 @@ async def import_workspace_sqlite_database(
     workspace_id: str,
     database_name: str,
     database_file: UploadFile = File(...),
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3066,14 +3076,19 @@ async def import_workspace_sqlite_database(
             user.id,
             database_name,
             tmp_path,
+            owner_workspace_id=owner_workspace_id,
             is_admin=is_admin,
         )
     finally:
         tmp_path.unlink(missing_ok=True)
-    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"import database {summary.name}")
+    await _snapshot_after_sqlite_mutation(
+        _resolved_sqlite_owner_workspace_id(workspace_id, owner_workspace_id),
+        user.id,
+        f"import database {summary.name}",
+    )
     return SqliteInspectorImportDatabaseResponse(
         workspace_id=workspace_id,
-        database=_serialize_inspector_database(summary),
+        database=summary,
         mode_promoted=promoted,
     )
 
@@ -3085,6 +3100,7 @@ async def import_workspace_sqlite_database(
 async def list_workspace_sqlite_tables(
     workspace_id: str,
     database_name: str,
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3092,14 +3108,14 @@ async def list_workspace_sqlite_tables(
         workspace_id,
         user.id,
         database_name,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
-    workspace = await userspace_service.get_workspace(workspace_id, user.id)
     return SqliteInspectorTableListResponse(
         workspace_id=workspace_id,
-        database=_serialize_inspector_database(summary),
+        database=summary,
         tables=[_serialize_inspector_table(t) for t in tables],
-        persistence_mode=workspace.sqlite_persistence_mode,
+        persistence_mode=summary.persistence_mode,
         mode_promoted=False,
     )
 
@@ -3113,6 +3129,7 @@ async def create_workspace_sqlite_table(
     workspace_id: str,
     database_name: str,
     request: SqliteInspectorCreateTableRequest,
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3123,9 +3140,14 @@ async def create_workspace_sqlite_table(
         request.name,
         _column_specs_to_definitions(request.columns),
         without_rowid=request.without_rowid,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
-    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"create table {request.name}")
+    await _snapshot_after_sqlite_mutation(
+        _resolved_sqlite_owner_workspace_id(workspace_id, owner_workspace_id),
+        user.id,
+        f"create table {request.name}",
+    )
     return SqliteInspectorCreateTableResponse(
         workspace_id=workspace_id,
         database_name=database_name,
@@ -3142,6 +3164,7 @@ async def get_workspace_sqlite_table_schema(
     workspace_id: str,
     database_name: str,
     table_name: str,
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3150,6 +3173,7 @@ async def get_workspace_sqlite_table_schema(
         user.id,
         database_name,
         table_name,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
     return SqliteInspectorTableSchemaResponse(
@@ -3168,6 +3192,7 @@ async def alter_workspace_sqlite_table(
     database_name: str,
     table_name: str,
     request: SqliteInspectorAlterTableRequest,
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3178,9 +3203,14 @@ async def alter_workspace_sqlite_table(
         database_name,
         table_name,
         alterations,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
-    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"alter table {table_name}")
+    await _snapshot_after_sqlite_mutation(
+        _resolved_sqlite_owner_workspace_id(workspace_id, owner_workspace_id),
+        user.id,
+        f"alter table {table_name}",
+    )
     return SqliteInspectorAlterTableResponse(
         workspace_id=workspace_id,
         database_name=database_name,
@@ -3197,6 +3227,7 @@ async def drop_workspace_sqlite_table(
     workspace_id: str,
     database_name: str,
     table_name: str,
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3205,9 +3236,14 @@ async def drop_workspace_sqlite_table(
         user.id,
         database_name,
         table_name,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
-    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"drop table {table_name}")
+    await _snapshot_after_sqlite_mutation(
+        _resolved_sqlite_owner_workspace_id(workspace_id, owner_workspace_id),
+        user.id,
+        f"drop table {table_name}",
+    )
     return SqliteInspectorDropTableResponse(
         workspace_id=workspace_id,
         database_name=database_name,
@@ -3221,6 +3257,7 @@ async def export_workspace_sqlite_table(
     workspace_id: str,
     database_name: str,
     table_name: str,
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3229,6 +3266,7 @@ async def export_workspace_sqlite_table(
         user.id,
         database_name,
         table_name,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
     safe_name = sqlite_inspector_helpers.validate_identifier(table_name, kind="Table name")
@@ -3249,6 +3287,7 @@ async def import_workspace_sqlite_table(
     table_name: str,
     csv_file: UploadFile = File(...),
     replace: bool = Form(default=False),
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3264,9 +3303,14 @@ async def import_workspace_sqlite_table(
         table_name,
         csv_text,
         replace=replace,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
-    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"import table {table_name}")
+    await _snapshot_after_sqlite_mutation(
+        _resolved_sqlite_owner_workspace_id(workspace_id, owner_workspace_id),
+        user.id,
+        f"import table {table_name}",
+    )
     return SqliteInspectorImportTableResponse(
         workspace_id=workspace_id,
         database_name=database_name,
@@ -3287,6 +3331,7 @@ async def list_workspace_sqlite_rows(
     offset: int = Query(default=0, ge=0),
     order_by: str | None = Query(default=None, max_length=64),
     order_direction: str = Query(default="asc"),
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3299,6 +3344,7 @@ async def list_workspace_sqlite_rows(
         offset=offset,
         order_by=order_by,
         order_direction=order_direction,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
     return SqliteInspectorRowPage(
@@ -3324,6 +3370,7 @@ async def insert_workspace_sqlite_row(
     database_name: str,
     table_name: str,
     request: SqliteInspectorRowMutationRequest,
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3333,9 +3380,14 @@ async def insert_workspace_sqlite_row(
         database_name,
         table_name,
         request.values,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
-    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"insert row in {table_name}")
+    await _snapshot_after_sqlite_mutation(
+        _resolved_sqlite_owner_workspace_id(workspace_id, owner_workspace_id),
+        user.id,
+        f"insert row in {table_name}",
+    )
     return SqliteInspectorRowMutationResponse(
         workspace_id=workspace_id,
         database_name=database_name,
@@ -3354,6 +3406,7 @@ async def update_workspace_sqlite_row(
     database_name: str,
     table_name: str,
     request: SqliteInspectorRowUpdateRequest,
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3364,9 +3417,14 @@ async def update_workspace_sqlite_row(
         table_name,
         request.row_key,
         request.values,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
-    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"update row in {table_name}")
+    await _snapshot_after_sqlite_mutation(
+        _resolved_sqlite_owner_workspace_id(workspace_id, owner_workspace_id),
+        user.id,
+        f"update row in {table_name}",
+    )
     return SqliteInspectorRowMutationResponse(
         workspace_id=workspace_id,
         database_name=database_name,
@@ -3385,6 +3443,7 @@ async def delete_workspace_sqlite_row(
     database_name: str,
     table_name: str,
     request: SqliteInspectorRowDeleteRequest,
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3394,9 +3453,14 @@ async def delete_workspace_sqlite_row(
         database_name,
         table_name,
         request.row_key,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
-    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"delete row from {table_name}")
+    await _snapshot_after_sqlite_mutation(
+        _resolved_sqlite_owner_workspace_id(workspace_id, owner_workspace_id),
+        user.id,
+        f"delete row from {table_name}",
+    )
     return SqliteInspectorRowDeleteResponse(
         workspace_id=workspace_id,
         database_name=database_name,
@@ -3413,6 +3477,7 @@ async def query_workspace_sqlite_database(
     workspace_id: str,
     database_name: str,
     request: SqliteInspectorSqlQueryRequest,
+    owner_workspace_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
@@ -3422,6 +3487,7 @@ async def query_workspace_sqlite_database(
         database_name,
         request.sql,
         max_rows=request.max_rows,
+        owner_workspace_id=owner_workspace_id,
         is_admin=is_admin,
     )
     return SqliteInspectorSqlQueryResponse(

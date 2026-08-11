@@ -17,6 +17,7 @@ The system prompt is composed of these sections in order:
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Mapping, Optional, Sequence
@@ -256,9 +257,11 @@ _USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
 """
 
 _SQLITE_TURN_REMINDER_LINE = (
-    "- SQLite local persistence is ON: ensure this delivery includes both live data "
-    "wiring (Lane A) and any needed SQLite migrations under .ragtime/db/migrations/ (Lane B). "
-    "Migration creation and upkeep are your responsibility in this mode.\n"
+    "- SQLite local persistence is ON: when selected tools are part of the requested "
+    "feature, keep live data wiring aligned with the current execution surface; when "
+    "local schema needs change, add any needed SQLite migrations under "
+    ".ragtime/db/migrations/. Migration creation and upkeep are your responsibility "
+    "in this mode.\n"
 )
 
 
@@ -763,7 +766,9 @@ _USERSPACE_DATA_WIRING_BLOCK = """
 
 - Use real tool outputs as the source of truth for rendered data.
 - In tool-enabled workspaces, do not replace live dashboard data connections with SQLite snapshots or seeded local tables.
-- Persistent User Space dashboards must be live-wired via `context.components[componentId].execute()`.
+- Persistent User Space dashboards must be live-wired via the approved execution surface for the current entrypoint.
+- Browser example: use `context.components[componentId].execute()` in preview code when the current entrypoint is using the browser execution surface.
+- Server-backed entrypoints may fetch the same live data through app-owned server code and pass the results into the UI.
 - When the workspace has selected tools, hardcoded/mock/sample data in any entrypoint file (including Python server entrypoints like `app.py`) is flagged as a live data contract violation. Use live tool connections to fetch data instead of embedding it in source.
 - For TypeScript dashboard mode, only `dashboard/main.ts` (the entry module) requires `live_data_connections`, `live_data_checks`, and verified `execute()` call sites.
 - Helper components under `dashboard/` (e.g., `dashboard/components/*`, `dashboard/charts/*`) do NOT need live_data_connections. They receive data as parameters from the entry module.
@@ -775,7 +780,7 @@ _USERSPACE_DATA_WIRING_BLOCK = """
 - Do not persist `dashboard/main.ts` without connection metadata when workspace has tools. If the file is persisted with contract violations, fix the violations via `patch_userspace_file` rather than regenerating the entire file.
 - Data connections are internal components, abstracted from end users.
 - These components map to admin-configured tools from Settings.
-- Persist the connection request (query/command payload + component reference), then read/fetch through `context.components` at render/runtime.
+- Persist the connection request (query/command payload + component reference), then read/fetch through the active execution surface at render/runtime.
 {userspace_shared_live_data_guardrails}
 - When creating chart/datatable payloads for reusable artifacts, include `data_connection` as a component reference:
     - `component_kind`: `tool_config`
@@ -788,7 +793,7 @@ _USERSPACE_DATA_WIRING_BLOCK = """
 
 ### Resilient data loading
 
-- Always wrap every `context.components[componentId].execute()` call in a try/catch block.
+- Always wrap every live-data execution call in a try/catch block.
 - When a data source is offline, timed-out, or returns an error, the dashboard must still render a visible layout with a user-friendly status message (e.g., "Data unavailable - source offline") instead of silently failing or rendering a blank page.
 - Render static layout elements (headers, navigation, empty table/chart placeholders) first, then load data asynchronously inside individual try/catch blocks so one failed source doesn't block the entire dashboard.
 - A single offline component must never prevent the rest of the dashboard from rendering.
@@ -863,42 +868,13 @@ Default to hiding unless the user benefits from seeing technical details.
 # USER SPACE MODE PROMPTS
 # =============================================================================
 
-_USERSPACE_SQLITE_PERSISTENCE_BLOCK = """
-
-#### Two-lane persistence contract
-
-This workspace has SQLite local persistence enabled. You must satisfy **both** lanes in every delivery:
-
-**Lane A -- Live data (primary, required when workspace has tools)**
-- Dashboard datasets requested by the user MUST be fetched at runtime via `context.components[componentId].execute()`.
-- Live tool responses are the source of truth for rendered data. Never substitute SQLite tables or local snapshots for live datasets.
-- All `live_data_connections`, `live_data_checks`, and AST `execute()` binding rules still apply.
-
-**Lane B -- SQLite local persistence (required for local app state)**
-- Use SQLite at `.ragtime/db/app.sqlite3` for local domain/app state (for example: user preferences, UI state, cache, drafts, operational data, computed aggregations for offline use).
-- You are responsible for persistence lifecycle management in include mode: design schema changes, add migrations, apply them in runtime/bootstrap, and keep migration history forward-only.
-- Every schema change requires a new numbered migration file in `.ragtime/db/migrations/` in lexical order (`0001_init.sql`, `0002_add_table.sql`, ...).
-- The workspace includes a runner at `.ragtime/scripts/sqlite_migrate.py`; keep it or replace it with an equivalent migration apply step.
-- Runtime bootstrap should run `.ragtime/scripts/sqlite_migrate.py --db .ragtime/db/app.sqlite3 --migrations .ragtime/db/migrations` so migrations apply on start/restart.
-- The default runner tracks applied migrations in `_ragtime_migrations` with SHA-256 checksums.
-- Never edit a previously applied migration file; always create a new migration.
-- If the project is JavaScript/TypeScript and an ORM is appropriate, Prisma is an optional query/modeling layer with a SQLite datasource; keep workspace persistence migrations in `.ragtime/db/migrations/` as the source of truth.
-- When scaffolding backend code, wire database configuration to `.ragtime/db/app.sqlite3` so local preview/runtime stays deterministic.
-
-**Delivery checklist (both lanes in one pass):**
-1. Create/extend the SQLite migration chain for any local state schema needs.
-2. Wire live data via `context.components[componentId].execute()` for dashboard datasets.
-3. Ensure local SQLite reads supplement but never replace live data connections.
-4. Validate all changed files, then snapshot.
-"""
-
 # Reusable hint appended to validation/tool feedback when sqlite_persistence_mode=include.
 # Keeps the two-lane expectation visible in error/violation payloads without duplicating prose.
 SQLITE_INCLUDE_MODE_HINT = (
     "This workspace has SQLite local persistence enabled (include mode). "
-    "Live data wiring remains required for dashboard datasets; additionally, "
-    "persist local app state in .ragtime/db/app.sqlite3 with numbered SQL "
-    "migration files in .ragtime/db/migrations/. You own creating and maintaining those migrations."
+    "When selected tools are part of the requested feature, live data wiring remains required for dashboard datasets. "
+    "When local schema needs change, persist local app state in .ragtime/db/app.sqlite3 with numbered SQL migration files in .ragtime/db/migrations/. "
+    "You own creating and maintaining those migrations."
 )
 
 
@@ -976,6 +952,7 @@ def build_userspace_mode_prompt_addition(
     has_live_data_tools: bool = True,
     workspace_continuity: str = "",
     available_tool_names: set[str] | None = None,
+    shared_sqlite_databases: list[dict[str, str]] | None = None,
 ) -> str:
     """Build userspace prompt additions with optional SQLite guidance and workspace continuity.
 
@@ -995,15 +972,14 @@ def build_userspace_mode_prompt_addition(
         data_wiring_block = ""
 
     return _build_userspace_mode_prompt_template(available_tool_names).format(
-        sqlite_persistence_block=(_USERSPACE_SQLITE_PERSISTENCE_BLOCK if include_sqlite_persistence else ""),
+        sqlite_persistence_block=build_userspace_data_and_persistence_boundaries_fragment(
+            include_sqlite_persistence=include_sqlite_persistence,
+            has_live_data_tools=has_live_data_tools,
+            shared_sqlite_databases=shared_sqlite_databases or [],
+        ),
         data_wiring_block=data_wiring_block,
         workspace_continuity=workspace_continuity,
     )
-
-
-USERSPACE_MODE_PROMPT_ADDITION = build_userspace_mode_prompt_addition(
-    include_sqlite_persistence=True,
-)
 
 
 _CHAT_DIAGNOSTICS_PROMPT_HEADER = """
@@ -1206,27 +1182,131 @@ _USERSPACE_RUNTIME_BRIDGE_BLOCK = """
 This workspace runs a real server entrypoint, so fetch live tool data from your
 SERVER code via the runtime bridge instead of wiring context.components[...] in
 browser modules:
-- Env vars available to the server process: RAGTIME_BRIDGE_URL, RAGTIME_BRIDGE_TOKEN.
-- Contract: POST {RAGTIME_BRIDGE_URL}/execute-component with header
+- Env vars available to the server process: `RAGTIME_BRIDGE_URL`, `RAGTIME_BRIDGE_TOKEN`.
+- Contract: POST `{RAGTIME_BRIDGE_URL}/execute-component` with header
   `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN` and JSON body
   `{"component_id": "<selected component id>", "request": {"query": "SELECT ... LIMIT 100"}}`.
 - For HTTP API-backed components, the same JSON body can instead be
   `{"component_id": "<selected component id>", "request": {"method": "GET", "path": "/customers"}}` (plus optional `query`, approved
   `headers`, `json_body`, `form_body`, or `response_selector`). Do not include credentials in app code.
 - Responses are `{rows, columns, row_count, error}` — same shape as the browser bridge.
-- Write access has two lanes; do not mix them:
-  - SERVER lane (this bridge, bearer token): follows Workspace Tools access policy.
+- Write access has two execution surfaces; do not mix them:
+  - SERVER execution surface (this bridge, bearer token): follows Workspace Tools access policy.
     Tools default read-only unless the workspace owner has Read+Write access and explicitly enables write
     access for the workspace.
-  - BROWSER lane (`context.components[...].execute()` in preview/shared pages):
+  - BROWSER execution surface (`context.components[...].execute()` in preview/shared pages):
     ALWAYS read-only, regardless of the workspace write toggle. Its request payload
-    comes from the browser, so the platform rejects writes on this lane by design.
+    comes from the browser, so the platform rejects writes on this execution surface by design.
 - Never attempt INSERT/UPDATE/DELETE or other mutations from browser code. Route
   every mutation through your own server route, and have the server call this bridge.
 - The runtime token is the backend service identity; backend mutation routes must enforce their own authz/authn and must never expose that token to browser code.
 - The browser bridge (`context.components[...]`) still works and remains correct
   for static-page reads; prefer the server bridge for backend routes and data APIs.
 """.strip()
+
+_SHARED_SQLITE_WORKSPACE_NAME_MAX_CHARS = 120
+
+
+def _sanitize_shared_sqlite_workspace_name(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(normalized) > _SHARED_SQLITE_WORKSPACE_NAME_MAX_CHARS:
+        normalized = normalized[: _SHARED_SQLITE_WORKSPACE_NAME_MAX_CHARS - 1].rstrip() + "…"
+    return json.dumps(normalized or "Unnamed workspace")
+
+
+def build_shared_sqlite_prompt_fragment(accessible_databases: list[dict[str, str]]) -> str:
+    """Build the Shared SQLite guidance fragment for accessible cross-workspace targets."""
+
+    if not accessible_databases:
+        return ""
+
+    sorted_targets = sorted(
+        accessible_databases,
+        key=lambda item: (
+            str(item.get("workspace_id", "") or ""),
+            str(item.get("workspace_name", "") or ""),
+            str(item.get("access_mode", "") or ""),
+        ),
+    )
+    target_lines: list[str] = []
+    for target in sorted_targets:
+        access_mode = "Read / Write" if target.get("access_mode") == "read_write" else "Read"
+        target_lines.extend(
+            [
+                f"- Workspace: {_sanitize_shared_sqlite_workspace_name(target.get('workspace_name', ''))}",
+                f"- target_workspace_id: `{target.get('workspace_id', '')}`",
+                "- database_name: `app.sqlite3`",
+                f"- effective_permission: {access_mode}",
+            ]
+        )
+
+    return (
+        "\n##### Shared SQLite target workspaces\n"
+        "- Shared SQLite is not a third persistence lane and never substitutes for selected live-tool data.\n"
+        "- `/sqlite/query` and `/sqlite/mutate` are only for cross-workspace access. Browser code must call an app-owned server route, and must never call bridge endpoints directly or receive `RAGTIME_BRIDGE_TOKEN`.\n"
+        "- Use Shared SQLite from server code only. Call `POST {RAGTIME_BRIDGE_URL}/sqlite/query` or `POST {RAGTIME_BRIDGE_URL}/sqlite/mutate` with `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN`. Never send the bridge token, raw credentials, or server bridge calls to browser code.\n"
+        "- A server-backed entrypoint is required for this access. Static or missing entrypoints cannot execute these server bridge calls until you add backend/server code.\n"
+        '- Query contract: `POST {RAGTIME_BRIDGE_URL}/sqlite/query` with `target_workspace_id`, fixed `database_name: "app.sqlite3"`, parameterized SQL, positional-list or named-dict `parameters`, and `max_rows` up to 500. Responses include `columns`, `rows`, `row_count`, and `truncated`.\n'
+        '- Example query: `{"target_workspace_id": "ws_target", "database_name": "app.sqlite3", "sql": "SELECT * FROM orders WHERE customer_id = :customer_id LIMIT 100", "parameters": {"customer_id": "<customer_id>"}, "max_rows": 100}`.\n'
+        "- Mutation contract: `POST {RAGTIME_BRIDGE_URL}/sqlite/mutate` with a target and 1..500 structured `insert`, `upsert`, `update`, or `delete` operations. Use `table`, `values`, nonempty `where` for update/delete, and `conflict_columns` for upsert. The bridge does not accept raw writable SQL.\n"
+        '- Example mutate payload: `{"target_workspace_id": "ws_target", "database_name": "app.sqlite3", "operations": [{"kind": "update", "table": "orders", "values": {"status": "<status>"}, "where": {"id": "<order_id>"}}]}`.\n'
+        "- Access rules: The target owner must grant Shared SQLite access. Read grants allow queries; Read / Write grants allow structured mutations.\n"
+        "- Membership rules: The runtime's leased user must keep source membership plus target viewer membership for query or target editor membership for mutation.\n"
+        "- Schema rules: The target workspace owns `.ragtime/db/migrations/*.sql` and all DDL. Consumers cannot run DDL, PRAGMA, ATTACH, or extension loading.\n"
+        "- Failure handling: Handle HTTP 409 as busy, 504 as timeout, and 503 as audit unavailable. A 503 audit failure occurs before writes and is safe to retry. Do not blindly retry other mutation failures.\n"
+        "- Accessible targets:\n" + "\n".join(target_lines) + "\n"
+    )
+
+
+def build_userspace_data_and_persistence_boundaries_fragment(
+    *,
+    include_sqlite_persistence: bool,
+    has_live_data_tools: bool,
+    shared_sqlite_databases: list[dict[str, str]],
+) -> str:
+    """Build the combined data/persistence guidance block when any relevant boundary applies."""
+
+    shared_fragment = build_shared_sqlite_prompt_fragment(shared_sqlite_databases)
+    if not include_sqlite_persistence and not shared_fragment:
+        return ""
+
+    sections = [
+        "\n\n#### Data and persistence boundaries\n",
+        "- These sections define responsibilities, not mandatory work in every turn.\n",
+    ]
+
+    if include_sqlite_persistence and has_live_data_tools:
+        sections.extend(
+            [
+                "\n##### Lane A - Live tool data\n",
+                "- Use the approved execution surface for the current entrypoint when fetching live datasets.\n",
+                "- Live tool responses are the source of truth for rendered data. Never substitute SQLite tables or local snapshots for live datasets.\n",
+                "- All `live_data_connections`, `live_data_checks`, and AST `execute()` binding rules still apply.\n",
+            ]
+        )
+
+    if include_sqlite_persistence:
+        sections.extend(
+            [
+                "\n##### Lane B - Primary workspace SQLite\n",
+                "- Primary workspace SQLite is accessed directly from server code at `.ragtime/db/app.sqlite3`; its workspace owns migrations and DDL.\n",
+                "- Use it for local domain/app state (for example: user preferences, UI state, cache, drafts, operational data, computed aggregations for offline use).\n",
+                "- You are responsible for persistence lifecycle management in include mode: design schema changes, add migrations, apply them in runtime/bootstrap, and keep migration history forward-only.\n",
+                "- Every schema change requires a new numbered migration file in `.ragtime/db/migrations/` in lexical order (`0001_init.sql`, `0002_add_table.sql`, ...).\n",
+                "- The workspace includes a runner at `.ragtime/scripts/sqlite_migrate.py`; keep it or replace it with an equivalent migration apply step.\n",
+                "- Runtime bootstrap should run `.ragtime/scripts/sqlite_migrate.py --db .ragtime/db/app.sqlite3 --migrations .ragtime/db/migrations` so migrations apply on start/restart.\n",
+                "- The default runner tracks applied migrations in `_ragtime_migrations` with SHA-256 checksums.\n",
+                "- Never edit a previously applied migration file; always create a new migration.\n",
+                "- If the project is JavaScript/TypeScript and an ORM is appropriate, Prisma is an optional query/modeling layer with a SQLite datasource; keep workspace persistence migrations in `.ragtime/db/migrations/` as the source of truth.\n",
+                "- When scaffolding backend code, wire database configuration to `.ragtime/db/app.sqlite3` so local preview/runtime stays deterministic.\n",
+            ]
+        )
+
+    if shared_fragment:
+        sections.append(shared_fragment)
+
+    return "".join(sections)
+
 
 # Nudge for missing/default entrypoint – lightweight suggestion style.
 _USERSPACE_ENTRYPOINT_MISSING_NUDGE = """
@@ -1286,6 +1366,11 @@ def build_userspace_entrypoint_nudge(
     if status.framework != "static":
         prompt += "\n\n" + _USERSPACE_RUNTIME_BRIDGE_BLOCK
     return prompt
+
+
+USERSPACE_MODE_PROMPT_ADDITION = build_userspace_mode_prompt_addition(
+    include_sqlite_persistence=True,
+)
 
 
 def build_index_system_prompt(index_metadata: List[dict]) -> str:

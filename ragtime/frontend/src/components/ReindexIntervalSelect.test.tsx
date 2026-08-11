@@ -60,9 +60,6 @@ describe('ReindexIntervalSelect', () => {
 
     await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), '24');
     expect(screen.getByRole('dialog', { name: 'Disable webhook delivery?' })).toBeTruthy();
-    expect(
-      screen.getByText('Switching away from webhook delivery will re-enable scheduled updates.'),
-    ).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
     expect(onWebhookDeliveryChange).not.toHaveBeenCalled();

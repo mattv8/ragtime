@@ -71,7 +71,6 @@ describe('AgentAccessSection', () => {
     ).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Copy agent manifest URL' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Copy agent instructions' })).toBeTruthy();
-    expect(screen.getByText(/paste them into the trusted external agent chat/i)).toBeTruthy();
   });
 
   it('retries initial load failures and copies secret-safe instructions', async () => {

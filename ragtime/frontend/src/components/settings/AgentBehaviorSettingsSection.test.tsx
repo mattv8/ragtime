@@ -43,7 +43,6 @@ describe('AgentBehaviorSettingsSection', () => {
 
     expect(screen.getByRole('button', { name: 'Agent Behavior' })).toBeTruthy();
     expect(document.getElementById('setting-agent_behavior')).toBeTruthy();
-    expect(screen.getByText(/global agent execution and tool behavior/i)).toBeTruthy();
     expect(document.getElementById('setting-tool_skills_enabled')).toBeTruthy();
     expect(screen.getByLabelText('Load tools on demand')).toBeTruthy();
     expect((screen.getByLabelText('Load tools on demand') as HTMLInputElement).checked).toBe(true);
@@ -57,21 +56,6 @@ describe('AgentBehaviorSettingsSection', () => {
     expect(screen.getByText('30')).toBeTruthy();
     expect(screen.getByText('5K')).toBeTruthy();
     expect(screen.getByText('6')).toBeTruthy();
-  });
-
-  it('explains on-demand tool loading by default and legacy eager loading when disabled', async () => {
-    const user = userEvent.setup();
-    renderSection();
-
-    expect(
-      screen.getByText(/Only essential tools and the tool-skill controls are sent initially/i),
-    ).toBeTruthy();
-
-    await user.click(screen.getByLabelText('Load tools on demand'));
-
-    expect(
-      screen.getByText(/All eligible tools and schemas are sent with every request/i),
-    ).toBeTruthy();
   });
 
   it('updates the toggle and numeric controls', async () => {

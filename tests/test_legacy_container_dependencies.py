@@ -68,6 +68,15 @@ class LegacyContainerDependencyTests(unittest.TestCase):
         self.assertIn("ARG LEGACY_CPU=0", production_stage)
         self.assertIn("RAGTIME_LEGACY_CPU=${LEGACY_CPU}", production_stage)
 
+    def test_legacy_build_uses_pre_native_claude_cli(self) -> None:
+        production_marker = "FROM python:3.12-slim-trixie AS production"
+        production_stage = self.dockerfile_text.split(production_marker, 1)[1]
+
+        self.assertIn('if [ "$LEGACY_CPU" = "1" ]; then', production_stage)
+        self.assertIn("npm install -g @anthropic-ai/claude-code@2.1.112", production_stage)
+        self.assertIn("npm install -g @anthropic-ai/claude-code@2.1.186", production_stage)
+        self.assertIn("claude --version", production_stage)
+
     def test_entrypoint_has_x86_v2_cpu_baseline_preflight(self) -> None:
         entrypoint = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
         self.assertIn("cpu_baseline_preflight", entrypoint)

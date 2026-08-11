@@ -11,7 +11,7 @@ import socket
 import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, cast
+from typing import Any, Callable, TypedDict, cast
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
@@ -46,6 +46,7 @@ from ragtime.userspace.models import (
     UserSpacePreviewLaunchResponse,
     UserSpacePreviewWarning,
     UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeBridgeStatus,
     UserSpaceRuntimeSession,
     UserSpaceRuntimeSessionResponse,
     UserSpaceRuntimeStatusResponse,
@@ -61,6 +62,16 @@ from ragtime.userspace.service import userspace_service
 from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
 
 logger = get_logger(__name__)
+
+
+class _RuntimeBridgeStatusBaseKwargs(TypedDict):
+    bridge_url: str | None
+    token_session_id: str | None
+    current_session_id: str | None
+    issued_at: datetime | None
+    expires_at: datetime | None
+    last_success_at: datetime | None
+
 
 _RUNTIME_CAPABILITY_TTL_SECONDS = 900
 _RUNTIME_PREVIEW_BOOTSTRAP_TTL_SECONDS = 300
@@ -81,6 +92,9 @@ _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN = "userspace-preview.lvh.me"
 _RUNTIME_PREVIEW_UPSTREAM_CACHE_TTL_SECONDS = 300
 _RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS = 2.0
 _RUNTIME_PROVIDER_STATUS_STALE_FALLBACK_SECONDS = 8.0
+_RUNTIME_BRIDGE_AUTH_FAILURE_AUDIT_WINDOW_SECONDS = 30.0
+_RUNTIME_BRIDGE_AUTH_FAILURE_AUDIT_CACHE_MAX = 1024
+_RUNTIME_BRIDGE_AUDIT_SUCCESS_SCAN_LIMIT = 10
 _RUNTIME_PREVIEW_PROBE_CACHE_TTL_SECONDS = 3.0
 _RUNTIME_PUBLIC_PREVIEW_DNS_CACHE_TTL_SECONDS = 30.0
 _RUNTIME_PUBLIC_PREVIEW_PROBE_CACHE_TTL_SECONDS = 30.0
@@ -136,6 +150,8 @@ class UserSpaceRuntimeService:
         self._preview_base_domains: set[str] = set()
         self._preview_upstream_cache: dict[str, _PreviewUpstreamCacheEntry] = {}
         self._provider_status_cache: dict[str, _ProviderStatusCacheEntry] = {}
+        self._runtime_bridge_auth_failure_audit_dedupe: dict[str, float] = {}
+        self._runtime_bridge_auth_failure_audit_lock = asyncio.Lock()
         self._runtime_mount_spec_signatures: dict[str, str] = {}
         self._preview_probe_cache: dict[str, _PreviewProbeCacheEntry] = {}
         self._public_preview_dns_cache: dict[str, _PreviewProbeCacheEntry] = {}
@@ -549,6 +565,90 @@ class UserSpaceRuntimeService:
         except JWTError as exc:
             raise HTTPException(status_code=401, detail=invalid_detail) from exc
 
+    @staticmethod
+    def _parse_runtime_bridge_datetime(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+    async def _log_runtime_bridge_auth_failure(
+        self,
+        *,
+        reason: str,
+        claims: dict[str, Any] | None = None,
+        current_session_id: str | None = None,
+    ) -> None:
+        payload = {
+            "reason": reason,
+            "workspace_id": str((claims or {}).get("workspace_id") or "").strip() or None,
+            "token_session_id": str((claims or {}).get("session_id") or "").strip() or None,
+            "current_session_id": str(current_session_id or "").strip() or None,
+        }
+        sanitized_payload = {key: value for key, value in payload.items() if value is not None}
+        logger.warning("Runtime bridge auth failed: %s", sanitized_payload)
+        if claims is None:
+            return
+        workspace_id = str(claims.get("workspace_id") or "").strip()
+        token_session_id = str(claims.get("session_id") or "").strip() or None
+        if not workspace_id:
+            return
+        dedupe_key = hashlib.sha256(
+            json.dumps(
+                {
+                    "workspace_id": workspace_id,
+                    "token_session_id": token_session_id,
+                    "reason": reason,
+                    "current_session_id": str(current_session_id or "").strip() or None,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        now_ts = _time.monotonic()
+        async with self._runtime_bridge_auth_failure_audit_lock:
+            expired_keys = [key for key, expiry in self._runtime_bridge_auth_failure_audit_dedupe.items() if expiry <= now_ts]
+            for key in expired_keys:
+                self._runtime_bridge_auth_failure_audit_dedupe.pop(key, None)
+            existing_expiry = self._runtime_bridge_auth_failure_audit_dedupe.get(dedupe_key)
+            if existing_expiry is not None and existing_expiry > now_ts:
+                return
+            if len(self._runtime_bridge_auth_failure_audit_dedupe) >= _RUNTIME_BRIDGE_AUTH_FAILURE_AUDIT_CACHE_MAX:
+                oldest_key = min(
+                    self._runtime_bridge_auth_failure_audit_dedupe,
+                    key=lambda key: self._runtime_bridge_auth_failure_audit_dedupe[key],
+                )
+                self._runtime_bridge_auth_failure_audit_dedupe.pop(oldest_key, None)
+            self._runtime_bridge_auth_failure_audit_dedupe[dedupe_key] = now_ts + _RUNTIME_BRIDGE_AUTH_FAILURE_AUDIT_WINDOW_SECONDS
+        await self._audit(
+            workspace_id,
+            "runtime_bridge_auth_failure",
+            user_id=None,
+            session_id=token_session_id,
+            payload=sanitized_payload,
+        )
+
+    @staticmethod
+    def _runtime_bridge_audit_payload_error(payload: Any) -> Any:
+        if isinstance(payload, dict):
+            return payload.get("error")
+        if isinstance(payload, str):
+            try:
+                decoded = json.loads(payload)
+            except ValueError:
+                return payload
+            if isinstance(decoded, dict):
+                return decoded.get("error")
+        return None
+
     def _finalize_workspace_env(
         self,
         workspace_id: str,
@@ -577,23 +677,172 @@ class UserSpaceRuntimeService:
 
     async def verify_runtime_bridge_token(self, token: str | None) -> dict[str, Any]:
         if not token:
+            await self._log_runtime_bridge_auth_failure(reason="missing_token")
             raise HTTPException(status_code=401, detail="Runtime bridge token required")
-        claims = self._decode_signed_token(token, invalid_detail="Invalid runtime bridge token")
+        try:
+            claims = self._decode_signed_token(token, invalid_detail="Invalid runtime bridge token")
+        except HTTPException:
+            await self._log_runtime_bridge_auth_failure(reason="invalid_or_expired_token")
+            raise
 
         workspace_id = str(claims.get("workspace_id") or "").strip()
         session_id = str(claims.get("session_id") or "").strip()
         if claims.get("kind") != _RUNTIME_BRIDGE_TOKEN_KIND or not workspace_id or not session_id:
+            await self._log_runtime_bridge_auth_failure(reason="invalid_claims", claims=claims)
             raise HTTPException(status_code=401, detail="Invalid runtime bridge token")
 
         session = await self._get_runtime_session_record(session_id)
+        current_session = await self._get_active_session_row(workspace_id)
+        current_session_id = str(getattr(current_session, "id", "") or "").strip() or None
+        if current_session_id and current_session_id != session_id:
+            await self._log_runtime_bridge_auth_failure(
+                reason="session_mismatch",
+                claims=claims,
+                current_session_id=current_session_id,
+            )
+            raise HTTPException(status_code=401, detail="Runtime bridge session mismatch")
         if (
             session is None
             or str(getattr(session, "workspaceId", "") or "") != workspace_id
             or str(getattr(session, "state", "") or "") not in _RUNTIME_BRIDGE_ACTIVE_SESSION_STATES
         ):
+            await self._log_runtime_bridge_auth_failure(
+                reason="session_inactive",
+                claims=claims,
+                current_session_id=current_session_id,
+            )
             raise HTTPException(status_code=401, detail="Runtime bridge session is not active")
 
+        leased_by_user_id = str(getattr(session, "leasedByUserId", "") or "").strip()
+        if not leased_by_user_id:
+            raise HTTPException(status_code=401, detail="Runtime bridge session is not active")
+
+        claims["leased_by_user_id"] = leased_by_user_id
+
         return claims
+
+    async def _get_latest_runtime_bridge_success_at(
+        self,
+        workspace_id: str,
+        session_id: str,
+    ) -> datetime | None:
+        db = await get_db()
+        model = self._runtime_audit_model(db)
+        try:
+            rows = await model.find_many(
+                where={
+                    "workspaceId": workspace_id,
+                    "sessionId": session_id,
+                    "eventType": "runtime_bridge_execute",
+                },
+                order={"createdAt": "desc"},
+                take=_RUNTIME_BRIDGE_AUDIT_SUCCESS_SCAN_LIMIT,
+            )
+        except Exception:
+            return None
+        for row in rows or []:
+            payload = getattr(row, "eventPayload", getattr(row, "event_payload", None))
+            if self._runtime_bridge_audit_payload_error(payload) not in {None, "", False}:
+                continue
+            value = getattr(row, "createdAt", getattr(row, "created_at", None))
+            parsed = self._parse_runtime_bridge_datetime(value)
+            if parsed is not None:
+                return parsed
+        return None
+
+    async def _get_runtime_bridge_status_for_session(
+        self,
+        session: UserSpaceRuntimeSession | None,
+        provider_status: dict[str, Any] | None,
+    ) -> UserSpaceRuntimeBridgeStatus:
+        if session is None or session.state not in {"starting", "running"}:
+            return UserSpaceRuntimeBridgeStatus(
+                state="not_running",
+                current_session_id=getattr(session, "id", None) if session else None,
+                detail="Runtime session is not active",
+            )
+        if provider_status is None:
+            return UserSpaceRuntimeBridgeStatus(
+                state="unavailable",
+                current_session_id=session.id,
+                detail="Runtime provider status unavailable",
+            )
+        raw_credential = provider_status.get("bridge_credential")
+        if not isinstance(raw_credential, dict):
+            return UserSpaceRuntimeBridgeStatus(
+                state="missing",
+                current_session_id=session.id,
+                detail="Runtime bridge credential metadata unavailable",
+            )
+
+        bridge_url = str(raw_credential.get("bridge_url") or "").strip() or None
+        token_kind = str(raw_credential.get("token_kind") or "").strip() or None
+        workspace_id = str(raw_credential.get("workspace_id") or "").strip() or None
+        token_session_id = str(raw_credential.get("session_id") or "").strip() or None
+        issued_at = self._parse_runtime_bridge_datetime(raw_credential.get("issued_at"))
+        expires_at = self._parse_runtime_bridge_datetime(raw_credential.get("expires_at"))
+        last_success_at = await self._get_latest_runtime_bridge_success_at(session.workspace_id, session.id)
+
+        base_kwargs: _RuntimeBridgeStatusBaseKwargs = {
+            "bridge_url": bridge_url,
+            "token_session_id": token_session_id,
+            "current_session_id": session.id,
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "last_success_at": last_success_at,
+        }
+
+        if token_kind != _RUNTIME_BRIDGE_TOKEN_KIND or workspace_id != session.workspace_id or not bridge_url or not token_session_id:
+            return UserSpaceRuntimeBridgeStatus(
+                state="invalid",
+                detail="Runtime bridge credential metadata is invalid",
+                **base_kwargs,
+            )
+        if expires_at is not None and expires_at <= utc_now():
+            return UserSpaceRuntimeBridgeStatus(
+                state="expired",
+                detail="Runtime bridge credential has expired",
+                **base_kwargs,
+            )
+        if token_session_id != session.id:
+            return UserSpaceRuntimeBridgeStatus(
+                state="session_mismatch",
+                detail="Runtime bridge credential is bound to a different session",
+                **base_kwargs,
+            )
+        return UserSpaceRuntimeBridgeStatus(state="healthy", **base_kwargs)
+
+    async def get_runtime_bridge_status(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> UserSpaceRuntimeBridgeStatus:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
+        active = await self._get_active_session_row(workspace_id)
+        session = self._to_runtime_session(active) if active else None
+        provider_status = None
+        if session is not None:
+            try:
+                provider_status = await self._runtime_provider_get_status(
+                    session.provider_session_id,
+                    max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
+                    allow_stale_on_error=True,
+                )
+            except HTTPException:
+                provider_status = None
+        return await self._get_runtime_bridge_status_for_session(session, provider_status)
+
+    async def refresh_runtime_bridge_credentials(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> UserSpaceRuntimeBridgeStatus:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+        await self.restart_runtime_env_vars_and_wait(
+            workspace_id,
+            timeout_seconds=60.0,
+        )
+        return await self.get_runtime_bridge_status(workspace_id, user_id)
 
     async def consume_preview_grant(self, claims: dict[str, Any]) -> None:
         """Enforce single-use semantics for preview bootstrap grants.
@@ -2130,16 +2379,30 @@ class UserSpaceRuntimeService:
                 runtime_has_cap_sys_admin=None,
                 preview_url=self._build_preview_origin(workspace_id),
                 live_data_warning=live_data_warning,
+                bridge_status=UserSpaceRuntimeBridgeStatus(
+                    state="not_running",
+                    detail="Runtime session is not active",
+                ),
             )
 
         session = self._to_runtime_session(active)
-        provider_status = await self._runtime_provider_get_status(
-            session.provider_session_id,
-            max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
-            allow_stale_on_error=True,
-        )
+        provider_status_fetch_failed = False
+        try:
+            provider_status = await self._runtime_provider_get_status(
+                session.provider_session_id,
+                max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
+                allow_stale_on_error=True,
+            )
+        except HTTPException:
+            provider_status = None
+            provider_status_fetch_failed = True
 
-        if provider_status is None and session.runtime_provider == self._runtime_provider_name() and session.state in {"starting", "running"}:
+        if (
+            provider_status is None
+            and not provider_status_fetch_failed
+            and session.runtime_provider == self._runtime_provider_name()
+            and session.state in {"starting", "running"}
+        ):
             # Re-read the DB row to guard against a concurrent stop_runtime_session
             # that set the state to "stopped" after our initial read.
             fresh_row = await self._get_active_session_row(workspace_id)
@@ -2154,6 +2417,11 @@ class UserSpaceRuntimeService:
                     runtime_has_cap_sys_admin=None,
                     preview_url=self._build_preview_origin(workspace_id),
                     live_data_warning=live_data_warning,
+                    bridge_status=UserSpaceRuntimeBridgeStatus(
+                        state="not_running",
+                        current_session_id=session.id,
+                        detail="Runtime session is not active",
+                    ),
                 )
             logger.warning(
                 "Runtime provider status missing for workspace %s; auto-recovering session",
@@ -2245,6 +2513,8 @@ class UserSpaceRuntimeService:
             runtime_operation_started_at = provider_status.get("runtime_operation_started_at")
             runtime_operation_updated_at = provider_status.get("runtime_operation_updated_at")
 
+        bridge_status = await self._get_runtime_bridge_status_for_session(session, provider_status)
+
         return UserSpaceRuntimeStatusResponse(
             workspace_id=workspace_id,
             session_state=state_for_response,
@@ -2259,6 +2529,7 @@ class UserSpaceRuntimeService:
             preview_url=self._build_preview_origin(workspace_id),
             last_error=last_error,
             live_data_warning=live_data_warning,
+            bridge_status=bridge_status,
             runtime_operation_id=runtime_operation_id,
             runtime_operation_phase=runtime_operation_phase,
             runtime_operation_started_at=runtime_operation_started_at,

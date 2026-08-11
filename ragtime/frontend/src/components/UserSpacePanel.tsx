@@ -113,6 +113,7 @@ import type {
   UserSpaceArtifactType,
   UserSpaceAvailableTool,
   UserSpaceBrowserSurface,
+  UserSpaceBridgeStatus,
   UserSpaceCollabMessage,
   UserSpaceCollabPresenceUser,
   UserSpaceFileInfo,
@@ -630,6 +631,8 @@ const USERSPACE_WORKSPACE_DUPLICATE_TASK_POLL_INTERVAL_MS = 1000;
 const USERSPACE_MOUNT_SYNC_POLL_INTERVAL_MS = 1200;
 const USERSPACE_RUNTIME_BACKGROUND_POLL_INTERVAL_MS = 30000;
 const USERSPACE_BROWSER_AUTH_REFRESH_LEAD_MS = 60_000;
+const USERSPACE_BRIDGE_CREDENTIAL_REFRESH_LEAD_MS = 5 * 60_000;
+const USERSPACE_BRIDGE_CREDENTIAL_REFRESH_COOLDOWN_MS = 60_000;
 const USERSPACE_PREVIEW_LAUNCH_REFRESH_LEAD_MS = 60_000;
 const SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES = 20;
 
@@ -747,6 +750,90 @@ function formatSnapshotTimestamp(value: string): string {
     hour: 'numeric',
     minute: '2-digit',
   });
+}
+
+function getBridgeStatusLabel(bridgeStatus: UserSpaceBridgeStatus): string {
+  switch (bridgeStatus.state) {
+    case 'healthy':
+      return 'Bridge healthy';
+    case 'not_running':
+      return 'Bridge not running';
+    case 'missing':
+      return 'Bridge missing';
+    case 'expired':
+      return 'Bridge expired';
+    case 'invalid':
+      return 'Bridge invalid';
+    case 'session_mismatch':
+      return 'Bridge session mismatch';
+    case 'unavailable':
+      return 'Bridge unavailable';
+    default:
+      return 'Bridge status';
+  }
+}
+
+function getBridgeStatusPillClass(bridgeStatus: UserSpaceBridgeStatus): string {
+  switch (bridgeStatus.state) {
+    case 'healthy':
+      return 'userspace-status-pill-muted';
+    case 'not_running':
+      return 'userspace-status-pill-warning';
+    case 'missing':
+    case 'expired':
+    case 'invalid':
+    case 'session_mismatch':
+      return 'userspace-status-pill-danger';
+    case 'unavailable':
+    default:
+      return 'userspace-status-pill-warning';
+  }
+}
+
+function getBridgeStatusDetail(bridgeStatus: UserSpaceBridgeStatus): string | null {
+  if (bridgeStatus.state === 'healthy') {
+    return null;
+  }
+
+  const parts: string[] = [];
+  const detail = bridgeStatus.detail?.trim();
+  if (detail) {
+    parts.push(detail);
+  }
+  if (bridgeStatus.expires_at) {
+    const expiresAt = parseUtcTimestamp(bridgeStatus.expires_at);
+    const isExpired =
+      bridgeStatus.state === 'expired' || (expiresAt !== null && expiresAt.getTime() <= Date.now());
+    parts.push(
+      `${isExpired ? 'Expired' : 'Expires'} ${formatSnapshotTimestamp(bridgeStatus.expires_at)}`,
+    );
+  }
+  if (bridgeStatus.last_success_at) {
+    parts.push(`Last success ${formatSnapshotTimestamp(bridgeStatus.last_success_at)}`);
+  }
+
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+function getBridgeCredentialRefreshAttemptKey(
+  workspaceId: string,
+  bridgeStatus: UserSpaceBridgeStatus,
+): string {
+  return [
+    workspaceId,
+    bridgeStatus.state,
+    bridgeStatus.token_session_id,
+    bridgeStatus.current_session_id,
+    bridgeStatus.issued_at,
+    bridgeStatus.expires_at,
+  ].join('::');
+}
+
+interface BridgeCredentialAutoRefreshState {
+  workspaceId: string;
+  lastAttemptedAt: number;
+  lastAttemptedKey: string | null;
+  lastSuccessfulKey: string | null;
 }
 
 function getSnapshotDiffFileKey(snapshotId: string, filePath: string): string {
@@ -1045,6 +1132,7 @@ export function UserSpacePanel({
   } | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<UserSpaceRuntimeStatusResponse | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
+  const [refreshingBridgeCredentials, setRefreshingBridgeCredentials] = useState(false);
   const [activeRightTab, setActiveRightTab] = useState<'preview' | 'console'>('preview');
   const [collabReadOnly, setCollabReadOnly] = useState(false);
   const [collabVersion, setCollabVersion] = useState(0);
@@ -1299,6 +1387,7 @@ export function UserSpacePanel({
   const browserSurfaceAuthExpiryRef = useRef<Partial<Record<UserSpaceBrowserSurface, number>>>({});
   const previewLaunchExpiresAtMsRef = useRef(0);
   const previousRuntimeDisplayStateRef = useRef<string | null>(null);
+  const bridgeCredentialAutoRefreshStateRef = useRef<BridgeCredentialAutoRefreshState | null>(null);
   const refreshRuntimeStatusPendingRef = useRef(false);
   const refreshRuntimeStatusPendingIncludeRef = useRef<boolean>(true);
   const latestQueuedWorkspaceCreateTaskIdRef = useRef<string | null>(null);
@@ -2382,6 +2471,12 @@ export function UserSpacePanel({
   const showRestartRuntimeButton = runtimeDisplayState === 'running';
   const showStopRuntimeButton =
     runtimeDisplayState === 'running' || runtimeDisplayState === 'starting';
+  const bridgeStatus = runtimeStatus?.bridge_status ?? null;
+  const bridgeStatusLabel = bridgeStatus ? getBridgeStatusLabel(bridgeStatus) : null;
+  const bridgeStatusDetail = bridgeStatus ? getBridgeStatusDetail(bridgeStatus) : null;
+  const bridgeStatusPillClass = bridgeStatus ? getBridgeStatusPillClass(bridgeStatus) : null;
+  const showRefreshBridgeCredentialsButton =
+    bridgeStatus !== null && bridgeStatus.state !== 'not_running';
   const allUsersById = useMemo(() => new Map(allUsers.map((user) => [user.id, user])), [allUsers]);
 
   const formatUserLabel = useCallback(
@@ -4559,8 +4654,13 @@ export function UserSpacePanel({
   const refreshSqliteHasTables = useCallback(async (workspaceId: string) => {
     try {
       const result = await api.listUserSpaceSqliteDatabases(workspaceId);
-      const appDb = result.databases.find((d) => d.name === result.default_database_name);
-      setSqliteHasTables(!!appDb && appDb.table_count > 0);
+      setSqliteHasTables(
+        result.databases.some(
+          (database) =>
+            (database as { initialized?: boolean }).initialized !== false &&
+            database.table_count > 0,
+        ),
+      );
     } catch {
       setSqliteHasTables(false);
     }
@@ -4586,14 +4686,17 @@ export function UserSpacePanel({
     }
   }, [activeWorkspaceId, refreshSqliteHasTables]);
 
-  const handleSqlitePersistencePromoted = useCallback(() => {
-    if (!activeWorkspaceId) return;
-    setWorkspaces((current) =>
-      current.map((ws) =>
-        ws.id === activeWorkspaceId ? { ...ws, sqlite_persistence_mode: 'include' } : ws,
-      ),
-    );
-  }, [activeWorkspaceId]);
+  const handleSqlitePersistencePromoted = useCallback(
+    (workspaceId: string) => {
+      if (!activeWorkspaceId || workspaceId !== activeWorkspaceId) return;
+      setWorkspaces((current) =>
+        current.map((ws) =>
+          ws.id === activeWorkspaceId ? { ...ws, sqlite_persistence_mode: 'include' } : ws,
+        ),
+      );
+    },
+    [activeWorkspaceId],
+  );
 
   const handleWorkspaceScmSyncComplete = useCallback(
     async (response: UserSpaceWorkspaceScmSyncResponse) => {
@@ -5048,6 +5151,101 @@ export function UserSpacePanel({
       setRuntimeBusy(false);
     }
   }, [activeWorkspaceId, canEditWorkspace, refreshActiveWorkspaceState]);
+
+  const handleRefreshBridgeCredentials = useCallback(async (): Promise<boolean> => {
+    if (!activeWorkspaceId || !canEditWorkspace) return false;
+    setRefreshingBridgeCredentials(true);
+    try {
+      await api.refreshUserSpaceBridgeCredentials(activeWorkspaceId);
+      await refreshActiveWorkspaceState();
+      setError(null);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to refresh bridge credentials');
+      return false;
+    } finally {
+      setRefreshingBridgeCredentials(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, refreshActiveWorkspaceState]);
+
+  useEffect(() => {
+    if (
+      !activeWorkspaceId ||
+      !canEditWorkspace ||
+      !bridgeStatus ||
+      runtimeStatus?.session_state !== 'running' ||
+      runtimeBusy ||
+      refreshingBridgeCredentials
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    const expiresAtMs = bridgeStatus.expires_at ? parseUtcTimestampMs(bridgeStatus.expires_at) : 0;
+    const shouldRefreshBridgeCredentials =
+      bridgeStatus.state === 'expired' ||
+      (bridgeStatus.state === 'healthy' &&
+        expiresAtMs > 0 &&
+        expiresAtMs <= now + USERSPACE_BRIDGE_CREDENTIAL_REFRESH_LEAD_MS);
+
+    if (!shouldRefreshBridgeCredentials) {
+      return;
+    }
+
+    const attemptKey = getBridgeCredentialRefreshAttemptKey(activeWorkspaceId, bridgeStatus);
+    const workspaceRefreshState =
+      bridgeCredentialAutoRefreshStateRef.current?.workspaceId === activeWorkspaceId
+        ? bridgeCredentialAutoRefreshStateRef.current
+        : {
+            workspaceId: activeWorkspaceId,
+            lastAttemptedAt: 0,
+            lastAttemptedKey: null,
+            lastSuccessfulKey: null,
+          };
+
+    if (workspaceRefreshState.lastSuccessfulKey === attemptKey) {
+      return;
+    }
+
+    if (
+      workspaceRefreshState.lastAttemptedAt > 0 &&
+      now - workspaceRefreshState.lastAttemptedAt < USERSPACE_BRIDGE_CREDENTIAL_REFRESH_COOLDOWN_MS
+    ) {
+      return;
+    }
+
+    bridgeCredentialAutoRefreshStateRef.current = {
+      ...workspaceRefreshState,
+      lastAttemptedAt: now,
+      lastAttemptedKey: attemptKey,
+    };
+
+    void handleRefreshBridgeCredentials().then((succeeded) => {
+      const latestWorkspaceRefreshState = bridgeCredentialAutoRefreshStateRef.current;
+      if (
+        !latestWorkspaceRefreshState ||
+        latestWorkspaceRefreshState.workspaceId !== activeWorkspaceId ||
+        latestWorkspaceRefreshState.lastAttemptedKey !== attemptKey
+      ) {
+        return;
+      }
+
+      if (succeeded) {
+        bridgeCredentialAutoRefreshStateRef.current = {
+          ...latestWorkspaceRefreshState,
+          lastSuccessfulKey: attemptKey,
+        };
+      }
+    });
+  }, [
+    activeWorkspaceId,
+    bridgeStatus,
+    canEditWorkspace,
+    handleRefreshBridgeCredentials,
+    refreshingBridgeCredentials,
+    runtimeBusy,
+    runtimeStatus?.session_state,
+  ]);
 
   useEffect(() => {
     void refreshActiveWorkspaceState();
@@ -8226,7 +8424,7 @@ export function UserSpacePanel({
 
   const sqliteInspectorButtonTitle = sqliteHasTables
     ? 'Open SQLite Inspector'
-    : 'SQLite database is empty — open the inspector to initialize tables';
+    : 'Accessible SQLite databases are empty — open the inspector to initialize tables';
   const formattedError = useMemo(() => formatUserSpaceErrorMessage(error), [error]);
   const liveDataWarningMessage = runtimeStatus?.live_data_warning?.trim() || null;
   const visibleLiveDataWarningMessage =
@@ -8963,6 +9161,21 @@ export function UserSpacePanel({
                     : runtimeDisplayState}
               </span>
             )}
+            {bridgeStatus && bridgeStatusLabel && bridgeStatusPillClass && (
+              <>
+                <span
+                  className={`userspace-status-pill ${bridgeStatusPillClass}`}
+                  title={bridgeStatus.bridge_url || bridgeStatusLabel}
+                >
+                  {bridgeStatusLabel}
+                </span>
+                {bridgeStatusDetail && (
+                  <span className="userspace-muted" title={bridgeStatusDetail}>
+                    {bridgeStatusDetail}
+                  </span>
+                )}
+              </>
+            )}
           </div>
 
           {activeWorkspaceId && (
@@ -8992,7 +9205,7 @@ export function UserSpacePanel({
                 <button
                   className="btn btn-secondary btn-sm btn-icon"
                   onClick={handleStartRuntime}
-                  disabled={runtimeBusy}
+                  disabled={runtimeBusy || refreshingBridgeCredentials}
                   title="Start runtime"
                 >
                   {runtimeBusy ? (
@@ -9006,7 +9219,7 @@ export function UserSpacePanel({
                 <button
                   className="btn btn-secondary btn-sm btn-icon"
                   onClick={handleRestartRuntime}
-                  disabled={runtimeBusy}
+                  disabled={runtimeBusy || refreshingBridgeCredentials}
                   title="Restart runtime"
                 >
                   {runtimeBusy ? (
@@ -9020,7 +9233,7 @@ export function UserSpacePanel({
                 <button
                   className="btn btn-secondary btn-sm btn-icon"
                   onClick={handleStopRuntime}
-                  disabled={runtimeBusy}
+                  disabled={runtimeBusy || refreshingBridgeCredentials}
                   title="Stop runtime"
                 >
                   {runtimeBusy ? (
@@ -9028,6 +9241,18 @@ export function UserSpacePanel({
                   ) : (
                     <Square size={14} />
                   )}
+                </button>
+              )}
+              {showRefreshBridgeCredentialsButton && (
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleRefreshBridgeCredentials}
+                  disabled={runtimeBusy || refreshingBridgeCredentials}
+                  title="Refresh bridge credentials"
+                >
+                  {refreshingBridgeCredentials
+                    ? 'Refreshing bridge credentials…'
+                    : 'Refresh bridge credentials'}
                 </button>
               )}
             </div>
@@ -9078,7 +9303,7 @@ export function UserSpacePanel({
               getToolStatusBadge={getWorkspaceToolStatusBadge}
             />
             <button
-              className={`btn btn-sm btn-icon userspace-toolbar-action-btn ${sqliteHasTables ? 'btn-primary' : 'btn-secondary'}`}
+              className={`btn btn-sm btn-icon userspace-toolbar-action-btn ${sqliteHasTables ? 'btn-primary' : 'btn-secondary'} ${activeWorkspace?.sqlite_persistence_mode === 'exclude' ? 'userspace-sqlite-mode-excluded' : ''}`.trim()}
               onClick={handleOpenSqliteInspector}
               disabled={!activeWorkspaceId}
               title={sqliteInspectorButtonTitle}
@@ -11840,6 +12065,7 @@ export function UserSpacePanel({
           availableWorkspaces={agentGrantWorkspaces.map((workspace) => ({
             ...workspace,
             canGrantReadWrite: canEditUserSpaceWorkspace(workspace, currentUser),
+            canGrantSqlite: workspace.owner_user_id === currentUser?.id,
           }))}
           grants={agentGrants}
           onUpsert={handleUpsertAgentGrant}

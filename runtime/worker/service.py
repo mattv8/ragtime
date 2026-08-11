@@ -15,7 +15,7 @@ import sys
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,7 @@ import httpx
 from fastapi import HTTPException
 
 from runtime.manager.models import (
+    RuntimeBridgeCredentialMetadata,
     RuntimeContentProbeRequest,
     RuntimeContentProbeResponse,
     RuntimeExecResponse,
@@ -919,6 +920,56 @@ class WorkerService:
                 clear_targets=clear_targets,
             )
 
+    @staticmethod
+    def _decode_jwt_payload_metadata(token: str) -> dict[str, Any] | None:
+        parts = str(token or "").split(".")
+        if len(parts) != 3:
+            return None
+        payload_segment = parts[1]
+        padding = "=" * (-len(payload_segment) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode(f"{payload_segment}{padding}")
+            payload = json.loads(decoded)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _coerce_datetime_claim(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        try:
+            return datetime.fromtimestamp(float(value), tz=UTC)
+        except Exception:
+            return None
+
+    def _bridge_credential_metadata(
+        self,
+        session: WorkerSession,
+    ) -> RuntimeBridgeCredentialMetadata | None:
+        bridge_url = str(session.workspace_env.get("RAGTIME_BRIDGE_URL") or "").strip()
+        token = str(session.workspace_env.get("RAGTIME_BRIDGE_TOKEN") or "").strip()
+        if not bridge_url or not token:
+            return None
+        payload = self._decode_jwt_payload_metadata(token)
+        if payload is None:
+            return None
+        token_kind = str(payload.get("kind") or "").strip()
+        workspace_id = str(payload.get("workspace_id") or "").strip()
+        session_id = str(payload.get("session_id") or "").strip()
+        issued_at = self._coerce_datetime_claim(payload.get("iat"))
+        expires_at = self._coerce_datetime_claim(payload.get("exp"))
+        if not token_kind or not workspace_id or not session_id or issued_at is None or expires_at is None:
+            return None
+        return RuntimeBridgeCredentialMetadata(
+            bridge_url=bridge_url,
+            token_kind=token_kind,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            issued_at=issued_at,
+            expires_at=expires_at,
+        )
+
     def _session_response(self, session: WorkerSession) -> WorkerSessionResponse:
         return WorkerSessionResponse(
             worker_session_id=session.id,
@@ -936,6 +987,7 @@ class WorkerService:
             runtime_operation_phase=session.runtime_operation_phase,
             runtime_operation_started_at=session.runtime_operation_started_at,
             runtime_operation_updated_at=session.runtime_operation_updated_at,
+            bridge_credential=self._bridge_credential_metadata(session),
             updated_at=session.updated_at,
         )
 
@@ -2331,6 +2383,11 @@ class WorkerService:
             existing_session_id = self._provider_to_session.get(request.provider_session_id)
             if existing_session_id and existing_session_id in self._sessions:
                 session = self._sessions[existing_session_id]
+                if session.workspace_id != request.workspace_id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Worker session workspace does not match requested workspace",
+                    )
                 session.pty_access_token = request.pty_access_token
                 session.workspace_env = self._normalize_workspace_env(request.workspace_env)
                 session.workspace_env_visibility = self._normalize_workspace_env_visibility(

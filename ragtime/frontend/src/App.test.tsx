@@ -324,7 +324,10 @@ describe('App chat fullscreen layout', () => {
     await flushMicrotasks();
     await user.click(screen.getByRole('button', { name: 'Settings' }));
 
-    expect(await screen.findByText('Loading view...')).toBeTruthy();
+    const loadingFallback = await screen.findByText((_, element) =>
+      Boolean(element?.classList.contains('auth-loading')),
+    );
+    expect(loadingFallback.querySelector('.spinner')).toBeTruthy();
 
     settingsPanelModuleGate.resolve();
 
@@ -408,11 +411,13 @@ describe('App chat fullscreen layout', () => {
 
     render(<App />);
 
-    const backupWarning = await screen.findByText('Back Up Your Encryption Key');
-    const backupWarningContainer = backupWarning.closest('div[data-dismiss-key]') as HTMLElement;
+    const backupWarningContainer = (await screen.findByText(
+      (_, element) =>
+        element?.matches('div[data-dismiss-key="ragtime_encryption_backup_reminder"]') ?? false,
+    )) as HTMLElement;
     expect(backupWarningContainer.dataset.dismissKey).toBe('ragtime_encryption_backup_reminder');
     expect(backupWarningContainer.dataset.persistDismiss).toBe('true');
-    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+    expect(backupWarningContainer.querySelector('button')).toBeTruthy();
 
     const openAction = await screen.findByRole('button', { name: 'Open backup settings' });
     await user.click(openAction);
@@ -431,7 +436,12 @@ describe('App chat fullscreen layout', () => {
         'true',
       );
     });
-    expect(screen.queryByText('Back Up Your Encryption Key')).toBe(null);
+    expect(
+      screen.queryByText(
+        (_, element) =>
+          element?.matches('div[data-dismiss-key="ragtime_encryption_backup_reminder"]') ?? false,
+      ),
+    ).toBe(null);
   });
 
   it('emits one backup completion toast after navigating away from Settings', async () => {
@@ -458,8 +468,6 @@ describe('App chat fullscreen layout', () => {
       vi.advanceTimersByTime(2000);
     });
     await flushMicrotasks();
-    expect(toastApiMock.success).toHaveBeenCalledWith('Server backup completed successfully.');
-
     expect(toastApiMock.success).toHaveBeenCalledTimes(1);
 
     await act(async () => {

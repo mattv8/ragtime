@@ -488,6 +488,211 @@ class ConversationToolEndpointAclTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
+    async def _build_userspace_runtime_context_for_prompt_test(
+        self,
+        *,
+        get_runtime_session: mock.AsyncMock | None = None,
+        list_accessible_targets: mock.AsyncMock | None = None,
+        build_mode_prompt: mock.Mock | None = None,
+    ) -> tuple[dict[str, Any], mock.AsyncMock, mock.AsyncMock, mock.Mock]:
+        rag = rag_components.RAGComponents.__new__(rag_components.RAGComponents)
+        rag._tool_configs = [
+            {"id": "tool-3", "name": "Flapping Tool", "tool_type": "postgres"},
+        ]
+        rag._app_settings = {}
+        rag._index_metadata = []
+        rag._request_prompt_cache = {}
+
+        workspace = SimpleNamespace(
+            id="workspace-1",
+            owner_user_id="owner-1",
+            tool_selection_mode="custom",
+            selected_tool_ids=["tool-3"],
+            selected_tool_group_ids=[],
+            sqlite_persistence_mode="include",
+        )
+        runtime_tools = [SimpleNamespace(name="query_flapping_tool")]
+        runtime_session_mock = get_runtime_session or mock.AsyncMock(return_value=SimpleNamespace(session=None))
+        target_mock = list_accessible_targets or mock.AsyncMock(return_value=[])
+        prompt_mock = build_mode_prompt or mock.Mock(return_value="MODE_PROMPT")
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(
+                    rag,
+                    "_apply_conversation_tool_overrides",
+                    mock.AsyncMock(return_value=list(runtime_tools)),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_service.get_workspace",
+                    mock.AsyncMock(return_value=workspace),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.resolve_effective_tool_ids",
+                    mock.AsyncMock(side_effect=resolve_effective_tool_ids),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_service.filter_tool_ids_for_workspace_owner",
+                    mock.AsyncMock(return_value=["tool-3"]),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.repository.list_healthy_enabled_tool_ids",
+                    mock.AsyncMock(return_value=["tool-3"]),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.repository.list_enabled_tool_ids",
+                    mock.AsyncMock(return_value=["tool-3"]),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.repository.get_tool_ids_for_groups",
+                    mock.AsyncMock(return_value=[]),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_service.list_workspace_env_var_summaries",
+                    mock.AsyncMock(return_value=[]),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_service.list_workspace_mounts",
+                    mock.AsyncMock(return_value=[]),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_service.list_mountable_sources",
+                    mock.AsyncMock(return_value=[]),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_service.get_workspace_object_storage_summary",
+                    mock.AsyncMock(return_value=None),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_service.list_workspace_preview_diagnostic_summary",
+                    mock.AsyncMock(return_value=None),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_runtime_service.get_devserver_status",
+                    mock.AsyncMock(return_value=None),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_runtime_service.get_runtime_session",
+                    runtime_session_mock,
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_service.list_accessible_cross_workspace_sqlite_targets",
+                    target_mock,
+                    create=True,
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    rag,
+                    "_create_userspace_file_tools",
+                    mock.AsyncMock(return_value=[]),
+                )
+            )
+            stack.enter_context(mock.patch.object(rag, "_create_spawn_subagents_tool", mock.AsyncMock(return_value=None)))
+            stack.enter_context(
+                mock.patch.object(
+                    rag,
+                    "_apply_mode_specific_tool_description_overrides",
+                    side_effect=lambda tools, **_: tools,
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    rag,
+                    "_wrap_userspace_runtime_tools_for_execution_proofs",
+                    side_effect=lambda tools, *_: tools,
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    rag,
+                    "_wrap_runtime_tools_with_request_state",
+                    side_effect=lambda tools, **_: (tools, {}),
+                )
+            )
+            stack.enter_context(mock.patch.object(rag, "_build_userspace_continuity_prompt", mock.AsyncMock(return_value="CONTINUITY")))
+            stack.enter_context(mock.patch.object(rag, "_build_userspace_env_var_turn_hint", return_value=""))
+            stack.enter_context(mock.patch.object(rag, "_build_userspace_runtime_status_turn_hint", return_value=""))
+            stack.enter_context(mock.patch.object(rag, "_build_userspace_env_var_prompt_fragment", return_value=""))
+            stack.enter_context(mock.patch.object(rag, "_build_userspace_mount_prompt_fragment", return_value=""))
+            stack.enter_context(mock.patch.object(rag, "_build_userspace_object_storage_prompt_fragment", return_value=""))
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.build_userspace_mode_prompt_addition",
+                    prompt_mock,
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.build_userspace_entrypoint_nudge",
+                    return_value="ENTRYPOINT_NUDGE",
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.build_userspace_diagnostics_turn_reminder_line",
+                    return_value="",
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    rag_components.userspace_service,
+                    "get_workspace_entrypoint_status",
+                    return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd="."),
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    rag_components.userspace_service,
+                    "is_default_static_entrypoint",
+                    return_value=False,
+                )
+            )
+            request_context = await rag._build_request_runtime_context(
+                is_ui=False,
+                executor=cast(Any, SimpleNamespace(tools=list(runtime_tools))),
+                blocked_tool_names=None,
+                workspace_context={"workspace_id": "workspace-1", "user_id": "viewer-1"},
+                add_chat_visualization_prompt=False,
+                user_id="viewer-1",
+                current_user_context={
+                    "user_id": "viewer-1",
+                    "username": "viewer",
+                    "display_name": "Viewer",
+                    "is_admin": False,
+                },
+            )
+
+        return request_context, runtime_session_mock, target_mock, prompt_mock
+
     async def test_conversation_write_override_fails_closed_without_user_identity(self) -> None:
         rag = rag_components.RAGComponents.__new__(rag_components.RAGComponents)
         rag._tool_configs = [
@@ -822,6 +1027,64 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("Flapping Tool", prompt)
         self.assertNotIn("Healthy Tool", prompt)
+
+    async def test_userspace_runtime_context_uses_active_lease_identity_for_shared_sqlite_targets(self) -> None:
+        targets = [
+            {
+                "workspace_id": "workspace-2",
+                "workspace_name": "Shared Workspace",
+                "database_name": "app.sqlite3",
+                "access_mode": "read_write",
+            }
+        ]
+        request_context, runtime_session_mock, target_mock, prompt_mock = await self._build_userspace_runtime_context_for_prompt_test(
+            get_runtime_session=mock.AsyncMock(return_value=SimpleNamespace(session=SimpleNamespace(leased_by_user_id="lease-user-1"))),
+            list_accessible_targets=mock.AsyncMock(return_value=targets),
+        )
+
+        self.assertIn("ENTRYPOINT_NUDGE", request_context["prompt_additions"])
+        runtime_session_mock.assert_awaited_once_with("workspace-1", "viewer-1")
+        target_mock.assert_awaited_once_with("workspace-1", "lease-user-1")
+        prompt_mock.assert_called_once()
+        self.assertEqual(prompt_mock.call_args.kwargs["shared_sqlite_databases"], targets)
+
+    async def test_userspace_runtime_context_falls_back_to_request_user_for_shared_sqlite_targets_without_session(self) -> None:
+        request_context, runtime_session_mock, target_mock, prompt_mock = await self._build_userspace_runtime_context_for_prompt_test(
+            get_runtime_session=mock.AsyncMock(return_value=SimpleNamespace(session=None)),
+        )
+
+        self.assertIn("ENTRYPOINT_NUDGE", request_context["prompt_additions"])
+        runtime_session_mock.assert_awaited_once_with("workspace-1", "viewer-1")
+        target_mock.assert_awaited_once_with("workspace-1", "viewer-1")
+        prompt_mock.assert_called_once()
+        self.assertEqual(prompt_mock.call_args.kwargs["shared_sqlite_databases"], [])
+
+    async def test_userspace_runtime_context_omits_shared_sqlite_targets_when_runtime_session_lookup_fails(self) -> None:
+        with self.assertLogs(rag_components.logger, level="WARNING") as captured:
+            request_context, runtime_session_mock, target_mock, prompt_mock = await self._build_userspace_runtime_context_for_prompt_test(
+                get_runtime_session=mock.AsyncMock(side_effect=RuntimeError("session lookup failed")),
+            )
+
+        self.assertIn("ENTRYPOINT_NUDGE", request_context["prompt_additions"])
+        runtime_session_mock.assert_awaited_once_with("workspace-1", "viewer-1")
+        target_mock.assert_not_awaited()
+        prompt_mock.assert_called_once()
+        self.assertEqual(prompt_mock.call_args.kwargs["shared_sqlite_databases"], [])
+        self.assertTrue(any("session lookup failed" in message for message in captured.output))
+
+    async def test_userspace_runtime_context_omits_shared_sqlite_targets_when_target_lookup_fails(self) -> None:
+        with self.assertLogs(rag_components.logger, level="WARNING") as captured:
+            request_context, runtime_session_mock, target_mock, prompt_mock = await self._build_userspace_runtime_context_for_prompt_test(
+                get_runtime_session=mock.AsyncMock(return_value=SimpleNamespace(session=SimpleNamespace(leased_by_user_id="lease-user-1"))),
+                list_accessible_targets=mock.AsyncMock(side_effect=RuntimeError("target lookup failed")),
+            )
+
+        self.assertIn("ENTRYPOINT_NUDGE", request_context["prompt_additions"])
+        runtime_session_mock.assert_awaited_once_with("workspace-1", "viewer-1")
+        target_mock.assert_awaited_once_with("workspace-1", "lease-user-1")
+        prompt_mock.assert_called_once()
+        self.assertEqual(prompt_mock.call_args.kwargs["shared_sqlite_databases"], [])
+        self.assertTrue(any("target lookup failed" in message for message in captured.output))
 
 
 if __name__ == "__main__":

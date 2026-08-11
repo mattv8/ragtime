@@ -98,12 +98,12 @@ model IndexJob {
   gitToken   String? @map("git_token") // Token for private repo access (kept in DB for job recovery)
 
   // Progress tracking
-  totalFiles      Int     @default(0) @map("total_files")
-  processedFiles  Int     @default(0) @map("processed_files")
-  totalChunks     Int     @default(0) @map("total_chunks")
-  processedChunks Int     @default(0) @map("processed_chunks")
+  totalFiles      Int           @default(0) @map("total_files")
+  processedFiles  Int           @default(0) @map("processed_files")
+  totalChunks     Int           @default(0) @map("total_chunks")
+  processedChunks Int           @default(0) @map("processed_chunks")
   phase           IndexJobPhase @default(preparing)
-  errorMessage    String? @map("error_message")
+  errorMessage    String?       @map("error_message")
 
   // Timestamps
   createdAt   DateTime  @default(now()) @map("created_at")
@@ -140,13 +140,13 @@ model IndexMetadata {
   loadTimeSeconds    Float?  @map("load_time_seconds") // Time to load this index
 
   // Source info
-  sourceType String  @map("source_type")
-  source     String?
-  gitBranch  String? @map("git_branch") // Branch for git sources
-  gitToken   String? @map("git_token") // Token for private repo access (stored for re-indexing)
-  webhookId  String? @unique @map("webhook_id")
-  webhookSecret String? @map("webhook_secret")
-  webhookPaused Boolean @default(false) @map("webhook_paused")
+  sourceType       String    @map("source_type")
+  source           String?
+  gitBranch        String?   @map("git_branch") // Branch for git sources
+  gitToken         String?   @map("git_token") // Token for private repo access (stored for re-indexing)
+  webhookId        String?   @unique @map("webhook_id")
+  webhookSecret    String?   @map("webhook_secret")
+  webhookPaused    Boolean   @default(false) @map("webhook_paused")
   webhookCreatedAt DateTime? @map("webhook_created_at")
 
   // OCR settings (per-index)
@@ -158,8 +158,8 @@ model IndexMetadata {
   configSnapshot Json? @map("config_snapshot")
 
   // Timestamps
-  createdAt    DateTime              @default(now()) @map("created_at")
-  lastModified DateTime              @default(now()) @map("last_modified")
+  createdAt         DateTime             @default(now()) @map("created_at")
+  lastModified      DateTime             @default(now()) @map("last_modified")
   webhookDeliveries GitWebhookDelivery[]
 
   @@map("index_metadata")
@@ -231,49 +231,49 @@ model AppSettings {
   omlxApiKey          String? @map("omlx_api_key")
 
   // LLM Configuration (for chat/RAG responses)
-  llmProvider                    String    @default("openai") @map("llm_provider") // "openai", "anthropic", "openrouter", "ollama", "llama_cpp", "lmstudio", "omlx", "github_copilot", or "github_models"
-  llmModel                       String    @default("gpt-4-turbo") @map("llm_model")
-  llmMaxTokens                   Int       @default(4096) @map("llm_max_tokens") // Max output tokens
-  chatCompactionThresholdPercent Int       @default(80) @map("chat_compaction_threshold_percent") // Show the chat compact button once conversation context reaches this percentage
-  chatAutoCompactionThresholdPercent Int   @default(99) @map("chat_auto_compaction_threshold_percent") // Automatically compact once conversation context reaches this percentage; 100 disables auto-compaction
-  imagePayloadMaxWidth           Int       @default(1024) @map("image_payload_max_width") // Max width (px) for image attachments
-  imagePayloadMaxHeight          Int       @default(1024) @map("image_payload_max_height") // Max height (px) for image attachments
-  imagePayloadMaxPixels          Int       @default(786432) @map("image_payload_max_pixels") // Max total pixels for image attachments
-  imagePayloadMaxBytes           Int       @default(350000) @map("image_payload_max_bytes") // Max compressed bytes for image attachments
-  llmOllamaProtocol              String    @default("http") @map("llm_ollama_protocol")
-  llmOllamaHost                  String    @default("localhost") @map("llm_ollama_host")
-  llmOllamaPort                  Int       @default(11434) @map("llm_ollama_port")
-  llmOllamaBaseUrl               String    @default("http://localhost:11434") @map("llm_ollama_base_url")
-  llmLlamaCppProtocol            String    @default("http") @map("llm_llama_cpp_protocol")
-  llmLlamaCppHost                String    @default("host.docker.internal") @map("llm_llama_cpp_host")
-  llmLlamaCppPort                Int       @default(8080) @map("llm_llama_cpp_port")
-  llmLlamaCppBaseUrl             String    @default("http://host.docker.internal:8080") @map("llm_llama_cpp_base_url")
-  llmLmstudioProtocol            String    @default("http") @map("llm_lmstudio_protocol")
-  llmLmstudioHost                String    @default("host.docker.internal") @map("llm_lmstudio_host")
-  llmLmstudioPort                Int       @default(1234) @map("llm_lmstudio_port")
-  llmLmstudioBaseUrl             String    @default("http://host.docker.internal:1234") @map("llm_lmstudio_base_url")
-  llmOmlxProtocol                String    @default("http") @map("llm_omlx_protocol")
-  llmOmlxHost                    String    @default("host.docker.internal") @map("llm_omlx_host")
-  llmOmlxPort                    Int       @default(8000) @map("llm_omlx_port")
-  llmOmlxBaseUrl                 String    @default("http://host.docker.internal:8000") @map("llm_omlx_base_url")
-  openaiApiKey                   String    @default("") @map("openai_api_key")
-  anthropicApiKey                String    @default("") @map("anthropic_api_key")
-  openrouterApiKey               String    @default("") @map("openrouter_api_key")
-  githubModelsApiToken           String    @default("") @map("github_models_api_token")
-  githubCopilotAccessToken       String    @default("") @map("github_copilot_access_token")
-  githubCopilotRefreshToken      String    @default("") @map("github_copilot_refresh_token")
-  githubCopilotOauthRefreshToken String    @default("") @map("github_copilot_oauth_refresh_token") // ghr_* token for refreshing expired ghu_* access tokens
-  githubCopilotTokenExpiresAt    DateTime? @map("github_copilot_token_expires_at")
-  githubCopilotEnterpriseUrl     String?   @map("github_copilot_enterprise_url")
-  githubCopilotBaseUrl           String    @default("https://api.githubcopilot.com") @map("github_copilot_base_url")
-  openaiCodexAccessToken         String    @default("") @map("openai_codex_access_token")
-  openaiCodexRefreshToken        String    @default("") @map("openai_codex_refresh_token")
-  openaiCodexTokenExpiresAt      DateTime? @map("openai_codex_token_expires_at")
-  openaiCodexAccountId           String    @default("") @map("openai_codex_account_id")
-  openaiCodexBaseUrl             String    @default("https://chatgpt.com/backend-api/codex") @map("openai_codex_base_url")
-  includeCopilotThirdPartyModels Boolean   @default(false) @map("include_copilot_third_party_models")
-  allowedChatModels              String[]  @default([]) @map("allowed_chat_models") // Empty = all models allowed
-  defaultChatModel               String?   @map("default_chat_model") // Optional manual override for chat default model selection
+  llmProvider                        String    @default("openai") @map("llm_provider") // "openai", "anthropic", "openrouter", "ollama", "llama_cpp", "lmstudio", "omlx", "github_copilot", or "github_models"
+  llmModel                           String    @default("gpt-4-turbo") @map("llm_model")
+  llmMaxTokens                       Int       @default(4096) @map("llm_max_tokens") // Max output tokens
+  chatCompactionThresholdPercent     Int       @default(80) @map("chat_compaction_threshold_percent") // Show the chat compact button once conversation context reaches this percentage
+  chatAutoCompactionThresholdPercent Int       @default(99) @map("chat_auto_compaction_threshold_percent") // Automatically compact once conversation context reaches this percentage; 100 disables auto-compaction
+  imagePayloadMaxWidth               Int       @default(1024) @map("image_payload_max_width") // Max width (px) for image attachments
+  imagePayloadMaxHeight              Int       @default(1024) @map("image_payload_max_height") // Max height (px) for image attachments
+  imagePayloadMaxPixels              Int       @default(786432) @map("image_payload_max_pixels") // Max total pixels for image attachments
+  imagePayloadMaxBytes               Int       @default(350000) @map("image_payload_max_bytes") // Max compressed bytes for image attachments
+  llmOllamaProtocol                  String    @default("http") @map("llm_ollama_protocol")
+  llmOllamaHost                      String    @default("localhost") @map("llm_ollama_host")
+  llmOllamaPort                      Int       @default(11434) @map("llm_ollama_port")
+  llmOllamaBaseUrl                   String    @default("http://localhost:11434") @map("llm_ollama_base_url")
+  llmLlamaCppProtocol                String    @default("http") @map("llm_llama_cpp_protocol")
+  llmLlamaCppHost                    String    @default("host.docker.internal") @map("llm_llama_cpp_host")
+  llmLlamaCppPort                    Int       @default(8080) @map("llm_llama_cpp_port")
+  llmLlamaCppBaseUrl                 String    @default("http://host.docker.internal:8080") @map("llm_llama_cpp_base_url")
+  llmLmstudioProtocol                String    @default("http") @map("llm_lmstudio_protocol")
+  llmLmstudioHost                    String    @default("host.docker.internal") @map("llm_lmstudio_host")
+  llmLmstudioPort                    Int       @default(1234) @map("llm_lmstudio_port")
+  llmLmstudioBaseUrl                 String    @default("http://host.docker.internal:1234") @map("llm_lmstudio_base_url")
+  llmOmlxProtocol                    String    @default("http") @map("llm_omlx_protocol")
+  llmOmlxHost                        String    @default("host.docker.internal") @map("llm_omlx_host")
+  llmOmlxPort                        Int       @default(8000) @map("llm_omlx_port")
+  llmOmlxBaseUrl                     String    @default("http://host.docker.internal:8000") @map("llm_omlx_base_url")
+  openaiApiKey                       String    @default("") @map("openai_api_key")
+  anthropicApiKey                    String    @default("") @map("anthropic_api_key")
+  openrouterApiKey                   String    @default("") @map("openrouter_api_key")
+  githubModelsApiToken               String    @default("") @map("github_models_api_token")
+  githubCopilotAccessToken           String    @default("") @map("github_copilot_access_token")
+  githubCopilotRefreshToken          String    @default("") @map("github_copilot_refresh_token")
+  githubCopilotOauthRefreshToken     String    @default("") @map("github_copilot_oauth_refresh_token") // ghr_* token for refreshing expired ghu_* access tokens
+  githubCopilotTokenExpiresAt        DateTime? @map("github_copilot_token_expires_at")
+  githubCopilotEnterpriseUrl         String?   @map("github_copilot_enterprise_url")
+  githubCopilotBaseUrl               String    @default("https://api.githubcopilot.com") @map("github_copilot_base_url")
+  openaiCodexAccessToken             String    @default("") @map("openai_codex_access_token")
+  openaiCodexRefreshToken            String    @default("") @map("openai_codex_refresh_token")
+  openaiCodexTokenExpiresAt          DateTime? @map("openai_codex_token_expires_at")
+  openaiCodexAccountId               String    @default("") @map("openai_codex_account_id")
+  openaiCodexBaseUrl                 String    @default("https://chatgpt.com/backend-api/codex") @map("openai_codex_base_url")
+  includeCopilotThirdPartyModels     Boolean   @default(false) @map("include_copilot_third_party_models")
+  allowedChatModels                  String[]  @default([]) @map("allowed_chat_models") // Empty = all models allowed
+  defaultChatModel                   String?   @map("default_chat_model") // Optional manual override for chat default model selection
 
   // OpenAPI-compatible endpoint model configuration
   allowedOpenapiModels  String[] @default([]) @map("allowed_openapi_models") // Models exposed via /v1/models; empty = use chat models
@@ -302,13 +302,13 @@ model AppSettings {
   scratchpadWindowSize Int @default(6) @map("scratchpad_window_size") // Keep last N tool calls in full detail; older ones are summarized (0=keep all)
 
   // Search Configuration
-  searchResultsK              Int                        @default(5) @map("search_results_k") // Number of results per vector search (k)
-  aggregateSearch             Boolean                    @default(true) @map("aggregate_search") // If true, use single search_knowledge; if false, create per-index tools
-  searchUseMmr                Boolean                    @default(false) @map("search_use_mmr") // Use Max Marginal Relevance for result diversification
-  searchMmrLambda             Float                      @default(0.5) @map("search_mmr_lambda") // MMR diversity/relevance tradeoff (0=max diversity, 1=max relevance)
-  contextTokenBudget          Int                        @default(4000) @map("context_token_budget") // Max tokens for retrieved context (0=unlimited)
-  chunkingUseTokens           Boolean                    @default(true) @map("chunking_use_tokens") // Use token-based chunking instead of character-based
-  faissSearchConcurrencyMode  FaissSearchConcurrencyMode @default(per_index) @map("faiss_search_concurrency_mode")
+  searchResultsK             Int                        @default(5) @map("search_results_k") // Number of results per vector search (k)
+  aggregateSearch            Boolean                    @default(true) @map("aggregate_search") // If true, use single search_knowledge; if false, create per-index tools
+  searchUseMmr               Boolean                    @default(false) @map("search_use_mmr") // Use Max Marginal Relevance for result diversification
+  searchMmrLambda            Float                      @default(0.5) @map("search_mmr_lambda") // MMR diversity/relevance tradeoff (0=max diversity, 1=max relevance)
+  contextTokenBudget         Int                        @default(4000) @map("context_token_budget") // Max tokens for retrieved context (0=unlimited)
+  chunkingUseTokens          Boolean                    @default(true) @map("chunking_use_tokens") // Use token-based chunking instead of character-based
+  faissSearchConcurrencyMode FaissSearchConcurrencyMode @default(per_index) @map("faiss_search_concurrency_mode")
 
   // pgvector Index Configuration
   ivfflatLists Int @default(100) @map("ivfflat_lists") // IVFFlat index lists parameter (higher=slower build, faster query)
@@ -356,28 +356,28 @@ model AppSettings {
   ollamaEmbeddingTimeoutSeconds Int @default(180) @map("ollama_embedding_timeout_seconds") // Per sub-batch timeout (seconds) for embedding calls across providers
 
   // User Space Configuration
-  snapshotRetentionDays                 Int      @default(0) @map("snapshot_retention_days") // Snapshot retention in days (0 = unlimited)
-  snapshotStaleBranchThreshold          Int      @default(50) @map("snapshot_stale_branch_threshold") // Hide branches whose head is >= N commits behind the active head (0 = show all, 10-500)
-  userspacePreviewSandboxFlags          String[] @default(["allow-scripts", "allow-same-origin", "allow-forms", "allow-popups", "allow-popups-to-escape-sandbox", "allow-modals", "allow-downloads"]) @map("userspace_preview_sandbox_flags") // Allowed iframe sandbox flags for User Space previews
-  userspaceDuplicateCopyFilesDefault    Boolean  @default(true) @map("userspace_duplicate_copy_files_default")
-  userspaceDuplicateCopyMetadataDefault Boolean  @default(true) @map("userspace_duplicate_copy_metadata_default")
-  userspaceDuplicateCopyChatsDefault    Boolean  @default(false) @map("userspace_duplicate_copy_chats_default")
-  userspaceDuplicateCopyMountsDefault   Boolean  @default(false) @map("userspace_duplicate_copy_mounts_default")
-  userspaceMountSyncIntervalSeconds     Int      @default(30) @map("userspace_mount_sync_interval_seconds")
-  userspaceMountSyncStartMinute         Int?     @map("userspace_mount_sync_start_minute")
-  userspaceMountSyncTimezone            String?  @map("userspace_mount_sync_timezone")
-  userspaceSqliteImportMaxBytes         BigInt   @default(104857600) @map("userspace_sqlite_import_max_bytes")
-  userspacePrimitiveUploadMaxBytes      Int      @default(104857600) @map("userspace_primitive_upload_max_bytes")
-  userspacePrimitiveArchiveMaxEntries   Int      @default(500) @map("userspace_primitive_archive_max_entries")
-  userspaceCodeIndexEnabled                Boolean  @default(true) @map("userspace_code_index_enabled")
-  userspaceCodeIndexDebounceSeconds        Int      @default(2) @map("userspace_code_index_debounce_seconds")
-  userspaceCodeIndexReconcileIntervalSeconds Int    @default(300) @map("userspace_code_index_reconcile_interval_seconds")
-  userspaceCodeIndexMaxAttempts            Int      @default(3) @map("userspace_code_index_max_attempts")
-  userspaceCodeIndexMaxConcurrency         Int      @default(1) @map("userspace_code_index_max_concurrency")
+  snapshotRetentionDays                      Int      @default(0) @map("snapshot_retention_days") // Snapshot retention in days (0 = unlimited)
+  snapshotStaleBranchThreshold               Int      @default(50) @map("snapshot_stale_branch_threshold") // Hide branches whose head is >= N commits behind the active head (0 = show all, 10-500)
+  userspacePreviewSandboxFlags               String[] @default(["allow-scripts", "allow-same-origin", "allow-forms", "allow-popups", "allow-popups-to-escape-sandbox", "allow-modals", "allow-downloads"]) @map("userspace_preview_sandbox_flags") // Allowed iframe sandbox flags for User Space previews
+  userspaceDuplicateCopyFilesDefault         Boolean  @default(true) @map("userspace_duplicate_copy_files_default")
+  userspaceDuplicateCopyMetadataDefault      Boolean  @default(true) @map("userspace_duplicate_copy_metadata_default")
+  userspaceDuplicateCopyChatsDefault         Boolean  @default(false) @map("userspace_duplicate_copy_chats_default")
+  userspaceDuplicateCopyMountsDefault        Boolean  @default(false) @map("userspace_duplicate_copy_mounts_default")
+  userspaceMountSyncIntervalSeconds          Int      @default(30) @map("userspace_mount_sync_interval_seconds")
+  userspaceMountSyncStartMinute              Int?     @map("userspace_mount_sync_start_minute")
+  userspaceMountSyncTimezone                 String?  @map("userspace_mount_sync_timezone")
+  userspaceSqliteImportMaxBytes              BigInt   @default(104857600) @map("userspace_sqlite_import_max_bytes")
+  userspacePrimitiveUploadMaxBytes           Int      @default(104857600) @map("userspace_primitive_upload_max_bytes")
+  userspacePrimitiveArchiveMaxEntries        Int      @default(500) @map("userspace_primitive_archive_max_entries")
+  userspaceCodeIndexEnabled                  Boolean  @default(true) @map("userspace_code_index_enabled")
+  userspaceCodeIndexDebounceSeconds          Int      @default(2) @map("userspace_code_index_debounce_seconds")
+  userspaceCodeIndexReconcileIntervalSeconds Int      @default(300) @map("userspace_code_index_reconcile_interval_seconds")
+  userspaceCodeIndexMaxAttempts              Int      @default(3) @map("userspace_code_index_max_attempts")
+  userspaceCodeIndexMaxConcurrency           Int      @default(1) @map("userspace_code_index_max_concurrency")
 
   // Index Archive Extraction Limits
-  archiveMaxTotalSizeBytes             BigInt   @default(5368709120) @map("archive_max_total_size_bytes") // 5 GB max extracted archive size
-  archiveMaxFileCount                  Int      @default(100000) @map("archive_max_file_count")
+  archiveMaxTotalSizeBytes BigInt @default(5368709120) @map("archive_max_total_size_bytes") // 5 GB max extracted archive size
+  archiveMaxFileCount      Int    @default(100000) @map("archive_max_file_count")
 
   // Timestamps
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
@@ -546,8 +546,8 @@ model ToolConfig {
   mcpDefaultRouteFilterTools McpDefaultRouteFilterToolSelection[]
 
   // Relation to conversation tool selections and options
-  conversationSelections ConversationToolSelection[]
-  conversationToolOptions  ConversationToolOption[]
+  conversationSelections  ConversationToolSelection[]
+  conversationToolOptions ConversationToolOption[]
 
   // Relation to userspace mount sources backed by this tool
   mountSources UserspaceMountSource[]
@@ -565,7 +565,7 @@ model ToolAccessPolicy {
   createdAt              DateTime        @default(now()) @map("created_at")
   updatedAt              DateTime        @default(now()) @updatedAt @map("updated_at")
 
-  toolConfig  ToolConfig             @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+  toolConfig  ToolConfig            @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
   userAccess  ToolUserAccess[]
   groupAccess ToolAuthGroupAccess[]
 
@@ -993,23 +993,23 @@ enum WorkspaceScmAutoSyncPolicy {
 
 /// User account (synced from LDAP or local admin)
 model User {
-  id              String        @id @default(uuid())
-  username        String        @unique // For LDAP: samAccountName/uid, for local: prefixed with "local:"
-  authProvider    AuthProvider  @default(ldap) @map("auth_provider")
-  ldapDn          String?       @map("ldap_dn") // LDAP distinguished name (null for local users)
-  sourceProvider  AuthProvider? @map("source_provider") // Original upstream provider for cached/synced identities
-  sourceId        String?       @map("source_id") // Provider-specific immutable identifier when available
-  passwordHash    String?       @map("password_hash") // PBKDF2 hash for local_managed users only
-  cachedGroups    Json          @default("[]") @map("cached_groups") // Provider-neutral projected group keys/DNs
-  sourceSyncedAt  DateTime?     @map("source_synced_at")
-  sourceExpiresAt DateTime?     @map("source_expires_at")
-  email           String?
-  displayName     String?       @map("display_name")
-  role            UserRole      @default(user)
-  roleManuallySet Boolean       @default(false) @map("role_manually_set") // True when admin manually changed role; cleared on LDAP login
-  themePack       String?       @map("theme_pack") // Per-user app theme pack; null means inherit the global default
-  mfaPreferredMethod String?    @map("mfa_preferred_method") // Preferred 2FA method presented first at login; null means inherit the global default
-  lastLoginAt     DateTime?     @map("last_login_at")
+  id                 String        @id @default(uuid())
+  username           String        @unique // For LDAP: samAccountName/uid, for local: prefixed with "local:"
+  authProvider       AuthProvider  @default(ldap) @map("auth_provider")
+  ldapDn             String?       @map("ldap_dn") // LDAP distinguished name (null for local users)
+  sourceProvider     AuthProvider? @map("source_provider") // Original upstream provider for cached/synced identities
+  sourceId           String?       @map("source_id") // Provider-specific immutable identifier when available
+  passwordHash       String?       @map("password_hash") // PBKDF2 hash for local_managed users only
+  cachedGroups       Json          @default("[]") @map("cached_groups") // Provider-neutral projected group keys/DNs
+  sourceSyncedAt     DateTime?     @map("source_synced_at")
+  sourceExpiresAt    DateTime?     @map("source_expires_at")
+  email              String?
+  displayName        String?       @map("display_name")
+  role               UserRole      @default(user)
+  roleManuallySet    Boolean       @default(false) @map("role_manually_set") // True when admin manually changed role; cleared on LDAP login
+  themePack          String?       @map("theme_pack") // Per-user app theme pack; null means inherit the global default
+  mfaPreferredMethod String?       @map("mfa_preferred_method") // Preferred 2FA method presented first at login; null means inherit the global default
+  lastLoginAt        DateTime?     @map("last_login_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
@@ -1049,17 +1049,17 @@ model User {
 
 /// Global auth-provider behavior flags. Kept provider-neutral for future OIDC/SAML sources.
 model AuthProviderConfig {
-  id                     String   @id @default("default")
-  localUsersEnabled      Boolean  @default(true) @map("local_users_enabled")
-  ldapLazySyncEnabled    Boolean  @default(true) @map("ldap_lazy_sync_enabled")
-  manualRoleOverrideWins Boolean  @default(true) @map("manual_role_override_wins")
-  cacheTtlMinutes        Int      @default(240) @map("cache_ttl_minutes")
+  id                     String     @id @default("default")
+  localUsersEnabled      Boolean    @default(true) @map("local_users_enabled")
+  ldapLazySyncEnabled    Boolean    @default(true) @map("ldap_lazy_sync_enabled")
+  manualRoleOverrideWins Boolean    @default(true) @map("manual_role_override_wins")
+  cacheTtlMinutes        Int        @default(240) @map("cache_ttl_minutes")
   totpPolicy             TotpPolicy @default(optional) @map("totp_policy")
-  totpRequiredGroupIds   String[] @default([]) @map("totp_required_group_ids")
-  totpRememberDeviceDays Int      @default(30) @map("totp_remember_device_days")
-  mfaAllowedMethods      String[] @default(["totp"]) @map("mfa_allowed_methods")
-  mfaDefaultMethod       String?  @map("mfa_default_method") // Global default 2FA method presented first at login; null means no forced default
-  updatedAt              DateTime @default(now()) @updatedAt @map("updated_at")
+  totpRequiredGroupIds   String[]   @default([]) @map("totp_required_group_ids")
+  totpRememberDeviceDays Int        @default(30) @map("totp_remember_device_days")
+  mfaAllowedMethods      String[]   @default(["totp"]) @map("mfa_allowed_methods")
+  mfaDefaultMethod       String?    @map("mfa_default_method") // Global default 2FA method presented first at login; null means no forced default
+  updatedAt              DateTime   @default(now()) @updatedAt @map("updated_at")
 
   @@map("auth_provider_config")
 }
@@ -1159,7 +1159,7 @@ model AuthGroup {
   createdAt    DateTime     @default(now()) @map("created_at")
   updatedAt    DateTime     @default(now()) @updatedAt @map("updated_at")
 
-  memberships AuthGroupMembership[]
+  memberships         AuthGroupMembership[]
   toolAuthGroupAccess ToolAuthGroupAccess[]
 
   @@index([provider])
@@ -1207,14 +1207,14 @@ model AuthSyncEvent {
 
 /// User session with JWT token
 model Session {
-  id        String   @id @default(uuid())
-  userId    String   @map("user_id")
-  tokenHash String   @map("token_hash") // Hash of JWT for validation
-  expiresAt DateTime @map("expires_at")
+  id            String    @id @default(uuid())
+  userId        String    @map("user_id")
+  tokenHash     String    @map("token_hash") // Hash of JWT for validation
+  expiresAt     DateTime  @map("expires_at")
   mfaVerifiedAt DateTime? @map("mfa_verified_at")
-  authMethods Json @default("[]") @map("auth_methods")
-  userAgent String?  @map("user_agent")
-  ipAddress String?  @map("ip_address")
+  authMethods   Json      @default("[]") @map("auth_methods")
+  userAgent     String?   @map("user_agent")
+  ipAddress     String?   @map("ip_address")
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -1324,8 +1324,8 @@ model Conversation {
   subagentsEnabled Boolean @default(true) @map("subagents_enabled")
 
   // Parent conversation for read-only subagent child conversations.
-  parentConversationId String?        @map("parent_conversation_id")
-  parentConversation   Conversation?  @relation("ConversationSubagents", fields: [parentConversationId], references: [id], onDelete: Cascade)
+  parentConversationId  String?        @map("parent_conversation_id")
+  parentConversation    Conversation?  @relation("ConversationSubagents", fields: [parentConversationId], references: [id], onDelete: Cascade)
   subagentConversations Conversation[] @relation("ConversationSubagents")
 
   // Subagent display metadata.
@@ -1596,22 +1596,22 @@ model WorkspaceCodeIndexState {
 }
 
 model WorkspaceCodeIndexJob {
-  id              String                    @id @default(uuid())
-  workspaceId     String                    @map("workspace_id")
-  indexName       String                    @map("index_name")
+  id              String                      @id @default(uuid())
+  workspaceId     String                      @map("workspace_id")
+  indexName       String                      @map("index_name")
   status          WorkspaceCodeIndexJobStatus @default(pending)
   phase           WorkspaceCodeIndexJobPhase  @default(collecting)
-  totalFiles      Int                       @default(0) @map("total_files")
-  processedFiles  Int                       @default(0) @map("processed_files")
-  totalChunks     Int                       @default(0) @map("total_chunks")
-  processedChunks Int                       @default(0) @map("processed_chunks")
-  currentFile     String?                   @map("current_file")
-  errorMessage    String?                   @map("error_message")
-  waitingForJobId String?                   @map("waiting_for_job_id")
-  cancelRequested Boolean                   @default(false) @map("cancel_requested")
-  createdAt       DateTime                  @default(now()) @map("created_at")
-  startedAt       DateTime?                 @map("started_at")
-  completedAt     DateTime?                 @map("completed_at")
+  totalFiles      Int                         @default(0) @map("total_files")
+  processedFiles  Int                         @default(0) @map("processed_files")
+  totalChunks     Int                         @default(0) @map("total_chunks")
+  processedChunks Int                         @default(0) @map("processed_chunks")
+  currentFile     String?                     @map("current_file")
+  errorMessage    String?                     @map("error_message")
+  waitingForJobId String?                     @map("waiting_for_job_id")
+  cancelRequested Boolean                     @default(false) @map("cancel_requested")
+  createdAt       DateTime                    @default(now()) @map("created_at")
+  startedAt       DateTime?                   @map("started_at")
+  completedAt     DateTime?                   @map("completed_at")
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
@@ -1747,17 +1747,26 @@ enum WorkspaceAgentGrantMode {
   @@map("workspace_agent_grant_mode")
 }
 
+enum WorkspaceSqliteGrantMode {
+  none
+  read
+  read_write
+
+  @@map("workspace_sqlite_grant_mode")
+}
+
 /// Grant from a source workspace's agent to access another (target) workspace's
 /// runtime files. The grant is owned/managed by the target workspace owner.
 model WorkspaceAgentGrant {
-  id                String                  @id @default(uuid())
-  sourceWorkspaceId String                  @map("source_workspace_id")
-  targetWorkspaceId String                  @map("target_workspace_id")
-  accessMode        WorkspaceAgentGrantMode @default(read) @map("access_mode")
-  grantedByUserId   String                  @map("granted_by_user_id")
-  expiresAt         DateTime?               @map("expires_at")
-  createdAt         DateTime                @default(now()) @map("created_at")
-  updatedAt         DateTime                @default(now()) @updatedAt @map("updated_at")
+  id                String                   @id @default(uuid())
+  sourceWorkspaceId String                   @map("source_workspace_id")
+  targetWorkspaceId String                   @map("target_workspace_id")
+  accessMode        WorkspaceAgentGrantMode  @default(read) @map("access_mode")
+  sqliteAccessMode  WorkspaceSqliteGrantMode @default(none) @map("sqlite_access_mode")
+  grantedByUserId   String                   @map("granted_by_user_id")
+  expiresAt         DateTime?                @map("expires_at")
+  createdAt         DateTime                 @default(now()) @map("created_at")
+  updatedAt         DateTime                 @default(now()) @updatedAt @map("updated_at")
 
   sourceWorkspace Workspace @relation("AgentGrantSource", fields: [sourceWorkspaceId], references: [id], onDelete: Cascade)
   targetWorkspace Workspace @relation("AgentGrantTarget", fields: [targetWorkspaceId], references: [id], onDelete: Cascade)

@@ -45,10 +45,15 @@ from ragtime.core.userspace_limits import (
     clamp_userspace_primitive_upload_max_bytes,
 )
 from ragtime.indexer.document_parser import extract_text_from_file_async
+from ragtime.userspace.cross_workspace_sqlite import CrossWorkspaceSqliteError
 from ragtime.userspace.html_templates import render_preview_host_unreachable_page_html
 from ragtime.userspace.models import (
     ExecuteComponentRequest,
     ExecuteComponentResponse,
+    RuntimeBridgeSqliteMutationRequest,
+    RuntimeBridgeSqliteMutationResponse,
+    RuntimeBridgeSqliteQueryRequest,
+    RuntimeBridgeSqliteQueryResponse,
     UserSpaceAuthMethod,
     UserSpaceBrowserAuthorization,
     UserSpaceBrowserAuthRequest,
@@ -59,6 +64,7 @@ from ragtime.userspace.models import (
     UserSpacePreviewLaunchRequest,
     UserSpacePreviewLaunchResponse,
     UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeBridgeStatus,
     UserSpaceRuntimeSessionResponse,
     UserSpaceRuntimeStatusResponse,
     UserSpaceWorkspaceTabStateResponse,
@@ -103,6 +109,22 @@ _PRIMITIVE_JOBS: dict[tuple[str, str], dict[str, Any]] = {}
 # must be kept byte-for-byte in sync. Changing the prefix on only one side
 # silently breaks user-app session persistence in previews.
 _USER_APP_COOKIE_PREFIX = "__ragtime_app_cookie_"
+_RUNTIME_BRIDGE_SQLITE_GENERIC_DETAIL = "Runtime bridge SQLite request failed."
+_RUNTIME_BRIDGE_SQLITE_ERROR_STATUS = {
+    "invalid_sql": 400,
+    "invalid_parameters": 400,
+    "sql_too_large": 400,
+    "payload_too_large": 400,
+    "response_too_large": 400,
+    "row_limit_invalid": 400,
+    "sql_not_allowed": 403,
+    "database_not_found": 404,
+    "sqlite_busy": 409,
+    "audit_unavailable": 503,
+    "query_timeout": 504,
+    "query_failed": 500,
+    "mutation_failed": 500,
+}
 
 
 def _decode_user_app_cookie_name(cookie_name: str) -> str | None:
@@ -1512,6 +1534,20 @@ def _extract_bearer_token(request: Request) -> str | None:
     return None
 
 
+def _require_runtime_bridge_claim(claims: dict[str, Any], key: str) -> str:
+    value = str(claims.get(key) or "").strip()
+    if not value:
+        raise HTTPException(status_code=401, detail="Invalid runtime bridge token")
+    return value
+
+
+def _raise_runtime_bridge_sqlite_error(exc: CrossWorkspaceSqliteError) -> None:
+    status_code = _RUNTIME_BRIDGE_SQLITE_ERROR_STATUS.get(exc.code)
+    if status_code is None:
+        raise HTTPException(status_code=500, detail=_RUNTIME_BRIDGE_SQLITE_GENERIC_DETAIL) from exc
+    raise HTTPException(status_code=status_code, detail=exc.safe_message) from exc
+
+
 def _extract_capability_token_from_websocket(websocket: WebSocket) -> str | None:
     # Capability tokens must travel via Authorization/explicit header only.
     # See _extract_capability_token_from_request.
@@ -2062,6 +2098,83 @@ async def runtime_bridge_execute_component(
     )
 
 
+@router.post(
+    "/runtime-bridge/sqlite/query",
+    response_model=RuntimeBridgeSqliteQueryResponse,
+)
+@limiter.limit(RUNTIME_BRIDGE_RATE_LIMIT)
+async def runtime_bridge_sqlite_query(
+    request: Request,
+    payload: RuntimeBridgeSqliteQueryRequest,
+):
+    token = _extract_bearer_token(request)
+    claims = await _runtime_service().verify_runtime_bridge_token(token)
+    workspace_id = _require_runtime_bridge_claim(claims, "workspace_id")
+    session_id = _require_runtime_bridge_claim(claims, "session_id")
+    leased_by_user_id = _require_runtime_bridge_claim(claims, "leased_by_user_id")
+    try:
+        return await _userspace_service().query_runtime_bridge_sqlite(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            leased_by_user_id=leased_by_user_id,
+            request=payload,
+        )
+    except HTTPException:
+        raise
+    except CrossWorkspaceSqliteError as exc:
+        _raise_runtime_bridge_sqlite_error(exc)
+    except Exception as exc:
+        logger.exception(
+            "Runtime bridge SQLite query route failed for workspace %s session %s",
+            workspace_id,
+            session_id,
+        )
+        raise HTTPException(status_code=500, detail=_RUNTIME_BRIDGE_SQLITE_GENERIC_DETAIL) from exc
+
+
+@router.post(
+    "/runtime-bridge/sqlite/mutate",
+    response_model=RuntimeBridgeSqliteMutationResponse,
+)
+@limiter.limit(RUNTIME_BRIDGE_RATE_LIMIT)
+async def runtime_bridge_sqlite_mutate(
+    request: Request,
+    payload: RuntimeBridgeSqliteMutationRequest,
+):
+    token = _extract_bearer_token(request)
+    claims = await _runtime_service().verify_runtime_bridge_token(token)
+    workspace_id = _require_runtime_bridge_claim(claims, "workspace_id")
+    session_id = _require_runtime_bridge_claim(claims, "session_id")
+    leased_by_user_id = _require_runtime_bridge_claim(claims, "leased_by_user_id")
+    try:
+        response = await _userspace_service().mutate_runtime_bridge_sqlite(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            leased_by_user_id=leased_by_user_id,
+            request=payload,
+        )
+    except HTTPException:
+        raise
+    except CrossWorkspaceSqliteError as exc:
+        _raise_runtime_bridge_sqlite_error(exc)
+    except Exception as exc:
+        logger.exception(
+            "Runtime bridge SQLite mutate route failed for workspace %s session %s",
+            workspace_id,
+            session_id,
+        )
+        raise HTTPException(status_code=500, detail=_RUNTIME_BRIDGE_SQLITE_GENERIC_DETAIL) from exc
+
+    try:
+        await _runtime_service().bump_workspace_generation(payload.target_workspace_id.strip(), "runtime_bridge_sqlite_mutate")
+    except Exception:
+        logger.exception(
+            "Failed to bump runtime bridge SQLite generation for workspace %s",
+            payload.target_workspace_id,
+        )
+    return response
+
+
 @router.get(
     "/runtime/workspaces/{workspace_id}/events",
 )
@@ -2106,6 +2219,28 @@ async def workspace_events_sse(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get(
+    "/runtime/workspaces/{workspace_id}/bridge-credentials/status",
+    response_model=UserSpaceRuntimeBridgeStatus,
+)
+async def get_runtime_bridge_status(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await _runtime_service().get_runtime_bridge_status(workspace_id, user.id)
+
+
+@router.post(
+    "/runtime/workspaces/{workspace_id}/bridge-credentials/refresh",
+    response_model=UserSpaceRuntimeBridgeStatus,
+)
+async def refresh_runtime_bridge_credentials(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await _runtime_service().refresh_runtime_bridge_credentials(workspace_id, user.id)
 
 
 @router.get(

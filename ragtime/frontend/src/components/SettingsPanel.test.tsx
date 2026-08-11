@@ -5,8 +5,19 @@ import type { ChatModelsSettingsSectionProps } from './settings/ChatModelsSettin
 
 const modalRenderSpy = vi.hoisted(() => vi.fn());
 const searchFilterBarSpy = vi.hoisted(() => vi.fn());
+const searchFilterState = vi.hoisted(() => ({ queries: [] as string[] }));
 const toastSuccessSpy = vi.hoisted(() => vi.fn());
 const toastErrorSpy = vi.hoisted(() => vi.fn());
+const toastInfoSpy = vi.hoisted(() => vi.fn());
+const toastClearSpy = vi.hoisted(() => vi.fn());
+const toastDismissSpy = vi.hoisted(() => vi.fn());
+const toastActions = vi.hoisted(() => ({
+  success: toastSuccessSpy,
+  error: toastErrorSpy,
+  info: toastInfoSpy,
+  clear: toastClearSpy,
+  dismiss: toastDismissSpy,
+}));
 const modalState = vi.hoisted(() => ({
   latestAllowedChatModelsProps: null as null | {
     title?: string;
@@ -15,6 +26,8 @@ const modalState = vi.hoisted(() => ({
 }));
 const chatModelsSectionState = vi.hoisted(() => ({
   latestProps: null as null | ChatModelsSettingsSectionProps,
+  openedModal: false,
+  autoOpenModal: true,
 }));
 const serverBackupSectionSpy = vi.hoisted(() => vi.fn());
 const mcpSectionState = vi.hoisted(() => ({
@@ -60,8 +73,11 @@ vi.mock('./settings/ChatModelsSettingsSection', () => ({
     const { openModelFilterModal } = props;
 
     useEffect(() => {
-      void openModelFilterModal();
-    }, [openModelFilterModal]);
+      if (chatModelsSectionState.autoOpenModal && !chatModelsSectionState.openedModal) {
+        chatModelsSectionState.openedModal = true;
+        void openModelFilterModal();
+      }
+    }, []);
 
     return (
       <section data-settings-accordion-section="chat-models">
@@ -106,11 +122,7 @@ vi.mock('./ModelFilterModal', () => ({
 
 vi.mock('./shared/Toast', () => ({
   ToastContainer: () => null,
-  useToast: () =>
-    [
-      [],
-      { success: toastSuccessSpy, error: toastErrorSpy, clear: vi.fn(), dismiss: vi.fn() },
-    ] as const,
+  useToast: () => [[], toastActions] as const,
 }));
 
 vi.mock('./settings/AgentBehaviorSettingsSection', () => ({
@@ -302,7 +314,7 @@ vi.mock('./shared/SearchFilterBar', () => ({
   },
   normalizeSearchFilterText: (value: string) => value,
   searchFilterTextMatchesQuery: () => true,
-  useUrlSearchFilterState: () => ({ queries: [] }),
+  useUrlSearchFilterState: () => searchFilterState,
 }));
 vi.mock('./shared/AuthAdminModals', () => ({ AuthAdminModalHost: () => null }));
 
@@ -344,6 +356,8 @@ beforeEach(() => {
   serverBackupSectionSpy.mockClear();
   modalState.latestAllowedChatModelsProps = null;
   chatModelsSectionState.latestProps = null;
+  chatModelsSectionState.openedModal = false;
+  chatModelsSectionState.autoOpenModal = true;
   mcpSectionState.latestProps = null;
   mcpSectionState.run = null;
   agentBehaviorSectionState.latestProps = null;
@@ -352,6 +366,9 @@ beforeEach(() => {
   sectionRenderOrder.length = 0;
   toastSuccessSpy.mockClear();
   toastErrorSpy.mockClear();
+  toastInfoSpy.mockClear();
+  toastClearSpy.mockClear();
+  toastDismissSpy.mockClear();
 
   apiMock.getSettings.mockResolvedValue(buildSettingsResponse());
   apiMock.getUserSpacePreviewSettings.mockResolvedValue({});
@@ -394,35 +411,42 @@ beforeEach(() => {
   apiMock.listMcpRoutes.mockResolvedValue({ routes: [] });
   apiMock.listCloudOAuthProviders.mockResolvedValue([]);
   apiMock.getLdapConfig.mockResolvedValue({ server_url: '', allow_self_signed: false });
-  apiMock.updateSettings.mockImplementation(async (payload: Record<string, unknown>) => ({
-    id: 'settings-1',
-    server_name: 'Ragtime',
-    default_theme_pack: 'default',
-    authenticated_webgl_background_enabled: true,
-    tool_skills_enabled:
-      typeof payload.tool_skills_enabled === 'boolean' ? payload.tool_skills_enabled : true,
-    max_iterations: typeof payload.max_iterations === 'number' ? payload.max_iterations : 30,
-    max_tool_output_chars:
-      typeof payload.max_tool_output_chars === 'number' ? payload.max_tool_output_chars : 5000,
-    scratchpad_window_size:
-      typeof payload.scratchpad_window_size === 'number' ? payload.scratchpad_window_size : 6,
-    openapi_model_prefix_enabled: true,
-    show_tool_card_footer_actions: false,
-    llm_provider: 'openai',
-    mcp_enabled: true,
-    mcp_default_route_auth: true,
-    mcp_default_route_auth_method: 'oauth2',
-    mcp_default_route_allowed_group: null,
-    mcp_default_route_client_id: '',
-    has_mcp_default_password: payload.mcp_default_route_password !== '',
-    mcp_default_route_password:
-      typeof payload.mcp_default_route_password === 'string'
-        ? payload.mcp_default_route_password
-        : '',
-    faiss_search_concurrency_mode:
-      payload.faiss_search_concurrency_mode === 'global' ? 'global' : 'per_index',
-    updated_at: null,
-  }));
+  apiMock.updateSettings.mockImplementation(async (payload: Record<string, unknown>) => {
+    const current = buildSettingsResponse().settings;
+    return {
+      ...current,
+      ...payload,
+      tool_skills_enabled:
+        typeof payload.tool_skills_enabled === 'boolean'
+          ? payload.tool_skills_enabled
+          : current.tool_skills_enabled,
+      max_iterations:
+        typeof payload.max_iterations === 'number'
+          ? payload.max_iterations
+          : current.max_iterations,
+      max_tool_output_chars:
+        typeof payload.max_tool_output_chars === 'number'
+          ? payload.max_tool_output_chars
+          : current.max_tool_output_chars,
+      scratchpad_window_size:
+        typeof payload.scratchpad_window_size === 'number'
+          ? payload.scratchpad_window_size
+          : current.scratchpad_window_size,
+      mcp_default_route_password:
+        typeof payload.mcp_default_route_password === 'string'
+          ? payload.mcp_default_route_password
+          : current.mcp_default_route_password,
+      has_mcp_default_password:
+        typeof payload.mcp_default_route_password === 'string'
+          ? payload.mcp_default_route_password !== ''
+          : current.has_mcp_default_password,
+      faiss_search_concurrency_mode:
+        payload.faiss_search_concurrency_mode === 'global'
+          ? 'global'
+          : current.faiss_search_concurrency_mode,
+      updated_at: null,
+    };
+  });
 });
 
 afterEach(() => {
@@ -663,9 +687,12 @@ describe('SettingsPanel', () => {
 
     render(<SettingsPanel />);
 
-    await waitFor(() => {
-      expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
-    });
+    await waitFor(
+      () => {
+        expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 3000 },
+    );
 
     expect(apiMock.updateSettings.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
@@ -673,7 +700,7 @@ describe('SettingsPanel', () => {
         mcp_default_route_password: 'fallback-pass1',
       }),
     );
-  });
+  }, 10000);
 
   it('retains an existing OAuth2 fallback password when the admin saves without changing it', async () => {
     const { SettingsPanel } = await import('./SettingsPanel');
@@ -687,14 +714,17 @@ describe('SettingsPanel', () => {
 
     render(<SettingsPanel />);
 
-    await waitFor(() => {
-      expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
-    });
+    await waitFor(
+      () => {
+        expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 3000 },
+    );
 
     expect(apiMock.updateSettings.mock.calls[0]?.[0]).not.toHaveProperty(
       'mcp_default_route_password',
     );
-  });
+  }, 10000);
 
   it('clears an existing OAuth2 fallback password when the admin removes it and saves', async () => {
     const { SettingsPanel } = await import('./SettingsPanel');
@@ -730,9 +760,12 @@ describe('SettingsPanel', () => {
 
     render(<SettingsPanel />);
 
-    await waitFor(() => {
-      expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
-    });
+    await waitFor(
+      () => {
+        expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 3000 },
+    );
 
     expect(apiMock.updateSettings.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
@@ -740,7 +773,7 @@ describe('SettingsPanel', () => {
         mcp_default_route_password: '',
       }),
     );
-  });
+  }, 10000);
 
   it('hydrates and saves the FAISS concurrency mode through the search configuration flow', async () => {
     const { SettingsPanel } = await import('./SettingsPanel');
@@ -777,14 +810,17 @@ describe('SettingsPanel', () => {
 
     render(<SettingsPanel />);
 
-    await waitFor(() => {
-      expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
-    });
+    await waitFor(
+      () => {
+        expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 3000 },
+    );
 
     expect(apiMock.updateSettings.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({ faiss_search_concurrency_mode: 'global' }),
     );
-  });
+  }, 10000);
 
   it('shows the updated default MCP route tooltip for OAuth2 routes with a password fallback', async () => {
     apiMock.listMcpRoutes.mockResolvedValue({

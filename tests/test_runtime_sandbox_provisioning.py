@@ -5,9 +5,9 @@ import inspect
 import json
 import os
 import select
+import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -875,34 +875,47 @@ class SandboxProvisioningTests(unittest.TestCase):
         )
 
     def test_exec_path_rearms_status_fd_cloexec_so_parent_sees_eof_after_exec(self) -> None:
-        sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")
         read_fd, write_fd = os.pipe()
-
-        pid = os.fork()
-        if pid == 0:
-            try:
-                os.close(read_fd)
-                sandbox_launcher._arm_status_fd_cloexec(write_fd)
-                os.execv(
-                    sys.executable,
-                    [sys.executable, "-c", "import time; time.sleep(0.5)"],
-                )
-            finally:
-                os._exit(127)
+        ready_read_fd, ready_write_fd = os.pipe()
+        target = "import os, sys, time; os.write(int(sys.argv[1]), b'ready'); time.sleep(10)"
+        helper = (
+            "import os, sys; "
+            "from runtime.worker import sandbox_launcher; "
+            "status_fd = int(sys.argv[1]); "
+            "ready_fd = int(sys.argv[2]); "
+            "sandbox_launcher._arm_status_fd_cloexec(status_fd); "
+            f"os.execv(sys.executable, [sys.executable, '-c', {target!r}, str(ready_fd)])"
+        )
+        repo_root = str(Path(__file__).resolve().parents[1])
+        env = os.environ.copy()
+        env["PYTHONPATH"] = repo_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        process = subprocess.Popen(
+            [sys.executable, "-c", helper, str(write_fd), str(ready_write_fd)],
+            pass_fds=(write_fd, ready_write_fd),
+            cwd=repo_root,
+            env=env,
+        )
 
         os.close(write_fd)
+        os.close(ready_write_fd)
         try:
+            ready, _, _ = select.select([ready_read_fd], [], [], 1.0)
+            self.assertEqual(ready, [ready_read_fd])
+            self.assertEqual(os.read(ready_read_fd, 5), b"ready")
             readable, _, _ = select.select([read_fd], [], [], 1.0)
             self.assertEqual(readable, [read_fd])
             self.assertEqual(os.read(read_fd, 1), b"")
-            self.assertEqual(os.waitpid(pid, os.WNOHANG), (0, 0))
-            time.sleep(0.55)
-            waited_pid, status = os.waitpid(pid, 0)
+            self.assertIsNone(process.poll())
         finally:
             os.close(read_fd)
-
-        self.assertEqual(waited_pid, pid)
-        self.assertTrue(os.WIFEXITED(status))
+            os.close(ready_read_fd)
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1.0)
 
     def test_chroot_launcher_falls_back_to_synced_system_dirs_when_mount_setup_fails(self) -> None:
         sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")

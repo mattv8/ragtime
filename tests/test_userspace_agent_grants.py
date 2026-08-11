@@ -90,10 +90,17 @@ class _FakeUserTable:
 
 
 class _GrantService(UserSpaceService):
-    def __init__(self, roles: dict[str, str | None]) -> None:
+    def __init__(
+        self,
+        roles: dict[str, str | None],
+        *,
+        owner_user_ids: dict[str, str] | None = None,
+    ) -> None:
         super().__init__()
         self.roles = roles
+        self.owner_user_ids = owner_user_ids or {}
         self.enforcements: list[tuple[str, str | None]] = []
+        self.audit_events: list[tuple[str, str | None, str, dict[str, Any]]] = []
 
     async def _enforce_workspace_access(
         self,
@@ -113,7 +120,10 @@ class _GrantService(UserSpaceService):
         return UserSpaceWorkspace(
             id=workspace_id,
             name=f"Workspace {workspace_id}",
-            owner_user_id="user-1" if role == "owner" else "owner-other",
+            owner_user_id=self.owner_user_ids.get(
+                workspace_id,
+                "user-1" if role == "owner" else "owner-other",
+            ),
             members=([] if role in {None, "owner"} else [WorkspaceMember(user_id=user_id, role=cast(Any, role))]),
             created_at=_NOW,
             updated_at=_NOW,
@@ -129,6 +139,7 @@ class _GrantService(UserSpaceService):
         session_id: str | None = None,
         created_at: datetime | None = None,
     ) -> bool:
+        self.audit_events.append((workspace_id, user_id, event_type, payload))
         return True
 
 
@@ -165,6 +176,9 @@ class UserSpaceAgentGrantTests(unittest.IsolatedAsyncioTestCase):
             [("source", "editor"), ("target", "viewer")],
         )
         self.assertEqual(grant_table.created[0]["accessMode"], "read")
+        self.assertEqual(grant.sqlite_access_mode, "none")
+        self.assertEqual(grant_table.created[0]["sqliteAccessMode"], "none")
+        self.assertEqual(service.audit_events[0][3]["sqlite_access_mode"], "none")
 
     async def test_read_write_grant_requires_target_editor(self) -> None:
         service = _GrantService({"source": "editor", "target": "viewer"})
@@ -244,6 +258,262 @@ class UserSpaceAgentGrantTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([grant.id for grant in grants], ["read-grant"])
         self.assertEqual(grants[0].source_workspace_name, "Read Source")
+        self.assertEqual(grants[0].sqlite_access_mode, "none")
+
+    async def test_legacy_missing_sqlite_mode_maps_to_none(self) -> None:
+        service = _GrantService({"source": "editor"})
+        grant_table = _FakeWorkspaceAgentGrantTable(
+            [
+                SimpleNamespace(
+                    id="legacy-grant",
+                    sourceWorkspaceId="source",
+                    targetWorkspaceId="target",
+                    accessMode="read",
+                    grantedByUserId="user-1",
+                    expiresAt=None,
+                    createdAt=_NOW,
+                    updatedAt=_NOW,
+                )
+            ]
+        )
+        fake_db = SimpleNamespace(
+            workspaceagentgrant=grant_table,
+            workspace=_FakeWorkspaceTable({"source": "Source", "target": "Target"}),
+            user=_FakeUserTable(),
+        )
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+            grants = await service.list_workspace_agent_grants(
+                "source",
+                "user-2",
+                direction="source",
+            )
+
+        self.assertEqual(len(grants), 1)
+        self.assertEqual(grants[0].sqlite_access_mode, "none")
+
+    async def test_omitted_sqlite_mode_preserves_existing_non_none_value(self) -> None:
+        service = _GrantService(
+            {"source": "editor", "target": "owner"},
+            owner_user_ids={"target": "user-2"},
+        )
+        existing_row = SimpleNamespace(
+            id="grant-existing",
+            sourceWorkspaceId="source",
+            targetWorkspaceId="target",
+            accessMode="read",
+            sqliteAccessMode="read_write",
+            grantedByUserId="user-1",
+            expiresAt=None,
+            createdAt=_NOW,
+            updatedAt=_NOW,
+        )
+        grant_table = _FakeWorkspaceAgentGrantTable([existing_row])
+        fake_db = SimpleNamespace(
+            workspaceagentgrant=grant_table,
+            workspace=_FakeWorkspaceTable({"source": "Source", "target": "Target"}),
+            user=_FakeUserTable(),
+        )
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+            grant = await service.upsert_workspace_agent_grant(
+                "source",
+                UpsertWorkspaceAgentGrantRequest(
+                    target_workspace_id="target",
+                    access_mode="read",
+                ),
+                "user-2",
+            )
+
+        self.assertEqual(grant.sqlite_access_mode, "read_write")
+        self.assertEqual(existing_row.sqliteAccessMode, "read_write")
+        self.assertNotIn("sqliteAccessMode", grant_table.updated[0]["data"])
+        self.assertEqual(service.audit_events[0][3]["sqlite_access_mode"], "read_write")
+
+    async def test_explicit_sqlite_mode_requires_real_target_owner(self) -> None:
+        for sqlite_access_mode in ("none", "read", "read_write"):
+            with self.subTest(sqlite_access_mode=sqlite_access_mode):
+                service = _GrantService(
+                    {"source": "editor", "target": "editor"},
+                    owner_user_ids={"target": "owner-other"},
+                )
+                fake_db = SimpleNamespace(
+                    workspaceagentgrant=_FakeWorkspaceAgentGrantTable(),
+                    workspace=_FakeWorkspaceTable({"source": "Source", "target": "Target"}),
+                    user=_FakeUserTable(),
+                )
+
+                async def _fake_get_db() -> SimpleNamespace:
+                    return fake_db
+
+                with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+                    with self.assertRaises(HTTPException) as raised:
+                        await service.upsert_workspace_agent_grant(
+                            "source",
+                            UpsertWorkspaceAgentGrantRequest(
+                                target_workspace_id="target",
+                                access_mode="read",
+                                sqlite_access_mode=sqlite_access_mode,
+                            ),
+                            "user-2",
+                        )
+
+                self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_admin_without_target_ownership_is_denied_explicit_sqlite_mode(self) -> None:
+        service = _GrantService(
+            {"source": None, "target": None},
+            owner_user_ids={"target": "owner-other"},
+        )
+        fake_db = SimpleNamespace(
+            workspaceagentgrant=_FakeWorkspaceAgentGrantTable(),
+            workspace=_FakeWorkspaceTable({"source": "Source", "target": "Target"}),
+            user=_FakeUserTable(),
+        )
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+            with self.assertRaises(HTTPException) as raised:
+                await service.upsert_workspace_agent_grant(
+                    "source",
+                    UpsertWorkspaceAgentGrantRequest(
+                        target_workspace_id="target",
+                        access_mode="read",
+                        sqlite_access_mode="read",
+                    ),
+                    "user-2",
+                    is_admin=True,
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
+
+    async def test_target_owner_can_grant_and_downgrade_sqlite_access(self) -> None:
+        service = _GrantService(
+            {"source": "editor", "target": "owner"},
+            owner_user_ids={"target": "user-2"},
+        )
+        grant_table = _FakeWorkspaceAgentGrantTable()
+        fake_db = SimpleNamespace(
+            workspaceagentgrant=grant_table,
+            workspace=_FakeWorkspaceTable({"source": "Source", "target": "Target"}),
+            user=_FakeUserTable(),
+        )
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+            created = await service.upsert_workspace_agent_grant(
+                "source",
+                UpsertWorkspaceAgentGrantRequest(
+                    target_workspace_id="target",
+                    access_mode="read",
+                    sqlite_access_mode="read_write",
+                ),
+                "user-2",
+            )
+            downgraded = await service.upsert_workspace_agent_grant(
+                "source",
+                UpsertWorkspaceAgentGrantRequest(
+                    target_workspace_id="target",
+                    access_mode="read",
+                    sqlite_access_mode="none",
+                ),
+                "user-2",
+            )
+
+        self.assertEqual(created.sqlite_access_mode, "read_write")
+        self.assertEqual(downgraded.sqlite_access_mode, "none")
+        self.assertEqual(grant_table.created[0]["sqliteAccessMode"], "read_write")
+        self.assertEqual(grant_table.updated[0]["data"]["sqliteAccessMode"], "none")
+
+    async def test_source_side_revoke_is_denied_for_active_sqlite_grant(self) -> None:
+        service = _GrantService(
+            {"source": "editor", "target": "viewer"},
+            owner_user_ids={"target": "owner-other"},
+        )
+        grant_table = _FakeWorkspaceAgentGrantTable(
+            [
+                SimpleNamespace(
+                    id="sqlite-grant",
+                    sourceWorkspaceId="source",
+                    targetWorkspaceId="target",
+                    accessMode="read",
+                    sqliteAccessMode="read",
+                    grantedByUserId="user-1",
+                    expiresAt=None,
+                    createdAt=_NOW,
+                    updatedAt=_NOW,
+                )
+            ]
+        )
+        fake_db = SimpleNamespace(
+            workspaceagentgrant=grant_table,
+            workspace=_FakeWorkspaceTable({"source": "Source", "target": "Target"}),
+            user=_FakeUserTable(),
+        )
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+            with self.assertRaises(HTTPException) as raised:
+                await service.revoke_workspace_agent_grant(
+                    "source",
+                    "target",
+                    "user-2",
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(grant_table.deleted, [])
+
+    async def test_target_owner_can_revoke_active_sqlite_grant(self) -> None:
+        service = _GrantService(
+            {"source": None, "target": "owner"},
+            owner_user_ids={"target": "user-2"},
+        )
+        grant_table = _FakeWorkspaceAgentGrantTable(
+            [
+                SimpleNamespace(
+                    id="sqlite-grant",
+                    sourceWorkspaceId="source",
+                    targetWorkspaceId="target",
+                    accessMode="read",
+                    sqliteAccessMode="read_write",
+                    grantedByUserId="user-1",
+                    expiresAt=None,
+                    createdAt=_NOW,
+                    updatedAt=_NOW,
+                )
+            ]
+        )
+        fake_db = SimpleNamespace(
+            workspaceagentgrant=grant_table,
+            workspace=_FakeWorkspaceTable({"source": "Source", "target": "Target"}),
+            user=_FakeUserTable(),
+        )
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+            revoked = await service.revoke_workspace_agent_grant(
+                "source",
+                "target",
+                "user-2",
+            )
+
+        self.assertTrue(revoked)
+        self.assertEqual(grant_table.deleted, [{"id": "sqlite-grant"}])
+        self.assertEqual(service.audit_events[0][3]["sqlite_access_mode"], "read_write")
 
     async def test_revoke_allows_target_viewer_to_remove_read_grant(self) -> None:
         service = _GrantService({"source": None, "target": "viewer"})
@@ -283,6 +553,7 @@ class UserSpaceAgentGrantTests(unittest.IsolatedAsyncioTestCase):
             service.enforcements,
             [("source", "editor"), ("target", "viewer")],
         )
+        self.assertEqual(service.audit_events[0][3]["sqlite_access_mode"], "none")
 
 
 if __name__ == "__main__":

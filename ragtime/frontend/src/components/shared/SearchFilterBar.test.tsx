@@ -119,7 +119,11 @@ describe('SearchFilterBar completion behavior', () => {
     const input = screen.getByRole('textbox', { name: 'Filter settings by keyword' });
     await user.type(input, 'server backup and');
 
-    expect(screen.getByText(/Tab to complete:/i).textContent).toContain('Server Backup & Restore');
+    const completionHintId = input.getAttribute('aria-describedby');
+    expect(completionHintId).toBeTruthy();
+    expect(document.getElementById(completionHintId!)?.textContent).toContain(
+      'Server Backup & Restore',
+    );
 
     await user.tab();
 
@@ -134,6 +138,9 @@ describe('SearchFilterBar completion behavior', () => {
 
     const input = screen.getByRole('textbox', { name: 'Filter settings by keyword' });
     await user.type(input, 'appearance');
+
+    expect(input.getAttribute('aria-describedby')).toBeNull();
+
     await user.tab();
 
     expect(document.activeElement).not.toBe(input);

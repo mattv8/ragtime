@@ -697,19 +697,19 @@ describe('ToolSelectorDropdown bulk selection', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(999);
     });
-    expect(screen.queryByText('Right-click a tool for more options')).toBeNull();
+    expect(document.body.querySelector('.popover')).toBeNull();
 
     fireEvent.mouseMove(dropdown, { clientX: 302, clientY: 252 });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(999);
     });
-    expect(screen.queryByText('Right-click a tool for more options')).toBeNull();
+    expect(document.body.querySelector('.popover')).toBeNull();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
 
-    const tooltip = screen.getByText('Right-click a tool for more options');
-    const popover = tooltip.closest('.popover') as HTMLElement;
+    const popover = document.body.querySelector('.popover') as HTMLElement;
+    expect(popover).not.toBeNull();
     expect(popover.style.left).toBe('302px');
     expect(popover.style.top).toBe('236px');
     expect(popover.style.zIndex).toBe('9001');
@@ -723,7 +723,7 @@ describe('ToolSelectorDropdown bulk selection', () => {
     await user.hover(document.querySelector('.userspace-tool-dropdown-surface') as HTMLElement);
 
     await new Promise((resolve) => setTimeout(resolve, 400));
-    expect(screen.queryByText('Right-click a tool for more options')).toBeNull();
+    expect(document.body.querySelector('.popover')).toBeNull();
   });
 
   it('does not hint at right-click when hovering the trigger while the menu is open', async () => {
@@ -743,8 +743,6 @@ describe('ToolSelectorDropdown bulk selection', () => {
     await user.click(screen.getByTitle('Conversation Tools (3/3 selected)'));
     await user.hover(screen.getByTitle('Conversation Tools (3/3 selected)'));
 
-    await waitFor(() =>
-      expect(screen.queryByText('Right-click a tool for more options')).toBeNull(),
-    );
+    await waitFor(() => expect(document.body.querySelector('.popover')).toBeNull());
   });
 });

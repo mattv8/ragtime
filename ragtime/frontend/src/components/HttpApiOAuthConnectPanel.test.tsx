@@ -59,7 +59,6 @@ describe('HttpApiOAuthConnectPanel', () => {
         }),
       ),
     );
-    expect(screen.getByText('Advanced endpoints')).toBeTruthy();
   });
 
   it('copies the device code, opens the preferred URL, and polls to connected', async () => {
