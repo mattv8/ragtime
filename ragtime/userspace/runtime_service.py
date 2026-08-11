@@ -85,6 +85,7 @@ _RUNTIME_PREVIEW_SESSION_KIND = "userspace_preview_session"
 _RUNTIME_BRIDGE_TOKEN_KIND = "userspace_runtime_bridge"
 _RUNTIME_BRIDGE_TOKEN_TTL_SECONDS = 14400
 _RUNTIME_BRIDGE_REFRESH_LEAD_SECONDS = 300
+_RUNTIME_BRIDGE_REFRESH_WATCH_INTERVAL_SECONDS = 60.0
 # Prevent synchronized preview retries from causing restart storms after a
 # failed bridge recovery attempt.
 _RUNTIME_BRIDGE_RECOVERY_COOLDOWN_SECONDS = 120
@@ -157,6 +158,7 @@ class UserSpaceRuntimeService:
         self._workspace_preview_bridge_readiness_locks: dict[str, asyncio.Lock] = {}
         self._workspace_preview_bridge_readiness_locks_lock = asyncio.Lock()
         self._workspace_preview_bridge_last_recovery_attempt_ts: dict[str, float] = {}
+        self._runtime_bridge_refresh_watch_task: asyncio.Task[None] | None = None
         self._runtime_bridge_auth_failure_audit_dedupe: dict[str, float] = {}
         self._runtime_bridge_auth_failure_audit_lock = asyncio.Lock()
         self._runtime_mount_spec_signatures: dict[str, str] = {}
@@ -953,6 +955,86 @@ class UserSpaceRuntimeService:
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         await self._ensure_workspace_preview_bridge_ready(session)
         return await self.get_runtime_bridge_status(workspace_id, user_id)
+
+    async def _refresh_runtime_bridge_credentials_for_active_workspaces(self) -> None:
+        db = await get_db()
+        model = self._runtime_session_model(db)
+        rows = await model.find_many(
+            where={"state": {"in": ["starting", "running"]}},
+            order={"updatedAt": "desc"},
+        )
+
+        newest_sessions_by_workspace: dict[str, UserSpaceRuntimeSession] = {}
+        for row in rows or []:
+            workspace_id = str(getattr(row, "workspaceId", getattr(row, "workspace_id", "")) or "").strip()
+            if not workspace_id or workspace_id in newest_sessions_by_workspace:
+                continue
+            newest_sessions_by_workspace[workspace_id] = self._to_runtime_session(row)
+
+        for workspace_id, session in newest_sessions_by_workspace.items():
+            status_name: str = session.state
+            try:
+                status = await self._get_workspace_preview_bridge_status(session)
+                status_name = status.state
+                if not self._workspace_preview_bridge_status_needs_recovery(status):
+                    continue
+                await self._ensure_workspace_preview_bridge_ready(session)
+            except Exception:
+                logger.warning(
+                    "Runtime bridge refresh watch failed for workspace %s (status=%s)",
+                    workspace_id,
+                    status_name,
+                    exc_info=True,
+                )
+
+    def schedule_runtime_bridge_refresh_watch(self) -> None:
+        task = self._runtime_bridge_refresh_watch_task
+        if task is not None and not task.done():
+            return
+        self._runtime_bridge_refresh_watch_task = asyncio.create_task(
+            self._runtime_bridge_refresh_watch_loop(),
+            name="userspace-runtime-bridge-refresh-watch",
+        )
+
+    @staticmethod
+    def _log_runtime_bridge_refresh_watch_task_failure(task: asyncio.Task[None]) -> None:
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is None:
+            return
+        logger.warning(
+            "Runtime bridge refresh watch task failed during shutdown (%s)",
+            type(exc).__name__,
+        )
+
+    async def shutdown_runtime_bridge_refresh_watch(self) -> None:
+        task = self._runtime_bridge_refresh_watch_task
+        if task is not None:
+            if task.done():
+                self._log_runtime_bridge_refresh_watch_task_failure(task)
+            else:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    self._log_runtime_bridge_refresh_watch_task_failure(task)
+                else:
+                    self._log_runtime_bridge_refresh_watch_task_failure(task)
+        self._runtime_bridge_refresh_watch_task = None
+
+    async def _runtime_bridge_refresh_watch_loop(self) -> None:
+        while True:
+            try:
+                await self._refresh_runtime_bridge_credentials_for_active_workspaces()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Runtime bridge refresh watch scan failed", exc_info=True)
+            await asyncio.sleep(_RUNTIME_BRIDGE_REFRESH_WATCH_INTERVAL_SECONDS)
 
     async def consume_preview_grant(self, claims: dict[str, Any]) -> None:
         """Enforce single-use semantics for preview bootstrap grants.

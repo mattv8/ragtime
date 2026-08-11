@@ -773,11 +773,7 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       chat_state: { ...DEFAULT_CHAT_STATE },
     });
 
-    render(
-      <UserSpacePanel
-        currentUser={{ ...VIEWER_USER }}
-      />,
-    );
+    render(<UserSpacePanel currentUser={{ ...VIEWER_USER }} />);
 
     await waitFor(() => {
       expect(screen.getByText('Bridge expired')).toBeTruthy();
@@ -1192,10 +1188,7 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    expect(previewApiMock.launchUserSpacePreview).toHaveBeenCalledWith(
-      'ws-1',
-      expect.any(Object),
-    );
+    expect(previewApiMock.launchUserSpacePreview).toHaveBeenCalledWith('ws-1', expect.any(Object));
 
     rerender(
       <UserSpacePanel
@@ -1207,10 +1200,7 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(previewApiMock.launchUserSpacePreview).toHaveBeenCalledWith(
-      'ws-2',
-      expect.any(Object),
-    );
+    expect(previewApiMock.launchUserSpacePreview).toHaveBeenCalledWith('ws-2', expect.any(Object));
     expect(screen.getByTestId('preview-frame').getAttribute('data-preview-url')).toBe(
       'http://preview.test/ws-2-session',
     );
@@ -1235,8 +1225,9 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       'http://preview.test/ws-2-session',
     );
     expect(
-      previewApiMock.launchUserSpacePreview.mock.calls.filter(([workspaceId]) => workspaceId === 'ws-1')
-        .length,
+      previewApiMock.launchUserSpacePreview.mock.calls.filter(
+        ([workspaceId]) => workspaceId === 'ws-1',
+      ).length,
     ).toBe(ws1LaunchCallsBeforeRetryWindow);
   });
 });

@@ -4,6 +4,7 @@ import asyncio
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import Literal
 from unittest import mock
 
 from fastapi import HTTPException
@@ -14,15 +15,21 @@ from ragtime.userspace.runtime_service import UserSpaceRuntimeService
 UTC = timezone.utc
 
 
-def _session_row(*, session_id: str, state: str = "running") -> SimpleNamespace:
+def _session_row(
+    *,
+    session_id: str,
+    state: str = "running",
+    workspace_id: str = "ws-1",
+    provider_session_id: str = "provider-1",
+) -> SimpleNamespace:
     now = datetime.now(UTC)
     return SimpleNamespace(
         id=session_id,
-        workspaceId="ws-1",
+        workspaceId=workspace_id,
         leasedByUserId="user-1",
         state=state,
         runtimeProvider="microvm_pool_v1",
-        providerSessionId="provider-1",
+        providerSessionId=provider_session_id,
         previewInternalUrl="http://preview",
         launchFramework=None,
         launchCommand=None,
@@ -39,7 +46,15 @@ def _session_row(*, session_id: str, state: str = "running") -> SimpleNamespace:
 
 def _bridge_status(
     *,
-    state: str = "healthy",
+    state: Literal[
+        "healthy",
+        "not_running",
+        "missing",
+        "expired",
+        "invalid",
+        "session_mismatch",
+        "unavailable",
+    ] = "healthy",
     expires_at: datetime | None = None,
     detail: str | None = None,
     session_id: str = "sess-1",
@@ -816,3 +831,146 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(exc_info.exception.detail, "bridge not ready")
         build_launch.assert_not_awaited()
+
+    async def test_bridge_refresh_watch_only_recovers_active_near_expiry_workspaces(self) -> None:
+        healthy_status = _bridge_status(expires_at=datetime.now(UTC) + timedelta(seconds=900), session_id="sess-healthy")
+        expired_status = _bridge_status(
+            state="expired",
+            expires_at=datetime.now(UTC) - timedelta(seconds=1),
+            detail="expired bridge token",
+            session_id="sess-expired",
+        )
+        rows = [
+            _session_row(session_id="sess-healthy", workspace_id="ws-healthy", provider_session_id="provider-healthy"),
+            _session_row(session_id="sess-older", workspace_id="ws-healthy", provider_session_id="provider-older"),
+            _session_row(session_id="sess-expired", workspace_id="ws-expired", provider_session_id="provider-expired"),
+            _session_row(session_id="sess-empty", workspace_id="", provider_session_id="provider-empty"),
+        ]
+        db = SimpleNamespace(userspaceruntimesession=SimpleNamespace(find_many=mock.AsyncMock(return_value=rows)))
+
+        async def get_status(session):
+            if session.workspace_id == "ws-healthy":
+                return healthy_status
+            if session.workspace_id == "ws-expired":
+                return expired_status
+            raise AssertionError(f"unexpected workspace {session.workspace_id}")
+
+        with (
+            mock.patch("ragtime.userspace.runtime_service.get_db", mock.AsyncMock(return_value=db)),
+            mock.patch.object(
+                self.service,
+                "_get_workspace_preview_bridge_status",
+                mock.AsyncMock(side_effect=get_status),
+            ) as get_status_mock,
+            mock.patch.object(
+                self.service,
+                "_ensure_workspace_preview_bridge_ready",
+                mock.AsyncMock(),
+            ) as ensure_ready,
+        ):
+            await self.service._refresh_runtime_bridge_credentials_for_active_workspaces()
+
+        db.userspaceruntimesession.find_many.assert_awaited_once_with(
+            where={"state": {"in": ["starting", "running"]}},
+            order={"updatedAt": "desc"},
+        )
+        self.assertEqual(
+            [call.args[0].workspace_id for call in get_status_mock.await_args_list],
+            ["ws-healthy", "ws-expired"],
+        )
+        ensure_ready.assert_awaited_once()
+        ensure_ready_args = ensure_ready.await_args
+        assert ensure_ready_args is not None
+        self.assertEqual(ensure_ready_args.args[0].workspace_id, "ws-expired")
+
+    async def test_bridge_refresh_watch_continues_after_workspace_failure(self) -> None:
+        rows = [
+            _session_row(session_id="sess-failing", workspace_id="ws-failing", provider_session_id="provider-failing"),
+            _session_row(session_id="sess-recover", workspace_id="ws-recover", provider_session_id="provider-recover"),
+        ]
+        db = SimpleNamespace(userspaceruntimesession=SimpleNamespace(find_many=mock.AsyncMock(return_value=rows)))
+        expired_status = _bridge_status(
+            state="expired",
+            expires_at=datetime.now(UTC) - timedelta(seconds=1),
+            detail="expired bridge token",
+            session_id="sess-recover",
+        )
+
+        async def get_status(session):
+            if session.workspace_id == "ws-failing":
+                raise HTTPException(status_code=502, detail="provider down")
+            if session.workspace_id == "ws-recover":
+                return expired_status
+            raise AssertionError(f"unexpected workspace {session.workspace_id}")
+
+        with (
+            mock.patch("ragtime.userspace.runtime_service.get_db", mock.AsyncMock(return_value=db)),
+            mock.patch.object(
+                self.service,
+                "_get_workspace_preview_bridge_status",
+                mock.AsyncMock(side_effect=get_status),
+            ) as get_status_mock,
+            mock.patch.object(
+                self.service,
+                "_ensure_workspace_preview_bridge_ready",
+                mock.AsyncMock(),
+            ) as ensure_ready,
+        ):
+            await self.service._refresh_runtime_bridge_credentials_for_active_workspaces()
+
+        self.assertEqual(
+            [call.args[0].workspace_id for call in get_status_mock.await_args_list],
+            ["ws-failing", "ws-recover"],
+        )
+        ensure_ready.assert_awaited_once()
+        ensure_ready_args = ensure_ready.await_args
+        assert ensure_ready_args is not None
+        self.assertEqual(ensure_ready_args.args[0].workspace_id, "ws-recover")
+
+    async def test_schedule_bridge_refresh_watch_is_idempotent(self) -> None:
+        release_task = asyncio.Event()
+
+        async def wait_forever() -> None:
+            await release_task.wait()
+
+        with mock.patch.object(self.service, "_runtime_bridge_refresh_watch_loop", side_effect=wait_forever):
+            self.service.schedule_runtime_bridge_refresh_watch()
+            first_task = self.service._runtime_bridge_refresh_watch_task
+            self.service.schedule_runtime_bridge_refresh_watch()
+
+            assert first_task is not None
+            self.assertIs(self.service._runtime_bridge_refresh_watch_task, first_task)
+            self.assertEqual(first_task.get_name(), "userspace-runtime-bridge-refresh-watch")
+            await self.service.shutdown_runtime_bridge_refresh_watch()
+
+        self.assertIsNone(self.service._runtime_bridge_refresh_watch_task)
+
+    async def test_shutdown_bridge_refresh_watch_cancels_task(self) -> None:
+        release_task = asyncio.Event()
+
+        async def wait_forever() -> None:
+            await release_task.wait()
+
+        task = asyncio.create_task(wait_forever())
+        self.service._runtime_bridge_refresh_watch_task = task
+
+        await self.service.shutdown_runtime_bridge_refresh_watch()
+
+        self.assertTrue(task.cancelled())
+        self.assertIsNone(self.service._runtime_bridge_refresh_watch_task)
+
+    async def test_shutdown_bridge_refresh_watch_logs_completed_task_failure_and_retrieves_exception(self) -> None:
+        async def fail_watch() -> None:
+            raise RuntimeError("bridge-watch boom secret-token")
+
+        task = asyncio.create_task(fail_watch())
+        await asyncio.sleep(0)
+        self.service._runtime_bridge_refresh_watch_task = task
+
+        with mock.patch("ragtime.userspace.runtime_service.logger.warning") as log_warning:
+            await self.service.shutdown_runtime_bridge_refresh_watch()
+
+        self.assertIsNone(self.service._runtime_bridge_refresh_watch_task)
+        self.assertFalse(getattr(task, "_log_traceback", True))
+        log_warning.assert_called_once()
+        self.assertNotIn("secret-token", str(log_warning.call_args))

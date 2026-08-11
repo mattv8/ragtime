@@ -283,6 +283,7 @@ async def lifespan(app: FastAPI):
     userspace_service.schedule_workspace_sqlite_import_recovery()
     userspace_service.schedule_workspace_mount_watch()
     userspace_service.schedule_workspace_scm_watch()
+    userspace_runtime_service.schedule_runtime_bridge_refresh_watch()
     await workspace_code_index_service.start()
     await git_webhook_service.start()
     # Start MCP session manager (enable/disable checked at request time)
@@ -295,6 +296,7 @@ async def lifespan(app: FastAPI):
     await userspace_service.shutdown_git_drift_reconciliation()
     await userspace_service.shutdown_workspace_mount_watch()
     await userspace_service.shutdown_workspace_scm_watch()
+    await userspace_runtime_service.shutdown_runtime_bridge_refresh_watch()
     await tool_health_monitor.stop()
 
     # Cleanup - stop background services before disconnecting DB

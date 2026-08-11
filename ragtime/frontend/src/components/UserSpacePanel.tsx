@@ -8475,7 +8475,7 @@ export function UserSpacePanel({
     ? 'Open SQLite Inspector'
     : 'Accessible SQLite databases are empty — open the inspector to initialize tables';
   const formattedError = useMemo(() => {
-    const activeError = activeRightTab === 'preview' ? previewLaunchError ?? error : error;
+    const activeError = activeRightTab === 'preview' ? (previewLaunchError ?? error) : error;
     return formatUserSpaceErrorMessage(activeError);
   }, [activeRightTab, error, previewLaunchError]);
   const liveDataWarningMessage = runtimeStatus?.live_data_warning?.trim() || null;
