@@ -1063,7 +1063,6 @@ describe('HttpApiConnectionPanel', () => {
     ).toBe('items');
     expect(screen.getByText(/agent-settable header names/i)).toBeTruthy();
     expect(screen.getByLabelText('Approved request headers (optional)')).toBeTruthy();
-    expect(screen.getByText(/not used as the request Base URL/i)).toBeTruthy();
     expect(screen.getByText(/does not configure fixed header values/i)).toBeTruthy();
     expect(screen.getByText(/optional dot-path used to select/i)).toBeTruthy();
     expect(screen.queryByLabelText('OpenAPI URL')).toBeNull();

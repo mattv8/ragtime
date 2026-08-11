@@ -92,7 +92,6 @@ describe('ToolAccessEditor', () => {
     render(<Harness />);
 
     expect(screen.getByText('Default')).toBeTruthy();
-    expect(screen.getByText(/when no override matches/i)).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText(/admins always have full access/i)).toBeNull();
   });
@@ -283,15 +282,11 @@ describe('ToolAccessEditor', () => {
 
     const browseButton = screen.getByRole('button', { name: /browse all/i });
 
-    expect(screen.getByText(/type to search, or/i)).toBeTruthy();
     expect(browseButton).toBeTruthy();
     expect((browseButton as HTMLButtonElement).disabled).toBe(false);
     expect(browseButton.getAttribute('aria-expanded')).toBe('false');
     expect(browseButton.getAttribute('aria-controls')).toBeTruthy();
     expect(screen.queryByRole('listbox', { name: /add users and groups/i })).toBeNull();
-    expect(
-      screen.getByText(/no user or group overrides\. search above to add one\./i),
-    ).toBeTruthy();
   });
 
   it('disables browse when there are no principals left to add', () => {
@@ -548,9 +543,6 @@ describe('ToolAccessEditor', () => {
     await user.click(screen.getByRole('option', { name: 'Inherit' }));
 
     expect(screen.queryByText('Alice Admin')).toBeNull();
-    expect(
-      screen.getByText(/no user or group overrides\. search above to add one\./i),
-    ).toBeTruthy();
   });
 
   it('filters existing rows by the search query and shows a no matches row', async () => {

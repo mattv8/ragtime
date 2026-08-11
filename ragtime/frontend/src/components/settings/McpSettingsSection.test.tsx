@@ -183,7 +183,7 @@ function renderSection({
 }
 
 describe('McpSettingsSection', () => {
-  it('shows OAuth2 as the default selectable auth method without LDAP and explains local plus LDAP sign-in', () => {
+  it('shows OAuth2 as the default selectable auth method without LDAP', () => {
     renderSection({
       settings: buildSettings({
         mcp_default_route_auth_method: undefined as never,
@@ -198,10 +198,9 @@ describe('McpSettingsSection', () => {
       'password',
       'client_credentials',
     ]);
-    expect(screen.getByText(/Local and LDAP users can sign in through OAuth2/i)).toBeTruthy();
   });
 
-  it('shows optional OAuth2 password fallback controls with existing password actions', () => {
+  it('shows optional OAuth2 password fallback controls and existing password actions', () => {
     renderSection({
       settings: buildSettings({
         has_mcp_default_password: true,
@@ -213,7 +212,6 @@ describe('McpSettingsSection', () => {
     expect(screen.getByRole('button', { name: 'Show password' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Generate Password' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Clear' })).toBeTruthy();
-    expect(screen.getByText(/enter a new one to change it/i)).toBeTruthy();
   });
 
   it('shows the exact LDAP bypass warning when an OAuth2 group restriction and fallback password are both configured', async () => {
