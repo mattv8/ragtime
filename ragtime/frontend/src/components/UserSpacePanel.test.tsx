@@ -392,6 +392,11 @@ function createDeferredPromise<T>() {
   return { promise, resolve, reject };
 }
 
+async function flushAsyncWork(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 async function renderPanelWithRuntimeOverlay(rightPaneCollapsed: boolean) {
   setLayoutCookie(rightPaneCollapsed);
 
@@ -528,11 +533,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   vi.useRealTimers();
   vi.clearAllMocks();
   latestSqliteInspectorModalProps = null;
   sqliteInspectorModalRender = () => null;
-  cleanup();
 });
 
 describe('UserSpacePanel workspace tool descriptions', () => {
@@ -748,42 +753,167 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     );
   });
 
-  it('shows unhealthy bridge status details to viewers without a refresh action', async () => {
-    const viewerWorkspace = buildWorkspaceForMember(VIEWER_USER.id, 'viewer');
-    previewApiMock.listUserSpaceWorkspaces.mockResolvedValue({
-      items: [{ ...viewerWorkspace }],
-      total: 1,
-    });
-    previewApiMock.getUserSpaceWorkspace.mockResolvedValue({ ...viewerWorkspace });
-    previewApiMock.getUserSpaceWorkspaceTabState.mockResolvedValue({
-      workspace_id: WORKSPACE.id,
-      runtime_status: {
-        ...STARTING_RUNTIME_STATUS,
-        bridge_status: {
-          state: 'expired',
-          bridge_url: 'https://bridge.example',
-          token_session_id: 'session-old',
-          current_session_id: 'session-new',
-          issued_at: '2026-08-05T18:00:00Z',
-          expires_at: '2026-08-05T19:00:00Z',
-          last_success_at: '2026-08-05T18:30:00Z',
-          detail: 'Bridge credentials expired.',
+  it('hides bridge health, detail, and manual refresh UI for admin, editor, and viewer across former bridge label states', async () => {
+    const scenarios = [
+      {
+        user: { ...CURRENT_USER },
+        workspace: { ...WORKSPACE },
+        runtimeStatus: { ...STARTING_RUNTIME_STATUS, devserver_running: true },
+      },
+      {
+        user: { ...CURRENT_USER },
+        workspace: { ...WORKSPACE },
+        runtimeStatus: {
+          ...STARTING_RUNTIME_STATUS,
+          devserver_running: true,
+          bridge_status: {
+            state: 'session_mismatch',
+            bridge_url: 'https://bridge.example',
+            token_session_id: 'session-old',
+            current_session_id: 'session-new',
+            issued_at: '2026-08-05T18:00:00Z',
+            expires_at: '2026-08-05T19:00:00Z',
+            last_success_at: '2026-08-05T18:30:00Z',
+            detail: 'Bridge session mismatch detail should stay hidden.',
+          },
         },
       },
-      chat_state: { ...DEFAULT_CHAT_STATE },
-    });
+      {
+        user: { ...CURRENT_USER },
+        workspace: { ...WORKSPACE },
+        runtimeStatus: {
+          ...STARTING_RUNTIME_STATUS,
+          devserver_running: true,
+          bridge_status: {
+            ...STARTING_RUNTIME_STATUS.bridge_status,
+            state: 'not_running',
+            detail: 'Bridge not running detail should stay hidden.',
+          },
+        },
+      },
+      {
+        user: { ...EDITOR_USER },
+        workspace: buildWorkspaceForMember(EDITOR_USER.id, 'editor'),
+        runtimeStatus: { ...STARTING_RUNTIME_STATUS, devserver_running: true },
+      },
+      {
+        user: { ...EDITOR_USER },
+        workspace: buildWorkspaceForMember(EDITOR_USER.id, 'editor'),
+        runtimeStatus: {
+          ...STARTING_RUNTIME_STATUS,
+          devserver_running: true,
+          bridge_status: {
+            state: 'expired',
+            bridge_url: 'https://bridge.example',
+            token_session_id: 'session-old',
+            current_session_id: 'session-new',
+            issued_at: '2026-08-05T18:00:00Z',
+            expires_at: '2026-08-05T19:00:00Z',
+            last_success_at: '2026-08-05T18:30:00Z',
+            detail: 'Bridge credentials expired.',
+          },
+        },
+      },
+      {
+        user: { ...EDITOR_USER },
+        workspace: buildWorkspaceForMember(EDITOR_USER.id, 'editor'),
+        runtimeStatus: {
+          ...STARTING_RUNTIME_STATUS,
+          devserver_running: true,
+          bridge_status: {
+            ...STARTING_RUNTIME_STATUS.bridge_status,
+            state: 'invalid',
+            detail: 'Bridge invalid detail should stay hidden.',
+          },
+        },
+      },
+      {
+        user: { ...VIEWER_USER },
+        workspace: buildWorkspaceForMember(VIEWER_USER.id, 'viewer'),
+        runtimeStatus: { ...STARTING_RUNTIME_STATUS, devserver_running: true },
+      },
+      {
+        user: { ...VIEWER_USER },
+        workspace: buildWorkspaceForMember(VIEWER_USER.id, 'viewer'),
+        runtimeStatus: {
+          ...STARTING_RUNTIME_STATUS,
+          devserver_running: true,
+          bridge_status: {
+            state: 'expired',
+            bridge_url: 'https://bridge.example',
+            token_session_id: 'session-old',
+            current_session_id: 'session-new',
+            issued_at: '2026-08-05T18:00:00Z',
+            expires_at: '2026-08-05T19:00:00Z',
+            last_success_at: '2026-08-05T18:30:00Z',
+            detail: 'Bridge credentials expired.',
+          },
+        },
+      },
+      {
+        user: { ...VIEWER_USER },
+        workspace: buildWorkspaceForMember(VIEWER_USER.id, 'viewer'),
+        runtimeStatus: {
+          ...STARTING_RUNTIME_STATUS,
+          devserver_running: true,
+          bridge_status: {
+            ...STARTING_RUNTIME_STATUS.bridge_status,
+            state: 'missing',
+            detail: 'Bridge missing detail should stay hidden.',
+          },
+        },
+      },
+      {
+        user: { ...CURRENT_USER },
+        workspace: { ...WORKSPACE },
+        runtimeStatus: {
+          ...STARTING_RUNTIME_STATUS,
+          devserver_running: true,
+          bridge_status: {
+            ...STARTING_RUNTIME_STATUS.bridge_status,
+            state: 'unavailable',
+            detail: 'Bridge unavailable detail should stay hidden.',
+          },
+        },
+      },
+    ];
 
-    render(<UserSpacePanel currentUser={{ ...VIEWER_USER }} />);
+    for (const scenario of scenarios) {
+      previewApiMock.listUserSpaceWorkspaces.mockResolvedValueOnce({
+        items: [{ ...scenario.workspace }],
+        total: 1,
+      });
+      previewApiMock.getUserSpaceWorkspace.mockResolvedValueOnce({ ...scenario.workspace });
+      previewApiMock.getUserSpaceWorkspaceTabState.mockResolvedValueOnce({
+        workspace_id: scenario.workspace.id,
+        runtime_status: scenario.runtimeStatus,
+        chat_state: { ...DEFAULT_CHAT_STATE },
+      });
 
-    await waitFor(() => {
-      expect(screen.getByText('Bridge expired')).toBeTruthy();
-    });
+      render(<UserSpacePanel currentUser={scenario.user} />);
 
-    expect(previewApiMock.refreshUserSpaceBridgeCredentials).not.toHaveBeenCalled();
-    expect(screen.getByText(/Bridge credentials expired\./)).toBeTruthy();
-    expect(screen.getByText(/Expired /)).toBeTruthy();
-    expect(screen.getByText(/Last success /)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Refresh bridge credentials' })).toBeNull();
+      await waitFor(() => {
+        expect(screen.getByTestId('preview-frame')).toBeTruthy();
+      });
+
+      expect(
+        screen.queryByText(
+          /bridge (healthy|expired|invalid|missing|unavailable|not running|session mismatch)/i,
+        ),
+      ).toBeNull();
+      expect(screen.queryByText(/Bridge credentials expired\./i)).toBeNull();
+      expect(screen.queryByText(/Bridge session mismatch detail should stay hidden\./i)).toBeNull();
+      expect(screen.queryByText(/Bridge not running detail should stay hidden\./i)).toBeNull();
+      expect(screen.queryByText(/Bridge invalid detail should stay hidden\./i)).toBeNull();
+      expect(screen.queryByText(/Bridge missing detail should stay hidden\./i)).toBeNull();
+      expect(screen.queryByText(/Bridge unavailable detail should stay hidden\./i)).toBeNull();
+      expect(screen.queryByText(/Expired /)).toBeNull();
+      expect(screen.queryByText(/Expires /)).toBeNull();
+      expect(screen.queryByText(/Last success /)).toBeNull();
+      expect(screen.queryByRole('button', { name: /refresh bridge credentials/i })).toBeNull();
+
+      cleanup();
+    }
   });
 
   it('automatically refreshes near-expiry bridge credentials for editable workspaces and reloads workspace state', async () => {
@@ -907,79 +1037,17 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledTimes(2);
   });
 
-  it('labels a future invalid bridge expiry as Expires instead of Expired', async () => {
-    previewApiMock.getUserSpaceWorkspaceTabState.mockResolvedValue({
-      workspace_id: WORKSPACE.id,
-      runtime_status: {
-        ...STARTING_RUNTIME_STATUS,
-        bridge_status: {
-          ...STARTING_RUNTIME_STATUS.bridge_status,
-          state: 'invalid',
-          expires_at: '2099-08-05T19:00:00Z',
-          detail: 'Bridge credentials are invalid.',
-        },
-      },
-      chat_state: { ...DEFAULT_CHAT_STATE },
-    });
-
-    await renderPanelWithRuntimeOverlay(false);
-
-    expect(screen.getByText('Bridge invalid')).toBeTruthy();
-    expect(screen.getByText(/Expires /)).toBeTruthy();
-    expect(screen.queryByText(/Expired /)).toBeNull();
-  });
-
-  it('shows a low-noise healthy bridge label without status details', async () => {
-    await renderPanelWithRuntimeOverlay(false);
-
-    expect(screen.getByText('Bridge healthy')).toBeTruthy();
-    expect(screen.queryByText(/Last success /)).toBeNull();
-    expect(screen.queryByText(/Expired /)).toBeNull();
-  });
-
-  it('does not render a manual bridge refresh control for admins, editors, or viewers', async () => {
-    const scenarios = [
-      {
-        user: { ...CURRENT_USER },
-        workspace: { ...WORKSPACE },
-      },
-      {
-        user: { ...EDITOR_USER },
-        workspace: buildWorkspaceForMember(EDITOR_USER.id, 'editor'),
-      },
-      {
-        user: { ...VIEWER_USER },
-        workspace: buildWorkspaceForMember(VIEWER_USER.id, 'viewer'),
-      },
-    ];
-
-    for (const scenario of scenarios) {
-      previewApiMock.listUserSpaceWorkspaces.mockResolvedValueOnce({
-        items: [{ ...scenario.workspace }],
-        total: 1,
-      });
-      previewApiMock.getUserSpaceWorkspace.mockResolvedValueOnce({ ...scenario.workspace });
-      previewApiMock.getUserSpaceWorkspaceTabState.mockResolvedValueOnce({
-        workspace_id: scenario.workspace.id,
-        runtime_status: { ...STARTING_RUNTIME_STATUS, devserver_running: true },
-        chat_state: { ...DEFAULT_CHAT_STATE },
-      });
-
-      render(<UserSpacePanel currentUser={scenario.user} />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Bridge healthy')).toBeTruthy();
-      });
-      expect(screen.queryByRole('button', { name: 'Refresh bridge credentials' })).toBeNull();
-
-      cleanup();
-    }
-  });
-
   it('retries preview launch after 2 seconds without mounting the iframe URL and clears the error on success', async () => {
     vi.useFakeTimers();
+    const firstLaunch = createDeferredPromise<{
+      workspace_id: string;
+      preview_url: string;
+      preview_origin: string;
+      expires_at: string;
+      preview_warning: null;
+    }>();
     previewApiMock.launchUserSpacePreview
-      .mockRejectedValueOnce(new Error('Preview launch failed'))
+      .mockImplementationOnce(() => firstLaunch.promise)
       .mockResolvedValueOnce({
         workspace_id: WORKSPACE.id,
         preview_url: 'http://preview.test/retried-session',
@@ -992,21 +1060,28 @@ describe('UserSpacePanel workspace tool descriptions', () => {
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushAsyncWork();
     });
+    expect(previewApiMock.launchUserSpacePreview.mock.calls.length).toBeGreaterThanOrEqual(1);
 
-    expect(previewApiMock.launchUserSpacePreview).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      firstLaunch.reject(new Error('Bridge token expired while preparing preview session'));
+      await flushAsyncWork();
+    });
 
     const previewFrame = screen.getByTestId('preview-frame');
     expect(previewFrame.getAttribute('data-preview-url')).toBe('');
     expect(previewFrame.getAttribute('data-preview-pending')).toBe('true');
-    expect(screen.getByText('Preview launch failed')).toBeTruthy();
+    expect(screen.getByText('Preview is still starting. Retrying automatically.')).toBeTruthy();
+    expect(screen.queryByText('Bridge token expired while preparing preview session')).toBeNull();
+    const launchCallCountAfterRejection = previewApiMock.launchUserSpacePreview.mock.calls.length;
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_999);
     });
-    expect(previewApiMock.launchUserSpacePreview).toHaveBeenCalledTimes(1);
+    expect(previewApiMock.launchUserSpacePreview.mock.calls.length).toBe(
+      launchCallCountAfterRejection,
+    );
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
@@ -1014,20 +1089,29 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       await Promise.resolve();
     });
 
-    expect(previewApiMock.launchUserSpacePreview.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(previewApiMock.launchUserSpacePreview.mock.calls.length).toBeGreaterThan(
+      launchCallCountAfterRejection,
+    );
     expect(screen.getByTestId('preview-frame').getAttribute('data-preview-url')).toBe(
       'http://preview.test/retried-session',
     );
     expect(screen.getByTestId('preview-frame').getAttribute('data-preview-pending')).toBe('false');
-    expect(screen.queryByText('Preview launch failed')).toBeNull();
+    expect(screen.queryByText('Bridge token expired while preparing preview session')).toBeNull();
   });
 
-  it('keeps an unrelated general error visible after preview retry succeeds', async () => {
+  it('keeps hidden bridge-specific failures hidden after preview retry succeeds', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2099-08-05T18:00:00Z'));
     const nearExpiry = isoAtOffsetFromNow(4 * 60 * 1000);
+    const firstLaunch = createDeferredPromise<{
+      workspace_id: string;
+      preview_url: string;
+      preview_origin: string;
+      expires_at: string;
+      preview_warning: null;
+    }>();
     previewApiMock.launchUserSpacePreview
-      .mockRejectedValueOnce(new Error('Preview launch failed'))
+      .mockImplementationOnce(() => firstLaunch.promise)
       .mockResolvedValueOnce({
         workspace_id: WORKSPACE.id,
         preview_url: 'http://preview.test/retried-session',
@@ -1048,38 +1132,47 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       chat_state: { ...DEFAULT_CHAT_STATE },
     }));
     previewApiMock.refreshUserSpaceBridgeCredentials.mockRejectedValueOnce(
-      new Error('Automatic bridge refresh failed'),
+      new Error('Bridge credential refresh failed because runtime session changed'),
     );
 
     render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushAsyncWork();
     });
+    expect(previewApiMock.launchUserSpacePreview.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+    await act(async () => {
+      firstLaunch.reject(new Error('Bridge token expired while preparing preview session'));
+      await flushAsyncWork();
+    });
+
+    expect(screen.queryByText('Bridge token expired while preparing preview session')).toBeNull();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushAsyncWork();
     });
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_999);
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushAsyncWork();
     });
 
     expect(screen.getByTestId('preview-frame').getAttribute('data-preview-url')).toBe(
       'http://preview.test/retried-session',
     );
-    expect(screen.queryByText('Preview launch failed')).toBeNull();
-    expect(screen.getByText('Automatic bridge refresh failed')).toBeTruthy();
+    expect(screen.queryByText('Bridge token expired while preparing preview session')).toBeNull();
+    expect(
+      screen.queryByText('Bridge credential refresh failed because runtime session changed'),
+    ).toBeNull();
   });
 
   it('clears preview launch errors when leaving Preview and lets later console errors surface', async () => {
-    previewApiMock.launchUserSpacePreview.mockRejectedValueOnce(new Error('Preview launch failed'));
+    previewApiMock.launchUserSpacePreview.mockRejectedValueOnce(
+      new Error('Bridge token expired while preparing preview session'),
+    );
     previewApiMock.authorizeUserSpaceBrowserSurfaces.mockImplementation(
       async (_workspaceId: string, surfaces: string[]) => {
         if (surfaces.includes('runtime_pty')) {
@@ -1099,8 +1192,9 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Preview launch failed')).toBeTruthy();
+      expect(screen.getByText('Preview is still starting. Retrying automatically.')).toBeTruthy();
     });
+    expect(screen.queryByText('Bridge token expired while preparing preview session')).toBeNull();
 
     await act(async () => {
       (screen.getByRole('tab', { name: 'Console' }) as HTMLButtonElement).click();
@@ -1109,10 +1203,10 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     await waitFor(() => {
       expect(screen.getByText('Console authorization failed')).toBeTruthy();
     });
-    expect(screen.queryByText('Preview launch failed')).toBeNull();
+    expect(screen.queryByText('Bridge token expired while preparing preview session')).toBeNull();
   });
 
-  it('surfaces automatic bridge-refresh failures for near-expiry credentials without a manual button', async () => {
+  it('keeps automatic near-expiry bridge-refresh failures hidden from users', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2099-08-05T18:00:00Z'));
 
@@ -1130,7 +1224,7 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       chat_state: { ...DEFAULT_CHAT_STATE },
     }));
     previewApiMock.refreshUserSpaceBridgeCredentials.mockRejectedValueOnce(
-      new Error('Automatic bridge refresh failed'),
+      new Error('Bridge credential refresh failed because runtime session changed'),
     );
 
     render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
@@ -1142,7 +1236,9 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     });
 
     expect(previewApiMock.refreshUserSpaceBridgeCredentials).toHaveBeenCalledWith('ws-1');
-    expect(screen.getByText('Automatic bridge refresh failed')).toBeTruthy();
+    expect(
+      screen.queryByText('Bridge credential refresh failed because runtime session changed'),
+    ).toBeNull();
     expect(screen.queryByRole('button', { name: 'Refresh bridge credentials' })).toBeNull();
   });
 
