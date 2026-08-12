@@ -246,6 +246,46 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine ESLint scope
+        id: eslint_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch)
+              selector_output=$'mypy_scope=all\neslint_scope=all'
+              ;;
+            push)
+              selector_output="$(python3 docker/scripts/changed_lint_files.py --base-ref "${{ github.event.before }}" --head-ref "${{ github.sha }}")"
+              ;;
+            pull_request)
+              selector_output="$(python3 docker/scripts/changed_lint_files.py --base-ref "${{ github.event.pull_request.base.sha }}" --head-ref "${{ github.event.pull_request.head.sha }}")"
+              ;;
+            *)
+              echo "Unsupported event for changed-file scope: $GITHUB_EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          eslint_scope=""
+          while IFS= read -r line; do
+            case "$line" in
+              eslint_scope=*)
+                eslint_scope="${line#eslint_scope=}"
+                ;;
+            esac
+          done <<< "$selector_output"
+
+          if [ -z "$eslint_scope" ]; then
+            echo "changed_lint_files.py did not emit eslint_scope" >&2
+            exit 1
+          fi
+
+          printf 'value=%s\n' "$eslint_scope" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -280,6 +320,8 @@ jobs:
           file: ./docker/Dockerfile
           target: frontend-lint
           push: false
+          build-args: |
+            ESLINT_SCOPE=${{ steps.eslint_scope.outputs.value }}
           cache-from: |
             type=gha,scope=frontend-${{ steps.cache_key.outputs.ref }}
             type=gha,scope=frontend-main
@@ -310,7 +352,7 @@ jobs:
 
           - Builds the Vite frontend through the Docker `frontend-builder` target.
           - Gates JS/TS formatting via the `frontend-format-check` target (Prettier). This is a blocking check.
-          - Gates ESLint via the `frontend-lint` target. This is a blocking check (result: ${{ steps.frontend_eslint.outcome }}).
+          - Gates ESLint via the `frontend-lint` target. This is a blocking check, scoped to changed frontend files for pushes and pull requests when the selector can scope them (result: ${{ steps.frontend_eslint.outcome }}).
 
           Local equivalents:
 
@@ -318,6 +360,7 @@ jobs:
           bash tests/check_frontend_format.sh           # format gate (+ reported lint)
           bash tests/check_frontend_format.sh --write    # auto-fix formatting and lint
           docker build --target frontend-format-check -f docker/Dockerfile .
+          docker build --target frontend-lint -f docker/Dockerfile .
           docker build --target frontend-builder -f docker/Dockerfile .
           ```
 

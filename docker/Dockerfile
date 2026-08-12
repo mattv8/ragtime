@@ -45,11 +45,28 @@ FROM frontend-base AS frontend-format-check
 RUN npm run format:check
 
 # -----------------------------------------------------------------------------
-# Stage 1c: Frontend ESLint check. Reported (non-blocking) in CI.
+# Stage 1c: Frontend ESLint check. Blocking in CI and scoped there when possible.
 # -----------------------------------------------------------------------------
 FROM frontend-base AS frontend-lint
 
-RUN npm run lint
+ARG ESLINT_SCOPE=all
+
+RUN set -eu; \
+    case "$ESLINT_SCOPE" in \
+        all) \
+            npm run lint -- --max-warnings 0 \
+            ;; \
+        none) \
+            echo "Skipping ESLint: no changed frontend files matched selector." \
+            ;; \
+        files:*) \
+            node -e "const { spawnSync } = require('node:child_process'); const prefix = 'ragtime/frontend/'; const scope = process.env.ESLINT_SCOPE || 'all'; const paths = Buffer.from(scope.slice('files:'.length), 'base64').toString('utf8').split('\\0').filter(Boolean); if (paths.length === 0) { console.log('Skipping ESLint: selector returned an empty frontend file list.'); process.exit(0); } const frontendPaths = paths.map((path) => { if (!path.startsWith(prefix)) { console.error('Unsupported ESLINT_SCOPE path: ' + path); process.exit(1); } return path.slice(prefix.length); }); const result = spawnSync('./node_modules/.bin/eslint', [...frontendPaths, '--max-warnings', '0'], { stdio: 'inherit' }); if (typeof result.status === 'number') { process.exit(result.status); } if (result.error) { console.error(result.error.message); } process.exit(1);" \
+            ;; \
+        *) \
+            echo "Unsupported ESLINT_SCOPE: $ESLINT_SCOPE" >&2; \
+            exit 1 \
+            ;; \
+    esac
 
 # =============================================================================
 # Stage 2: Build Python dependencies

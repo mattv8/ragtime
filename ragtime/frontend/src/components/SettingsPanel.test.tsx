@@ -77,7 +77,7 @@ vi.mock('./settings/ChatModelsSettingsSection', () => ({
         chatModelsSectionState.openedModal = true;
         void openModelFilterModal();
       }
-    }, []);
+    }, [openModelFilterModal]);
 
     return (
       <section data-settings-accordion-section="chat-models">
