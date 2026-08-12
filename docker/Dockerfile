@@ -173,7 +173,10 @@ RUN npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests
 
 FROM python-ci-base AS python-mypy-check
 
-RUN python -m mypy --config-file pyproject.toml docker/scripts ragtime runtime tests
+ARG MYPY_SCOPE=all
+
+RUN --mount=type=cache,id=ragtime-mypy-cache,target=/ragtime/.mypy_cache/3.12,sharing=locked \
+    python docker/scripts/run_scoped_mypy.py
 
 FROM python-ci-base AS python-pyright-check
 
@@ -189,6 +192,8 @@ RUN mkdir -p "$INDEX_DATA_PATH" && \
 # =============================================================================
 FROM python-ci-base AS python-test
 
+ARG MYPY_SCOPE=all
+
 RUN mkdir -p "$INDEX_DATA_PATH" && \
     python -m compileall ragtime/userspace/runtime_service.py runtime/manager runtime/main.py && \
     python -m ruff check --select E9,F821,F822,F823 ragtime runtime tests && \
@@ -198,8 +203,12 @@ RUN mkdir -p "$INDEX_DATA_PATH" && \
     python docker/scripts/fix_inline_imports.py ragtime --check && \
     python docker/scripts/fix_inline_imports.py runtime --check && \
     python docker/scripts/fix_inline_imports.py tests --check && \
-    npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests && \
-    python -m mypy --config-file pyproject.toml docker/scripts ragtime runtime tests && \
+    npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests
+
+RUN --mount=type=cache,id=ragtime-mypy-cache,target=/ragtime/.mypy_cache/3.12,sharing=locked \
+    python docker/scripts/run_scoped_mypy.py
+
+RUN \
     python -m pyright --pythonpath .venv/bin/python && \
     python -m pytest tests
 

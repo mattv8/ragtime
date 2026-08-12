@@ -89,7 +89,7 @@ jobs:
             target: python-mypy-check
             cache-scope: mypy
             local-command: python -m mypy --config-file pyproject.toml docker/scripts ragtime runtime tests
-            explanation: Runs mypy across the Python codebase using the repository configuration in pyproject.toml.
+            explanation: Runs mypy using the repository configuration in pyproject.toml, scoped to changed Python files on pushes and pull requests when the selector can resolve them, and full-repository on manual runs or selector fallback.
           - name: Pylance/Pyright Problem Check
             target: python-pyright-check
             cache-scope: pyright
@@ -104,6 +104,47 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine mypy scope
+        if: matrix.target == 'python-mypy-check'
+        id: mypy_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch)
+              selector_output=$'mypy_scope=all\neslint_scope=all'
+              ;;
+            push)
+              selector_output="$(python3 docker/scripts/changed_lint_files.py --base-ref "${{ github.event.before }}" --head-ref "${{ github.sha }}")"
+              ;;
+            pull_request)
+              selector_output="$(python3 docker/scripts/changed_lint_files.py --base-ref "${{ github.event.pull_request.base.sha }}" --head-ref "${{ github.event.pull_request.head.sha }}")"
+              ;;
+            *)
+              echo "Unsupported event for changed-file scope: $GITHUB_EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          mypy_scope=""
+          while IFS= read -r line; do
+            case "$line" in
+              mypy_scope=*)
+                mypy_scope="${line#mypy_scope=}"
+                ;;
+            esac
+          done <<< "$selector_output"
+
+          if [ -z "$mypy_scope" ]; then
+            echo "changed_lint_files.py did not emit mypy_scope" >&2
+            exit 1
+          fi
+
+          printf 'value=%s\n' "$mypy_scope" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -123,6 +164,7 @@ jobs:
           file: ./docker/Dockerfile
           target: ${{ matrix.target }}
           push: false
+          build-args: ${{ matrix.target == 'python-mypy-check' && format('MYPY_SCOPE={0}', steps.mypy_scope.outputs.value) || '' }}
           cache-from: |
             type=gha,scope=backend-${{ matrix.cache-scope }}-${{ steps.cache_key.outputs.ref }}
             type=gha,scope=backend-${{ matrix.cache-scope }}-main

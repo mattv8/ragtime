@@ -33,7 +33,7 @@
         "reveal": "always",
         "panel": "dedicated"
       },
-      "detail": "Local full-repository gate runner: README sync, Python (compile/Ruff/inline-imports/jscpd/mypy/pyright/pytest), frontend Prettier format check, frontend ESLint with warnings as errors, and frontend Vite build. Uses Docker build targets for environment parity. Note: docker compose manifest validation is not included (run manually if changing .env.example or compose files)."
+      "detail": "Local gate runner: README sync, Python (compile/Ruff/inline-imports/jscpd/changed-file mypy via selector/pyright/pytest), frontend Prettier format check, changed-file frontend ESLint with warnings as errors via selector, and frontend Vite build. Uses Docker build targets for environment parity. Note: docker compose manifest validation is not included (run manually if changing .env.example or compose files)."
     },
     {
       "type": "shell",

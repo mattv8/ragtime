@@ -17,19 +17,26 @@ FRONTEND_EXTENSIONS = (".js", ".jsx", ".cjs", ".mjs", ".ts", ".tsx")
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--local", action="store_true")
     parser.add_argument("--base-ref")
     parser.add_argument("--head-ref")
     args = parser.parse_args()
 
-    if not (args.base_ref and args.head_ref):
+    if args.local:
+        if args.base_ref or args.head_ref:
+            parser.error("use either --local or --base-ref/--head-ref")
+    elif not (args.base_ref and args.head_ref):
         parser.error("--base-ref and --head-ref are required together")
 
     repo_root = Path(_git_output("rev-parse", "--show-toplevel").strip())
-    if not _range_refs_are_usable(args.base_ref, args.head_ref):
-        print("mypy_scope=all")
-        print("eslint_scope=all")
-        return 0
-    changed_paths = _range_changed_paths(args.base_ref, args.head_ref)
+    if args.local:
+        changed_paths = _local_changed_paths()
+    else:
+        if not _range_refs_are_usable(args.base_ref, args.head_ref):
+            print("mypy_scope=all")
+            print("eslint_scope=all")
+            return 0
+        changed_paths = _range_changed_paths(args.base_ref, args.head_ref)
 
     mypy_paths = _filter_paths(repo_root, changed_paths, PYTHON_ROOTS, PYTHON_EXTENSIONS)
     eslint_paths = _filter_paths(repo_root, changed_paths, FRONTEND_ROOTS, FRONTEND_EXTENSIONS)
@@ -42,6 +49,22 @@ def main() -> int:
 def _range_changed_paths(base_ref: str, head_ref: str) -> set[str]:
     diff_base = EMPTY_TREE_HASH if base_ref == ALL_ZERO_REF else base_ref
     return set(_git_z_list("diff", "--name-only", "--diff-filter=d", f"{diff_base}..{head_ref}"))
+
+
+def _local_changed_paths() -> set[str]:
+    upstream_ref = _local_upstream_ref()
+    changed_paths = _range_changed_paths(upstream_ref, "HEAD")
+    changed_paths.update(_git_z_list("diff", "--name-only", "--diff-filter=d", "--cached"))
+    changed_paths.update(_git_z_list("diff", "--name-only", "--diff-filter=d"))
+    changed_paths.update(_git_z_list("ls-files", "--others", "--exclude-standard"))
+    return changed_paths
+
+
+def _local_upstream_ref() -> str:
+    try:
+        return _git_output("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}").strip()
+    except subprocess.CalledProcessError:
+        raise SystemExit("Unable to determine upstream for --local mode; configure an upstream branch.") from None
 
 
 def _range_refs_are_usable(base_ref: str, head_ref: str) -> bool:

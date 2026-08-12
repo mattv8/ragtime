@@ -80,6 +80,45 @@ jobs:
         if: steps.quality_coverage.outputs.run_backend_quality == 'true'
         uses: docker/setup-buildx-action@v3
 
+      - name: Determine mypy scope
+        if: steps.quality_coverage.outputs.run_backend_quality == 'true'
+        id: mypy_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch)
+              selector_output=$'mypy_scope=all\neslint_scope=all'
+              ;;
+            push)
+              selector_output="$(python3 docker/scripts/changed_lint_files.py --base-ref "${{ github.event.before }}" --head-ref "${{ github.sha }}")"
+              ;;
+            pull_request)
+              selector_output="$(python3 docker/scripts/changed_lint_files.py --base-ref "${{ github.event.pull_request.base.sha }}" --head-ref "${{ github.event.pull_request.head.sha }}")"
+              ;;
+            *)
+              echo "Unsupported event for changed-file scope: $GITHUB_EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          mypy_scope=""
+          while IFS= read -r line; do
+            case "$line" in
+              mypy_scope=*)
+                mypy_scope="${line#mypy_scope=}"
+                ;;
+            esac
+          done <<< "$selector_output"
+
+          if [ -z "$mypy_scope" ]; then
+            echo "changed_lint_files.py did not emit mypy_scope" >&2
+            exit 1
+          fi
+
+          printf 'value=%s\n' "$mypy_scope" >> "$GITHUB_OUTPUT"
+
       - name: Extract branch name
         if: steps.quality_coverage.outputs.run_backend_quality == 'true'
         id: extract_branch
@@ -104,6 +143,8 @@ jobs:
           file: ./docker/Dockerfile
           target: python-test
           push: false
+          build-args: |
+            MYPY_SCOPE=${{ steps.mypy_scope.outputs.value }}
           cache-from: |
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ steps.extract_branch.outputs.branch }}
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-main
@@ -123,7 +164,7 @@ jobs:
             echo
             echo "${{ steps.quality_coverage.outputs.reason }}"
             echo
-            echo "The aggregate Docker \`python-test\` target ran in this workflow."
+            echo "The aggregate Docker \`python-test\` target ran in this workflow, with mypy scoped to changed Python files on pushes and pull requests when the selector could resolve them, and full-repository on manual runs or selector fallback."
           } >> "$GITHUB_STEP_SUMMARY"
 
   build-main:
