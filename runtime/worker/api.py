@@ -119,10 +119,7 @@ def _is_html_document_request(request: Request) -> bool:
 
 
 def _preview_request_headers(request: Request) -> dict[str, str]:
-    raw_headers = {
-        key.decode("latin-1").lower(): value.decode("latin-1")
-        for key, value in request.scope.get("headers", [])
-    }
+    raw_headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in request.scope.get("headers", [])}
     blocked = {
         "host",
         "connection",

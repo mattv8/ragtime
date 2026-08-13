@@ -906,9 +906,9 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_headers.get("x-ragtime-internal-authenticated-username"), "verified-user")
         self.assertEqual(sent_headers.get("x-ragtime-internal-authenticated-display-name"), "Verified User")
         self.assertEqual(sent_headers.get("x-ragtime-internal-user-fingerprint"), "verified-fingerprint")
-        self.assertNotIn("x-ragtime-authenticated-username", sent_headers)
-        self.assertNotIn("x-ragtime-authenticated-display-name", sent_headers)
-        self.assertNotIn("x-ragtime-user-fingerprint", sent_headers)
+        self.assertEqual(sent_headers.get("x-ragtime-authenticated-username"), "verified-user")
+        self.assertEqual(sent_headers.get("x-ragtime-authenticated-display-name"), "Verified User")
+        self.assertEqual(sent_headers.get("x-ragtime-user-fingerprint"), "verified-fingerprint")
         self.assertEqual(len(client.requests), 1)
         primitive_session_factory.assert_awaited_once()
 
@@ -965,9 +965,9 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             sent_headers.get("x-ragtime-internal-user-fingerprint"),
             "verified-fingerprint",
         )
-        self.assertNotIn("x-ragtime-authenticated-username", sent_headers)
-        self.assertNotIn("x-ragtime-authenticated-display-name", sent_headers)
-        self.assertNotIn("x-ragtime-user-fingerprint", sent_headers)
+        self.assertEqual(sent_headers.get("x-ragtime-authenticated-username"), "verified-user")
+        self.assertEqual(sent_headers.get("x-ragtime-authenticated-display-name"), "Verified User")
+        self.assertEqual(sent_headers.get("x-ragtime-user-fingerprint"), "verified-fingerprint")
         self.assertEqual(len(client.requests), 1)
 
     async def test_unauthenticated_preview_json_request_does_not_inject_identity_headers(self) -> None:
@@ -1049,9 +1049,9 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_headers.get("x-ragtime-internal-authenticated-username"), "verified-user")
         self.assertEqual(sent_headers.get("x-ragtime-internal-authenticated-display-name"), "Verified User")
         self.assertEqual(sent_headers.get("x-ragtime-internal-user-fingerprint"), "verified-fingerprint")
-        self.assertNotIn("x-ragtime-authenticated-username", sent_headers)
-        self.assertNotIn("x-ragtime-authenticated-display-name", sent_headers)
-        self.assertNotIn("x-ragtime-user-fingerprint", sent_headers)
+        self.assertEqual(sent_headers.get("x-ragtime-authenticated-username"), "verified-user")
+        self.assertEqual(sent_headers.get("x-ragtime-authenticated-display-name"), "Verified User")
+        self.assertEqual(sent_headers.get("x-ragtime-user-fingerprint"), "verified-fingerprint")
         self.assertEqual(len(client.requests), 1)
 
     async def test_preview_handoff_cleanup_injects_before_app_scripts(self) -> None:

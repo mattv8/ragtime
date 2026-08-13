@@ -1446,11 +1446,12 @@ def _authenticated_preview_identity_headers(primitive_session: dict[str, Any] | 
     if not isinstance(user_payload, dict):
         return {}
     headers: dict[str, str] = {}
-    for header_name, path in _PRIVATE_AUTHENTICATED_IDENTITY_HEADER_MAP.items():
-        field_name = path[-1]
-        value = str(user_payload.get(field_name) or "").strip()
-        if value:
-            headers[header_name] = value
+    for header_map in (_AUTHENTICATED_IDENTITY_HEADER_MAP, _PRIVATE_AUTHENTICATED_IDENTITY_HEADER_MAP):
+        for header_name, path in header_map.items():
+            field_name = path[-1]
+            value = str(user_payload.get(field_name) or "").strip()
+            if value:
+                headers[header_name] = value
     return headers
 
 

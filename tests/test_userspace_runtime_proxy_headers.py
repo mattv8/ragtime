@@ -28,6 +28,7 @@ _build_bridge_config_tag = getattr(_RUNTIME_ROUTES, "_build_bridge_config_tag")
 _build_bridge_context_tag = getattr(_RUNTIME_ROUTES, "_build_bridge_context_tag")
 _json_for_inline_script = getattr(_RUNTIME_ROUTES, "_json_for_inline_script")
 
+
 def _browser_app_cookie_name(name: str) -> str:
     encoded = base64.urlsafe_b64encode(name.encode("utf-8")).decode("ascii").rstrip("=")
     return f"__ragtime_app_cookie_{encoded}"

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import unittest
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 import httpx
@@ -9,6 +10,7 @@ import openai
 from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 from ollama import ResponseError
+from pydantic import SecretStr
 
 from ragtime.indexer.embedding_errors import (
     EmbeddingFailureKind,
@@ -262,9 +264,10 @@ class EmbeddingFactoryTests(unittest.IsolatedAsyncioTestCase):
             model = await get_embeddings_model(settings)
 
         self.assertIsInstance(model, GuardedEmbeddings)
-        self.assertEqual(model.provider, "ollama")
-        self.assertEqual(model.query_timeout_seconds, 45.0)
-        self.assertEqual(model.document_timeout_seconds, 120.0)
+        guarded_model = cast(GuardedEmbeddings, model)
+        self.assertEqual(guarded_model.provider, "ollama")
+        self.assertEqual(guarded_model.query_timeout_seconds, 45.0)
+        self.assertEqual(guarded_model.document_timeout_seconds, 120.0)
         self.assertEqual(len(constructed), 2)
         self.assertEqual(constructed[0]["base_url"], "http://private-embedding-host:11434")
         self.assertIn("sync_client_kwargs", constructed[0])
@@ -291,15 +294,21 @@ class EmbeddingFactoryTests(unittest.IsolatedAsyncioTestCase):
             model = await get_embeddings_model(settings)
 
         self.assertIsInstance(model, GuardedEmbeddings)
-        self.assertEqual(model.query_timeout_seconds, 45.0)
-        self.assertEqual(model.document_timeout_seconds, 90.0)
+        guarded_model = cast(GuardedEmbeddings, model)
+        self.assertEqual(guarded_model.query_timeout_seconds, 45.0)
+        self.assertEqual(guarded_model.document_timeout_seconds, 90.0)
         self.assertEqual(constructed[0]["max_retries"], 0)
         self.assertEqual(constructed[1]["max_retries"], 0)
         self.assertIsInstance(constructed[0]["timeout"], httpx.Timeout)
         self.assertIsInstance(constructed[1]["timeout"], httpx.Timeout)
 
     async def test_get_embeddings_model_openai_timeout_populates_request_timeout(self):
-        model = OpenAIEmbeddings(model="text-embedding-3-small", api_key="secret", timeout=httpx.Timeout(12.0, connect=3.0), max_retries=0)
+        model = OpenAIEmbeddings(
+            model="text-embedding-3-small",
+            api_key=SecretStr("secret"),
+            timeout=httpx.Timeout(12.0, connect=3.0),
+            max_retries=0,
+        )
         self.assertEqual(model.max_retries, 0)
         self.assertIsNotNone(model.request_timeout)
 
