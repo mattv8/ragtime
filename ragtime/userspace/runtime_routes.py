@@ -84,6 +84,16 @@ _PROXY_TIMEOUT_FLOOR = 300.0  # seconds — minimum proxy read/write timeout
 _PROXY_TIMEOUT_BUFFER = 20.0  # seconds — headroom above max tool timeout
 _USERSPACE_SURFACE_HEADER = "X-Ragtime-Userspace-Surface"
 _USERSPACE_PREVIEW_PROXY_HEADER = "X-Ragtime-Userspace-Preview-Proxy"
+_AUTHENTICATED_IDENTITY_HEADER_MAP = {
+    "x-ragtime-authenticated-username": ("auth", "user", "username"),
+    "x-ragtime-authenticated-display-name": ("auth", "user", "display_name"),
+    "x-ragtime-user-fingerprint": ("auth", "user", "user_fingerprint"),
+}
+_PRIVATE_AUTHENTICATED_IDENTITY_HEADER_MAP = {
+    "x-ragtime-internal-authenticated-username": ("auth", "user", "username"),
+    "x-ragtime-internal-authenticated-display-name": ("auth", "user", "display_name"),
+    "x-ragtime-internal-user-fingerprint": ("auth", "user", "user_fingerprint"),
+}
 _DOCUMENT_PARSE_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _DOCUMENT_PARSE_MAX_BYTES = 25 * 1024 * 1024
 _PRIMITIVE_UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -1409,6 +1419,8 @@ def _proxy_request_headers(request: Request, *, allow_user_cookies: bool = False
         "x-api-key",
         "x-userspace-share-password",
         "x-userspace-share-auth",
+        *set(_AUTHENTICATED_IDENTITY_HEADER_MAP),
+        *set(_PRIVATE_AUTHENTICATED_IDENTITY_HEADER_MAP),
     }
     forwarded_headers = {key: value for key, value in request.headers.items() if key.lower() not in _blocked}
     if allow_user_cookies:
@@ -1422,6 +1434,24 @@ def _proxy_request_headers(request: Request, *, allow_user_cookies: bool = False
     if client_host:
         forwarded_headers.setdefault("x-forwarded-for", client_host)
     return forwarded_headers
+
+
+def _authenticated_preview_identity_headers(primitive_session: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(primitive_session, dict):
+        return {}
+    auth_payload = primitive_session.get("auth")
+    if not isinstance(auth_payload, dict) or not bool(auth_payload.get("authenticated")):
+        return {}
+    user_payload = auth_payload.get("user")
+    if not isinstance(user_payload, dict):
+        return {}
+    headers: dict[str, str] = {}
+    for header_name, path in _PRIVATE_AUTHENTICATED_IDENTITY_HEADER_MAP.items():
+        field_name = path[-1]
+        value = str(user_payload.get(field_name) or "").strip()
+        if value:
+            headers[header_name] = value
+    return headers
 
 
 def _proxy_response_headers(
@@ -1752,6 +1782,34 @@ async def _proxy_http_request(
     primitive_session_factory: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     allow_user_cookies: bool = False,
 ) -> Response:
+    primitive_session: dict[str, Any] | None = None
+
+    async def _get_primitive_session() -> dict[str, Any] | None:
+        nonlocal primitive_session
+        if primitive_session_factory is None:
+            return None
+        if primitive_session is None:
+            primitive_session = await primitive_session_factory()
+        return primitive_session
+
+    async def _send_upstream(request_headers: dict[str, str]) -> tuple[httpx.AsyncClient, Any, Any]:
+        client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+        try:
+            upstream_request = client.build_request(
+                method=request.method,
+                url=upstream_url,
+                content=body if body else None,
+                headers=request_headers,
+            )
+            upstream_response = await client.send(upstream_request, stream=True)
+        except httpx.RequestError as exc:
+            await client.aclose()
+            raise HTTPException(
+                status_code=502,
+                detail=f"Runtime preview upstream unavailable: {exc}",
+            ) from exc
+        return client, upstream_request, upstream_response
+
     if request.headers.get("upgrade", "").lower() == "websocket":
         raise HTTPException(
             status_code=501,
@@ -1768,6 +1826,8 @@ async def _proxy_http_request(
 
     body = await request.body()
     headers = _proxy_request_headers(request, allow_user_cookies=effective_allow_user_cookies)
+    if primitive_session_factory is not None:
+        headers.update(_authenticated_preview_identity_headers(await _get_primitive_session()))
 
     # Inject the shared runtime auth token for upstream worker requests
     runtime_token = getattr(settings, "userspace_runtime_auth_token", "") or ""
@@ -1779,21 +1839,7 @@ async def _proxy_http_request(
     # Falls back to 320 s if no tools are configured.
     proxy_read_timeout = _get_max_proxy_timeout()
     timeout = httpx.Timeout(connect=2.0, read=proxy_read_timeout, write=proxy_read_timeout, pool=5.0)
-    client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
-    try:
-        upstream_request = client.build_request(
-            method=request.method,
-            url=upstream_url,
-            content=body if body else None,
-            headers=headers,
-        )
-        upstream_response = await client.send(upstream_request, stream=True)
-    except httpx.RequestError as exc:
-        await client.aclose()
-        raise HTTPException(
-            status_code=502,
-            detail=f"Runtime preview upstream unavailable: {exc}",
-        ) from exc
+    client, _, upstream_response = await _send_upstream(headers)
 
     media_type = upstream_response.headers.get("content-type", "")
     resp_headers, set_cookie_headers = _proxy_response_headers(upstream_response.headers, allow_user_cookies=effective_allow_user_cookies)
@@ -1817,10 +1863,9 @@ async def _proxy_http_request(
             sandbox_flags = list(app_settings.get("userspace_preview_sandbox_flags") or [])
         except Exception:
             sandbox_flags = None
-        primitive_session: dict[str, Any] | None = None
         auth_requirement = _extract_ragtime_auth_requirement(content)
         if auth_requirement is not None and primitive_session_factory is not None:
-            primitive_session = await primitive_session_factory()
+            primitive_session = await _get_primitive_session()
             auth_payload = primitive_session.get("auth") if isinstance(primitive_session, dict) else None
             is_authenticated = bool(auth_payload.get("authenticated")) if isinstance(auth_payload, dict) else False
             if not is_authenticated:

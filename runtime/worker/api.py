@@ -75,6 +75,11 @@ logger = logging.getLogger(__name__)
 # byte-for-byte in sync; changing only one side silently breaks user-app
 # session persistence in previews.
 _USER_APP_COOKIE_PREFIX = "__ragtime_app_cookie_"
+_AUTHENTICATED_IDENTITY_HEADER_MAP = {
+    "x-ragtime-authenticated-username": "x-ragtime-internal-authenticated-username",
+    "x-ragtime-authenticated-display-name": "x-ragtime-internal-authenticated-display-name",
+    "x-ragtime-user-fingerprint": "x-ragtime-internal-user-fingerprint",
+}
 
 
 def _encode_user_app_cookie_name(cookie_name: str) -> str | None:
@@ -114,6 +119,10 @@ def _is_html_document_request(request: Request) -> bool:
 
 
 def _preview_request_headers(request: Request) -> dict[str, str]:
+    raw_headers = {
+        key.decode("latin-1").lower(): value.decode("latin-1")
+        for key, value in request.scope.get("headers", [])
+    }
     blocked = {
         "host",
         "connection",
@@ -127,17 +136,24 @@ def _preview_request_headers(request: Request) -> dict[str, str]:
         "content-length",
         "authorization",
         "cookie",
+        *set(_AUTHENTICATED_IDENTITY_HEADER_MAP),
+        *set(_AUTHENTICATED_IDENTITY_HEADER_MAP.values()),
     }
     forwarded_headers = {key: value for key, value in request.headers.items() if key.lower() not in blocked}
     # The inbound ``Cookie`` header is forwarded verbatim to the devserver. It
     # is trusted because the ragtime control-plane proxy already stripped its
-    # own platform/session cookies and decoded only the user-app cookies from
-    # the ``__ragtime_app_cookie_`` namespace before sending the request here
-    # (see _sanitize_user_app_cookie_header in ragtime/userspace/runtime_routes).
+    # own platform/session cookies, decoded only the user-app cookies from the
+    # ``__ragtime_app_cookie_`` namespace, and replaced any browser-supplied
+    # identity headers with verified private preview-session headers before
+    # sending the request here (see ragtime/userspace/runtime_routes.py).
     # The worker must not be reached directly by browsers; only via that proxy.
     cookie_header = request.headers.get("cookie")
     if cookie_header:
         forwarded_headers["cookie"] = cookie_header
+    for public_name, private_name in _AUTHENTICATED_IDENTITY_HEADER_MAP.items():
+        value = str(raw_headers.get(private_name, "") or "").strip()
+        if value:
+            forwarded_headers[public_name] = value
     forwarded_headers.setdefault("x-forwarded-proto", request.url.scheme)
     forwarded_headers.setdefault("x-forwarded-host", request.headers.get("host", ""))
     client_host = request.client.host if request.client else ""

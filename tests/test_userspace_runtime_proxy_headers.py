@@ -28,7 +28,6 @@ _build_bridge_config_tag = getattr(_RUNTIME_ROUTES, "_build_bridge_config_tag")
 _build_bridge_context_tag = getattr(_RUNTIME_ROUTES, "_build_bridge_context_tag")
 _json_for_inline_script = getattr(_RUNTIME_ROUTES, "_json_for_inline_script")
 
-
 def _browser_app_cookie_name(name: str) -> str:
     encoded = base64.urlsafe_b64encode(name.encode("utf-8")).decode("ascii").rstrip("=")
     return f"__ragtime_app_cookie_{encoded}"
@@ -137,6 +136,69 @@ class UserSpaceRuntimeProxyHeaderTests(unittest.TestCase):
 
         self.assertEqual(headers.get("cookie"), "custom_bid_manager_session=app")
         self.assertNotIn("authorization", {key.lower(): value for key, value in headers.items()})
+
+    def test_worker_preview_proxy_translates_private_identity_headers(self) -> None:
+        request = _build_request(
+            "http",
+            [
+                (b"host", b"runtime-worker.test"),
+                (b"authorization", b"Bearer worker-token"),
+                (b"x-ragtime-internal-authenticated-username", b"verified-user"),
+                (b"x-ragtime-internal-authenticated-display-name", b"Verified User"),
+                (b"x-ragtime-internal-user-fingerprint", b"verified-fingerprint"),
+            ],
+        )
+
+        headers = _worker_preview_request_headers(request)
+
+        self.assertEqual(headers.get("x-ragtime-authenticated-username"), "verified-user")
+        self.assertEqual(headers.get("x-ragtime-authenticated-display-name"), "Verified User")
+        self.assertEqual(headers.get("x-ragtime-user-fingerprint"), "verified-fingerprint")
+        self.assertNotIn("x-ragtime-internal-authenticated-username", headers)
+        self.assertNotIn("x-ragtime-internal-authenticated-display-name", headers)
+        self.assertNotIn("x-ragtime-internal-user-fingerprint", headers)
+
+    def test_worker_preview_proxy_drops_public_identity_spoofs_without_private_claims(self) -> None:
+        request = _build_request(
+            "http",
+            [
+                (b"host", b"runtime-worker.test"),
+                (b"authorization", b"Bearer worker-token"),
+                (b"x-ragtime-authenticated-username", b"browser-spoof"),
+                (b"x-ragtime-authenticated-display-name", b"Browser Spoof"),
+                (b"x-ragtime-user-fingerprint", b"browser-spoof-fingerprint"),
+            ],
+        )
+
+        headers = _worker_preview_request_headers(request)
+
+        self.assertNotIn("x-ragtime-authenticated-username", headers)
+        self.assertNotIn("x-ragtime-authenticated-display-name", headers)
+        self.assertNotIn("x-ragtime-user-fingerprint", headers)
+
+    def test_worker_preview_proxy_strips_spoofs_when_private_identity_headers_arrive(self) -> None:
+        request = _build_request(
+            "http",
+            [
+                (b"host", b"runtime-worker.test"),
+                (b"authorization", b"Bearer worker-token"),
+                (b"x-ragtime-authenticated-username", b"browser-spoof"),
+                (b"x-ragtime-authenticated-display-name", b"Browser Spoof"),
+                (b"x-ragtime-user-fingerprint", b"browser-spoof-fingerprint"),
+                (b"x-ragtime-internal-authenticated-username", b"verified-user"),
+                (b"x-ragtime-internal-authenticated-display-name", b"Verified User"),
+                (b"x-ragtime-internal-user-fingerprint", b"verified-fingerprint"),
+            ],
+        )
+
+        headers = _worker_preview_request_headers(request)
+
+        self.assertEqual(headers.get("x-ragtime-authenticated-username"), "verified-user")
+        self.assertEqual(headers.get("x-ragtime-authenticated-display-name"), "Verified User")
+        self.assertEqual(headers.get("x-ragtime-user-fingerprint"), "verified-fingerprint")
+        self.assertNotIn("x-ragtime-internal-authenticated-username", headers)
+        self.assertNotIn("x-ragtime-internal-authenticated-display-name", headers)
+        self.assertNotIn("x-ragtime-internal-user-fingerprint", headers)
 
     def test_worker_preview_proxy_namespaces_user_app_set_cookie(self) -> None:
         app_cookie_name = _browser_app_cookie_name("custom_bid_manager_session")

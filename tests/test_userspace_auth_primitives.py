@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
+import httpx
 from fastapi import HTTPException
 from slowapi.errors import RateLimitExceeded
 from starlette.requests import Request
@@ -88,7 +89,7 @@ class _FakePreviewRuntimeService(_FakeRuntimeService):
 class _FakeProxyUpstreamResponse:
     def __init__(self, body: bytes, content_type: str = "text/html; charset=utf-8") -> None:
         self._body = body
-        self.headers = {"content-type": content_type}
+        self.headers = httpx.Headers({"content-type": content_type})
         self.status_code = 200
         self.closed = False
 
@@ -103,8 +104,12 @@ class _FakeProxyClient:
     def __init__(self, response: _FakeProxyUpstreamResponse) -> None:
         self.response = response
         self.closed = False
+        self.built_request: dict[str, Any] | None = None
+        self.requests: list[dict[str, Any]] = []
 
     def build_request(self, **kwargs: Any) -> dict[str, Any]:
+        self.built_request = kwargs
+        self.requests.append(kwargs)
         return kwargs
 
     async def send(self, request: Any, stream: bool = False) -> _FakeProxyUpstreamResponse:
@@ -832,6 +837,222 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("window.__ragtime_session=", body)
         self.assertLess(body.index("window.__ragtime_session="), body.index("/main.js"))
         self.assertLess(body.index("bridge.js"), body.index("/main.js"))
+
+    def test_proxy_request_headers_strip_browser_supplied_identity_headers(self) -> None:
+        request = _build_request(
+            "/dashboard",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"x-ragtime-authenticated-username", b"spoofed-user"),
+                (b"x-ragtime-authenticated-display-name", b"Spoofed User"),
+                (b"x-ragtime-user-fingerprint", b"spoofed-fingerprint"),
+            ],
+            method="GET",
+        )
+
+        headers = _RUNTIME_ROUTES._proxy_request_headers(request)
+
+        self.assertNotIn("x-ragtime-authenticated-username", headers)
+        self.assertNotIn("x-ragtime-authenticated-display-name", headers)
+        self.assertNotIn("x-ragtime-user-fingerprint", headers)
+
+    async def test_auth_required_preview_request_strips_spoofed_identity_headers_and_injects_verified_identity(self) -> None:
+        html = b"""
+        <html><head>
+          <meta name="ragtime-auth" content="required; surfaces=collab">
+          <script src="/main.js"></script>
+        </head><body>Protected dashboard contents</body></html>
+        """
+        upstream = _FakeProxyUpstreamResponse(html)
+        client = _FakeProxyClient(upstream)
+        request = _build_request(
+            "/dashboard",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"accept", b"text/html"),
+                (b"x-ragtime-authenticated-username", b"spoofed-user"),
+                (b"x-ragtime-authenticated-display-name", b"Spoofed User"),
+                (b"x-ragtime-user-fingerprint", b"spoofed-fingerprint"),
+            ],
+            method="GET",
+            body=b"",
+        )
+        primitive_session_factory = mock.AsyncMock(
+            return_value={
+                "workspace_id": "workspace-a",
+                "user_id": "user-1",
+                "auth": {
+                    "authenticated": True,
+                    "user": {
+                        "username": "verified-user",
+                        "display_name": "Verified User",
+                        "user_fingerprint": "verified-fingerprint",
+                    },
+                },
+            }
+        )
+
+        with (
+            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
+        ):
+            await _RUNTIME_ROUTES._proxy_http_request(
+                request,
+                "http://runtime/dashboard",
+                primitive_session_factory=primitive_session_factory,
+            )
+
+        sent_headers = client.built_request["headers"] if client.built_request else {}
+        self.assertEqual(sent_headers.get("x-ragtime-internal-authenticated-username"), "verified-user")
+        self.assertEqual(sent_headers.get("x-ragtime-internal-authenticated-display-name"), "Verified User")
+        self.assertEqual(sent_headers.get("x-ragtime-internal-user-fingerprint"), "verified-fingerprint")
+        self.assertNotIn("x-ragtime-authenticated-username", sent_headers)
+        self.assertNotIn("x-ragtime-authenticated-display-name", sent_headers)
+        self.assertNotIn("x-ragtime-user-fingerprint", sent_headers)
+        self.assertEqual(len(client.requests), 1)
+        primitive_session_factory.assert_awaited_once()
+
+    async def test_authenticated_preview_json_request_injects_verified_identity_without_html_probe(self) -> None:
+        upstream = _FakeProxyUpstreamResponse(b'{"ok":true}', content_type="application/json")
+        client = _FakeProxyClient(upstream)
+        request = _build_request(
+            "/api/save",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"content-type", b"application/json"),
+                (b"x-ragtime-authenticated-username", b"spoofed-user"),
+                (b"x-ragtime-authenticated-display-name", b"Spoofed User"),
+                (b"x-ragtime-user-fingerprint", b"spoofed-fingerprint"),
+            ],
+            method="POST",
+            body=b'{"action":"save"}',
+        )
+
+        with (
+            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
+        ):
+            response = await _RUNTIME_ROUTES._proxy_http_request(
+                request,
+                "http://runtime/api/save",
+                primitive_session_factory=mock.AsyncMock(
+                    return_value={
+                        "workspace_id": "workspace-a",
+                        "user_id": "user-1",
+                        "auth": {
+                            "authenticated": True,
+                            "user": {
+                                "username": "verified-user",
+                                "display_name": "Verified User",
+                                "user_fingerprint": "verified-fingerprint",
+                            },
+                        },
+                    }
+                ),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        sent_headers = client.built_request["headers"] if client.built_request else {}
+        self.assertEqual(
+            sent_headers.get("x-ragtime-internal-authenticated-username"),
+            "verified-user",
+        )
+        self.assertEqual(
+            sent_headers.get("x-ragtime-internal-authenticated-display-name"),
+            "Verified User",
+        )
+        self.assertEqual(
+            sent_headers.get("x-ragtime-internal-user-fingerprint"),
+            "verified-fingerprint",
+        )
+        self.assertNotIn("x-ragtime-authenticated-username", sent_headers)
+        self.assertNotIn("x-ragtime-authenticated-display-name", sent_headers)
+        self.assertNotIn("x-ragtime-user-fingerprint", sent_headers)
+        self.assertEqual(len(client.requests), 1)
+
+    async def test_unauthenticated_preview_json_request_does_not_inject_identity_headers(self) -> None:
+        upstream = _FakeProxyUpstreamResponse(b'{"ok":true}', content_type="application/json")
+        client = _FakeProxyClient(upstream)
+        request = _build_request(
+            "/api/save",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"content-type", b"application/json"),
+                (b"x-ragtime-authenticated-username", b"spoofed-user"),
+                (b"x-ragtime-internal-authenticated-username", b"spoofed-private-user"),
+            ],
+            method="POST",
+            body=b'{"action":"save"}',
+        )
+
+        with (
+            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
+        ):
+            response = await _RUNTIME_ROUTES._proxy_http_request(
+                request,
+                "http://runtime/api/save",
+                primitive_session_factory=mock.AsyncMock(return_value={"auth": {"authenticated": False}}),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        sent_headers = client.built_request["headers"] if client.built_request else {}
+        self.assertNotIn("x-ragtime-authenticated-username", sent_headers)
+        self.assertNotIn("x-ragtime-authenticated-display-name", sent_headers)
+        self.assertNotIn("x-ragtime-user-fingerprint", sent_headers)
+        self.assertNotIn("x-ragtime-internal-authenticated-username", sent_headers)
+        self.assertNotIn("x-ragtime-internal-authenticated-display-name", sent_headers)
+        self.assertNotIn("x-ragtime-internal-user-fingerprint", sent_headers)
+        self.assertEqual(len(client.requests), 1)
+
+    async def test_non_auth_required_preview_request_injects_verified_identity_headers(self) -> None:
+        html = b"<html><head><script src='/main.js'></script></head><body>Dashboard</body></html>"
+        upstream = _FakeProxyUpstreamResponse(html)
+        client = _FakeProxyClient(upstream)
+        request = _build_request(
+            "/dashboard",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"accept", b"text/html"),
+                (b"x-ragtime-authenticated-username", b"spoofed-user"),
+                (b"x-ragtime-authenticated-display-name", b"Spoofed User"),
+                (b"x-ragtime-user-fingerprint", b"spoofed-fingerprint"),
+            ],
+            method="GET",
+            body=b"",
+        )
+
+        with (
+            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
+        ):
+            await _RUNTIME_ROUTES._proxy_http_request(
+                request,
+                "http://runtime/dashboard",
+                primitive_session_factory=mock.AsyncMock(
+                    return_value={
+                        "workspace_id": "workspace-a",
+                        "user_id": "user-1",
+                        "auth": {
+                            "authenticated": True,
+                            "user": {
+                                "username": "verified-user",
+                                "display_name": "Verified User",
+                                "user_fingerprint": "verified-fingerprint",
+                            },
+                        },
+                    }
+                ),
+            )
+
+        sent_headers = client.built_request["headers"] if client.built_request else {}
+        self.assertEqual(sent_headers.get("x-ragtime-internal-authenticated-username"), "verified-user")
+        self.assertEqual(sent_headers.get("x-ragtime-internal-authenticated-display-name"), "Verified User")
+        self.assertEqual(sent_headers.get("x-ragtime-internal-user-fingerprint"), "verified-fingerprint")
+        self.assertNotIn("x-ragtime-authenticated-username", sent_headers)
+        self.assertNotIn("x-ragtime-authenticated-display-name", sent_headers)
+        self.assertNotIn("x-ragtime-user-fingerprint", sent_headers)
+        self.assertEqual(len(client.requests), 1)
 
     async def test_preview_handoff_cleanup_injects_before_app_scripts(self) -> None:
         html = b"""
