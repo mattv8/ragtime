@@ -26,6 +26,7 @@ from ragtime.core.logging import get_logger
 from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
 from ragtime.http_api.guidance import build_http_api_headers_description, build_http_api_request_guidance
 from ragtime.http_api.models import HttpApiConnectionConfig
+from ragtime.indexer.embedding_errors import EmbeddingOperationError, build_embedding_configuration_error
 from ragtime.indexer.schema_service import search_schema_index
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds, tool_health_monitor
 from ragtime.rag import rag
@@ -45,6 +46,10 @@ from ragtime.tools.git_history import search_git_history
 logger = get_logger(__name__)
 
 MCP_TOOL_TIMEOUT_GRACE_SECONDS = 10.0
+
+
+def _build_embedding_configuration_error(app_settings: dict[str, Any] | None) -> EmbeddingOperationError:
+    return build_embedding_configuration_error(app_settings or {}, operation="query")
 
 
 async def _run_mcp_faiss_search(
@@ -1272,6 +1277,42 @@ class MCPToolAdapter:
                 return serialize_knowledge_search_payload(payload)
 
             started_at = time.monotonic()
+            embedding_model = rag._embedding_model  # pyright: ignore[reportPrivateUsage]
+            if embedding_model is None:
+                typed_error = _build_embedding_configuration_error(rag._app_settings)  # pyright: ignore[reportPrivateUsage]
+                payload = build_knowledge_search_payload(
+                    tool_name=KNOWLEDGE_SEARCH_TOOL_ID,
+                    status="error",
+                    ok=False,
+                    query=query,
+                    index_name=index_name or None,
+                    k=k,
+                    max_chars_per_result=max_chars_per_result,
+                    entries=[],
+                    errors=[{"index_name": index_name or next(iter(dbs_to_search.keys()), ""), "message": str(typed_error)}],
+                    message="Knowledge search failed.",
+                    duration_ms=(time.monotonic() - started_at) * 1000.0,
+                )
+                return serialize_knowledge_search_payload(payload)
+
+            try:
+                query_embedding = await embedding_model.aembed_query(query)
+            except EmbeddingOperationError as exc:
+                payload = build_knowledge_search_payload(
+                    tool_name=KNOWLEDGE_SEARCH_TOOL_ID,
+                    status="error",
+                    ok=False,
+                    query=query,
+                    index_name=index_name or None,
+                    k=k,
+                    max_chars_per_result=max_chars_per_result,
+                    entries=[],
+                    errors=[{"index_name": index_name or next(iter(dbs_to_search.keys()), ""), "message": str(exc)}],
+                    message="Knowledge search failed.",
+                    duration_ms=(time.monotonic() - started_at) * 1000.0,
+                )
+                return serialize_knowledge_search_payload(payload)
+
             for name, db in dbs_to_search.items():
                 try:
                     logger.debug(f"MCP searching index '{name}' with query: {query[:50] if query else ''}..., k={k}")
@@ -1280,8 +1321,8 @@ class MCPToolAdapter:
                         fetch_k = max(k * 4, 20)  # Get more candidates for diversity
                         docs = await _run_mcp_faiss_search(
                             name,
-                            db.max_marginal_relevance_search,
-                            query,
+                            db.max_marginal_relevance_search_by_vector,
+                            query_embedding,
                             k=k,
                             fetch_k=fetch_k,
                             lambda_mult=mmr_lambda,
@@ -1289,8 +1330,8 @@ class MCPToolAdapter:
                     else:
                         docs = await _run_mcp_faiss_search(
                             name,
-                            db.similarity_search,
-                            query,
+                            db.similarity_search_by_vector,
+                            query_embedding,
                             k=k,
                         )
 
@@ -1314,13 +1355,8 @@ class MCPToolAdapter:
                 except Exception as e:
                     error_msg = str(e)
                     logger.warning(f"Error searching {name}: {e}", exc_info=True)
-                    # Detect Ollama connectivity issues
-                    if "ollama" in error_msg.lower() or "failed to connect" in error_msg.lower():
-                        message = (
-                            f"[{name}] Embedding service unavailable - Cannot connect to Ollama. "
-                            "Check that Ollama is running and the URL in Settings is accessible from the server "
-                            "(use 'host.docker.internal' instead of 'localhost' when running in Docker)."
-                        )
+                    if isinstance(e, EmbeddingOperationError):
+                        message = f"[{name}] {e}"
                     else:
                         message = f"[{name}] Search error: {error_msg}"
                     errors.append({"index_name": name, "message": message})
@@ -1529,14 +1565,36 @@ class MCPToolAdapter:
                     logger.debug(f"MCP search_{idx_name} called with query='{query[:50] if query else ''}...', k={k}, max_chars={max_chars_per_result}")
 
                     started_at = time.monotonic()
+                    embedding_model = rag._embedding_model  # pyright: ignore[reportPrivateUsage]
+                    if embedding_model is None:
+                        typed_error = _build_embedding_configuration_error(rag._app_settings)  # pyright: ignore[reportPrivateUsage]
+                        errors.append({"index_name": idx_name, "message": str(typed_error)})
+                        duration_ms = (time.monotonic() - started_at) * 1000.0
+                        error_message = str(errors[0].get("message") or "Knowledge search failed.")
+                        payload = build_knowledge_search_payload(
+                            tool_name=tool_name,
+                            status="error",
+                            ok=False,
+                            query=query,
+                            index_name=idx_name,
+                            k=k,
+                            max_chars_per_result=max_chars_per_result,
+                            entries=[],
+                            errors=errors,
+                            message=error_message,
+                            duration_ms=duration_ms,
+                        )
+                        return serialize_knowledge_search_payload(payload)
+
                     try:
+                        query_embedding = await embedding_model.aembed_query(query)
                         # Use MMR or similarity search based on settings
                         if use_mmr_:
                             fetch_k = max(k * 4, 20)
                             docs = await _run_mcp_faiss_search(
                                 idx_name,
-                                idx_db.max_marginal_relevance_search,
-                                query,
+                                idx_db.max_marginal_relevance_search_by_vector,
+                                query_embedding,
                                 k=k,
                                 fetch_k=fetch_k,
                                 lambda_mult=mmr_lambda_,
@@ -1544,8 +1602,8 @@ class MCPToolAdapter:
                         else:
                             docs = await _run_mcp_faiss_search(
                                 idx_name,
-                                idx_db.similarity_search,
-                                query,
+                                idx_db.similarity_search_by_vector,
+                                query_embedding,
                                 k=k,
                             )
 
@@ -1569,8 +1627,8 @@ class MCPToolAdapter:
                     except Exception as e:
                         error_msg = str(e)
                         logger.warning(f"Error searching {idx_name}: {e}", exc_info=True)
-                        if "ollama" in error_msg.lower() or "failed to connect" in error_msg.lower():
-                            message = "Embedding service unavailable - Cannot connect to Ollama. Check that Ollama is running and accessible."
+                        if isinstance(e, EmbeddingOperationError):
+                            message = str(e)
                         else:
                             message = f"Search error: {error_msg}"
                         errors.append({"index_name": idx_name, "message": message})

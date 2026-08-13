@@ -41,8 +41,8 @@ from langchain_core.messages import (
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
-from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import (
     _construct_responses_api_payload,
     _get_last_messages,
@@ -176,6 +176,7 @@ from ragtime.indexer.conversation_tool_options import (
     load_conversation_tool_options,
     resolve_effective_allow_write,
 )
+from ragtime.indexer.embedding_errors import EmbeddingFailureKind, EmbeddingOperationError, build_embedding_configuration_error
 from ragtime.indexer.export_service import (
     chart_to_table,
     content_source,
@@ -190,6 +191,7 @@ from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.tool_selection import resolve_effective_tool_ids
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
+from ragtime.indexer.vector_utils import get_embeddings_model
 from ragtime.rag.prompts import (
     BASE_CHAT_SYSTEM_PROMPT,
     BASE_USERSPACE_SYSTEM_PROMPT,
@@ -721,9 +723,19 @@ def run_async_tool_sync(coroutine_factory: Callable[[], Coroutine[Any, Any, Any]
 class _FaissSearchIndex(Protocol):
     def similarity_search(self, query: str, k: int) -> list[Any]: ...
 
+    def similarity_search_by_vector(self, embedding: list[float], k: int) -> list[Any]: ...
+
     def max_marginal_relevance_search(
         self,
         query: str,
+        k: int,
+        fetch_k: int,
+        lambda_mult: float,
+    ) -> list[Any]: ...
+
+    def max_marginal_relevance_search_by_vector(
+        self,
+        embedding: list[float],
         k: int,
         fetch_k: int,
         lambda_mult: float,
@@ -3305,8 +3317,11 @@ class RAGComponents:
 
             current_embedding_dim = None
             try:
-                test_embedding = await asyncio.to_thread(self._embedding_model.embed_query, "test")
+                test_embedding = await self._embedding_model.aembed_query("test")
                 current_embedding_dim = len(test_embedding)
+            except EmbeddingOperationError as e:
+                current_embedding_dim = self._app_settings.get("embedding_dimension")
+                logger.warning(f"Could not probe embedding dimension before hot-loading '{index_name}': {e}. Using tracked dimension: {current_embedding_dim}")
             except Exception as e:
                 current_embedding_dim = self._app_settings.get("embedding_dimension")
                 logger.warning(f"Could not probe embedding dimension before hot-loading '{index_name}': {e}. Using tracked dimension: {current_embedding_dim}")
@@ -3594,27 +3609,6 @@ class RAGComponents:
         if normalized_provider == "omlx":
             return await omlx.get_model_context_length(model, base_url)
         return None
-
-    def _build_local_openai_embedding_model(
-        self,
-        provider: str,
-        model: str,
-    ) -> OpenAIEmbeddings:
-        assert self._app_settings is not None
-        normalized_provider = normalize_provider_name(provider)
-        base_url = self._resolve_provider_base_url(normalized_provider, "embedding").rstrip("/")
-        api_keys = {
-            "llama_cpp": "llama-cpp-local",
-            "lmstudio": self._app_settings.get("lmstudio_api_key") or "lmstudio-local",
-            "omlx": self._app_settings.get("omlx_api_key") or "omlx-local",
-        }
-        logger.info(f"Using {self._provider_label(normalized_provider)} embeddings: {model} at {base_url}")
-        return OpenAIEmbeddings(
-            model=model,
-            api_key=SecretStr(str(api_keys[normalized_provider])),
-            base_url=f"{base_url}/v1",
-            check_embedding_ctx_length=False,
-        )
 
     async def _resolve_llm_max_tokens(self, provider: str, model: str) -> int:
         """Resolve max tokens for an LLM request using configured limits."""
@@ -4073,53 +4067,11 @@ class RAGComponents:
     async def _get_embedding_model(self) -> Optional[Any]:
         """Get embedding model based on database settings."""
         assert self._app_settings is not None  # Set by initialize()
-        provider = normalize_provider_name(self._app_settings.get("embedding_provider", "ollama"))
-        model = self._app_settings.get("embedding_model", "nomic-embed-text")
+        return await get_embeddings_model(self._app_settings, return_none_on_error=True)
 
-        if provider == "ollama":
-            base_url = self._resolve_provider_base_url(provider, "embedding")
-            logger.info(f"Using Ollama embeddings: {model} at {base_url}")
-            return OllamaEmbeddings(model=model, base_url=base_url, num_gpu=NUM_GPU, keep_alive=KEEP_ALIVE)
-        elif provider == "openai":
-            api_key = self._app_settings.get("openai_api_key", "")
-            if not api_key:
-                logger.warning("OpenAI embeddings selected but no API key configured")
-                return None
-            logger.info(f"Using OpenAI embeddings: {model}")
-            return OpenAIEmbeddings(model=model, openai_api_key=api_key)  # type: ignore[call-arg]
-        elif provider == "openai_codex":
-            token = await ensure_openai_codex_token_fresh()
-            if not token:
-                logger.warning("OpenAI Codex embeddings selected but Codex is not authenticated")
-                return None
-            headers: dict[str, str] = {}
-            account_id = str(self._app_settings.get("openai_codex_account_id") or "").strip()
-            if account_id:
-                headers["ChatGPT-Account-Id"] = account_id
-            logger.info(f"Using OpenAI Codex embeddings: {model}")
-            return OpenAIEmbeddings(
-                model=model,
-                api_key=SecretStr(token),
-                base_url="https://api.openai.com/v1",
-                default_headers=headers or None,
-                check_embedding_ctx_length=False,
-            )
-        elif provider == "openrouter":
-            api_key = resolve_provider_api_key(self._app_settings, provider, "embedding")
-            if not api_key:
-                logger.warning("OpenRouter embeddings selected but no API key configured")
-                return None
-            logger.info(f"Using OpenRouter embeddings: {model}")
-            return OpenAIEmbeddings(
-                model=model,
-                api_key=SecretStr(str(api_key or "")),
-                base_url=openrouter.DEFAULT_BASE_URL,
-                check_embedding_ctx_length=False,
-            )
-        elif provider in {"llama_cpp", "lmstudio", "omlx"}:
-            return self._build_local_openai_embedding_model(provider, model)
-        else:
-            raise ValueError(f"Unknown embedding provider: {provider}")
+    def _build_embedding_configuration_error(self) -> EmbeddingOperationError:
+        assert self._app_settings is not None
+        return build_embedding_configuration_error(self._app_settings, operation="query")
 
     def _create_retriever_from_faiss(self, db: _FaissSearchIndex, index_name: str) -> Any:
         """Create a retriever from a FAISS vectorstore with appropriate settings.
@@ -4198,7 +4150,6 @@ class RAGComponents:
         mmr_lambda: float,
         include_index_name: bool = True,
         include_index_name_in_errors: bool = True,
-        ollama_error_message: str,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Search one or more FAISS indexes with shared formatting/error handling.
 
@@ -4212,14 +4163,24 @@ class RAGComponents:
         errors: list[dict[str, Any]] = []
         k, max_chars_per_result = clamp_search_parameters(k, max_chars_per_result)
 
+        embedding_model = self._embedding_model
+        if embedding_model is None:
+            typed_error = self._build_embedding_configuration_error()
+            return results, [{"index_name": "" if not include_index_name_in_errors else next(iter(dbs_to_search.keys()), ""), "message": str(typed_error)}]
+
+        try:
+            query_embedding = await embedding_model.aembed_query(query)
+        except EmbeddingOperationError as exc:
+            return results, [{"index_name": "" if not include_index_name_in_errors else next(iter(dbs_to_search.keys()), ""), "message": str(exc)}]
+
         for name, db in dbs_to_search.items():
             try:
                 if use_mmr:
                     fetch_k = max(k * MMR_FETCH_K_MULTIPLIER, MMR_MIN_FETCH_K)
                     docs = await faiss_search_coordinator.run(
                         name,
-                        db.max_marginal_relevance_search,
-                        query,
+                        db.max_marginal_relevance_search_by_vector,
+                        query_embedding,
                         k=k,
                         fetch_k=fetch_k,
                         lambda_mult=mmr_lambda,
@@ -4227,8 +4188,8 @@ class RAGComponents:
                 else:
                     docs = await faiss_search_coordinator.run(
                         name,
-                        db.similarity_search,
-                        query,
+                        db.similarity_search_by_vector,
+                        query_embedding,
                         k=k,
                     )
 
@@ -4256,8 +4217,8 @@ class RAGComponents:
             except Exception as e:
                 error_msg = str(e)
                 logger.warning(f"Error searching {name}: {e}", exc_info=True)
-                if "ollama" in error_msg.lower() or "failed to connect" in error_msg.lower():
-                    message = ollama_error_message
+                if isinstance(e, EmbeddingOperationError):
+                    message = str(e)
                 else:
                     message = f"Search error: {error_msg}"
                 if include_index_name_in_errors:
@@ -4343,9 +4304,12 @@ class RAGComponents:
         # This is more reliable than tracked app_settings when provider changes
         current_embedding_dim = None
         try:
-            test_embedding = await asyncio.to_thread(embedding_model.embed_query, "test")
+            test_embedding = await embedding_model.aembed_query("test")
             current_embedding_dim = len(test_embedding)
             logger.info(f"Detected embedding dimension: {current_embedding_dim} (will check indexes for mismatch)")
+        except EmbeddingOperationError as e:
+            current_embedding_dim = (self._app_settings or {}).get("embedding_dimension")
+            logger.warning(f"Could not probe embedding dimension: {e}. Using tracked dimension: {current_embedding_dim}")
         except Exception as e:
             # Fall back to tracked dimension if probe fails
             current_embedding_dim = (self._app_settings or {}).get("embedding_dimension")
@@ -4508,9 +4472,12 @@ class RAGComponents:
         # This is more reliable than tracked app_settings when provider changes
         current_embedding_dim = None
         try:
-            test_embedding = await asyncio.to_thread(embedding_model.embed_query, "test")
+            test_embedding = await embedding_model.aembed_query("test")
             current_embedding_dim = len(test_embedding)
             logger.info(f"Detected embedding dimension: {current_embedding_dim} (will check indexes for mismatch)")
+        except EmbeddingOperationError as e:
+            current_embedding_dim = app_settings.get("embedding_dimension")
+            logger.warning(f"Could not probe embedding dimension: {e}. Using tracked dimension: {current_embedding_dim}")
         except Exception as e:
             # Fall back to tracked dimension if probe fails
             current_embedding_dim = app_settings.get("embedding_dimension")
@@ -5307,11 +5274,6 @@ class RAGComponents:
                 use_mmr=use_mmr,
                 mmr_lambda=mmr_lambda,
                 include_index_name=True,
-                ollama_error_message=(
-                    "Embedding service unavailable - Cannot connect to Ollama. "
-                    "Check that Ollama is running and the URL in Settings is accessible from the server "
-                    "(use 'host.docker.internal' instead of 'localhost' when running in Docker)."
-                ),
             )
             duration_ms = (time.monotonic() - started_at) * 1000.0
 
@@ -5720,7 +5682,6 @@ class RAGComponents:
                         mmr_lambda=mmr_lambda_,
                         include_index_name=False,
                         include_index_name_in_errors=False,
-                        ollama_error_message=("Embedding service unavailable - Cannot connect to Ollama. Check that Ollama is running and accessible."),
                     )
                     duration_ms = (time.monotonic() - started_at) * 1000.0
 

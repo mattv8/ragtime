@@ -1097,7 +1097,7 @@ class FilesystemIndexerService:
         for j in range(0, len(chunks), sub_batch_size):
             sub = chunks[j : j + sub_batch_size]
             try:
-                embs = await asyncio.to_thread(embeddings.embed_documents, sub)
+                embs = await embeddings.aembed_documents(sub)
                 all_embeddings.extend(embs)
                 continue
             except Exception as e:
@@ -1107,7 +1107,7 @@ class FilesystemIndexerService:
             # Sub-batch failed - process chunks individually
             for chunk in sub:
                 try:
-                    emb = await asyncio.to_thread(embeddings.embed_documents, [chunk])
+                    emb = await embeddings.aembed_documents([chunk])
                     all_embeddings.extend(emb)
                 except Exception as single_e:
                     if not is_context_length_error(single_e):
@@ -1122,20 +1122,18 @@ class FilesystemIndexerService:
                     embedded = False
                     for pct in (0.75, 0.50, 0.25):
                         try:
-                            emb = await asyncio.to_thread(
-                                embeddings.embed_documents,
-                                [chunk[: int(len(chunk) * pct)]],
-                            )
+                            emb = await embeddings.aembed_documents([chunk[: int(len(chunk) * pct)]])
                             all_embeddings.extend(emb)
                             embedded = True
                             break
-                        except Exception:
-                            pass
+                        except Exception as truncated_e:
+                            if not is_context_length_error(truncated_e):
+                                raise
 
                     if not embedded:
                         # Embed placeholder to maintain alignment
                         try:
-                            emb = await asyncio.to_thread(embeddings.embed_documents, ["."])
+                            emb = await embeddings.aembed_documents(["."])
                             all_embeddings.extend(emb)
                         except Exception:
                             dim = len(all_embeddings[0]) if all_embeddings else 768

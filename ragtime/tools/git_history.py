@@ -14,7 +14,7 @@ import re
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from ragtime.config.settings import settings
 from ragtime.core.faiss_concurrency import FaissSearchBusyError, faiss_search_coordinator
 from ragtime.core.logging import get_logger
+from ragtime.indexer.embedding_errors import EmbeddingOperationError
 
 logger = get_logger(__name__)
 
@@ -31,6 +32,8 @@ MAX_FILES_DISPLAY_LIMIT = 50
 MAX_DIFF_LINES = 200
 # Number of git-log candidates to score when falling back to fuzzy local search
 FUZZY_COMMIT_CANDIDATE_LIMIT = 500
+
+_SEMANTIC_DISABLED = object()
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -264,9 +267,17 @@ def _semantic_result_to_match(result: Dict[str, Any]) -> Optional[Dict[str, Any]
     }
 
 
-async def _search_commits_semantic(index_name: Optional[str], query: str, k: int) -> List[Dict[str, Any]]:
+async def _search_commits_semantic(
+    index_name: Optional[str],
+    query: str,
+    k: int,
+    *,
+    query_embedding: Optional[List[float] | object] = None,
+) -> List[Dict[str, Any]]:
     """Search embedded git commit-history documents when the index has them."""
     if not index_name:
+        return []
+    if query_embedding is _SEMANTIC_DISABLED:
         return []
 
     try:
@@ -279,22 +290,19 @@ async def _search_commits_semantic(index_name: Optional[str], query: str, k: int
         )
         from ragtime.rag.components import rag
 
-        app_settings = await get_app_settings()
-        embeddings = await get_embeddings_model(
-            app_settings,
-            return_none_on_error=True,
-            logger_override=logger,
-        )
-        if embeddings is None:
-            return []
-
-        try:
-            query_embedding = await embeddings.aembed_query(query)
-        except AttributeError:
-            embedded_query = await asyncio.to_thread(embeddings.embed_documents, [query])
-            if not embedded_query:
+        if query_embedding is None:
+            app_settings = await get_app_settings()
+            embeddings = await get_embeddings_model(
+                app_settings,
+                return_none_on_error=True,
+                logger_override=logger,
+            )
+            if embeddings is None:
                 return []
-            query_embedding = embedded_query[0]
+            query_embedding = await embeddings.aembed_query(query)
+        if not isinstance(query_embedding, list):
+            return []
+        semantic_query_embedding = cast(List[float], query_embedding)
 
         search_limit = max(k * 10, 100)
         raw_results: List[Dict[str, Any]] = []
@@ -303,7 +311,7 @@ async def _search_commits_semantic(index_name: Optional[str], query: str, k: int
             raw_results.extend(
                 await search_pgvector_embeddings(
                     table_name="filesystem_embeddings",
-                    query_embedding=query_embedding,
+                    query_embedding=semantic_query_embedding,
                     index_name=index_name,
                     max_results=search_limit,
                     columns=FILESYSTEM_COLUMNS,
@@ -318,8 +326,8 @@ async def _search_commits_semantic(index_name: Optional[str], query: str, k: int
             if index_name in rag.faiss_dbs:
                 docs_with_scores = await faiss_search_coordinator.run(
                     index_name,
-                    rag.faiss_dbs[index_name].similarity_search_with_score,
-                    query,
+                    rag.faiss_dbs[index_name].similarity_search_with_score_by_vector,
+                    semantic_query_embedding,
                     k=search_limit,
                 )
                 for doc, score in docs_with_scores:
@@ -334,7 +342,7 @@ async def _search_commits_semantic(index_name: Optional[str], query: str, k: int
                 faiss_backend = get_faiss_backend()
                 if index_name in faiss_backend.get_loaded_indexes():
                     faiss_results = await faiss_backend.search(
-                        query_embedding=query_embedding,
+                        query_embedding=semantic_query_embedding,
                         index_name=index_name,
                         max_results=search_limit,
                     )
@@ -358,6 +366,9 @@ async def _search_commits_semantic(index_name: Optional[str], query: str, k: int
 
         matches.sort(key=lambda item: item.get("semantic_similarity", 0.0), reverse=True)
         return matches[:k]
+    except EmbeddingOperationError as e:
+        logger.warning("Git commit semantic search unavailable: %s", e, exc_info=True)
+        return []
     except Exception as e:
         logger.debug(f"Git commit semantic search unavailable: {e}")
         return []
@@ -559,9 +570,10 @@ async def _search_commits(
     query: str,
     k: int,
     index_name: Optional[str] = None,
+    query_embedding: Optional[List[float] | object] = None,
 ) -> str:
     """Search commits using embedded history when available, with fuzzy git-log fallback."""
-    semantic_matches = await _search_commits_semantic(index_name, query, k)
+    semantic_matches = await _search_commits_semantic(index_name, query, k, query_embedding=query_embedding)
     fuzzy_error, fuzzy_matches = await _search_commits_fuzzy(repo_path, query, k)
     if fuzzy_error and not semantic_matches:
         return fuzzy_error
@@ -850,13 +862,32 @@ async def search_git_history(
 
     # Execute action on each repo
     all_results = []
+    query_embedding: Optional[List[float] | object] = None
+
+    if action == "search_commits":
+        assert query is not None
+        try:
+            from ragtime.core.app_settings import get_app_settings
+            from ragtime.indexer.vector_utils import get_embeddings_model
+
+            app_settings = await get_app_settings()
+            embeddings = await get_embeddings_model(
+                app_settings,
+                return_none_on_error=True,
+                logger_override=logger,
+            )
+            if embeddings is not None:
+                query_embedding = await embeddings.aembed_query(query)
+        except EmbeddingOperationError as exc:
+            logger.warning("Git commit semantic search unavailable: %s", exc, exc_info=True)
+            query_embedding = _SEMANTIC_DISABLED
 
     for repo_name, repo_path in repos:
         try:
             result: str
             if action == "search_commits":
                 assert query is not None  # Validated above
-                result = await _search_commits(repo_path, query, k, index_name=repo_name)
+                result = await _search_commits(repo_path, query, k, index_name=repo_name, query_embedding=query_embedding)
             elif action == "get_commit":
                 assert commit_hash is not None  # Validated above
                 result = await _get_commit_details(repo_path, commit_hash)

@@ -55,6 +55,7 @@ from ragtime.indexer.chunking import (
     rechunk_oversized_content,
 )
 from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
+from ragtime.indexer.embedding_errors import iter_exception_chain
 from ragtime.indexer.file_utils import (
     build_authenticated_git_url,
     collect_files_recursive,
@@ -679,12 +680,15 @@ class IndexerService:
 
     def _is_rate_limit_error(self, exc: Exception) -> bool:
         """Detect OpenAI rate limit errors across libraries."""
-        status = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
-        if status == 429:
-            return True
+        for current in iter_exception_chain(exc):
+            status = getattr(current, "status_code", None) or getattr(current, "http_status", None)
+            if status == 429:
+                return True
 
-        text = str(exc).lower()
-        return "rate limit" in text or "rate_limit_exceeded" in text or "429" in text
+            text = str(current).lower()
+            if "rate limit" in text or "rate_limit_exceeded" in text or "429" in text:
+                return True
+        return False
 
     def _retry_delay_seconds(self, exc: Exception, attempt: int, base_delay: float = 1.5) -> float:
         """Compute delay before retrying after a rate limit.
@@ -692,10 +696,13 @@ class IndexerService:
         Uses Retry-After headers or "try again in Xms" hints when available,
         otherwise falls back to exponential backoff capped to 30s.
         """
-        headers = getattr(getattr(exc, "response", None), "headers", {}) or {}
         retry_after_header = None
-        if isinstance(headers, dict):
-            retry_after_header = headers.get("retry-after")
+        for current in iter_exception_chain(exc):
+            headers = getattr(getattr(current, "response", None), "headers", {}) or {}
+            if hasattr(headers, "get"):
+                retry_after_header = headers.get("retry-after")
+            if retry_after_header:
+                break
 
         if retry_after_header:
             try:
@@ -703,13 +710,14 @@ class IndexerService:
             except (TypeError, ValueError):
                 pass
 
-        text = str(exc).lower()
-        match = re.search(r"try again in ([0-9]+)ms", text)
-        if match:
-            try:
-                return max(base_delay, min(30.0, int(match.group(1)) / 1000))
-            except (TypeError, ValueError):
-                pass
+        for current in iter_exception_chain(exc):
+            text = str(current).lower()
+            match = re.search(r"try again in ([0-9]+)ms", text)
+            if match:
+                try:
+                    return max(base_delay, min(30.0, int(match.group(1)) / 1000))
+                except (TypeError, ValueError):
+                    pass
 
         return min(30.0, base_delay * (2**attempt))
 
@@ -3134,7 +3142,7 @@ class IndexerService:
                             if self._is_cancelled(job.id):
                                 raise asyncio.CancelledError("Job cancelled by user")
                             try:
-                                single_emb = await asyncio.to_thread(embeddings.embed_documents, [text])
+                                single_emb = await embeddings.aembed_documents([text])
                                 all_embeddings.extend(single_emb)
                             except Exception as single_err:
                                 logger.warning(f"Skipping chunk ({len(text)} chars): {single_err}")

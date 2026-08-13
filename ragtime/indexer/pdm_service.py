@@ -28,6 +28,7 @@ from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple, ca
 from ragtime.core.app_setting_defaults import DEFAULT_IVFFLAT_LISTS
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
+from ragtime.indexer.embedding_errors import EmbeddingOperationError, build_embedding_configuration_error
 from ragtime.indexer.models import (
     PdmDocumentInfo,
     PdmIndexJob,
@@ -869,7 +870,7 @@ class PdmIndexerService:
                 raise RuntimeError("No embedding provider configured. Configure an embedding provider in Settings.")
 
             # Check embedding dimension and ensure column matches
-            test_embedding = await asyncio.to_thread(embeddings.embed_documents, ["test"])
+            test_embedding = await embeddings.aembed_documents(["test"])
             embedding_dim = len(test_embedding[0])
             index_lists = app_settings.get("ivfflat_lists", DEFAULT_IVFFLAT_LISTS)
             # This will raise RuntimeError with detailed message if it fails
@@ -1372,11 +1373,10 @@ async def search_pdm_index(
         )
 
         if embeddings is None:
-            return "Error: No embedding provider configured"
+            return f"Error: {build_embedding_configuration_error(app_settings, operation='query')}"
 
         # Generate query embedding
-        query_embedding = await asyncio.to_thread(embeddings.embed_documents, [query])
-        embedding = query_embedding[0]
+        embedding = await embeddings.aembed_query(query)
 
         # Search using centralized pgvector search
         results = await search_pgvector_embeddings(
@@ -1409,6 +1409,9 @@ async def search_pdm_index(
 
         return "\n\n---\n\n".join(output_parts)
 
+    except EmbeddingOperationError as e:
+        logger.error(f"Error searching PDM index: {e}")
+        return f"Error: {str(e)}"
     except Exception as e:
         logger.error(f"Error searching PDM index: {e}")
         return f"Error searching PDM: {str(e)}"

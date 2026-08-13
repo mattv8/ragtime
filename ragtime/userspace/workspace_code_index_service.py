@@ -15,6 +15,7 @@ from ragtime.core.database import get_db
 from ragtime.core.datetimes import utc_now
 from ragtime.core.logging import get_logger
 from ragtime.indexer.code_extraction import extract_metadata
+from ragtime.indexer.embedding_errors import EmbeddingOperationError, build_embedding_configuration_error
 from ragtime.indexer.file_utils import compute_file_hash, is_excluded_by_patterns, is_excluded_directory, should_index_file_type
 from ragtime.indexer.filesystem_service import FilesystemIndexerService
 from ragtime.indexer.models import FilesystemConnectionConfig, OcrMode, VectorStoreType, WorkspaceCodeIndexJobPhase
@@ -1200,12 +1201,15 @@ class WorkspaceCodeIndexService:
             )
         if mode in {"semantic", "hybrid"} and len(results) < max_results:
             app_settings = await get_app_settings()
-            embeddings_model = await get_embeddings_model(app_settings, logger_override=logger)
-            if embeddings_model is None:
+            try:
+                embeddings_model = await get_embeddings_model(app_settings, logger_override=logger)
+                if embeddings_model is None:
+                    raise build_embedding_configuration_error(app_settings, operation="query")
+                query_embedding = await embeddings_model.aembed_query(query)
+            except EmbeddingOperationError as exc:
                 if not best_effort_semantic:
-                    raise ValueError("Embeddings model is not configured")
-                return results[:max_results], "semantic search unavailable"
-            query_embedding = await asyncio.to_thread(embeddings_model.embed_query, query)
+                    raise
+                return results[:max_results], str(exc)
             semantic_rows = await search_pgvector_embeddings(
                 "filesystem_embeddings",
                 query_embedding,

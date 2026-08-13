@@ -12,15 +12,23 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+import httpx
 from langchain_core.embeddings import Embeddings
 from pydantic import SecretStr
 
 from ragtime.core import openrouter
+from ragtime.core.app_setting_defaults import DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.core.model_providers import resolve_provider_api_key
 from ragtime.core.openai_codex_auth import ensure_openai_codex_token_fresh
+from ragtime.indexer.embedding_errors import (
+    EmbeddingFailureKind,
+    EmbeddingOperationError,
+    GuardedEmbeddings,
+    build_embedding_configuration_error,
+)
 
 logger = get_logger(__name__)
 
@@ -248,9 +256,6 @@ async def ensure_embedding_column(
 
 # Maximum chunks per embedding API call to avoid blocking too long
 EMBEDDING_SUB_BATCH_SIZE = 50
-# Bound individual embedding requests so a stuck remote call does not
-# pin an indexing background task forever.
-from ragtime.core.app_setting_defaults import DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS
 
 
 async def _get_embedding_timeout() -> float:
@@ -354,6 +359,9 @@ async def embed_documents_subbatched(
 
 def _uses_ollama_embeddings(embeddings: Any) -> bool:
     """Detect Ollama embedding clients so we can apply shared guardrails."""
+    provider = getattr(embeddings, "provider", None)
+    if isinstance(provider, str) and provider.lower() == "ollama":
+        return True
     embedding_type = type(embeddings)
     module_name = getattr(embedding_type, "__module__", "").lower()
     class_name = getattr(embedding_type, "__name__", "").lower()
@@ -371,15 +379,25 @@ async def _embed_documents_guarded(
     log = logger_override or logger
 
     async def _run_embed() -> List[List[float]]:
-        embed_call = asyncio.to_thread(embeddings.embed_documents, texts)
-        if timeout_seconds and timeout_seconds > 0:
-            try:
+        try:
+            if hasattr(embeddings, "aembed_documents"):
+                return await embeddings.aembed_documents(texts)
+            embed_call = asyncio.to_thread(embeddings.embed_documents, texts)
+            if timeout_seconds and timeout_seconds > 0:
                 return await asyncio.wait_for(embed_call, timeout=timeout_seconds)
-            except asyncio.TimeoutError as exc:
+            return await embed_call
+        except EmbeddingOperationError as exc:
+            if exc.kind == EmbeddingFailureKind.TIMEOUT:
+                effective_timeout = timeout_seconds or getattr(embeddings, "document_timeout_seconds", 0) or 0
                 raise EmbeddingBatchTimeoutError(
-                    f"Embedding provider timed out after {timeout_seconds:.0f} seconds while processing {len(texts)} chunks"
+                    f"Embedding provider timed out after {effective_timeout:.0f} seconds while processing {len(texts)} chunks"
                 ) from exc
-        return await embed_call
+            raise
+        except asyncio.TimeoutError as exc:
+            effective_timeout = timeout_seconds or getattr(embeddings, "document_timeout_seconds", 0) or 0
+            raise EmbeddingBatchTimeoutError(
+                f"Embedding provider timed out after {effective_timeout:.0f} seconds while processing {len(texts)} chunks"
+            ) from exc
 
     if _uses_ollama_embeddings(embeddings):
         from ragtime.core.ollama_concurrency import get_ollama_embedding_semaphore
@@ -404,6 +422,44 @@ async def get_embeddings_model(
     provider = str(_get_setting(settings, "embedding_provider", "ollama") or "").lower()
     model = str(_get_setting(settings, "embedding_model", "nomic-embed-text") or "nomic-embed-text")
     dimensions = _get_setting(settings, "embedding_dimensions")
+    configured_timeout = max(
+        1.0,
+        float(
+            _get_setting(
+                settings,
+                "ollama_embedding_timeout_seconds",
+                DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS,
+            )
+        ),
+    )
+    query_timeout = min(configured_timeout, 45.0)
+    connect_timeout = min(query_timeout, 5.0)
+
+    def _raise_configuration(message: str) -> None:
+        if allow_missing_api_key or return_none_on_error:
+            log.warning(message)
+            raise StopAsyncIteration
+        raise build_embedding_configuration_error(settings, operation="configure", cause=ValueError(message))
+
+    def _build_guarded(
+        *,
+        factory,
+        endpoint: str | None,
+        common_kwargs: dict[str, Any],
+        document_extra_kwargs: dict[str, Any] | None = None,
+        query_extra_kwargs: dict[str, Any] | None = None,
+    ) -> GuardedEmbeddings:
+        document_kwargs = {**common_kwargs, **(document_extra_kwargs or {})}
+        query_kwargs = {**common_kwargs, **(query_extra_kwargs or {})}
+        return GuardedEmbeddings(
+            provider=provider,
+            model=model,
+            endpoint=endpoint,
+            document_embeddings=factory(**document_kwargs),
+            query_embeddings=factory(**query_kwargs),
+            document_timeout_seconds=configured_timeout,
+            query_timeout_seconds=query_timeout,
+        )
 
     if provider == "ollama":
         from langchain_ollama import OllamaEmbeddings
@@ -411,7 +467,19 @@ async def get_embeddings_model(
         from ragtime.core.ollama import KEEP_ALIVE, NUM_GPU
 
         base_url = _get_setting(settings, "ollama_base_url", "http://localhost:11434")
-        return OllamaEmbeddings(model=model, base_url=base_url, num_gpu=NUM_GPU, keep_alive=KEEP_ALIVE)
+        return _build_guarded(
+            factory=OllamaEmbeddings,
+            endpoint=str(base_url),
+            common_kwargs={"model": model, "base_url": base_url, "num_gpu": NUM_GPU, "keep_alive": KEEP_ALIVE},
+            document_extra_kwargs={
+                "sync_client_kwargs": {"timeout": httpx.Timeout(configured_timeout, connect=min(configured_timeout, 5.0))},
+                "async_client_kwargs": {"timeout": httpx.Timeout(configured_timeout, connect=min(configured_timeout, 5.0))},
+            },
+            query_extra_kwargs={
+                "sync_client_kwargs": {"timeout": httpx.Timeout(query_timeout, connect=connect_timeout)},
+                "async_client_kwargs": {"timeout": httpx.Timeout(query_timeout, connect=connect_timeout)},
+            },
+        )
 
     if provider == "openai":
         from langchain_openai import OpenAIEmbeddings
@@ -419,16 +487,22 @@ async def get_embeddings_model(
         api_key = _get_setting(settings, "openai_api_key", "")
         if not api_key:
             message = "OpenAI embeddings selected but no API key configured in Settings"
-            if allow_missing_api_key or return_none_on_error:
-                log.warning(message)
+            try:
+                _raise_configuration(message)
+            except StopAsyncIteration:
                 return None
-            raise ValueError(message)
 
         kwargs: dict[str, Any] = {"model": model, "api_key": SecretStr(str(api_key))}
         if dimensions and str(model).startswith("text-embedding-3"):
             kwargs["dimensions"] = dimensions
             log.info(f"Using OpenAI embeddings with {dimensions} dimensions")
-        return OpenAIEmbeddings(**kwargs)
+        return _build_guarded(
+            factory=OpenAIEmbeddings,
+            endpoint="https://api.openai.com/v1",
+            common_kwargs={**kwargs, "max_retries": 0},
+            document_extra_kwargs={"timeout": httpx.Timeout(configured_timeout, connect=min(configured_timeout, 5.0))},
+            query_extra_kwargs={"timeout": httpx.Timeout(query_timeout, connect=connect_timeout)},
+        )
 
     if provider == "openai_codex":
         from langchain_openai import OpenAIEmbeddings
@@ -437,16 +511,17 @@ async def get_embeddings_model(
         token = await ensure_openai_codex_token_fresh(settings=settings_obj)
         if not token:
             message = "OpenAI Codex embeddings selected but Codex is not authenticated"
-            if allow_missing_api_key or return_none_on_error:
-                log.warning(message)
+            try:
+                _raise_configuration(message)
+            except StopAsyncIteration:
                 return None
-            raise ValueError(message)
 
         kwargs = {
             "model": model,
             "api_key": SecretStr(token),
             "base_url": "https://api.openai.com/v1",
             "check_embedding_ctx_length": False,
+            "max_retries": 0,
         }
         account_id = str(_get_setting(settings, "openai_codex_account_id", "") or "").strip()
         if account_id:
@@ -454,7 +529,13 @@ async def get_embeddings_model(
         if dimensions and str(model).startswith("text-embedding-3"):
             kwargs["dimensions"] = dimensions
             log.info(f"Using OpenAI Codex embeddings with {dimensions} dimensions")
-        return OpenAIEmbeddings(**kwargs)
+        return _build_guarded(
+            factory=OpenAIEmbeddings,
+            endpoint="https://api.openai.com/v1",
+            common_kwargs=kwargs,
+            document_extra_kwargs={"timeout": httpx.Timeout(configured_timeout, connect=min(configured_timeout, 5.0))},
+            query_extra_kwargs={"timeout": httpx.Timeout(query_timeout, connect=connect_timeout)},
+        )
 
     if provider == "openrouter":
         from langchain_openai import OpenAIEmbeddings
@@ -462,27 +543,41 @@ async def get_embeddings_model(
         api_key = resolve_provider_api_key(settings, "openrouter", "embedding")
         if not api_key:
             message = "OpenRouter embeddings selected but no API key configured in Settings"
-            if allow_missing_api_key or return_none_on_error:
-                log.warning(message)
+            try:
+                _raise_configuration(message)
+            except StopAsyncIteration:
                 return None
-            raise ValueError(message)
 
-        return OpenAIEmbeddings(
-            model=model,
-            api_key=SecretStr(str(api_key)),
-            base_url=openrouter.DEFAULT_BASE_URL,
-            check_embedding_ctx_length=False,
+        return _build_guarded(
+            factory=OpenAIEmbeddings,
+            endpoint=openrouter.DEFAULT_BASE_URL,
+            common_kwargs={
+                "model": model,
+                "api_key": SecretStr(str(api_key)),
+                "base_url": openrouter.DEFAULT_BASE_URL,
+                "check_embedding_ctx_length": False,
+                "max_retries": 0,
+            },
+            document_extra_kwargs={"timeout": httpx.Timeout(configured_timeout, connect=min(configured_timeout, 5.0))},
+            query_extra_kwargs={"timeout": httpx.Timeout(query_timeout, connect=connect_timeout)},
         )
 
     if provider == "llama_cpp":
         from langchain_openai import OpenAIEmbeddings
 
         base_url = str(_get_setting(settings, "llama_cpp_base_url", "http://host.docker.internal:8081") or "http://host.docker.internal:8081").rstrip("/")
-        return OpenAIEmbeddings(
-            model=model,
-            api_key=SecretStr("llama-cpp-local"),
-            base_url=f"{base_url}/v1",
-            check_embedding_ctx_length=False,
+        return _build_guarded(
+            factory=OpenAIEmbeddings,
+            endpoint=f"{base_url}/v1",
+            common_kwargs={
+                "model": model,
+                "api_key": SecretStr("llama-cpp-local"),
+                "base_url": f"{base_url}/v1",
+                "check_embedding_ctx_length": False,
+                "max_retries": 0,
+            },
+            document_extra_kwargs={"timeout": httpx.Timeout(configured_timeout, connect=min(configured_timeout, 5.0))},
+            query_extra_kwargs={"timeout": httpx.Timeout(query_timeout, connect=connect_timeout)},
         )
 
     if provider == "lmstudio":
@@ -490,11 +585,18 @@ async def get_embeddings_model(
 
         base_url = str(_get_setting(settings, "lmstudio_base_url", "http://host.docker.internal:1234") or "http://host.docker.internal:1234").rstrip("/")
         api_key = str(_get_setting(settings, "lmstudio_api_key", "") or "lmstudio-local")
-        return OpenAIEmbeddings(
-            model=model,
-            api_key=SecretStr(api_key),
-            base_url=f"{base_url}/v1",
-            check_embedding_ctx_length=False,
+        return _build_guarded(
+            factory=OpenAIEmbeddings,
+            endpoint=f"{base_url}/v1",
+            common_kwargs={
+                "model": model,
+                "api_key": SecretStr(api_key),
+                "base_url": f"{base_url}/v1",
+                "check_embedding_ctx_length": False,
+                "max_retries": 0,
+            },
+            document_extra_kwargs={"timeout": httpx.Timeout(configured_timeout, connect=min(configured_timeout, 5.0))},
+            query_extra_kwargs={"timeout": httpx.Timeout(query_timeout, connect=connect_timeout)},
         )
 
     if provider == "omlx":
@@ -502,18 +604,25 @@ async def get_embeddings_model(
 
         base_url = str(_get_setting(settings, "omlx_base_url", "http://host.docker.internal:8000") or "http://host.docker.internal:8000").rstrip("/")
         api_key = str(_get_setting(settings, "omlx_api_key", "") or "omlx-local")
-        return OpenAIEmbeddings(
-            model=model,
-            api_key=SecretStr(api_key),
-            base_url=f"{base_url}/v1",
-            check_embedding_ctx_length=False,
+        return _build_guarded(
+            factory=OpenAIEmbeddings,
+            endpoint=f"{base_url}/v1",
+            common_kwargs={
+                "model": model,
+                "api_key": SecretStr(api_key),
+                "base_url": f"{base_url}/v1",
+                "check_embedding_ctx_length": False,
+                "max_retries": 0,
+            },
+            document_extra_kwargs={"timeout": httpx.Timeout(configured_timeout, connect=min(configured_timeout, 5.0))},
+            query_extra_kwargs={"timeout": httpx.Timeout(query_timeout, connect=connect_timeout)},
         )
 
     message = f"Unknown embedding provider: {provider}"
     if return_none_on_error:
         log.warning(message)
         return None
-    raise ValueError(message)
+    raise build_embedding_configuration_error(settings, operation="configure", cause=ValueError(message))
 
 
 # =============================================================================

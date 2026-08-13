@@ -18,6 +18,7 @@ from typing import Literal, Optional
 import httpx
 
 from ragtime.core.logging import get_logger
+from ragtime.indexer.embedding_errors import classify_embedding_exception, format_embedding_failure
 
 logger = get_logger(__name__)
 
@@ -638,5 +639,12 @@ async def warmup_embedding_model(
                 return True
             logger.warning(f"Ollama embedding warmup for '{model}' returned status {resp.status_code}")
     except Exception as e:
-        logger.warning(f"Could not warm up Ollama embedding model '{model}': {e}")
+        kind = classify_embedding_exception(e)
+        logger.warning(
+            "%s endpoint=%s original_exception=%r",
+            format_embedding_failure(kind, "ollama", model),
+            base_url,
+            e,
+            exc_info=True,
+        )
     return False

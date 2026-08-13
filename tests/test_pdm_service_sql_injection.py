@@ -289,6 +289,9 @@ class PdmServiceSqlInjectionTests(unittest.IsolatedAsyncioTestCase):
             def embed_documents(self, _texts: list[str]) -> list[list[float]]:
                 return [[0.1, 0.2, 0.3]]
 
+            async def aembed_query(self, _text: str) -> list[float]:
+                return [0.1, 0.2, 0.3]
+
         captured: dict[str, Any] = {}
 
         async def _fake_search_pgvector_embeddings(**kwargs: Any) -> list[dict[str, Any]]:
@@ -320,6 +323,9 @@ class PdmServiceSqlInjectionTests(unittest.IsolatedAsyncioTestCase):
         class _FakeEmbeddings:
             def embed_documents(self, _texts: list[str]) -> list[list[float]]:
                 return [[0.1, 0.2, 0.3]]
+
+            async def aembed_documents(self, _texts: list[str]) -> list[list[float]]:
+                return self.embed_documents(_texts)
 
         class _FakeSettings:
             embedding_dimension = 3

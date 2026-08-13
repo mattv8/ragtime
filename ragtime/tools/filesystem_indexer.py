@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
+from ragtime.indexer.embedding_errors import EmbeddingOperationError, build_embedding_configuration_error
 from ragtime.indexer.vector_backends import get_faiss_backend, get_pgvector_backend
 from ragtime.indexer.vector_utils import get_embeddings_model
 
@@ -65,8 +66,6 @@ async def search_filesystem_index(
 
         # Get the embedding for the query
         embedding = await _get_query_embedding(query, app_settings)
-        if embedding is None:
-            return "Error: Could not generate query embedding. Check embedding provider settings."
 
         # Search both backends and combine results
         all_results = []
@@ -119,29 +118,25 @@ async def search_filesystem_index(
 
         return "\n".join(output_parts)
 
+    except EmbeddingOperationError as e:
+        logger.error(f"Filesystem search error: {e}")
+        return f"Error: {str(e)}"
     except Exception as e:
         logger.error(f"Filesystem search error: {e}")
         return f"Error searching filesystem index: {str(e)}"
 
 
-async def _get_query_embedding(query: str, app_settings: dict) -> Optional[list]:
+async def _get_query_embedding(query: str, app_settings: dict) -> list[float]:
     """Generate embedding for the search query using configured provider."""
-    try:
-        embeddings = await get_embeddings_model(
-            app_settings,
-            return_none_on_error=True,
-            logger_override=logger,
-        )
-        if embeddings is None:
-            return None
+    embeddings = await get_embeddings_model(
+        app_settings,
+        return_none_on_error=True,
+        logger_override=logger,
+    )
+    if embeddings is None:
+        raise build_embedding_configuration_error(app_settings, operation="query")
 
-        # Generate embedding using async method
-        result = await embeddings.aembed_query(query)
-        return result
-
-    except Exception as e:
-        logger.error(f"Error generating query embedding: {e}")
-        return None
+    return await embeddings.aembed_query(query)
 
 
 # The tool is created dynamically in components.py based on tool configs

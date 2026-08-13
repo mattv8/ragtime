@@ -3,16 +3,72 @@ from types import SimpleNamespace
 from unittest import mock
 
 from ragtime.core.ssh import SSHResult
+from ragtime.indexer.embedding_errors import EmbeddingFailureKind, EmbeddingOperationError
 from ragtime.indexer.models import SchemaIndexJob, SchemaIndexStatus, TableSchemaInfo
-from ragtime.indexer.schema_service import SchemaIndexerService
+from ragtime.indexer.schema_service import SchemaIndexerService, search_schema_index
 
 
 class _FakeEmbeddings:
     def embed_documents(self, contents: list[str]) -> list[list[float]]:
         return [[0.1, 0.2] for _ in contents]
 
+    async def aembed_documents(self, contents: list[str]) -> list[list[float]]:
+        return self.embed_documents(contents)
+
 
 class SchemaIndexerServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_search_schema_index_returns_typed_embedding_failure(self) -> None:
+        settings = {
+            "embedding_provider": "ollama",
+            "embedding_model": "nomic-embed-text:latest",
+        }
+        embeddings = SimpleNamespace(
+            aembed_query=mock.AsyncMock(
+                side_effect=EmbeddingOperationError(
+                    kind=EmbeddingFailureKind.CONNECTION,
+                    provider="ollama",
+                    model="nomic-embed-text:latest",
+                    operation="query",
+                    endpoint="http://private-host:11434",
+                    cause=RuntimeError("socket secret detail"),
+                )
+            )
+        )
+
+        with (
+            mock.patch("ragtime.indexer.schema_service.repository.get_settings", new=mock.AsyncMock(return_value=settings)),
+            mock.patch("ragtime.indexer.schema_service.get_embeddings_model", new=mock.AsyncMock(return_value=embeddings)),
+            mock.patch("ragtime.indexer.schema_service.search_pgvector_embeddings", new=mock.AsyncMock()) as search_pgvector,
+        ):
+            result = await search_schema_index("orders", "schema_tool_1")
+
+        self.assertEqual(
+            result,
+            "Error: Could not connect to the Ollama embedding server for model 'nomic-embed-text:latest'. Verify the service is running and reachable.",
+        )
+        self.assertNotIn("private-host", result)
+        self.assertNotIn("socket secret detail", result)
+        search_pgvector.assert_not_awaited()
+
+    async def test_search_schema_index_returns_configuration_failure_when_embeddings_missing(self) -> None:
+        settings = {
+            "embedding_provider": "openai",
+            "embedding_model": "text-embedding-3-large",
+        }
+
+        with (
+            mock.patch("ragtime.indexer.schema_service.repository.get_settings", new=mock.AsyncMock(return_value=settings)),
+            mock.patch("ragtime.indexer.schema_service.get_embeddings_model", new=mock.AsyncMock(return_value=None)),
+            mock.patch("ragtime.indexer.schema_service.search_pgvector_embeddings", new=mock.AsyncMock()) as search_pgvector,
+        ):
+            result = await search_schema_index("orders", "schema_tool_1")
+
+        self.assertEqual(
+            result,
+            "Error: The OpenAI embedding configuration for model 'text-embedding-3-large' is invalid or unauthorized. Verify the embedding provider settings and credentials.",
+        )
+        search_pgvector.assert_not_awaited()
+
     async def test_postgres_connection_uses_remote_docker_for_docker_ssh_config(self) -> None:
         service = SchemaIndexerService()
         remote_calls = []

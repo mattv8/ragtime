@@ -7,6 +7,7 @@ from unittest import mock
 
 from fastapi import HTTPException
 
+from ragtime.indexer.embedding_errors import EmbeddingFailureKind, EmbeddingOperationError
 from ragtime.indexer.models import UpdateSettingsRequest, WorkspaceCodeIndexJobResponse, WorkspaceCodeIndexJobStatus
 from ragtime.indexer.repository import IndexerRepository
 from ragtime.indexer.tool_presentation import HIDDEN_TOOL_VISIBILITY, normalize_tool_presentation
@@ -750,6 +751,14 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
             execute_raw=mock.AsyncMock(),
         )
         service = WorkspaceCodeIndexService()
+        error = EmbeddingOperationError(
+            kind=EmbeddingFailureKind.CONNECTION,
+            provider="ollama",
+            model="nomic-embed-text:latest",
+            operation="query",
+            endpoint="http://private-host:11434",
+            cause=RuntimeError("socket secret detail"),
+        )
 
         with (
             mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
@@ -759,7 +768,7 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch(
                 "ragtime.userspace.workspace_code_index_service.get_embeddings_model",
-                mock.AsyncMock(return_value=None),
+                mock.AsyncMock(return_value=SimpleNamespace(aembed_query=mock.AsyncMock(side_effect=error))),
             ),
         ):
             result = await service.search_workspace_code_read_only(workspace_id="workspace-1", query="revenue", mode="hybrid")
@@ -767,8 +776,117 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "stale")
         self.assertEqual(result["result_count"], 1)
         self.assertEqual(result["results"][0]["source"], "symbol")
-        self.assertEqual(result["error"], "semantic search unavailable")
+        self.assertEqual(result["error"], str(error))
+        self.assertNotIn("private-host", result["error"])
+        self.assertNotIn("socket secret detail", result["error"])
         fake_db.execute_raw.assert_not_awaited()
+
+    async def test_read_only_hybrid_returns_symbols_with_typed_embedding_warning(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        fake_db = SimpleNamespace(
+            query_raw=mock.AsyncMock(
+                side_effect=[
+                    [{"status": "stale"}],
+                    [{"path": "app.py", "kind": "function", "name": "revenue", "signature": "def revenue():"}],
+                ]
+            ),
+            execute_raw=mock.AsyncMock(),
+        )
+        service = WorkspaceCodeIndexService()
+        error = EmbeddingOperationError(
+            kind=EmbeddingFailureKind.CONNECTION,
+            provider="ollama",
+            model="nomic-embed-text:latest",
+            operation="query",
+            endpoint="http://private-host:11434",
+            cause=RuntimeError("socket secret detail"),
+        )
+
+        with (
+            mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_db", mock.AsyncMock(return_value=fake_db)),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_app_settings", mock.AsyncMock(return_value={})),
+            mock.patch(
+                "ragtime.userspace.workspace_code_index_service.get_embeddings_model",
+                mock.AsyncMock(return_value=SimpleNamespace(aembed_query=mock.AsyncMock(side_effect=error))),
+            ),
+        ):
+            result = await service.search_workspace_code_read_only(workspace_id="workspace-1", query="revenue", mode="hybrid")
+
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(
+            result["error"],
+            "Could not connect to the Ollama embedding server for model 'nomic-embed-text:latest'. Verify the service is running and reachable.",
+        )
+        self.assertNotIn("private-host", result["error"])
+        self.assertNotIn("socket secret detail", result["error"])
+
+    async def test_read_only_hybrid_returns_symbols_with_construction_failure_warning(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        fake_db = SimpleNamespace(
+            query_raw=mock.AsyncMock(
+                side_effect=[
+                    [{"status": "stale"}],
+                    [{"path": "app.py", "kind": "function", "name": "revenue", "signature": "def revenue():"}],
+                ]
+            ),
+            execute_raw=mock.AsyncMock(),
+        )
+        service = WorkspaceCodeIndexService()
+        error = EmbeddingOperationError(
+            kind=EmbeddingFailureKind.CONFIGURATION,
+            provider="openai",
+            model="text-embedding-3-large",
+            operation="configure",
+            endpoint=None,
+            cause=RuntimeError("socket secret detail"),
+        )
+
+        with (
+            mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_db", mock.AsyncMock(return_value=fake_db)),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_app_settings", mock.AsyncMock(return_value={})),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_embeddings_model", mock.AsyncMock(side_effect=error)),
+        ):
+            result = await service.search_workspace_code_read_only(workspace_id="workspace-1", query="revenue", mode="hybrid")
+
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(result["results"][0]["source"], "symbol")
+        self.assertEqual(result["error"], str(error))
+        self.assertNotIn("socket secret detail", result["error"])
+
+    async def test_search_workspace_code_semantic_raises_construction_failure(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        fake_db = SimpleNamespace(
+            query_raw=mock.AsyncMock(return_value=[{"status": "ready", "last_error": None}]),
+            execute_raw=mock.AsyncMock(),
+        )
+        service = WorkspaceCodeIndexService()
+        ensure_state_mock = mock.AsyncMock(return_value="userspace_workspace_workspace_1")
+        error = EmbeddingOperationError(
+            kind=EmbeddingFailureKind.CONFIGURATION,
+            provider="openai",
+            model="text-embedding-3-large",
+            operation="configure",
+            endpoint=None,
+            cause=RuntimeError("socket secret detail"),
+        )
+
+        with (
+            mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
+            mock.patch.object(service, "ensure_state", ensure_state_mock),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_db", mock.AsyncMock(return_value=fake_db)),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_app_settings", mock.AsyncMock(return_value={})),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_embeddings_model", mock.AsyncMock(side_effect=error)),
+        ):
+            with self.assertRaises(EmbeddingOperationError) as caught:
+                await service.search_workspace_code(workspace_id="workspace-1", query="revenue", mode="semantic")
+
+        self.assertEqual(str(caught.exception), str(error))
+        ensure_state_mock.assert_awaited_once_with("workspace-1")
 
     async def test_read_only_semantic_returns_empty_with_generic_error_when_embeddings_unavailable(self) -> None:
         from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
@@ -778,6 +896,14 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
             execute_raw=mock.AsyncMock(),
         )
         service = WorkspaceCodeIndexService()
+        error = EmbeddingOperationError(
+            kind=EmbeddingFailureKind.CONFIGURATION,
+            provider="openai",
+            model="text-embedding-3-large",
+            operation="query",
+            endpoint=None,
+            cause=RuntimeError("socket secret detail"),
+        )
 
         with (
             mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
@@ -787,14 +913,14 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch(
                 "ragtime.userspace.workspace_code_index_service.get_embeddings_model",
-                mock.AsyncMock(return_value=None),
+                mock.AsyncMock(return_value=SimpleNamespace(aembed_query=mock.AsyncMock(side_effect=error))),
             ),
         ):
             result = await service.search_workspace_code_read_only(workspace_id="workspace-1", query="revenue", mode="semantic")
 
         self.assertEqual(result["status"], "ready")
         self.assertEqual(result["results"], [])
-        self.assertEqual(result["error"], "semantic search unavailable")
+        self.assertEqual(result["error"], str(error))
         fake_db.execute_raw.assert_not_awaited()
 
     async def test_search_workspace_code_semantic_still_ensures_state_and_raises_without_embeddings(self) -> None:
@@ -806,6 +932,14 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         service = WorkspaceCodeIndexService()
         ensure_state_mock = mock.AsyncMock(return_value="userspace_workspace_workspace_1")
+        error = EmbeddingOperationError(
+            kind=EmbeddingFailureKind.CONFIGURATION,
+            provider="openai",
+            model="text-embedding-3-large",
+            operation="query",
+            endpoint=None,
+            cause=RuntimeError("socket secret detail"),
+        )
 
         with (
             mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
@@ -820,14 +954,80 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch(
                 "ragtime.userspace.workspace_code_index_service.get_embeddings_model",
-                mock.AsyncMock(return_value=None),
+                mock.AsyncMock(side_effect=error),
             ),
         ):
-            with self.assertRaisesRegex(ValueError, "Embeddings model is not configured"):
+            with self.assertRaises(EmbeddingOperationError) as caught:
                 await service.search_workspace_code(workspace_id="workspace-1", query="revenue", mode="semantic")
 
+        self.assertEqual(str(caught.exception), str(error))
         ensure_state_mock.assert_awaited_once_with("workspace-1")
         fake_db.execute_raw.assert_not_awaited()
+
+    async def test_search_workspace_code_semantic_raises_typed_embedding_failure(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        fake_db = SimpleNamespace(
+            query_raw=mock.AsyncMock(return_value=[{"status": "ready", "last_error": None}]),
+            execute_raw=mock.AsyncMock(),
+        )
+        service = WorkspaceCodeIndexService()
+        ensure_state_mock = mock.AsyncMock(return_value="userspace_workspace_workspace_1")
+        error = EmbeddingOperationError(
+            kind=EmbeddingFailureKind.CONNECTION,
+            provider="ollama",
+            model="nomic-embed-text:latest",
+            operation="query",
+            endpoint="http://private-host:11434",
+            cause=RuntimeError("socket secret detail"),
+        )
+
+        with (
+            mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
+            mock.patch.object(service, "ensure_state", ensure_state_mock),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_db", mock.AsyncMock(return_value=fake_db)),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_app_settings", mock.AsyncMock(return_value={})),
+            mock.patch(
+                "ragtime.userspace.workspace_code_index_service.get_embeddings_model",
+                mock.AsyncMock(return_value=SimpleNamespace(aembed_query=mock.AsyncMock(side_effect=error))),
+            ),
+        ):
+            with self.assertRaises(EmbeddingOperationError) as caught:
+                await service.search_workspace_code(workspace_id="workspace-1", query="revenue", mode="semantic")
+
+        self.assertEqual(str(caught.exception), str(error))
+        self.assertNotIn("private-host", str(caught.exception))
+        self.assertNotIn("socket secret detail", str(caught.exception))
+        ensure_state_mock.assert_awaited_once_with("workspace-1")
+
+    async def test_search_workspace_code_semantic_uses_async_query_embedding(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        fake_db = SimpleNamespace(
+            query_raw=mock.AsyncMock(return_value=[{"status": "ready", "last_error": None}]),
+            execute_raw=mock.AsyncMock(),
+        )
+        service = WorkspaceCodeIndexService()
+        ensure_state_mock = mock.AsyncMock(return_value="userspace_workspace_workspace_1")
+        aembed_query = mock.AsyncMock(return_value=[0.1, 0.2])
+        embeddings = SimpleNamespace(aembed_query=aembed_query, embed_query=mock.Mock(side_effect=AssertionError("sync embed_query should not be used")))
+
+        with (
+            mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
+            mock.patch.object(service, "ensure_state", ensure_state_mock),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_db", mock.AsyncMock(return_value=fake_db)),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_app_settings", mock.AsyncMock(return_value={})),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_embeddings_model", mock.AsyncMock(return_value=embeddings)),
+            mock.patch(
+                "ragtime.userspace.workspace_code_index_service.search_pgvector_embeddings",
+                mock.AsyncMock(return_value=[]),
+            ) as search_pgvector,
+        ):
+            result = await service.search_workspace_code(workspace_id="workspace-1", query="revenue", mode="semantic")
+
+        self.assertEqual(result["results"], [])
+        aembed_query.assert_awaited_once_with("revenue")
+        search_pgvector.assert_awaited_once()
 
     async def test_search_workspace_code_symbols_preserves_raw_signature_values(self) -> None:
         from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService

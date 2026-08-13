@@ -36,6 +36,7 @@ from ragtime.core.app_setting_defaults import (
 from ragtime.core.file_constants import DOCUMENT_EXTENSIONS, LANG_MAPPING
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
+from ragtime.indexer.embedding_errors import iter_exception_chain
 
 # Suppress Chonkie warnings we intentionally trigger:
 # - tokenizers library: we use tiktoken intentionally
@@ -1420,5 +1421,8 @@ def rechunk_texts_batch(
 
 def is_context_length_error(exc: Exception) -> bool:
     """Detect embedding context length errors from Ollama and other providers."""
-    text = str(exc).lower()
-    return "input length exceeds" in text or "context length" in text or "maximum context length" in text or "token limit" in text
+    for current in iter_exception_chain(exc):
+        text = str(current).lower()
+        if "input length exceeds" in text or "context length" in text or "maximum context length" in text or "token limit" in text:
+            return True
+    return False

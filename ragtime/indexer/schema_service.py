@@ -33,6 +33,7 @@ from ragtime.core.ssh import (
     build_ssh_tunnel_config,
     ssh_tunnel_config_from_dict,
 )
+from ragtime.indexer.embedding_errors import EmbeddingOperationError, build_embedding_configuration_error
 from ragtime.indexer.models import (
     SchemaIndexConfig,
     SchemaIndexJob,
@@ -2083,7 +2084,7 @@ class SchemaIndexerService:
             # Timeout after 60 seconds to prevent indefinite hangs
             try:
                 test_embedding = await asyncio.wait_for(
-                    asyncio.to_thread(embeddings.embed_documents, ["test"]),
+                    embeddings.aembed_documents(["test"]),
                     timeout=60.0,
                 )
             except asyncio.TimeoutError:
@@ -2172,7 +2173,7 @@ class SchemaIndexerService:
                     # Generate embedding with 120s timeout per table
                     try:
                         embedding = await asyncio.wait_for(
-                            asyncio.to_thread(embeddings.embed_documents, [content]),
+                            embeddings.aembed_documents([content]),
                             timeout=120.0,
                         )
                     except asyncio.TimeoutError:
@@ -2477,11 +2478,10 @@ async def search_schema_index(
         )
 
         if embeddings is None:
-            return "Error: No embedding provider configured. Please configure OpenAI or Ollama in Settings."
+            return f"Error: {build_embedding_configuration_error(settings, operation='query')}"
 
         # Generate query embedding
-        query_embedding = await asyncio.to_thread(embeddings.embed_documents, [query])
-        embedding = query_embedding[0]
+        embedding = await embeddings.aembed_query(query)
 
         # Search using centralized pgvector search
         results = await search_pgvector_embeddings(
@@ -2506,6 +2506,9 @@ async def search_schema_index(
 
         return "\n\n---\n\n".join(output_parts)
 
+    except EmbeddingOperationError as e:
+        logger.error(f"Error searching schema index: {e}")
+        return f"Error: {str(e)}"
     except Exception as e:
         logger.error(f"Error searching schema index: {e}")
         return f"Error searching schema: {str(e)}"
