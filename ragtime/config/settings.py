@@ -139,6 +139,11 @@ class Settings(BaseSettings):
         alias="RUNTIME_AUTH_TOKEN",
         description="Bearer token shared by Ragtime and the runtime service",
     )
+    runtime_bridge_base_url: str = Field(
+        default="",
+        alias="RUNTIME_BRIDGE_BASE_URL",
+        description="Optional internal Ragtime origin reachable by User Space runtime workers",
+    )
     # DEPRECATED legacy bridge: older compose files set RUNTIME_MANAGER_AUTH_TOKEN /
     # RUNTIME_WORKER_AUTH_TOKEN instead of RUNTIME_AUTH_TOKEN. When the shared
     # token is unset we fall back to the legacy manager value so those

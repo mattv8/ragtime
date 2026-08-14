@@ -202,11 +202,15 @@ class UserSpaceRuntimeService:
 
     @staticmethod
     def _runtime_bridge_control_plane_origin() -> str:
+        configured_bridge_origin = str(getattr(settings, "runtime_bridge_base_url", "") or "").strip()
+        if configured_bridge_origin:
+            parsed = urlsplit(configured_bridge_origin)
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                return urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
+            logger.warning("Ignoring invalid RUNTIME_BRIDGE_BASE_URL for runtime bridge origin resolution")
+
         public_origin = UserSpaceRuntimeService._default_public_control_plane_origin()
-        public_parts = urlsplit(public_origin)
-        public_scheme = public_parts.scheme or "http"
-        public_port = public_parts.port or int(getattr(settings, "port", 8000) or 8000)
-        if not UserSpaceRuntimeService._is_loopback_host(public_parts.hostname):
+        if bool(getattr(settings, "enable_https", False)):
             return public_origin
 
         manager_base_url = str(getattr(get_runtime_manager_request_config(), "base_url", "") or "").strip()
@@ -215,11 +219,14 @@ class UserSpaceRuntimeService:
         if not manager_host or UserSpaceRuntimeService._is_loopback_host(manager_host):
             return public_origin
 
-        manager_port = manager_parts.port or 80
+        manager_port = manager_parts.port or (443 if manager_parts.scheme == "https" else 80)
         bridge_host = UserSpaceRuntimeService._discover_runtime_bridge_host(manager_host, manager_port)
         if not bridge_host:
-            bridge_host = "ragtime-dev"
-        return UserSpaceRuntimeService._build_origin_with_host(public_scheme, bridge_host, public_port)
+            return public_origin
+
+        internal_scheme = "https" if bool(getattr(settings, "enable_https", False)) else "http"
+        internal_port = int(getattr(settings, "port", 8000) or 8000)
+        return UserSpaceRuntimeService._build_origin_with_host(internal_scheme, bridge_host, internal_port)
 
     @staticmethod
     def _is_loopback_host(hostname: str | None) -> bool:
@@ -240,11 +247,25 @@ class UserSpaceRuntimeService:
             with socket.socket(socket_family, socket.SOCK_DGRAM) as probe_socket:
                 probe_socket.connect((manager_host, manager_port))
                 local_host = str(probe_socket.getsockname()[0] or "").strip()
+                peer_host = str(probe_socket.getpeername()[0] or "").strip()
         except OSError:
+            return None
+        if not UserSpaceRuntimeService._is_private_or_link_local_ip(peer_host):
             return None
         if not local_host or UserSpaceRuntimeService._is_loopback_host(local_host):
             return None
         return local_host
+
+    @staticmethod
+    def _is_private_or_link_local_ip(hostname: str | None) -> bool:
+        normalized = str(hostname or "").strip().strip("[]")
+        if not normalized:
+            return False
+        try:
+            address = ipaddress.ip_address(normalized)
+        except ValueError:
+            return False
+        return bool(address.is_private or address.is_link_local)
 
     @staticmethod
     def _build_origin_with_host(scheme: str, host: str, port: int) -> str:

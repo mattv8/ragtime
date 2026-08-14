@@ -36,21 +36,135 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("api_key", dumped)
         self.assertNotIn("basic_password", dumped)
 
-    def test_runtime_bridge_origin_keeps_non_local_public_origin(self) -> None:
+    def test_runtime_bridge_origin_prefers_explicit_override(self) -> None:
         with (
+            mock.patch.object(settings, "runtime_bridge_base_url", " https://bridge.internal:9443/runtime-bridge "),
             mock.patch.object(settings, "external_base_url", "https://public.example.com/app"),
             mock.patch(
                 "ragtime.userspace.runtime_service.get_runtime_manager_request_config",
                 return_value=SimpleNamespace(base_url="http://runtime:8090"),
+            ),
+            mock.patch.object(
+                UserSpaceRuntimeService,
+                "_discover_runtime_bridge_host",
+                return_value="172.18.0.3",
+            ),
+        ):
+            origin = self.service._runtime_bridge_control_plane_origin()
+
+        self.assertEqual(origin, "https://bridge.internal:9443")
+
+    def test_runtime_bridge_origin_ignores_invalid_explicit_override_and_logs_warning(self) -> None:
+        with (
+            mock.patch.object(settings, "runtime_bridge_base_url", "ragtime:8000"),
+            mock.patch.object(settings, "external_base_url", "https://public.example.com/app"),
+            mock.patch.object(settings, "enable_https", False),
+            mock.patch.object(settings, "port", 8000),
+            mock.patch(
+                "ragtime.userspace.runtime_service.get_runtime_manager_request_config",
+                return_value=SimpleNamespace(base_url="http://runtime:8090"),
+            ),
+            mock.patch.object(
+                UserSpaceRuntimeService,
+                "_discover_runtime_bridge_host",
+                return_value="172.18.0.3",
+            ),
+            mock.patch("ragtime.userspace.runtime_service.logger.warning") as warning,
+        ):
+            origin = self.service._runtime_bridge_control_plane_origin()
+
+        self.assertEqual(origin, "http://172.18.0.3:8000")
+        warning.assert_called_once()
+        warning_message = warning.call_args.args[0]
+        self.assertIn("Ignoring invalid RUNTIME_BRIDGE_BASE_URL", warning_message)
+        self.assertNotIn("ragtime:8000", warning_message)
+
+    def test_runtime_bridge_origin_discovers_internal_origin_for_private_manager_peer(self) -> None:
+        with (
+            mock.patch.object(settings, "runtime_bridge_base_url", ""),
+            mock.patch.object(settings, "external_base_url", "https://public.example.com/app"),
+            mock.patch.object(settings, "enable_https", False),
+            mock.patch.object(settings, "port", 8000),
+            mock.patch(
+                "ragtime.userspace.runtime_service.get_runtime_manager_request_config",
+                return_value=SimpleNamespace(base_url="http://runtime:8090"),
+            ),
+            mock.patch.object(
+                UserSpaceRuntimeService,
+                "_discover_runtime_bridge_host",
+                return_value="172.18.0.3",
+            ),
+        ):
+            origin = self.service._runtime_bridge_control_plane_origin()
+
+        self.assertEqual(origin, "http://172.18.0.3:8000")
+
+    def test_runtime_bridge_origin_falls_back_to_public_origin_for_public_manager_peer(self) -> None:
+        with (
+            mock.patch.object(settings, "runtime_bridge_base_url", ""),
+            mock.patch.object(settings, "external_base_url", "https://public.example.com/app"),
+            mock.patch.object(settings, "enable_https", False),
+            mock.patch.object(settings, "port", 8000),
+            mock.patch(
+                "ragtime.userspace.runtime_service.get_runtime_manager_request_config",
+                return_value=SimpleNamespace(base_url="http://203.0.113.10:8090"),
+            ),
+            mock.patch.object(
+                UserSpaceRuntimeService,
+                "_discover_runtime_bridge_host",
+                return_value=None,
             ),
         ):
             origin = self.service._runtime_bridge_control_plane_origin()
 
         self.assertEqual(origin, "https://public.example.com")
 
-    def test_runtime_bridge_origin_keeps_native_localhost_when_manager_is_loopback(self) -> None:
+    def test_runtime_bridge_origin_skips_discovery_when_https_enabled_without_override(self) -> None:
         with (
-            mock.patch.object(settings, "external_base_url", "http://localhost:8000/app"),
+            mock.patch.object(settings, "runtime_bridge_base_url", ""),
+            mock.patch.object(settings, "external_base_url", "https://public.example.com/app"),
+            mock.patch.object(settings, "enable_https", True),
+            mock.patch.object(settings, "port", 8443),
+            mock.patch(
+                "ragtime.userspace.runtime_service.get_runtime_manager_request_config",
+                return_value=SimpleNamespace(base_url="http://runtime:8090"),
+            ),
+            mock.patch.object(
+                UserSpaceRuntimeService,
+                "_discover_runtime_bridge_host",
+                return_value="fd00::1",
+            ) as discover,
+        ):
+            origin = self.service._runtime_bridge_control_plane_origin()
+
+        self.assertEqual(origin, "https://public.example.com")
+        discover.assert_not_called()
+
+    def test_runtime_bridge_origin_uses_https_default_manager_port_for_probe(self) -> None:
+        with (
+            mock.patch.object(settings, "runtime_bridge_base_url", ""),
+            mock.patch.object(settings, "external_base_url", "https://public.example.com/app"),
+            mock.patch.object(settings, "enable_https", False),
+            mock.patch.object(settings, "port", 8000),
+            mock.patch(
+                "ragtime.userspace.runtime_service.get_runtime_manager_request_config",
+                return_value=SimpleNamespace(base_url="https://runtime"),
+            ),
+            mock.patch.object(
+                UserSpaceRuntimeService,
+                "_discover_runtime_bridge_host",
+                return_value="172.18.0.3",
+            ) as discover,
+        ):
+            origin = self.service._runtime_bridge_control_plane_origin()
+
+        self.assertEqual(origin, "http://172.18.0.3:8000")
+        discover.assert_called_once_with("runtime", 443)
+
+    def test_runtime_bridge_origin_falls_back_to_public_origin_when_manager_is_loopback(self) -> None:
+        with (
+            mock.patch.object(settings, "runtime_bridge_base_url", ""),
+            mock.patch.object(settings, "external_base_url", "https://public.example.com/app"),
             mock.patch(
                 "ragtime.userspace.runtime_service.get_runtime_manager_request_config",
                 return_value=SimpleNamespace(base_url="http://127.0.0.1:8090"),
@@ -58,7 +172,25 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
         ):
             origin = self.service._runtime_bridge_control_plane_origin()
 
-        self.assertEqual(origin, "http://localhost:8000")
+        self.assertEqual(origin, "https://public.example.com")
+
+    def test_runtime_bridge_origin_falls_back_to_public_origin_when_discovery_fails(self) -> None:
+        with (
+            mock.patch.object(settings, "runtime_bridge_base_url", ""),
+            mock.patch.object(settings, "external_base_url", "https://public.example.com/app"),
+            mock.patch(
+                "ragtime.userspace.runtime_service.get_runtime_manager_request_config",
+                return_value=SimpleNamespace(base_url="http://runtime:8090"),
+            ),
+            mock.patch.object(
+                UserSpaceRuntimeService,
+                "_discover_runtime_bridge_host",
+                return_value=None,
+            ),
+        ):
+            origin = self.service._runtime_bridge_control_plane_origin()
+
+        self.assertEqual(origin, "https://public.example.com")
 
     def test_bridge_env_uses_discovered_container_reachable_origin_for_local_public_url(self) -> None:
         socket_instance = mock.Mock()
@@ -66,6 +198,7 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
         socket_context.__enter__ = mock.Mock(return_value=socket_instance)
         socket_context.__exit__ = mock.Mock(return_value=False)
         socket_instance.getsockname.return_value = ("172.18.0.3", 54321)
+        socket_instance.getpeername.return_value = ("172.18.0.2", 8090)
 
         with (
             mock.patch.object(settings, "external_base_url", "http://localhost:8000"),
@@ -84,7 +217,7 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
             "http://172.18.0.3:8000/indexes/userspace/runtime-bridge",
         )
 
-    def test_bridge_env_falls_back_to_ragtime_dev_when_socket_discovery_fails(self) -> None:
+    def test_bridge_env_falls_back_to_public_origin_when_socket_discovery_fails(self) -> None:
         socket_instance = mock.Mock()
         socket_context = mock.Mock()
         socket_context.__enter__ = mock.Mock(return_value=socket_instance)
@@ -103,11 +236,50 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             env["RAGTIME_BRIDGE_URL"],
-            "http://ragtime-dev:8000/indexes/userspace/runtime-bridge",
+            "http://localhost:8000/indexes/userspace/runtime-bridge",
         )
 
-    def test_settings_no_longer_exposes_runtime_bridge_base_url(self) -> None:
-        self.assertFalse(hasattr(settings, "runtime_bridge_base_url"))
+    def test_discover_runtime_bridge_host_accepts_private_ipv4_peer(self) -> None:
+        socket_instance = mock.Mock()
+        socket_context = mock.Mock()
+        socket_context.__enter__ = mock.Mock(return_value=socket_instance)
+        socket_context.__exit__ = mock.Mock(return_value=False)
+        socket_instance.getsockname.return_value = ("172.18.0.3", 54321)
+        socket_instance.getpeername.return_value = ("172.18.0.2", 8090)
+
+        with mock.patch("ragtime.userspace.runtime_service.socket.socket", return_value=socket_context):
+            host = self.service._discover_runtime_bridge_host("runtime", 8090)
+
+        self.assertEqual(host, "172.18.0.3")
+
+    def test_discover_runtime_bridge_host_rejects_public_ipv4_peer(self) -> None:
+        socket_instance = mock.Mock()
+        socket_context = mock.Mock()
+        socket_context.__enter__ = mock.Mock(return_value=socket_instance)
+        socket_context.__exit__ = mock.Mock(return_value=False)
+        socket_instance.getsockname.return_value = ("10.0.0.5", 54321)
+        socket_instance.getpeername.return_value = ("8.8.8.8", 8090)
+
+        with mock.patch("ragtime.userspace.runtime_service.socket.socket", return_value=socket_context):
+            host = self.service._discover_runtime_bridge_host("8.8.8.8", 8090)
+
+        self.assertIsNone(host)
+
+    def test_discover_runtime_bridge_host_accepts_private_ipv6_peer(self) -> None:
+        socket_instance = mock.Mock()
+        socket_context = mock.Mock()
+        socket_context.__enter__ = mock.Mock(return_value=socket_instance)
+        socket_context.__exit__ = mock.Mock(return_value=False)
+        socket_instance.getsockname.return_value = ("fd00::10", 54321, 0, 0)
+        socket_instance.getpeername.return_value = ("fe80::1", 8090, 0, 0)
+
+        with mock.patch("ragtime.userspace.runtime_service.socket.socket", return_value=socket_context):
+            host = self.service._discover_runtime_bridge_host("fd00::1", 8090)
+
+        self.assertEqual(host, "fd00::10")
+
+    def test_settings_runtime_bridge_base_url_defaults_blank(self) -> None:
+        self.assertEqual(settings.runtime_bridge_base_url, "")
 
     async def test_provider_start_merges_bridge_env_without_clobbering_user_env(self) -> None:
         with (
