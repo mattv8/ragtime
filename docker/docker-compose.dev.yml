@@ -73,6 +73,7 @@ services:
       - INDEX_DATA_PATH=/data
       - API_PORT=${API_PORT:-8001}
       - RUNTIME_MANAGER_URL=${RUNTIME_MANAGER_URL:-http://runtime:8090}
+      - RUNTIME_BRIDGE_BASE_URL=${RUNTIME_BRIDGE_BASE_URL:-}
       # Development-only defaults. Override these when testing adversarial/networked deployments.
       - RUNTIME_AUTH_TOKEN=${RUNTIME_AUTH_TOKEN:-dev-runtime-auth-token}
       # Authentication settings (from .env file via env_file)

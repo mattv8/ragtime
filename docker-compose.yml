@@ -72,6 +72,7 @@ services:
       # Recommended defaults
       DEBUG_MODE: "false"
       RUNTIME_MANAGER_URL: ${RUNTIME_MANAGER_URL:-http://runtime:8090}
+      RUNTIME_BRIDGE_BASE_URL: ${RUNTIME_BRIDGE_BASE_URL:-}
       # Shared Ragtime <-> runtime token. If unset, User Space runtime features
       # stay disabled and admins see a security warning in the UI.
       RUNTIME_AUTH_TOKEN: ${RUNTIME_AUTH_TOKEN:-}

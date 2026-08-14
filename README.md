@@ -212,6 +212,10 @@ flowchart LR
    # Set to blank/non-http to force local placeholder runtime mode.
    # RUNTIME_MANAGER_URL=http://runtime:8090
 
+   # Internal Ragtime URL for User Space runtime workers.
+   # Set only for remote/custom runtime networks where automatic discovery cannot reach Ragtime.
+   # RUNTIME_BRIDGE_BASE_URL=http://ragtime:8000
+
    # Shared bearer token for Ragtime <-> runtime service calls. If unset, User
    # Space runtime features stay disabled and admins see a security warning in
    # the UI. Generate with: openssl rand -base64 32
@@ -324,6 +328,7 @@ flowchart LR
          # Recommended defaults
          DEBUG_MODE: "false"
          RUNTIME_MANAGER_URL: ${RUNTIME_MANAGER_URL:-http://runtime:8090}
+         RUNTIME_BRIDGE_BASE_URL: ${RUNTIME_BRIDGE_BASE_URL:-}
          # Shared Ragtime <-> runtime token. If unset, User Space runtime features
          # stay disabled and admins see a security warning in the UI.
          RUNTIME_AUTH_TOKEN: ${RUNTIME_AUTH_TOKEN:-}
