@@ -2633,6 +2633,8 @@ class RAGComponents:
         self.faiss_dbs: dict[str, Any] = {}  # Raw FAISS vectorstores for dynamic k searches
         self.agent_executor: Optional[AgentExecutor] = None
         self.agent_executor_ui: Optional[AgentExecutor] = None  # UI-only agent with chart tool
+        self._runtime_tools: list[Any] = []
+        self._runtime_tools_ui: list[Any] = []
         self.llm: Optional[Any] = None  # ChatOpenAI, ChatAnthropic, or ChatOllama
         self._core_ready: bool = False  # LLM/settings ready
         self._indexes_ready: bool = False  # All FAISS indexes loaded
@@ -4643,13 +4645,6 @@ class RAGComponents:
         """
         assert self._app_settings is not None  # Set by initialize()
         self._request_prompt_cache.clear()
-        # Skip agent creation if LLM is not configured
-        if self.llm is None:
-            logger.warning("Skipping agent creation - no LLM configured")
-            self.agent_executor = None
-            self.agent_executor_ui = None
-            return
-
         tools = []
 
         # Add knowledge search tool(s) if we have FAISS retrievers
@@ -4718,6 +4713,16 @@ class RAGComponents:
                 for t in tools
             ]
             logger.info(f"Wrapped {len(tools)} tools with output truncation (max {max_tool_output_chars:,} chars)")
+
+        self._runtime_tools = list(tools)
+        self._runtime_tools_ui = [*self._runtime_tools, create_chart_tool, create_datatable_tool]
+
+        # Skip agent creation if LLM is not configured
+        if self.llm is None:
+            logger.warning("Skipping agent creation - no LLM configured")
+            self.agent_executor = None
+            self.agent_executor_ui = None
+            return
 
         # Store window size for scratchpad compression
         self._scratchpad_window_size = scratchpad_window_size
@@ -4823,7 +4828,7 @@ class RAGComponents:
         # Create UI agent (with visualization tools and UI prompt)
         # Note: create_chart_tool and create_datatable_tool are NOT wrapped with
         # truncation because their JSON output must be complete for rendering
-        ui_tools = tools + [create_chart_tool, create_datatable_tool]
+        ui_tools = list(self._runtime_tools_ui)
 
         prompt_ui = ChatPromptTemplate.from_messages(
             [
@@ -14842,7 +14847,12 @@ class RAGComponents:
     ) -> dict[str, Any]:
         """Build request-scoped runtime tools, mode, and prompt additions once."""
         t0 = time.monotonic()
-        runtime_tools = list(runtime_tool_source_override if runtime_tool_source_override is not None else getattr(executor, "tools", []) if executor else [])
+        if runtime_tool_source_override is not None:
+            runtime_tools = list(runtime_tool_source_override)
+        elif executor is not None:
+            runtime_tools = list(executor.tools)
+        else:
+            runtime_tools = list(self._runtime_tools_ui if is_ui else self._runtime_tools)
         if blocked_tool_names:
             runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in blocked_tool_names]
         runtime_tool_source = list(runtime_tools)

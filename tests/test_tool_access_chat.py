@@ -488,6 +488,63 @@ class ConversationToolEndpointAclTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
+    async def test_runtime_tool_catalog_without_global_llm(self) -> None:
+        rag = rag_components.RAGComponents()
+        rag.llm = None
+        rag._app_settings = {
+            "max_iterations": 5,
+            "max_tool_output_chars": 0,
+            "scratchpad_window_size": 0,
+            "tool_skills_enabled": False,
+        }
+        rag._tool_configs = [
+            {"id": "tool-1", "name": "Proxy DCA", "tool_type": "ssh_shell"},
+        ]
+
+        ssh_tool = SimpleNamespace(name="ssh_proxy_dca", description="SSH tool")
+
+        with (
+            mock.patch.object(rag, "_create_git_history_tools", mock.AsyncMock(return_value=[])),
+            mock.patch.object(rag, "_build_tools_from_configs", mock.AsyncMock(return_value=[ssh_tool])),
+        ):
+            await rag._create_agent()
+
+        self.assertIsNone(rag.agent_executor)
+        self.assertIsNone(rag.agent_executor_ui)
+        self.assertEqual([tool.name for tool in rag._runtime_tools], ["ssh_proxy_dca"])
+        self.assertEqual(
+            [tool.name for tool in rag._runtime_tools_ui],
+            ["ssh_proxy_dca", "create_chart", "create_datatable"],
+        )
+
+        with (
+            mock.patch.object(rag, "_apply_conversation_tool_overrides", mock.AsyncMock(side_effect=lambda *_args, **_kwargs: _args[1])),
+            mock.patch.object(
+                rag,
+                "_resolve_request_tool_skill_bindings",
+                mock.AsyncMock(
+                    side_effect=lambda **kwargs: {
+                        "runtime_tools": list(kwargs["runtime_tools"]),
+                        "tool_skill_binding_state": None,
+                        "tool_skill_catalog": [],
+                        "tool_skill_hidden_ids": [],
+                        "tool_skill_has_loadable": False,
+                        "tool_skill_mode": "disabled",
+                        "tool_skill_loaded_ids": [],
+                    }
+                ),
+            ),
+        ):
+            request_context = await rag._build_request_runtime_context(
+                is_ui=False,
+                executor=None,
+                blocked_tool_names=None,
+                workspace_context=None,
+                add_chat_visualization_prompt=False,
+            )
+
+        self.assertIn("ssh_proxy_dca", [tool.name for tool in request_context["runtime_tools"]])
+
     async def _build_userspace_runtime_context_for_prompt_test(
         self,
         *,
