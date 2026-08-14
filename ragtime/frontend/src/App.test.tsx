@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
 import { SERVER_BACKUP_RESTORE_HIGHLIGHT } from './components/shared/securityWarnings';
-import type { ServerBackupJob, ServerRestoreJob, User } from './types';
+import type { ConfigurationWarning, ServerBackupJob, ServerRestoreJob, User } from './types';
 
 const localStorageMock = vi.hoisted(() => ({
   getItem: vi.fn(() => null),
@@ -253,7 +253,7 @@ beforeEach(() => {
   apiMock.logout.mockResolvedValue(undefined);
 });
 
-function mockAuthenticatedAdmin(): void {
+function mockAuthenticatedAdmin(configurationWarnings: ConfigurationWarning[] = []): void {
   apiMock.getAuthStatus.mockResolvedValue({
     authenticated: true,
     ldap_configured: false,
@@ -276,7 +276,7 @@ function mockAuthenticatedAdmin(): void {
       server_name: 'Ragtime',
       authenticated_webgl_background_enabled: false,
     },
-    configuration_warnings: [],
+    configuration_warnings: configurationWarnings,
   });
 }
 
@@ -338,30 +338,7 @@ describe('App chat fullscreen layout', () => {
 
   it('applies fullscreen state to the outer chat page container', async () => {
     const user = userEvent.setup();
-    apiMock.getAuthStatus.mockResolvedValue({
-      authenticated: true,
-      ldap_configured: false,
-      local_admin_enabled: true,
-      debug_mode: false,
-      api_key_configured: true,
-      session_cookie_secure: false,
-      allowed_origins_open: false,
-      authenticated_webgl_background_enabled: false,
-      server_name: 'Ragtime',
-    });
-    apiMock.getCurrentUser.mockResolvedValue({
-      id: 'user-1',
-      username: 'local:admin',
-      display_name: 'Admin',
-      role: 'admin',
-    });
-    apiMock.getSettings.mockResolvedValue({
-      settings: {
-        server_name: 'Ragtime',
-        authenticated_webgl_background_enabled: false,
-      },
-      configuration_warnings: [],
-    });
+    mockAuthenticatedAdmin();
 
     const { container } = render(<App />);
 
@@ -378,36 +355,13 @@ describe('App chat fullscreen layout', () => {
 
   it('deep-links the encryption backup reminder into server backup settings and dismisses it only after delivery is reported', async () => {
     const user = userEvent.setup();
-    apiMock.getAuthStatus.mockResolvedValue({
-      authenticated: true,
-      ldap_configured: false,
-      local_admin_enabled: true,
-      debug_mode: false,
-      api_key_configured: true,
-      session_cookie_secure: false,
-      allowed_origins_open: false,
-      authenticated_webgl_background_enabled: false,
-      server_name: 'Ragtime',
-    });
-    apiMock.getCurrentUser.mockResolvedValue({
-      id: 'user-1',
-      username: 'local:admin',
-      display_name: 'Admin',
-      role: 'admin',
-    });
-    apiMock.getSettings.mockResolvedValue({
-      settings: {
-        server_name: 'Ragtime',
-        authenticated_webgl_background_enabled: false,
+    mockAuthenticatedAdmin([
+      {
+        level: 'warning',
+        category: 'encryption_backup',
+        message: 'Back up your managed encryption key in an encrypted server backup.',
       },
-      configuration_warnings: [
-        {
-          level: 'warning',
-          category: 'encryption_backup',
-          message: 'Back up your managed encryption key in an encrypted server backup.',
-        },
-      ],
-    });
+    ]);
 
     render(<App />);
 

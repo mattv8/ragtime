@@ -1,6 +1,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect } from 'react';
+import type { ConversationShareLinkStatus } from '@/types/api';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatPage } from './ChatPage';
@@ -74,73 +75,72 @@ afterEach(() => {
   sseMock.sources.length = 0;
 });
 
+const makeShareLinkStatus = (
+  overrides: Partial<ConversationShareLinkStatus> = {},
+): ConversationShareLinkStatus => ({
+  id: 'share-1',
+  conversation_id: 'conv-1',
+  has_share_link: true,
+  owner_username: 'owner',
+  label: 'Alpha link',
+  share_slug: 'alpha-link',
+  share_token: 'token-1',
+  share_url: 'https://example.com/owner/alpha-link',
+  anonymous_share_url: 'https://example.com/shared/token-1',
+  created_at: '2026-07-14T00:00:00Z',
+  share_access_mode: 'token',
+  selected_user_ids: [],
+  selected_ldap_groups: [],
+  has_password: false,
+  granted_role: 'viewer',
+  scope_anchor_message_idx: null,
+  scope_direction: null,
+  active_share_style: 'named',
+  public_hit_count: 0,
+  last_public_hit_at: null,
+  ...overrides,
+});
+
+const mockConversationShareLinks = (links: ConversationShareLinkStatus[]): void => {
+  apiMock.listConversationShareLinks.mockResolvedValue({
+    conversation_id: 'conv-1',
+    owner_username: 'owner',
+    links,
+  });
+};
+
+const renderAuthenticatedChatPage = () =>
+  render(
+    <ChatPage
+      currentUser={{
+        id: 'user-1',
+        username: 'local:admin',
+        display_name: 'Admin',
+        email: null,
+        role: 'admin',
+        auth_provider: 'local',
+      }}
+    />,
+  );
+
 describe('ChatPage share link analytics', () => {
   it('removes a deleted share link without reloading the list', async () => {
     const user = userEvent.setup();
-    apiMock.listConversationShareLinks.mockResolvedValue({
-      conversation_id: 'conv-1',
-      owner_username: 'owner',
-      links: [
-        {
-          id: 'share-1',
-          conversation_id: 'conv-1',
-          has_share_link: true,
-          owner_username: 'owner',
-          label: 'Alpha link',
-          share_slug: 'alpha-link',
-          share_token: 'token-1',
-          share_url: 'https://example.com/owner/alpha-link',
-          anonymous_share_url: 'https://example.com/shared/token-1',
-          created_at: '2026-07-14T00:00:00Z',
-          share_access_mode: 'token',
-          selected_user_ids: [],
-          selected_ldap_groups: [],
-          has_password: false,
-          granted_role: 'viewer',
-          scope_anchor_message_idx: null,
-          scope_direction: null,
-          active_share_style: 'named',
-          public_hit_count: 0,
-          last_public_hit_at: null,
-        },
-        {
-          id: 'share-2',
-          conversation_id: 'conv-1',
-          has_share_link: true,
-          owner_username: 'owner',
-          label: 'Beta link',
-          share_slug: 'beta-link',
-          share_token: 'token-2',
-          share_url: 'https://example.com/owner/beta-link',
-          anonymous_share_url: 'https://example.com/shared/token-2',
-          created_at: '2026-07-14T00:05:00Z',
-          share_access_mode: 'token',
-          selected_user_ids: [],
-          selected_ldap_groups: [],
-          has_password: false,
-          granted_role: 'viewer',
-          scope_anchor_message_idx: null,
-          scope_direction: null,
-          active_share_style: 'named',
-          public_hit_count: 0,
-          last_public_hit_at: null,
-        },
-      ],
-    });
+    mockConversationShareLinks([
+      makeShareLinkStatus(),
+      makeShareLinkStatus({
+        id: 'share-2',
+        label: 'Beta link',
+        share_slug: 'beta-link',
+        share_token: 'token-2',
+        share_url: 'https://example.com/owner/beta-link',
+        anonymous_share_url: 'https://example.com/shared/token-2',
+        created_at: '2026-07-14T00:05:00Z',
+      }),
+    ]);
     apiMock.deleteConversationShareLink.mockResolvedValue(undefined);
 
-    render(
-      <ChatPage
-        currentUser={{
-          id: 'user-1',
-          username: 'local:admin',
-          display_name: 'Admin',
-          email: null,
-          role: 'admin',
-          auth_provider: 'local',
-        }}
-      />,
-    );
+    renderAuthenticatedChatPage();
 
     await user.click(await screen.findByRole('button', { name: 'Open share modal' }));
 
@@ -168,70 +168,21 @@ describe('ChatPage share link analytics', () => {
       rejectDelete = reject;
     });
 
-    apiMock.listConversationShareLinks.mockResolvedValue({
-      conversation_id: 'conv-1',
-      owner_username: 'owner',
-      links: [
-        {
-          id: 'share-1',
-          conversation_id: 'conv-1',
-          has_share_link: true,
-          owner_username: 'owner',
-          label: 'Alpha link',
-          share_slug: 'alpha-link',
-          share_token: 'token-1',
-          share_url: 'https://example.com/owner/alpha-link',
-          anonymous_share_url: 'https://example.com/shared/token-1',
-          created_at: '2026-07-14T00:00:00Z',
-          share_access_mode: 'token',
-          selected_user_ids: [],
-          selected_ldap_groups: [],
-          has_password: false,
-          granted_role: 'viewer',
-          scope_anchor_message_idx: null,
-          scope_direction: null,
-          active_share_style: 'named',
-          public_hit_count: 0,
-          last_public_hit_at: null,
-        },
-        {
-          id: 'share-2',
-          conversation_id: 'conv-1',
-          has_share_link: true,
-          owner_username: 'owner',
-          label: 'Beta link',
-          share_slug: 'beta-link',
-          share_token: 'token-2',
-          share_url: 'https://example.com/owner/beta-link',
-          anonymous_share_url: 'https://example.com/shared/token-2',
-          created_at: '2026-07-14T00:05:00Z',
-          share_access_mode: 'token',
-          selected_user_ids: [],
-          selected_ldap_groups: [],
-          has_password: false,
-          granted_role: 'viewer',
-          scope_anchor_message_idx: null,
-          scope_direction: null,
-          active_share_style: 'named',
-          public_hit_count: 0,
-          last_public_hit_at: null,
-        },
-      ],
-    });
+    mockConversationShareLinks([
+      makeShareLinkStatus(),
+      makeShareLinkStatus({
+        id: 'share-2',
+        label: 'Beta link',
+        share_slug: 'beta-link',
+        share_token: 'token-2',
+        share_url: 'https://example.com/owner/beta-link',
+        anonymous_share_url: 'https://example.com/shared/token-2',
+        created_at: '2026-07-14T00:05:00Z',
+      }),
+    ]);
     apiMock.deleteConversationShareLink.mockReturnValue(deletePromise);
 
-    render(
-      <ChatPage
-        currentUser={{
-          id: 'user-1',
-          username: 'local:admin',
-          display_name: 'Admin',
-          email: null,
-          role: 'admin',
-          auth_provider: 'local',
-        }}
-      />,
-    );
+    renderAuthenticatedChatPage();
 
     await user.click(await screen.findByRole('button', { name: 'Open share modal' }));
 
@@ -262,34 +213,7 @@ describe('ChatPage share link analytics', () => {
 
   it('renders click counts and merges analytics updates without clobbering local drafts', async () => {
     const user = userEvent.setup();
-    apiMock.listConversationShareLinks.mockResolvedValue({
-      conversation_id: 'conv-1',
-      owner_username: 'owner',
-      links: [
-        {
-          id: 'share-1',
-          conversation_id: 'conv-1',
-          has_share_link: true,
-          owner_username: 'owner',
-          label: 'Alpha link',
-          share_slug: 'alpha-link',
-          share_token: 'token-1',
-          share_url: 'https://example.com/owner/alpha-link',
-          anonymous_share_url: 'https://example.com/shared/token-1',
-          created_at: '2026-07-14T00:00:00Z',
-          share_access_mode: 'token',
-          selected_user_ids: [],
-          selected_ldap_groups: [],
-          has_password: false,
-          granted_role: 'viewer',
-          scope_anchor_message_idx: null,
-          scope_direction: null,
-          active_share_style: 'named',
-          public_hit_count: 0,
-          last_public_hit_at: null,
-        },
-      ],
-    });
+    mockConversationShareLinks([makeShareLinkStatus()]);
     apiMock.createConversationShareLink.mockResolvedValue({
       id: 'share-1',
       conversation_id: 'conv-1',
@@ -303,18 +227,7 @@ describe('ChatPage share link analytics', () => {
       scope_direction: null,
     });
 
-    render(
-      <ChatPage
-        currentUser={{
-          id: 'user-1',
-          username: 'local:admin',
-          display_name: 'Admin',
-          email: null,
-          role: 'admin',
-          auth_provider: 'local',
-        }}
-      />,
-    );
+    renderAuthenticatedChatPage();
 
     await user.click(await screen.findByRole('button', { name: 'Open share modal' }));
 
