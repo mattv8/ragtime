@@ -115,16 +115,24 @@ class RuntimeWorkerWorkspaceIdentityTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.dict(os.environ, {"RUNTIME_WORKSPACE_ROOT": tmpdir}, clear=False):
                 service = worker_service_module.WorkerService()
-                first = await service.start_session(
-                    worker_service_module.WorkerStartSessionRequest(
-                        workspace_id="ws-1",
-                        provider_session_id="provider-1",
-                        pty_access_token="pty-token",
-                        workspace_env={"FIRST": "one"},
-                        workspace_env_visibility={"FIRST": True},
-                        workspace_mounts=[{"target_path": "/workspace/one"}],
+                with mock.patch.object(
+                    service,
+                    "_run_startup_pipeline",
+                    mock.AsyncMock(return_value=None),
+                ) as run_startup_pipeline:
+                    first = await service.start_session(
+                        worker_service_module.WorkerStartSessionRequest(
+                            workspace_id="ws-1",
+                            provider_session_id="provider-1",
+                            pty_access_token="pty-token",
+                            workspace_env={"FIRST": "one"},
+                            workspace_env_visibility={"FIRST": True},
+                            workspace_mounts=[{"target_path": "/workspace/one"}],
+                        )
                     )
-                )
+                    startup_task = service._startup_tasks[first.worker_session_id]
+                    await startup_task
+                    run_startup_pipeline.assert_awaited_once()
 
                 stored_session = service._sessions[first.worker_session_id]
                 original_updated_at = stored_session.updated_at

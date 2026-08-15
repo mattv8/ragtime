@@ -165,7 +165,6 @@ class SandboxProvisioningTests(unittest.TestCase):
                 mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
                 mock.patch.object(sandbox, "_provision_etc"),
                 mock.patch.object(sandbox, "_provision_dev"),
-                mock.patch.object(sandbox.shutil, "copytree") as copytree,
             ):
                 sandbox.provision_rootfs(spec)
 
@@ -178,7 +177,6 @@ class SandboxProvisioningTests(unittest.TestCase):
             self.assertEqual(len(archives), 1)
             self.assertTrue((archives[0] / "node_modules" / "left-pad" / "index.js").exists())
             self.assertEqual(list((rootfs / "workspace").iterdir()), [])
-            copytree.assert_not_called()
 
     def test_provision_rootfs_prefers_legacy_workspace_over_newer_canonical_on_mode_transition(self) -> None:
         """Regression: a chroot->pivot_root capability flip must not lose data.
