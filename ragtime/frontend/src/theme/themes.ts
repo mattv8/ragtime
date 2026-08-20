@@ -1,4 +1,4 @@
-export type ThemePackId = 'default' | 'serif';
+export type ThemePackId = 'default' | 'vscode' | 'serif';
 
 export interface ThemePackSwatches {
   background: string;
@@ -31,6 +31,19 @@ export const THEME_PACKS: ThemePack[] = [
       surface: '#1e293b',
       primary: '#6366f1',
       text: '#f1f5f9',
+    },
+  },
+  {
+    id: 'vscode',
+    label: 'VS Code Modern',
+    description:
+      'VS Code-inspired workbench chrome: compact framed panels, Droid Sans UI, Fira Code code surfaces, and modern blue accents.',
+    headingFontPreview: "'Droid Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    swatches: {
+      background: '#252526',
+      surface: '#1f1f1f',
+      primary: '#0078d4',
+      text: '#cccccc',
     },
   },
   {

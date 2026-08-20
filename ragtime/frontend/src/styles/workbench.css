@@ -1,0 +1,133 @@
+/* Shared workbench sash presentation. */
+
+.resize-handle {
+  position: relative;
+  flex-shrink: 0;
+  z-index: 1;
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 0;
+  padding: 0;
+  outline: none;
+}
+
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: auto;
+}
+
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  background: var(--color-sash-hover);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity var(--transition-fast),
+    background-color var(--transition-fast);
+}
+
+.resize-handle-horizontal {
+  width: var(--sash-size);
+  cursor: col-resize;
+}
+
+.resize-handle-horizontal::before {
+  left: calc(var(--workbench-gap, 4px) * -1);
+  right: calc(var(--workbench-gap, 4px) * -1);
+}
+
+.resize-handle-horizontal::after {
+  inset-block: 0;
+  left: 50%;
+  width: var(--sash-hover-size);
+  transform: translateX(-50%);
+}
+
+.resize-handle-vertical {
+  height: var(--sash-size);
+  cursor: row-resize;
+}
+
+.resize-handle-vertical::before {
+  top: calc(var(--workbench-gap, 4px) * -1);
+  bottom: calc(var(--workbench-gap, 4px) * -1);
+}
+
+.resize-handle-vertical::after {
+  inset-inline: 0;
+  top: 50%;
+  height: var(--sash-hover-size);
+  transform: translateY(-50%);
+}
+
+.resize-handle:hover::after,
+.resize-handle:active::after,
+.resize-handle:focus-visible::after,
+.resize-handle-collapsed::after {
+  opacity: 1;
+}
+
+.resize-handle:focus-visible {
+  outline: 1px solid var(--color-focus);
+  outline-offset: -1px;
+}
+
+.resize-handle-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+}
+
+.resize-handle-collapsed.resize-handle-horizontal {
+  width: 16px;
+}
+
+.resize-handle-collapsed.resize-handle-vertical {
+  height: 16px;
+}
+
+.resize-handle-chevron {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+
+@media (pointer: coarse) {
+  .resize-handle::after {
+    opacity: 0.55;
+  }
+
+  .resize-handle-collapsed::after {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 768px) {
+  .userspace-content > .resize-handle-horizontal,
+  .userspace-left-pane > .resize-handle-vertical,
+  .userspace-editor-section > .resize-handle-horizontal {
+    display: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .resize-handle {
+    forced-color-adjust: auto;
+    color: ButtonText;
+  }
+
+  .resize-handle::after {
+    background: CanvasText;
+    opacity: 1;
+  }
+
+  .resize-handle:focus-visible {
+    outline: 1px solid Highlight;
+  }
+}

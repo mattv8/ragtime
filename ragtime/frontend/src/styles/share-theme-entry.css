@@ -1,0 +1,109 @@
+@import './fonts.css';
+@import './theme.css';
+@import './themes/vscode.css';
+@import './themes/serif.css';
+
+:root {
+  color-scheme: dark light;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-md);
+  box-sizing: border-box;
+  background: var(--color-workbench);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+}
+
+#share-unlock-page {
+  width: 100%;
+}
+
+#share-unlock-form {
+  width: min(92vw, 360px);
+  margin: 0 auto;
+  padding: 20px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border);
+  border-radius: var(--workbench-surface-radius);
+  background: var(--color-widget);
+  box-shadow: var(--shadow-lg);
+}
+
+#share-unlock-form h1 {
+  margin: 0 0 10px;
+  font-family: var(--font-heading);
+  font-size: 18px;
+  line-height: var(--leading-tight);
+  color: var(--color-text-strong);
+}
+
+#share-unlock-form .subtitle {
+  margin: 0 0 6px;
+  color: var(--color-text-primary);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+#share-unlock-form .owner {
+  margin: 0 0 14px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+#share-unlock-form .error {
+  margin: 0 0 12px;
+  color: var(--color-error);
+  font-size: 14px;
+}
+
+#share-unlock-form label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+#share-unlock-form input[type='password'] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--color-input-border);
+  border-radius: var(--workbench-control-radius);
+  background: var(--color-input-bg);
+  color: var(--color-text-primary);
+  font: inherit;
+}
+
+#share-unlock-form button {
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--workbench-control-radius);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+#share-unlock-form button:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+#share-unlock-form input[type='password']:focus-visible,
+#share-unlock-form button:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}

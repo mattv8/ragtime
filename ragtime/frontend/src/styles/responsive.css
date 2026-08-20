@@ -448,13 +448,11 @@
     bottom: 0;
     width: 280px;
     min-width: 280px;
-    z-index: 100;
     box-shadow: var(--shadow-lg);
     background: var(--color-bg-secondary);
   }
 
   .chat-main {
-    z-index: 1;
     position: relative;
     /* Ensure input area is not clipped */
     display: flex;
@@ -604,12 +602,6 @@
     display: flex;
     flex-direction: column;
     grid-template-columns: none !important;
-  }
-
-  .userspace-content > .resize-handle-horizontal,
-  .userspace-left-pane > .resize-handle-vertical,
-  .userspace-editor-section > .resize-handle-horizontal {
-    display: none;
   }
 
   .userspace-left-pane,

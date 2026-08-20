@@ -9,6 +9,7 @@ from typing import Any
 _TEMPLATES_DIR = Path(__file__).with_name("templates")
 _TSX_TEMPLATE_PREFIX = "export default String.raw`"
 _TSX_TEMPLATE_SUFFIX = "`;"
+SHARE_THEME_STYLESHEET_HREF = "/assets/share-theme.css"
 
 
 @lru_cache(maxsize=None)
@@ -107,6 +108,7 @@ def render_share_unlock_prompt_html(
     owner_label: str | None = None,
     error: str | None = None,
     next_target: str | None = None,
+    default_theme_pack: str | None = None,
 ) -> str:
     subtitle_block = f'<p class="subtitle">{_escape_text(subtitle)}</p>' if subtitle else ""
     owner_block = f'<p class="owner">{_escape_text(owner_label)}</p>' if owner_label else ""
@@ -121,5 +123,6 @@ def render_share_unlock_prompt_html(
             "__RAGTIME_OWNER_BLOCK__": owner_block,
             "__RAGTIME_ERROR_BLOCK__": error_block,
             "__RAGTIME_NEXT_BLOCK__": next_block,
+            "__RAGTIME_DEFAULT_THEME_PACK_JSON__": json.dumps(str(default_theme_pack or "").strip()),
         },
     )

@@ -62,7 +62,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { api, type ChatTaskStreamEvent } from '@/api';
-import { getThemeFontFamily } from '@/theme';
+import { getThemeFontFamily, subscribeToThemeChanges } from '@/theme';
 import type {
   Conversation,
   ConversationSummary,
@@ -144,6 +144,7 @@ import {
   type ToolSelectorToolGroup,
 } from './shared/ToolSelectorDropdown';
 import { UserSpaceFileDiffView, formatDiffStatus } from './shared/UserSpaceFileDiffView';
+import { ThemeChromeIcon } from './shared/ThemeChromeIcon';
 import { useToast, ToastContainer } from './shared/Toast';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import {
@@ -1878,7 +1879,11 @@ const VisualizationVersionAnchor = memo(function VisualizationVersionAnchor({
           disabled={isRefreshing || isRefreshDisabled}
           title={refreshDisabledReason || 'Refresh live data'}
         >
-          {isRefreshing ? <MiniLoadingSpinner variant="icon" size={12} /> : <RefreshCw size={12} />}
+          {isRefreshing ? (
+            <MiniLoadingSpinner variant="icon" size={12} />
+          ) : (
+            <ThemeChromeIcon fallback={<RefreshCw size={12} />} codicon="refresh" size={12} />
+          )}
           <span>Refresh live data</span>
         </button>
       )}
@@ -1994,7 +1999,11 @@ const VisualizationExportControls = memo(function VisualizationExportControls({
         aria-haspopup="menu"
         aria-expanded={isMenuOpen}
       >
-        {isExportingXlsx ? <MiniLoadingSpinner variant="icon" size={12} /> : <Download size={12} />}
+        {isExportingXlsx ? (
+          <MiniLoadingSpinner variant="icon" size={12} />
+        ) : (
+          <ThemeChromeIcon fallback={<Download size={12} />} codicon="ellipsis" size={12} />
+        )}
       </button>
       {isMenuOpen && (
         <div
@@ -2171,12 +2180,10 @@ const ChartDisplay = memo(function ChartDisplay({
   // Recreate the chart when the theme pack or color mode changes so canvas-rendered
   // fonts and colors (which cannot inherit CSS) track the active theme.
   useEffect(() => {
-    const observer = new MutationObserver(() => createChart());
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['data-theme', 'data-theme-pack'],
+    const unsubscribe = subscribeToThemeChanges(() => {
+      createChart();
     });
-    return () => observer.disconnect();
+    return unsubscribe;
   }, [createChart]);
 
   const handleDownloadChartCsv = useCallback(() => {
@@ -2204,7 +2211,11 @@ const ChartDisplay = memo(function ChartDisplay({
           onClick={() => setIsExpanded((e) => !e)}
           title={isExpanded ? 'Collapse chart' : 'Expand chart'}
         >
-          {isExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          <ThemeChromeIcon
+            fallback={isExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            codicon={isExpanded ? 'screen-normal' : 'screen-full'}
+            size={14}
+          />
         </button>
         <canvas ref={canvasRef}></canvas>
         {chartData.description && (
@@ -10225,7 +10236,6 @@ export function ChatPanel({
   const inChatSearchMarksRef = useRef<InChatSearchMatchTarget[]>([]);
   const inChatSearchActiveIndexRef = useRef(0);
   const previouslyActiveInChatMarkRef = useRef<InChatSearchMatchTarget | null>(null);
-  const inChatSearchResizeCleanupRef = useRef<(() => void) | null>(null);
   const branchSearchPreviewRestoreRef = useRef<BranchSearchPreviewRestore | null>(null);
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
@@ -10875,63 +10885,8 @@ export function ChatPanel({
     setChatKeywordFocusHint(null);
   }, [restoreBranchSearchPreview]);
 
-  const startInChatSearchResize = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-
-    const wrapper =
-      (event.currentTarget.closest('.chat-in-chat-search-inline') as HTMLElement | null) ??
-      (event.currentTarget.closest('.chat-in-chat-search') as HTMLElement | null);
-    const input = inChatSearchInputRef.current;
-    if (!wrapper || !input) return;
-
-    const wrapperRect = wrapper.getBoundingClientRect();
-    const inputRect = input.getBoundingClientRect();
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const startWidth = wrapperRect.width;
-    const startHeight = inputRect.height;
-
-    const minWidth = 220;
-    const maxWidth = 720;
-    const minHeight = 30;
-    const maxHeight = 260;
-
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      const width = Math.max(
-        minWidth,
-        Math.min(maxWidth, startWidth + (moveEvent.clientX - startX)),
-      );
-      const height = Math.max(
-        minHeight,
-        Math.min(maxHeight, startHeight + (moveEvent.clientY - startY)),
-      );
-      setInChatSearchInlineSize({
-        width: Math.round(width),
-        height: Math.round(height),
-      });
-    };
-
-    const onMouseUp = () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-      inChatSearchResizeCleanupRef.current = null;
-    };
-
-    inChatSearchResizeCleanupRef.current?.();
-    inChatSearchResizeCleanupRef.current = () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-    };
-
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-  }, []);
-
   useEffect(() => {
     return () => {
-      inChatSearchResizeCleanupRef.current?.();
-      inChatSearchResizeCleanupRef.current = null;
       branchSearchPreviewRestoreRef.current = null;
     };
   }, []);
@@ -11775,6 +11730,8 @@ export function ChatPanel({
   const chatMainRef = useRef<HTMLDivElement>(null);
   const selectConversationRequestIdRef = useRef(0);
   const prevSidebarWidth = useRef(280);
+  const showSidebarLiveRef = useRef(showSidebar);
+  const sidebarWidthLiveRef = useRef(sidebarWidth);
   const prevInputAreaHeight = useRef(MIN_INPUT_AREA_HEIGHT);
   const inputAreaHeightLiveRef = useRef(MIN_INPUT_AREA_HEIGHT);
   const inputAreaCollapsedLiveRef = useRef(false);
@@ -11809,6 +11766,14 @@ export function ChatPanel({
   );
 
   useEffect(() => {
+    showSidebarLiveRef.current = showSidebar;
+  }, [showSidebar]);
+
+  useEffect(() => {
+    sidebarWidthLiveRef.current = sidebarWidth;
+  }, [sidebarWidth]);
+
+  useEffect(() => {
     inputAreaHeightLiveRef.current = inputAreaHeight;
   }, [inputAreaHeight]);
 
@@ -11835,6 +11800,8 @@ export function ChatPanel({
       setIsInputAreaCollapsed(false);
       setIsMessagesCollapsed(false);
       prevSidebarWidth.current = 280;
+      showSidebarLiveRef.current = !embedded;
+      sidebarWidthLiveRef.current = 280;
       prevInputAreaHeight.current = MIN_INPUT_AREA_HEIGHT;
       inputAreaHeightLiveRef.current = MIN_INPUT_AREA_HEIGHT;
       inputAreaCollapsedLiveRef.current = false;
@@ -11850,6 +11817,8 @@ export function ChatPanel({
 
     setShowSidebar(embedded ? false : stored.showSidebar);
     setSidebarWidth(nextSidebarWidth);
+    showSidebarLiveRef.current = embedded ? false : stored.showSidebar;
+    sidebarWidthLiveRef.current = nextSidebarWidth;
     setInputAreaHeight(nextInputAreaHeight);
     setIsInputAreaCollapsed(nextIsInputAreaCollapsed);
     setIsMessagesCollapsed(nextIsMessagesCollapsed);
@@ -11928,20 +11897,49 @@ export function ChatPanel({
         const next = Math.min(480, Math.max(0, prev + delta));
         if (next < 120) {
           if (prev >= 120) prevSidebarWidth.current = prev;
+          showSidebarLiveRef.current = false;
+          sidebarWidthLiveRef.current = prevSidebarWidth.current || prev || 280;
           setShowSidebar(false);
           return prevSidebarWidth.current || prev || 280;
         }
         prevSidebarWidth.current = next;
+        showSidebarLiveRef.current = true;
+        sidebarWidthLiveRef.current = next;
         return next;
       });
     },
     [embedded],
   );
 
-  const expandSidebar = useCallback(() => {
-    setShowSidebar(true);
-    const restored = prevSidebarWidth.current || 280;
-    setSidebarWidth(Math.min(480, Math.max(180, restored)));
+  const handleResizeSidebarTo = useCallback(
+    (nextValue: number) => {
+      if (embedded) return;
+      if (nextValue <= 0) {
+        const restored = showSidebar
+          ? sidebarWidth
+          : prevSidebarWidth.current || sidebarWidth || 280;
+        if (restored >= 120) {
+          prevSidebarWidth.current = restored;
+        }
+        showSidebarLiveRef.current = false;
+        sidebarWidthLiveRef.current = restored;
+        setShowSidebar(false);
+        return;
+      }
+
+      const next = Math.min(480, Math.max(180, nextValue));
+      prevSidebarWidth.current = next;
+      showSidebarLiveRef.current = true;
+      sidebarWidthLiveRef.current = next;
+      setShowSidebar(true);
+      setSidebarWidth(next);
+    },
+    [embedded, showSidebar, sidebarWidth],
+  );
+
+  const commitResizeSidebar = useCallback(() => {
+    setShowSidebar(showSidebarLiveRef.current);
+    setSidebarWidth(sidebarWidthLiveRef.current);
   }, []);
 
   const getMaxInputAreaHeight = useCallback(() => {
@@ -11960,6 +11958,45 @@ export function ChatPanel({
 
     return Math.max(MIN_INPUT_AREA_HEIGHT, containerHeight - occupiedHeight);
   }, [MIN_INPUT_AREA_HEIGHT]);
+
+  const resizeInputAreaTo = useCallback(
+    (nextValue: number) => {
+      const inputArea = chatMainRef.current?.querySelector(
+        '.chat-input-area',
+      ) as HTMLElement | null;
+      const messages = chatMainRef.current?.querySelector('.chat-messages') as HTMLElement | null;
+      if (nextValue <= 0) {
+        if (
+          !inputAreaCollapsedLiveRef.current &&
+          inputAreaHeightLiveRef.current > MIN_INPUT_AREA_HEIGHT
+        ) {
+          prevInputAreaHeight.current = inputAreaHeightLiveRef.current;
+        }
+        inputAreaCollapsedLiveRef.current = true;
+        messagesCollapsedLiveRef.current = false;
+        manualResizeLiveRef.current = false;
+        if (inputArea) inputArea.style.display = 'none';
+        if (messages) messages.style.display = '';
+        return;
+      }
+
+      const maxInputHeight = getMaxInputAreaHeight();
+      const next = Math.min(maxInputHeight, Math.max(MIN_INPUT_AREA_HEIGHT, nextValue));
+      inputAreaHeightLiveRef.current = next;
+      inputAreaCollapsedLiveRef.current = false;
+      messagesCollapsedLiveRef.current = false;
+      manualResizeLiveRef.current = true;
+      prevInputAreaHeight.current = next;
+      if (inputArea) {
+        inputArea.style.display = '';
+        inputArea.style.flex = '';
+        inputArea.style.height = `${next}px`;
+        inputArea.style.minHeight = `${next}px`;
+      }
+      if (messages) messages.style.display = '';
+    },
+    [MIN_INPUT_AREA_HEIGHT, getMaxInputAreaHeight],
+  );
 
   const handleResizeInputArea = useCallback(
     (delta: number) => {
@@ -12006,21 +12043,14 @@ export function ChatPanel({
         return;
       }
 
-      const next = Math.min(maxInputHeight, Math.max(MIN_INPUT_AREA_HEIGHT, proposed));
-      inputAreaHeightLiveRef.current = next;
-      inputAreaCollapsedLiveRef.current = false;
-      messagesCollapsedLiveRef.current = false;
-      manualResizeLiveRef.current = true;
-      prevInputAreaHeight.current = next;
-      if (inputArea) {
-        inputArea.style.display = '';
-        inputArea.style.flex = '';
-        inputArea.style.height = `${next}px`;
-        inputArea.style.minHeight = `${next}px`;
-      }
-      if (messages) messages.style.display = '';
+      resizeInputAreaTo(proposed);
     },
-    [INPUT_AREA_COLLAPSE_THRESHOLD, MIN_INPUT_AREA_HEIGHT, getMaxInputAreaHeight],
+    [
+      INPUT_AREA_COLLAPSE_THRESHOLD,
+      MIN_INPUT_AREA_HEIGHT,
+      getMaxInputAreaHeight,
+      resizeInputAreaTo,
+    ],
   );
 
   const commitResizeInputArea = useCallback(() => {
@@ -12032,40 +12062,49 @@ export function ChatPanel({
     setIsManualResize(manualResizeLiveRef.current);
   }, []);
 
-  const expandInputArea = useCallback(() => {
-    const nextHeight = Math.max(
-      MIN_INPUT_AREA_HEIGHT,
-      prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT,
-    );
-    inputAreaHeightLiveRef.current = nextHeight;
-    inputAreaCollapsedLiveRef.current = false;
-    manualResizeLiveRef.current = nextHeight > MIN_INPUT_AREA_HEIGHT;
-    setIsInputAreaCollapsed(false);
-    setInputAreaHeight(nextHeight);
-    if (nextHeight > MIN_INPUT_AREA_HEIGHT) {
-      setIsManualResize(true);
-    } else {
-      setIsManualResize(false);
-    }
-    requestAnimationFrame(() => inputRef.current?.focus());
-  }, [MIN_INPUT_AREA_HEIGHT]);
+  const clampInChatSearchInlineWidth = useCallback(
+    (width: number) => Math.round(Math.max(220, Math.min(720, width))),
+    [],
+  );
 
-  const expandMessages = useCallback(() => {
-    const nextHeight = Math.max(
-      MIN_INPUT_AREA_HEIGHT,
-      prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT,
+  const clampInChatSearchInlineHeight = useCallback(
+    (height: number) => Math.round(Math.max(30, Math.min(260, height))),
+    [],
+  );
+
+  const getInChatSearchInlineSize = useCallback(() => {
+    const autoInlineWidth = Math.min(
+      520,
+      Math.max(220, 170 + Math.max(8, inChatSearchQuery.trim().length) * 7.5),
     );
-    inputAreaHeightLiveRef.current = nextHeight;
-    messagesCollapsedLiveRef.current = false;
-    manualResizeLiveRef.current = nextHeight > MIN_INPUT_AREA_HEIGHT;
-    setIsMessagesCollapsed(false);
-    setInputAreaHeight(nextHeight);
-    if (nextHeight > MIN_INPUT_AREA_HEIGHT) {
-      setIsManualResize(true);
-    } else {
-      setIsManualResize(false);
-    }
-  }, [MIN_INPUT_AREA_HEIGHT]);
+
+    return {
+      width: inChatSearchInlineSize?.width ?? autoInlineWidth,
+      height: inChatSearchInlineSize?.height ?? 30,
+    };
+  }, [inChatSearchInlineSize, inChatSearchQuery]);
+
+  const resizeInChatSearchWidthTo = useCallback(
+    (nextWidth: number) => {
+      const current = getInChatSearchInlineSize();
+      setInChatSearchInlineSize({
+        width: clampInChatSearchInlineWidth(nextWidth),
+        height: current.height,
+      });
+    },
+    [clampInChatSearchInlineWidth, getInChatSearchInlineSize],
+  );
+
+  const resizeInChatSearchHeightTo = useCallback(
+    (nextHeight: number) => {
+      const current = getInChatSearchInlineSize();
+      setInChatSearchInlineSize({
+        width: current.width,
+        height: clampInChatSearchInlineHeight(nextHeight),
+      });
+    },
+    [clampInChatSearchInlineHeight, getInChatSearchInlineSize],
+  );
 
   // Adjust the input area container height to fit the composer content.
   // The composer (a contentEditable div) grows with its inline content,
@@ -16889,6 +16928,18 @@ export function ChatPanel({
   const panelStyle: CSSProperties | undefined = !embedded
     ? ({ ['--chat-sidebar-width' as const]: `${sidebarWidth}px` } as CSSProperties)
     : undefined;
+  const sidebarHandleLabel = showSidebar ? 'Resize chat sidebar' : 'Restore chat sidebar';
+  const composerHandleCollapsedSide = isInputAreaCollapsed
+    ? 'after'
+    : isMessagesCollapsed
+      ? 'before'
+      : undefined;
+  const composerHandleLabel = isInputAreaCollapsed
+    ? 'Restore chat composer'
+    : isMessagesCollapsed
+      ? 'Restore chat messages'
+      : 'Resize chat messages and composer';
+  const composerHandleCollapsibleSide = composerHandleCollapsedSide ?? 'after';
 
   const renderInChatSearchBar = (variant: 'inline' | 'floating') => {
     const hasQuery = inChatSearchTrimmedQuery.length > 0;
@@ -16896,12 +16947,7 @@ export function ChatPanel({
     const hasAnyResults = inChatSearchTotal > 0 || branchCount > 0;
     const showCount = hasQuery && (inChatSearchRunning || inChatSearchTotal > 0 || branchCount > 0);
     const branchSuffix = branchCount > 0 ? ` +${branchCount}B` : '';
-    const autoInlineWidthPx = Math.min(
-      520,
-      Math.max(220, 170 + Math.max(8, inChatSearchQuery.trim().length) * 7.5),
-    );
-    const inlineWidthPx = inChatSearchInlineSize?.width ?? autoInlineWidthPx;
-    const inlineHeightPx = inChatSearchInlineSize?.height ?? 30;
+    const { width: inlineWidthPx, height: inlineHeightPx } = getInChatSearchInlineSize();
     const counterText = inChatSearchRunning
       ? inChatSearchTotal > 0
         ? `${inChatSearchTotal}...`
@@ -17030,11 +17076,31 @@ export function ChatPanel({
               <X size={12} />
             </button>
           </div>
-          <div
-            className="chat-in-chat-search-resize-handle"
-            onMouseDown={startInChatSearchResize}
-            role="presentation"
-            title="Drag to resize search box"
+          <ResizeHandle
+            direction="horizontal"
+            className="resize-handle resize-handle-horizontal chat-in-chat-search-resize-handle chat-in-chat-search-resize-handle-horizontal"
+            ariaLabel="Resize find panel width"
+            value={inlineWidthPx}
+            min={220}
+            max={720}
+            valueUnit="pixels"
+            onResize={(delta) =>
+              resizeInChatSearchWidthTo(getInChatSearchInlineSize().width + delta)
+            }
+            onResizeTo={resizeInChatSearchWidthTo}
+          />
+          <ResizeHandle
+            direction="vertical"
+            className="resize-handle resize-handle-vertical chat-in-chat-search-resize-handle chat-in-chat-search-resize-handle-vertical"
+            ariaLabel="Resize find panel height"
+            value={inlineHeightPx}
+            min={30}
+            max={260}
+            valueUnit="pixels"
+            onResize={(delta) =>
+              resizeInChatSearchHeightTo(getInChatSearchInlineSize().height + delta)
+            }
+            onResizeTo={resizeInChatSearchHeightTo}
           />
         </div>
       </div>
@@ -17043,12 +17109,13 @@ export function ChatPanel({
 
   return (
     <div
+      id="chat-workbench-panel"
       className={`chat-panel ${embedded ? 'chat-panel-embedded' : ''}${showWorkspaceConversationSelect ? ' chat-panel-workspace' : ''}${isFullscreen ? ' chat-panel-fullscreen' : ''}`}
       style={panelStyle}
     >
       {/* Conversations Sidebar */}
       {!embedded && showSidebar && (
-        <div className="chat-sidebar open">
+        <div id="chat-workbench-sidebar" className="chat-sidebar open">
           {!workspaceId && (
             <div className="chat-conversation-search chat-search-with-branches">
               <input
@@ -17262,9 +17329,22 @@ export function ChatPanel({
         <ResizeHandle
           direction="horizontal"
           className="resize-handle resize-handle-horizontal chat-resize-handle"
+          ariaLabel={sidebarHandleLabel}
+          value={showSidebar ? sidebarWidth : 0}
+          min={180}
+          max={480}
+          valueUnit="pixels"
           onResize={handleResizeSidebar}
+          onResizeTo={handleResizeSidebarTo}
+          onResizeEnd={commitResizeSidebar}
           collapsed={!showSidebar ? 'before' : undefined}
-          onExpand={expandSidebar}
+          collapsible={{
+            side: 'before',
+            restoreValue: Math.min(
+              480,
+              Math.max(180, prevSidebarWidth.current || sidebarWidth || 280),
+            ),
+          }}
         />
       )}
 
@@ -17275,16 +17355,27 @@ export function ChatPanel({
         ) : activeConversation ? (
           <>
             {/* Chat Header */}
-            <div className={`chat-header ${embedded ? 'chat-header-embedded' : ''}`}>
+            <div
+              id="chat-workbench-header"
+              className={`chat-header ${embedded ? 'chat-header-embedded' : ''}`}
+            >
               <div className="chat-header-info">
-                {!embedded && !isAdmin && (
+                {!embedded && (
                   <button
+                    id="chat-mobile-sidebar-toggle"
                     className="btn btn-secondary btn-sm btn-icon"
                     onClick={() => setShowSidebar((prev) => !prev)}
-                    title={showSidebar ? 'Hide sidebar' : 'Show sidebar'}
+                    title={showSidebar ? 'Close chat sidebar' : 'Open chat sidebar'}
+                    aria-label={showSidebar ? 'Close chat sidebar' : 'Open chat sidebar'}
                     style={{ marginRight: '8px' }}
                   >
-                    {showSidebar ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
+                    <ThemeChromeIcon
+                      fallback={
+                        showSidebar ? <ChevronLeft size={14} /> : <ChevronRight size={14} />
+                      }
+                      codicon={showSidebar ? 'layout-sidebar-left-off' : 'layout-sidebar-left'}
+                      size={14}
+                    />
                   </button>
                 )}
                 {showWorkspaceConversationSelect ? (
@@ -17673,7 +17764,11 @@ export function ChatPanel({
                     onClick={toggleFullscreen}
                     title={isFullscreen ? 'Exit full screen' : 'Full screen'}
                   >
-                    {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                    <ThemeChromeIcon
+                      fallback={isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                      codicon={isFullscreen ? 'screen-normal' : 'screen-full'}
+                      size={14}
+                    />
                   </button>
                 )}
               </div>
@@ -17683,7 +17778,7 @@ export function ChatPanel({
 
             {/* Messages */}
             {!isMessagesCollapsed && (
-              <div className="chat-message-region">
+              <div id="chat-workbench-main" className="chat-message-region">
                 <div
                   className="chat-messages"
                   ref={chatMessagesRef}
@@ -18708,23 +18803,28 @@ export function ChatPanel({
             <ResizeHandle
               direction="vertical"
               className="resize-handle resize-handle-vertical chat-resize-handle"
+              ariaLabel={composerHandleLabel}
+              value={inputAreaHeight}
+              min={MIN_INPUT_AREA_HEIGHT}
+              max={Math.max(MIN_INPUT_AREA_HEIGHT, getMaxInputAreaHeight())}
+              valueUnit="pixels"
               onResize={handleResizeInputArea}
+              onResizeTo={resizeInputAreaTo}
               onResizeEnd={commitResizeInputArea}
-              collapsed={
-                isInputAreaCollapsed ? 'after' : isMessagesCollapsed ? 'before' : undefined
-              }
-              onExpand={
-                isInputAreaCollapsed
-                  ? expandInputArea
-                  : isMessagesCollapsed
-                    ? expandMessages
-                    : undefined
-              }
+              collapsed={composerHandleCollapsedSide}
+              collapsible={{
+                side: composerHandleCollapsibleSide,
+                restoreValue: Math.max(
+                  MIN_INPUT_AREA_HEIGHT,
+                  prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT,
+                ),
+              }}
             />
 
             {/* Input Area */}
             {!isInputAreaCollapsed && (
               <div
+                id="chat-workbench-composer"
                 className={`chat-input-area ${isManualResize ? 'manual-resize' : ''} ${autoResizeState ? 'auto-resizing' : ''} ${autoResizeState === 'shrinking' ? 'shrinking' : ''}`
                   .trim()
                   .replace(/\s+/g, ' ')}
@@ -18915,6 +19015,7 @@ export function ChatPanel({
       {showPromptDebugModal && (
         <div className="modal-overlay" onClick={closePromptDebugModal} role="presentation">
           <div
+            id="chat-prompt-debug-modal"
             className="modal modal-large"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
@@ -18928,7 +19029,7 @@ export function ChatPanel({
                 onClick={closePromptDebugModal}
                 aria-label="Close prompt debug modal"
               >
-                &times;
+                <ThemeChromeIcon fallback={<X size={18} />} codicon="close" size={18} />
               </button>
             </div>
             <div className="modal-body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
@@ -19331,6 +19432,7 @@ export function ChatPanel({
           role="presentation"
         >
           <div
+            id="chat-compaction-review-modal"
             className="modal modal-large chat-compaction-review-modal"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
@@ -19344,7 +19446,7 @@ export function ChatPanel({
                 onClick={closeCompactionReview}
                 aria-label="Close compaction review modal"
               >
-                &times;
+                <ThemeChromeIcon fallback={<X size={18} />} codicon="close" size={18} />
               </button>
             </div>
             <div className="modal-body chat-compaction-review-body">
@@ -19385,7 +19487,11 @@ export function ChatPanel({
                         aria-label="Regenerate compaction"
                         title="Try Again"
                       >
-                        <RefreshCw size={12} />
+                        <ThemeChromeIcon
+                          fallback={<RefreshCw size={12} />}
+                          codicon="refresh"
+                          size={12}
+                        />
                       </button>
                     </span>
                   </span>

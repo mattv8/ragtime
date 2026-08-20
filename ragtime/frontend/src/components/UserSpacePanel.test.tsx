@@ -215,6 +215,7 @@ import {
   UserSpacePanel,
   getWorkspaceToolReadOnlyDescription,
   getWorkspaceToolStatusBadgeForState,
+  resolveAbsolutePaneFraction,
 } from './UserSpacePanel';
 
 const CURRENT_USER = {
@@ -541,6 +542,13 @@ afterEach(() => {
 });
 
 describe('UserSpacePanel workspace tool descriptions', () => {
+  it('maps absolute collapse requests to the requested pane side', () => {
+    expect(resolveAbsolutePaneFraction(0, 'after')).toBe(1);
+    expect(resolveAbsolutePaneFraction(0, 'before')).toBe(0);
+    expect(resolveAbsolutePaneFraction(55, 'before')).toBe(0.55);
+    expect(resolveAbsolutePaneFraction(120, 'after')).toBe(0.9);
+  });
+
   it('gives admins an inline Settings > Tools link for read-only tools', async () => {
     const user = userEvent.setup();
     const onNavigateToTools = vi.fn();

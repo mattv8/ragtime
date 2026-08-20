@@ -1013,7 +1013,16 @@ def _oauth_redirect_error_payload(
     return payload
 
 
-def _render_share_unlock_prompt(
+async def _get_share_unlock_default_theme_pack() -> str:
+    try:
+        app_settings = await get_app_settings()
+    except Exception as exc:
+        logger.debug("Failed to load share unlock theme pack: %s", exc)
+        return "default"
+    return str(app_settings.get("default_theme_pack") or "default").strip() or "default"
+
+
+async def _render_share_unlock_prompt(
     title: str,
     form_action: str,
     subtitle: str | None = None,
@@ -1021,6 +1030,7 @@ def _render_share_unlock_prompt(
     error: str | None = None,
     next_target: str | None = None,
 ) -> str:
+    default_theme_pack = await _get_share_unlock_default_theme_pack()
     return render_share_unlock_prompt_html(
         title=title,
         form_action=form_action,
@@ -1028,17 +1038,18 @@ def _render_share_unlock_prompt(
         owner_label=owner_label,
         error=error,
         next_target=next_target,
+        default_theme_pack=default_theme_pack,
     )
 
 
-def _render_share_password_prompt(
+async def _render_share_password_prompt(
     workspace_name: str | None,
     form_action: str,
     owner_label: str | None = None,
     error: str | None = None,
     next_target: str | None = None,
 ) -> str:
-    return _render_share_unlock_prompt(
+    return await _render_share_unlock_prompt(
         "Unlock shared workspace",
         form_action,
         workspace_name or "Shared workspace",
@@ -1048,13 +1059,13 @@ def _render_share_password_prompt(
     )
 
 
-def _render_share_token_password_prompt(
+async def _render_share_token_password_prompt(
     workspace_name: str | None,
     form_action: str,
     error: str | None = None,
     next_target: str | None = None,
 ) -> str:
-    return _render_share_unlock_prompt(
+    return await _render_share_unlock_prompt(
         "Unlock shared workspace",
         form_action,
         workspace_name or "Shared workspace",
@@ -1223,7 +1234,7 @@ async def _shared_launch_redirect_by_slug(
             is_password_error = exc.status_code == 401 and ("password required" in detail or "invalid password" in detail)
             if is_password_error and request.method == "GET":
                 response = HTMLResponse(
-                    _render_share_password_prompt(
+                    await _render_share_password_prompt(
                         workspace_name,
                         _share_slug_authorize_path(owner_username, share_slug),
                         owner_display_name or owner_username,
@@ -1281,7 +1292,7 @@ async def _shared_launch_redirect_by_slug(
         is_password_error = exc.status_code == 401 and ("password required" in detail or "invalid password" in detail)
         if is_password_error and request.method == "GET":
             response = HTMLResponse(
-                _render_share_password_prompt(
+                await _render_share_password_prompt(
                     workspace_name,
                     _share_slug_authorize_path(owner_username, share_slug),
                     owner_display_name or owner_username,
@@ -1379,7 +1390,7 @@ async def _shared_launch_redirect_by_token(
             is_password_error = exc.status_code == 401 and ("password required" in detail or "invalid password" in detail)
             if is_password_error and request.method == "GET":
                 response = HTMLResponse(
-                    _render_share_token_password_prompt(
+                    await _render_share_token_password_prompt(
                         workspace_name,
                         _share_token_authorize_path(share_token),
                         "Invalid password" if "invalid password" in detail else None,
@@ -1434,7 +1445,7 @@ async def _shared_launch_redirect_by_token(
         is_password_error = exc.status_code == 401 and ("password required" in detail or "invalid password" in detail)
         if is_password_error and request.method == "GET":
             response = HTMLResponse(
-                _render_share_token_password_prompt(
+                await _render_share_token_password_prompt(
                     workspace_name,
                     _share_token_authorize_path(share_token),
                     "Invalid password" if "invalid password" in detail else None,
@@ -1519,7 +1530,7 @@ async def userspace_share_token_authorize(share_token: str, request: Request):
     )
     if not share_password:
         return HTMLResponse(
-            _render_share_token_password_prompt(
+            await _render_share_token_password_prompt(
                 workspace_name,
                 _share_token_authorize_path(share_token),
                 "Password is required",
@@ -1544,7 +1555,7 @@ async def userspace_share_token_authorize(share_token: str, request: Request):
     except HTTPException as exc:
         detail = str(exc.detail) if isinstance(exc.detail, str) else "Invalid password"
         error_response = HTMLResponse(
-            _render_share_token_password_prompt(
+            await _render_share_token_password_prompt(
                 workspace_name,
                 _share_token_authorize_path(share_token),
                 detail,
@@ -1626,7 +1637,7 @@ async def userspace_share_slug_authorize(
     )
     if not share_password:
         return HTMLResponse(
-            _render_share_password_prompt(
+            await _render_share_password_prompt(
                 workspace_name,
                 _share_slug_authorize_path(owner_username, share_slug),
                 owner_display_name or owner_username,
@@ -1654,7 +1665,7 @@ async def userspace_share_slug_authorize(
     except HTTPException as exc:
         detail = str(exc.detail) if isinstance(exc.detail, str) else "Invalid password"
         error_response = HTMLResponse(
-            _render_share_password_prompt(
+            await _render_share_password_prompt(
                 workspace_name,
                 _share_slug_authorize_path(owner_username, share_slug),
                 owner_display_name or owner_username,

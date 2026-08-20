@@ -1,10 +1,17 @@
-import type { Dispatch, SetStateAction } from 'react';
+import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import { Check } from 'lucide-react';
 import type { AppSettings, UpdateSettingsRequest } from '@/types';
 import type { ThemePackId } from '@/theme';
 import { THEME_PACKS } from '@/theme';
 import { SettingsAccordionSection } from './SettingsAccordionSection';
 import type { SettingsAccordionSectionId } from './settingsAccordionState';
+
+type AppearanceCardStyle = CSSProperties & {
+  '--appearance-card-background'?: string;
+  '--appearance-card-surface'?: string;
+  '--appearance-card-primary'?: string;
+  '--appearance-card-text'?: string;
+};
 
 interface AppearanceSettingsSectionProps {
   open: boolean;
@@ -58,9 +65,20 @@ export function AppearanceSettingsSection(props: AppearanceSettingsSectionProps)
         >
           <div className="form-group">
             <label>Default theme</label>
-            <div className="appearance-theme-grid">
+            <div
+              className="appearance-theme-grid"
+              id="appearance-theme-grid"
+              data-workbench-boundary="appearance-theme-grid"
+            >
               {THEME_PACKS.map((pack) => {
                 const selected = pack.id === defaultThemePack;
+                const previewStyle: AppearanceCardStyle = {
+                  '--appearance-card-background': pack.swatches.background,
+                  '--appearance-card-surface': pack.swatches.surface,
+                  '--appearance-card-primary': pack.swatches.primary,
+                  '--appearance-card-text': pack.swatches.text,
+                };
+
                 return (
                   <button
                     type="button"
@@ -69,6 +87,9 @@ export function AppearanceSettingsSection(props: AppearanceSettingsSectionProps)
                     aria-pressed={selected}
                     disabled={!isAdmin}
                     onClick={() => setDefaultThemePack(pack.id)}
+                    data-theme-pack-card={pack.id}
+                    data-appearance-theme-card={pack.id}
+                    style={previewStyle}
                   >
                     <span className="appearance-theme-card-header">
                       <span className="appearance-theme-card-name">{pack.label}</span>
@@ -78,7 +99,50 @@ export function AppearanceSettingsSection(props: AppearanceSettingsSectionProps)
                         </span>
                       )}
                     </span>
-                    <span className="appearance-swatches" aria-hidden="true">
+                    <span className="appearance-theme-card-preview" aria-hidden="true">
+                      <span className="appearance-theme-card-preview-header">
+                        <span className="appearance-theme-card-preview-dot" />
+                        <span className="appearance-theme-card-preview-dot" />
+                        <span className="appearance-theme-card-preview-dot" />
+                      </span>
+                      <span className="appearance-theme-card-surface">
+                        <span className="appearance-theme-card-accent" />
+                        <span className="appearance-theme-card-preview-copy appearance-theme-card-preview-copy-strong">
+                          {pack.label}
+                        </span>
+                        <span className="appearance-theme-card-preview-copy">
+                          {pack.description}
+                        </span>
+                        <span className="appearance-swatches">
+                          <span
+                            className="appearance-swatch"
+                            style={{ background: pack.swatches.background }}
+                          />
+                          <span
+                            className="appearance-swatch"
+                            style={{ background: pack.swatches.surface }}
+                          />
+                          <span
+                            className="appearance-swatch"
+                            style={{ background: pack.swatches.primary }}
+                          />
+                          <span
+                            className="appearance-swatch appearance-swatch-sample"
+                            style={{
+                              background: pack.swatches.surface,
+                              color: pack.swatches.text,
+                              fontFamily: pack.headingFontPreview,
+                            }}
+                          >
+                            Aa
+                          </span>
+                        </span>
+                      </span>
+                    </span>
+                    <span
+                      className="appearance-swatches appearance-swatches-compact"
+                      aria-hidden="true"
+                    >
                       <span
                         className="appearance-swatch"
                         style={{ background: pack.swatches.background }}

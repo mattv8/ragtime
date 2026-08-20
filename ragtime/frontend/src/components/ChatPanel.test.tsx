@@ -234,9 +234,22 @@ function renderChatPanel(ui: ReactElement) {
   return render(<AvailableModelsProvider>{ui}</AvailableModelsProvider>);
 }
 
+function setChatLayoutCookie(userId: string, layout: Record<string, unknown>) {
+  document.cookie = `${encodeURIComponent(`chat_layout_${userId}`)}=${encodeURIComponent(JSON.stringify(layout))}; path=/`;
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  document.cookie
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .forEach((entry) => {
+      const separatorIndex = entry.indexOf('=');
+      const key = separatorIndex >= 0 ? entry.slice(0, separatorIndex) : entry;
+      document.cookie = `${key}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+    });
   window.HTMLElement.prototype.scrollIntoView = defaultPrototypeScrollIntoView;
   window.HTMLElement.prototype.scrollTo = defaultPrototypeScrollTo;
   window.requestAnimationFrame = originalRequestAnimationFrame;
@@ -1753,5 +1766,87 @@ describe('ChatPanel user message navigator integration', () => {
 
     expect(screen.queryByLabelText('User message navigation')).toBeNull();
     expect(chatMessageNavigatorMock.renderSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChatPanel resize and mobile sidebar integration', () => {
+  it('restores the messages region from the keyboard when the composer is maximized', async () => {
+    setChatLayoutCookie(currentUser.id, {
+      showSidebar: true,
+      sidebarWidth: 280,
+      inputAreaHeight: 160,
+      isInputAreaCollapsed: false,
+      isMessagesCollapsed: true,
+    });
+
+    const conversation = makeConversation('layout-restore-1', 'Assistant reply', {
+      workspace_id: 'ws-1',
+      active_task_id: null,
+    });
+
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+      />,
+    );
+
+    const separator = await screen.findByRole('separator', { name: 'Restore chat messages' });
+    expect(document.getElementById('chat-workbench-main')).toBeNull();
+
+    fireEvent.keyDown(separator, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('separator', { name: 'Resize chat messages and composer' }),
+      ).toBeDefined();
+      expect(document.getElementById('chat-workbench-main')).toBeTruthy();
+    });
+  });
+
+  it('exposes a stable mobile sidebar restore control and reopens the overlay sidebar', async () => {
+    const matchMediaSpy = vi.fn().mockImplementation(() => ({
+      matches: true,
+      media: '(max-width: 768px)',
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    window.matchMedia = matchMediaSpy;
+
+    const conversation = makeConversation('mobile-sidebar-1', 'Assistant reply', {
+      workspace_id: 'ws-1',
+      active_task_id: null,
+    });
+
+    renderChatPanel(
+      <ChatPanel
+        currentUser={{ ...currentUser, role: 'admin' }}
+        workspaceId="ws-1"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+      />,
+    );
+
+    const toggle = await screen.findByRole('button', { name: 'Open chat sidebar' });
+    expect(toggle.id).toBe('chat-mobile-sidebar-toggle');
+    expect(document.getElementById('chat-workbench-sidebar')).toBeNull();
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Close chat sidebar' })).toBeDefined();
+      expect(document.getElementById('chat-workbench-sidebar')).toBeTruthy();
+      expect(
+        document.getElementById('chat-mobile-sidebar-toggle')?.closest('.chat-sidebar'),
+      ).toBeNull();
+    });
   });
 });

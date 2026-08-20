@@ -1,11 +1,23 @@
-import { useCallback, useRef, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from 'lucide-react';
 
 interface ResizeHandleProps {
   /** 'horizontal' = dragging left/right, 'vertical' = dragging up/down */
   direction: 'horizontal' | 'vertical';
+  /** Accessible name for the separator */
+  ariaLabel: string;
+  /** Current pane size or split percentage */
+  value: number;
+  /** Minimum expanded size */
+  min: number;
+  /** Maximum expanded size */
+  max: number;
+  /** Unit for announcing the current value */
+  valueUnit: 'pixels' | 'percent';
   /** Called continuously during drag with the delta in px from drag start */
   onResize: (delta: number) => void;
+  /** Called for absolute moves such as Home, End, and collapse/restore */
+  onResizeTo: (value: number) => void;
   /** Optional className override */
   className?: string;
   /**
@@ -13,18 +25,27 @@ interface ResizeHandleProps {
    * 'before' = the pane before (left/top), 'after' = the pane after (right/bottom), undefined = nothing collapsed.
    */
   collapsed?: 'before' | 'after';
-  /** Called when the user activates the collapsed handle to restore a pane */
-  onExpand?: () => void;
+  /** Optional collapse/restore support for Enter and pointer restore */
+  collapsible?: {
+    side: 'before' | 'after';
+    restoreValue: number;
+  };
   /** Called when a drag gesture ends or collapsed handle is activated */
   onResizeEnd?: () => void;
 }
 
 export function ResizeHandle({
   direction,
+  ariaLabel,
+  value,
+  min,
+  max,
+  valueUnit,
   onResize,
+  onResizeTo,
   className,
   collapsed,
-  onExpand,
+  collapsible,
   onResizeEnd,
 }: ResizeHandleProps) {
   const startPos = useRef(0);
@@ -74,16 +95,17 @@ export function ResizeHandle({
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
+      e.stopPropagation();
+      if (collapsed && collapsible) {
+        onResizeTo(collapsible.restoreValue);
+      }
       e.currentTarget.setPointerCapture(e.pointerId);
       startPos.current = direction === 'horizontal' ? e.clientX : e.clientY;
       document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
       document.body.style.userSelect = 'none';
       isDragging.current = true;
-      if (collapsed) {
-        onExpand?.();
-      }
     },
-    [collapsed, direction, onExpand],
+    [collapsed, collapsible, direction, onResizeTo],
   );
 
   const handlePointerMove = useCallback(
@@ -125,22 +147,83 @@ export function ResizeHandle({
   );
 
   const cls = className ?? `resize-handle resize-handle-${direction}`;
+  const isCollapsed = Boolean(collapsed);
+  const separatorOrientation = direction === 'horizontal' ? 'vertical' : 'horizontal';
+  const ariaValueNow = isCollapsed ? 0 : value;
+  const roundedValue = Math.round(value);
+  const ariaValueText = isCollapsed
+    ? 'Collapsed'
+    : valueUnit === 'percent'
+      ? `${roundedValue}%`
+      : `${roundedValue} pixels`;
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      let handled = false;
+      const step = event.shiftKey ? 32 : 8;
+
+      if (direction === 'horizontal') {
+        if (event.key === 'ArrowLeft') {
+          onResize(-step);
+          handled = true;
+        } else if (event.key === 'ArrowRight') {
+          onResize(step);
+          handled = true;
+        }
+      } else if (event.key === 'ArrowUp') {
+        onResize(-step);
+        handled = true;
+      } else if (event.key === 'ArrowDown') {
+        onResize(step);
+        handled = true;
+      }
+
+      if (!handled && event.key === 'Home') {
+        onResizeTo(min);
+        handled = true;
+      } else if (!handled && event.key === 'End') {
+        onResizeTo(max);
+        handled = true;
+      } else if (!handled && event.key === 'Enter' && collapsible) {
+        onResizeTo(isCollapsed ? collapsible.restoreValue : 0);
+        handled = true;
+      }
+
+      if (!handled) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onResizeEnd?.();
+    },
+    [collapsible, direction, isCollapsed, max, min, onResize, onResizeEnd, onResizeTo],
+  );
+
   let CollapsedIcon: typeof ChevronLeft | null = null;
-  if (collapsed && direction === 'horizontal') {
+  if (isCollapsed && direction === 'horizontal') {
     CollapsedIcon = collapsed === 'before' ? ChevronRight : ChevronLeft;
-  } else if (collapsed) {
+  } else if (isCollapsed) {
     CollapsedIcon = collapsed === 'before' ? ChevronDown : ChevronUp;
   }
 
   return (
     <div
-      className={collapsed ? `${cls} resize-handle-collapsed` : cls}
+      className={isCollapsed ? `${cls} resize-handle-collapsed` : cls}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={finishPointerDrag}
       onPointerCancel={finishPointerDrag}
-      title={collapsed ? 'Drag or click to expand pane' : undefined}
+      onKeyDown={handleKeyDown}
+      role="separator"
+      aria-label={ariaLabel}
+      aria-orientation={separatorOrientation}
+      aria-valuemin={min}
+      aria-valuemax={max}
+      aria-valuenow={ariaValueNow}
+      aria-valuetext={ariaValueText}
+      tabIndex={0}
+      title={isCollapsed ? 'Drag, click, or press Enter to restore pane' : undefined}
       style={{ touchAction: 'none' }}
+      data-value-unit={valueUnit}
+      data-collapsed-side={collapsed}
     >
       {CollapsedIcon && <CollapsedIcon size={14} className="resize-handle-chevron" />}
     </div>

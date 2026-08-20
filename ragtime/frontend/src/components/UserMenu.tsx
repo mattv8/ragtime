@@ -4,6 +4,7 @@ import { User, ChevronDown, LogOut, Moon, Sun, Monitor, Palette, Shield } from '
 import type { User as UserType } from '@/types';
 import { api } from '@/api';
 import { Manage2FAModal } from './Manage2FAModal';
+import { ThemeChromeIcon } from '@/components/shared/ThemeChromeIcon';
 import {
   THEME_PACKS,
   type ThemePackId,
@@ -133,27 +134,36 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
   };
 
   return (
-    <div className="user-menu" ref={menuRef}>
+    <div className="user-menu" ref={menuRef} data-workbench-boundary="user-menu">
       <button
+        type="button"
         className="user-menu-trigger"
         onClick={() => setIsOpen(!isOpen)}
         aria-expanded={isOpen}
         aria-haspopup="true"
+        aria-controls="user-menu-dropdown"
       >
         <span className="user-menu-avatar">
           <User size={16} />
         </span>
         <span className="user-menu-name">{user.display_name || user.username}</span>
         {isAdmin && <span className="admin-badge">Admin</span>}
-        <ChevronDown size={14} className={`user-menu-chevron ${isOpen ? 'rotated' : ''}`} />
+        <ThemeChromeIcon
+          className={`user-menu-chevron ${isOpen ? 'rotated' : ''}`}
+          fallback={<ChevronDown size={14} />}
+          codicon="chevron-down"
+          size={14}
+        />
       </button>
 
       {isOpen &&
         dropdownPosition &&
         createPortal(
           <div
+            id="user-menu-dropdown"
             ref={dropdownRef}
             className="user-menu-dropdown"
+            data-workbench-surface="user-menu-dropdown"
             style={{ position: 'fixed', top: dropdownPosition.top, right: dropdownPosition.right }}
           >
             <div className="user-menu-header">

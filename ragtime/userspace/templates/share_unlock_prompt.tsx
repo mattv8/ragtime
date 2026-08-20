@@ -4,20 +4,39 @@ export default String.raw`<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Shared Workspace</title>
-  <style>
-    body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-    form { width: min(92vw, 360px); padding: 20px; border: 1px solid #334155; border-radius: 12px; background: #111827; }
-    h1 { font-size: 18px; margin: 0 0 10px 0; }
-    .subtitle { margin: 0 0 6px 0; color: #e2e8f0; font-size: 15px; font-weight: 600; }
-    .owner { margin: 0 0 14px 0; color: #94a3b8; font-size: 13px; }
-    .error { color: #fca5a5; margin: 0 0 12px 0; font-size: 14px; }
-    label { display: block; margin-bottom: 8px; font-size: 13px; }
-    input[type="password"] { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid #334155; background: #0b1220; color: #e2e8f0; }
-    button { margin-top: 12px; width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #334155; background: #1d4ed8; color: #fff; cursor: pointer; }
-  </style>
+  <script>
+    (() => {
+      const allowedThemePacks = ['default', 'vscode', 'serif'];
+      const injectedDefaultThemePack = __RAGTIME_DEFAULT_THEME_PACK_JSON__;
+      const root = document.documentElement;
+      const readValidThemePack = (value) => allowedThemePacks.includes(value) ? value : null;
+      const readValidColorMode = (value) => value === 'light' || value === 'dark' ? value : null;
+      let storedThemePack = null;
+      let storedColorMode = null;
+      try {
+        storedThemePack = readValidThemePack(localStorage.getItem("ragtime-theme-pack"));
+        storedColorMode = readValidColorMode(localStorage.getItem("ragtime-theme"));
+      } catch {
+        storedThemePack = null;
+        storedColorMode = null;
+      }
+      const resolvedThemePack = storedThemePack || readValidThemePack(injectedDefaultThemePack) || 'default';
+      if (resolvedThemePack === 'default') {
+        root.removeAttribute('data-theme-pack');
+      } else {
+        root.setAttribute('data-theme-pack', resolvedThemePack);
+      }
+      if (storedColorMode) {
+        root.setAttribute('data-theme', storedColorMode);
+      } else {
+        root.removeAttribute('data-theme');
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="/assets/share-theme.css">
 </head>
-<body>
-  <form method="post" action="__RAGTIME_FORM_ACTION__">
+<body id="share-unlock-page">
+  <form id="share-unlock-form" method="post" action="__RAGTIME_FORM_ACTION__">
     <h1>__RAGTIME_TITLE__</h1>
     __RAGTIME_SUBTITLE_BLOCK__
     __RAGTIME_OWNER_BLOCK__

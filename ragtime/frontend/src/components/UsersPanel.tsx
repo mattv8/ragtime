@@ -45,6 +45,7 @@ import {
   parseStoredModelIdentifier,
 } from '@/utils/contextUsage';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
+import { subscribeToThemeChanges } from '@/theme';
 
 ChartJS.register(
   CategoryScale,
@@ -76,18 +77,8 @@ function useThemeColors() {
   const [colors, setColors] = useState(read);
 
   useEffect(() => {
-    const observer = new MutationObserver(() => setColors(read()));
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['data-theme', 'data-theme-pack'],
-    });
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = () => setColors(read());
-    mq.addEventListener('change', handler);
-    return () => {
-      observer.disconnect();
-      mq.removeEventListener('change', handler);
-    };
+    const handleThemeChange = () => setColors(read());
+    return subscribeToThemeChanges(handleThemeChange);
   }, [read]);
 
   return colors;
@@ -2398,7 +2389,7 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   }, [mcpUsersPage, mcpUsersPaging.safePage]);
 
   return (
-    <div className="users-panel">
+    <div id="users-admin-panel" className="users-panel" data-workbench-boundary="users-panel">
       <div className="users-header-bar">
         <div className="tabs" style={{ marginBottom: 0 }}>
           <button

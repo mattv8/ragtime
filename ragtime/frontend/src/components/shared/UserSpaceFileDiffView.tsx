@@ -9,6 +9,12 @@ import {
 import { StateField, type Extension } from '@codemirror/state';
 import { diffLines } from 'diff';
 import type { UserSpaceSnapshotFileDiff } from '@/types';
+import {
+  createCodeMirrorThemeCompartment,
+  createCodeMirrorThemeExtension,
+  reconfigureCodeMirrorTheme,
+} from '@/theme/codemirrorTheme';
+import { getThemeSnapshot, subscribeToThemeChanges } from '@/theme/themeSnapshot';
 import { useCodeMirrorLanguageExtension } from '@/utils/codemirrorLanguage';
 
 type DiffSourceLineNumber = number | null;
@@ -344,8 +350,26 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
 }: UserSpaceFileDiffViewProps) {
   const beforeWrapRef = useRef<HTMLDivElement | null>(null);
   const afterWrapRef = useRef<HTMLDivElement | null>(null);
+  const singleViewRef = useRef<EditorView | null>(null);
+  const beforeViewRef = useRef<EditorView | null>(null);
+  const afterViewRef = useRef<EditorView | null>(null);
   const scrollSyncingRef = useRef(false);
   const languageExtension = useCodeMirrorLanguageExtension(diff.path ?? '');
+  const singleThemeCompartment = useMemo(() => createCodeMirrorThemeCompartment(), []);
+  const beforeThemeCompartment = useMemo(() => createCodeMirrorThemeCompartment(), []);
+  const afterThemeCompartment = useMemo(() => createCodeMirrorThemeCompartment(), []);
+  const singleThemeExtension = useMemo(
+    () => singleThemeCompartment.of(createCodeMirrorThemeExtension(getThemeSnapshot())),
+    [singleThemeCompartment],
+  );
+  const beforeThemeExtension = useMemo(
+    () => beforeThemeCompartment.of(createCodeMirrorThemeExtension(getThemeSnapshot())),
+    [beforeThemeCompartment],
+  );
+  const afterThemeExtension = useMemo(
+    () => afterThemeCompartment.of(createCodeMirrorThemeExtension(getThemeSnapshot())),
+    [afterThemeCompartment],
+  );
 
   const languageExtensions = useMemo(() => {
     return languageExtension ? [languageExtension] : [];
@@ -367,8 +391,12 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
 
   const beforeExtensions = useMemo(() => {
     const exts: Extension[] = alignedDiff
-      ? [buildDiffLineNumberExtension(alignedDiff.beforeLineNumbers), ...languageExtensions]
-      : [...languageExtensions];
+      ? [
+          beforeThemeExtension,
+          buildDiffLineNumberExtension(alignedDiff.beforeLineNumbers),
+          ...languageExtensions,
+        ]
+      : [beforeThemeExtension, ...languageExtensions];
     if (alignedDiff) {
       if (alignedDiff.beforeDeletedLines.size > 0) {
         exts.push(buildDiffHighlightExtension(alignedDiff.beforeDeletedLines, diffLineDeletedMark));
@@ -381,12 +409,16 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
       }
     }
     return exts;
-  }, [languageExtensions, alignedDiff]);
+  }, [alignedDiff, beforeThemeExtension, languageExtensions]);
 
   const afterExtensions = useMemo(() => {
     const exts: Extension[] = alignedDiff
-      ? [buildDiffLineNumberExtension(alignedDiff.afterLineNumbers), ...languageExtensions]
-      : [...languageExtensions];
+      ? [
+          afterThemeExtension,
+          buildDiffLineNumberExtension(alignedDiff.afterLineNumbers),
+          ...languageExtensions,
+        ]
+      : [afterThemeExtension, ...languageExtensions];
     if (alignedDiff) {
       if (alignedDiff.afterAddedLines.size > 0) {
         exts.push(buildDiffHighlightExtension(alignedDiff.afterAddedLines, diffLineAddedMark));
@@ -399,7 +431,19 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
       }
     }
     return exts;
-  }, [languageExtensions, alignedDiff]);
+  }, [afterThemeExtension, alignedDiff, languageExtensions]);
+
+  useEffect(() => {
+    const syncTheme = () => {
+      const snapshot = getThemeSnapshot();
+      reconfigureCodeMirrorTheme(singleViewRef.current, singleThemeCompartment, snapshot);
+      reconfigureCodeMirrorTheme(beforeViewRef.current, beforeThemeCompartment, snapshot);
+      reconfigureCodeMirrorTheme(afterViewRef.current, afterThemeCompartment, snapshot);
+    };
+
+    syncTheme();
+    return subscribeToThemeChanges(syncTheme);
+  }, [afterThemeCompartment, beforeThemeCompartment, singleThemeCompartment]);
 
   useEffect(() => {
     if (!syncScroll || !alignedDiff) return;
@@ -484,7 +528,11 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
       ? isPureAdd
         ? afterExtensions
         : beforeExtensions
-      : [buildDiffLineNumberExtension(singleLineNumbers), ...languageExtensions];
+      : [
+          singleThemeExtension,
+          buildDiffLineNumberExtension(singleLineNumbers),
+          ...languageExtensions,
+        ];
 
     const autoFitHeight = maxLines ? computeAutoFitHeight(singleContent, maxLines) : '100%';
     const wrapStyle = maxLines ? { minHeight: 0, height: autoFitHeight } : undefined;
@@ -507,6 +555,10 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
               editable={false}
               extensions={singleExtensions}
               height={autoFitHeight}
+              onCreateEditor={(view) => {
+                singleViewRef.current = view;
+                reconfigureCodeMirrorTheme(view, singleThemeCompartment, getThemeSnapshot());
+              }}
             />
           </div>
         </div>
@@ -546,6 +598,10 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
             editable={false}
             extensions={beforeExtensions}
             height={dualAutoFitHeight}
+            onCreateEditor={(view) => {
+              beforeViewRef.current = view;
+              reconfigureCodeMirrorTheme(view, beforeThemeCompartment, getThemeSnapshot());
+            }}
           />
         </div>
       </div>
@@ -565,6 +621,10 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
             editable={false}
             extensions={afterExtensions}
             height={dualAutoFitHeight}
+            onCreateEditor={(view) => {
+              afterViewRef.current = view;
+              reconfigureCodeMirrorTheme(view, afterThemeCompartment, getThemeSnapshot());
+            }}
           />
         </div>
       </div>

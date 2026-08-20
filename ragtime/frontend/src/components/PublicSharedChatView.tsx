@@ -419,14 +419,20 @@ function SharedChatSurface({
     });
   }, []);
 
+  const handleResizeInputAreaTo = useCallback((nextValue: number) => {
+    setInputAreaHeight(
+      Math.min(SHARED_CHAT_MAX_INPUT_HEIGHT, Math.max(SHARED_CHAT_MIN_INPUT_HEIGHT, nextValue)),
+    );
+  }, []);
+
   const showLoginModal = showLogin && !currentUser && Boolean(authStatus);
 
   return (
-    <div className="app-shell app-shell-locked">
+    <div id="public-shared-chat-view" className="app-shell app-shell-locked chat-workbench-shell">
       <div
         className={showLoginModal ? 'shared-blur-host shared-blur-host-active' : 'shared-blur-host'}
       >
-        <nav className="topnav">
+        <nav className="topnav chat-workbench-topnav">
           <span className="topnav-brand">
             <BrandName name={serverName} />
           </span>
@@ -465,7 +471,7 @@ function SharedChatSurface({
         </nav>
 
         <div className="container chat-page-container">
-          <div className="chat-panel chat-panel-shared">
+          <div id="public-shared-chat-panel" className="chat-panel chat-panel-shared">
             <div className="chat-main">
               <div className="chat-header chat-header-shared">
                 <div className="chat-header-info">
@@ -763,12 +769,21 @@ function SharedChatSurface({
 
               {!loading && !passwordRequired && conversation && canEdit && (
                 <>
+                  {/* Shared chat keeps a bounded composer resize only: this surface never exposes
+                      a collapsible pane state, so there is no collapsed restore contract here. */}
                   <ResizeHandle
                     direction="vertical"
                     className="resize-handle resize-handle-vertical chat-resize-handle"
+                    ariaLabel="Resize shared chat input area"
+                    value={inputAreaHeight}
+                    min={SHARED_CHAT_MIN_INPUT_HEIGHT}
+                    max={SHARED_CHAT_MAX_INPUT_HEIGHT}
+                    valueUnit="pixels"
                     onResize={handleResizeInputArea}
+                    onResizeTo={handleResizeInputAreaTo}
                   />
                   <div
+                    id="public-shared-chat-composer"
                     className="chat-input-area manual-resize"
                     style={{ height: `${inputAreaHeight}px`, minHeight: `${inputAreaHeight}px` }}
                   >

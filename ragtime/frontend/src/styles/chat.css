@@ -581,9 +581,6 @@ textarea.chat-title-input {
   min-height: 0;
   overflow: hidden;
 }
-.chat-resize-handle {
-  align-self: stretch;
-}
 .chat-header {
   display: flex;
   justify-content: space-between;
@@ -5221,23 +5218,6 @@ mark.chat-in-chat-search-match.chat-in-chat-search-match-active {
   max-width: 520px;
   min-height: var(--chat-in-chat-search-inline-height, 30px);
   transition: width 140ms ease;
-}
-.chat-in-chat-search-resize-handle {
-  position: absolute;
-  right: 0px;
-  bottom: 0px;
-  width: 0;
-  height: 0;
-  border-style: solid;
-  border-width: 0 0 10px 10px;
-  border-color: transparent transparent color-mix(in srgb, var(--color-text-muted) 65%, transparent)
-    transparent;
-  cursor: nwse-resize;
-  opacity: 0.9;
-  z-index: 3;
-}
-.chat-in-chat-search-resize-handle:hover {
-  border-color: transparent transparent var(--color-text-primary) transparent;
 }
 .chat-in-chat-search-floating {
   display: flex;

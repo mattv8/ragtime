@@ -1,0 +1,49 @@
+Ragtime Frontend Third-Party Notices
+====================================
+
+This build bundles the local font and icon assets listed below.
+
+1. Nunito
+   - Package: @fontsource/nunito 5.3.0
+   - Source: https://fontsource.org/fonts/nunito
+   - Upstream repository: https://github.com/fontsource/font-files/tree/main/fonts/google/nunito
+   - Copyright: Google Inc.
+   - License: SIL Open Font License 1.1
+
+2. Source Serif 4
+   - Package: @fontsource/source-serif-4 5.3.0
+   - Source: https://fontsource.org/fonts/source-serif-4
+   - Upstream repository: https://github.com/fontsource/font-files/tree/main/fonts/adobe/source-serif-4
+   - Copyright: Adobe Systems Incorporated
+   - License: SIL Open Font License 1.1
+
+3. JetBrains Mono
+   - Package: @fontsource/jetbrains-mono 5.3.0
+   - Source: https://fontsource.org/fonts/jetbrains-mono
+   - Upstream repository: https://github.com/fontsource/font-files/tree/main/fonts/jetbrains-mono/jetbrains-mono
+   - Copyright: JetBrains s.r.o.
+   - License: SIL Open Font License 1.1
+
+4. Fira Code
+   - Package: @fontsource/fira-code 5.3.0
+   - Source: https://fontsource.org/fonts/fira-code
+   - Upstream repository: https://github.com/fontsource/font-files/tree/main/fonts/tonsky/fira-code
+   - Copyright: Nikita Prokopov
+   - License: SIL Open Font License 1.1
+
+5. Droid Sans
+   - Files: public/fonts/DroidSans.ttf, public/fonts/DroidSans-Bold.ttf
+   - Source archive: https://android.googlesource.com/platform/frameworks/base/+/android-4.4_r1/data/fonts/
+   - Exact source files:
+     - https://android.googlesource.com/platform/frameworks/base/+/android-4.4_r1/data/fonts/DroidSans.ttf
+     - https://android.googlesource.com/platform/frameworks/base/+/android-4.4_r1/data/fonts/DroidSans-Bold.ttf
+   - Copyright: The Android Open Source Project
+   - License: Apache License 2.0
+
+6. Codicons
+   - Package: @vscode/codicons 0.0.46-24 (fontVersion 1.15)
+   - Source: https://github.com/microsoft/vscode-codicons
+   - Font asset: @vscode/codicons/dist/codicon.ttf
+   - Copyright: Microsoft Corporation
+   - Font license: Creative Commons Attribution 4.0 International (CC BY 4.0)
+   - Package/source code notice: the distributed CSS and supporting package code include Microsoft MIT-licensed source headers; see the upstream repository for the corresponding MIT source license text.

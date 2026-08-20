@@ -263,18 +263,41 @@ print_banner() {
     fi
 }
 
+frontend_lock_checksum() {
+    local lock_file=$1
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$lock_file" | awk '{print $1}'
+        return 0
+    fi
+
+    shasum -a 256 "$lock_file" | awk '{print $1}'
+}
+
+sync_frontend_dependencies() {
+    local frontend_dir=${1:-/ragtime/ragtime/frontend}
+    local lock_file="$frontend_dir/package-lock.json"
+    local node_bin_dir="$frontend_dir/node_modules/.bin"
+    local stamp_path="$frontend_dir/node_modules/.package-lock.sha256"
+    local current_checksum
+    current_checksum="$(frontend_lock_checksum "$lock_file")"
+
+    if [ ! -d "$node_bin_dir" ] || [ ! -f "$stamp_path" ] || [ "$(cat "$stamp_path")" != "$current_checksum" ]; then
+        log "INFO" "Installing frontend dependencies..."
+        (cd "$frontend_dir" && npm ci --loglevel=error)
+        mkdir -p "$(dirname "$stamp_path")"
+        printf '%s\n' "$current_checksum" > "$stamp_path"
+    fi
+}
+
 # Start services based on mode
 if [ "$DEBUG_MODE" = "true" ]; then
     # Development mode with hot-reload
     # Start uvicorn (Python backend) on PORT (8000)
     # Start Vite (UI) on API_PORT (8001)
 
-    # Install frontend dependencies if missing (node_modules is a named volume)
-    if [ ! -d "/ragtime/ragtime/frontend/node_modules/.bin" ]; then
-        log "INFO" "Installing frontend dependencies..."
-        cd /ragtime/ragtime/frontend
-        npm ci --loglevel=error
-    fi
+    # Install frontend dependencies when the named volume is missing or stale.
+    sync_frontend_dependencies "/ragtime/ragtime/frontend"
 
     cd /ragtime
 

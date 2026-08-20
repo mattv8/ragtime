@@ -1,0 +1,45 @@
+@import '@vscode/codicons/dist/codicon.css';
+
+@font-face {
+  font-family: 'codicon';
+  font-display: swap;
+  src: url('@vscode/codicons/dist/codicon.ttf') format('truetype');
+}
+
+.theme-chrome-icon {
+  --theme-chrome-icon-size: 1em;
+  display: inline-grid;
+  place-items: center;
+  inline-size: var(--theme-chrome-icon-size);
+  block-size: var(--theme-chrome-icon-size);
+  flex: 0 0 auto;
+}
+
+.theme-chrome-icon-fallback,
+.theme-chrome-icon-codicon {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+.theme-chrome-icon-fallback > * {
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+.theme-chrome-icon-codicon {
+  display: none;
+  font-size: var(--theme-chrome-icon-size);
+  line-height: 1;
+}
+
+[data-theme-pack='vscode'] .theme-chrome-icon-fallback {
+  display: none;
+}
+
+[data-theme-pack='vscode'] .theme-chrome-icon-codicon {
+  display: inline-flex;
+}

@@ -38,6 +38,28 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     chunkSizeWarningLimit: 3500,
+    rollupOptions: {
+      input: {
+        app: resolve(__dirname, 'index.html'),
+        'share-theme': resolve(__dirname, 'src/styles/share-theme-entry.css'),
+      },
+      output: {
+        assetFileNames: (assetInfo) => {
+          const names = [
+            ...(assetInfo.names ?? []),
+            ...((assetInfo.originalFileNames as string[] | undefined) ?? []),
+          ];
+          if (
+            names.some(
+              (name) => name.endsWith('share-theme.css') || name.endsWith('share-theme-entry.css'),
+            )
+          ) {
+            return 'assets/share-theme.css';
+          }
+          return 'assets/[name]-[hash][extname]';
+        },
+      },
+    },
   },
   server: {
     host: '0.0.0.0',

@@ -191,6 +191,14 @@ import {
   type UserSpaceStatusOverlayTone,
 } from './UserSpaceStatusOverlay';
 import { useWorkspaceScmWizardActivity, WorkspaceScmWizard } from './WorkspaceScmWizard';
+import { ThemeChromeIcon } from './shared/ThemeChromeIcon';
+import {
+  createCodeMirrorThemeCompartment,
+  createCodeMirrorThemeExtension,
+  reconfigureCodeMirrorTheme,
+} from '@/theme/codemirrorTheme';
+import { getThemeSnapshot, subscribeToThemeChanges } from '@/theme/themeSnapshot';
+import { applyTerminalTheme, readTerminalTheme } from '@/theme/terminalTheme';
 
 interface UserSpacePanelProps {
   currentUser: User;
@@ -831,6 +839,16 @@ function readStoredUserSpaceFullscreen(cookieName: string): boolean {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+export function resolveAbsolutePaneFraction(
+  nextPercent: number,
+  collapseSide: 'before' | 'after' = 'after',
+): number {
+  if (nextPercent <= 0) {
+    return collapseSide === 'before' ? 0 : 1;
+  }
+  return Math.min(0.9, Math.max(0.1, nextPercent / 100));
 }
 
 function extractApiErrorDetail(payload: string): string | null {
@@ -1561,6 +1579,25 @@ export function UserSpacePanel({
     }
   }, []);
 
+  const handleResizeSidebarTo = useCallback((nextValue: number) => {
+    const next = nextValue <= 0 ? 0 : Math.min(400, Math.max(60, nextValue));
+
+    if (next === 0 && sidebarWidthLiveRef.current >= SIDEBAR_COLLAPSE_THRESHOLD) {
+      prevSidebarWidth.current = sidebarWidthLiveRef.current;
+    }
+
+    sidebarWidthLiveRef.current = next;
+    const el = fileSidebarRef.current;
+    if (el) {
+      if (next === 0) {
+        el.style.display = 'none';
+      } else {
+        el.style.display = '';
+        el.style.width = `${next}px`;
+      }
+    }
+  }, []);
+
   // Commit final width to React state (triggers one re-render + persist).
   const commitSidebarWidth = useCallback(() => {
     const width = sidebarWidthLiveRef.current;
@@ -1604,6 +1641,21 @@ export function UserSpacePanel({
     if (next === 1 && rightPaneRef.current) rightPaneRef.current.style.display = 'none';
     else if (rightPaneRef.current) rightPaneRef.current.style.display = '';
   }, []);
+
+  const handleResizeMainSplitTo = useCallback(
+    (nextPercent: number, collapseSide: 'before' | 'after' = 'after') => {
+      const el = contentRef.current;
+      if (!el) return;
+
+      const next = resolveAbsolutePaneFraction(nextPercent, collapseSide);
+      leftPaneFractionLiveRef.current = next;
+      el.style.gridTemplateColumns = `minmax(0, ${next}fr) 4px minmax(0, ${1 - next}fr)`;
+
+      if (leftPaneRef.current) leftPaneRef.current.style.display = '';
+      if (rightPaneRef.current) rightPaneRef.current.style.display = next === 1 ? 'none' : '';
+    },
+    [],
+  );
 
   const commitMainSplitFraction = useCallback(() => {
     const fraction = leftPaneFractionLiveRef.current;
@@ -1670,6 +1722,25 @@ export function UserSpacePanel({
     }
   }, []);
 
+  const handleResizeEditorChatTo = useCallback(
+    (nextPercent: number, collapseSide: 'before' | 'after' = 'after') => {
+      const next = resolveAbsolutePaneFraction(nextPercent, collapseSide);
+      editorFractionLiveRef.current = next;
+
+      const editorEl = editorSectionRef.current;
+      const chatEl = chatSectionRef.current;
+      if (editorEl) {
+        editorEl.style.display = '';
+        editorEl.style.flex = String(next);
+      }
+      if (chatEl) {
+        chatEl.style.display = next === 1 ? 'none' : '';
+        chatEl.style.flex = String(1 - next);
+      }
+    },
+    [],
+  );
+
   const commitEditorChatFraction = useCallback(() => {
     const fraction = editorFractionLiveRef.current;
     if (fraction === 0) {
@@ -1682,47 +1753,14 @@ export function UserSpacePanel({
     }
   }, []);
 
-  const expandSidebar = useCallback(() => {
-    const width = prevSidebarWidth.current || 180;
-    sidebarWidthLiveRef.current = width;
-    const el = fileSidebarRef.current;
-    if (el) el.style.width = `${width}px`;
-    setSidebarCollapsed(false);
-    setSidebarWidth(width);
-  }, []);
-
-  const expandLeftPane = useCallback(() => {
-    const fraction = prevLeftPaneFraction.current || 0.5;
-    leftPaneFractionLiveRef.current = fraction;
-    const root = contentRef.current;
-    if (root)
-      root.style.gridTemplateColumns = `minmax(0, ${fraction}fr) 4px minmax(0, ${1 - fraction}fr)`;
-    if (leftPaneRef.current) leftPaneRef.current.style.display = '';
-    setLeftPaneCollapsed(false);
-    setLeftPaneFraction(fraction);
-  }, []);
-
-  const expandRightPane = useCallback(() => {
-    const fraction = prevLeftPaneFraction.current || 0.5;
-    leftPaneFractionLiveRef.current = fraction;
-    const root = contentRef.current;
-    if (root)
-      root.style.gridTemplateColumns = `minmax(0, ${fraction}fr) 4px minmax(0, ${1 - fraction}fr)`;
-    if (rightPaneRef.current) rightPaneRef.current.style.display = '';
-    setRightPaneCollapsed(false);
-    setLeftPaneFraction(fraction);
-  }, []);
-
   const expandChat = useCallback(() => {
-    const fraction = Math.min(0.9, Math.max(0.1, prevEditorFraction.current || 0.6));
-    editorFractionLiveRef.current = fraction;
-    const editorEl = editorSectionRef.current;
-    const chatEl = chatSectionRef.current;
-    if (editorEl) editorEl.style.flex = String(fraction);
-    if (chatEl) chatEl.style.flex = String(1 - fraction);
+    const restorePercent = Math.round(
+      Math.min(0.9, Math.max(0.1, prevEditorFraction.current || 0.6)) * 100,
+    );
+    handleResizeEditorChatTo(restorePercent);
     setEditorChatCollapsedSide(null);
-    setEditorFraction(fraction);
-  }, []);
+    setEditorFraction(restorePercent / 100);
+  }, [handleResizeEditorChatTo]);
 
   const isCodeEditorFocused = useCallback(() => {
     const activeElement = document.activeElement;
@@ -2254,6 +2292,11 @@ export function UserSpacePanel({
 
   const snapshotUiLocked = navigatingSnapshots || restoringSnapshotId !== null;
   const codeMirrorLanguageExtension = useCodeMirrorLanguageExtension(selectedFilePath);
+  const codeMirrorThemeCompartment = useMemo(() => createCodeMirrorThemeCompartment(), []);
+  const initialCodeMirrorThemeExtension = useMemo(
+    () => codeMirrorThemeCompartment.of(createCodeMirrorThemeExtension(getThemeSnapshot())),
+    [codeMirrorThemeCompartment],
+  );
 
   const handleCodeMirrorSelectionUpdate = useCallback(
     (update: ViewUpdate) => {
@@ -2312,6 +2355,7 @@ export function UserSpacePanel({
 
   const codeMirrorExtensions = useMemo(() => {
     const extensions: Extension[] = [
+      initialCodeMirrorThemeExtension,
       contextLineHighlightField,
       EditorView.updateListener.of(handleCodeMirrorSelectionUpdate),
       keymap.of([
@@ -2326,7 +2370,18 @@ export function UserSpacePanel({
       extensions.unshift(codeMirrorLanguageExtension);
     }
     return extensions;
-  }, [codeMirrorLanguageExtension, handleCodeMirrorSelectionUpdate]);
+  }, [
+    codeMirrorLanguageExtension,
+    handleCodeMirrorSelectionUpdate,
+    initialCodeMirrorThemeExtension,
+  ]);
+
+  const applyEditorTheme = useCallback(
+    (view: EditorView | null) => {
+      reconfigureCodeMirrorTheme(view, codeMirrorThemeCompartment, getThemeSnapshot());
+    },
+    [codeMirrorThemeCompartment],
+  );
 
   useEffect(
     () => () => {
@@ -2336,6 +2391,19 @@ export function UserSpacePanel({
     },
     [],
   );
+
+  useEffect(() => {
+    const syncTheme = () => {
+      const snapshot = getThemeSnapshot();
+      reconfigureCodeMirrorTheme(codeMirrorViewRef.current, codeMirrorThemeCompartment, snapshot);
+      if (terminalRef.current) {
+        applyTerminalTheme(terminalRef.current, readTerminalTheme(snapshot));
+      }
+    };
+
+    syncTheme();
+    return subscribeToThemeChanges(syncTheme);
+  }, [codeMirrorThemeCompartment]);
 
   const selectedFileDisplayName = useMemo(() => {
     const parts = selectedFilePath.split('/').filter(Boolean);
@@ -5637,13 +5705,14 @@ export function UserSpacePanel({
 
     const fitAddon = new FitAddon();
     const isReadOnlyInitial = !canEditWorkspace;
+    const initialTerminalTheme = readTerminalTheme(getThemeSnapshot());
     const terminal = new XTerm({
       convertEol: true,
       cursorBlink: !isReadOnlyInitial,
       disableStdin: isReadOnlyInitial,
-      fontFamily:
-        'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)',
+      fontFamily: initialTerminalTheme.fontFamily,
       fontSize: 12,
+      theme: initialTerminalTheme.theme,
     });
     terminal.loadAddon(fitAddon);
     terminal.open(terminalContainer);
@@ -8114,7 +8183,19 @@ export function UserSpacePanel({
                   style={indentStyle}
                 >
                   <span className="userspace-tree-chevron" aria-hidden="true">
-                    {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    {isExpanded ? (
+                      <ThemeChromeIcon
+                        fallback={<ChevronDown size={12} />}
+                        codicon="chevron-down"
+                        size={12}
+                      />
+                    ) : (
+                      <ThemeChromeIcon
+                        fallback={<ChevronRight size={12} />}
+                        codicon="chevron-right"
+                        size={12}
+                      />
+                    )}
                   </span>
                   <span
                     className={`userspace-folder-label${isMount ? ' userspace-tree-mount-label' : ''}`}
@@ -9161,7 +9242,12 @@ export function UserSpacePanel({
                 role="tab"
                 aria-selected={activeRightTab === 'console'}
               >
-                <Terminal size={13} /> Console
+                <ThemeChromeIcon
+                  fallback={<Terminal size={13} />}
+                  codicon="terminal-bash"
+                  size={13}
+                />
+                Console
               </button>
             </div>
           )}
@@ -9322,7 +9408,8 @@ export function UserSpacePanel({
               >
                 <div className="userspace-file-sidebar-header">
                   <h4>
-                    <File size={14} /> Files
+                    <ThemeChromeIcon fallback={<File size={14} />} codicon="files" size={14} />
+                    Files
                   </h4>
                 </div>
                 <div className="userspace-file-list">
@@ -9386,10 +9473,19 @@ export function UserSpacePanel({
 
             <ResizeHandle
               direction="horizontal"
+              ariaLabel="Resize workspace file sidebar"
+              value={sidebarCollapsed ? 0 : sidebarWidth}
+              min={60}
+              max={400}
+              valueUnit="pixels"
               onResize={handleResizeSidebar}
+              onResizeTo={handleResizeSidebarTo}
               onResizeEnd={commitSidebarWidth}
               collapsed={sidebarCollapsed ? 'before' : undefined}
-              onExpand={expandSidebar}
+              collapsible={{
+                side: 'before',
+                restoreValue: Math.min(400, Math.max(60, prevSidebarWidth.current || 180)),
+              }}
             />
 
             {/* Code editor */}
@@ -9413,6 +9509,7 @@ export function UserSpacePanel({
                   value={fileContent}
                   onCreateEditor={(view) => {
                     codeMirrorViewRef.current = view;
+                    applyEditorTheme(view);
                   }}
                   onChange={(value) => {
                     setFileContent(value);
@@ -9442,14 +9539,6 @@ export function UserSpacePanel({
                   readOnly={!canEditWorkspace}
                   placeholder="Create dashboard/report/module source files here"
                   height="100%"
-                  theme={(() => {
-                    const stored = localStorage.getItem('ragtime-theme');
-                    if (stored === 'light') return 'light';
-                    if (stored === 'dark' || stored) return 'dark';
-                    return window.matchMedia('(prefers-color-scheme: light)').matches
-                      ? 'light'
-                      : 'dark';
-                  })()}
                   basicSetup={USERSPACE_CODEMIRROR_BASIC_SETUP}
                 />
               )}
@@ -9458,10 +9547,21 @@ export function UserSpacePanel({
 
           <ResizeHandle
             direction="vertical"
+            ariaLabel="Resize workspace editor and chat"
+            value={Math.round(editorFraction * 100)}
+            min={10}
+            max={90}
+            valueUnit="percent"
             onResize={handleResizeEditorChat}
+            onResizeTo={handleResizeEditorChatTo}
             onResizeEnd={commitEditorChatFraction}
             collapsed={editorChatCollapsedSide ?? undefined}
-            onExpand={expandChat}
+            collapsible={{
+              side: 'after',
+              restoreValue: Math.round(
+                Math.min(0.9, Math.max(0.1, prevEditorFraction.current || 0.6)) * 100,
+              ),
+            }}
           />
 
           {/* Chat section */}
@@ -9537,10 +9637,21 @@ export function UserSpacePanel({
 
         <ResizeHandle
           direction="horizontal"
+          ariaLabel="Resize workspace editor and preview"
+          value={Math.round(leftPaneFraction * 100)}
+          min={10}
+          max={90}
+          valueUnit="percent"
           onResize={handleResizeMainSplit}
+          onResizeTo={handleResizeMainSplitTo}
           onResizeEnd={commitMainSplitFraction}
           collapsed={rightPaneCollapsed ? 'after' : leftPaneCollapsed ? 'before' : undefined}
-          onExpand={leftPaneCollapsed ? expandLeftPane : expandRightPane}
+          collapsible={{
+            side: 'after',
+            restoreValue: Math.round(
+              Math.min(0.9, Math.max(0.1, prevLeftPaneFraction.current || 0.5)) * 100,
+            ),
+          }}
         />
 
         {/* Right pane */}
@@ -10805,7 +10916,11 @@ export function UserSpacePanel({
                                               previewingMountId === mount.id ? (
                                                 <MiniLoadingSpinner variant="icon" size={12} />
                                               ) : (
-                                                <RefreshCw size={12} />
+                                                <ThemeChromeIcon
+                                                  fallback={<RefreshCw size={12} />}
+                                                  codicon="refresh"
+                                                  size={12}
+                                                />
                                               )}
                                             </button>
                                           </>

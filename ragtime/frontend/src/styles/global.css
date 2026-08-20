@@ -1,13 +1,14 @@
-/* =============================================================================
-   RAGTIME - Main Stylesheet
-
-   This file imports the modular CSS architecture.
-   ============================================================================= */
-
+@import './fonts.css';
 @import './theme.css';
+@import './themes/vscode.css';
 @import './themes/serif.css';
+@import './icons.css';
 @import './components.css';
 @import './layout.css';
 @import './chat.css';
 @import './attachments.css';
+@import './workbench.css';
+@import './workbench-chat.css';
+@import './workbench-userspace.css';
+@import './workbench-admin.css';
 @import './responsive.css';

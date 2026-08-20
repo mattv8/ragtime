@@ -23,3 +23,4 @@ export {
   type ColorMode,
 } from './colorMode';
 export { getThemeFontFamily } from './fonts';
+export { getThemeSnapshot, subscribeToThemeChanges, type ThemeSnapshot } from './themeSnapshot';

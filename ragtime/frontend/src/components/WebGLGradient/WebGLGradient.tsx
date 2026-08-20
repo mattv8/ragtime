@@ -4,6 +4,7 @@ import { Popover } from '../Popover';
 import createFragmentShader from './fragmentShader';
 import { FluidSimulation } from './fluidSimulation';
 import { bindFullscreenQuad, createFullscreenQuadBuffer, createProgram } from './glUtils';
+import { subscribeToThemeChanges } from '@/theme';
 
 const TEXTURE_WIDTH = 1024;
 const DEFAULT_COLOR_VARIABLES = [
@@ -414,20 +415,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
 
   useEffect(() => {
     const handleThemeChange = () => setThemeRevision((revision) => revision + 1);
-    const rootElement = document.documentElement;
-    const observer = new MutationObserver(handleThemeChange);
-    observer.observe(rootElement, {
-      attributes: true,
-      attributeFilter: ['data-theme', 'data-theme-pack', 'style'],
-    });
-
-    const colorSchemeQuery = window.matchMedia('(prefers-color-scheme: light)');
-    colorSchemeQuery.addEventListener('change', handleThemeChange);
-
-    return () => {
-      observer.disconnect();
-      colorSchemeQuery.removeEventListener('change', handleThemeChange);
-    };
+    return subscribeToThemeChanges(handleThemeChange);
   }, []);
 
   useEffect(() => {
