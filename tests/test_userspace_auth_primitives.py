@@ -28,6 +28,7 @@ def _build_request(
     method: str = "POST",
     query_string: str | bytes = b"",
     body: bytes | None = None,
+    scheme: str = "https",
 ) -> Request:
     request_headers = headers or [(b"host", b"workspace.ragtime.test")]
     raw_query = query_string.encode("utf-8") if isinstance(query_string, str) else query_string
@@ -38,7 +39,7 @@ def _build_request(
         "raw_path": path.encode("utf-8"),
         "query_string": raw_query,
         "headers": request_headers,
-        "scheme": "https",
+        "scheme": scheme,
         "server": ("workspace.ragtime.test", 443),
         "client": ("127.0.0.1", 12345),
     }
@@ -84,6 +85,14 @@ class _FakePreviewRuntimeService(_FakeRuntimeService):
     def verify_capability_token(self, token: str, workspace_id: str, capability: str) -> dict[str, Any]:
         self.verified_capability_token = (token, workspace_id, capability)
         return {"workspace_id": workspace_id, "sub": "user-1", "capabilities": [capability]}
+
+
+class _FakePreviewWebSocket:
+    def __init__(self, *, host: str, token: str | None) -> None:
+        self.headers = {"host": host}
+        self.cookies = {}
+        if token is not None:
+            self.cookies["userspace_preview_session"] = token
 
 
 class _FakeProxyUpstreamResponse:
@@ -471,7 +480,6 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(_RUNTIME_ROUTES, "_runtime_service", return_value=fake_runtime),
             mock.patch.object(_PREVIEW_HOST, "_userspace_service", return_value=fake_service),
             mock.patch.object(_PREVIEW_HOST, "validate_session_and_fetch_user", new=mock.AsyncMock(return_value=(object(), user))),
-            mock.patch.object(_PREVIEW_HOST, "_register_preview_session", new=mock.AsyncMock()),
             mock.patch.object(
                 _RUNTIME_ROUTES,
                 "build_auth_method_statuses",
@@ -525,7 +533,6 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(_PREVIEW_HOST, "_userspace_service", return_value=fake_service),
             mock.patch.object(_PREVIEW_HOST, "validate_session_and_fetch_user", new=mock.AsyncMock(return_value=(None, None))),
             mock.patch.object(_PREVIEW_HOST, "_preview_user_from_id", new=mock.AsyncMock(return_value=SimpleNamespace(id="user-1"))),
-            mock.patch.object(_PREVIEW_HOST, "_register_preview_session", new=mock.AsyncMock()),
             mock.patch.object(
                 _RUNTIME_ROUTES,
                 "build_auth_method_statuses",
@@ -593,7 +600,6 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(_PREVIEW_HOST, "mfa_needed_for_user", new=mock.AsyncMock(return_value=False)),
             mock.patch.object(_PREVIEW_HOST, "_preview_user_from_id", new=mock.AsyncMock(return_value=user)),
-            mock.patch.object(_PREVIEW_HOST, "_register_preview_session", new=mock.AsyncMock()),
             mock.patch.object(
                 _RUNTIME_ROUTES,
                 "build_auth_method_statuses",
@@ -740,7 +746,6 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(_PREVIEW_HOST, "mfa_needed_for_user", new=mock.AsyncMock(return_value=False)),
             mock.patch.object(_PREVIEW_HOST, "_preview_user_from_id", new=mock.AsyncMock(return_value=user)),
-            mock.patch.object(_PREVIEW_HOST, "_register_preview_session", new=mock.AsyncMock()),
             mock.patch.object(
                 _RUNTIME_ROUTES,
                 "build_auth_method_statuses",
@@ -1114,7 +1119,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             "tab=main",
         )
 
-    async def test_top_level_preview_document_ignores_host_registry_without_cookie(self) -> None:
+    async def test_top_level_preview_document_requires_cookie_even_when_public_host_direct_access_is_enabled(self) -> None:
         request = _build_request(
             "/",
             headers=[(b"host", b"workspace-a.ragtime.test"), (b"accept", b"text/html"), (b"sec-fetch-dest", b"document")],
@@ -1132,38 +1137,19 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
                         "preview_mode": "workspace",
                     }
                 ),
+                create=True,
             ) as lookup,
-            mock.patch.object(_PREVIEW_HOST, "_resolve_public_preview_session", new=mock.AsyncMock(return_value=None)),
-            mock.patch.object(_PREVIEW_HOST, "_invalidate_preview_session_for_host", new=mock.AsyncMock()) as invalidate,
+            mock.patch.object(
+                _PREVIEW_HOST,
+                "_userspace_service",
+                return_value=SimpleNamespace(is_public_direct_share_host_enabled=mock.AsyncMock(return_value=True)),
+            ),
         ):
             with self.assertRaises(HTTPException) as raised:
                 await _PREVIEW_HOST._verify_preview_session_cookie(request)
 
         self.assertEqual(raised.exception.status_code, 401)
         lookup.assert_not_awaited()
-        invalidate.assert_awaited_once_with("workspace-a.ragtime.test")
-
-    async def test_top_level_public_document_clears_stale_registry_before_primitive_calls(self) -> None:
-        request = _build_request(
-            "/",
-            headers=[(b"host", b"workspace-a.ragtime.test"), (b"accept", b"text/html"), (b"sec-fetch-dest", b"document")],
-            method="GET",
-        )
-        public_claims = {
-            "workspace_id": "workspace-a",
-            "preview_mode": "shared_public_host",
-            "share_access_mode": "token",
-            "preview_host": "workspace-a.ragtime.test",
-        }
-
-        with (
-            mock.patch.object(_PREVIEW_HOST, "_invalidate_preview_session_for_host", new=mock.AsyncMock()) as invalidate,
-            mock.patch.object(_PREVIEW_HOST, "_resolve_public_preview_session", new=mock.AsyncMock(return_value=public_claims)),
-        ):
-            claims = await _PREVIEW_HOST._verify_preview_session_cookie(request)
-
-        self.assertEqual(claims, public_claims)
-        invalidate.assert_awaited_once_with("workspace-a.ragtime.test")
 
     async def test_bootstrap_handoff_document_can_use_workspace_session_without_fetch_headers(self) -> None:
         request = _build_request(
@@ -1172,7 +1158,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             method="GET",
             query_string="__ragtime_preview_handoff=nonce-1",
         )
-        registry_claims = {
+        handoff_claims = {
             "workspace_id": "workspace-a",
             "sub": "user-1",
             "preview_mode": "workspace",
@@ -1180,18 +1166,18 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with (
-            mock.patch.object(_PREVIEW_HOST, "_consume_preview_handoff", new=mock.AsyncMock(return_value=registry_claims)) as consume,
+            mock.patch.object(_PREVIEW_HOST, "_consume_preview_handoff", new=mock.AsyncMock(return_value=handoff_claims)) as consume,
             mock.patch.object(_PREVIEW_HOST, "_invalidate_preview_session_for_host", new=mock.AsyncMock()) as invalidate,
             mock.patch.object(_PREVIEW_HOST, "_enforce_shared_subdomain_allowed", new=mock.AsyncMock()) as enforce,
         ):
             claims = await _PREVIEW_HOST._verify_preview_session_cookie(request)
 
-        self.assertEqual(claims, registry_claims)
+        self.assertEqual(claims, handoff_claims)
         consume.assert_awaited_once_with("workspace-a.ragtime.test", "nonce-1")
-        enforce.assert_awaited_once_with(registry_claims)
+        enforce.assert_awaited_once_with(handoff_claims)
         invalidate.assert_not_awaited()
 
-    async def test_same_site_workspace_iframe_document_can_use_host_registry(self) -> None:
+    async def test_same_site_workspace_iframe_without_cookie_cannot_use_host_identity(self) -> None:
         request = _build_request(
             "/",
             headers=[
@@ -1202,71 +1188,161 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             ],
             method="GET",
         )
-        registry_claims = {
+        leaked_claims = {
             "workspace_id": "workspace-a",
-            "sub": "user-1",
+            "sub": "matt-user-id",
             "preview_mode": "workspace",
             "preview_host": "workspace-a.ragtime.test",
         }
 
         with (
-            mock.patch.object(_PREVIEW_HOST, "_lookup_preview_session", new=mock.AsyncMock(return_value=registry_claims)) as lookup,
-            mock.patch.object(_PREVIEW_HOST, "_invalidate_preview_session_for_host", new=mock.AsyncMock()) as invalidate,
-            mock.patch.object(_PREVIEW_HOST, "_enforce_shared_subdomain_allowed", new=mock.AsyncMock()),
+            mock.patch.object(
+                _PREVIEW_HOST,
+                "_lookup_preview_session",
+                new=mock.AsyncMock(return_value=leaked_claims),
+                create=True,
+            ) as lookup,
         ):
-            claims = await _PREVIEW_HOST._verify_preview_session_cookie(request)
+            with self.assertRaises(HTTPException) as raised:
+                await _PREVIEW_HOST._verify_preview_session_cookie(request)
 
-        self.assertEqual(claims, registry_claims)
-        lookup.assert_awaited_once()
-        invalidate.assert_not_awaited()
+        self.assertEqual(raised.exception.status_code, 401)
+        lookup.assert_not_awaited()
 
-    async def test_headerless_preview_asset_request_can_use_host_registry(self) -> None:
+    async def test_headerless_preview_asset_request_requires_cookie(self) -> None:
         request = _build_request(
             "/dist/main.js",
             headers=[(b"host", b"workspace-a.ragtime.test")],
             method="GET",
         )
-        registry_claims = {
+        leaked_claims = {
             "workspace_id": "workspace-a",
-            "sub": "user-1",
+            "sub": "matt-user-id",
             "preview_mode": "workspace",
             "preview_host": "workspace-a.ragtime.test",
         }
 
         with (
-            mock.patch.object(_PREVIEW_HOST, "_lookup_preview_session", new=mock.AsyncMock(return_value=registry_claims)) as lookup,
-            mock.patch.object(_PREVIEW_HOST, "_invalidate_preview_session_for_host", new=mock.AsyncMock()) as invalidate,
-            mock.patch.object(_PREVIEW_HOST, "_enforce_shared_subdomain_allowed", new=mock.AsyncMock()),
+            mock.patch.object(
+                _PREVIEW_HOST,
+                "_lookup_preview_session",
+                new=mock.AsyncMock(return_value=leaked_claims),
+                create=True,
+            ) as lookup,
         ):
-            claims = await _PREVIEW_HOST._verify_preview_session_cookie(request)
+            with self.assertRaises(HTTPException) as raised:
+                await _PREVIEW_HOST._verify_preview_session_cookie(request)
 
-        self.assertEqual(claims, registry_claims)
-        lookup.assert_awaited_once()
-        invalidate.assert_not_awaited()
+        self.assertEqual(raised.exception.status_code, 401)
+        lookup.assert_not_awaited()
 
-    async def test_preview_primitive_request_can_use_host_registry_fallback(self) -> None:
+    async def test_preview_primitive_request_requires_cookie(self) -> None:
         request = _build_request(
             "/__ragtime/session",
             headers=[(b"host", b"workspace-a.ragtime.test"), (b"accept", b"application/json")],
             method="GET",
         )
-        registry_claims = {
+        leaked_claims = {
             "workspace_id": "workspace-a",
-            "sub": "user-1",
+            "sub": "matt-user-id",
             "preview_mode": "workspace",
             "preview_host": "workspace-a.ragtime.test",
         }
 
         with (
-            mock.patch.object(_PREVIEW_HOST, "_lookup_preview_session", new=mock.AsyncMock(return_value=registry_claims)) as lookup,
-            mock.patch.object(_PREVIEW_HOST, "_enforce_shared_subdomain_allowed", new=mock.AsyncMock()),
+            mock.patch.object(
+                _PREVIEW_HOST,
+                "_lookup_preview_session",
+                new=mock.AsyncMock(return_value=leaked_claims),
+                create=True,
+            ) as lookup,
         ):
-            claims = await _PREVIEW_HOST._verify_preview_session_cookie(request)
+            with self.assertRaises(HTTPException) as raised:
+                await _PREVIEW_HOST._verify_preview_session_cookie(request)
 
-        self.assertEqual(claims, registry_claims)
-        lookup.assert_awaited_once()
+        self.assertEqual(raised.exception.status_code, 401)
+        lookup.assert_not_awaited()
 
-    async def test_preview_browser_auth_logout_clears_preview_session_and_registry(self) -> None:
+    async def test_preview_session_cookie_policy_is_host_only_on_https(self) -> None:
+        request = _build_request(headers=[(b"host", b"workspace-a.ragtime.test")], scheme="https")
+        response = Response()
+        fake_runtime = _FakePreviewRuntimeService()
+
+        with mock.patch.object(_PREVIEW_HOST, "_runtime_service", return_value=fake_runtime):
+            await _PREVIEW_HOST._set_preview_session_cookie(
+                request,
+                response,
+                {"workspace_id": "workspace-a", "sub": "user-1", "preview_mode": "workspace"},
+            )
+
+        set_cookie = "\n".join(value.decode("latin-1") for key, value in response.raw_headers if key == b"set-cookie")
+        self.assertIn("userspace_preview_session=preview-session-token", set_cookie)
+        self.assertIn("HttpOnly", set_cookie)
+        self.assertIn("SameSite=lax", set_cookie)
+        self.assertIn("Secure", set_cookie)
+        self.assertIn("Path=/", set_cookie)
+        self.assertNotIn("Domain=", set_cookie)
+
+    async def test_preview_session_cookie_policy_is_host_only_on_http_without_secure(self) -> None:
+        request = _build_request(headers=[(b"host", b"workspace-a.ragtime.test")], scheme="http")
+        response = Response()
+        fake_runtime = _FakePreviewRuntimeService()
+
+        with mock.patch.object(_PREVIEW_HOST, "_runtime_service", return_value=fake_runtime):
+            await _PREVIEW_HOST._set_preview_session_cookie(
+                request,
+                response,
+                {"workspace_id": "workspace-a", "sub": "user-1", "preview_mode": "workspace"},
+            )
+
+        set_cookie = "\n".join(value.decode("latin-1") for key, value in response.raw_headers if key == b"set-cookie")
+        self.assertIn("userspace_preview_session=preview-session-token", set_cookie)
+        self.assertIn("HttpOnly", set_cookie)
+        self.assertIn("SameSite=lax", set_cookie)
+        self.assertIn("Path=/", set_cookie)
+        self.assertNotIn("Secure", set_cookie)
+        self.assertNotIn("Domain=", set_cookie)
+
+    async def test_preview_websocket_sessions_stay_cookie_scoped_per_client(self) -> None:
+        host = "workspace-a.ragtime.test"
+
+        async def fake_resolve(host_header: str | None, cookie_token: str | None) -> dict[str, Any]:
+            self.assertEqual(host_header, host)
+            if cookie_token == "andy-token":
+                return {"workspace_id": "workspace-a", "sub": "andy-user-id", "preview_mode": "workspace", "preview_host": host}
+            if cookie_token == "matt-token":
+                return {"workspace_id": "workspace-a", "sub": "matt-user-id", "preview_mode": "workspace", "preview_host": host}
+            raise HTTPException(status_code=401, detail="Preview session required")
+
+        with mock.patch.object(_PREVIEW_HOST, "_resolve_preview_session", new=mock.AsyncMock(side_effect=fake_resolve)):
+            andy_claims = await _PREVIEW_HOST._verify_preview_session_websocket(cast(Any, _FakePreviewWebSocket(host=host, token="andy-token")))
+            matt_claims = await _PREVIEW_HOST._verify_preview_session_websocket(cast(Any, _FakePreviewWebSocket(host=host, token="matt-token")))
+            with self.assertRaises(HTTPException) as raised:
+                await _PREVIEW_HOST._verify_preview_session_websocket(cast(Any, _FakePreviewWebSocket(host=host, token=None)))
+
+        self.assertEqual(andy_claims["sub"], "andy-user-id")
+        self.assertEqual(matt_claims["sub"], "matt-user-id")
+        self.assertEqual(raised.exception.status_code, 401)
+
+    async def test_direct_preview_document_401_does_not_redirect_to_canonical_share_link(self) -> None:
+        request = _build_request(
+            "/",
+            headers=[(b"host", b"workspace-a.ragtime.test"), (b"accept", b"text/html"), (b"sec-fetch-dest", b"document")],
+            method="GET",
+        )
+        fake_service = SimpleNamespace(get_share_token=mock.AsyncMock(return_value="share-token"))
+
+        with mock.patch.object(_PREVIEW_HOST, "_userspace_service", return_value=fake_service):
+            response = await _PREVIEW_HOST._handle_preview_auth_error(
+                request,
+                HTTPException(status_code=401, detail="Preview session required"),
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn("location", response.headers)
+        fake_service.get_share_token.assert_not_awaited()
+
+    async def test_preview_browser_auth_logout_clears_preview_session_and_handoffs(self) -> None:
         response = Response()
         request = _build_request(
             "/__ragtime/browser-auth/logout",

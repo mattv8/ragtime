@@ -107,6 +107,30 @@ class _FakeRuntimeService:
         return ["ragtime.hammerton.com"]
 
 
+class _CookiePreviewRuntimeService(_FakeRuntimeService):
+    def __init__(self, *, workspace_id: str, host: str) -> None:
+        self.workspace_id = workspace_id
+        self.host = host
+
+    def verify_preview_token(self, token: str, expected_kind: str) -> dict[str, str]:
+        assert expected_kind == "userspace_preview_session"
+        if token == "andy-token":
+            return {
+                "workspace_id": self.workspace_id,
+                "sub": "andy-user-id",
+                "preview_mode": "workspace",
+                "preview_host": self.host,
+            }
+        if token == "matt-token":
+            return {
+                "workspace_id": self.workspace_id,
+                "sub": "matt-user-id",
+                "preview_mode": "workspace",
+                "preview_host": self.host,
+            }
+        raise HTTPException(status_code=401, detail="bad token")
+
+
 class _FakeUserSpaceService:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -453,29 +477,39 @@ class UserSpaceDocumentParseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated["status"], "completed")
         self.assertEqual(fetched["result"], {"count": 2})
 
-    async def test_direct_subdomain_preview_session_resolves_from_registry(self) -> None:
+    async def test_direct_subdomain_preview_session_resolves_from_cookie_token(self) -> None:
         workspace_id = "31eccb83-4529-4e71-b575-3e510826fcc6"
         host = f"{workspace_id}.ragtime.hammerton.com"
-        claims = {
-            "workspace_id": workspace_id,
-            "sub": "user-1",
-            "preview_mode": "workspace",
-            "preview_host": host,
-        }
-        preview_host._preview_host_sessions.clear()
-        preview_host._preview_host_session_order.clear()
-        preview_host._preview_host_expiry_heap.clear()
 
-        with mock.patch.object(preview_host, "_runtime_service", return_value=_FakeRuntimeService()):
-            await preview_host._register_preview_session(
-                host,
-                claims,
-                datetime.now(timezone.utc) + timedelta(minutes=5),
-            )
-            resolved = await preview_host._resolve_preview_session(host, None)
+        with mock.patch.object(
+            preview_host,
+            "_runtime_service",
+            return_value=_CookiePreviewRuntimeService(workspace_id=workspace_id, host=host),
+        ):
+            andy_claims = await preview_host._resolve_preview_session(host, "andy-token")
+            matt_claims = await preview_host._resolve_preview_session(host, "matt-token")
 
-        self.assertEqual(resolved["workspace_id"], workspace_id)
-        self.assertEqual(resolved["preview_mode"], "workspace")
+        self.assertEqual(andy_claims["sub"], "andy-user-id")
+        self.assertEqual(matt_claims["sub"], "matt-user-id")
+
+    async def test_same_workspace_preview_tokens_stay_client_scoped(self) -> None:
+        workspace_id = "31eccb83-4529-4e71-b575-3e510826fcc6"
+        host = f"{workspace_id}.ragtime.hammerton.com"
+
+        with mock.patch.object(
+            preview_host,
+            "_runtime_service",
+            return_value=_CookiePreviewRuntimeService(workspace_id=workspace_id, host=host),
+        ):
+            andy_claims = await preview_host._resolve_preview_session(host, "andy-token")
+            matt_claims = await preview_host._resolve_preview_session(host, "matt-token")
+
+            with self.assertRaises(HTTPException) as raised:
+                await preview_host._resolve_preview_session(host, None)
+
+        self.assertEqual(andy_claims["sub"], "andy-user-id")
+        self.assertEqual(matt_claims["sub"], "matt-user-id")
+        self.assertEqual(raised.exception.status_code, 401)
 
     async def test_preview_file_primitive_uses_workspace_subdomain_session(self) -> None:
         claims = {

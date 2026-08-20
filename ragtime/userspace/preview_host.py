@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import heapq
 import json
-from collections import OrderedDict
 from collections.abc import MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from itertools import count
 from typing import Any, cast
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
@@ -106,8 +103,12 @@ preview_host_app.add_exception_handler(RateLimitExceeded, cast(Any, _rate_limit_
 
 @preview_host_app.exception_handler(HTTPException)
 async def _handle_preview_auth_error(request: StarletteRequest, exc: HTTPException):
-    """Redirect unauthenticated visitors to the share link password/login page
-    instead of showing a raw JSON 401."""
+    """Fail closed with 401 for direct preview-host requests.
+
+    Only an expired/already-consumed top-level /__ragtime/bootstrap navigation
+    may recover by redirecting back to the canonical /shared/{token} link so
+    the control plane can mint a fresh bootstrap grant.
+    """
     if exc.status_code != 401:
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     if getattr(request, "scope", {}).get("type") != "http":
@@ -127,7 +128,7 @@ async def _handle_preview_auth_error(request: StarletteRequest, exc: HTTPExcepti
     # so it can mint a fresh grant and re-enter the subdomain bootstrap.
     is_top_level_nav = str(request.headers.get("sec-fetch-dest", "")).lower() == "document"
 
-    should_redirect_to_share = workspace_id and (not request.url.path.startswith("/__ragtime/") or (is_bootstrap and is_top_level_nav))
+    should_redirect_to_share = bool(workspace_id and is_bootstrap and is_top_level_nav)
     if should_redirect_to_share:
         share_token = await _userspace_service().get_share_token(workspace_id)
         if share_token:
@@ -163,16 +164,13 @@ window.parent.postMessage({{
 
 
 # ---------------------------------------------------------------------------
-# In-memory preview host session registry
+# In-memory preview host bootstrap handoff registry
 #
-# Internal workspace preview surfaces may run in embedded browser contexts
-# where SameSite=Lax cookies are not sent reliably. The bootstrap endpoint
-# registers those sessions here so the preview host can still resolve them by
-# host label when the cookie is absent. Shared-preview auth does not use this
-# fallback anymore; protected shared subdomains are cookie-backed only.
+# The bootstrap endpoint mints a cookie-backed session and a short-lived
+# same-host handoff nonce for the first document request after redirect.
 # ---------------------------------------------------------------------------
 
-_SESSION_REGISTRY_MAX = 500  # prevent unbounded growth
+_HANDOFF_REGISTRY_MAX = 500  # prevent unbounded growth
 
 
 @dataclass
@@ -182,40 +180,22 @@ class _PreviewHostSessionEntry:
     registered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-_preview_host_sessions: dict[str, _PreviewHostSessionEntry] = {}
-_preview_host_session_order: OrderedDict[str, None] = OrderedDict()
-_preview_host_expiry_heap: list[tuple[float, int, str]] = []
 _preview_bootstrap_handoffs: dict[str, _PreviewHostSessionEntry] = {}
 _registry_lock = asyncio.Lock()
-_registry_sequence = count()
 
 
-def _discard_preview_session_locked(label: str) -> None:
-    _preview_host_sessions.pop(label, None)
-    _preview_host_session_order.pop(label, None)
+def _discard_preview_handoffs_locked(label: str) -> None:
     prefix = f"{label}:"
     for key in [key for key in _preview_bootstrap_handoffs if key.startswith(prefix)]:
         _preview_bootstrap_handoffs.pop(key, None)
 
 
-def _evict_preview_sessions_locked(now: datetime) -> None:
-    now_ts = now.timestamp()
-    while _preview_host_expiry_heap and _preview_host_expiry_heap[0][0] <= now_ts:
-        expires_ts, _, label = heapq.heappop(_preview_host_expiry_heap)
-        entry = _preview_host_sessions.get(label)
-        if entry is None or entry.expires_at.timestamp() != expires_ts:
-            continue
-        _discard_preview_session_locked(label)
-
-    while len(_preview_host_sessions) > _SESSION_REGISTRY_MAX:
-        oldest_label, _ = _preview_host_session_order.popitem(last=False)
-        _preview_host_sessions.pop(oldest_label, None)
-
+def _evict_preview_handoffs_locked(now: datetime) -> None:
     expired_handoffs = [key for key, entry in _preview_bootstrap_handoffs.items() if entry.expires_at <= now]
     for key in expired_handoffs:
         _preview_bootstrap_handoffs.pop(key, None)
 
-    while len(_preview_bootstrap_handoffs) > _SESSION_REGISTRY_MAX:
+    while len(_preview_bootstrap_handoffs) > _HANDOFF_REGISTRY_MAX:
         oldest_key = min(
             _preview_bootstrap_handoffs,
             key=lambda key: _preview_bootstrap_handoffs[key].registered_at,
@@ -224,12 +204,12 @@ def _evict_preview_sessions_locked(now: datetime) -> None:
 
 
 async def invalidate_preview_sessions_for_workspace(workspace_id: str) -> None:
-    """Remove all in-memory preview session registry entries for *workspace_id*."""
+    """Remove all in-memory preview bootstrap handoffs for *workspace_id*."""
     label = (workspace_id or "").strip().lower()
     if not label:
         return
     async with _registry_lock:
-        _discard_preview_session_locked(label)
+        _discard_preview_handoffs_locked(label)
 
 
 async def _invalidate_preview_session_for_host(host_header: str | None) -> None:
@@ -238,7 +218,7 @@ async def _invalidate_preview_session_for_host(host_header: str | None) -> None:
     if not label:
         return
     async with _registry_lock:
-        _discard_preview_session_locked(label)
+        _discard_preview_handoffs_locked(label)
 
 
 def _host_label_from_hostname(hostname: str) -> str:
@@ -264,48 +244,6 @@ def _workspace_id_from_preview_host(host_header: str | None) -> str | None:
     return workspace_id or None
 
 
-async def _register_preview_session(
-    host_header: str,
-    claims: dict[str, Any],
-    expires_at: datetime,
-) -> None:
-    hostname, _ = _split_host(host_header)
-    label = _host_label_from_hostname(hostname)
-    if not label:
-        return
-    now = datetime.now(timezone.utc)
-    async with _registry_lock:
-        _preview_host_sessions[label] = _PreviewHostSessionEntry(
-            claims=claims,
-            expires_at=expires_at,
-        )
-        _preview_host_session_order.pop(label, None)
-        _preview_host_session_order[label] = None
-        heapq.heappush(
-            _preview_host_expiry_heap,
-            (expires_at.timestamp(), next(_registry_sequence), label),
-        )
-        _evict_preview_sessions_locked(now)
-
-
-async def _lookup_preview_session(host_header: str) -> dict[str, Any] | None:
-    hostname, _ = _split_host(host_header)
-    label = _host_label_from_hostname(hostname)
-    if not label:
-        return None
-    now = datetime.now(timezone.utc)
-    async with _registry_lock:
-        _evict_preview_sessions_locked(now)
-        entry = _preview_host_sessions.get(label)
-        if entry is None:
-            return None
-        if entry.expires_at <= now:
-            _discard_preview_session_locked(label)
-            return None
-        _preview_host_session_order.move_to_end(label)
-    return entry.claims
-
-
 async def _register_preview_handoff(
     host_header: str,
     nonce: str,
@@ -321,7 +259,7 @@ async def _register_preview_handoff(
             claims=claims,
             expires_at=expires_at,
         )
-        _evict_preview_sessions_locked(now)
+        _evict_preview_handoffs_locked(now)
 
 
 async def _consume_preview_handoff(host_header: str | None, nonce: str | None) -> dict[str, Any] | None:
@@ -330,7 +268,7 @@ async def _consume_preview_handoff(host_header: str | None, nonce: str | None) -
         return None
     now = datetime.now(timezone.utc)
     async with _registry_lock:
-        _evict_preview_sessions_locked(now)
+        _evict_preview_handoffs_locked(now)
         entry = _preview_bootstrap_handoffs.pop(key, None)
     if entry is None or entry.expires_at <= now:
         return None
@@ -685,11 +623,6 @@ async def _set_preview_session_cookie(
     claims: dict[str, Any],
 ) -> None:
     session_token, expires_at = _runtime_service().build_preview_session_token(claims)
-    await _register_preview_session(
-        request.headers.get("host", ""),
-        claims,
-        expires_at,
-    )
     max_age = max(60, int((expires_at - datetime.now(timezone.utc)).total_seconds()))
     response.set_cookie(
         key=_RUNTIME_PREVIEW_SESSION_COOKIE_NAME,
@@ -753,23 +686,6 @@ async def _workspace_user_for_preview_auth(
     return workspace_id, user
 
 
-async def _resolve_public_preview_session(
-    host_header: str | None,
-) -> dict[str, Any] | None:
-    workspace_id = _workspace_id_from_preview_host(host_header)
-    if not workspace_id:
-        return None
-    if not await _userspace_service().is_public_direct_share_host_enabled(workspace_id):
-        return None
-    return {
-        "workspace_id": workspace_id,
-        "preview_mode": "shared_public_host",
-        "share_access_mode": "token",
-        "preview_host": str(host_header or "").strip().lower() or None,
-        "parent_origin": None,
-    }
-
-
 async def _enforce_shared_subdomain_allowed(claims: dict[str, Any]) -> None:
     workspace_id = str(claims.get("workspace_id") or "").strip()
     if not workspace_id:
@@ -796,16 +712,7 @@ async def _enforce_shared_subdomain_allowed(claims: dict[str, Any]) -> None:
 async def _resolve_preview_session(
     host_header: str | None,
     cookie_token: str | None,
-    *,
-    allow_registry_fallback: bool = True,
 ) -> dict[str, Any]:
-    """Resolve preview session claims from cookie or in-memory registry.
-
-    Tries the cookie first. Falls back to the host-label registry only for
-    internal workspace preview sessions, where embedded browser contexts may
-    suppress SameSite=Lax cookies.
-    """
-    # 1. Try cookie-based auth
     if cookie_token:
         try:
             claims = _verify_preview_session_token(cookie_token)
@@ -817,47 +724,9 @@ async def _resolve_preview_session(
             )
             return claims
         except HTTPException:
-            pass  # fall through to registry
-
-    # 2. Fall back to in-memory host-label registry
-    registry_claims = await _lookup_preview_session(host_header or "") if allow_registry_fallback else None
-    if registry_claims is not None and _preview_mode(registry_claims) == "workspace":
-        await _enforce_shared_subdomain_allowed(registry_claims)
-        _ensure_preview_host_matches_workspace(
-            host_header,
-            str(registry_claims.get("workspace_id") or ""),
-            str(registry_claims.get("preview_host") or "").strip() or None,
-        )
-        return registry_claims
-
-    public_claims = await _resolve_public_preview_session(host_header)
-    if public_claims is not None:
-        _ensure_preview_host_matches_workspace(
-            host_header,
-            str(public_claims.get("workspace_id") or ""),
-            str(public_claims.get("preview_host") or "").strip() or None,
-        )
-        return public_claims
+            pass
 
     raise HTTPException(status_code=401, detail="Preview session required")
-
-
-def _is_direct_preview_document_request(request: Request) -> bool:
-    if request.method not in {"GET", "HEAD"}:
-        return False
-    if request.url.path.startswith("/__ragtime/"):
-        return False
-    last_path_segment = (request.url.path or "/").rsplit("/", 1)[-1].lower()
-    if "." in last_path_segment and not last_path_segment.endswith((".html", ".htm")):
-        return False
-    accept = str(request.headers.get("accept", "")).lower()
-    sec_fetch_dest = str(request.headers.get("sec-fetch-dest", "")).lower()
-    sec_fetch_site = str(request.headers.get("sec-fetch-site", "")).lower()
-    if sec_fetch_dest:
-        if sec_fetch_dest != "document":
-            return False
-        return sec_fetch_site in {"", "none"}
-    return not accept or "text/html" in accept or "*/*" in accept
 
 
 async def _verify_preview_session_cookie(request: Request) -> dict[str, Any]:
@@ -874,19 +743,7 @@ async def _verify_preview_session_cookie(request: Request) -> dict[str, Any]:
             str(handoff_claims.get("preview_host") or "").strip() or None,
         )
         return handoff_claims
-    is_direct_document = _is_direct_preview_document_request(request)
-    if is_direct_document and not token:
-        # A top-level no-cookie direct visit must establish fresh public/shared
-        # context. If an earlier authenticated workspace preview registered the
-        # same host, leaving it in the process-wide fallback registry lets the
-        # page's subsequent same-origin primitive calls inherit that unrelated
-        # user session. Clear it before the document response is proxied.
-        await _invalidate_preview_session_for_host(request.headers.get("host"))
-    return await _resolve_preview_session(
-        request.headers.get("host"),
-        token or None,
-        allow_registry_fallback=not is_direct_document,
-    )
+    return await _resolve_preview_session(request.headers.get("host"), token or None)
 
 
 async def _verify_preview_session_websocket(websocket: WebSocket) -> dict[str, Any]:
