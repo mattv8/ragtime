@@ -86,6 +86,7 @@ from ragtime.core.model_providers import (
     ProviderConnection,
 )
 from ragtime.core.openai_codex_auth import OPENAI_CODEX_DEFAULT_BASE_URL
+from ragtime.core.theme import canonicalize_theme_pack_id
 from ragtime.core.userspace_limits import (
     ARCHIVE_MAX_FILE_COUNT_DEFAULT,
     ARCHIVE_MAX_TOTAL_SIZE_DEFAULT_BYTES,
@@ -343,7 +344,7 @@ class SettingsCache:
 
             self._settings = {
                 "server_name": prisma_settings.serverName,
-                "default_theme_pack": getattr(prisma_settings, "defaultThemePack", "default"),
+                "default_theme_pack": canonicalize_theme_pack_id(getattr(prisma_settings, "defaultThemePack", "default")) or "default",
                 "authenticated_webgl_background_enabled": getattr(
                     prisma_settings,
                     "authenticatedWebglBackgroundEnabled",

@@ -11007,7 +11007,9 @@ class RAGComponents:
                     policy_read_error = str(exc)
                 else:
                     policy_payload = _coerce_payload_dict(policy)
-            rules = [normalized for normalized in (_normalize_entitlement_rule(rule) for rule in list(policy_payload.get("rules") or [])) if normalized is not None]
+            rules = [
+                normalized for normalized in (_normalize_entitlement_rule(rule) for rule in list(policy_payload.get("rules") or [])) if normalized is not None
+            ]
             configured_groups = _configured_groups_from_rules(rules)
             can_configure = bool(policy_payload.get("can_configure") or policy_payload.get("may_configure") or policy_payload.get("canConfigure"))
             available_auth_groups: list[dict[str, str]] = []
@@ -11093,9 +11095,7 @@ class RAGComponents:
             response_payload = _coerce_payload_dict(response)
             normalized_rules = [
                 normalized
-                for normalized in (
-                    _normalize_entitlement_rule(rule_payload) for rule_payload in list(response_payload.get("rules") or [])
-                )
+                for normalized in (_normalize_entitlement_rule(rule_payload) for rule_payload in list(response_payload.get("rules") or []))
                 if normalized is not None
             ]
             configured_groups = _configured_groups_from_rules(normalized_rules)

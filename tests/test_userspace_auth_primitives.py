@@ -1099,9 +1099,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             body=b'{"action":"save"}',
         )
         client = _FakeProxyClient(_FakeProxyUpstreamResponse(b'{"ok":true}', content_type="application/json"))
-        primitive_session_factory = mock.AsyncMock(
-            side_effect=HTTPException(status_code=503, detail="Entitlement resolution unavailable")
-        )
+        primitive_session_factory = mock.AsyncMock(side_effect=HTTPException(status_code=503, detail="Entitlement resolution unavailable"))
 
         with (
             mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),

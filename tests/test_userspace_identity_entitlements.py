@@ -199,10 +199,12 @@ class WorkspaceIdentityEntitlementServiceTests(unittest.IsolatedAsyncioTestCase)
         service = _AccessControlledService()
         accounting = _group(group_id="group-1", key="accounting")
         db = _make_db(groups=[accounting])
-        request = self._request_model()(rules=[
-            {"auth_group_id": "group-1", "entitlements": ["recon.admin"]},
-            {"auth_group_id": "group-1", "entitlements": ["recon.role.preparer"]},
-        ])
+        request = self._request_model()(
+            rules=[
+                {"auth_group_id": "group-1", "entitlements": ["recon.admin"]},
+                {"auth_group_id": "group-1", "entitlements": ["recon.role.preparer"]},
+            ]
+        )
 
         with mock.patch("ragtime.userspace.service.get_db", new=mock.AsyncMock(return_value=db)):
             with self.assertRaises(HTTPException) as raised:
