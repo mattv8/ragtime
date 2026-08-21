@@ -35,7 +35,13 @@ from prisma import fields as prisma_fields
 
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
-from ragtime.core.auth import _get_ldap_connection, get_ldap_config, user_matches_group_identifier
+from ragtime.core.auth import (
+    _expires_at_is_active,
+    _get_ldap_connection,
+    get_ldap_config,
+    ldap_user_is_member_of_group_strict,
+    user_matches_group_identifier,
+)
 from ragtime.core.database import get_db
 from ragtime.core.datetimes import (
     coerce_utc_datetime as coerce_utc_datetime_strict,
@@ -171,6 +177,7 @@ from ragtime.userspace.models import (
     MountSourceUnavailableKind,
     PaginatedWorkspacesResponse,
     RenameUserSpaceObjectStorageObjectRequest,
+    ReplaceUserSpaceIdentityEntitlementPolicyRequest,
     RuntimeBridgeSqliteMutationOperationResponse,
     RuntimeBridgeSqliteMutationRequest,
     RuntimeBridgeSqliteMutationResponse,
@@ -202,6 +209,9 @@ from ragtime.userspace.models import (
     UserCloudOAuthProvider,
     UserSpaceFileInfo,
     UserSpaceFileResponse,
+    UserSpaceIdentityEntitlementAuthGroup,
+    UserSpaceIdentityEntitlementPolicyResponse,
+    UserSpaceIdentityEntitlementRule,
     UserSpaceLiveDataCheck,
     UserSpaceLiveDataConnection,
     UserspaceMountBackend,
@@ -1109,6 +1119,10 @@ _SQLITE_EXCLUDE_GLOBS = (
 _WORKSPACE_ENV_VAR_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WORKSPACE_ENV_VAR_MAX_COUNT = 200
 _GLOBAL_ENV_VAR_MAX_COUNT = 200
+_WORKSPACE_IDENTITY_ENTITLEMENT_TOKEN_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
+_WORKSPACE_IDENTITY_ENTITLEMENT_MAX_RULES = 100
+_WORKSPACE_IDENTITY_ENTITLEMENT_MAX_RULE_TOKENS = 32
+_WORKSPACE_IDENTITY_ENTITLEMENT_MAX_ENCODED_BYTES = 4096
 _WORKSPACE_SCM_PREVIEW_TTL_SECONDS = 300
 _WORKSPACE_SCM_PREVIEW_SAMPLE_LIMIT = 100
 _WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MIN_SECONDS = 300
@@ -13169,6 +13183,254 @@ class UserSpaceService:
                     "options": Json(options),
                 }
             )
+
+    @staticmethod
+    def _workspace_identity_entitlement_rule_model(db: Any) -> Any | None:
+        return getattr(db, "workspaceidentityentitlementrule", None)
+
+    @staticmethod
+    def _workspace_identity_entitlement_group(group: Any) -> UserSpaceIdentityEntitlementAuthGroup:
+        return UserSpaceIdentityEntitlementAuthGroup(
+            id=str(getattr(group, "id", "") or ""),
+            key=str(getattr(group, "key", "") or ""),
+            display_name=str(getattr(group, "displayName", "") or ""),
+            provider=str(getattr(group, "provider", "") or ""),
+        )
+
+    def _normalize_identity_entitlement_tokens(self, entitlements: Sequence[Any]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_token in entitlements:
+            token = str(raw_token or "").strip()
+            if not token:
+                continue
+            if not _WORKSPACE_IDENTITY_ENTITLEMENT_TOKEN_RE.fullmatch(token):
+                raise HTTPException(status_code=400, detail=f"Invalid entitlement token: {token}")
+            if token in seen:
+                continue
+            normalized.append(token)
+            seen.add(token)
+        normalized.sort()
+        if not normalized:
+            raise HTTPException(status_code=400, detail="Each workspace entitlement rule requires at least one entitlement token")
+        if len(normalized) > _WORKSPACE_IDENTITY_ENTITLEMENT_MAX_RULE_TOKENS:
+            raise HTTPException(status_code=400, detail="Each workspace entitlement rule supports at most 32 entitlement tokens")
+        return normalized
+
+    def _validate_identity_entitlement_policy_size(self, rules: Sequence[UserSpaceIdentityEntitlementRule]) -> None:
+        encoded = ",".join(token for rule in rules for token in rule.entitlements)
+        if len(encoded.encode("utf-8")) > _WORKSPACE_IDENTITY_ENTITLEMENT_MAX_ENCODED_BYTES:
+            raise HTTPException(status_code=400, detail="Workspace identity entitlement policy exceeds the supported encoded size")
+
+    async def _list_workspace_identity_entitlement_rules(self, db: Any, workspace_id: str) -> list[UserSpaceIdentityEntitlementRule]:
+        model = self._workspace_identity_entitlement_rule_model(db)
+        if model is None:
+            return []
+        raw_rows = await model.find_many(where={"workspaceId": workspace_id}, order={"authGroupId": "asc"})
+        group_ids = list({str(getattr(row, "authGroupId", "") or "") for row in raw_rows if getattr(row, "authGroupId", None)})
+        groups = await db.authgroup.find_many(where={"id": {"in": group_ids}}, order={"key": "asc"}) if group_ids else []
+        groups_by_id = {str(getattr(group, "id", "") or ""): group for group in groups}
+        rules: list[UserSpaceIdentityEntitlementRule] = []
+        for row in raw_rows:
+            auth_group_id = str(getattr(row, "authGroupId", "") or "")
+            group = groups_by_id.get(auth_group_id)
+            if group is None:
+                continue
+            entitlements = getattr(row, "entitlements", [])
+            if isinstance(entitlements, Json):
+                entitlements = entitlements.data
+            try:
+                normalized_entitlements = self._normalize_identity_entitlement_tokens(cast(Sequence[Any], entitlements))
+            except HTTPException:
+                logger.warning(
+                    "Skipping workspace identity entitlement rule '%s' with invalid stored tokens",
+                    getattr(row, "id", ""),
+                )
+                continue
+            rules.append(
+                UserSpaceIdentityEntitlementRule(
+                    auth_group_id=auth_group_id,
+                    entitlements=normalized_entitlements,
+                    auth_group=self._workspace_identity_entitlement_group(group),
+                )
+            )
+        return rules
+
+    async def get_workspace_identity_entitlement_policy(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+        include_available_groups: bool = False,
+    ) -> UserSpaceIdentityEntitlementPolicyResponse:
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner", is_admin=is_admin)
+        db = await get_db()
+        rules = await self._list_workspace_identity_entitlement_rules(db, workspace_id)
+        available_auth_groups: list[UserSpaceIdentityEntitlementAuthGroup] = []
+        if include_available_groups:
+            groups = await db.authgroup.find_many(where={}, order={"key": "asc"})
+            available_auth_groups = [self._workspace_identity_entitlement_group(group) for group in groups]
+        return UserSpaceIdentityEntitlementPolicyResponse(
+            workspace_id=workspace_id,
+            can_configure=True,
+            rules=rules,
+            available_auth_groups=available_auth_groups,
+        )
+
+    async def replace_workspace_identity_entitlement_policy(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: ReplaceUserSpaceIdentityEntitlementPolicyRequest,
+        *,
+        is_admin: bool = False,
+    ) -> UserSpaceIdentityEntitlementPolicyResponse:
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner", is_admin=is_admin)
+        db = await get_db()
+        if len(request.rules) > _WORKSPACE_IDENTITY_ENTITLEMENT_MAX_RULES:
+            raise HTTPException(status_code=400, detail="A workspace supports at most 100 identity entitlement rules")
+
+        seen_group_ids: set[str] = set()
+        requested_group_ids: list[str] = []
+        for rule in request.rules:
+            auth_group_id = str(rule.auth_group_id).strip()
+            if auth_group_id in seen_group_ids:
+                raise HTTPException(status_code=400, detail=f"Duplicate auth group rule: {auth_group_id}")
+            seen_group_ids.add(auth_group_id)
+            requested_group_ids.append(auth_group_id)
+
+        groups = await db.authgroup.find_many(where={"id": {"in": requested_group_ids}}, order={"key": "asc"}) if requested_group_ids else []
+        groups_by_id = {str(getattr(group, "id", "") or ""): group for group in groups}
+        missing_group_ids = [group_id for group_id in requested_group_ids if group_id not in groups_by_id]
+        if missing_group_ids:
+            raise HTTPException(status_code=400, detail=f"Unknown auth group: {missing_group_ids[0]}")
+
+        normalized_rules: list[UserSpaceIdentityEntitlementRule] = []
+        for rule in request.rules:
+            auth_group_id = str(rule.auth_group_id).strip()
+            normalized_rules.append(
+                UserSpaceIdentityEntitlementRule(
+                    auth_group_id=auth_group_id,
+                    entitlements=self._normalize_identity_entitlement_tokens(rule.entitlements),
+                    auth_group=self._workspace_identity_entitlement_group(groups_by_id[auth_group_id]),
+                )
+            )
+        self._validate_identity_entitlement_policy_size(normalized_rules)
+
+        model = self._workspace_identity_entitlement_rule_model(db)
+        if model is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Workspace identity entitlement storage is unavailable",
+            )
+        if hasattr(db, "tx"):
+            async with db.tx() as tx:
+                tx_model = self._workspace_identity_entitlement_rule_model(tx)
+                if tx_model is None:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Workspace identity entitlement storage is unavailable",
+                    )
+                await tx_model.delete_many(where={"workspaceId": workspace_id})
+                for normalized_rule in normalized_rules:
+                    await tx_model.create(
+                        data={
+                            "workspaceId": workspace_id,
+                            "authGroupId": normalized_rule.auth_group_id,
+                            "entitlements": Json(normalized_rule.entitlements),
+                        }
+                    )
+        else:
+            await model.delete_many(where={"workspaceId": workspace_id})
+            for normalized_rule in normalized_rules:
+                await model.create(
+                    data={
+                        "workspaceId": workspace_id,
+                        "authGroupId": normalized_rule.auth_group_id,
+                        "entitlements": Json(normalized_rule.entitlements),
+                    }
+                )
+
+        return UserSpaceIdentityEntitlementPolicyResponse(
+            workspace_id=workspace_id,
+            can_configure=True,
+            rules=normalized_rules,
+            available_auth_groups=[],
+        )
+
+    async def _user_has_exact_workspace_identity_group_membership(self, db: Any, user: Any, group: Any) -> bool:
+        membership = await db.authgroupmembership.find_unique(
+            where={"userId_groupId": {"userId": getattr(user, "id", None), "groupId": getattr(group, "id", None)}}
+        )
+        if membership is not None and _expires_at_is_active(getattr(membership, "expiresAt", None)):
+            return True
+
+        active_cached_groups = _expires_at_is_active(getattr(user, "sourceExpiresAt", None))
+        if active_cached_groups:
+            normalized_cached_groups = {str(value or "").strip().lower() for value in list(getattr(user, "cachedGroups", []) or []) if str(value or "").strip()}
+            candidate_identifiers = {
+                str(getattr(group, "key", "") or "").strip().lower(),
+                str(getattr(group, "sourceDn", "") or "").strip().lower(),
+                str(getattr(group, "sourceId", "") or "").strip().lower(),
+            }
+            if any(identifier and identifier in normalized_cached_groups for identifier in candidate_identifiers):
+                return True
+
+        if str(getattr(group, "provider", "") or "") != "ldap":
+            return False
+        if active_cached_groups:
+            return False
+
+        user_dn = str(getattr(user, "ldapDn", "") or "").strip()
+        group_dn = str(getattr(group, "sourceDn", "") or "").strip()
+        if not user_dn or not group_dn:
+            raise HTTPException(status_code=503, detail="Workspace identity entitlements could not verify LDAP group membership")
+
+        try:
+            return await ldap_user_is_member_of_group_strict(user_dn, group_dn)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Workspace identity entitlement LDAP verification failed for workspace group '%s': %s",
+                getattr(group, "id", ""),
+                exc,
+            )
+            raise HTTPException(status_code=503, detail="Workspace identity entitlements could not verify LDAP group membership") from exc
+
+    async def resolve_workspace_identity_entitlements(self, workspace_id: str, user: Any) -> list[str]:
+        db = await get_db()
+        started = _time.perf_counter()
+        rules = await self._list_workspace_identity_entitlement_rules(db, workspace_id)
+        resolved: set[str] = set()
+        try:
+            group_ids = list({rule.auth_group_id for rule in rules})
+            groups = await db.authgroup.find_many(where={"id": {"in": group_ids}}) if group_ids else []
+            groups_by_id = {str(getattr(group, "id", "") or ""): group for group in groups}
+            for rule in rules:
+                group = groups_by_id.get(rule.auth_group_id)
+                if group is None:
+                    continue
+                if await self._user_has_exact_workspace_identity_group_membership(db, user, group):
+                    resolved.update(rule.entitlements)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Workspace identity entitlement resolution failed for workspace '%s' with %d rules after %.2fms: %s",
+                workspace_id,
+                len(rules),
+                (_time.perf_counter() - started) * 1000,
+                exc,
+            )
+            raise HTTPException(status_code=503, detail="Workspace identity entitlements could not be resolved") from exc
+
+        resolved_list = sorted(resolved)
+        encoded = ",".join(resolved_list)
+        if len(encoded.encode("utf-8")) > _WORKSPACE_IDENTITY_ENTITLEMENT_MAX_ENCODED_BYTES:
+            raise HTTPException(status_code=503, detail="Resolved workspace entitlements exceed the supported header size")
+        return resolved_list
 
     async def create_workspace(self, request: CreateWorkspaceRequest, user_id: str) -> UserSpaceWorkspace:
         db = await get_db()

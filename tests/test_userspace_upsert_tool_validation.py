@@ -279,6 +279,225 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
         primitive_capabilities.assert_awaited_once_with("workspace-1", "user-1", preview_mode="workspace")
         primitive_session.assert_awaited_once_with("workspace-1", "user-1", mode="workspace", same_origin_auth_endpoints=True)
 
+    def _identity_policy_response(self, *, rules=None, available_auth_groups=None, can_configure=True):
+        from ragtime.userspace.models import (
+            UserSpaceIdentityEntitlementAuthGroup,
+            UserSpaceIdentityEntitlementPolicyResponse,
+            UserSpaceIdentityEntitlementRule,
+        )
+
+        def _group(payload):
+            return UserSpaceIdentityEntitlementAuthGroup(**payload)
+
+        return UserSpaceIdentityEntitlementPolicyResponse(
+            workspace_id="workspace-1",
+            can_configure=can_configure,
+            rules=[
+                UserSpaceIdentityEntitlementRule(
+                    auth_group_id=rule["auth_group_id"],
+                    entitlements=rule["entitlements"],
+                    auth_group=_group(rule["auth_group"]),
+                )
+                for rule in (rules or [])
+            ],
+            available_auth_groups=[_group(group) for group in (available_auth_groups or [])],
+        )
+
+    async def test_discover_userspace_primitives_exposes_identity_entitlement_contract(self) -> None:
+        tool = await self._tool("discover_userspace_primitives")
+        coroutine = tool.coroutine
+        assert coroutine is not None
+
+        accounting_group = {
+            "id": "group-1",
+            "key": "ldap-accounting",
+            "display_name": "Accounting",
+            "provider": "ldap",
+        }
+        policy_response = self._identity_policy_response(
+            rules=[
+                {
+                    "auth_group_id": "group-1",
+                    "entitlements": ["recon.admin", "recon.admin", "recon.role.preparer"],
+                    "auth_group": accounting_group,
+                }
+            ],
+            available_auth_groups=[accounting_group],
+        )
+        session_payload = {
+            "workspace_id": "workspace-1",
+            "auth": {
+                "authenticated": True,
+                "entitlements": ["recon.admin"],
+            },
+        }
+
+        with (
+            mock.patch(
+                "ragtime.userspace.runtime_routes._primitive_capabilities",
+                new_callable=mock.AsyncMock,
+                return_value={"workspace_id": "workspace-1"},
+            ),
+            mock.patch(
+                "ragtime.userspace.runtime_routes._primitive_session_payload",
+                new_callable=mock.AsyncMock,
+                return_value=session_payload,
+            ),
+            mock.patch(
+                "ragtime.rag.components.userspace_service.get_workspace_identity_entitlement_policy",
+                new_callable=mock.AsyncMock,
+                return_value=policy_response,
+                create=True,
+            ),
+        ):
+            raw = await coroutine(include_session=True)
+
+        payload = json.loads(raw)
+        identity = payload["identity_entitlements"]
+        self.assertEqual(identity["policy_status"], "configured")
+        self.assertEqual(identity["current_session_entitlements"], ["recon.admin"])
+        self.assertEqual(identity["private_header"], "X-Ragtime-Internal-Authenticated-Entitlements")
+        self.assertEqual(identity["browser_session_field"], "auth.entitlements")
+        self.assertEqual(identity["configuration_tool"], "configure_userspace_identity_entitlements")
+        self.assertEqual(identity["rules"][0]["entitlements"], ["recon.admin", "recon.role.preparer"])
+        self.assertEqual(identity["rules"][0]["auth_group"], accounting_group)
+        self.assertEqual(identity["configured_groups"], [accounting_group])
+        self.assertIn("owner", identity["configuration_scope"])
+        self.assertIn("fail", identity["failure_mode"].lower())
+        self.assertIn("administrator", identity["missing_group_instructions"].lower())
+        self.assertNotIn("members", json.dumps(identity).lower())
+
+    async def test_discover_userspace_primitives_surfaces_policy_read_errors(self) -> None:
+        from fastapi import HTTPException
+
+        tool = await self._tool("discover_userspace_primitives")
+        coroutine = tool.coroutine
+        assert coroutine is not None
+
+        with (
+            mock.patch(
+                "ragtime.userspace.runtime_routes._primitive_capabilities",
+                new_callable=mock.AsyncMock,
+                return_value={"workspace_id": "workspace-1"},
+            ),
+            mock.patch(
+                "ragtime.rag.components.userspace_service.get_workspace_identity_entitlement_policy",
+                new_callable=mock.AsyncMock,
+                side_effect=HTTPException(status_code=403, detail="Owner access required"),
+                create=True,
+            ),
+        ):
+            raw = await coroutine(include_session=False)
+
+        identity = json.loads(raw)["identity_entitlements"]
+        self.assertEqual(identity["policy_status"], "read_failed")
+        self.assertIn("403", identity["policy_read_error"])
+        self.assertIn("Owner access required", identity["policy_read_error"])
+
+    async def test_discover_userspace_primitives_compacts_large_available_auth_group_catalog(self) -> None:
+        tool = await self._tool("discover_userspace_primitives")
+        coroutine = tool.coroutine
+        assert coroutine is not None
+
+        policy_response = self._identity_policy_response(
+            rules=[],
+            available_auth_groups=[
+                {
+                    "id": f"group-{index:03d}",
+                    "key": f"group-{index:03d}",
+                    "display_name": f"Group {index:03d}",
+                    "provider": "ldap",
+                }
+                for index in range(40)
+            ],
+        )
+
+        with (
+            mock.patch(
+                "ragtime.userspace.runtime_routes._primitive_capabilities",
+                new_callable=mock.AsyncMock,
+                return_value={"workspace_id": "workspace-1"},
+            ),
+            mock.patch(
+                "ragtime.rag.components.userspace_service.get_workspace_identity_entitlement_policy",
+                new_callable=mock.AsyncMock,
+                return_value=policy_response,
+                create=True,
+            ),
+        ):
+            raw = await coroutine(include_session=False)
+
+        payload = json.loads(raw)
+        identity = payload["identity_entitlements"]
+        self.assertEqual(identity["policy_status"], "unconfigured")
+        self.assertTrue(identity["available_auth_groups_truncated"])
+        self.assertEqual(identity["available_auth_groups_total"], 40)
+        self.assertLessEqual(len(identity["available_auth_groups"]), 25)
+        self.assertEqual(identity["available_auth_groups"][0]["id"], "group-000")
+
+    async def test_configure_userspace_identity_entitlements_tool_is_owner_scoped(self) -> None:
+        from ragtime.userspace.models import ReplaceUserSpaceIdentityEntitlementPolicyRequest
+
+        tool = await self._tool("configure_userspace_identity_entitlements")
+        coroutine = tool.coroutine
+        assert coroutine is not None
+
+        schema = tool.args_schema
+        assert schema is not None
+        assert not isinstance(schema, dict)
+        self.assertIn("rules", schema.model_fields)
+        self.assertIn("reason", schema.model_fields)
+        self.assertNotIn("workspace_id", schema.model_fields)
+
+        executive_group = {
+            "id": "group-2",
+            "key": "ldap-executive",
+            "display_name": "Executive",
+            "provider": "ldap",
+        }
+        replace_response = self._identity_policy_response(
+            rules=[
+                {
+                    "auth_group_id": "group-2",
+                    "entitlements": ["recon.admin"],
+                    "auth_group": executive_group,
+                }
+            ],
+            available_auth_groups=[],
+        )
+
+        with mock.patch(
+            "ragtime.rag.components.userspace_service.replace_workspace_identity_entitlement_policy",
+            new_callable=mock.AsyncMock,
+            return_value=replace_response,
+            create=True,
+        ) as replace_policy:
+            raw = await coroutine(
+                rules=[
+                    {
+                        "auth_group_id": "group-2",
+                        "entitlements": ["recon.admin", "recon.admin"],
+                    }
+                ],
+                reason="Grant admin access",
+            )
+
+        payload = json.loads(raw)
+        self.assertEqual(payload["tool"], "configure_userspace_identity_entitlements")
+        self.assertTrue(payload["persisted"])
+        self.assertEqual(
+            payload["rules"],
+            [{"auth_group_id": "group-2", "entitlements": ["recon.admin"], "auth_group": executive_group}],
+        )
+        self.assertEqual(payload["configured_groups"], [executive_group])
+        self.assertEqual(payload["reason"], "Grant admin access")
+        request = replace_policy.await_args.args[2]
+        self.assertIsInstance(request, ReplaceUserSpaceIdentityEntitlementPolicyRequest)
+        self.assertEqual(replace_policy.await_args.args[:2], ("workspace-1", "user-1"))
+        self.assertEqual(request.rules[0].auth_group_id, "group-2")
+        self.assertEqual(request.rules[0].entitlements, ["recon.admin", "recon.admin"])
+        self.assertFalse(replace_policy.await_args.kwargs.get("is_admin", False))
+
     async def test_frontend_json_display_tools_bypass_global_output_truncation(self) -> None:
         tool = await self._tool("discover_userspace_primitives")
 

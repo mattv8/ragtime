@@ -1161,6 +1161,7 @@ model AuthGroup {
 
   memberships         AuthGroupMembership[]
   toolAuthGroupAccess ToolAuthGroupAccess[]
+  workspaceIdentityEntitlementRules WorkspaceIdentityEntitlementRule[]
 
   @@index([provider])
   @@index([sourceDn])
@@ -1539,11 +1540,29 @@ model Workspace {
   previewDiagnostics          WorkspacePreviewDiagnostic[]
   agentAccess                 WorkspaceAgentAccess?
   webhookDeliveries           GitWebhookDelivery[]
+  identityEntitlementRules    WorkspaceIdentityEntitlementRule[]
 
   @@unique([ownerUserId, nameNormalized])
   @@index([ownerUserId])
   @@index([updatedAt])
   @@map("workspaces")
+}
+
+model WorkspaceIdentityEntitlementRule {
+  id           String   @id @default(uuid())
+  workspaceId  String   @map("workspace_id")
+  authGroupId  String   @map("auth_group_id")
+  entitlements Json     @default("[]")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  authGroup AuthGroup @relation(fields: [authGroupId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, authGroupId])
+  @@index([workspaceId])
+  @@index([authGroupId])
+  @@map("workspace_identity_entitlement_rules")
 }
 
 model WorkspacePreviewDiagnostic {

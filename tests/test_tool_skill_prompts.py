@@ -217,6 +217,21 @@ No tools configured. Answer from indexed knowledge sources only (code, documenta
         self.assertNotIn("Persistent User Space dashboards must be live-wired", prompt)
         self.assertNotIn("Two-lane persistence contract", prompt)
 
+    def test_userspace_prompt_directs_auth_and_ldap_work_to_identity_entitlement_primitives(self) -> None:
+        prompt = build_userspace_mode_prompt_addition(
+            include_sqlite_persistence=False,
+            has_live_data_tools=False,
+            workspace_continuity="### Workspace\n\n- Existing app.\n",
+            available_tool_names={"discover_userspace_primitives", "configure_userspace_identity_entitlements"},
+        )
+
+        self.assertIn("discover_userspace_primitives", prompt)
+        self.assertIn("configure_userspace_identity_entitlements", prompt)
+        self.assertIn("auth groups by stable ID", prompt)
+        self.assertIn("private entitlement header only in backend code", prompt)
+        self.assertIn("auth.entitlements only for UI hints", prompt)
+        self.assertIn("Ragtime administrator must sync or register", prompt)
+
     def test_userspace_diagnostics_none_and_all_names_match_legacy(self) -> None:
         diagnostics = [{"target_label": "preview", "count": 2, "max_ms": 1800, "avg_ms": 1200, "last_ms": 1500}]
 

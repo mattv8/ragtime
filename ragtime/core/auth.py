@@ -1716,11 +1716,16 @@ async def resolve_ldap_role_for_user_dn(
             conn.unbind()
 
 
-async def ldap_user_is_member_of_group(user_dn: str, group_dn: str) -> bool:
-    """Check live LDAP membership for a user DN, including AD primary groups."""
+async def ldap_user_is_member_of_group_strict(user_dn: str, group_dn: str) -> bool:
+    """Live LDAP membership check that raises when membership cannot be verified.
+
+    Returns True/False only when the directory answered authoritatively. Raises
+    when LDAP is unconfigured, unreachable, or the search fails, so callers
+    that must distinguish "not a member" from "unverifiable" can fail closed.
+    """
     ldap_config = await get_ldap_config()
     if not ldap_config.serverUrl or not ldap_config.bindDn or not group_dn:
-        return False
+        raise RuntimeError("LDAP is not configured for group membership verification")
 
     bind_password = decrypt_secret(ldap_config.bindPassword)
     conn = _get_ldap_connection(
@@ -1730,7 +1735,7 @@ async def ldap_user_is_member_of_group(user_dn: str, group_dn: str) -> bool:
         ldap_config.allowSelfSigned,
     )
     if not conn:
-        return False
+        raise RuntimeError("Failed to connect to LDAP server")
 
     try:
         conn.search(
@@ -1749,12 +1754,18 @@ async def ldap_user_is_member_of_group(user_dn: str, group_dn: str) -> bool:
             ldap_config=ldap_config,
             bind_password=bind_password,
         )
-    except Exception as exc:
-        logger.debug(f"LDAP membership check failed for {user_dn}: {exc}")
-        return False
     finally:
         if conn.bound:
             conn.unbind()
+
+
+async def ldap_user_is_member_of_group(user_dn: str, group_dn: str) -> bool:
+    """Check live LDAP membership for a user DN, including AD primary groups."""
+    try:
+        return await ldap_user_is_member_of_group_strict(user_dn, group_dn)
+    except Exception as exc:
+        logger.debug(f"LDAP membership check failed for {user_dn}: {exc}")
+        return False
 
 
 # =============================================================================

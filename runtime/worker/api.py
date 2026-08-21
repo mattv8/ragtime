@@ -80,6 +80,12 @@ _AUTHENTICATED_IDENTITY_HEADER_MAP = {
     "x-ragtime-authenticated-display-name": "x-ragtime-internal-authenticated-display-name",
     "x-ragtime-user-fingerprint": "x-ragtime-internal-user-fingerprint",
 }
+_PUBLIC_AUTHENTICATED_ENTITLEMENTS_HEADER = "x-ragtime-authenticated-entitlements"
+# The private entitlement header is injected by the ragtime control plane and
+# must reach the workspace backend unchanged (backends authorize against it).
+# It is therefore intentionally NOT added to the blocked set in
+# ``_preview_request_headers``; only the public spoof alias is blocked there.
+_PRIVATE_AUTHENTICATED_ENTITLEMENTS_HEADER = "x-ragtime-internal-authenticated-entitlements"
 
 
 def _encode_user_app_cookie_name(cookie_name: str) -> str | None:
@@ -133,6 +139,7 @@ def _preview_request_headers(request: Request) -> dict[str, str]:
         "content-length",
         "authorization",
         "cookie",
+        _PUBLIC_AUTHENTICATED_ENTITLEMENTS_HEADER,
         *set(_AUTHENTICATED_IDENTITY_HEADER_MAP),
         *set(_AUTHENTICATED_IDENTITY_HEADER_MAP.values()),
     }

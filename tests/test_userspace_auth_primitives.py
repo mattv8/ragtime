@@ -207,7 +207,11 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         async def fake_capabilities(workspace_id: str, user_id: str | None, *, preview_mode: str) -> dict[str, Any]:
             return {"workspace_id": workspace_id, "mode": preview_mode, "can_read_files": True}
 
-        fake_service = SimpleNamespace(get_workspace_audit_fingerprint_namespace=mock.AsyncMock(return_value="portable-a"))
+        fake_service = SimpleNamespace(
+            get_workspace_audit_fingerprint_namespace=mock.AsyncMock(return_value="portable-a"),
+            resolve_workspace_identity_entitlements=mock.AsyncMock(return_value=["recon.admin", "recon.role.preparer"]),
+        )
+        user = SimpleNamespace(id="user-1", username="verified-user", displayName="Verified User", authProvider="ldap")
         with (
             mock.patch.object(_RUNTIME_ROUTES, "_primitive_capabilities", new=fake_capabilities),
             mock.patch.object(_RUNTIME_ROUTES, "_userspace_service", return_value=fake_service),
@@ -232,6 +236,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
                 "workspace-a",
                 "user-1",
                 mode="workspace",
+                user=user,
             )
 
         self.assertEqual(payload["workspace_id"], "workspace-a")
@@ -239,6 +244,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(str(payload["user_fingerprint"]).startswith("v1:"))
         self.assertEqual(payload["user_fingerprint_scope"], "workspace")
         self.assertTrue(payload["auth"]["authenticated"])
+        self.assertEqual(payload["auth"]["entitlements"], ["recon.admin", "recon.role.preparer"])
         self.assertEqual(payload["auth"]["binding_strategy"], "browser_capability_token")
         self.assertEqual(payload["auth"]["interactive_auth_endpoint"], "/__ragtime/browser-auth/start")
         self.assertEqual(payload["auth"]["login_endpoint"], "/auth/login")
@@ -246,12 +252,17 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["auth"]["methods"][0]["key"], "local_managed")
         self.assertEqual(payload["auth"]["methods"][0]["binding_surfaces"], ["collab", "runtime_pty"])
         self.assertEqual(payload["auth"]["browser_logout_endpoint"], "/indexes/userspace/runtime/workspaces/workspace-a/browser-auth/logout")
+        self.assertNotIn("groups", payload["auth"])
+        fake_service.resolve_workspace_identity_entitlements.assert_awaited_once_with("workspace-a", user)
 
     async def test_same_origin_primitive_session_payload_uses_preview_auth_endpoints(self) -> None:
         async def fake_capabilities(workspace_id: str, user_id: str | None, *, preview_mode: str) -> dict[str, Any]:
             return {"workspace_id": workspace_id, "mode": preview_mode, "can_read_files": True}
 
-        fake_service = SimpleNamespace(get_workspace_audit_fingerprint_namespace=mock.AsyncMock(return_value="portable-a"))
+        fake_service = SimpleNamespace(
+            get_workspace_audit_fingerprint_namespace=mock.AsyncMock(return_value="portable-a"),
+            resolve_workspace_identity_entitlements=mock.AsyncMock(return_value=[]),
+        )
         with (
             mock.patch.object(_RUNTIME_ROUTES, "_primitive_capabilities", new=fake_capabilities),
             mock.patch.object(_RUNTIME_ROUTES, "_userspace_service", return_value=fake_service),
@@ -277,7 +288,10 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             email="jane@example.com",
             authProvider="local_managed",
         )
-        fake_service = SimpleNamespace(get_workspace_audit_fingerprint_namespace=mock.AsyncMock(return_value="portable-a"))
+        fake_service = SimpleNamespace(
+            get_workspace_audit_fingerprint_namespace=mock.AsyncMock(return_value="portable-a"),
+            resolve_workspace_identity_entitlements=mock.AsyncMock(return_value=[]),
+        )
         with (
             mock.patch.object(_RUNTIME_ROUTES, "_primitive_capabilities", new=fake_capabilities),
             mock.patch.object(_RUNTIME_ROUTES, "_userspace_service", return_value=fake_service),
@@ -302,7 +316,10 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             return {"workspace_id": workspace_id, "mode": preview_mode, "can_read_files": True}
 
         user = SimpleNamespace(username="jane@example.com", displayName="", email=None, authProvider="ldap")
-        fake_service = SimpleNamespace(get_workspace_audit_fingerprint_namespace=mock.AsyncMock(return_value="portable-a"))
+        fake_service = SimpleNamespace(
+            get_workspace_audit_fingerprint_namespace=mock.AsyncMock(return_value="portable-a"),
+            resolve_workspace_identity_entitlements=mock.AsyncMock(return_value=[]),
+        )
         with (
             mock.patch.object(_RUNTIME_ROUTES, "_primitive_capabilities", new=fake_capabilities),
             mock.patch.object(_RUNTIME_ROUTES, "_userspace_service", return_value=fake_service),
@@ -349,6 +366,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertFalse(payload["auth"]["authenticated"])
+        self.assertEqual(payload["auth"]["entitlements"], [])
         self.assertIsNone(payload["auth"]["user"])
         self.assertIsNone(payload["user_id"])
         self.assertIsNone(payload["user_fingerprint"])
@@ -888,6 +906,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
                 "user_id": "user-1",
                 "auth": {
                     "authenticated": True,
+                    "entitlements": ["recon.admin", "recon.role.preparer"],
                     "user": {
                         "username": "verified-user",
                         "display_name": "Verified User",
@@ -911,6 +930,11 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_headers.get("x-ragtime-internal-authenticated-username"), "verified-user")
         self.assertEqual(sent_headers.get("x-ragtime-internal-authenticated-display-name"), "Verified User")
         self.assertEqual(sent_headers.get("x-ragtime-internal-user-fingerprint"), "verified-fingerprint")
+        self.assertEqual(
+            sent_headers.get("x-ragtime-internal-authenticated-entitlements"),
+            "recon.admin,recon.role.preparer",
+        )
+        self.assertNotIn("x-ragtime-authenticated-entitlements", sent_headers)
         self.assertEqual(sent_headers.get("x-ragtime-authenticated-username"), "verified-user")
         self.assertEqual(sent_headers.get("x-ragtime-authenticated-display-name"), "Verified User")
         self.assertEqual(sent_headers.get("x-ragtime-user-fingerprint"), "verified-fingerprint")
@@ -946,6 +970,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
                         "user_id": "user-1",
                         "auth": {
                             "authenticated": True,
+                            "entitlements": ["recon.admin"],
                             "user": {
                                 "username": "verified-user",
                                 "display_name": "Verified User",
@@ -970,6 +995,11 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             sent_headers.get("x-ragtime-internal-user-fingerprint"),
             "verified-fingerprint",
         )
+        self.assertEqual(
+            sent_headers.get("x-ragtime-internal-authenticated-entitlements"),
+            "recon.admin",
+        )
+        self.assertNotIn("x-ragtime-authenticated-entitlements", sent_headers)
         self.assertEqual(sent_headers.get("x-ragtime-authenticated-username"), "verified-user")
         self.assertEqual(sent_headers.get("x-ragtime-authenticated-display-name"), "Verified User")
         self.assertEqual(sent_headers.get("x-ragtime-user-fingerprint"), "verified-fingerprint")
@@ -984,7 +1014,9 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
                 (b"host", b"workspace-a.ragtime.test"),
                 (b"content-type", b"application/json"),
                 (b"x-ragtime-authenticated-username", b"spoofed-user"),
+                (b"x-ragtime-authenticated-entitlements", b"spoofed-public-entitlement"),
                 (b"x-ragtime-internal-authenticated-username", b"spoofed-private-user"),
+                (b"x-ragtime-internal-authenticated-entitlements", b"spoofed-private-entitlement"),
             ],
             method="POST",
             body=b'{"action":"save"}',
@@ -1008,7 +1040,82 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("x-ragtime-internal-authenticated-username", sent_headers)
         self.assertNotIn("x-ragtime-internal-authenticated-display-name", sent_headers)
         self.assertNotIn("x-ragtime-internal-user-fingerprint", sent_headers)
+        self.assertNotIn("x-ragtime-authenticated-entitlements", sent_headers)
+        self.assertNotIn("x-ragtime-internal-authenticated-entitlements", sent_headers)
         self.assertEqual(len(client.requests), 1)
+
+    async def test_authenticated_preview_request_omits_entitlements_header_when_resolved_list_is_empty(self) -> None:
+        upstream = _FakeProxyUpstreamResponse(b'{"ok":true}', content_type="application/json")
+        client = _FakeProxyClient(upstream)
+        request = _build_request(
+            "/api/save",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"content-type", b"application/json"),
+                (b"x-ragtime-authenticated-entitlements", b"spoofed-public-entitlement"),
+                (b"x-ragtime-internal-authenticated-entitlements", b"spoofed-private-entitlement"),
+            ],
+            method="POST",
+            body=b'{"action":"save"}',
+        )
+
+        with (
+            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
+        ):
+            response = await _RUNTIME_ROUTES._proxy_http_request(
+                request,
+                "http://runtime/api/save",
+                primitive_session_factory=mock.AsyncMock(
+                    return_value={
+                        "workspace_id": "workspace-a",
+                        "user_id": "user-1",
+                        "auth": {
+                            "authenticated": True,
+                            "entitlements": [],
+                            "user": {
+                                "username": "verified-user",
+                                "display_name": "Verified User",
+                                "user_fingerprint": "verified-fingerprint",
+                            },
+                        },
+                    }
+                ),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        sent_headers = client.built_request["headers"] if client.built_request else {}
+        self.assertNotIn("x-ragtime-authenticated-entitlements", sent_headers)
+        self.assertNotIn("x-ragtime-internal-authenticated-entitlements", sent_headers)
+
+    async def test_proxy_request_returns_503_when_entitlement_resolution_fails(self) -> None:
+        request = _build_request(
+            "/api/save",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"content-type", b"application/json"),
+            ],
+            method="POST",
+            body=b'{"action":"save"}',
+        )
+        client = _FakeProxyClient(_FakeProxyUpstreamResponse(b'{"ok":true}', content_type="application/json"))
+        primitive_session_factory = mock.AsyncMock(
+            side_effect=HTTPException(status_code=503, detail="Entitlement resolution unavailable")
+        )
+
+        with (
+            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await _RUNTIME_ROUTES._proxy_http_request(
+                    request,
+                    "http://runtime/api/save",
+                    primitive_session_factory=primitive_session_factory,
+                )
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertIsNone(client.built_request)
 
     async def test_non_auth_required_preview_request_injects_verified_identity_headers(self) -> None:
         html = b"<html><head><script src='/main.js'></script></head><body>Dashboard</body></html>"

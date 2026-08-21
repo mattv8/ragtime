@@ -89,6 +89,7 @@ from ragtime.userspace.models import (
     PaginatedWorkspacesResponse,
     PromoteBranchToMainRequest,
     RenameUserSpaceObjectStorageObjectRequest,
+    ReplaceUserSpaceIdentityEntitlementPolicyRequest,
     RestoreSnapshotResponse,
     SqliteInspectorAlterTableRequest,
     SqliteInspectorAlterTableResponse,
@@ -141,6 +142,7 @@ from ragtime.userspace.models import (
     UserSpaceCollabPresenceUser,
     UserSpaceFileInfo,
     UserSpaceFileResponse,
+    UserSpaceIdentityEntitlementPolicyResponse,
     UserspaceMountSource,
     UserSpaceObjectStorageConfig,
     UserSpaceObjectStorageListResponse,
@@ -944,6 +946,40 @@ async def update_workspace(
             result.owner_user_id,
         )
     return result
+
+
+@router.get(
+    "/workspaces/{workspace_id}/identity-entitlements",
+    response_model=UserSpaceIdentityEntitlementPolicyResponse,
+)
+async def get_workspace_identity_entitlements(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.get_workspace_identity_entitlement_policy(
+        workspace_id,
+        user.id,
+        is_admin=is_admin,
+        include_available_groups=True,
+    )
+
+
+@router.put(
+    "/workspaces/{workspace_id}/identity-entitlements",
+    response_model=UserSpaceIdentityEntitlementPolicyResponse,
+)
+async def replace_workspace_identity_entitlements(
+    workspace_id: str,
+    request: ReplaceUserSpaceIdentityEntitlementPolicyRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.replace_workspace_identity_entitlement_policy(
+        workspace_id,
+        user.id,
+        request,
+        is_admin=user.role == "admin",
+    )
 
 
 @router.post(

@@ -239,6 +239,35 @@ class WorkspaceToolOptionState(BaseModel):
     write_access_enabled: bool = False
 
 
+class UserSpaceIdentityEntitlementAuthGroup(BaseModel):
+    id: str
+    key: str
+    display_name: str
+    provider: str
+
+
+class UserSpaceIdentityEntitlementRuleInput(BaseModel):
+    auth_group_id: str = Field(min_length=1)
+    entitlements: list[str] = Field(min_length=1, max_length=32)
+
+
+class UserSpaceIdentityEntitlementRule(BaseModel):
+    auth_group_id: str
+    entitlements: list[str] = Field(default_factory=list)
+    auth_group: UserSpaceIdentityEntitlementAuthGroup
+
+
+class ReplaceUserSpaceIdentityEntitlementPolicyRequest(BaseModel):
+    rules: list[UserSpaceIdentityEntitlementRuleInput] = Field(default_factory=list, max_length=100)
+
+
+class UserSpaceIdentityEntitlementPolicyResponse(BaseModel):
+    workspace_id: str
+    can_configure: bool = False
+    rules: list[UserSpaceIdentityEntitlementRule] = Field(default_factory=list)
+    available_auth_groups: list[UserSpaceIdentityEntitlementAuthGroup] = Field(default_factory=list)
+
+
 class UserSpaceWorkspace(BaseModel):
     id: str
     name: str

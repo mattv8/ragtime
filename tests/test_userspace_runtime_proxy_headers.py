@@ -90,6 +90,21 @@ class UserSpaceRuntimeProxyHeaderTests(unittest.TestCase):
 
         self.assertNotIn("cookie", {key.lower(): value for key, value in headers.items()})
 
+    def test_control_plane_proxy_blocks_public_and_private_entitlement_spoof_headers(self) -> None:
+        request = _build_request(
+            "https",
+            [
+                (b"host", b"workspace.example.test"),
+                (b"x-ragtime-authenticated-entitlements", b"spoofed-public"),
+                (b"x-ragtime-internal-authenticated-entitlements", b"spoofed-private"),
+            ],
+        )
+
+        headers = _proxy_request_headers(request)
+
+        self.assertNotIn("x-ragtime-authenticated-entitlements", {key.lower(): value for key, value in headers.items()})
+        self.assertNotIn("x-ragtime-internal-authenticated-entitlements", {key.lower(): value for key, value in headers.items()})
+
     def test_control_plane_forwards_only_namespaced_user_app_cookies_when_allowed(self) -> None:
         app_cookie_name = _browser_app_cookie_name("custom_bid_manager_session")
         request = _build_request(
@@ -201,6 +216,22 @@ class UserSpaceRuntimeProxyHeaderTests(unittest.TestCase):
         self.assertNotIn("x-ragtime-internal-authenticated-display-name", headers)
         self.assertNotIn("x-ragtime-internal-user-fingerprint", headers)
 
+    def test_worker_preview_proxy_strips_public_entitlement_spoof_and_forwards_private_header(self) -> None:
+        request = _build_request(
+            "http",
+            [
+                (b"host", b"runtime-worker.test"),
+                (b"authorization", b"Bearer worker-token"),
+                (b"x-ragtime-authenticated-entitlements", b"spoofed-public"),
+                (b"x-ragtime-internal-authenticated-entitlements", b"recon.admin,recon.role.preparer"),
+            ],
+        )
+
+        headers = _worker_preview_request_headers(request)
+
+        self.assertNotIn("x-ragtime-authenticated-entitlements", {key.lower(): value for key, value in headers.items()})
+        self.assertEqual(headers.get("x-ragtime-internal-authenticated-entitlements"), "recon.admin,recon.role.preparer")
+
     def test_worker_preview_proxy_namespaces_user_app_set_cookie(self) -> None:
         app_cookie_name = _browser_app_cookie_name("custom_bid_manager_session")
         upstream_headers = httpx.Headers(
@@ -271,6 +302,48 @@ class CancellationSafeStreamingResponseTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(StreamingResponse, "__call__", raise_group):
             with self.assertRaises(BaseExceptionGroup):
                 await response({}, None, None)
+
+
+class AuthenticatedPreviewIdentityHeaderTests(unittest.TestCase):
+    _headers = staticmethod(getattr(_RUNTIME_ROUTES, "_authenticated_preview_identity_headers"))
+
+    def test_injects_only_private_entitlements_header(self) -> None:
+        headers = self._headers(
+            {
+                "auth": {
+                    "authenticated": True,
+                    "entitlements": ["recon.admin", "recon.role.preparer"],
+                    "user": {
+                        "username": "verified-user",
+                        "display_name": "Verified User",
+                        "user_fingerprint": "verified-fingerprint",
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(
+            headers.get("x-ragtime-internal-authenticated-entitlements"),
+            "recon.admin,recon.role.preparer",
+        )
+        self.assertNotIn("x-ragtime-authenticated-entitlements", headers)
+
+    def test_omits_private_entitlements_header_for_empty_lists(self) -> None:
+        headers = self._headers(
+            {
+                "auth": {
+                    "authenticated": True,
+                    "entitlements": [],
+                    "user": {
+                        "username": "verified-user",
+                        "display_name": "Verified User",
+                        "user_fingerprint": "verified-fingerprint",
+                    },
+                }
+            }
+        )
+
+        self.assertNotIn("x-ragtime-internal-authenticated-entitlements", headers)
 
 
 class SanitizeUserAppCookieHeaderTests(unittest.TestCase):

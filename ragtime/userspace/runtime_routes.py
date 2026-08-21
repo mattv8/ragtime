@@ -94,6 +94,8 @@ _PRIVATE_AUTHENTICATED_IDENTITY_HEADER_MAP = {
     "x-ragtime-internal-authenticated-display-name": ("auth", "user", "display_name"),
     "x-ragtime-internal-user-fingerprint": ("auth", "user", "user_fingerprint"),
 }
+_PUBLIC_AUTHENTICATED_ENTITLEMENTS_HEADER = "x-ragtime-authenticated-entitlements"
+_PRIVATE_AUTHENTICATED_ENTITLEMENTS_HEADER = "x-ragtime-internal-authenticated-entitlements"
 _DOCUMENT_PARSE_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _DOCUMENT_PARSE_MAX_BYTES = 25 * 1024 * 1024
 _PRIMITIVE_UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -400,6 +402,7 @@ async def _primitive_session_payload(
     same_origin_auth_endpoints: bool = False,
 ) -> dict[str, Any]:
     capabilities = await _primitive_capabilities(workspace_id, user_id, preview_mode=mode)
+    entitlements: list[str] = []
     fingerprint = None
     if user_id:
         fingerprint = (
@@ -418,6 +421,9 @@ async def _primitive_session_payload(
             )
             or None
         )
+        if user is not None:
+            resolved = await _userspace_service().resolve_workspace_identity_entitlements(workspace_id, user)
+            entitlements = sorted({str(item).strip() for item in resolved if str(item).strip()})
     auth_methods = await _userspace_auth_methods()
     browser_auth_endpoint = "/__ragtime/browser-auth"
     browser_logout_endpoint = "/__ragtime/browser-auth/logout"
@@ -433,6 +439,7 @@ async def _primitive_session_payload(
         "share_access_mode": share_access_mode,
         "auth": {
             "authenticated": bool(user_id),
+            "entitlements": entitlements,
             "user": _auth_user_payload(user, user_fingerprint=fingerprint) if user_id else None,
             "methods": [method.model_dump() for method in auth_methods],
             "binding_strategy": "browser_capability_token",
@@ -1419,6 +1426,8 @@ def _proxy_request_headers(request: Request, *, allow_user_cookies: bool = False
         "x-api-key",
         "x-userspace-share-password",
         "x-userspace-share-auth",
+        _PUBLIC_AUTHENTICATED_ENTITLEMENTS_HEADER,
+        _PRIVATE_AUTHENTICATED_ENTITLEMENTS_HEADER,
         *set(_AUTHENTICATED_IDENTITY_HEADER_MAP),
         *set(_PRIVATE_AUTHENTICATED_IDENTITY_HEADER_MAP),
     }
@@ -1452,6 +1461,11 @@ def _authenticated_preview_identity_headers(primitive_session: dict[str, Any] | 
             value = str(user_payload.get(field_name) or "").strip()
             if value:
                 headers[header_name] = value
+    raw_entitlements = auth_payload.get("entitlements")
+    if isinstance(raw_entitlements, list):
+        entitlements = sorted({str(item).strip() for item in raw_entitlements if str(item).strip()})
+        if entitlements:
+            headers[_PRIVATE_AUTHENTICATED_ENTITLEMENTS_HEADER] = ",".join(entitlements)
     return headers
 
 

@@ -297,6 +297,7 @@ FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES = frozenset(
         CHAT_WEB_SEARCH_TOOL_ID,
         CHAT_WEB_BROWSE_TOOL_ID,
         "assay_userspace_code",
+        "configure_userspace_identity_entitlements",
         "discover_userspace_primitives",
         "search_knowledge",
         "validate_userspace_code",
@@ -9722,6 +9723,28 @@ class RAGComponents:
                 description="Brief description of why primitive discovery is needed",
             )
 
+        class ConfigureIdentityEntitlementRuleInput(BaseModel):
+            auth_group_id: str = Field(
+                min_length=1,
+                description="Stable auth-group ID returned by primitive discovery.",
+            )
+            entitlements: list[str] = Field(
+                min_length=1,
+                max_length=32,
+                description="Complete opaque entitlement token list for this auth group.",
+            )
+
+        class ConfigureUserSpaceIdentityEntitlementsInput(BaseModel):
+            rules: list[ConfigureIdentityEntitlementRuleInput] = Field(
+                default_factory=list,
+                max_length=100,
+                description="Complete replacement policy for the current workspace.",
+            )
+            reason: str = Field(
+                default="",
+                description="Why the workspace identity policy is changing.",
+            )
+
         class UpsertUserSpaceEnvVarInput(BaseModel):
             key: str = Field(
                 description=("Environment variable key (for example: OPENAI_API_KEY). Must match [A-Za-z_][A-Za-z0-9_]*."),
@@ -10891,6 +10914,64 @@ class RAGComponents:
                 payload = {"tool": "search_userspace_code", **payload}
             return json.dumps(payload, indent=2)
 
+        def _coerce_payload_dict(value: Any) -> dict[str, Any]:
+            if value is None:
+                return {}
+            if isinstance(value, dict):
+                return dict(value)
+            model_dump = getattr(value, "model_dump", None)
+            if callable(model_dump):
+                dumped = model_dump(mode="json")
+                if isinstance(dumped, dict):
+                    return dict(dumped)
+            raw_dict = getattr(value, "dict", None)
+            if callable(raw_dict):
+                dumped = raw_dict()
+                if isinstance(dumped, dict):
+                    return dict(dumped)
+            if hasattr(value, "__dict__"):
+                return {key: raw for key, raw in vars(value).items() if not key.startswith("_")}
+            return {}
+
+        def _normalize_entitlement_tokens(values: Any) -> list[str]:
+            return sorted({str(value).strip() for value in list(values or []) if str(value).strip()})
+
+        def _normalize_auth_group(value: Any) -> dict[str, str] | None:
+            payload = _coerce_payload_dict(value)
+            group_id = str(payload.get("id") or "").strip()
+            if not group_id:
+                return None
+            return {
+                "id": group_id,
+                "key": str(payload.get("key") or "").strip(),
+                "display_name": str(payload.get("display_name") or payload.get("displayName") or "").strip(),
+                "provider": str(payload.get("provider") or "").strip(),
+            }
+
+        def _normalize_entitlement_rule(value: Any) -> dict[str, Any] | None:
+            payload = _coerce_payload_dict(value)
+            auth_group_id = str(payload.get("auth_group_id") or payload.get("authGroupId") or payload.get("group_id") or "").strip()
+            if not auth_group_id:
+                return None
+            normalized: dict[str, Any] = {
+                "auth_group_id": auth_group_id,
+                "entitlements": _normalize_entitlement_tokens(payload.get("entitlements")),
+            }
+            auth_group = _normalize_auth_group(payload.get("auth_group") or payload.get("authGroup"))
+            if auth_group is not None:
+                normalized["auth_group"] = auth_group
+            return normalized
+
+        def _configured_groups_from_rules(rules: list[dict[str, Any]]) -> list[dict[str, str]]:
+            configured_groups: list[dict[str, str]] = []
+            seen_group_ids: set[str] = set()
+            for rule in rules:
+                group = rule.get("auth_group")
+                if isinstance(group, dict) and group.get("id") and group["id"] not in seen_group_ids:
+                    seen_group_ids.add(group["id"])
+                    configured_groups.append(cast(dict[str, str], group))
+            return configured_groups
+
         async def discover_userspace_primitives(
             include_session: bool = True,
             reason: str = "",
@@ -10906,6 +10987,60 @@ class RAGComponents:
             if include_session:
                 session = await _primitive_session_payload(target_ws, target_uid, mode="workspace", same_origin_auth_endpoints=True)
 
+            def _compact_auth_groups(values: Any, *, limit: int = 25) -> tuple[list[dict[str, str]], bool, int]:
+                groups = [normalized for normalized in (_normalize_auth_group(value) for value in list(values or [])) if normalized is not None]
+                groups.sort(key=lambda item: (item["provider"], item["display_name"], item["key"], item["id"]))
+                total = len(groups)
+                return groups[:limit], total > limit, total
+
+            policy_getter = getattr(userspace_service, "get_workspace_identity_entitlement_policy", None)
+            policy_payload: dict[str, Any] = {}
+            policy_read_error: str | None = None
+            if not callable(policy_getter):
+                policy_read_error = "Workspace identity entitlement policy service is unavailable."
+            else:
+                try:
+                    policy = await policy_getter(target_ws, target_uid, include_available_groups=True, is_admin=False)
+                except HTTPException as exc:
+                    policy_read_error = f"HTTP {exc.status_code}: {exc.detail}"
+                except Exception as exc:
+                    policy_read_error = str(exc)
+                else:
+                    policy_payload = _coerce_payload_dict(policy)
+            rules = [normalized for normalized in (_normalize_entitlement_rule(rule) for rule in list(policy_payload.get("rules") or [])) if normalized is not None]
+            configured_groups = _configured_groups_from_rules(rules)
+            can_configure = bool(policy_payload.get("can_configure") or policy_payload.get("may_configure") or policy_payload.get("canConfigure"))
+            available_auth_groups: list[dict[str, str]] = []
+            available_auth_groups_truncated = False
+            available_auth_groups_total = 0
+            if can_configure:
+                available_auth_groups, available_auth_groups_truncated, available_auth_groups_total = _compact_auth_groups(
+                    policy_payload.get("available_auth_groups") or policy_payload.get("available_groups") or policy_payload.get("availableAuthGroups")
+                )
+            session_auth = _coerce_payload_dict((session or {}).get("auth") if isinstance(session, dict) else None)
+            identity_entitlements: dict[str, Any] = {
+                "policy_status": "configured" if rules else "unconfigured",
+                "rules": rules,
+                "configured_groups": configured_groups,
+                "can_configure": can_configure,
+                "current_session_entitlements": _normalize_entitlement_tokens(session_auth.get("entitlements")),
+                "private_header": "X-Ragtime-Internal-Authenticated-Entitlements",
+                "private_header_format": "sorted comma-separated opaque entitlement tokens",
+                "browser_session_field": "auth.entitlements",
+                "browser_session_security": "Display-only advisory field. Backend authorization must use the private header.",
+                "configuration_tool": "configure_userspace_identity_entitlements",
+                "configuration_scope": "Current-workspace owner only. Global admins who are not owners must use REST.",
+                "failure_mode": "Fail closed. If policy or group verification cannot be verified, protected requests are not forwarded.",
+                "missing_group_instructions": "If a required auth group is missing from the available catalog, stop and report that a Ragtime administrator must sync or register it before configuration.",
+            }
+            if policy_read_error is not None:
+                identity_entitlements["policy_status"] = "read_failed"
+                identity_entitlements["policy_read_error"] = policy_read_error
+            if can_configure:
+                identity_entitlements["available_auth_groups"] = available_auth_groups
+                identity_entitlements["available_auth_groups_truncated"] = available_auth_groups_truncated
+                identity_entitlements["available_auth_groups_total"] = available_auth_groups_total
+
             return _render_userspace_tool_payload(
                 tool_name="discover_userspace_primitives",
                 status="completed",
@@ -10918,6 +11053,65 @@ class RAGComponents:
                 include_session=include_session,
                 capabilities=capabilities,
                 session=session,
+                identity_entitlements=identity_entitlements,
+            )
+
+        async def configure_userspace_identity_entitlements(
+            rules: list[ConfigureIdentityEntitlementRuleInput],
+            reason: str = "",
+            **_: Any,
+        ) -> str:
+            from ragtime.userspace.models import (
+                ReplaceUserSpaceIdentityEntitlementPolicyRequest,
+                UserSpaceIdentityEntitlementRuleInput,
+            )
+
+            replace_policy = getattr(userspace_service, "replace_workspace_identity_entitlement_policy", None)
+            if not callable(replace_policy):
+                raise ToolException("Workspace identity entitlement policy service is unavailable.")
+
+            normalized_rule_inputs: list[UserSpaceIdentityEntitlementRuleInput] = []
+            for rule in rules:
+                if isinstance(rule, dict):
+                    normalized_rule_inputs.append(
+                        UserSpaceIdentityEntitlementRuleInput(
+                            auth_group_id=str(rule.get("auth_group_id") or ""),
+                            entitlements=list(rule.get("entitlements") or []),
+                        )
+                    )
+                else:
+                    normalized_rule_inputs.append(
+                        UserSpaceIdentityEntitlementRuleInput(
+                            auth_group_id=rule.auth_group_id,
+                            entitlements=list(rule.entitlements),
+                        )
+                    )
+
+            request = ReplaceUserSpaceIdentityEntitlementPolicyRequest(rules=normalized_rule_inputs)
+            response = await replace_policy(workspace_id, user_id, request, is_admin=False)
+
+            response_payload = _coerce_payload_dict(response)
+            normalized_rules = [
+                normalized
+                for normalized in (
+                    _normalize_entitlement_rule(rule_payload) for rule_payload in list(response_payload.get("rules") or [])
+                )
+                if normalized is not None
+            ]
+            configured_groups = _configured_groups_from_rules(normalized_rules)
+
+            return _render_userspace_tool_payload(
+                tool_name="configure_userspace_identity_entitlements",
+                status="persisted",
+                message="Workspace identity entitlement policy replaced.",
+                persisted=True,
+                retryable=True,
+                failure_class="none",
+                next_best_tool="patch_userspace_file",
+                workspace_id=workspace_id,
+                reason=reason,
+                rules=normalized_rules,
+                configured_groups=configured_groups,
             )
 
         async def upsert_userspace_env_var(
@@ -13433,6 +13627,15 @@ class RAGComponents:
                     "Use this to discover auth, login, SSO, LDAP, Basic Auth, and audit identity primitives."
                 ),
                 args_schema=DiscoverUserSpacePrimitivesInput,
+            ),
+            _create_userspace_tool(
+                coroutine=configure_userspace_identity_entitlements,
+                name="configure_userspace_identity_entitlements",
+                description=(
+                    "Replace the current workspace identity-entitlement policy using auth-group IDs returned by primitive discovery. "
+                    "Owner-only, current-workspace only, and full replacement semantics."
+                ),
+                args_schema=ConfigureUserSpaceIdentityEntitlementsInput,
             ),
             _create_userspace_tool(
                 coroutine=upsert_userspace_env_var,
