@@ -203,4 +203,14 @@ describe('UserMenu passkey management', () => {
     await screen.findByText('Delete failed');
     expect(screen.queryByText('Old passkey')).not.toBeNull();
   });
+
+  it('shows Modern when user theme_pack is the legacy vscode id', async () => {
+    const userInteraction = userEvent.setup();
+    const legacyUser = { ...user, theme_pack: 'vscode' };
+    render(<UserMenu user={legacyUser} onLogout={vi.fn()} />);
+
+    await userInteraction.click(screen.getByRole('button', { name: /alice/i }));
+
+    expect(screen.getByText('Theme: Modern')).not.toBeNull();
+  });
 });

@@ -136,6 +136,73 @@ describe('ResizeHandle', () => {
     expect(onResizeEnd).toHaveBeenCalledTimes(2);
   });
 
+  it('renders a decorative three-dot grip with aria-hidden in both directions', () => {
+    const onResize = vi.fn();
+    const onResizeTo = vi.fn();
+
+    const { rerender } = render(
+      <ResizeHandle
+        direction="horizontal"
+        ariaLabel="Resize pane"
+        value={200}
+        min={100}
+        max={400}
+        valueUnit="pixels"
+        onResize={onResize}
+        onResizeTo={onResizeTo}
+      />,
+    );
+
+    let separator = screen.getByRole('separator', { name: 'Resize pane' });
+    let grip = separator.querySelector('.resize-handle-grip');
+    expect(grip?.getAttribute('aria-hidden')).toBe('true');
+    expect(grip?.querySelectorAll('.resize-handle-grip-dot')).toHaveLength(3);
+
+    rerender(
+      <ResizeHandle
+        direction="vertical"
+        ariaLabel="Resize pane"
+        value={200}
+        min={100}
+        max={400}
+        valueUnit="pixels"
+        onResize={onResize}
+        onResizeTo={onResizeTo}
+      />,
+    );
+
+    separator = screen.getByRole('separator', { name: 'Resize pane' });
+    grip = separator.querySelector('.resize-handle-grip');
+    expect(grip).not.toBeNull();
+  });
+
+  it('keeps the grip alongside the collapsed chevron', () => {
+    const onResize = vi.fn();
+    const onResizeTo = vi.fn();
+
+    render(
+      <ResizeHandle
+        direction="horizontal"
+        ariaLabel="Restore pane"
+        value={0}
+        min={180}
+        max={480}
+        valueUnit="pixels"
+        collapsed="before"
+        collapsible={{ side: 'before', restoreValue: 280 }}
+        onResize={onResize}
+        onResizeTo={onResizeTo}
+      />,
+    );
+
+    const separator = screen.getByRole('separator', { name: 'Restore pane' });
+    const grip = separator.querySelector('.resize-handle-grip');
+    const chevron = separator.querySelector('.resize-handle-chevron');
+
+    expect(grip).not.toBeNull();
+    expect(chevron).not.toBeNull();
+  });
+
   it('flushes pointer resizing and restores body styles when the drag completes', () => {
     const onResize = vi.fn();
     const onResizeTo = vi.fn();

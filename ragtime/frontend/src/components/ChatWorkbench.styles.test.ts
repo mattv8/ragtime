@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 const cssPath = join(cwd(), 'src/styles/workbench-chat.css');
 const workbenchCssPath = join(cwd(), 'src/styles/workbench.css');
 const responsiveCssPath = join(cwd(), 'src/styles/responsive.css');
+const adminCssPath = join(cwd(), 'src/styles/workbench-admin.css');
 const chatPanelPath = join(cwd(), 'src/components/ChatPanel.tsx');
 const publicSharedChatPath = join(cwd(), 'src/components/PublicSharedChatView.tsx');
 
@@ -38,6 +39,81 @@ function getRuleBody(css: string, selector: string): string {
   throw new Error(`Unterminated CSS rule for ${selector}`);
 }
 
+function splitSelectorList(selectorText: string): string[] {
+  const selectors: string[] = [];
+  let current = '';
+  let parenDepth = 0;
+
+  for (const character of selectorText) {
+    if (character === '(') parenDepth += 1;
+    if (character === ')') parenDepth -= 1;
+
+    if (character === ',' && parenDepth === 0) {
+      const trimmed = current.trim();
+      if (trimmed) selectors.push(trimmed);
+      current = '';
+      continue;
+    }
+
+    current += character;
+  }
+
+  const trimmed = current.trim();
+  if (trimmed) selectors.push(trimmed);
+
+  return selectors;
+}
+
+function collectRuleSelectors(css: string): string[] {
+  const selectors: string[] = [];
+  let index = 0;
+
+  while (index < css.length) {
+    const braceIndex = css.indexOf('{', index);
+    if (braceIndex === -1) break;
+
+    const prelude = css
+      .slice(index, braceIndex)
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .trim();
+    let depth = 1;
+    let cursor = braceIndex + 1;
+
+    while (cursor < css.length && depth > 0) {
+      if (css[cursor] === '{') depth += 1;
+      if (css[cursor] === '}') depth -= 1;
+      cursor += 1;
+    }
+
+    const body = css.slice(braceIndex + 1, cursor - 1);
+    if (!prelude) {
+      index = cursor;
+      continue;
+    }
+
+    if (!prelude.startsWith('@')) {
+      selectors.push(...splitSelectorList(prelude));
+    } else if (body.includes('{')) {
+      selectors.push(...collectRuleSelectors(body));
+    }
+
+    index = cursor;
+  }
+
+  return selectors;
+}
+
+function expectModernScopedSelectors(css: string): void {
+  const selectors = collectRuleSelectors(css);
+
+  expect(selectors.length).toBeGreaterThan(0);
+  for (const selector of selectors) {
+    expect(selector).toMatch(
+      /^\[data-theme-pack='modern'\](?:\[data-theme='light'\]|:not\(\[data-theme='dark'\]\))?\s/,
+    );
+  }
+}
+
 describe('Chat workbench surface contract', () => {
   it('defines token-driven chat workbench surfaces and responsive states', () => {
     const css = read(cssPath);
@@ -52,17 +128,54 @@ describe('Chat workbench surface contract', () => {
       /\.chat-page-container\.chat-page-fullscreen\s*\{[\s\S]*position:\s*fixed;[\s\S]*inset:\s*var\(--workbench-padding\);/,
     );
     expect(css).toMatch(
-      /\.chat-panel(?:,\s*\.chat-panel-shared)?\s*\{[\s\S]*background:\s*var\(--color-editor\);[\s\S]*border-radius:\s*var\(--workbench-surface-radius\);/,
+      /\[data-theme-pack='modern'\]\s+\.chat-panel\s*\{[\s\S]*display:\s*flex;[\s\S]*gap:\s*var\(--workbench-gap\);[\s\S]*background:\s*transparent;/,
     );
-    expect(css).toMatch(/\.chat-sidebar\s*\{[\s\S]*background:\s*var\(--color-chrome\);/);
-    expect(css).toMatch(/\.chat-main\s*\{[\s\S]*background:\s*var\(--color-editor\);/);
     expect(css).toMatch(
-      /\.chat-header\s*\{[\s\S]*min-height:\s*var\(--workbench-titlebar-height\);/,
+      /\[data-theme-pack='modern'\]\s+\.chat-sidebar\s*\{[\s\S]*display:\s*flex;[\s\S]*gap:\s*var\(--workbench-gap\);[\s\S]*background:\s*transparent;/,
     );
-    expect(css).toMatch(/\.chat-input-area\s*\{[\s\S]*background:\s*var\(--color-panel\);/);
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-conversation-list\s*\{[\s\S]*background:\s*var\(--color-panel\);[\s\S]*border-radius:\s*var\(--workbench-surface-radius\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-main\s*\{[\s\S]*display:\s*flex;[\s\S]*flex-direction:\s*column;[\s\S]*gap:\s*var\(--workbench-gap\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-message-region\s*\{[\s\S]*background:\s*var\(--color-panel\);[\s\S]*border-radius:\s*var\(--workbench-surface-radius\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-message\.chat-message-assistant,[\s\S]*background:\s*var\(--color-panel\);/,
+    );
+    expect(css).toMatch(
+      /\.chat-header\s*\{[\s\S]*min-height:\s*var\(--workbench-titlebar-height\);[\s\S]*padding:\s*0\s+var\(--space-sm\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-input-wrapper\s*\{[\s\S]*background:\s*var\(--color-panel\);[\s\S]*border-radius:\s*var\(--workbench-surface-radius\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-conversation-search-input\s*\{[\s\S]*min-height:\s*var\(--workbench-titlebar-height\);[\s\S]*border-radius:\s*var\(--workbench-surface-radius\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-conversation-search-input::placeholder\s*\{[\s\S]*color:\s*var\(--color-text-muted\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-show-older-btn\s*\{[\s\S]*background:\s*var\(--color-input-bg\);[\s\S]*border:\s*var\(--workbench-container-border\);[\s\S]*border-radius:\s*var\(--workbench-surface-radius\);/,
+    );
+    const adminCss = read(adminCssPath);
+    expect(adminCss).toMatch(
+      /\[data-theme-pack='modern'\]\s+:where\(button:not\(\.chat-message-navigator-tick\),\s*\[role='button'\]:not\(\.chat-message-navigator-tick\)\)/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-welcome,\s*\[data-theme-pack='modern'\]\s+\.chat-empty-state\s*\{[\s\S]*background:\s*transparent;[\s\S]*border:\s*none;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-message-navigator-rail\s*\{[\s\S]*background:\s*transparent;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-message-navigator-tick\s*\{[\s\S]*display:\s*block;/,
+    );
     expect(css).toMatch(/\.markdown-content\s*\{[\s\S]*color:\s*var\(--color-text-primary\);/);
     expect(css).toMatch(
-      /\.chat-tool-calls\s*\{[\s\S]*border-top:\s*1px solid var\(--color-border\);/,
+      /\.chat-tool-calls\s*\{[\s\S]*border-top:\s*var\(--workbench-container-border\);/,
     );
     expect(css).toMatch(/\.datatable-container\s*\{[\s\S]*background:\s*var\(--color-editor\);/);
     expect(css).toMatch(/\.chat-panel-embedded\s*\{[\s\S]*border-radius:\s*0;/);
@@ -88,12 +201,24 @@ describe('Chat workbench surface contract', () => {
     expect(css).toMatch(
       /@media\s*\(max-width:\s*768px\)[\s\S]*#chat-mobile-sidebar-toggle\s*\{[\s\S]*display:\s*inline-flex;[\s\S]*z-index:\s*26;/,
     );
-    expect(responsiveCss).not.toContain('.userspace-content > .resize-handle-horizontal');
-    expect(responsiveCss).not.toContain('.userspace-left-pane > .resize-handle-vertical');
-    expect(responsiveCss).not.toContain('.userspace-editor-section > .resize-handle-horizontal');
     expect(responsiveMobileChatSidebar).not.toContain('z-index');
     expect(responsiveMobileChatMain).not.toContain('z-index');
     expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}/);
+  });
+
+  it('scopes every chat workbench selector to the Modern theme pack, including media queries', () => {
+    const css = read(cssPath);
+
+    expectModernScopedSelectors(css);
+    expect(css).toMatch(
+      /@media\s*\(max-width:\s*768px\)[\s\S]*\[data-theme-pack='modern'\]\s+\.chat-sidebar/,
+    );
+    expect(css).toMatch(
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*\[data-theme-pack='modern'\]\s+\.chat-panel/,
+    );
+    expect(css).toMatch(
+      /@media\s*\(forced-colors:\s*active\)[\s\S]*\[data-theme-pack='modern'\]\s+\.chat-panel/,
+    );
   });
 
   it('uses shared theme subscription, selective chrome icons, and stable workbench hooks', () => {
@@ -118,6 +243,29 @@ describe('Chat workbench surface contract', () => {
     expect(publicSharedChat).toMatch(/id="public-shared-chat-view"/);
     expect(publicSharedChat).toMatch(/id="public-shared-chat-panel"/);
     expect(publicSharedChat).toMatch(/id="public-shared-chat-composer"/);
+  });
+
+  it('unifies embedded chat control surfaces under one Modern variable', () => {
+    const css = read(cssPath);
+
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-panel-embedded\s*\{[\s\S]*--chat-embedded-control-surface:\s*var\(--color-panel\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-panel-embedded\s+\.chat-header\s*\{[\s\S]*background:\s*var\(--color-chrome\);[\s\S]*border-radius:\s*var\(--workbench-surface-radius\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-panel-embedded\s+\.chat-workspace-conversation-trigger[\s\S]*background:\s*var\(--chat-embedded-control-surface\)/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-panel-embedded\s+\.chat-input-wrapper\s*\{[\s\S]*background:\s*var\(--color-panel\);[\s\S]*border-radius:\s*var\(--workbench-surface-radius\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-panel-embedded\s+\.chat-header-actions\s+:is\([\s\S]*?\.model-selector-trigger\)\s*\{[\s\S]*?background:\s*var\(--chat-embedded-control-surface\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-panel-embedded\s+\.chat-input-wrapper:focus-within\s*\{[\s\S]*border-color:\s*var\(--color-focus\);/,
+    );
   });
 
   it('wires chat sidebar resizing through the drag-end commit callback', () => {

@@ -1,6 +1,6 @@
 /* Shared workbench sash presentation. */
 
-.resize-handle {
+[data-theme-pack='modern'] .resize-handle {
   position: relative;
   flex-shrink: 0;
   z-index: 1;
@@ -11,7 +11,7 @@
   outline: none;
 }
 
-.resize-handle::before {
+[data-theme-pack='modern'] .resize-handle::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -19,7 +19,7 @@
   pointer-events: auto;
 }
 
-.resize-handle::after {
+[data-theme-pack='modern'] .resize-handle::after {
   content: '';
   position: absolute;
   z-index: 0;
@@ -31,103 +31,103 @@
     background-color var(--transition-fast);
 }
 
-.resize-handle-horizontal {
+[data-theme-pack='modern'] .resize-handle-horizontal {
   width: var(--sash-size);
   cursor: col-resize;
 }
 
-.resize-handle-horizontal::before {
+[data-theme-pack='modern'] .resize-handle-horizontal::before {
   left: calc(var(--workbench-gap, 4px) * -1);
   right: calc(var(--workbench-gap, 4px) * -1);
 }
 
-.resize-handle-horizontal::after {
+[data-theme-pack='modern'] .resize-handle-horizontal::after {
   inset-block: 0;
   left: 50%;
   width: var(--sash-hover-size);
   transform: translateX(-50%);
 }
 
-.resize-handle-vertical {
+[data-theme-pack='modern'] .resize-handle-vertical {
   height: var(--sash-size);
   cursor: row-resize;
 }
 
-.resize-handle-vertical::before {
+[data-theme-pack='modern'] .resize-handle-vertical::before {
   top: calc(var(--workbench-gap, 4px) * -1);
   bottom: calc(var(--workbench-gap, 4px) * -1);
 }
 
-.resize-handle-vertical::after {
+[data-theme-pack='modern'] .resize-handle-vertical::after {
   inset-inline: 0;
   top: 50%;
   height: var(--sash-hover-size);
   transform: translateY(-50%);
 }
 
-.resize-handle:hover::after,
-.resize-handle:active::after,
-.resize-handle:focus-visible::after,
-.resize-handle-collapsed::after {
+[data-theme-pack='modern'] .resize-handle:hover::after,
+[data-theme-pack='modern'] .resize-handle:active::after,
+[data-theme-pack='modern'] .resize-handle:focus-visible::after,
+[data-theme-pack='modern'] .resize-handle-collapsed::after {
   opacity: 1;
 }
 
-.resize-handle:focus-visible {
-  outline: 1px solid var(--color-focus);
-  outline-offset: -1px;
+[data-theme-pack='modern'] .resize-handle:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--color-focus);
 }
 
-.resize-handle-collapsed {
+[data-theme-pack='modern'] .resize-handle-collapsed {
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--color-text-secondary);
 }
 
-.resize-handle-collapsed.resize-handle-horizontal {
+[data-theme-pack='modern'] .resize-handle-collapsed.resize-handle-horizontal {
   width: 16px;
 }
 
-.resize-handle-collapsed.resize-handle-vertical {
+[data-theme-pack='modern'] .resize-handle-collapsed.resize-handle-vertical {
   height: 16px;
 }
 
-.resize-handle-chevron {
+[data-theme-pack='modern'] .resize-handle-chevron {
   position: relative;
   z-index: 1;
   pointer-events: none;
 }
 
 @media (pointer: coarse) {
-  .resize-handle::after {
+  [data-theme-pack='modern'] .resize-handle::after {
     opacity: 0.55;
   }
 
-  .resize-handle-collapsed::after {
+  [data-theme-pack='modern'] .resize-handle-collapsed::after {
     opacity: 1;
   }
 }
 
 @media (max-width: 768px) {
-  .userspace-content > .resize-handle-horizontal,
-  .userspace-left-pane > .resize-handle-vertical,
-  .userspace-editor-section > .resize-handle-horizontal {
+  [data-theme-pack='modern'] .userspace-content > .resize-handle-horizontal,
+  [data-theme-pack='modern'] .userspace-left-pane > .resize-handle-vertical,
+  [data-theme-pack='modern'] .userspace-editor-section > .resize-handle-horizontal {
     display: none;
   }
 }
 
 @media (forced-colors: active) {
-  .resize-handle {
+  [data-theme-pack='modern'] .resize-handle {
     forced-color-adjust: auto;
     color: ButtonText;
   }
 
-  .resize-handle::after {
+  [data-theme-pack='modern'] .resize-handle::after {
     background: CanvasText;
     opacity: 1;
   }
 
-  .resize-handle:focus-visible {
+  [data-theme-pack='modern'] .resize-handle:focus-visible {
     outline: 1px solid Highlight;
   }
 }

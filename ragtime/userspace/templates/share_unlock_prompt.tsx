@@ -6,15 +6,22 @@ export default String.raw`<!doctype html>
   <title>Shared Workspace</title>
   <script>
     (() => {
-      const allowedThemePacks = ['default', 'vscode', 'serif'];
       const injectedDefaultThemePack = __RAGTIME_DEFAULT_THEME_PACK_JSON__;
       const root = document.documentElement;
-      const readValidThemePack = (value) => allowedThemePacks.includes(value) ? value : null;
+      const allowedThemePacks = ['default', 'modern', 'serif'];
+      const canonicalizeThemePack = (value) => value === 'vscode' ? 'modern' : value;
+      const readValidThemePack = (value) => {
+        const canonical = canonicalizeThemePack(value);
+        return allowedThemePacks.includes(canonical) ? canonical : null;
+      };
       const readValidColorMode = (value) => value === 'light' || value === 'dark' ? value : null;
       let storedThemePack = null;
       let storedColorMode = null;
       try {
         storedThemePack = readValidThemePack(localStorage.getItem("ragtime-theme-pack"));
+        if (storedThemePack === 'modern' && localStorage.getItem("ragtime-theme-pack") === 'vscode') {
+          localStorage.setItem("ragtime-theme-pack", "modern");
+        }
         storedColorMode = readValidColorMode(localStorage.getItem("ragtime-theme"));
       } catch {
         storedThemePack = null;

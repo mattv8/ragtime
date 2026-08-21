@@ -63,8 +63,7 @@ class FrontendDependencySyncTests(unittest.TestCase):
                 [
                     "bash",
                     "-lc",
-                    shell
-                    + f"\nPATH=\"{bin_dir}:$PATH\"\nsync_frontend_dependencies \"{frontend_dir}\"\n",
+                    shell + f'\nPATH="{bin_dir}:$PATH"\nsync_frontend_dependencies "{frontend_dir}"\n',
                 ],
                 cwd=ROOT,
                 capture_output=True,

@@ -99,6 +99,7 @@ from ragtime.core.security import (
     get_session_token,
     require_admin,
 )
+from ragtime.core.theme import canonicalize_theme_pack_id
 from ragtime.core.usage_accounting import (
     get_daily_provider_failures,
     get_daily_usage_trend,
@@ -819,7 +820,7 @@ async def _user_response(user: User) -> UserResponse:
         email=user.email,
         role=user.role,
         auth_provider=user.authProvider,
-        theme_pack=getattr(user, "themePack", None),
+        theme_pack=canonicalize_theme_pack_id(getattr(user, "themePack", None)),
         role_manually_set=user.roleManuallySet,
         source_provider=getattr(user, "sourceProvider", None),
         source_synced_at=getattr(user, "sourceSyncedAt", None),
@@ -919,7 +920,7 @@ async def _bulk_user_responses(users: list[User]) -> list[UserResponse]:
                 email=user.email,
                 role=user.role,
                 auth_provider=user.authProvider,
-                theme_pack=getattr(user, "themePack", None),
+                theme_pack=canonicalize_theme_pack_id(getattr(user, "themePack", None)),
                 role_manually_set=user.roleManuallySet,
                 source_provider=getattr(user, "sourceProvider", None),
                 source_synced_at=getattr(user, "sourceSyncedAt", None),
@@ -1783,7 +1784,7 @@ class UpdateMePreferencesRequest(BaseModel):
 def _normalize_theme_pack(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
-    normalized = value.strip().lower()
+    normalized = canonicalize_theme_pack_id(value) or value.strip().lower()
     if not normalized:
         return None
     if not all(ch.isalnum() or ch in {"-", "_"} for ch in normalized):

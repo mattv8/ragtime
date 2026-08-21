@@ -107,6 +107,7 @@ from ragtime.core.encryption import (
 from ragtime.core.logging import get_logger
 from ragtime.core.sql import sql_quote_literal as _sql_quote_literal
 from ragtime.core.sql_utils import strip_table_metadata
+from ragtime.core.theme import canonicalize_theme_pack_id
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.tool_access import normalize_default_access_level
 from ragtime.core.userspace_limits import (
@@ -1221,7 +1222,7 @@ class IndexerRepository:
             id=settings.id,
             # Server branding
             server_name=getattr(settings, "serverName", DEFAULT_SERVER_NAME),
-            default_theme_pack=getattr(settings, "defaultThemePack", "default"),
+            default_theme_pack=canonicalize_theme_pack_id(getattr(settings, "defaultThemePack", "default")) or "default",
             authenticated_webgl_background_enabled=getattr(
                 settings,
                 "authenticatedWebglBackgroundEnabled",
@@ -1756,7 +1757,10 @@ class IndexerRepository:
         update_data = {}
         for snake_key, camel_key in field_mapping.items():
             if snake_key in updates and updates[snake_key] is not None:
-                update_data[camel_key] = updates[snake_key]
+                value = updates[snake_key]
+                if snake_key == "default_theme_pack" and isinstance(value, str):
+                    value = canonicalize_theme_pack_id(value) or "default"
+                update_data[camel_key] = value
 
         # Encrypt secret fields before storage
         # These need to be reversibly encrypted so we can show them in the UI

@@ -660,9 +660,9 @@ export function SettingsPanel({
 
   useEffect(() => {
     if (!loading) {
-      applyThemePack(defaultThemePack);
+      applyThemePack(resolveThemePackId(currentUser?.theme_pack, defaultThemePack));
     }
-  }, [defaultThemePack, loading]);
+  }, [currentUser?.theme_pack, defaultThemePack, loading]);
 
   useEffect(() => {
     return () => {

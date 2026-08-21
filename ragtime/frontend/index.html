@@ -12,8 +12,12 @@
       // Apply persisted theme before first paint to avoid a flash of the wrong theme.
       (function () {
         try {
-          var allowedThemePacks = ['default', 'vscode', 'serif'];
+          var allowedThemePacks = ['default', 'modern', 'serif'];
           var pack = localStorage.getItem('ragtime-theme-pack');
+          if (pack === 'vscode') {
+            pack = 'modern';
+            localStorage.setItem('ragtime-theme-pack', pack);
+          }
           if (allowedThemePacks.includes(pack) && pack !== 'default') {
             document.documentElement.setAttribute('data-theme-pack', pack);
           } else {

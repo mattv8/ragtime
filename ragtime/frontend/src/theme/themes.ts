@@ -1,4 +1,4 @@
-export type ThemePackId = 'default' | 'vscode' | 'serif';
+export type ThemePackId = 'default' | 'modern' | 'serif';
 
 export interface ThemePackSwatches {
   background: string;
@@ -34,10 +34,10 @@ export const THEME_PACKS: ThemePack[] = [
     },
   },
   {
-    id: 'vscode',
-    label: 'VS Code Modern',
+    id: 'modern',
+    label: 'Modern',
     description:
-      'VS Code-inspired workbench chrome: compact framed panels, Droid Sans UI, Fira Code code surfaces, and modern blue accents.',
+      'Compact workbench chrome: framed panels, dense UI typography, Fira Code code surfaces, and blue accents.',
     headingFontPreview: "'Droid Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
     swatches: {
       background: '#252526',
@@ -60,6 +60,11 @@ export const THEME_PACKS: ThemePack[] = [
     },
   },
 ];
+
+export function normalizeThemePackId(value: string | null | undefined): ThemePackId | null {
+  const canonical = value === 'vscode' ? 'modern' : value;
+  return THEME_PACKS.some((pack) => pack.id === canonical) ? (canonical as ThemePackId) : null;
+}
 
 export function isThemePackId(value: string | null | undefined): value is ThemePackId {
   return THEME_PACKS.some((pack) => pack.id === value);

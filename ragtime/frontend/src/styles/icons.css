@@ -36,10 +36,10 @@
   line-height: 1;
 }
 
-[data-theme-pack='vscode'] .theme-chrome-icon-fallback {
+[data-theme-pack='modern'] .theme-chrome-icon-fallback {
   display: none;
 }
 
-[data-theme-pack='vscode'] .theme-chrome-icon-codicon {
+[data-theme-pack='modern'] .theme-chrome-icon-codicon {
   display: inline-flex;
 }

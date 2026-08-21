@@ -151,8 +151,16 @@ legend {
   z-index: 1;
   pointer-events: none;
   background:
-    radial-gradient(circle at 18% 16%, rgba(100, 116, 139, 0.08), transparent 30%),
-    radial-gradient(circle at 84% 78%, rgba(59, 130, 146, 0.07), transparent 34%),
+    radial-gradient(
+      circle at 18% 16%,
+      color-mix(in srgb, var(--color-text-muted) 14%, transparent),
+      transparent 30%
+    ),
+    radial-gradient(
+      circle at 84% 78%,
+      color-mix(in srgb, var(--color-primary) 10%, transparent),
+      transparent 34%
+    ),
     linear-gradient(180deg, transparent 0%, var(--login-gradient-wash) 100%);
 }
 
@@ -161,7 +169,18 @@ legend {
   z-index: 2;
 }
 
-.app-shell-webgl-background > .topnav {
+#workbench-shell-stack,
+#workbench-warning-stack {
+  display: contents;
+}
+
+.app-shell-webgl-background #workbench-topnav {
+  z-index: 2;
+}
+
+.app-shell-webgl-background > #workbench-shell-stack > :not(#workbench-warning-stack),
+.app-shell-webgl-background > #workbench-shell-stack > #workbench-warning-stack > * {
+  position: relative;
   z-index: 2;
 }
 
@@ -215,7 +234,7 @@ legend {
   padding: 0;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  background: rgba(15, 23, 42, 0.55);
+  background: color-mix(in srgb, var(--color-bg-primary) 55%, transparent);
   color: var(--color-text-muted);
   box-shadow: var(--shadow-sm);
   cursor: pointer;
@@ -230,13 +249,13 @@ legend {
 
 .app-shell > .webgl-motion-toggle[data-active='true'] {
   border-color: transparent;
-  background: rgba(15, 23, 42, 0.35);
+  background: color-mix(in srgb, var(--color-bg-primary) 35%, transparent);
   color: var(--color-text-muted);
 }
 
 .app-shell > .webgl-motion-toggle[data-active='false'] {
   border-color: var(--color-warning-border);
-  background: rgba(15, 23, 42, 0.75);
+  background: color-mix(in srgb, var(--color-bg-primary) 75%, transparent);
   color: var(--color-warning);
 }
 
@@ -245,35 +264,18 @@ legend {
 }
 
 .app-shell > .webgl-motion-toggle[data-active='true']:hover {
-  background: rgba(15, 23, 42, 0.55);
-  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-bg-primary) 55%, transparent);
+  color: var(--color-text-primary);
 }
 
 .app-shell > .webgl-motion-toggle[data-active='false']:hover {
-  background: rgba(15, 23, 42, 0.85);
+  background: color-mix(in srgb, var(--color-bg-primary) 85%, transparent);
 }
 
 .webgl-motion-toggle:focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 1px;
   opacity: 1;
-}
-
-[data-theme='light'] .app-shell > .webgl-motion-toggle[data-active='true'] {
-  background: rgba(255, 255, 255, 0.45);
-}
-
-[data-theme='light'] .app-shell > .webgl-motion-toggle[data-active='false'] {
-  background: rgba(255, 255, 255, 0.85);
-  border-color: var(--color-warning-border);
-}
-
-[data-theme='light'] .app-shell > .webgl-motion-toggle[data-active='true']:hover {
-  background: rgba(255, 255, 255, 0.75);
-}
-
-[data-theme='light'] .app-shell > .webgl-motion-toggle[data-active='false']:hover {
-  background: rgba(255, 255, 255, 0.95);
 }
 
 .app-shell-locked {
@@ -285,6 +287,14 @@ legend {
 
 .app-shell-webgl-background.app-shell-locked {
   height: 100dvh;
+}
+
+.app-shell-locked #workbench-shell-stack {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .app-shell-locked .container {
@@ -2851,6 +2861,10 @@ legend {
   *::before,
   *::after {
     transition-duration: 0.01ms !important;
+  }
+
+  .app-shell-webgl-background::before {
+    background: linear-gradient(180deg, transparent 0%, var(--login-gradient-wash) 100%);
   }
 }
 

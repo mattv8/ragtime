@@ -62,14 +62,14 @@ describe('themeSnapshot', () => {
 
   it('returns the effective pack and mode from root attributes and system preference', () => {
     installMatchMediaStub(true);
-    document.documentElement.setAttribute('data-theme-pack', 'vscode');
+    document.documentElement.setAttribute('data-theme-pack', 'modern');
 
-    expect(getThemeSnapshot()).toEqual({ pack: 'vscode', mode: 'light' });
+    expect(getThemeSnapshot()).toEqual({ pack: 'modern', mode: 'light' });
   });
 
   it('returns the same snapshot object until the effective pack or mode changes', async () => {
     const matchMediaControl = installMatchMediaStub(false);
-    document.documentElement.setAttribute('data-theme-pack', 'vscode');
+    document.documentElement.setAttribute('data-theme-pack', 'modern');
 
     const firstSnapshot = getThemeSnapshot();
     const secondSnapshot = getThemeSnapshot();
@@ -81,7 +81,7 @@ describe('themeSnapshot', () => {
     await flushObservers();
 
     const thirdSnapshot = getThemeSnapshot();
-    expect(thirdSnapshot).toEqual({ pack: 'vscode', mode: 'light' });
+    expect(thirdSnapshot).toEqual({ pack: 'modern', mode: 'light' });
     expect(thirdSnapshot).not.toBe(firstSnapshot);
     expect(getThemeSnapshot()).toBe(thirdSnapshot);
 
@@ -90,7 +90,7 @@ describe('themeSnapshot', () => {
     matchMediaControl.setMatches(true);
 
     const fourthSnapshot = getThemeSnapshot();
-    expect(fourthSnapshot).toEqual({ pack: 'vscode', mode: 'light' });
+    expect(fourthSnapshot).toEqual({ pack: 'modern', mode: 'light' });
 
     unsubscribe();
   });
@@ -100,15 +100,15 @@ describe('themeSnapshot', () => {
     const listener = vi.fn();
     const unsubscribe = subscribeToThemeChanges(listener);
 
-    document.documentElement.setAttribute('data-theme-pack', 'vscode');
+    document.documentElement.setAttribute('data-theme-pack', 'modern');
     await flushObservers();
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(getThemeSnapshot()).toEqual({ pack: 'vscode', mode: 'dark' });
+    expect(getThemeSnapshot()).toEqual({ pack: 'modern', mode: 'dark' });
 
     document.documentElement.setAttribute('data-theme', 'light');
     await flushObservers();
     expect(listener).toHaveBeenCalledTimes(2);
-    expect(getThemeSnapshot()).toEqual({ pack: 'vscode', mode: 'light' });
+    expect(getThemeSnapshot()).toEqual({ pack: 'modern', mode: 'light' });
 
     matchMediaControl.setMatches(true);
     expect(listener).toHaveBeenCalledTimes(2);
@@ -119,7 +119,7 @@ describe('themeSnapshot', () => {
 
     matchMediaControl.setMatches(false);
     expect(listener).toHaveBeenCalledTimes(3);
-    expect(getThemeSnapshot()).toEqual({ pack: 'vscode', mode: 'dark' });
+    expect(getThemeSnapshot()).toEqual({ pack: 'modern', mode: 'dark' });
 
     unsubscribe();
     document.documentElement.setAttribute('data-theme-pack', 'serif');

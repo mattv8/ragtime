@@ -8,7 +8,7 @@ import { ThemeChromeIcon } from '@/components/shared/ThemeChromeIcon';
 import {
   THEME_PACKS,
   type ThemePackId,
-  isThemePackId,
+  normalizeThemePackId,
   type ColorMode,
   getStoredColorMode,
   setColorMode,
@@ -48,11 +48,11 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
   }, [colorMode]);
 
   const [themePack, setThemePackState] = useState<ThemePackId | null>(() =>
-    isThemePackId(user.theme_pack) ? user.theme_pack : null,
+    normalizeThemePackId(user.theme_pack),
   );
   const [mfaHubOpen, setMfaHubOpen] = useState(false);
   useEffect(() => {
-    setThemePackState(isThemePackId(user.theme_pack) ? user.theme_pack : null);
+    setThemePackState(normalizeThemePackId(user.theme_pack));
   }, [user.theme_pack]);
 
   // Close menu when clicking outside

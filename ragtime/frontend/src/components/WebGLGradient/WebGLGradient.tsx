@@ -12,7 +12,7 @@ const DEFAULT_COLOR_VARIABLES = [
   '--login-gradient-middle',
   '--login-gradient-end',
 ] as const;
-const FALLBACK_BLUE_COLORS = ['#0a1220', '#0f182a', '#354b61'] as const;
+const FALLBACK_BLUE_COLORS = ['#0a1220', '#0f182a', '#1e3a5f', '#0078d4'] as const;
 const BATTERY_NOTICE_TEXT = 'Background paused on battery';
 const SCREEN_READER_ONLY_STYLE = {
   position: 'absolute',
@@ -137,7 +137,18 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
       .map((variableName) => rootStyles.getPropertyValue(variableName).trim())
       .filter(Boolean);
 
-    return resolvedColors.length >= 2 ? resolvedColors : [...FALLBACK_BLUE_COLORS];
+    const primaryColor =
+      rootStyles.getPropertyValue('--color-primary').trim() ||
+      rootStyles.getPropertyValue('--color-link').trim();
+
+    if (resolvedColors.length >= 2) {
+      if (primaryColor && !resolvedColors.includes(primaryColor)) {
+        return [...resolvedColors, primaryColor];
+      }
+      return resolvedColors;
+    }
+
+    return [...FALLBACK_BLUE_COLORS];
   }, [colors, colorVariables]);
 
   const createGradientTexture = useCallback(

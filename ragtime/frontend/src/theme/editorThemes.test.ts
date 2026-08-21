@@ -23,8 +23,8 @@ describe('editor themes', () => {
     document.body.innerHTML = '';
   });
 
-  it('defines VS Code editor palettes, syntax colors, and the Fira Code stack', () => {
-    expect(getCodeMirrorThemePalette({ pack: 'vscode', mode: 'dark' })).toMatchObject({
+  it('defines Modern editor palettes, syntax colors, and the Fira Code stack', () => {
+    expect(getCodeMirrorThemePalette({ pack: 'modern', mode: 'dark' })).toMatchObject({
       background: '#1f1f1f',
       gutterBackground: '#1f1f1f',
       gutterForeground: '#858585',
@@ -39,7 +39,7 @@ describe('editor themes', () => {
       },
     });
 
-    expect(getCodeMirrorThemePalette({ pack: 'vscode', mode: 'light' })).toMatchObject({
+    expect(getCodeMirrorThemePalette({ pack: 'modern', mode: 'light' })).toMatchObject({
       background: '#ffffff',
       gutterBackground: '#f8f8f8',
       gutterForeground: '#237893',
@@ -65,7 +65,7 @@ describe('editor themes', () => {
         doc: 'const answer = 42;\n',
         selection: { anchor: 6, head: 12 },
         extensions: [
-          themeCompartment.of(createCodeMirrorThemeExtension({ pack: 'vscode', mode: 'dark' })),
+          themeCompartment.of(createCodeMirrorThemeExtension({ pack: 'modern', mode: 'dark' })),
         ],
       }),
       parent,
@@ -74,7 +74,7 @@ describe('editor themes', () => {
     expect(view.state.facet(EditorView.darkTheme)).toBe(true);
 
     const sameView = view;
-    reconfigureCodeMirrorTheme(view, themeCompartment, { pack: 'vscode', mode: 'light' });
+    reconfigureCodeMirrorTheme(view, themeCompartment, { pack: 'modern', mode: 'light' });
 
     expect(view).toBe(sameView);
     expect(view.state.selection.main.from).toBe(6);
@@ -110,7 +110,7 @@ describe('editor themes', () => {
     rootStyle.setProperty('--color-terminal-ansi-bright-cyan', '#29b8db');
     rootStyle.setProperty('--color-terminal-ansi-bright-white', '#e5e5e5');
 
-    const nextTheme = readTerminalTheme({ pack: 'vscode', mode: 'dark' });
+    const nextTheme = readTerminalTheme({ pack: 'modern', mode: 'dark' });
 
     expect(nextTheme).toMatchObject({
       fontFamily: expect.stringContaining('Fira Code'),
@@ -151,7 +151,7 @@ describe('editor themes', () => {
     rootStyle.setProperty('--terminal-selection-background', 'rgba(1, 2, 3, 0.4)');
     rootStyle.setProperty('--terminal-ansi-blue', '#abcdef');
 
-    const nextTheme = readTerminalTheme({ pack: 'vscode', mode: 'dark' });
+    const nextTheme = readTerminalTheme({ pack: 'modern', mode: 'dark' });
 
     expect(nextTheme.theme.foreground).toBe('#CCCCCC');
     expect(nextTheme.theme.cursor).toBe('#0078D4');
@@ -162,19 +162,23 @@ describe('editor themes', () => {
   it('defines token-driven User Space workbench styling without pack-specific color literals', () => {
     const css = readFileSync(join(cwd(), 'src/styles/workbench-userspace.css'), 'utf8');
 
-    expect(css).toMatch(/\.userspace-layout\s*\{/);
-    expect(css).toMatch(/\.userspace-toolbar\s*\{/);
-    expect(css).toMatch(/\.userspace-file-sidebar(?:\s*,|\s*\{)/);
-    expect(css).toMatch(/\.userspace-code-editor(?:\s*,|\s*\{)/);
-    expect(css).toMatch(/\.userspace-chat-section(?:\s*,|\s*\{)/);
-    expect(css).toMatch(/\.userspace-preview-section(?:\s*,|\s*\{)/);
-    expect(css).toMatch(/\.userspace-runtime-terminal(?:\s*,|\s*\{)/);
-    expect(css).toMatch(/\.userspace-status-pill\s*\{/);
-    expect(css).toMatch(/\.userspace-snapshot-diff-editor-wrap\s*\{/);
-    expect(css).toMatch(/\.userspace-preview-card(?:\s*,|\s*\{)/);
-    expect(css).toMatch(/\.userspace-readonly-badge\s*\{/);
+    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.userspace-layout\s*\{/);
+    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.userspace-toolbar\s*\{/);
+    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.userspace-file-sidebar(?:\s*,|\s*\{)/);
+    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.userspace-code-editor(?:\s*,|\s*\{)/);
+    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.userspace-chat-section(?:\s*,|\s*\{)/);
+    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.userspace-preview-section(?:\s*,|\s*\{)/);
     expect(css).toMatch(
-      /\.userspace-chat-placeholder,\s*\.userspace-nontext-file-placeholder\s*\{/,
+      /\[data-theme-pack='modern'\]\s+\.userspace-runtime-terminal(?:\s*,|\s*\{)/,
+    );
+    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.userspace-status-pill\s*\{/);
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.userspace-snapshot-diff-editor-wrap\s*\{/,
+    );
+    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.userspace-preview-card(?:\s*,|\s*\{)/);
+    expect(css).toMatch(/\[data-theme-pack='modern'\]\s+\.userspace-readonly-badge\s*\{/);
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.userspace-chat-placeholder,\s*\[data-theme-pack='modern'\]\s+\.userspace-nontext-file-placeholder\s*\{/,
     );
     expect(css).toContain('@media (max-width: 768px)');
     expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}/);

@@ -40,7 +40,7 @@ export interface CodeMirrorThemePalette {
   syntax: CodeMirrorSyntaxPalette;
 }
 
-const VSCODE_DARK_PALETTE: CodeMirrorThemePalette = {
+const MODERN_DARK_PALETTE: CodeMirrorThemePalette = {
   background: '#1f1f1f',
   foreground: '#d4d4d4',
   gutterBackground: '#1f1f1f',
@@ -70,7 +70,7 @@ const VSCODE_DARK_PALETTE: CodeMirrorThemePalette = {
   },
 };
 
-const VSCODE_LIGHT_PALETTE: CodeMirrorThemePalette = {
+const MODERN_LIGHT_PALETTE: CodeMirrorThemePalette = {
   background: '#ffffff',
   foreground: '#000000',
   gutterBackground: '#f8f8f8',
@@ -138,8 +138,8 @@ const GENERIC_LIGHT_PALETTE: CodeMirrorThemePalette = {
 };
 
 export function getCodeMirrorThemePalette(snapshot: ThemeSnapshot): CodeMirrorThemePalette {
-  if (snapshot.pack === 'vscode') {
-    return snapshot.mode === 'light' ? VSCODE_LIGHT_PALETTE : VSCODE_DARK_PALETTE;
+  if (snapshot.pack === 'modern') {
+    return snapshot.mode === 'light' ? MODERN_LIGHT_PALETTE : MODERN_DARK_PALETTE;
   }
 
   return snapshot.mode === 'light' ? GENERIC_LIGHT_PALETTE : GENERIC_DARK_PALETTE;

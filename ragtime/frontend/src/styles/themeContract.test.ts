@@ -156,7 +156,7 @@ describe('theme contract', () => {
   it('defines the required theme and canonical terminal tokens for each pack and effective mode', () => {
     const themeCss = readProjectFile('src/styles/theme.css');
     const serifCss = readProjectFile('src/styles/themes/serif.css');
-    const vscodeCss = readProjectFile('src/styles/themes/vscode.css');
+    const modernCss = readProjectFile('src/styles/themes/modern.css');
 
     const defaultDark = getMergedRuleProperties(themeCss, ':root');
     const defaultLight = getMergedRuleProperties(themeCss, "[data-theme='light']");
@@ -175,14 +175,14 @@ describe('theme contract', () => {
       "[data-theme-pack='serif']:not([data-theme='dark'])",
     );
 
-    const vscodeDark = getMergedRuleProperties(vscodeCss, "[data-theme-pack='vscode']");
-    const vscodeLight = getMergedRuleProperties(
-      vscodeCss,
-      "[data-theme-pack='vscode'][data-theme='light']",
+    const modernDark = getMergedRuleProperties(modernCss, "[data-theme-pack='modern']");
+    const modernLight = getMergedRuleProperties(
+      modernCss,
+      "[data-theme-pack='modern'][data-theme='light']",
     );
-    const vscodeSystemLight = getMergedRuleProperties(
-      getRuleBody(vscodeCss, '@media (prefers-color-scheme: light)'),
-      "[data-theme-pack='vscode']:not([data-theme='dark'])",
+    const modernSystemLight = getMergedRuleProperties(
+      getRuleBody(modernCss, '@media (prefers-color-scheme: light)'),
+      "[data-theme-pack='modern']:not([data-theme='dark'])",
     );
 
     for (const properties of [
@@ -192,9 +192,9 @@ describe('theme contract', () => {
       serifDark,
       serifLight,
       serifSystemLight,
-      vscodeDark,
-      vscodeLight,
-      vscodeSystemLight,
+      modernDark,
+      modernLight,
+      modernSystemLight,
     ]) {
       expectRequiredTokens(properties);
     }
@@ -203,7 +203,7 @@ describe('theme contract', () => {
   it('keeps explicit and system light token blocks identical for every pack', () => {
     const themeCss = readProjectFile('src/styles/theme.css');
     const serifCss = readProjectFile('src/styles/themes/serif.css');
-    const vscodeCss = readProjectFile('src/styles/themes/vscode.css');
+    const modernCss = readProjectFile('src/styles/themes/modern.css');
 
     expect(parseCustomProperties(getRuleBody(themeCss, "[data-theme='light']"))).toEqual(
       parseCustomProperties(
@@ -227,13 +227,13 @@ describe('theme contract', () => {
 
     expect(
       parseCustomProperties(
-        getRuleBody(vscodeCss, "[data-theme-pack='vscode'][data-theme='light']"),
+        getRuleBody(modernCss, "[data-theme-pack='modern'][data-theme='light']"),
       ),
     ).toEqual(
       parseCustomProperties(
         getRuleBody(
-          getRuleBody(vscodeCss, '@media (prefers-color-scheme: light)'),
-          "[data-theme-pack='vscode']:not([data-theme='dark'])",
+          getRuleBody(modernCss, '@media (prefers-color-scheme: light)'),
+          "[data-theme-pack='modern']:not([data-theme='dark'])",
         ),
       ),
     );
@@ -243,7 +243,7 @@ describe('theme contract', () => {
     const files = [
       'src/styles/theme.css',
       'src/styles/themes/serif.css',
-      'src/styles/themes/vscode.css',
+      'src/styles/themes/modern.css',
     ] as const;
 
     for (const relativePath of files) {
@@ -258,19 +258,50 @@ describe('theme contract', () => {
 
     expect(html).not.toContain('fonts.googleapis.com');
     expect(html).not.toContain('fonts.gstatic.com');
-    expect(html).toContain("var allowedThemePacks = ['default', 'vscode', 'serif'];");
+    expect(html).toContain("var allowedThemePacks = ['default', 'modern', 'serif'];");
     expect(html).toContain("if (allowedThemePacks.includes(pack) && pack !== 'default') {");
   });
 
   it('keeps sash tokens and forced-colors support in the shared workbench contract', () => {
     const themeCss = readProjectFile('src/styles/theme.css');
+    const modernCss = readProjectFile('src/styles/themes/modern.css');
     const workbenchCss = readProjectFile('src/styles/workbench.css');
 
-    expect(themeCss).toContain('--sash-size: 4px;');
-    expect(themeCss).toContain('--sash-hover-size: 4px;');
+    expect(themeCss).not.toContain('--sash-size: 4px;');
+    expect(themeCss).not.toContain('--sash-hover-size: 4px;');
     expect(themeCss).toContain('--color-sash-hover: var(--color-focus);');
+    expect(modernCss).toContain('--sash-size: 4px;');
+    expect(modernCss).toContain('--sash-hover-size: 4px;');
     expect(workbenchCss).toContain('@media (forced-colors: active)');
     expect(workbenchCss).toContain('background: var(--color-sash-hover);');
+  });
+
+  it('keeps compact workbench dimensions out of the base theme contract and inside the Modern pack', () => {
+    const themeCss = readProjectFile('src/styles/theme.css');
+    const modernCss = readProjectFile('src/styles/themes/modern.css');
+
+    const defaultDark = getMergedRuleProperties(themeCss, ':root');
+    const modernDark = getMergedRuleProperties(modernCss, "[data-theme-pack='modern']");
+
+    expect(defaultDark['--workbench-gap']).toBeUndefined();
+    expect(defaultDark['--workbench-padding']).toBeUndefined();
+    expect(defaultDark['--workbench-surface-radius']).toBeUndefined();
+    expect(defaultDark['--workbench-control-radius']).toBeUndefined();
+    expect(defaultDark['--workbench-titlebar-height']).toBeUndefined();
+    expect(defaultDark['--workbench-toolbar-height']).toBeUndefined();
+    expect(defaultDark['--workbench-control-height']).toBeUndefined();
+    expect(defaultDark['--sash-size']).toBeUndefined();
+    expect(defaultDark['--sash-hover-size']).toBeUndefined();
+
+    expect(modernDark['--workbench-gap']).toBe('4px');
+    expect(modernDark['--workbench-padding']).toBe('8px');
+    expect(modernDark['--workbench-surface-radius']).toBe('8px');
+    expect(modernDark['--workbench-control-radius']).toBe('4px');
+    expect(modernDark['--workbench-titlebar-height']).toBe('35px');
+    expect(modernDark['--workbench-toolbar-height']).toBe('32px');
+    expect(modernDark['--workbench-control-height']).toBe('28px');
+    expect(modernDark['--sash-size']).toBe('4px');
+    expect(modernDark['--sash-hover-size']).toBe('4px');
   });
 
   it('defines the canonical toast z-layer token in the root theme contract', () => {

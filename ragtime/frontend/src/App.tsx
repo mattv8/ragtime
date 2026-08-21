@@ -1156,258 +1156,262 @@ export function App() {
             <Waves size={14} />
           </button>
         ) : null}
-        <nav
-          id="workbench-topnav"
-          className="topnav"
-          data-workbench-surface="topnav"
-          style={hideChrome ? { display: 'none' } : undefined}
-        >
-          <span className="topnav-brand">
-            <BrandName name={serverName} />
-          </span>
-          <button
-            type="button"
-            className="topnav-overflow-trigger"
-            aria-label="Toggle navigation"
-            aria-controls="workbench-topnav-links"
-            aria-expanded={isNavOverflowOpen}
-            onClick={() => setIsNavOverflowOpen((open) => !open)}
+        <div id="workbench-shell-stack">
+          <nav
+            id="workbench-topnav"
+            className="topnav"
+            data-workbench-surface="topnav"
+            style={hideChrome ? { display: 'none' } : undefined}
           >
-            <ThemeChromeIcon fallback={<MoreHorizontal size={16} />} codicon="ellipsis" />
-          </button>
-          <div
-            id="workbench-topnav-links"
-            className={`topnav-links${isNavOverflowOpen ? ' is-open' : ''}`}
-          >
+            <span className="topnav-brand">
+              <BrandName name={serverName} />
+            </span>
             <button
               type="button"
-              className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
-              onClick={() => handleViewSelect('chat')}
+              className="topnav-overflow-trigger"
+              aria-label="Toggle navigation"
+              aria-controls="workbench-topnav-links"
+              aria-expanded={isNavOverflowOpen}
+              onClick={() => setIsNavOverflowOpen((open) => !open)}
             >
-              Chat
+              <ThemeChromeIcon fallback={<MoreHorizontal size={16} />} codicon="ellipsis" />
             </button>
-            <button
-              type="button"
-              className={`topnav-link ${activeView === 'userspace' ? 'active' : ''}`}
-              onClick={() => handleViewSelect('userspace')}
+            <div
+              id="workbench-topnav-links"
+              className={`topnav-links${isNavOverflowOpen ? ' is-open' : ''}`}
             >
-              Workspace
-            </button>
-            {isAdmin && (
-              <>
-                <button
-                  type="button"
-                  className={`topnav-link ${activeView === 'indexer' ? 'active' : ''}`}
-                  onClick={() => handleViewSelect('indexer')}
-                >
-                  Indexer
-                </button>
-                <button
-                  type="button"
-                  className={`topnav-link ${activeView === 'tools' ? 'active' : ''}`}
-                  onClick={() => handleViewSelect('tools')}
-                >
-                  Tools
-                </button>
-                <button
-                  type="button"
-                  className={`topnav-link ${activeView === 'users' ? 'active' : ''}`}
-                  onClick={() => handleViewSelect('users')}
-                >
-                  Users
-                </button>
-                <button
-                  type="button"
-                  className={`topnav-link ${activeView === 'settings' ? 'active' : ''}`}
-                  onClick={() => handleViewSelect('settings')}
-                >
-                  Settings
-                </button>
-              </>
-            )}
-          </div>
-          <div className="topnav-actions" data-workbench-surface="topnav-actions">
-            <MemoryStatus />
-            <UserMenu
-              user={currentUser}
-              onLogout={handleLogout}
-              defaultThemePack={authStatus?.default_theme_pack}
+              <button
+                type="button"
+                className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
+                onClick={() => handleViewSelect('chat')}
+              >
+                Chat
+              </button>
+              <button
+                type="button"
+                className={`topnav-link ${activeView === 'userspace' ? 'active' : ''}`}
+                onClick={() => handleViewSelect('userspace')}
+              >
+                Workspace
+              </button>
+              {isAdmin && (
+                <>
+                  <button
+                    type="button"
+                    className={`topnav-link ${activeView === 'indexer' ? 'active' : ''}`}
+                    onClick={() => handleViewSelect('indexer')}
+                  >
+                    Indexer
+                  </button>
+                  <button
+                    type="button"
+                    className={`topnav-link ${activeView === 'tools' ? 'active' : ''}`}
+                    onClick={() => handleViewSelect('tools')}
+                  >
+                    Tools
+                  </button>
+                  <button
+                    type="button"
+                    className={`topnav-link ${activeView === 'users' ? 'active' : ''}`}
+                    onClick={() => handleViewSelect('users')}
+                  >
+                    Users
+                  </button>
+                  <button
+                    type="button"
+                    className={`topnav-link ${activeView === 'settings' ? 'active' : ''}`}
+                    onClick={() => handleViewSelect('settings')}
+                  >
+                    Settings
+                  </button>
+                </>
+              )}
+            </div>
+            <div className="topnav-actions" data-workbench-surface="topnav-actions">
+              <MemoryStatus />
+              <UserMenu
+                user={currentUser}
+                onLogout={handleLogout}
+                defaultThemePack={authStatus?.default_theme_pack}
+              />
+            </div>
+          </nav>
+          <div id="workbench-warning-stack">
+            <SecurityBanner
+              authStatus={authStatus}
+              isAdmin={isAdmin}
+              hidden={hideChrome}
+              onNavigateToSettings={(highlightTarget) => {
+                if (isAdmin) {
+                  setHighlightSetting(highlightTarget || 'api_key_info');
+                  setActiveView('settings');
+                }
+              }}
+            />
+            <WarningsBanner
+              title="Encryption Key Error"
+              warnings={encryptionKeyErrorMessages}
+              dismissKey={ENCRYPTION_KEY_ERROR_DISMISS_KEY}
+              hidden={hideChrome || !isAdmin}
+            />
+            <WarningsBanner
+              title="Back Up Your Encryption Key"
+              warnings={encryptionBackupMessages}
+              dismissKey={ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY}
+              persistDismiss
+              hidden={hideChrome || !isAdmin || encryptionBackupReminderDismissed}
+              action={
+                isAdmin
+                  ? {
+                      label: 'Open backup settings',
+                      onClick: () => {
+                        setHighlightSetting(SERVER_BACKUP_RESTORE_HIGHLIGHT);
+                        setActiveView('settings');
+                      },
+                    }
+                  : undefined
+              }
+            />
+            <ConfigurationBanner
+              warnings={otherConfigurationWarnings}
+              isAdmin={isAdmin}
+              hidden={hideChrome}
+              onNavigateToSettings={() => {
+                if (isAdmin) {
+                  setHighlightSetting('embedding_config');
+                  setActiveView('settings');
+                }
+              }}
+            />
+            <WarningsBanner
+              title={previewWarning?.title || 'Userspace Preview Setup'}
+              warnings={previewWarning?.warnings || []}
+              dismissKey={previewWarning?.dismiss_key}
+              compact
+              hidden={hideChrome || !isAdmin}
             />
           </div>
-        </nav>
-        <SecurityBanner
-          authStatus={authStatus}
-          isAdmin={isAdmin}
-          hidden={hideChrome}
-          onNavigateToSettings={(highlightTarget) => {
-            if (isAdmin) {
-              setHighlightSetting(highlightTarget || 'api_key_info');
-              setActiveView('settings');
-            }
-          }}
-        />
-        <WarningsBanner
-          title="Encryption Key Error"
-          warnings={encryptionKeyErrorMessages}
-          dismissKey={ENCRYPTION_KEY_ERROR_DISMISS_KEY}
-          hidden={hideChrome || !isAdmin}
-        />
-        <WarningsBanner
-          title="Back Up Your Encryption Key"
-          warnings={encryptionBackupMessages}
-          dismissKey={ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY}
-          persistDismiss
-          hidden={hideChrome || !isAdmin || encryptionBackupReminderDismissed}
-          action={
-            isAdmin
-              ? {
-                  label: 'Open backup settings',
-                  onClick: () => {
-                    setHighlightSetting(SERVER_BACKUP_RESTORE_HIGHLIGHT);
-                    setActiveView('settings');
-                  },
-                }
-              : undefined
-          }
-        />
-        <ConfigurationBanner
-          warnings={otherConfigurationWarnings}
-          isAdmin={isAdmin}
-          hidden={hideChrome}
-          onNavigateToSettings={() => {
-            if (isAdmin) {
-              setHighlightSetting('embedding_config');
-              setActiveView('settings');
-            }
-          }}
-        />
-        <WarningsBanner
-          title={previewWarning?.title || 'Userspace Preview Setup'}
-          warnings={previewWarning?.warnings || []}
-          dismissKey={previewWarning?.dismiss_key}
-          compact
-          hidden={hideChrome || !isAdmin}
-        />
-        <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
-        <div className="container">
-          {activeView === 'userspace' ? (
-            <div
-              id="workbench-userspace-route"
-              className="userspace-page-container"
-              data-workbench-route-root="userspace"
-            >
-              <Suspense fallback={<RouteViewFallback />}>
-                <LazyUserSpacePanel
-                  currentUser={currentUser}
-                  debugMode={Boolean(authStatus?.debug_mode)}
-                  openWorkspaceRequest={workspaceOpenRequest}
-                  onFullscreenChange={setUserspaceFullscreen}
-                  onPreviewWarningChange={setPreviewWarning}
-                  onNavigateToTools={(section) => {
-                    setHighlightToolsSection(section ?? null);
-                    setActiveView('tools');
-                  }}
-                />
-              </Suspense>
-            </div>
-          ) : isChatView ? (
-            <div
-              id="workbench-chat-route"
-              className={`chat-page-container${chatFullscreen ? ' chat-page-fullscreen' : ''}`}
-              data-workbench-route-root="chat"
-            >
-              <Suspense fallback={<RouteViewFallback />}>
-                <LazyChatPage
-                  key={chatOpenRequest ? `chat-open-${chatOpenRequest.requestId}` : 'chat-main'}
-                  currentUser={currentUser}
-                  debugMode={Boolean(authStatus?.debug_mode)}
-                  initialConversationId={chatOpenRequest?.conversationId ?? initialConversationId}
-                  chatCompactionThresholdPercent={
-                    authStatus?.chat_compaction_threshold_percent ?? 80
-                  }
-                  chatAutoCompactionThresholdPercent={
-                    authStatus?.chat_auto_compaction_threshold_percent ?? 99
-                  }
-                  onFullscreenChange={setChatFullscreen}
-                />
-              </Suspense>
-            </div>
-          ) : activeView === 'settings' ? (
-            <div id="workbench-settings-route" data-workbench-route-root="settings">
-              <Suspense fallback={<RouteViewFallback />}>
-                <LazySettingsPanel
-                  currentUser={currentUser}
-                  onServerNameChange={handleServerNameChange}
-                  onAuthenticatedWebglBackgroundChange={setAuthenticatedWebglBackgroundEnabled}
-                  onChatCompactionThresholdChange={handleChatCompactionThresholdChange}
-                  onChatAutoCompactionThresholdChange={handleChatAutoCompactionThresholdChange}
-                  onSettingsSaved={refreshConfigurationWarnings}
-                  highlightSetting={highlightSetting}
-                  onHighlightComplete={() => setHighlightSetting(null)}
-                  authStatus={authStatus}
-                  onEncryptedArtifactDelivered={handleEncryptedArtifactDelivered}
-                  onServerBackupJobObserved={observeServerBackupJob}
-                  onServerRestoreJobObserved={observeServerRestoreJob}
-                  onServerOperationError={handleServerOperationError}
-                />
-              </Suspense>
-            </div>
-          ) : activeView === 'tools' ? (
-            <div id="workbench-tools-route" data-workbench-route-root="tools">
-              <Suspense fallback={<RouteViewFallback />}>
-                <LazyToolsPanel
-                  onSchemaJobTriggered={loadSchemaJobs}
-                  schemaJobs={schemaJobs}
-                  highlightSection={highlightToolsSection}
-                  onHighlightComplete={() => setHighlightToolsSection(null)}
-                />
-              </Suspense>
-            </div>
-          ) : activeView === 'users' ? (
-            <div id="workbench-users-route" data-workbench-route-root="users">
-              <Suspense fallback={<RouteViewFallback />}>
-                <LazyUsersPanel
-                  currentUser={currentUser}
-                  onOpenWorkspace={handleOpenWorkspaceFromUsers}
-                  onOpenChat={handleOpenChatFromUsers}
-                />
-              </Suspense>
-            </div>
-          ) : (
-            <div id="workbench-indexer-route" data-workbench-route-root="indexer">
-              <Suspense fallback={<RouteViewFallback />}>
-                <LazyIndexerAdminView
-                  indexes={indexes}
-                  jobs={jobs}
-                  indexesLoading={indexesLoading}
-                  indexesError={indexesError}
-                  jobsLoading={jobsLoading}
-                  jobsError={jobsError}
-                  filesystemJobs={filesystemJobs}
-                  schemaJobs={schemaJobs}
-                  pdmJobs={pdmJobs}
-                  userspaceCodeJobs={userspaceCodeJobs}
-                  aggregateSearch={aggregateSearch}
-                  embeddingDimensions={embeddingDimensions}
-                  onLoadIndexes={loadIndexes}
-                  onJobCreated={handleJobCreated}
-                  onNavigateToSettings={() => {
-                    setHighlightSetting('sequential_index_loading');
-                    handleViewSelect('settings');
-                  }}
-                  onToolsChanged={handleFilesystemToolsChanged}
-                  onFilesystemJobsChanged={loadFilesystemJobs}
-                  onJobsChanged={loadJobs}
-                  onSchemaJobsChanged={loadSchemaJobs}
-                  onPdmJobsChanged={loadPdmJobs}
-                  onUserSpaceCodeJobsChanged={loadUserSpaceCodeJobs}
-                  onCancelFilesystemJob={handleCancelFilesystemJob}
-                  onCancelSchemaJob={handleCancelSchemaJob}
-                  onCancelPdmJob={handleCancelPdmJob}
-                />
-              </Suspense>
-            </div>
-          )}
+          <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
+          <div className="container">
+            {activeView === 'userspace' ? (
+              <div
+                id="workbench-userspace-route"
+                className="userspace-page-container"
+                data-workbench-route-root="userspace"
+              >
+                <Suspense fallback={<RouteViewFallback />}>
+                  <LazyUserSpacePanel
+                    currentUser={currentUser}
+                    debugMode={Boolean(authStatus?.debug_mode)}
+                    openWorkspaceRequest={workspaceOpenRequest}
+                    onFullscreenChange={setUserspaceFullscreen}
+                    onPreviewWarningChange={setPreviewWarning}
+                    onNavigateToTools={(section) => {
+                      setHighlightToolsSection(section ?? null);
+                      setActiveView('tools');
+                    }}
+                  />
+                </Suspense>
+              </div>
+            ) : isChatView ? (
+              <div
+                id="workbench-chat-route"
+                className={`chat-page-container${chatFullscreen ? ' chat-page-fullscreen' : ''}`}
+                data-workbench-route-root="chat"
+              >
+                <Suspense fallback={<RouteViewFallback />}>
+                  <LazyChatPage
+                    key={chatOpenRequest ? `chat-open-${chatOpenRequest.requestId}` : 'chat-main'}
+                    currentUser={currentUser}
+                    debugMode={Boolean(authStatus?.debug_mode)}
+                    initialConversationId={chatOpenRequest?.conversationId ?? initialConversationId}
+                    chatCompactionThresholdPercent={
+                      authStatus?.chat_compaction_threshold_percent ?? 80
+                    }
+                    chatAutoCompactionThresholdPercent={
+                      authStatus?.chat_auto_compaction_threshold_percent ?? 99
+                    }
+                    onFullscreenChange={setChatFullscreen}
+                  />
+                </Suspense>
+              </div>
+            ) : activeView === 'settings' ? (
+              <div id="workbench-settings-route" data-workbench-route-root="settings">
+                <Suspense fallback={<RouteViewFallback />}>
+                  <LazySettingsPanel
+                    currentUser={currentUser}
+                    onServerNameChange={handleServerNameChange}
+                    onAuthenticatedWebglBackgroundChange={setAuthenticatedWebglBackgroundEnabled}
+                    onChatCompactionThresholdChange={handleChatCompactionThresholdChange}
+                    onChatAutoCompactionThresholdChange={handleChatAutoCompactionThresholdChange}
+                    onSettingsSaved={refreshConfigurationWarnings}
+                    highlightSetting={highlightSetting}
+                    onHighlightComplete={() => setHighlightSetting(null)}
+                    authStatus={authStatus}
+                    onEncryptedArtifactDelivered={handleEncryptedArtifactDelivered}
+                    onServerBackupJobObserved={observeServerBackupJob}
+                    onServerRestoreJobObserved={observeServerRestoreJob}
+                    onServerOperationError={handleServerOperationError}
+                  />
+                </Suspense>
+              </div>
+            ) : activeView === 'tools' ? (
+              <div id="workbench-tools-route" data-workbench-route-root="tools">
+                <Suspense fallback={<RouteViewFallback />}>
+                  <LazyToolsPanel
+                    onSchemaJobTriggered={loadSchemaJobs}
+                    schemaJobs={schemaJobs}
+                    highlightSection={highlightToolsSection}
+                    onHighlightComplete={() => setHighlightToolsSection(null)}
+                  />
+                </Suspense>
+              </div>
+            ) : activeView === 'users' ? (
+              <div id="workbench-users-route" data-workbench-route-root="users">
+                <Suspense fallback={<RouteViewFallback />}>
+                  <LazyUsersPanel
+                    currentUser={currentUser}
+                    onOpenWorkspace={handleOpenWorkspaceFromUsers}
+                    onOpenChat={handleOpenChatFromUsers}
+                  />
+                </Suspense>
+              </div>
+            ) : (
+              <div id="workbench-indexer-route" data-workbench-route-root="indexer">
+                <Suspense fallback={<RouteViewFallback />}>
+                  <LazyIndexerAdminView
+                    indexes={indexes}
+                    jobs={jobs}
+                    indexesLoading={indexesLoading}
+                    indexesError={indexesError}
+                    jobsLoading={jobsLoading}
+                    jobsError={jobsError}
+                    filesystemJobs={filesystemJobs}
+                    schemaJobs={schemaJobs}
+                    pdmJobs={pdmJobs}
+                    userspaceCodeJobs={userspaceCodeJobs}
+                    aggregateSearch={aggregateSearch}
+                    embeddingDimensions={embeddingDimensions}
+                    onLoadIndexes={loadIndexes}
+                    onJobCreated={handleJobCreated}
+                    onNavigateToSettings={() => {
+                      setHighlightSetting('sequential_index_loading');
+                      handleViewSelect('settings');
+                    }}
+                    onToolsChanged={handleFilesystemToolsChanged}
+                    onFilesystemJobsChanged={loadFilesystemJobs}
+                    onJobsChanged={loadJobs}
+                    onSchemaJobsChanged={loadSchemaJobs}
+                    onPdmJobsChanged={loadPdmJobs}
+                    onUserSpaceCodeJobsChanged={loadUserSpaceCodeJobs}
+                    onCancelFilesystemJob={handleCancelFilesystemJob}
+                    onCancelSchemaJob={handleCancelSchemaJob}
+                    onCancelPdmJob={handleCancelPdmJob}
+                  />
+                </Suspense>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </AvailableModelsProvider>

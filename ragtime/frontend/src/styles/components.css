@@ -5401,6 +5401,94 @@ textarea:focus {
   }
 }
 
+/* --- Resize handles --- */
+
+.resize-handle {
+  flex-shrink: 0;
+  background: var(--color-border);
+  position: relative;
+  z-index: 1;
+  transition: background var(--transition-fast);
+}
+
+.resize-handle:hover,
+.resize-handle:active {
+  background: var(--color-primary);
+}
+
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  cursor: inherit;
+}
+
+.resize-handle-horizontal::before {
+  left: -5px;
+  right: -5px;
+}
+
+.resize-handle-vertical::before {
+  top: -5px;
+  bottom: -5px;
+}
+
+.resize-handle-horizontal {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.resize-handle-vertical {
+  height: 4px;
+  cursor: row-resize;
+}
+
+/* Collapsed state: clickable strip with expand chevron */
+.resize-handle-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-border);
+}
+
+.resize-handle-collapsed.resize-handle-horizontal {
+  width: 16px;
+  cursor: col-resize;
+}
+
+.resize-handle-collapsed.resize-handle-vertical {
+  height: 16px;
+  cursor: row-resize;
+}
+
+.resize-handle-chevron {
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.resize-handle-grip {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  z-index: 1;
+  display: flex;
+  gap: 2px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  color: var(--color-text-muted);
+}
+
+.resize-handle-horizontal .resize-handle-grip { flex-direction: column; }
+.resize-handle-vertical .resize-handle-grip { flex-direction: row; }
+
+.resize-handle-collapsed .resize-handle-grip { display: none; }
+
+.resize-handle-grip-dot {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
 input::placeholder,
 textarea::placeholder {
   color: var(--color-text-muted);

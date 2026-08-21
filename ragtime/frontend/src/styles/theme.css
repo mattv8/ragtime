@@ -116,16 +116,6 @@
   --radius-xl: 16px;
   --radius-full: 9999px;
 
-  --workbench-gap: 4px;
-  --workbench-padding: 8px;
-  --workbench-surface-radius: var(--radius-lg);
-  --workbench-control-radius: var(--radius-md);
-  --workbench-titlebar-height: 35px;
-  --workbench-toolbar-height: 32px;
-  --workbench-control-height: 28px;
-  --sash-size: 4px;
-  --sash-hover-size: 4px;
-
   --font-sans:
     'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
     sans-serif;

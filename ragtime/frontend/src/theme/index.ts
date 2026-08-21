@@ -3,6 +3,7 @@ export {
   DEFAULT_THEME_PACK_ID,
   THEME_PACK_STORAGE_KEY,
   isThemePackId,
+  normalizeThemePackId,
   getThemePack,
   type ThemePack,
   type ThemePackId,

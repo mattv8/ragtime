@@ -604,6 +604,12 @@
     grid-template-columns: none !important;
   }
 
+  .userspace-content > .resize-handle-horizontal,
+  .userspace-left-pane > .resize-handle-vertical,
+  .userspace-editor-section > .resize-handle-horizontal {
+    display: none;
+  }
+
   .userspace-left-pane,
   .userspace-right-pane {
     min-height: 0;

@@ -1,7 +1,7 @@
 import {
   DEFAULT_THEME_PACK_ID,
   THEME_PACK_STORAGE_KEY,
-  isThemePackId,
+  normalizeThemePackId,
   type ThemePackId,
 } from './themes';
 
@@ -9,20 +9,20 @@ export function resolveThemePackId(
   userPack: string | null | undefined,
   globalDefault: string | null | undefined,
 ): ThemePackId {
-  if (isThemePackId(userPack)) {
-    return userPack;
-  }
-  if (isThemePackId(globalDefault)) {
-    return globalDefault;
-  }
-  return DEFAULT_THEME_PACK_ID;
+  return (
+    normalizeThemePackId(userPack) ?? normalizeThemePackId(globalDefault) ?? DEFAULT_THEME_PACK_ID
+  );
 }
 
 export function getStoredThemePack(): ThemePackId {
   try {
     const stored = localStorage.getItem(THEME_PACK_STORAGE_KEY);
-    if (isThemePackId(stored)) {
-      return stored;
+    const resolved = normalizeThemePackId(stored);
+    if (resolved && stored === 'vscode') {
+      localStorage.setItem(THEME_PACK_STORAGE_KEY, 'modern');
+    }
+    if (resolved) {
+      return resolved;
     }
   } catch {
     /* localStorage unavailable */

@@ -225,6 +225,11 @@ export function ResizeHandle({
       data-value-unit={valueUnit}
       data-collapsed-side={collapsed}
     >
+      <span className="resize-handle-grip" aria-hidden="true">
+        <span className="resize-handle-grip-dot" />
+        <span className="resize-handle-grip-dot" />
+        <span className="resize-handle-grip-dot" />
+      </span>
       {CollapsedIcon && <CollapsedIcon size={14} className="resize-handle-chevron" />}
     </div>
   );

@@ -1,4 +1,4 @@
-[data-theme-pack='vscode'] {
+[data-theme-pack='modern'] {
   color-scheme: dark light;
 
   --font-heading: 'Droid Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -12,8 +12,16 @@
   --radius-xl: 8px;
   --radius-full: 9999px;
 
+  --workbench-gap: 4px;
+  --workbench-padding: 8px;
+  --workbench-titlebar-height: 35px;
+  --workbench-toolbar-height: 32px;
+  --workbench-control-height: 28px;
+  --sash-size: 4px;
+  --sash-hover-size: 4px;
   --workbench-surface-radius: 8px;
   --workbench-control-radius: 4px;
+  --workbench-container-border: 1px solid var(--color-border);
 
   --color-workbench: #252526;
   --color-chrome: #181818;
@@ -71,8 +79,8 @@
   --color-focus: #0078d4;
   --color-sash-hover: var(--color-focus);
 
-  --color-input-bg: #313131;
-  --color-input-border: #3c3c3c;
+  --color-input-bg: #181818;
+  --color-input-border: #2b2b2b;
   --color-input-focus: var(--color-focus);
 
   --color-terminal-surface: #181818;
@@ -106,15 +114,17 @@
   --login-card-border: rgba(43, 43, 43, 0.96);
   --login-card-shadow: 0 18px 40px rgba(0, 0, 0, 0.38);
 
-  --shadow-sm: 0 0 0 1px rgba(43, 43, 43, 0.95);
-  --shadow-md: 0 0 0 1px rgba(43, 43, 43, 0.95), inset 0 1px 0 rgba(255, 255, 255, 0.02);
-  --shadow-lg: 0 0 0 1px rgba(43, 43, 43, 0.95), 0 12px 28px rgba(0, 0, 0, 0.32);
-  --shadow-xl: 0 0 0 1px rgba(43, 43, 43, 0.95), 0 18px 40px rgba(0, 0, 0, 0.4);
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.32);
+  --shadow-xl: 0 18px 40px rgba(0, 0, 0, 0.4);
 }
 
 /* Intentional duplication: explicit light and system light must stay identical. */
-[data-theme-pack='vscode'][data-theme='light'] {
+[data-theme-pack='modern'][data-theme='light'] {
   color-scheme: light;
+
+  --workbench-container-border: 1px solid var(--color-border);
 
   --color-workbench: #f3f3f3;
   --color-chrome: #f8f8f8;
@@ -207,16 +217,18 @@
   --login-card-border: rgba(229, 229, 229, 0.98);
   --login-card-shadow: 0 18px 40px rgba(0, 0, 0, 0.08);
 
-  --shadow-sm: 0 0 0 1px rgba(229, 229, 229, 0.98);
-  --shadow-md: 0 0 0 1px rgba(229, 229, 229, 0.98), inset 0 1px 0 rgba(255, 255, 255, 0.75);
-  --shadow-lg: 0 0 0 1px rgba(229, 229, 229, 0.98), 0 10px 24px rgba(0, 0, 0, 0.08);
-  --shadow-xl: 0 0 0 1px rgba(229, 229, 229, 0.98), 0 16px 36px rgba(0, 0, 0, 0.12);
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: 0 10px 24px rgba(0, 0, 0, 0.08);
+  --shadow-xl: 0 16px 36px rgba(0, 0, 0, 0.12);
 }
 
 /* Intentional duplication: explicit light and system light must stay identical. */
 @media (prefers-color-scheme: light) {
-  [data-theme-pack='vscode']:not([data-theme='dark']) {
+  [data-theme-pack='modern']:not([data-theme='dark']) {
     color-scheme: light;
+
+    --workbench-container-border: 1px solid var(--color-border);
 
     --color-workbench: #f3f3f3;
     --color-chrome: #f8f8f8;
@@ -309,9 +321,9 @@
     --login-card-border: rgba(229, 229, 229, 0.98);
     --login-card-shadow: 0 18px 40px rgba(0, 0, 0, 0.08);
 
-    --shadow-sm: 0 0 0 1px rgba(229, 229, 229, 0.98);
-    --shadow-md: 0 0 0 1px rgba(229, 229, 229, 0.98), inset 0 1px 0 rgba(255, 255, 255, 0.75);
-    --shadow-lg: 0 0 0 1px rgba(229, 229, 229, 0.98), 0 10px 24px rgba(0, 0, 0, 0.08);
-    --shadow-xl: 0 0 0 1px rgba(229, 229, 229, 0.98), 0 16px 36px rgba(0, 0, 0, 0.12);
+    --shadow-sm: none;
+    --shadow-md: none;
+    --shadow-lg: 0 10px 24px rgba(0, 0, 0, 0.08);
+    --shadow-xl: 0 16px 36px rgba(0, 0, 0, 0.12);
   }
 }

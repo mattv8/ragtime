@@ -9242,11 +9242,6 @@ export function UserSpacePanel({
                 role="tab"
                 aria-selected={activeRightTab === 'console'}
               >
-                <ThemeChromeIcon
-                  fallback={<Terminal size={13} />}
-                  codicon="terminal-bash"
-                  size={13}
-                />
                 Console
               </button>
             </div>
