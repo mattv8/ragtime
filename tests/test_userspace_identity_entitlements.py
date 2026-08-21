@@ -113,7 +113,11 @@ class _FakeMembershipTable:
 
     async def find_unique(self, *, where: dict[str, Any]) -> SimpleNamespace | None:
         key = where.get("userId_groupId") or {}
-        return self.memberships.get((key.get("userId"), key.get("groupId")))
+        user_id = key.get("userId")
+        group_id = key.get("groupId")
+        if not isinstance(user_id, str) or not isinstance(group_id, str):
+            return None
+        return self.memberships.get((user_id, group_id))
 
 
 class _FakeTx(AbstractAsyncContextManager[Any]):
@@ -459,8 +463,11 @@ class WorkspaceIdentityEntitlementRouteTests(unittest.IsolatedAsyncioTestCase):
             result = await userspace_routes.get_workspace_identity_entitlements("workspace-1", fake_user)
 
         self.assertEqual(result, response)
-        self.assertTrue(get_policy.await_args.kwargs["is_admin"])
-        self.assertTrue(get_policy.await_args.kwargs["include_available_groups"])
+        await_args = get_policy.await_args
+        self.assertIsNotNone(await_args)
+        assert await_args is not None
+        self.assertTrue(await_args.kwargs["is_admin"])
+        self.assertTrue(await_args.kwargs["include_available_groups"])
 
     async def test_put_route_passes_admin_flag(self) -> None:
         fake_user = SimpleNamespace(id="admin-1", role="admin")
@@ -476,7 +483,10 @@ class WorkspaceIdentityEntitlementRouteTests(unittest.IsolatedAsyncioTestCase):
             result = await userspace_routes.replace_workspace_identity_entitlements("workspace-1", request, fake_user)
 
         self.assertEqual(result, response)
-        self.assertTrue(replace_policy.await_args.kwargs["is_admin"])
+        await_args = replace_policy.await_args
+        self.assertIsNotNone(await_args)
+        assert await_args is not None
+        self.assertTrue(await_args.kwargs["is_admin"])
 
     async def test_routes_propagate_owner_denial_from_service(self) -> None:
         fake_user = SimpleNamespace(id="editor-1", role="user")

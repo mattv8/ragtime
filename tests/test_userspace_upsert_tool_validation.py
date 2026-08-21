@@ -491,12 +491,15 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(payload["configured_groups"], [executive_group])
         self.assertEqual(payload["reason"], "Grant admin access")
-        request = replace_policy.await_args.args[2]
+        await_args = replace_policy.await_args
+        self.assertIsNotNone(await_args)
+        assert await_args is not None
+        request = await_args.args[2]
         self.assertIsInstance(request, ReplaceUserSpaceIdentityEntitlementPolicyRequest)
-        self.assertEqual(replace_policy.await_args.args[:2], ("workspace-1", "user-1"))
+        self.assertEqual(await_args.args[:2], ("workspace-1", "user-1"))
         self.assertEqual(request.rules[0].auth_group_id, "group-2")
         self.assertEqual(request.rules[0].entitlements, ["recon.admin", "recon.admin"])
-        self.assertFalse(replace_policy.await_args.kwargs.get("is_admin", False))
+        self.assertFalse(await_args.kwargs.get("is_admin", False))
 
     async def test_frontend_json_display_tools_bypass_global_output_truncation(self) -> None:
         tool = await self._tool("discover_userspace_primitives")
