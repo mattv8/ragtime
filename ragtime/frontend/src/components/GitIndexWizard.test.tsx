@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { GitWebhookConfig, GitWebhookEnableResponse, IndexInfo } from '@/types';
+import { deferred } from '@/testHelpers/deferred';
 
 import { GitIndexWizard } from './GitIndexWizard';
 
@@ -181,15 +182,7 @@ const enabledWebhookWithSecret: GitWebhookEnableResponse = {
   secret: 'secret-once',
 };
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
+
 
 async function completeAnalysis() {
   fireEvent.change(

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Lock, LockOpen, Info, ExternalLink, Pencil } from 'lucide-react';
 import { api } from '@/api';
+import { generateCredentialValue } from '@/utils/credentialGenerator';
 import type {
   AppSettings,
   UpdateSettingsRequest,
@@ -138,27 +139,12 @@ function formatDnForDisplay(dn: string, baseDn: string): string {
   return names.join(' / ');
 }
 
-function generateMcpCredentialValue(length: number): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-  const randomValues = new Uint8Array(length);
-
-  if (globalThis.crypto?.getRandomValues) {
-    globalThis.crypto.getRandomValues(randomValues);
-  } else {
-    for (let index = 0; index < randomValues.length; index += 1) {
-      randomValues[index] = Math.floor(Math.random() * alphabet.length);
-    }
-  }
-
-  return Array.from(randomValues, (value) => alphabet[value % alphabet.length]).join('');
-}
-
 function generateMcpClientId(): string {
-  return `cid-${generateMcpCredentialValue(12).toLowerCase()}`;
+  return `cid-${generateCredentialValue(12).toLowerCase()}`;
 }
 
 function generateMcpSecret(): string {
-  return generateMcpCredentialValue(32);
+  return generateCredentialValue(32);
 }
 
 function getCloudOAuthCallbackUrl(): string {

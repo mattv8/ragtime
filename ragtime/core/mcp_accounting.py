@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
+from ragtime.core._accounting_shared import build_where_clause_for_since, format_where_sql
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 
@@ -51,16 +52,8 @@ async def get_mcp_usage_by_user(
     """Per-user MCP request summary for admin dashboard."""
     db = await get_db()
 
-    where_clauses: list[str] = []
-    params: list[Any] = []
-    param_idx = 1
-
-    if since:
-        where_clauses.append(f"m.created_at >= ${param_idx}::timestamp")
-        params.append(since.isoformat())
-        param_idx += 1
-
-    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    where_clauses, params, _ = build_where_clause_for_since(since, column_name="m.created_at")
+    where_sql = format_where_sql(where_clauses)
 
     query = f"""
         SELECT
@@ -89,16 +82,8 @@ async def get_mcp_daily_trend(
     """Daily MCP request trend for admin dashboard."""
     db = await get_db()
 
-    where_clauses: list[str] = []
-    params: list[Any] = []
-    param_idx = 1
-
-    if since:
-        where_clauses.append(f"created_at >= ${param_idx}::timestamp")
-        params.append(since.isoformat())
-        param_idx += 1
-
-    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    where_clauses, params, _ = build_where_clause_for_since(since, column_name="created_at")
+    where_sql = format_where_sql(where_clauses)
 
     query = f"""
         SELECT
@@ -123,16 +108,8 @@ async def get_mcp_usage_by_route(
     """Per-route MCP request summary for admin dashboard."""
     db = await get_db()
 
-    where_clauses: list[str] = []
-    params: list[Any] = []
-    param_idx = 1
-
-    if since:
-        where_clauses.append(f"created_at >= ${param_idx}::timestamp")
-        params.append(since.isoformat())
-        param_idx += 1
-
-    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    where_clauses, params, _ = build_where_clause_for_since(since, column_name="created_at")
+    where_sql = format_where_sql(where_clauses)
 
     query = f"""
         SELECT

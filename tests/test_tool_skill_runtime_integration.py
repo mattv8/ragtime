@@ -12,138 +12,61 @@ from langchain_core.tools import StructuredTool
 from ragtime.rag import components as rag_components
 from ragtime.rag.prompts import UI_VISUALIZATION_CHAT_PROMPT, UI_VISUALIZATION_COMMON_PROMPT
 from ragtime.rag.tool_skills import ToolSkillBindingState
+from tests.test_tool_skill_shared import (
+    FakeAction,
+    FakeExecutor,
+    FakeStreamExecutor,
+    make_base_request_context,
+    make_builtin_tool,
+    make_chart_tool,
+    make_datatable_tool,
+    make_empty_request_state,
+    make_noop_tool,
+    make_rag_components,
+    make_sql_bundle_tools,
+    make_tool,
+    tool_by_name,
+)
+
+# Convenience aliases for backwards compatibility
+_FakeAction = FakeAction
+_FakeExecutor = FakeExecutor
+_FakeStreamExecutor = FakeStreamExecutor
 
 
-def _make_tool(name: str, *, description: str | None = None, coroutine: Any) -> StructuredTool:
-    return StructuredTool.from_function(
-        coroutine=coroutine,
-        name=name,
-        description=description or f"Tool {name}",
-    )
-
-
+# Convenience wrappers (all delegate to shared module)
 def _make_sql_bundle_tools() -> list[StructuredTool]:
-    async def _query_demo_sql(query: str, limit: int = 100) -> str:
-        return f"rows for {query} limit {limit}"
-
-    async def _search_demo_sql_schema(query: str) -> str:
-        return f"schema for {query}"
-
-    return [
-        _make_tool(
-            "query_demo_sql",
-            description="Query the demo SQL database.",
-            coroutine=_query_demo_sql,
-        ),
-        _make_tool(
-            "search_demo_sql_schema",
-            description="Search the demo SQL schema.",
-            coroutine=_search_demo_sql_schema,
-        ),
-    ]
+    return make_sql_bundle_tools()
 
 
 def _make_builtin_tool() -> StructuredTool:
-    async def _builtin_lookup(query: str, limit: int = 5) -> str:
-        return f"builtin {query} {limit}"
-
-    return _make_tool(
-        "builtin_lookup",
-        description="Optional built-in lookup tool.",
-        coroutine=_builtin_lookup,
-    )
+    return make_builtin_tool()
 
 
 def _make_noop_tool(name: str, *, description: str | None = None) -> StructuredTool:
-    async def _tool(**_kwargs: Any) -> str:
-        return name
-
-    return _make_tool(name, description=description, coroutine=_tool)
+    return make_noop_tool(name, description=description)
 
 
 def _make_chart_tool() -> StructuredTool:
-    async def _create_chart(chart_type: str, title: str = "Chart") -> str:
-        return f"{chart_type}:{title}"
-
-    return _make_tool(
-        "create_chart",
-        description="Create a chart.",
-        coroutine=_create_chart,
-    )
+    return make_chart_tool()
 
 
 def _make_datatable_tool() -> StructuredTool:
-    async def _create_datatable(title: str = "Table") -> str:
-        return title
-
-    return _make_tool(
-        "create_datatable",
-        description="Create a datatable.",
-        coroutine=_create_datatable,
-    )
-
-
-class _FakeAction:
-    def __init__(self, tool: str, tool_input: dict[str, Any], tool_call_id: str) -> None:
-        self.tool = tool
-        self.tool_input = tool_input
-        self.tool_call_id = tool_call_id
-
-
-class _FakeExecutor:
-    def __init__(self, tools: list[Any], results: list[dict[str, Any]]) -> None:
-        self.tools = tools
-        self._results = list(results)
-        self.inputs: list[dict[str, Any]] = []
-
-    async def ainvoke(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.inputs.append(payload)
-        if not self._results:
-            raise AssertionError("No more fake executor results")
-        return self._results.pop(0)
-
-
-class _FakeStreamExecutor:
-    def __init__(self, tools: list[Any], streams: list[list[dict[str, Any]]]) -> None:
-        self.tools = tools
-        self._streams = list(streams)
-        self.inputs: list[dict[str, Any]] = []
-
-    def astream_events(self, payload: dict[str, Any], version: str = "v2"):
-        self.inputs.append(payload)
-
-        async def _gen():
-            if not self._streams:
-                raise AssertionError("No more fake stream stages")
-            for event in self._streams.pop(0):
-                yield event
-
-        return _gen()
+    return make_datatable_tool()
 
 
 def _tool_by_name(tools: list[StructuredTool], name: str) -> StructuredTool:
-    for tool in tools:
-        if tool.name == name:
-            return tool
-    raise AssertionError(f"Missing tool {name}")
+    return tool_by_name(tools, name)
+
+
+def _make_request_context(**kwargs: Any) -> dict[str, Any]:
+    """Convenience wrapper for make_base_request_context."""
+    return make_base_request_context(**kwargs)
 
 
 class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def _make_rag(self, *, tool_name: str = "Demo SQL", tool_description: str = "Reads demo SQL rows.") -> rag_components.RAGComponents:
-        rag = rag_components.RAGComponents.__new__(rag_components.RAGComponents)
-        rag._tool_configs = [
-            {
-                "id": "tool-1",
-                "name": tool_name,
-                "tool_type": "postgres",
-                "description": tool_description,
-                "connection_config": {},
-            }
-        ]
-        rag._index_metadata = []
-        rag._request_prompt_cache = {}
-        rag._app_settings = {"tool_skills_enabled": True, "max_iterations": 4}
-        return rag
+        return make_rag_components(tool_name=tool_name, tool_description=tool_description)
 
     async def test_tool_config_bundle_can_be_searched_and_loaded_request_locally(self) -> None:
         rag = self._make_rag()

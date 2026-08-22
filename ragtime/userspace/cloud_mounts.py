@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 import httpx
 
 from ragtime.config import settings
+from ragtime.core._digest_shared import build_tree_state_fingerprint
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -196,32 +197,6 @@ def _collect_delete_paths(files: set[str], directories: set[str]) -> list[str]:
     return paths
 
 
-def _build_tree_state_fingerprint(
-    remote_files: dict[str, tuple[int, int]],
-    remote_dirs: set[str],
-    local_files: dict[str, tuple[int, int]],
-    local_dirs: set[str],
-) -> str:
-    digest = hashlib.sha256()
-    for label, files, directories in (
-        ("remote", remote_files, remote_dirs),
-        ("local", local_files, local_dirs),
-    ):
-        digest.update(label.encode("ascii"))
-        digest.update(b"\0")
-        for directory in sorted(directories):
-            digest.update(b"d\0")
-            digest.update(directory.encode("utf-8", errors="ignore"))
-            digest.update(b"\0")
-        for path, (size_bytes, mtime_seconds) in sorted(files.items()):
-            digest.update(b"f\0")
-            digest.update(path.encode("utf-8", errors="ignore"))
-            digest.update(b"\0")
-            digest.update(f"{size_bytes}:{mtime_seconds}".encode("ascii"))
-            digest.update(b"\0")
-    return digest.hexdigest()
-
-
 def _preview_cloud_sync_from_metadata(
     remote_files: dict[str, tuple[int, int]],
     remote_dirs: set[str],
@@ -244,7 +219,7 @@ def _preview_cloud_sync_from_metadata(
         delete_from_target_count=len(delete_from_target_paths),
         delete_from_source_paths=delete_from_source_paths[:sample_limit],
         delete_from_target_paths=delete_from_target_paths[:sample_limit],
-        state_fingerprint=_build_tree_state_fingerprint(remote_files, remote_dirs, local_files, local_dirs),
+        state_fingerprint=build_tree_state_fingerprint(remote_files, remote_dirs, local_files, local_dirs),
         errors=errors,
         success=len(errors) == 0,
         sample_limit=sample_limit,

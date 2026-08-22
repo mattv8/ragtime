@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/api';
 import type {
-  CommitHistoryInfo,
   GitWebhookConfig,
   GitWebhookEnableResponse,
   IndexAnalysisResult,
@@ -12,7 +11,6 @@ import type {
   VectorStoreType,
 } from '@/types';
 import { AnalysisStats } from './AnalysisStats';
-import { IndexConfigFields } from './IndexConfigFields';
 import { OcrVectorStoreFields, OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
 import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
@@ -20,6 +18,7 @@ import { WarningsBanner } from './WarningsBanner';
 import { ReindexIntervalSelect } from './ReindexIntervalSelect';
 import { defaultScheduleStartMinute, defaultScheduleTimezone } from './ScheduleStartTimeInput';
 import { GitWebhookSettings } from './GitWebhookSettings';
+import { GitHistoryDepthAndAdvancedOptions } from './GitHistoryDepthAndAdvancedOptions';
 
 type StatusType = 'info' | 'success' | 'error' | null;
 type WizardStep = 'input' | 'analyzing' | 'review' | 'indexing';
@@ -48,72 +47,7 @@ function computeCloneTimeout(depth: number): number {
   return Math.round(Math.max(minTimeout, Math.min(maxTimeout, timeout)));
 }
 
-/**
- * Interpolates a date for a given depth from commit history samples.
- * Returns a human-readable description like "~6 months of history".
- */
-function getDepthDateEstimate(
-  depth: number,
-  commitHistory: CommitHistoryInfo | undefined,
-): string | null {
-  if (!commitHistory?.samples || commitHistory.samples.length < 2) return null;
-  if (depth === 0) return null; // Full history - use oldest_date directly
-  if (depth === 1) return null; // Shallow - no history
 
-  const samples = commitHistory.samples;
-  const newest = samples.find((s) => s.depth === 0);
-  if (!newest) return null;
-
-  const newestDate = new Date(newest.date);
-  let estimatedDate: Date | null = null;
-
-  // Find the two samples that bracket the requested depth
-  for (let i = 0; i < samples.length - 1; i++) {
-    const lower = samples[i];
-    const upper = samples[i + 1];
-    if (depth >= lower.depth && depth <= upper.depth) {
-      // Linear interpolation between the two sample dates
-      const ratio = (depth - lower.depth) / (upper.depth - lower.depth);
-      const lowerDate = new Date(lower.date);
-      const upperDate = new Date(upper.date);
-      const interpolatedMs =
-        lowerDate.getTime() + ratio * (upperDate.getTime() - lowerDate.getTime());
-      estimatedDate = new Date(interpolatedMs);
-      break;
-    }
-  }
-
-  // If depth is beyond our last sample, extrapolate or use oldest_date
-  if (!estimatedDate && depth > samples[samples.length - 1].depth) {
-    if (commitHistory.oldest_date) {
-      estimatedDate = new Date(commitHistory.oldest_date);
-    } else {
-      // Extrapolate from last two samples
-      const last = samples[samples.length - 1];
-      const prev = samples[samples.length - 2];
-      if (last && prev) {
-        const ratio = (depth - prev.depth) / (last.depth - prev.depth);
-        const prevDate = new Date(prev.date);
-        const lastDate = new Date(last.date);
-        const interpolatedMs =
-          prevDate.getTime() + ratio * (lastDate.getTime() - prevDate.getTime());
-        estimatedDate = new Date(interpolatedMs);
-      }
-    }
-  }
-
-  if (!estimatedDate) return null;
-
-  // Calculate time difference and format nicely
-  const diffMs = newestDate.getTime() - estimatedDate.getTime();
-  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffDays < 7) return `~${diffDays} days of history`;
-  if (diffDays < 30) return `~${Math.round(diffDays / 7)} weeks of history`;
-  if (diffDays < 365) return `~${Math.round(diffDays / 30)} months of history`;
-  const years = (diffDays / 365).toFixed(1);
-  return `~${years} years of history`;
-}
 
 const INDEX_JOB_POLL_INTERVAL_MS = 1000;
 
@@ -1241,60 +1175,24 @@ export function GitIndexWizard({
           vectorStoreDisabled={true}
         />
 
-        {/* Git History Depth - outside Advanced Options for prominence */}
-        <div className="form-group" style={{ marginBottom: '16px' }}>
-          <label>Git History Depth</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <input
-              type="range"
-              min={1}
-              max={1001}
-              value={gitHistoryDepth === 0 ? 1001 : gitHistoryDepth}
-              onChange={(e) => {
-                const sliderVal = parseInt(e.target.value, 10);
-                setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
-              }}
-              disabled={isLoading}
-              style={{ flex: '1 1 300px' }}
-            />
-            <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-              {gitHistoryDepth === 0
-                ? 'Full'
-                : gitHistoryDepth === 1
-                  ? '1 (shallow)'
-                  : `${gitHistoryDepth} commits`}
-            </span>
-          </div>
-          <small style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
-            {gitHistoryDepth === 0
-              ? 'Full history: Indexes all commits. Large repos may take 30+ min to clone.'
-              : gitHistoryDepth === 1
-                ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
-                : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`}
-          </small>
-        </div>
-
-        <details style={{ marginBottom: '16px' }}>
-          <summary style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}>
-            Advanced Options
-          </summary>
-          <IndexConfigFields
-            isLoading={isLoading}
-            filePatterns={filePatterns}
-            setFilePatterns={setFilePatterns}
-            excludePatterns={excludePatterns}
-            setExcludePatterns={setExcludePatterns}
-            chunkSize={chunkSize}
-            setChunkSize={setChunkSize}
-            chunkOverlap={chunkOverlap}
-            setChunkOverlap={setChunkOverlap}
-            maxFileSizeKb={maxFileSizeKb}
-            setMaxFileSizeKb={setMaxFileSizeKb}
-            gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
-            setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
-            setTimeoutManuallySet={setTimeoutManuallySet}
-          />
-        </details>
+        <GitHistoryDepthAndAdvancedOptions
+          gitHistoryDepth={gitHistoryDepth}
+          onGitHistoryDepthChange={setGitHistoryDepth}
+          gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
+          onGitCloneTimeoutMinutesChange={setGitCloneTimeoutMinutes}
+          filePatterns={filePatterns}
+          onFilePattersChange={setFilePatterns}
+          excludePatterns={excludePatterns}
+          onExcludePattersChange={setExcludePatterns}
+          chunkSize={chunkSize}
+          onChunkSizeChange={setChunkSize}
+          chunkOverlap={chunkOverlap}
+          onChunkOverlapChange={setChunkOverlap}
+          maxFileSizeKb={maxFileSizeKb}
+          onMaxFileSizeKbChange={setMaxFileSizeKb}
+          isLoading={isLoading}
+          onTimeoutManuallySet={setTimeoutManuallySet}
+        />
 
         <div className="wizard-actions" style={{ marginTop: '16px' }}>
           {onCancel && (
@@ -1557,60 +1455,24 @@ export function GitIndexWizard({
           vectorStoreDisabled={!!existingVectorStoreType}
         />
 
-        {/* Git History Depth - outside Advanced Options for prominence */}
-        <div className="form-group" style={{ marginBottom: '16px' }}>
-          <label>Git History Depth</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <input
-              type="range"
-              min={1}
-              max={1001}
-              value={gitHistoryDepth === 0 ? 1001 : gitHistoryDepth}
-              onChange={(e) => {
-                const sliderVal = parseInt(e.target.value, 10);
-                setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
-              }}
-              disabled={isLoading}
-              style={{ flex: '1 1 300px' }}
-            />
-            <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-              {gitHistoryDepth === 0
-                ? 'Full'
-                : gitHistoryDepth === 1
-                  ? '1 (shallow)'
-                  : `${gitHistoryDepth} commits`}
-            </span>
-          </div>
-          <small style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
-            {gitHistoryDepth === 0
-              ? 'Full history: Indexes all commits. Large repos may take 30+ min to clone.'
-              : gitHistoryDepth === 1
-                ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
-                : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`}
-          </small>
-        </div>
-
-        <details style={{ marginBottom: '16px' }}>
-          <summary style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}>
-            Advanced Options
-          </summary>
-          <IndexConfigFields
-            isLoading={isLoading}
-            filePatterns={filePatterns}
-            setFilePatterns={setFilePatterns}
-            excludePatterns={excludePatterns}
-            setExcludePatterns={setExcludePatterns}
-            chunkSize={chunkSize}
-            setChunkSize={setChunkSize}
-            chunkOverlap={chunkOverlap}
-            setChunkOverlap={setChunkOverlap}
-            maxFileSizeKb={maxFileSizeKb}
-            setMaxFileSizeKb={setMaxFileSizeKb}
-            gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
-            setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
-            setTimeoutManuallySet={setTimeoutManuallySet}
-          />
-        </details>
+        <GitHistoryDepthAndAdvancedOptions
+          gitHistoryDepth={gitHistoryDepth}
+          onGitHistoryDepthChange={setGitHistoryDepth}
+          gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
+          onGitCloneTimeoutMinutesChange={setGitCloneTimeoutMinutes}
+          filePatterns={filePatterns}
+          onFilePattersChange={setFilePatterns}
+          excludePatterns={excludePatterns}
+          onExcludePattersChange={setExcludePatterns}
+          chunkSize={chunkSize}
+          onChunkSizeChange={setChunkSize}
+          chunkOverlap={chunkOverlap}
+          onChunkOverlapChange={setChunkOverlap}
+          maxFileSizeKb={maxFileSizeKb}
+          onMaxFileSizeKbChange={setMaxFileSizeKb}
+          isLoading={isLoading}
+          onTimeoutManuallySet={setTimeoutManuallySet}
+        />
 
         <div className="wizard-actions">
           {onCancel && (
@@ -1715,83 +1577,38 @@ export function GitIndexWizard({
           style={{ marginBottom: '16px', maxWidth: '300px' }}
         />
 
-        {/* Git History Depth - outside Advanced Options for prominence */}
-        <div className="form-group" style={{ marginBottom: '16px' }}>
-          <label>Git History Depth</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <input
-              type="range"
-              min={1}
-              max={1001}
-              value={gitHistoryDepth === 0 ? 1001 : gitHistoryDepth}
-              onChange={(e) => {
-                const sliderVal = parseInt(e.target.value, 10);
-                setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
-              }}
+        <GitHistoryDepthAndAdvancedOptions
+          gitHistoryDepth={gitHistoryDepth}
+          onGitHistoryDepthChange={setGitHistoryDepth}
+          gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
+          onGitCloneTimeoutMinutesChange={setGitCloneTimeoutMinutes}
+          filePatterns={filePatterns}
+          onFilePattersChange={setFilePatterns}
+          excludePatterns={excludePatterns}
+          onExcludePattersChange={setExcludePatterns}
+          chunkSize={chunkSize}
+          onChunkSizeChange={setChunkSize}
+          chunkOverlap={chunkOverlap}
+          onChunkOverlapChange={setChunkOverlap}
+          maxFileSizeKb={maxFileSizeKb}
+          onMaxFileSizeKbChange={setMaxFileSizeKb}
+          isLoading={isLoading}
+          onTimeoutManuallySet={setTimeoutManuallySet}
+          commitHistory={analysisResult.commit_history}
+          patternsExpanded={patternsExpanded}
+          onPatternsExpandedChange={setPatternsExpanded}
+          advancedOptionsFooterButton={
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleReanalyze}
               disabled={isLoading}
-              style={{ flex: '1 1 300px' }}
-            />
-            <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-              {gitHistoryDepth === 0
-                ? 'Full'
-                : gitHistoryDepth === 1
-                  ? '1 (shallow)'
-                  : `${gitHistoryDepth} commits`}
-            </span>
-          </div>
-          <small style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
-            {gitHistoryDepth === 0
-              ? `Full history: Indexes all commits.${analysisResult.commit_history?.total_commits ? ` (${analysisResult.commit_history.total_commits.toLocaleString()} commits)` : ''} Large repos may take 30+ min to clone.`
-              : gitHistoryDepth === 1
-                ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
-                : (() => {
-                    const dateEstimate = getDepthDateEstimate(
-                      gitHistoryDepth,
-                      analysisResult.commit_history,
-                    );
-                    return dateEstimate
-                      ? `Indexes last ${gitHistoryDepth} commits (${dateEstimate}). Clone time scales with depth.`
-                      : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`;
-                  })()}
-          </small>
-        </div>
-
-        <details
-          style={{ marginBottom: '16px' }}
-          open={patternsExpanded}
-          onToggle={(e) => setPatternsExpanded((e.target as HTMLDetailsElement).open)}
-        >
-          <summary style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}>
-            Advanced Options
-          </summary>
-
-          <IndexConfigFields
-            isLoading={isLoading}
-            filePatterns={filePatterns}
-            setFilePatterns={setFilePatterns}
-            excludePatterns={excludePatterns}
-            setExcludePatterns={setExcludePatterns}
-            chunkSize={chunkSize}
-            setChunkSize={setChunkSize}
-            chunkOverlap={chunkOverlap}
-            setChunkOverlap={setChunkOverlap}
-            maxFileSizeKb={maxFileSizeKb}
-            setMaxFileSizeKb={setMaxFileSizeKb}
-            gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
-            setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
-            setTimeoutManuallySet={setTimeoutManuallySet}
-          />
-
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={handleReanalyze}
-            disabled={isLoading}
-            style={{ marginTop: '8px' }}
-          >
-            {isLoading ? 'Re-analyzing...' : 'Re-analyze'}
-          </button>
-        </details>
+              style={{ marginTop: '8px' }}
+            >
+              {isLoading ? 'Re-analyzing...' : 'Re-analyze'}
+            </button>
+          }
+        />
 
         <div className="wizard-actions">
           <button

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Eye, EyeOff, Pencil, Plus } from 'lucide-react';
 import { api } from '@/api';
+import { generateCredentialValue } from '@/utils/credentialGenerator';
 import type { AuthGroup, UserRole } from '@/types';
 import { DeleteConfirmButton } from '../DeleteConfirmButton';
 import { InlineCopyButton } from './InlineCopyButton';
@@ -37,21 +38,6 @@ const EMPTY_LOCAL_USER_FORM: LocalUserFormState = {
   email: '',
   role: 'user',
 };
-
-function generateCredentialValue(length: number): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-  const randomValues = new Uint8Array(length);
-
-  if (globalThis.crypto?.getRandomValues) {
-    globalThis.crypto.getRandomValues(randomValues);
-  } else {
-    for (let index = 0; index < randomValues.length; index += 1) {
-      randomValues[index] = Math.floor(Math.random() * alphabet.length);
-    }
-  }
-
-  return Array.from(randomValues, (value) => alphabet[value % alphabet.length]).join('');
-}
 
 function sortAuthGroupsByName(groups: AuthGroup[]): AuthGroup[] {
   return [...groups].sort((a, b) => a.display_name.localeCompare(b.display_name));

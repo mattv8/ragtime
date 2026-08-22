@@ -398,6 +398,29 @@ def _format_validation_error(exc: Exception) -> str:
     return "; ".join(parts) or "Invalid configuration"
 
 
+def _job_to_response(job: Any, include_vector_store_type: bool = False) -> IndexJobResponse:
+    """Convert an indexer job object to an IndexJobResponse."""
+    response_data = {
+        "id": job.id,
+        "name": job.name,
+        "status": job.status,
+        "phase": job.phase,
+        "progress_percent": job.progress_percent,
+        "clone_progress": job.clone_progress,
+        "total_files": job.total_files,
+        "processed_files": job.processed_files,
+        "total_chunks": job.total_chunks,
+        "processed_chunks": job.processed_chunks,
+        "error_message": job.error_message,
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+    }
+    if include_vector_store_type and hasattr(job, "config") and job.config:
+        response_data["vector_store_type"] = job.config.vector_store_type
+    return IndexJobResponse(**response_data)
+
+
 def _parse_http_api_connection_config(connection_config: dict[str, Any]) -> dict[str, Any]:
     try:
         return HttpApiConnectionConfig(**connection_config).model_dump()
@@ -874,25 +897,7 @@ async def list_index_webhook_deliveries(
 async def list_jobs(_user: User = Depends(require_admin)):
     """List all indexing jobs. Admin only."""
     jobs = await indexer.list_jobs()
-    return [
-        IndexJobResponse(
-            id=job.id,
-            name=job.name,
-            status=job.status,
-            phase=job.phase,
-            progress_percent=job.progress_percent,
-            clone_progress=job.clone_progress,
-            total_files=job.total_files,
-            processed_files=job.processed_files,
-            total_chunks=job.total_chunks,
-            processed_chunks=job.processed_chunks,
-            error_message=job.error_message,
-            created_at=job.created_at,
-            started_at=job.started_at,
-            completed_at=job.completed_at,
-        )
-        for job in jobs
-    ]
+    return [_job_to_response(job) for job in jobs]
 
 
 @router.get("/jobs/{job_id}", response_model=IndexJobResponse)
@@ -902,22 +907,7 @@ async def get_job(job_id: str, _user: User = Depends(require_admin)):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    return IndexJobResponse(
-        id=job.id,
-        name=job.name,
-        status=job.status,
-        phase=job.phase,
-        progress_percent=job.progress_percent,
-        clone_progress=job.clone_progress,
-        total_files=job.total_files,
-        processed_files=job.processed_files,
-        total_chunks=job.total_chunks,
-        processed_chunks=job.processed_chunks,
-        error_message=job.error_message,
-        created_at=job.created_at,
-        started_at=job.started_at,
-        completed_at=job.completed_at,
-    )
+    return _job_to_response(job)
 
 
 @router.post("/jobs/{job_id}/cancel")
@@ -1019,24 +1009,7 @@ async def upload_and_index(
 
     try:
         job = await indexer.create_index_from_upload(file.file, file.filename, config)
-
-        return IndexJobResponse(
-            id=job.id,
-            name=job.name,
-            status=job.status,
-            phase=job.phase,
-            progress_percent=job.progress_percent,
-            clone_progress=job.clone_progress,
-            total_files=job.total_files,
-            processed_files=job.processed_files,
-            total_chunks=job.total_chunks,
-            processed_chunks=job.processed_chunks,
-            error_message=job.error_message,
-            created_at=job.created_at,
-            started_at=job.started_at,
-            completed_at=job.completed_at,
-            vector_store_type=job.config.vector_store_type,
-        )
+        return _job_to_response(job, include_vector_store_type=True)
     except Exception as e:
         logger.exception("Failed to start indexing job")
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -1067,24 +1040,7 @@ async def index_from_git(
             config=config,
             git_token=request.git_token,
         )
-
-        return IndexJobResponse(
-            id=job.id,
-            name=job.name,
-            status=job.status,
-            phase=job.phase,
-            progress_percent=job.progress_percent,
-            clone_progress=job.clone_progress,
-            total_files=job.total_files,
-            processed_files=job.processed_files,
-            total_chunks=job.total_chunks,
-            processed_chunks=job.processed_chunks,
-            error_message=job.error_message,
-            created_at=job.created_at,
-            started_at=job.started_at,
-            completed_at=job.completed_at,
-            vector_store_type=job.config.vector_store_type,
-        )
+        return _job_to_response(job, include_vector_store_type=True)
     except Exception as e:
         logger.exception("Failed to start git indexing job")
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -1170,23 +1126,7 @@ async def reindex_from_git(
             config=config,
             git_token=git_token,
         )
-
-        return IndexJobResponse(
-            id=job.id,
-            name=job.name,
-            status=job.status,
-            phase=job.phase,
-            progress_percent=job.progress_percent,
-            clone_progress=job.clone_progress,
-            total_files=job.total_files,
-            processed_files=job.processed_files,
-            total_chunks=job.total_chunks,
-            processed_chunks=job.processed_chunks,
-            error_message=job.error_message,
-            created_at=job.created_at,
-            started_at=job.started_at,
-            completed_at=job.completed_at,
-        )
+        return _job_to_response(job)
     except Exception as e:
         logger.exception("Failed to start re-indexing job")
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -1239,46 +1179,14 @@ async def retry_failed_job(
                 config=failed_job.config,
                 git_token=git_token,
             )
-
-            return IndexJobResponse(
-                id=new_job.id,
-                name=new_job.name,
-                status=new_job.status,
-                phase=new_job.phase,
-                progress_percent=new_job.progress_percent,
-                clone_progress=new_job.clone_progress,
-                total_files=new_job.total_files,
-                processed_files=new_job.processed_files,
-                total_chunks=new_job.total_chunks,
-                processed_chunks=new_job.processed_chunks,
-                error_message=new_job.error_message,
-                created_at=new_job.created_at,
-                started_at=new_job.started_at,
-                completed_at=new_job.completed_at,
-            )
+            return _job_to_response(new_job)
         except Exception as e:
             logger.exception("Failed to retry indexing job")
             raise HTTPException(status_code=500, detail=str(e)) from e
     elif failed_job.source_type == "upload":
         try:
             new_job = await indexer.retry_upload_job(failed_job)
-
-            return IndexJobResponse(
-                id=new_job.id,
-                name=new_job.name,
-                status=new_job.status,
-                phase=new_job.phase,
-                progress_percent=new_job.progress_percent,
-                clone_progress=new_job.clone_progress,
-                total_files=new_job.total_files,
-                processed_files=new_job.processed_files,
-                total_chunks=new_job.total_chunks,
-                processed_chunks=new_job.processed_chunks,
-                error_message=new_job.error_message,
-                created_at=new_job.created_at,
-                started_at=new_job.started_at,
-                completed_at=new_job.completed_at,
-            )
+            return _job_to_response(new_job)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:

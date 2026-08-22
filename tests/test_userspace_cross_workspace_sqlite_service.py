@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, TypedDict
+from typing import Any
 from unittest import mock
 
 from fastapi import HTTPException
@@ -23,23 +23,16 @@ from ragtime.userspace.models import (
     RuntimeBridgeSqliteQueryResponse,
 )
 from ragtime.userspace.service import UserSpaceService
+from tests.test_userspace_sqlite_shared import _CapturedAuditEvent, _FakeGrantTable, _FakeUserTable, _FakeWorkspaceMemberTable, _WorkspaceRowBase
 
 _NOW = datetime(2026, 8, 5, tzinfo=timezone.utc)
 
 
 @dataclass
-class _WorkspaceRow:
-    owner_user_id: str
-    name: str
+class _WorkspaceRow(_WorkspaceRowBase):
+    """Workspace row for cross-workspace SQLite tests."""
 
-
-class _CapturedAuditEvent(TypedDict):
-    workspace_id: str
-    user_id: str | None
-    event_type: str
-    payload: dict[str, object]
-    session_id: str | None
-    created_at: datetime | None
+    pass
 
 
 class _FakeWorkspaceTable:
@@ -67,52 +60,9 @@ class _FakeWorkspaceTable:
         return rows
 
 
-class _FakeWorkspaceMemberTable:
-    def __init__(self, roles: dict[tuple[str, str], str]) -> None:
-        self.roles = roles
-        self.find_first_calls = 0
+class _FakeUserTableCrossWorkspace(_FakeUserTable):
+    """Fake user table for cross-workspace tests with error checking."""
 
-    async def find_first(self, *, where: dict[str, str]) -> SimpleNamespace | None:
-        self.find_first_calls += 1
-        key = (str(where.get("workspaceId") or ""), str(where.get("userId") or ""))
-        role = self.roles.get(key)
-        if role is None:
-            return None
-        return SimpleNamespace(workspaceId=key[0], userId=key[1], role=role)
-
-    async def find_many(self, *, where: dict[str, Any] | None = None) -> list[SimpleNamespace]:
-        workspace_ids = {str(value) for value in (where or {}).get("workspaceId", {}).get("in", [])}
-        user_id = str((where or {}).get("userId") or "")
-        return [
-            SimpleNamespace(workspaceId=workspace_id, userId=member_user_id, role=role)
-            for (workspace_id, member_user_id), role in self.roles.items()
-            if (not workspace_ids or workspace_id in workspace_ids) and (not user_id or member_user_id == user_id)
-        ]
-
-
-class _FakeGrantTable:
-    def __init__(self, rows: list[SimpleNamespace] | None = None) -> None:
-        self.rows = rows or []
-        self.find_first_calls = 0
-
-    async def find_first(self, *, where: dict[str, str]) -> SimpleNamespace | None:
-        self.find_first_calls += 1
-        for row in self.rows:
-            if str(getattr(row, "sourceWorkspaceId", "") or "") == str(where.get("sourceWorkspaceId") or "") and str(
-                getattr(row, "targetWorkspaceId", "") or ""
-            ) == str(where.get("targetWorkspaceId") or ""):
-                return row
-        return None
-
-    async def find_many(self, *, where: dict[str, object] | None = None, order: dict[str, str] | None = None) -> list[SimpleNamespace]:
-        source_workspace_id = str((where or {}).get("sourceWorkspaceId") or "")
-        rows = [row for row in self.rows if not source_workspace_id or str(getattr(row, "sourceWorkspaceId", "") or "") == source_workspace_id]
-        if order == {"targetWorkspaceId": "asc"}:
-            rows.sort(key=lambda row: str(getattr(row, "targetWorkspaceId", "") or ""))
-        return rows
-
-
-class _FakeUserTable:
     async def find_unique(self, **_: object) -> SimpleNamespace | None:  # pragma: no cover - should never be called here
         raise AssertionError("cross-workspace SQLite auth must not query global user role")
 
@@ -215,7 +165,7 @@ class RuntimeBridgeCrossWorkspaceSqliteServiceTests(unittest.IsolatedAsyncioTest
             ),
             workspacemember=_FakeWorkspaceMemberTable(roles or {}),
             workspaceagentgrant=_FakeGrantTable(grant_rows) if with_grant_model else None,
-            user=_FakeUserTable(),
+            user=_FakeUserTableCrossWorkspace(),
         )
 
     def _grant(self, *, sqlite_access_mode: str = "read", expires_at: datetime | None = None) -> SimpleNamespace:

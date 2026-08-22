@@ -11,86 +11,36 @@ from langchain_core.tools import StructuredTool
 
 from ragtime.rag import components as rag_components
 from ragtime.rag.tool_skills import ToolSkillBindingState, ToolSkillDefinition, build_tool_skill_control_tools
+from tests.test_tool_skill_shared import (
+    FakeAction,
+    FakeExecutor,
+    FakeStreamExecutor,
+    make_base_request_context,
+    make_empty_request_state,
+    make_noop_tool,
+    make_rag_components,
+    make_tool,
+)
+
+# Convenience aliases for backwards compatibility
+_FakeAction = FakeAction
+_FakeExecutor = FakeExecutor
+_FakeStreamExecutor = FakeStreamExecutor
 
 
+# Convenience wrappers
 def _make_tool(name: str, *, description: str | None = None) -> StructuredTool:
-    async def _tool(**_kwargs: Any) -> str:
-        return name
-
-    return StructuredTool.from_function(
-        coroutine=_tool,
-        name=name,
-        description=description or f"Tool {name}",
-    )
+    return make_tool(name, description=description)
 
 
-class _FakeAction:
-    def __init__(self, tool: str, tool_input: dict[str, Any], tool_call_id: str) -> None:
-        self.tool = tool
-        self.tool_input = tool_input
-        self.tool_call_id = tool_call_id
-
-    @property
-    def message_log(self) -> list[AIMessage]:
-        return [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": self.tool,
-                        "args": self.tool_input,
-                        "id": self.tool_call_id,
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        ]
-
-
-class _FakeExecutor:
-    def __init__(self, tools: list[Any], results: list[dict[str, Any]]) -> None:
-        self.tools = tools
-        self._results = list(results)
-        self.calls: list[dict[str, Any]] = []
-
-    async def ainvoke(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append(payload)
-        if not self._results:
-            raise AssertionError("No more fake executor results")
-        return self._results.pop(0)
-
-
-class _FakeStreamExecutor:
-    def __init__(self, tools: list[Any], streams: list[list[dict[str, Any]]]) -> None:
-        self.tools = tools
-        self._streams = list(streams)
-
-    def astream_events(self, _payload: dict[str, Any], version: str = "v2"):
-        async def _gen():
-            if not self._streams:
-                raise AssertionError("No more fake stream stages")
-            for event in self._streams.pop(0):
-                yield event
-
-        return _gen()
+def _make_request_context(**kwargs: Any) -> dict[str, Any]:
+    """Convenience wrapper for make_base_request_context."""
+    return make_base_request_context(**kwargs)
 
 
 class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
     def _make_rag(self) -> rag_components.RAGComponents:
-        rag = rag_components.RAGComponents.__new__(rag_components.RAGComponents)
-        rag._tool_configs = [
-            {
-                "id": "tool-1",
-                "name": "Demo SQL",
-                "tool_type": "postgres",
-                "description": "Reads demo SQL rows.",
-                "connection_config": {},
-            }
-        ]
-        rag._index_metadata = []
-        rag._request_prompt_cache = {}
-        rag._app_settings = {"tool_skills_enabled": True, "max_iterations": 4}
-        return rag
+        return make_rag_components()
 
     def test_request_system_prompt_hides_unloaded_optional_tool_configs(self) -> None:
         rag = self._make_rag()

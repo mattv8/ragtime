@@ -13,6 +13,7 @@
     "**/.data/**",
     "**/data/**",
     "ragtime/frontend/.vite/**",
-    "ragtime/frontend/package-lock.json"
+    "ragtime/frontend/package-lock.json",
+    ".jscpd-report/**"
   ]
 }

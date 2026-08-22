@@ -16,12 +16,13 @@ from ragtime.userspace import routes as userspace_routes
 from ragtime.userspace import sqlite_inspector as sqlite_inspector_helpers
 from ragtime.userspace.models import SqliteInspectorDatabaseSummary
 from ragtime.userspace.service import UserSpaceService
+from tests.test_userspace_sqlite_shared import _FakeGrantTable, _FakeUserTable, _FakeWorkspaceMemberTable, _WorkspaceRowBase
 
 
 @dataclass
-class _WorkspaceRow:
-    owner_user_id: str
-    name: str
+class _WorkspaceRow(_WorkspaceRowBase):
+    """Workspace row for linked SQLite inspector tests."""
+
     sqlite_persistence_mode: str = "exclude"
 
 
@@ -71,53 +72,6 @@ class _FakeWorkspaceTable:
         if order == {"name": "asc"}:
             rows.sort(key=lambda item: (str(item.name).casefold(), str(item.id)))
         return rows
-
-
-class _FakeWorkspaceMemberTable:
-    def __init__(self, roles: dict[tuple[str, str], str]) -> None:
-        self.roles = roles
-
-    async def find_first(self, *, where: dict[str, str]) -> SimpleNamespace | None:
-        key = (str(where.get("workspaceId") or ""), str(where.get("userId") or ""))
-        role = self.roles.get(key)
-        if role is None:
-            return None
-        return SimpleNamespace(workspaceId=key[0], userId=key[1], role=role)
-
-    async def find_many(self, *, where: dict[str, Any] | None = None) -> list[SimpleNamespace]:
-        workspace_ids = {str(value) for value in (where or {}).get("workspaceId", {}).get("in", [])}
-        user_id = str((where or {}).get("userId") or "")
-        return [
-            SimpleNamespace(workspaceId=workspace_id, userId=member_user_id, role=role)
-            for (workspace_id, member_user_id), role in self.roles.items()
-            if (not workspace_ids or workspace_id in workspace_ids) and (not user_id or member_user_id == user_id)
-        ]
-
-
-class _FakeGrantTable:
-    def __init__(self, rows: list[SimpleNamespace]) -> None:
-        self.rows = rows
-
-    async def find_first(self, *, where: dict[str, str]) -> SimpleNamespace | None:
-        for row in self.rows:
-            if str(getattr(row, "sourceWorkspaceId", "") or "") != str(where.get("sourceWorkspaceId") or ""):
-                continue
-            if str(getattr(row, "targetWorkspaceId", "") or "") != str(where.get("targetWorkspaceId") or ""):
-                continue
-            return row
-        return None
-
-    async def find_many(self, *, where: dict[str, object] | None = None, order: dict[str, str] | None = None) -> list[SimpleNamespace]:
-        source_workspace_id = str((where or {}).get("sourceWorkspaceId") or "")
-        rows = [row for row in self.rows if not source_workspace_id or str(getattr(row, "sourceWorkspaceId", "") or "") == source_workspace_id]
-        if order == {"targetWorkspaceId": "asc"}:
-            rows.sort(key=lambda row: str(getattr(row, "targetWorkspaceId", "") or ""))
-        return rows
-
-
-class _FakeUserTable:
-    async def find_unique(self, **_: object) -> SimpleNamespace | None:
-        return None
 
 
 class SqliteInspectorDatabaseSummaryModelTests(unittest.TestCase):

@@ -3,6 +3,7 @@ import { api } from '@/api';
 import { Eye, EyeOff } from 'lucide-react';
 import { useToast, ToastContainer } from './shared/Toast';
 import { InlineCopyButton } from './shared/InlineCopyButton';
+import { generateCredentialValue } from '@/utils/credentialGenerator';
 import type {
   McpRouteConfig,
   CreateMcpRouteRequest,
@@ -32,21 +33,6 @@ interface MCPRoutesPanelProps {
 }
 
 type RouteAuthMethod = 'password' | 'oauth2' | 'client_credentials';
-
-function generateCredentialValue(length: number): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-  const randomValues = new Uint8Array(length);
-
-  if (globalThis.crypto?.getRandomValues) {
-    globalThis.crypto.getRandomValues(randomValues);
-  } else {
-    for (let index = 0; index < randomValues.length; index += 1) {
-      randomValues[index] = Math.floor(Math.random() * alphabet.length);
-    }
-  }
-
-  return Array.from(randomValues, (value) => alphabet[value % alphabet.length]).join('');
-}
 
 function generateClientId(): string {
   return `cid-${generateCredentialValue(12).toLowerCase()}`;

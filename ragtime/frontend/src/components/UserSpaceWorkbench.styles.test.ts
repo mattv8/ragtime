@@ -7,83 +7,10 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { expectModernScopedSelectors } from '@/testHelpers/cssRuleUtils';
+
 function readSource(relativePath: string): string {
   return readFileSync(join(cwd(), relativePath), 'utf8');
-}
-
-function splitSelectorList(selectorText: string): string[] {
-  const selectors: string[] = [];
-  let current = '';
-  let parenDepth = 0;
-
-  for (const character of selectorText) {
-    if (character === '(') parenDepth += 1;
-    if (character === ')') parenDepth -= 1;
-
-    if (character === ',' && parenDepth === 0) {
-      const trimmed = current.trim();
-      if (trimmed) selectors.push(trimmed);
-      current = '';
-      continue;
-    }
-
-    current += character;
-  }
-
-  const trimmed = current.trim();
-  if (trimmed) selectors.push(trimmed);
-
-  return selectors;
-}
-
-function collectRuleSelectors(css: string): string[] {
-  const selectors: string[] = [];
-  let index = 0;
-
-  while (index < css.length) {
-    const braceIndex = css.indexOf('{', index);
-    if (braceIndex === -1) break;
-
-    const prelude = css
-      .slice(index, braceIndex)
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .trim();
-    let depth = 1;
-    let cursor = braceIndex + 1;
-
-    while (cursor < css.length && depth > 0) {
-      if (css[cursor] === '{') depth += 1;
-      if (css[cursor] === '}') depth -= 1;
-      cursor += 1;
-    }
-
-    const body = css.slice(braceIndex + 1, cursor - 1);
-    if (!prelude) {
-      index = cursor;
-      continue;
-    }
-
-    if (!prelude.startsWith('@')) {
-      selectors.push(...splitSelectorList(prelude));
-    } else if (body.includes('{')) {
-      selectors.push(...collectRuleSelectors(body));
-    }
-
-    index = cursor;
-  }
-
-  return selectors;
-}
-
-function expectModernScopedSelectors(css: string): void {
-  const selectors = collectRuleSelectors(css);
-
-  expect(selectors.length).toBeGreaterThan(0);
-  for (const selector of selectors) {
-    expect(selector).toMatch(
-      /^\[data-theme-pack='modern'\](?:\[data-theme='light'\]|:not\(\[data-theme='dark'\]\))?\s/,
-    );
-  }
 }
 
 describe('User Space workbench styles contract', () => {

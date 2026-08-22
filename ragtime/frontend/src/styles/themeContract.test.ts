@@ -7,6 +7,8 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { getRuleBody } from '@/testHelpers/cssRuleUtils';
+
 const TERMINAL_ANSI_SUFFIXES = [
   'black',
   'red',
@@ -46,27 +48,6 @@ const LEGACY_TERMINAL_TOKEN_PATTERN =
 
 function readProjectFile(relativePath: string): string {
   return readFileSync(join(cwd(), relativePath), 'utf8');
-}
-
-function getRuleBody(css: string, selector: string): string {
-  const start = css.indexOf(`${selector} {`);
-  expect(start).toBeGreaterThanOrEqual(0);
-
-  const bodyStart = css.indexOf('{', start);
-  let depth = 0;
-
-  for (let index = bodyStart; index < css.length; index += 1) {
-    const character = css[index];
-    if (character === '{') depth += 1;
-    if (character === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return css.slice(bodyStart + 1, index);
-      }
-    }
-  }
-
-  throw new Error(`Unterminated CSS rule for ${selector}`);
 }
 
 function getMergedRuleProperties(css: string, selector: string): Record<string, string> {

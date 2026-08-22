@@ -86,6 +86,11 @@ import { AgentAccessModal } from './shared/AgentAccessModal';
 import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
+import { SearchHighlightedText } from './shared/SearchHighlightedText';
+import {
+  isWorkspaceDeleteTaskTerminal,
+  formatWorkspaceDeleteTasksStatus,
+} from './shared/WorkspaceDeleteTaskUtils';
 import {
   ToolSelectorDropdown,
   type ToolGroupInfo,
@@ -131,7 +136,6 @@ import type {
   UserSpaceWorkspaceCreateTask,
   UserSpaceWorkspaceCreateTaskPhase,
   UserSpaceWorkspaceDeleteTask,
-  UserSpaceWorkspaceDeleteTaskPhase,
   UserSpaceWorkspaceDuplicateTask,
   UserSpaceWorkspaceDuplicateTaskPhase,
   UserSpaceWorkspaceEnvVar,
@@ -262,35 +266,6 @@ function mergeWorkspaceShareLinkAnalytics(
   });
 }
 
-function SearchHighlightedText({ text, query }: { text: string; query: string }) {
-  const needle = query.trim();
-  if (!needle) return <>{text}</>;
-
-  const lowerText = text.toLowerCase();
-  const lowerNeedle = needle.toLowerCase();
-  const segments: ReactNode[] = [];
-  let cursor = 0;
-  let matchIndex = lowerText.indexOf(lowerNeedle);
-
-  while (matchIndex !== -1) {
-    if (matchIndex > cursor) {
-      segments.push(text.slice(cursor, matchIndex));
-    }
-    segments.push(
-      <mark key={`${matchIndex}-${segments.length}`} className="chat-search-highlight">
-        {text.slice(matchIndex, matchIndex + needle.length)}
-      </mark>,
-    );
-    cursor = matchIndex + needle.length;
-    matchIndex = lowerText.indexOf(lowerNeedle, cursor);
-  }
-
-  if (cursor < text.length) {
-    segments.push(text.slice(cursor));
-  }
-  return <>{segments}</>;
-}
-
 type MountSyncPreviewIntent = 'sync' | 'enable-auto' | 'update-auto-sync-mode';
 
 const DEFAULT_WORKSPACE_CHAT_STATE: WorkspaceChatState = { hasLive: false, hasInterrupted: false };
@@ -377,46 +352,6 @@ function formatWorkspaceDuplicateTasksStatus(
   return queuedCount > 0
     ? `Duplicating ${tasks.length} workspaces (${queuedCount} queued)...`
     : `Duplicating ${tasks.length} workspaces...`;
-}
-
-function isWorkspaceDeleteTaskTerminal(phase: UserSpaceWorkspaceDeleteTaskPhase): boolean {
-  return phase === 'completed' || phase === 'failed';
-}
-
-function formatWorkspaceDeleteTaskStatus(task: UserSpaceWorkspaceDeleteTask | null): string | null {
-  if (!task) {
-    return null;
-  }
-
-  const label = task.workspace_name?.trim() || 'workspace';
-  switch (task.phase) {
-    case 'queued':
-      return `Preparing to delete ${label}...`;
-    case 'stopping_runtime':
-      return `Stopping runtime for ${label}...`;
-    case 'deleting_conversations':
-      return `Deleting conversations for ${label}...`;
-    case 'deleting_workspace':
-      return `Deleting ${label}...`;
-    case 'failed':
-      return task.error?.trim() || `Failed to delete ${label}.`;
-    default:
-      return null;
-  }
-}
-
-function formatWorkspaceDeleteTasksStatus(tasks: UserSpaceWorkspaceDeleteTask[]): string | null {
-  if (tasks.length === 0) {
-    return null;
-  }
-  if (tasks.length === 1) {
-    return formatWorkspaceDeleteTaskStatus(tasks[0]);
-  }
-
-  const queuedCount = tasks.filter((task) => task.phase === 'queued').length;
-  return queuedCount > 0
-    ? `Deleting ${tasks.length} workspaces (${queuedCount} queued)...`
-    : `Deleting ${tasks.length} workspaces...`;
 }
 
 function normalizeWorkspacePath(value: string): string {

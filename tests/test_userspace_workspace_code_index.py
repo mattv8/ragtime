@@ -20,50 +20,7 @@ from ragtime.userspace.routes import (
     reindex_workspace_code_index,
     workspace_code_index_service,
 )
-
-
-def _settings_row(**overrides: Any) -> SimpleNamespace:
-    values = {
-        "id": "default",
-        "serverName": "Ragtime",
-        "defaultThemePack": "default",
-        "openaiApiKey": "",
-        "anthropicApiKey": "",
-        "ollamaProtocol": "http",
-        "ollamaHost": "localhost",
-        "ollamaPort": 11434,
-        "ollamaBaseUrl": "http://localhost:11434",
-        "allowedChatModels": [],
-        "enabledTools": [],
-        "postgresHost": "",
-        "postgresUser": "",
-        "postgresPassword": "",
-        "postgresDb": "",
-        "enableWriteOps": False,
-        "updatedAt": None,
-    }
-    values.update(overrides)
-    return SimpleNamespace(**values)
-
-
-class _FakeAppSettingsClient:
-    def __init__(self, row: SimpleNamespace) -> None:
-        self._row = row
-        self.last_update_data: dict[str, Any] | None = None
-
-    async def find_unique(self, *, where: dict[str, str]) -> SimpleNamespace:
-        return self._row
-
-    async def update(self, *, where: dict[str, str], data: dict[str, Any]) -> SimpleNamespace:
-        self.last_update_data = data
-        for key, value in data.items():
-            setattr(self._row, key, value)
-        return self._row
-
-
-class _FakeDb:
-    def __init__(self, row: SimpleNamespace) -> None:
-        self.appsettings = _FakeAppSettingsClient(row)
+from tests.test_db_fixtures import FakeDb, make_settings_row
 
 
 class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -1162,8 +1119,8 @@ class WorkspaceCodeIndexSettingsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_repository_get_settings_maps_code_index_fields(self) -> None:
         repository = IndexerRepository()
-        fake_db = _FakeDb(
-            _settings_row(
+        fake_db = FakeDb(
+            make_settings_row(
                 userspaceCodeIndexEnabled=False,
                 userspaceCodeIndexDebounceSeconds=10,
                 userspaceCodeIndexReconcileIntervalSeconds=1200,
@@ -1181,7 +1138,7 @@ class WorkspaceCodeIndexSettingsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_repository_update_settings_maps_code_index_fields(self) -> None:
         repository = IndexerRepository()
-        fake_db = _FakeDb(_settings_row())
+        fake_db = FakeDb(make_settings_row())
 
         with mock.patch.object(repository, "_get_db", mock.AsyncMock(return_value=fake_db)):
             await repository.update_settings(

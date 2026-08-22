@@ -7,7 +7,6 @@ Supports:
 - Key + passphrase authentication
 """
 
-import hashlib
 import io
 import os as _os
 import shlex
@@ -27,6 +26,7 @@ from typing import Any, Callable, Literal, Optional
 
 import paramiko
 
+from ragtime.core._digest_shared import build_tree_state_fingerprint
 from ragtime.core.logging import get_logger
 from ragtime.core.type_coercion import coerce_int_metadata
 
@@ -711,32 +711,6 @@ def _collect_delete_paths(
     return delete_paths
 
 
-def _build_tree_state_fingerprint(
-    remote_files: dict[str, tuple[int, int]],
-    remote_dirs: set[str],
-    local_files: dict[str, tuple[int, int]],
-    local_dirs: set[str],
-) -> str:
-    digest = hashlib.sha256()
-    for prefix, files, directories in (
-        ("remote", remote_files, remote_dirs),
-        ("local", local_files, local_dirs),
-    ):
-        digest.update(prefix.encode("ascii"))
-        digest.update(b"\0")
-        for directory in sorted(directories):
-            digest.update(b"d\0")
-            digest.update(directory.encode("utf-8", errors="ignore"))
-            digest.update(b"\0")
-        for path, (size_bytes, mtime_seconds) in sorted(files.items()):
-            digest.update(b"f\0")
-            digest.update(path.encode("utf-8", errors="ignore"))
-            digest.update(b"\0")
-            digest.update(f"{size_bytes}:{mtime_seconds}".encode("ascii"))
-            digest.update(b"\0")
-    return digest.hexdigest()
-
-
 def _preview_ssh_sync_from_metadata(
     remote_files: dict[str, tuple[int, int]],
     remote_dirs: set[str],
@@ -761,7 +735,7 @@ def _preview_ssh_sync_from_metadata(
             remote_dirs - local_dirs,
         )
 
-    fingerprint = _build_tree_state_fingerprint(
+    fingerprint = build_tree_state_fingerprint(
         remote_files,
         remote_dirs,
         local_files,

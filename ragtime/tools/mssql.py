@@ -7,64 +7,20 @@ Follows the same patterns as the PostgreSQL tool for consistency.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import DB_TYPE_MSSQL, format_query_result, normalize_mssql_error_message
+from ragtime.core.sql_utils import DB_TYPE_MSSQL, normalize_mssql_error_message
 from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
-from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
-from ragtime.tools._query_helpers import validate_and_prepare_query
-from ragtime.tools.descriptions import format_tool_write_access_sentence
+from ragtime.tools._db_shared import (
+    MAX_TOOL_TIMEOUT_SECONDS,
+    create_sql_tool,
+    resolve_effective_timeout,
+)
 
 logger = get_logger(__name__)
-
-# Maximum timeout for any tool execution (5 minutes)
-# AI can request up to this limit; configured per-tool timeout is the default
-MAX_TOOL_TIMEOUT_SECONDS = 300
-
-
-def resolve_effective_timeout(requested_timeout: int | None, timeout_max_seconds: int) -> int:
-    """Resolve runtime timeout using per-tool max (0 max = unlimited)."""
-    return resolve_effective_tool_timeout(requested_timeout, timeout_max_seconds)
-
-
-def create_mssql_query_input(default_timeout: int, timeout_max_seconds: int) -> type[BaseModel]:
-    """Create MssqlQueryInput with dynamic default timeout."""
-    timeout_hint = "Use 0 for no timeout." if timeout_max_seconds == 0 else "Use 0 or omit to use the configured maximum."
-
-    class MssqlQueryInput(BaseModel):
-        """Input schema for MSSQL queries."""
-
-        query: str = Field(
-            description=(
-                "SQL SELECT query to execute. Must be read-only and include "
-                "TOP n clause (e.g., SELECT TOP 100 * FROM table). "
-                "For MSSQL, use square brackets for identifiers: [TableName].[ColumnName]"
-            )
-        )
-        description: str = Field(
-            default="",
-            description="Brief description of what this query retrieves (for logging)",
-            alias="reason",
-        )
-        timeout: int = Field(
-            default=default_timeout,
-            ge=0,
-            le=max(timeout_max_seconds, MAX_TOOL_TIMEOUT_SECONDS),
-            description=(
-                f"Query timeout in seconds (default: {default_timeout}, "
-                f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
-                f"{timeout_hint}"
-            ),
-        )
-
-        model_config = {"populate_by_name": True}
-
-    return MssqlQueryInput
 
 
 # Legacy schema for backwards compatibility (default 30s timeout)
@@ -73,8 +29,8 @@ class MssqlQueryInput(BaseModel):
 
     query: str = Field(
         description=(
-            "SQL SELECT query to execute. Must be read-only and include "
-            "TOP n clause (e.g., SELECT TOP 100 * FROM table). "
+            "SQL SELECT query to execute. Must be read-only. "
+            "Include TOP n clause to limit results (e.g., SELECT TOP 100 ...). "
             "For MSSQL, use square brackets for identifiers: [TableName].[ColumnName]"
         )
     )
@@ -91,6 +47,25 @@ class MssqlQueryInput(BaseModel):
     )
 
     model_config = {"populate_by_name": True}
+
+
+def _mssql_connect(host: str, port: int, user: str, password: str, database: str, timeout: int) -> Any:
+    """Create and return a pymssql connection."""
+    try:
+        import pymssql  # type: ignore[import-untyped]
+    except ImportError:
+        raise ImportError("pymssql package not installed. Install with: pip install pymssql")
+
+    return pymssql.connect(  # type: ignore[attr-defined]
+        server=host,
+        port=str(port),
+        user=user,
+        password=password,
+        database=database,
+        login_timeout=timeout,
+        timeout=timeout,
+        as_dict=True,
+    )
 
 
 async def execute_mssql_query_async(
@@ -138,22 +113,6 @@ async def execute_mssql_query_async(
     Returns:
         String output from the MSSQL query.
     """
-    logger.info(f"MSSQL Query: {description}")
-    logger.debug(f"SQL: {query[:200]}...")
-
-    is_safe, prepared_query = validate_and_prepare_query(
-        query,
-        max_results=max_results,
-        allow_write=allow_write,
-        db_type=DB_TYPE_MSSQL,
-        require_result_limit=require_result_limit,
-        enforce_result_limit=enforce_result_limit,
-    )
-    if not is_safe:
-        error_msg = f"Security validation failed: {prepared_query}"
-        logger.warning(error_msg)
-        return f"Error: {error_msg}"
-    query = prepared_query
 
     def run_query() -> str:
         """Execute query in thread pool."""
@@ -171,7 +130,7 @@ async def execute_mssql_query_async(
         try:
             # Set up SSH tunnel if configured
             if ssh_tunnel_config:
-                tunnel_cfg = ssh_tunnel_config_from_dict(ssh_tunnel_config)
+                tunnel_cfg = ssh_tunnel_config_from_dict(ssh_tunnel_config, default_remote_port=1433)
                 if tunnel_cfg:
                     tunnel = SSHTunnel(tunnel_cfg)
                     local_port = tunnel.start()
@@ -179,18 +138,27 @@ async def execute_mssql_query_async(
                     actual_port = local_port
                     logger.debug(f"SSH tunnel established: localhost:{local_port} -> {tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}")
 
-            conn = pymssql.connect(  # type: ignore[attr-defined]
-                server=actual_host,
-                port=str(actual_port),
-                user=user,
-                password=password,
-                database=database,
-                login_timeout=timeout,
-                timeout=timeout,
-                as_dict=True,
-            )
+            conn = _mssql_connect(actual_host, actual_port, user, password, database, timeout)
             cursor = conn.cursor()
-            cursor.execute(query)
+
+            # Use shared query execution
+            from ragtime.core.sql_utils import format_query_result
+            from ragtime.tools._query_helpers import validate_and_prepare_query
+
+            is_safe, prepared_query = validate_and_prepare_query(
+                query,
+                max_results=max_results,
+                allow_write=allow_write,
+                db_type=DB_TYPE_MSSQL,
+                require_result_limit=require_result_limit,
+                enforce_result_limit=enforce_result_limit,
+            )
+            if not is_safe:
+                error_msg = f"Security validation failed: {prepared_query}"
+                logger.warning(error_msg)
+                return f"Error: {error_msg}"
+
+            cursor.execute(prepared_query)
 
             # Fetch results
             rows = cursor.fetchall()
@@ -244,6 +212,8 @@ async def execute_mssql_query_async(
                     pass
 
     try:
+        import asyncio
+
         if timeout > 0:
             result = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(None, run_query),
@@ -257,6 +227,17 @@ async def execute_mssql_query_async(
     except asyncio.TimeoutError:
         logger.error(f"MSSQL query timed out after {timeout}s")
         return f"Error: Query timed out after {timeout} seconds"
+
+
+def _mssql_error_formatter(exc: Exception, database: str | None) -> str:
+    """Format MSSQL-specific errors for LLM consumption."""
+    try:
+        import pymssql  # type: ignore[import-untyped]
+    except ImportError:
+        return f"Error: {exc}"
+    if isinstance(exc, (pymssql.OperationalError, pymssql.ProgrammingError)):
+        return f"Error: {normalize_mssql_error_message(str(exc), database=database)}"
+    return f"Error: {exc}"
 
 
 def create_mssql_tool(
@@ -273,7 +254,7 @@ def create_mssql_tool(
     description: str = "",
     ssh_tunnel_config: dict[str, Any] | None = None,
     include_metadata: bool = True,
-) -> StructuredTool:
+) -> Any:
     """
     Create a configured MSSQL query tool for LangChain.
 
@@ -293,44 +274,27 @@ def create_mssql_tool(
     Returns:
         Configured StructuredTool instance.
     """
-    # Create input schema with this tool's default timeout
-    QueryInput = create_mssql_query_input(timeout, timeout_max_seconds)
-
-    async def execute_query(query: str = "", description: str = "", timeout: int = timeout, **_: Any) -> str:
-        """Execute MSSQL query using configured connection."""
-        if not query or not query.strip():
-            return "Error: 'query' parameter is required. Provide a SQL query to execute."
-        if not description:
-            description = "SQL query"
-
-        effective_timeout = resolve_effective_timeout(timeout, timeout_max_seconds)
-
-        return await execute_mssql_query_async(
-            query=query,
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            database=database,
-            timeout=effective_timeout,
-            max_results=max_results,
-            allow_write=allow_write,
-            description=description,
-            ssh_tunnel_config=ssh_tunnel_config,
-            include_metadata=include_metadata,
-        )
-
-    tool_description = f"Query the {name} MSSQL/SQL Server database using SQL."
-    if description:
-        tool_description += f" This database contains: {description}"
-    tool_description += f" {format_tool_write_access_sentence(allow_write)}"
-    tool_description += " Include TOP n clause to limit results (e.g., SELECT TOP 100 ...)."
-
-    return StructuredTool.from_function(
-        coroutine=execute_query,
-        name=f"query_{name.lower().replace(' ', '_').replace('-', '_')}",
-        description=tool_description,
-        args_schema=QueryInput,
+    return create_sql_tool(
+        name=name,
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=database,
+        db_type=DB_TYPE_MSSQL,
+        db_display_name="MSSQL/SQL Server",
+        identifier_example="square brackets for identifiers: [TableName].[ColumnName]",
+        limit_clause_hint="Include TOP n clause to limit results (e.g., SELECT TOP 100 ...).",
+        connect_fn=_mssql_connect,
+        timeout=timeout,
+        timeout_max_seconds=timeout_max_seconds,
+        max_results=max_results,
+        allow_write=allow_write,
+        description=description,
+        ssh_tunnel_config=ssh_tunnel_config,
+        include_metadata=include_metadata,
+        default_remote_port=1433,
+        error_formatter=_mssql_error_formatter,
     )
 
 
@@ -382,15 +346,7 @@ async def test_mssql_connection(
                     actual_port = local_port
                     logger.debug(f"SSH tunnel established: localhost:{local_port} -> {tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}")
 
-            conn = pymssql.connect(  # type: ignore[attr-defined]
-                server=actual_host,
-                port=str(actual_port),
-                user=user,
-                password=password,
-                database=database,
-                login_timeout=timeout,
-                timeout=timeout,
-            )
+            conn = _mssql_connect(actual_host, actual_port, user, password, database, timeout)
             cursor = conn.cursor()
 
             # Get server version
@@ -449,6 +405,8 @@ async def test_mssql_connection(
                     pass
 
     try:
+        import asyncio
+
         return await asyncio.wait_for(
             asyncio.get_event_loop().run_in_executor(None, do_test),
             timeout=timeout + 5,

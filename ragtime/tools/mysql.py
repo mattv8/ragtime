@@ -7,64 +7,20 @@ Follows the same patterns as the MSSQL tool for consistency.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import DB_TYPE_MYSQL, format_query_result
+from ragtime.core.sql_utils import DB_TYPE_MYSQL
 from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
-from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
-from ragtime.tools._query_helpers import validate_and_prepare_query
-from ragtime.tools.descriptions import format_tool_write_access_sentence
+from ragtime.tools._db_shared import (
+    MAX_TOOL_TIMEOUT_SECONDS,
+    create_sql_tool,
+    resolve_effective_timeout,
+)
 
 logger = get_logger(__name__)
-
-# Maximum timeout for any tool execution (5 minutes)
-# AI can request up to this limit; configured per-tool timeout is the default
-MAX_TOOL_TIMEOUT_SECONDS = 300
-
-
-def resolve_effective_timeout(requested_timeout: int | None, timeout_max_seconds: int) -> int:
-    """Resolve runtime timeout using per-tool max (0 max = unlimited)."""
-    return resolve_effective_tool_timeout(requested_timeout, timeout_max_seconds)
-
-
-def create_mysql_query_input(default_timeout: int, timeout_max_seconds: int) -> type[BaseModel]:
-    """Create MysqlQueryInput with dynamic default timeout."""
-    timeout_hint = "Use 0 for no timeout." if timeout_max_seconds == 0 else "Use 0 or omit to use the configured maximum."
-
-    class MysqlQueryInput(BaseModel):
-        """Input schema for MySQL queries."""
-
-        query: str = Field(
-            description=(
-                "SQL SELECT query to execute. Must be read-only and include "
-                "LIMIT clause (e.g., SELECT * FROM table LIMIT 100). "
-                "For MySQL, use backticks for identifiers: `table_name`.`column_name`"
-            )
-        )
-        description: str = Field(
-            default="",
-            description="Brief description of what this query retrieves (for logging)",
-            alias="reason",
-        )
-        timeout: int = Field(
-            default=default_timeout,
-            ge=0,
-            le=max(timeout_max_seconds, MAX_TOOL_TIMEOUT_SECONDS),
-            description=(
-                f"Query timeout in seconds (default: {default_timeout}, "
-                f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
-                f"{timeout_hint}"
-            ),
-        )
-
-        model_config = {"populate_by_name": True}
-
-    return MysqlQueryInput
 
 
 # Legacy schema for backwards compatibility (default 30s timeout)
@@ -73,8 +29,8 @@ class MysqlQueryInput(BaseModel):
 
     query: str = Field(
         description=(
-            "SQL SELECT query to execute. Must be read-only and include "
-            "LIMIT clause (e.g., SELECT * FROM table LIMIT 100). "
+            "SQL SELECT query to execute. Must be read-only. "
+            "Include LIMIT clause to limit results (e.g., SELECT * FROM table LIMIT 100). "
             "For MySQL, use backticks for identifiers: `table_name`.`column_name`"
         )
     )
@@ -91,6 +47,28 @@ class MysqlQueryInput(BaseModel):
     )
 
     model_config = {"populate_by_name": True}
+
+
+def _mysql_connect(host: str, port: int, user: str, password: str, database: str, timeout: int) -> Any:
+    """Create and return a pymysql connection."""
+    try:
+        import pymysql  # type: ignore[import-untyped]
+        import pymysql.cursors  # type: ignore[import-untyped]
+    except ImportError:
+        raise ImportError("pymysql package not installed. Install with: pip install pymysql")
+
+    return pymysql.connect(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=database,
+        cursorclass=pymysql.cursors.DictCursor,
+        connect_timeout=timeout,
+        read_timeout=timeout,
+        write_timeout=timeout,
+        charset="utf8mb4",
+    )
 
 
 async def execute_mysql_query_async(
@@ -138,28 +116,11 @@ async def execute_mysql_query_async(
     Returns:
         String output from the MySQL query.
     """
-    logger.info(f"MySQL Query: {description}")
-    logger.debug(f"SQL: {query[:200]}...")
-
-    is_safe, prepared_query = validate_and_prepare_query(
-        query,
-        max_results=max_results,
-        allow_write=allow_write,
-        db_type=DB_TYPE_MYSQL,
-        require_result_limit=require_result_limit,
-        enforce_result_limit=enforce_result_limit,
-    )
-    if not is_safe:
-        error_msg = f"Security validation failed: {prepared_query}"
-        logger.warning(error_msg)
-        return f"Error: {error_msg}"
-    query = prepared_query
 
     def run_query() -> str:
         """Execute query in thread pool."""
         try:
             import pymysql  # type: ignore[import-untyped]
-            import pymysql.cursors  # type: ignore[import-untyped]
         except ImportError:
             return "Error: pymysql package not installed. Install with: pip install pymysql"
 
@@ -180,20 +141,27 @@ async def execute_mysql_query_async(
                     actual_port = local_port
                     logger.debug(f"SSH tunnel established: localhost:{local_port} -> {tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}")
 
-            conn = pymysql.connect(
-                host=actual_host,
-                port=actual_port,
-                user=user,
-                password=password,
-                database=database,
-                cursorclass=pymysql.cursors.DictCursor,
-                connect_timeout=timeout,
-                read_timeout=timeout,
-                write_timeout=timeout,
-                charset="utf8mb4",
-            )
+            conn = _mysql_connect(actual_host, actual_port, user, password, database, timeout)
             cursor = conn.cursor()
-            cursor.execute(query)
+
+            # Use shared query execution
+            from ragtime.core.sql_utils import format_query_result
+            from ragtime.tools._query_helpers import validate_and_prepare_query
+
+            is_safe, prepared_query = validate_and_prepare_query(
+                query,
+                max_results=max_results,
+                allow_write=allow_write,
+                db_type=DB_TYPE_MYSQL,
+                require_result_limit=require_result_limit,
+                enforce_result_limit=enforce_result_limit,
+            )
+            if not is_safe:
+                error_msg = f"Security validation failed: {prepared_query}"
+                logger.warning(error_msg)
+                return f"Error: {error_msg}"
+
+            cursor.execute(prepared_query)
 
             # Fetch results
             rows = cursor.fetchall()
@@ -253,6 +221,8 @@ async def execute_mysql_query_async(
                     pass
 
     try:
+        import asyncio
+
         if timeout > 0:
             result = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(None, run_query),
@@ -266,6 +236,18 @@ async def execute_mysql_query_async(
     except asyncio.TimeoutError:
         logger.error(f"MySQL query timed out after {timeout}s")
         return f"Error: Query timed out after {timeout} seconds"
+
+
+def _mysql_error_formatter(exc: Exception, database: str | None) -> str:
+    """Format MySQL-specific errors for LLM consumption."""
+    error_str = str(exc)
+    if "Access denied" in error_str:
+        return "Error: Access denied - check username and password"
+    if "Unknown database" in error_str:
+        return f"Error: Unknown database '{database}' - check database name"
+    if "Can't connect" in error_str:
+        return f"Error: Cannot connect to MySQL server"
+    return f"Error: Connection failed - {error_str}"
 
 
 def create_mysql_tool(
@@ -282,7 +264,7 @@ def create_mysql_tool(
     description: str = "",
     ssh_tunnel_config: dict[str, Any] | None = None,
     include_metadata: bool = True,
-) -> StructuredTool:
+) -> Any:
     """
     Create a configured MySQL query tool for LangChain.
 
@@ -302,44 +284,27 @@ def create_mysql_tool(
     Returns:
         Configured StructuredTool instance.
     """
-    # Create input schema with this tool's default timeout
-    QueryInput = create_mysql_query_input(timeout, timeout_max_seconds)
-
-    async def execute_query(query: str = "", description: str = "", timeout: int = timeout, **_: Any) -> str:
-        """Execute MySQL query using configured connection."""
-        if not query or not query.strip():
-            return "Error: 'query' parameter is required. Provide a SQL query to execute."
-        if not description:
-            description = "SQL query"
-
-        effective_timeout = resolve_effective_timeout(timeout, timeout_max_seconds)
-
-        return await execute_mysql_query_async(
-            query=query,
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            database=database,
-            timeout=effective_timeout,
-            max_results=max_results,
-            allow_write=allow_write,
-            description=description,
-            ssh_tunnel_config=ssh_tunnel_config,
-            include_metadata=include_metadata,
-        )
-
-    tool_description = f"Query the {name} MySQL/MariaDB database using SQL."
-    if description:
-        tool_description += f" This database contains: {description}"
-    tool_description += f" {format_tool_write_access_sentence(allow_write)}"
-    tool_description += " Include LIMIT clause to limit results (e.g., SELECT ... LIMIT 100)."
-
-    return StructuredTool.from_function(
-        coroutine=execute_query,
-        name=f"query_{name.lower().replace(' ', '_').replace('-', '_')}",
-        description=tool_description,
-        args_schema=QueryInput,
+    return create_sql_tool(
+        name=name,
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=database,
+        db_type=DB_TYPE_MYSQL,
+        db_display_name="MySQL/MariaDB",
+        identifier_example="backticks for identifiers: `table_name`.`column_name`",
+        limit_clause_hint="Include LIMIT clause to limit results (e.g., SELECT ... LIMIT 100).",
+        connect_fn=_mysql_connect,
+        timeout=timeout,
+        timeout_max_seconds=timeout_max_seconds,
+        max_results=max_results,
+        allow_write=allow_write,
+        description=description,
+        ssh_tunnel_config=ssh_tunnel_config,
+        include_metadata=include_metadata,
+        default_remote_port=3306,
+        error_formatter=_mysql_error_formatter,
     )
 
 
@@ -469,15 +434,7 @@ async def test_mysql_connection(
                     actual_port = local_port
                     logger.debug(f"SSH tunnel established: localhost:{local_port} -> {tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}")
 
-            conn = pymysql.connect(
-                host=actual_host,
-                port=actual_port,
-                user=user,
-                password=password,
-                database=database,
-                connect_timeout=timeout,
-                read_timeout=timeout,
-            )
+            conn = _mysql_connect(actual_host, actual_port, user, password, database, timeout)
             cursor = conn.cursor()
 
             # Get server version
@@ -541,6 +498,8 @@ async def test_mysql_connection(
                     pass
 
     try:
+        import asyncio
+
         return await asyncio.wait_for(
             asyncio.get_event_loop().run_in_executor(None, do_test),
             timeout=timeout + 5,

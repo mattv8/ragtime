@@ -1631,18 +1631,55 @@ class UserSpaceService:
                     seen_group_ids.add(group_id)
         return filtered_tool_ids, filtered_group_ids
 
-    async def _get_workspace_file_mutation_lock(self, workspace_id: str, normalized_path: str) -> asyncio.Lock:
-        key = (workspace_id, normalized_path.strip("/"))
-        async with self._workspace_file_mutation_locks_lock:
-            lock = self._workspace_file_mutation_locks.get(key)
+    async def _get_or_create_lock(
+        self,
+        key: Any,
+        locks_dict: dict[Any, asyncio.Lock],
+        locks_lock: asyncio.Lock,
+    ) -> asyncio.Lock:
+        """Generic helper to get or create an asyncio lock for a given key."""
+        async with locks_lock:
+            lock = locks_dict.get(key)
             if lock is None:
                 lock = asyncio.Lock()
-                self._workspace_file_mutation_locks[key] = lock
+                locks_dict[key] = lock
             return lock
+
+    async def _get_workspace_file_mutation_lock(self, workspace_id: str, normalized_path: str) -> asyncio.Lock:
+        key = (workspace_id, normalized_path.strip("/"))
+        return await self._get_or_create_lock(
+            key,
+            self._workspace_file_mutation_locks,
+            self._workspace_file_mutation_locks_lock,
+        )
 
     async def _get_workspace_file_mutation_locks(self, workspace_id: str, normalized_paths: list[str]) -> list[asyncio.Lock]:
         keys = sorted({path.strip("/") for path in normalized_paths if path.strip("/")})
         return [await self._get_workspace_file_mutation_lock(workspace_id, key) for key in keys]
+
+    def _prune_simple_task(
+        self,
+        task_id: Any,
+        task: asyncio.Task[Any],
+        tasks_dict: dict[Any, asyncio.Task[Any]],
+    ) -> None:
+        """Generic helper to prune a task from a simple task tracking dict."""
+        if tasks_dict.get(task_id) is task:
+            tasks_dict.pop(task_id, None)
+
+    def _prune_workspace_tracked_task(
+        self,
+        task_id: str,
+        workspace_id: str,
+        task: asyncio.Task[Any],
+        tasks_dict: dict[str, asyncio.Task[Any]],
+        active_task_ids_dict: dict[str, str],
+    ) -> None:
+        """Generic helper to prune a workspace-tracked task from both dicts."""
+        if tasks_dict.get(task_id) is task:
+            tasks_dict.pop(task_id, None)
+        if active_task_ids_dict.get(workspace_id) == task_id:
+            active_task_ids_dict.pop(workspace_id, None)
 
     @staticmethod
     def _positive_int_env(name: str, default_value: int) -> int:
@@ -1706,12 +1743,11 @@ class UserSpaceService:
         self,
         mount_id: str,
     ) -> asyncio.Lock:
-        async with self._workspace_mount_operation_locks_lock:
-            existing = self._workspace_mount_operation_locks.get(mount_id)
-            if existing is None:
-                existing = asyncio.Lock()
-                self._workspace_mount_operation_locks[mount_id] = existing
-            return existing
+        return await self._get_or_create_lock(
+            mount_id,
+            self._workspace_mount_operation_locks,
+            self._workspace_mount_operation_locks_lock,
+        )
 
     async def _store_workspace_mount_sync_preview(
         self,
@@ -1895,8 +1931,7 @@ class UserSpaceService:
         mount_id: str,
         task: asyncio.Task[WorkspaceMountSyncResponse],
     ) -> None:
-        if self._workspace_mount_sync_tasks.get(mount_id) is task:
-            self._workspace_mount_sync_tasks.pop(mount_id, None)
+        self._prune_simple_task(mount_id, task, self._workspace_mount_sync_tasks)
 
     def _attach_workspace_mount_sync_task_cleanup(
         self,
@@ -1910,8 +1945,7 @@ class UserSpaceService:
         task_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        if self._workspace_create_tasks.get(task_id) is task:
-            self._workspace_create_tasks.pop(task_id, None)
+        self._prune_simple_task(task_id, task, self._workspace_create_tasks)
 
     def _attach_workspace_create_task_cleanup(
         self,
@@ -1925,8 +1959,7 @@ class UserSpaceService:
         task_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        if self._workspace_duplicate_tasks.get(task_id) is task:
-            self._workspace_duplicate_tasks.pop(task_id, None)
+        self._prune_simple_task(task_id, task, self._workspace_duplicate_tasks)
 
     def _attach_workspace_duplicate_task_cleanup(
         self,
@@ -1935,23 +1968,37 @@ class UserSpaceService:
     ) -> None:
         task.add_done_callback(partial(self._prune_workspace_duplicate_task, task_id))
 
-    def _prune_expired_workspace_create_task_statuses(self) -> None:
-        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_CREATE_TASK_TTL_SECONDS)
-        for task_id, record in list(self._workspace_create_task_statuses.items()):
-            if record.phase not in {"preview_ready", "completed", "failed"}:
+    def _prune_expired_task_statuses(
+        self,
+        task_statuses: dict[str, Any],
+        ttl_seconds: int,
+        final_phases: set[str],
+        cleanup_fn: Callable[[str], None] | None = None,
+    ) -> None:
+        """Generic helper to prune expired task status records with optional cleanup."""
+        cutoff = utc_now() - timedelta(seconds=ttl_seconds)
+        for task_id, record in list(task_statuses.items()):
+            if record.phase not in final_phases:
                 continue
             if record.updated_at > cutoff:
                 continue
-            self._workspace_create_task_statuses.pop(task_id, None)
+            task_statuses.pop(task_id, None)
+            if cleanup_fn is not None:
+                cleanup_fn(task_id)
+
+    def _prune_expired_workspace_create_task_statuses(self) -> None:
+        self._prune_expired_task_statuses(
+            self._workspace_create_task_statuses,
+            _WORKSPACE_CREATE_TASK_TTL_SECONDS,
+            {"preview_ready", "completed", "failed"},
+        )
 
     def _prune_expired_workspace_duplicate_task_statuses(self) -> None:
-        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_DUPLICATE_TASK_TTL_SECONDS)
-        for task_id, record in list(self._workspace_duplicate_task_statuses.items()):
-            if record.phase not in {"completed", "failed"}:
-                continue
-            if record.updated_at > cutoff:
-                continue
-            self._workspace_duplicate_task_statuses.pop(task_id, None)
+        self._prune_expired_task_statuses(
+            self._workspace_duplicate_task_statuses,
+            _WORKSPACE_DUPLICATE_TASK_TTL_SECONDS,
+            {"completed", "failed"},
+        )
 
     @staticmethod
     def _workspace_create_task_model(
@@ -2027,12 +2074,11 @@ class UserSpaceService:
         self,
         workspace_id: str,
     ) -> asyncio.Lock:
-        async with self._workspace_archive_operation_locks_lock:
-            existing = self._workspace_archive_operation_locks.get(workspace_id)
-            if existing is None:
-                existing = asyncio.Lock()
-                self._workspace_archive_operation_locks[workspace_id] = existing
-            return existing
+        return await self._get_or_create_lock(
+            workspace_id,
+            self._workspace_archive_operation_locks,
+            self._workspace_archive_operation_locks_lock,
+        )
 
     def _workspace_archive_task_dir(self, task_id: str) -> Path:
         return self._archive_tasks_dir / task_id
@@ -2196,10 +2242,13 @@ class UserSpaceService:
         workspace_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        if self._workspace_sqlite_import_tasks.get(task_id) is task:
-            self._workspace_sqlite_import_tasks.pop(task_id, None)
-        if self._workspace_sqlite_import_active_task_ids_by_workspace.get(workspace_id) == task_id:
-            self._workspace_sqlite_import_active_task_ids_by_workspace.pop(workspace_id, None)
+        self._prune_workspace_tracked_task(
+            task_id,
+            workspace_id,
+            task,
+            self._workspace_sqlite_import_tasks,
+            self._workspace_sqlite_import_active_task_ids_by_workspace,
+        )
 
     def _attach_workspace_sqlite_import_task_cleanup(
         self,
@@ -2210,12 +2259,12 @@ class UserSpaceService:
         task.add_done_callback(partial(self._prune_workspace_sqlite_import_task, task_id, workspace_id))
 
     def _prune_expired_workspace_sqlite_import_task_statuses(self) -> None:
-        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_SQLITE_IMPORT_TASK_TTL_SECONDS)
-        for task_id, record in list(self._workspace_sqlite_import_task_statuses.items()):
-            if record.phase not in {"completed", "failed"} or record.updated_at > cutoff:
-                continue
-            self._workspace_sqlite_import_task_statuses.pop(task_id, None)
-            self._remove_workspace_archive_dir_sync(self._workspace_sqlite_import_task_dir(task_id))
+        self._prune_expired_task_statuses(
+            self._workspace_sqlite_import_task_statuses,
+            _WORKSPACE_SQLITE_IMPORT_TASK_TTL_SECONDS,
+            {"completed", "failed"},
+            lambda task_id: self._remove_workspace_archive_dir_sync(self._workspace_sqlite_import_task_dir(task_id)),
+        )
 
     def _set_workspace_sqlite_import_task_phase(
         self,
@@ -2394,10 +2443,13 @@ class UserSpaceService:
         workspace_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        if self._workspace_archive_export_tasks.get(task_id) is task:
-            self._workspace_archive_export_tasks.pop(task_id, None)
-        if self._workspace_archive_export_active_task_ids_by_workspace.get(workspace_id) == task_id:
-            self._workspace_archive_export_active_task_ids_by_workspace.pop(workspace_id, None)
+        self._prune_workspace_tracked_task(
+            task_id,
+            workspace_id,
+            task,
+            self._workspace_archive_export_tasks,
+            self._workspace_archive_export_active_task_ids_by_workspace,
+        )
 
     def _attach_workspace_archive_export_task_cleanup(
         self,
@@ -2413,10 +2465,13 @@ class UserSpaceService:
         workspace_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        if self._workspace_archive_import_tasks.get(task_id) is task:
-            self._workspace_archive_import_tasks.pop(task_id, None)
-        if self._workspace_archive_import_active_task_ids_by_workspace.get(workspace_id) == task_id:
-            self._workspace_archive_import_active_task_ids_by_workspace.pop(workspace_id, None)
+        self._prune_workspace_tracked_task(
+            task_id,
+            workspace_id,
+            task,
+            self._workspace_archive_import_tasks,
+            self._workspace_archive_import_active_task_ids_by_workspace,
+        )
 
     def _attach_workspace_archive_import_task_cleanup(
         self,
@@ -2427,26 +2482,22 @@ class UserSpaceService:
         task.add_done_callback(partial(self._prune_workspace_archive_import_task, task_id, workspace_id))
 
     def _prune_expired_workspace_archive_export_task_statuses(self) -> None:
-        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_ARCHIVE_EXPORT_TASK_TTL_SECONDS)
-        for task_id, record in list(self._workspace_archive_export_task_statuses.items()):
-            # Completed exports are kept as a persistent history (file-backed) until
-            # the user explicitly deletes them. Only prune failed exports on TTL.
-            if record.phase != "failed":
-                continue
-            if record.updated_at > cutoff:
-                continue
-            self._workspace_archive_export_task_statuses.pop(task_id, None)
-            self._remove_workspace_archive_dir_sync(self._workspace_archive_task_dir(task_id))
+        # Completed exports are kept as a persistent history (file-backed) until
+        # the user explicitly deletes them. Only prune failed exports on TTL.
+        self._prune_expired_task_statuses(
+            self._workspace_archive_export_task_statuses,
+            _WORKSPACE_ARCHIVE_EXPORT_TASK_TTL_SECONDS,
+            {"failed"},
+            lambda task_id: self._remove_workspace_archive_dir_sync(self._workspace_archive_task_dir(task_id)),
+        )
 
     def _prune_expired_workspace_archive_import_task_statuses(self) -> None:
-        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_ARCHIVE_IMPORT_TASK_TTL_SECONDS)
-        for task_id, record in list(self._workspace_archive_import_task_statuses.items()):
-            if record.phase not in {"completed", "failed"}:
-                continue
-            if record.updated_at > cutoff:
-                continue
-            self._workspace_archive_import_task_statuses.pop(task_id, None)
-            self._remove_workspace_archive_dir_sync(self._workspace_archive_task_dir(task_id))
+        self._prune_expired_task_statuses(
+            self._workspace_archive_import_task_statuses,
+            _WORKSPACE_ARCHIVE_IMPORT_TASK_TTL_SECONDS,
+            {"completed", "failed"},
+            lambda task_id: self._remove_workspace_archive_dir_sync(self._workspace_archive_task_dir(task_id)),
+        )
 
     @staticmethod
     def _workspace_archive_export_task_model(
@@ -2494,19 +2545,36 @@ class UserSpaceService:
             updated_at=record.updated_at,
         )
 
+    async def _persist_workspace_task_reference(
+        self,
+        workspace_id: str,
+        task_id_field: str,
+        phase_field: str,
+        task_id: str | None,
+        phase: Any,
+    ) -> None:
+        """Generic helper to persist task reference to workspace record."""
+        db = await get_db()
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={
+                task_id_field: task_id,
+                phase_field: phase,
+            },
+        )
+
     async def _persist_workspace_archive_export_task_reference(
         self,
         workspace_id: str,
         task_id: str | None,
         phase: WorkspaceArchiveExportTaskPhase | None,
     ) -> None:
-        db = await get_db()
-        await db.workspace.update(
-            where={"id": workspace_id},
-            data={
-                "archiveExportTaskId": task_id,
-                "archiveExportTaskPhase": phase,
-            },
+        await self._persist_workspace_task_reference(
+            workspace_id,
+            "archiveExportTaskId",
+            "archiveExportTaskPhase",
+            task_id,
+            phase,
         )
 
     async def _persist_workspace_archive_import_task_reference(
@@ -2515,13 +2583,12 @@ class UserSpaceService:
         task_id: str | None,
         phase: WorkspaceArchiveImportTaskPhase | None,
     ) -> None:
-        db = await get_db()
-        await db.workspace.update(
-            where={"id": workspace_id},
-            data={
-                "archiveImportTaskId": task_id,
-                "archiveImportTaskPhase": phase,
-            },
+        await self._persist_workspace_task_reference(
+            workspace_id,
+            "archiveImportTaskId",
+            "archiveImportTaskPhase",
+            task_id,
+            phase,
         )
 
     async def _clear_missing_workspace_archive_task_reference(
@@ -4836,13 +4903,11 @@ class UserSpaceService:
         )
 
     def _prune_expired_workspace_scm_import_task_statuses(self) -> None:
-        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_SCM_IMPORT_TASK_TTL_SECONDS)
-        for task_id, record in list(self._workspace_scm_import_task_statuses.items()):
-            if record.phase not in {"completed", "failed"}:
-                continue
-            if record.updated_at > cutoff:
-                continue
-            self._workspace_scm_import_task_statuses.pop(task_id, None)
+        self._prune_expired_task_statuses(
+            self._workspace_scm_import_task_statuses,
+            _WORKSPACE_SCM_IMPORT_TASK_TTL_SECONDS,
+            {"completed", "failed"},
+        )
 
     def _prune_workspace_scm_import_task(
         self,
@@ -4850,10 +4915,13 @@ class UserSpaceService:
         workspace_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        if self._workspace_scm_import_tasks.get(task_id) is task:
-            self._workspace_scm_import_tasks.pop(task_id, None)
-        if self._workspace_scm_import_active_task_ids_by_workspace.get(workspace_id) == task_id:
-            self._workspace_scm_import_active_task_ids_by_workspace.pop(workspace_id, None)
+        self._prune_workspace_tracked_task(
+            task_id,
+            workspace_id,
+            task,
+            self._workspace_scm_import_tasks,
+            self._workspace_scm_import_active_task_ids_by_workspace,
+        )
 
     def _attach_workspace_scm_import_task_cleanup(
         self,
@@ -6282,10 +6350,13 @@ class UserSpaceService:
         workspace_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        if self._workspace_delete_tasks.get(task_id) is task:
-            self._workspace_delete_tasks.pop(task_id, None)
-        if self._workspace_delete_active_task_ids_by_workspace.get(workspace_id) == task_id:
-            self._workspace_delete_active_task_ids_by_workspace.pop(workspace_id, None)
+        self._prune_workspace_tracked_task(
+            task_id,
+            workspace_id,
+            task,
+            self._workspace_delete_tasks,
+            self._workspace_delete_active_task_ids_by_workspace,
+        )
 
     def _attach_workspace_delete_task_cleanup(
         self,
@@ -6296,13 +6367,11 @@ class UserSpaceService:
         task.add_done_callback(partial(self._prune_workspace_delete_task, task_id, workspace_id))
 
     def _prune_expired_workspace_delete_task_statuses(self) -> None:
-        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_DELETE_TASK_TTL_SECONDS)
-        for task_id, record in list(self._workspace_delete_task_statuses.items()):
-            if record.phase not in {"completed", "failed"}:
-                continue
-            if record.updated_at > cutoff:
-                continue
-            self._workspace_delete_task_statuses.pop(task_id, None)
+        self._prune_expired_task_statuses(
+            self._workspace_delete_task_statuses,
+            _WORKSPACE_DELETE_TASK_TTL_SECONDS,
+            {"completed", "failed"},
+        )
 
     @staticmethod
     def _workspace_delete_task_model(

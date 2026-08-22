@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ChevronDown, ChevronRight, X } from 'lucide-react';
 import { MiniLoadingSpinner } from './MiniLoadingSpinner';
 import { WorkspaceRowList } from './WorkspaceRowList';
+import { SearchHighlightedText } from './SearchHighlightedText';
+import {
+  isWorkspaceDeleteTaskTerminal,
+  formatWorkspaceDeleteTasksStatus,
+} from './WorkspaceDeleteTaskUtils';
 import { api, ApiError } from '@/api';
-import type {
-  User,
-  UserSpaceWorkspace,
-  UserSpaceWorkspaceDeleteTask,
-  UserSpaceWorkspaceDeleteTaskPhase,
-} from '@/types';
+import type { User, UserSpaceWorkspace, UserSpaceWorkspaceDeleteTask } from '@/types';
 import { clearInterruptDismiss, resolveWorkspaceInterruptStateFromSummary } from '@/utils';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 import { useWorkspaceChatSearch } from '@/utils/useWorkspaceChatSearch';
@@ -31,46 +31,6 @@ interface OwnerGroup {
   workspaces: UserSpaceWorkspace[];
 }
 
-function isWorkspaceDeleteTaskTerminal(phase: UserSpaceWorkspaceDeleteTaskPhase): boolean {
-  return phase === 'completed' || phase === 'failed';
-}
-
-function formatWorkspaceDeleteTaskStatus(task: UserSpaceWorkspaceDeleteTask | null): string | null {
-  if (!task) {
-    return null;
-  }
-
-  const label = task.workspace_name?.trim() || 'workspace';
-  switch (task.phase) {
-    case 'queued':
-      return `Preparing to delete ${label}...`;
-    case 'stopping_runtime':
-      return `Stopping runtime for ${label}...`;
-    case 'deleting_conversations':
-      return `Deleting conversations for ${label}...`;
-    case 'deleting_workspace':
-      return `Deleting ${label}...`;
-    case 'failed':
-      return task.error?.trim() || `Failed to delete ${label}.`;
-    default:
-      return null;
-  }
-}
-
-function formatWorkspaceDeleteTasksStatus(tasks: UserSpaceWorkspaceDeleteTask[]): string | null {
-  if (tasks.length === 0) {
-    return null;
-  }
-  if (tasks.length === 1) {
-    return formatWorkspaceDeleteTaskStatus(tasks[0]);
-  }
-
-  const queuedCount = tasks.filter((task) => task.phase === 'queued').length;
-  return queuedCount > 0
-    ? `Deleting ${tasks.length} workspaces (${queuedCount} queued)...`
-    : `Deleting ${tasks.length} workspaces...`;
-}
-
 function workspaceMatchesQuery(workspace: UserSpaceWorkspace, query: string): boolean {
   const needle = query.trim().toLowerCase();
   if (!needle) {
@@ -82,35 +42,6 @@ function workspaceMatchesQuery(workspace: UserSpaceWorkspace, query: string): bo
     .join(' ')
     .toLowerCase();
   return haystack.includes(needle);
-}
-
-function SearchHighlightedText({ text, query }: { text: string; query: string }) {
-  const needle = query.trim();
-  if (!needle) return <>{text}</>;
-
-  const lowerText = text.toLowerCase();
-  const lowerNeedle = needle.toLowerCase();
-  const segments: ReactNode[] = [];
-  let cursor = 0;
-  let matchIndex = lowerText.indexOf(lowerNeedle);
-
-  while (matchIndex !== -1) {
-    if (matchIndex > cursor) {
-      segments.push(text.slice(cursor, matchIndex));
-    }
-    segments.push(
-      <mark key={`${matchIndex}-${segments.length}`} className="chat-search-highlight">
-        {text.slice(matchIndex, matchIndex + needle.length)}
-      </mark>,
-    );
-    cursor = matchIndex + needle.length;
-    matchIndex = lowerText.indexOf(lowerNeedle, cursor);
-  }
-
-  if (cursor < text.length) {
-    segments.push(text.slice(cursor));
-  }
-  return <>{segments}</>;
 }
 
 export function AdminWorkspaceModal({
