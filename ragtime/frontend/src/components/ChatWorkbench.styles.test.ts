@@ -7,10 +7,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  expectModernScopedSelectors,
-  getRuleBody,
-} from '@/testHelpers/cssRuleUtils';
+import { expectModernScopedSelectors, getRuleBody } from '@/testHelpers/cssRuleUtils';
 
 const cssPath = join(cwd(), 'src/styles/workbench-chat.css');
 const workbenchCssPath = join(cwd(), 'src/styles/workbench.css');

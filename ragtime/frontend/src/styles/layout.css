@@ -374,6 +374,10 @@ legend {
   line-height: 1.2;
 }
 
+.topnav-overflow-trigger {
+  display: none;
+}
+
 .topnav-links {
   display: flex;
   gap: var(--space-xs);

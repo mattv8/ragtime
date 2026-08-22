@@ -609,6 +609,10 @@ textarea.chat-title-input {
   flex: 1;
   min-width: 0;
 }
+
+#chat-mobile-sidebar-toggle {
+  display: none;
+}
 .chat-header-info h2 {
   margin: 0;
   font-size: var(--text-lg);

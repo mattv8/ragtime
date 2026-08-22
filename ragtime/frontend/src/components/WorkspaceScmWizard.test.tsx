@@ -163,8 +163,6 @@ const enabledWebhookWithSecret: GitWebhookEnableResponse = {
   secret: 'secret-once',
 };
 
-
-
 function upstreamWorkspace(
   overrides?: Partial<NonNullable<UserSpaceWorkspace['scm']>>,
 ): UserSpaceWorkspace {

@@ -5,6 +5,8 @@ from typing import Any
 from langchain_core.messages import AIMessage
 from langchain_core.tools import StructuredTool
 
+from ragtime.rag import components as rag_components
+
 
 def make_tool(name: str, *, description: str | None = None, coroutine: Any = None) -> StructuredTool:
     """Create a StructuredTool for testing.
@@ -268,8 +270,6 @@ def make_rag_components(
     Returns:
         RAGComponents instance with mocked attributes
     """
-    from ragtime.rag import components as rag_components
-
     rag = rag_components.RAGComponents.__new__(rag_components.RAGComponents)
     rag._tool_configs = [
         {

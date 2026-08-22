@@ -47,8 +47,6 @@ function computeCloneTimeout(depth: number): number {
   return Math.round(Math.max(minTimeout, Math.min(maxTimeout, timeout)));
 }
 
-
-
 const INDEX_JOB_POLL_INTERVAL_MS = 1000;
 
 function isIndexJobTerminal(job: IndexJob | null): boolean {

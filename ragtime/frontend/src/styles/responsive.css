@@ -97,13 +97,31 @@
     flex: 1;
   }
 
+  .topnav-overflow-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+  }
+
   .topnav-links {
+    display: none;
     order: 3;
     width: 100%;
-    display: flex;
     flex-wrap: wrap;
     gap: var(--space-xs);
     justify-content: center;
+  }
+
+  .topnav-links.is-open {
+    display: flex;
   }
 
   .topnav-link {
@@ -472,6 +490,13 @@
     min-width: 0;
     flex-wrap: nowrap;
     align-items: center;
+  }
+
+  #chat-mobile-sidebar-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 26;
   }
 
   .chat-header-info h2 {

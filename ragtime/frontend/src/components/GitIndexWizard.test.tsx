@@ -182,8 +182,6 @@ const enabledWebhookWithSecret: GitWebhookEnableResponse = {
   secret: 'secret-once',
 };
 
-
-
 async function completeAnalysis() {
   fireEvent.change(
     screen.getByPlaceholderText(

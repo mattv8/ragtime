@@ -1,7 +1,4 @@
-import type {
-  UserSpaceWorkspaceDeleteTask,
-  UserSpaceWorkspaceDeleteTaskPhase,
-} from '@/types';
+import type { UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase } from '@/types';
 
 /**
  * Checks if a workspace delete task has reached a terminal phase.

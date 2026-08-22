@@ -34,6 +34,7 @@ describe('Workbench shell styles contract', () => {
     expect(css).not.toContain('.app-shell > .webgl-motion-toggle');
     expect(layoutCss).toMatch(/\.app-shell-webgl-background::before\s*\{/);
     expect(layoutCss).toMatch(/\.app-shell\s*>\s*\.webgl-motion-toggle\s*\{/);
+    expect(layoutCss).toMatch(/\.topnav-overflow-trigger\s*\{[\s\S]*display:\s*none;/);
     expect(css).toMatch(
       /\[data-theme-pack='modern'\]\s+#workbench-shell-stack\s*>\s*\.topnav,[\s\S]*>\s*\.container\s*\{[\s\S]*width:\s*100%;[\s\S]*max-width:\s*none;[\s\S]*margin:\s*0;/,
     );

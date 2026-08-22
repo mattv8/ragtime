@@ -2555,12 +2555,13 @@ class UserSpaceService:
     ) -> None:
         """Generic helper to persist task reference to workspace record."""
         db = await get_db()
+        data: dict[str, Any] = {
+            task_id_field: task_id,
+            phase_field: phase,
+        }
         await db.workspace.update(
             where={"id": workspace_id},
-            data={
-                task_id_field: task_id,
-                phase_field: phase,
-            },
+            data=cast(Any, data),
         )
 
     async def _persist_workspace_archive_export_task_reference(
