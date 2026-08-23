@@ -10993,20 +10993,16 @@ class RAGComponents:
                 total = len(groups)
                 return groups[:limit], total > limit, total
 
-            policy_getter = getattr(userspace_service, "get_workspace_identity_entitlement_policy", None)
             policy_payload: dict[str, Any] = {}
             policy_read_error: str | None = None
-            if not callable(policy_getter):
-                policy_read_error = "Workspace identity entitlement policy service is unavailable."
+            try:
+                policy = await userspace_service.get_workspace_identity_entitlement_policy(target_ws, target_uid, include_available_groups=True, is_admin=False)
+            except HTTPException as exc:
+                policy_read_error = f"HTTP {exc.status_code}: {exc.detail}"
+            except Exception as exc:
+                policy_read_error = str(exc)
             else:
-                try:
-                    policy = await policy_getter(target_ws, target_uid, include_available_groups=True, is_admin=False)
-                except HTTPException as exc:
-                    policy_read_error = f"HTTP {exc.status_code}: {exc.detail}"
-                except Exception as exc:
-                    policy_read_error = str(exc)
-                else:
-                    policy_payload = _coerce_payload_dict(policy)
+                policy_payload = _coerce_payload_dict(policy)
             rules = [
                 normalized for normalized in (_normalize_entitlement_rule(rule) for rule in list(policy_payload.get("rules") or [])) if normalized is not None
             ]
@@ -11068,10 +11064,6 @@ class RAGComponents:
                 UserSpaceIdentityEntitlementRuleInput,
             )
 
-            replace_policy = getattr(userspace_service, "replace_workspace_identity_entitlement_policy", None)
-            if not callable(replace_policy):
-                raise ToolException("Workspace identity entitlement policy service is unavailable.")
-
             normalized_rule_inputs: list[UserSpaceIdentityEntitlementRuleInput] = []
             for rule in rules:
                 if isinstance(rule, dict):
@@ -11090,7 +11082,7 @@ class RAGComponents:
                     )
 
             request = ReplaceUserSpaceIdentityEntitlementPolicyRequest(rules=normalized_rule_inputs)
-            response = await replace_policy(workspace_id, user_id, request, is_admin=False)
+            response = await userspace_service.replace_workspace_identity_entitlement_policy(workspace_id, user_id, request, is_admin=False)
 
             response_payload = _coerce_payload_dict(response)
             normalized_rules = [
