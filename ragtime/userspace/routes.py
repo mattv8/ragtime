@@ -583,6 +583,20 @@ async def download_workspace_archive_export_task(
     return FileResponse(path=archive_path, filename=archive_file_name)
 
 
+@router.head("/workspace-archive-export-tasks/{task_id}/download")
+async def head_download_workspace_archive_export_task(
+    task_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    archive_path, archive_file_name = await userspace_service.get_workspace_archive_export_download(
+        task_id,
+        user.id,
+        is_admin=is_admin,
+    )
+    return FileResponse(path=archive_path, filename=archive_file_name)
+
+
 @router.get(
     "/workspaces/{workspace_id}/archive-exports",
     response_model=UserSpaceWorkspaceArchiveExportListResponse,

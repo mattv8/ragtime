@@ -855,5 +855,70 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("Could not determine whether the workspace has uncommitted changes" in warning for warning in warnings))
 
 
+class WorkspaceArchiveExportDownloadHeadRouteTests(unittest.IsolatedAsyncioTestCase):
+    """Tests for HEAD /workspace-archive-export-tasks/{task_id}/download route."""
+
+    async def test_head_download_returns_metadata_without_body(self) -> None:
+        """Test that HEAD request returns FileResponse metadata matching GET handler."""
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from unittest.mock import AsyncMock, patch
+
+        from starlette.requests import Request
+
+        import ragtime.userspace.routes as _ROUTES
+        from ragtime.userspace.service import UserSpaceService
+
+        # Get the HEAD handler function from the router
+        head_handler = _ROUTES.head_download_workspace_archive_export_task
+
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            archive_file = tmp_path / "workspace.zip"
+            archive_file.write_bytes(b"archive content")
+
+            # Mock the service method
+            fake_user = SimpleNamespace(id="user-1", role="admin")
+            fake_service = SimpleNamespace(get_workspace_archive_export_download=AsyncMock(return_value=(archive_file, "workspace-export.zip")))
+
+            # Build a minimal Starlette request for HEAD
+            request = Request(
+                {
+                    "type": "http",
+                    "method": "HEAD",
+                    "path": "/indexes/userspace/workspace-archive-export-tasks/task-1/download",
+                    "raw_path": b"/indexes/userspace/workspace-archive-export-tasks/task-1/download",
+                    "query_string": b"",
+                    "headers": [(b"host", b"ragtime.dev")],
+                    "scheme": "https",
+                    "server": ("ragtime.dev", 443),
+                    "client": ("127.0.0.1", 12345),
+                }
+            )
+
+            # Patch get_current_user to return our fake user
+            with (
+                patch(
+                    "ragtime.userspace.routes.get_current_user",
+                    return_value=fake_user,
+                ),
+                patch(
+                    "ragtime.userspace.routes.userspace_service",
+                    fake_service,
+                ),
+            ):
+                result = await head_handler("task-1", user=fake_user)
+
+            # Verify it returns a FileResponse with the correct path and filename
+            self.assertEqual(result.path, archive_file)
+            self.assertEqual(result.filename, "workspace-export.zip")
+            # Verify the service was called with admin propagation
+            fake_service.get_workspace_archive_export_download.assert_awaited_once_with(
+                "task-1",
+                "user-1",
+                is_admin=True,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

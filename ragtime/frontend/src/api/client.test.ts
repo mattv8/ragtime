@@ -764,3 +764,129 @@ describe('workspace bridge credential client requests', () => {
     expect(result.token_session_id).toBe('session-new');
   });
 });
+
+describe('workspace archive export downloads', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(),
+      revokeObjectURL: vi.fn(),
+    } as Partial<typeof URL>);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('sends HEAD request and then calls startNativeDownload on success', async () => {
+    const taskId = 'export-task-123';
+    const expectedUrl = `/indexes/userspace/workspace-archive-export-tasks/${encodeURIComponent(taskId)}/download`;
+
+    // Mock HEAD response for readiness check
+    const headResponse = new Response(null, {
+      status: 200,
+      headers: {
+        'content-disposition': 'attachment; filename="workspace-export.zip"',
+      },
+    });
+
+    // Simulate startNativeDownload spy
+    const iframeAppendSpy = vi.spyOn(document.body, 'appendChild');
+
+    // Mock fetch to return HEAD response
+    fetchMock.mockResolvedValueOnce(headResponse);
+
+    await api.downloadUserSpaceWorkspaceArchiveExportTask(taskId);
+
+    // Verify HEAD request was made with credentials
+    expect(fetchMock).toHaveBeenCalledWith(
+      expectedUrl,
+      expect.objectContaining({
+        method: 'HEAD',
+        credentials: 'include',
+      }),
+    );
+
+    // Verify iframe was created (indicating startNativeDownload was called)
+    const iframeCreated = iframeAppendSpy.mock.calls.some((call) => {
+      const node = call[0];
+      return node instanceof HTMLElement && node.tagName === 'IFRAME';
+    });
+    expect(iframeCreated).toBe(true);
+
+    iframeAppendSpy.mockRestore();
+  });
+
+  it('throws ApiError with detail on non-OK HEAD response', async () => {
+    const taskId = 'export-task-456';
+
+    const errorResponse = new Response(JSON.stringify({ detail: 'Archive not ready' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    fetchMock.mockResolvedValueOnce(errorResponse);
+
+    const iframeAppendSpy = vi.spyOn(document.body, 'appendChild');
+
+    await expect(api.downloadUserSpaceWorkspaceArchiveExportTask(taskId)).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 400,
+      detail: 'Archive not ready',
+    });
+
+    // Verify iframe was never created on error
+    const iframeCreated = iframeAppendSpy.mock.calls.some((call) => {
+      const node = call[0];
+      return node instanceof HTMLElement && node.tagName === 'IFRAME';
+    });
+    expect(iframeCreated).toBe(false);
+
+    iframeAppendSpy.mockRestore();
+  });
+
+  it('throws ApiError with fallback message when error detail is missing', async () => {
+    const taskId = 'export-task-789';
+
+    const errorResponse = new Response(null, {
+      status: 500,
+    });
+
+    fetchMock.mockResolvedValueOnce(errorResponse);
+
+    await expect(api.downloadUserSpaceWorkspaceArchiveExportTask(taskId)).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 500,
+      message: 'Archive download failed',
+    });
+  });
+
+  it('does not call blob() or createObjectURL on success', async () => {
+    const taskId = 'export-task-blob-test';
+
+    const headResponse = new Response(null, {
+      status: 200,
+      headers: {
+        'content-disposition': 'attachment; filename="test.zip"',
+      },
+    });
+
+    const blobSpy = vi.spyOn(headResponse, 'blob');
+    const createObjectURLSpy = vi.spyOn(window.URL, 'createObjectURL');
+
+    fetchMock.mockResolvedValueOnce(headResponse);
+
+    await api.downloadUserSpaceWorkspaceArchiveExportTask(taskId);
+
+    // Verify blob() was not called
+    expect(blobSpy).not.toHaveBeenCalled();
+
+    // Verify createObjectURL was not called
+    expect(createObjectURLSpy).not.toHaveBeenCalled();
+
+    blobSpy.mockRestore();
+  });
+});

@@ -3653,37 +3653,17 @@ export const api = {
   },
 
   async downloadUserSpaceWorkspaceArchiveExportTask(taskId: string): Promise<void> {
-    const response = await apiFetch(
-      `${API_BASE}/userspace/workspace-archive-export-tasks/${encodeURIComponent(taskId)}/download`,
-    );
+    const downloadUrl = `${API_BASE}/userspace/workspace-archive-export-tasks/${encodeURIComponent(taskId)}/download`;
+
+    // Check readiness with HEAD request
+    const response = await apiFetch(downloadUrl, { method: 'HEAD' });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new ApiError(data.detail || 'Archive download failed', response.status, data.detail);
     }
 
-    const contentDisposition = response.headers.get('content-disposition') || '';
-    // Prefer RFC 5987 filename*=UTF-8''... when present; fall back to quoted or bare filename=.
-    const extendedMatch = contentDisposition.match(/filename\*=(?:UTF-8'')?([^;]+)/i);
-    const plainMatch = contentDisposition.match(/(?:^|;)\s*filename=("[^"]*"|[^;]+)/i);
-    let filename = `workspace-export-${taskId}.zip`;
-    if (extendedMatch?.[1]) {
-      try {
-        filename = decodeURIComponent(extendedMatch[1].trim());
-      } catch {
-        filename = extendedMatch[1].trim();
-      }
-    } else if (plainMatch?.[1]) {
-      filename = plainMatch[1].trim().replace(/^"(.*)"$/, '$1');
-    }
-    const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    window.URL.revokeObjectURL(url);
+    // Download via native iframe (streamed, no buffering)
+    startNativeDownload(downloadUrl);
   },
 
   async listUserSpaceWorkspaceArchiveExports(

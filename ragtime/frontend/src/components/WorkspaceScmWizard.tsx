@@ -554,6 +554,7 @@ export function WorkspaceScmWizard({
   const [archiveExportsScanned, setArchiveExportsScanned] = useState(false);
   const [deletingExportTaskId, setDeletingExportTaskId] = useState<string | null>(null);
   const [downloadedExportTaskIds, setDownloadedExportTaskIds] = useState<Set<string>>(new Set());
+  const [downloadingExportTaskId, setDownloadingExportTaskId] = useState<string | null>(null);
   const [loadingAction, setLoadingAction] = useState<
     | 'pull'
     | 'push'
@@ -601,6 +602,7 @@ export function WorkspaceScmWizard({
   const lastNotifiedArchiveImportTaskIdRef = useRef<string | null>(null);
   const webhookRequestRef = useRef(0);
   const loadingActionRef = useRef(loadingAction);
+  const currentDownloadRequestRef = useRef<{ workspaceId: string; taskId: string } | null>(null);
   const activeScm = scmState ?? result?.scm ?? initialScm ?? null;
   const hasConfiguredRemote = Boolean(activeScm?.connected || activeScm?.git_url);
   const shouldShowWebhookSettings = hasConfiguredRemote && activeScm?.remote_role === 'upstream';
@@ -754,6 +756,11 @@ export function WorkspaceScmWizard({
     setArchiveMode(hasActiveArchiveImportTask ? 'import' : 'export');
     setStep('input');
   }, [hasActiveArchiveExportTask, hasActiveArchiveImportTask, workspace.id]);
+
+  useEffect(() => {
+    currentDownloadRequestRef.current = null;
+    setDownloadingExportTaskId(null);
+  }, [workspace.id]);
 
   useEffect(() => {
     setArchiveRestoreConfirmed(false);
@@ -1562,8 +1569,19 @@ export function WorkspaceScmWizard({
   }
 
   async function handleDownloadArchive(taskId: string): Promise<void> {
+    if (currentDownloadRequestRef.current !== null) {
+      return;
+    }
+
+    const request = { workspaceId: workspace.id, taskId };
+    currentDownloadRequestRef.current = request;
+    setDownloadingExportTaskId(taskId);
+
     try {
       await api.downloadUserSpaceWorkspaceArchiveExportTask(taskId);
+      if (currentDownloadRequestRef.current !== request) {
+        return;
+      }
       lastDownloadedArchiveTaskIdRef.current = taskId;
       setDownloadedExportTaskIds((prev) => {
         const next = new Set(prev);
@@ -1573,8 +1591,16 @@ export function WorkspaceScmWizard({
       clearStatus();
       toast.success('Workspace archive downloaded.');
     } catch (error) {
+      if (currentDownloadRequestRef.current !== request) {
+        return;
+      }
       clearStatus();
       toast.error(error instanceof Error ? error.message : 'Failed to download workspace archive.');
+    } finally {
+      if (currentDownloadRequestRef.current === request) {
+        currentDownloadRequestRef.current = null;
+        setDownloadingExportTaskId(null);
+      }
     }
   }
 
@@ -2646,10 +2672,14 @@ export function WorkspaceScmWizard({
                           <button
                             className="btn btn-sm btn-secondary"
                             onClick={() => void handleDownloadArchive(item.task_id)}
-                            disabled={isDeleting}
+                            disabled={isDeleting || downloadingExportTaskId !== null}
                             title="Download archive"
                           >
-                            <ArrowDownToLine size={12} />{' '}
+                            {downloadingExportTaskId === item.task_id ? (
+                              <MiniLoadingSpinner variant="icon" size={14} />
+                            ) : (
+                              <ArrowDownToLine size={12} />
+                            )}{' '}
                             {hasDownloaded ? 'Downloaded' : 'Download'}
                           </button>
                           <DeleteConfirmButton
@@ -4043,10 +4073,15 @@ export function WorkspaceScmWizard({
                       onClick={() => void handleDownloadArchive(archiveExportTask.task_id)}
                       disabled={
                         isLoading ||
+                        downloadingExportTaskId !== null ||
                         lastDownloadedArchiveTaskIdRef.current === archiveExportTask.task_id
                       }
                     >
-                      <ArrowDownToLine size={14} />
+                      {downloadingExportTaskId === archiveExportTask.task_id ? (
+                        <MiniLoadingSpinner variant="icon" size={14} />
+                      ) : (
+                        <ArrowDownToLine size={14} />
+                      )}
                       {lastDownloadedArchiveTaskIdRef.current === archiveExportTask.task_id
                         ? 'Downloaded'
                         : 'Download Archive'}

@@ -19,6 +19,10 @@ const apiMock = vi.hoisted(() => ({
   rotateUserSpaceWorkspaceScmWebhookSecret: vi.fn(),
   disableUserSpaceWorkspaceScmWebhook: vi.fn(),
   queueUserSpaceWorkspaceScmPreviewImport: vi.fn(),
+  listUserSpaceWorkspaceArchiveExports: vi.fn(),
+  getUserSpaceWorkspaceArchiveExportTask: vi.fn(),
+  downloadUserSpaceWorkspaceArchiveExportTask: vi.fn(),
+  deleteUserSpaceWorkspaceArchiveExportTask: vi.fn(),
 }));
 
 const latestWebhookSettingsProps = vi.hoisted(() => ({
@@ -101,8 +105,19 @@ vi.mock('./GitWebhookSettings', () => ({
     })(),
 }));
 
+const miniLoadingSpinnerProps = vi.hoisted(() => ({
+  lastProps: null as { variant?: string; size?: number } | null,
+}));
+
 vi.mock('./shared/MiniLoadingSpinner', () => ({
-  MiniLoadingSpinner: () => <span>loading</span>,
+  MiniLoadingSpinner: (props: { variant?: string; size?: number }) => {
+    miniLoadingSpinnerProps.lastProps = props;
+    return (
+      <span data-testid="mini-loading-spinner" data-variant={props.variant} data-size={props.size}>
+        loading
+      </span>
+    );
+  },
 }));
 
 const toastApiMock = vi.hoisted(() => ({
@@ -270,6 +285,27 @@ beforeEach(() => {
     completed_at: null,
     error: null,
   });
+  apiMock.listUserSpaceWorkspaceArchiveExports.mockResolvedValue({
+    exports: [],
+  });
+  apiMock.getUserSpaceWorkspaceArchiveExportTask.mockResolvedValue({
+    task_id: 'archive-task-1',
+    workspace_id: 'workspace-1',
+    phase: 'completed',
+    progress: 100,
+    message: null,
+    archive_file_name: 'workspace-1.tar.gz',
+    archive_size_bytes: 1024,
+    include_snapshots: false,
+    include_chat_history: false,
+    warnings: [],
+    created_at: '2026-07-16T12:00:00Z',
+    started_at: '2026-07-16T12:01:00Z',
+    completed_at: '2026-07-16T12:02:00Z',
+    error: null,
+  });
+  apiMock.downloadUserSpaceWorkspaceArchiveExportTask.mockResolvedValue(undefined);
+  apiMock.deleteUserSpaceWorkspaceArchiveExportTask.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -539,5 +575,261 @@ describe('WorkspaceScmWizard webhook integration', () => {
     await openGitSourceTab();
     expect(screen.queryByText('rotated-secret')).toBeNull();
     expect(screen.queryByText('Push webhook')).toBeNull();
+  });
+});
+
+const mockArchiveExport = () => ({
+  task_id: 'archive-task-1',
+  workspace_id: 'workspace-1',
+  archive_file_name: 'workspace-1.tar.gz',
+  archive_size_bytes: 1024,
+  include_snapshots: false,
+  include_chat_history: false,
+  created_at: '2026-07-16T12:00:00Z',
+});
+
+async function setupArchiveExportTab(workspace: typeof baseWorkspace) {
+  renderWizard(workspace);
+  fireEvent.click(screen.getAllByRole('button', { name: 'Backup/Restore' })[0]);
+  await act(async () => {
+    await Promise.resolve();
+  });
+  fireEvent.click(await screen.findByRole('button', { name: /Export Workspace/ }));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  await waitFor(() => {
+    expect(apiMock.listUserSpaceWorkspaceArchiveExports).toHaveBeenCalled();
+  });
+}
+
+describe('WorkspaceScmWizard archive download spinner', () => {
+  it('disables download button and shows spinner while download is pending, and enables on resolve', async () => {
+    const downloadPromise = deferred<void>();
+    apiMock.downloadUserSpaceWorkspaceArchiveExportTask.mockReturnValue(downloadPromise.promise);
+    apiMock.listUserSpaceWorkspaceArchiveExports.mockResolvedValue({
+      exports: [mockArchiveExport()],
+    });
+
+    await setupArchiveExportTab(baseWorkspace);
+    const downloadButton = await screen.findByRole('button', { name: 'Download' });
+
+    fireEvent.click(downloadButton);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Verify spinner is shown with correct variant and size, and button is disabled
+    const spinner = screen.getByTestId('mini-loading-spinner');
+    expect(spinner.getAttribute('data-variant')).toBe('icon');
+    expect(spinner.getAttribute('data-size')).toBe('14');
+    expect(downloadButton).toHaveProperty('disabled', true);
+
+    // Click again to verify only one API call was made
+    fireEvent.click(downloadButton);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(apiMock.downloadUserSpaceWorkspaceArchiveExportTask).toHaveBeenCalledTimes(1);
+
+    // Resolve download
+    downloadPromise.resolve();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Verify button is enabled again
+    expect(downloadButton).toHaveProperty('disabled', false);
+    // The button text should change to Downloaded after successful download
+    expect(toastApiMock.success).toHaveBeenCalledWith('Workspace archive downloaded.');
+  });
+
+  it('clears pending state on download error and enables button', async () => {
+    const downloadPromise = deferred<void>();
+    apiMock.downloadUserSpaceWorkspaceArchiveExportTask.mockReturnValue(downloadPromise.promise);
+    apiMock.listUserSpaceWorkspaceArchiveExports.mockResolvedValue({
+      exports: [mockArchiveExport()],
+    });
+
+    await setupArchiveExportTab(baseWorkspace);
+    const downloadButton = await screen.findByRole('button', { name: 'Download' });
+    fireEvent.click(downloadButton);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const spinner = screen.getByTestId('mini-loading-spinner');
+    expect(spinner.getAttribute('data-variant')).toBe('icon');
+    expect(spinner.getAttribute('data-size')).toBe('14');
+    expect(downloadButton).toHaveProperty('disabled', true);
+
+    // Reject download
+    downloadPromise.reject(new Error('Network error'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Verify error toast and button re-enabled
+    expect(downloadButton).toHaveProperty('disabled', false);
+    expect(toastApiMock.error).toHaveBeenCalledWith('Network error');
+  });
+
+  it('prevents synchronous duplicate dispatch with ref-backed lock', async () => {
+    const downloadPromise = deferred<void>();
+    apiMock.downloadUserSpaceWorkspaceArchiveExportTask.mockReturnValue(downloadPromise.promise);
+    apiMock.listUserSpaceWorkspaceArchiveExports.mockResolvedValue({
+      exports: [mockArchiveExport()],
+    });
+
+    await setupArchiveExportTab(baseWorkspace);
+    const downloadButton = await screen.findByRole('button', { name: 'Download' });
+
+    fireEvent.click(downloadButton);
+    fireEvent.click(downloadButton);
+    fireEvent.click(downloadButton);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(apiMock.downloadUserSpaceWorkspaceArchiveExportTask).toHaveBeenCalledTimes(1);
+    expect(downloadButton).toHaveProperty('disabled', true);
+
+    downloadPromise.resolve();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(downloadButton).toHaveProperty('disabled', false);
+  });
+
+  it('disables all archive Download buttons when any task is pending', async () => {
+    const downloadPromise = deferred<void>();
+    apiMock.downloadUserSpaceWorkspaceArchiveExportTask.mockReturnValue(downloadPromise.promise);
+    apiMock.listUserSpaceWorkspaceArchiveExports.mockResolvedValue({
+      exports: [
+        mockArchiveExport(),
+        {
+          ...mockArchiveExport(),
+          task_id: 'archive-task-2',
+          archive_file_name: 'workspace-2.tar.gz',
+          archive_size_bytes: 2048,
+          created_at: '2026-07-15T12:00:00Z',
+        },
+      ],
+    });
+
+    await setupArchiveExportTab(baseWorkspace);
+
+    const downloadButtons = screen.getAllByRole('button', { name: /Download/i });
+    const button1 = downloadButtons[0];
+    const button2 = downloadButtons.length > 1 ? downloadButtons[1] : null;
+
+    fireEvent.click(button1);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(button1).toHaveProperty('disabled', true);
+    if (button2) {
+      expect(button2).toHaveProperty('disabled', true);
+    }
+
+    const spinner = screen.getByTestId('mini-loading-spinner');
+    expect(spinner.getAttribute('data-variant')).toBe('icon');
+    expect(spinner.getAttribute('data-size')).toBe('14');
+
+    downloadPromise.resolve();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(button1).toHaveProperty('disabled', false);
+    expect(toastApiMock.success).toHaveBeenCalledWith('Workspace archive downloaded.');
+  });
+
+  it('prevents late settlement from prior workspace when request identity changes', async () => {
+    const promiseA = deferred<void>();
+    const promiseB = deferred<void>();
+    apiMock.downloadUserSpaceWorkspaceArchiveExportTask.mockImplementation((taskId: string) => {
+      if (taskId === 'archive-task-1') return promiseA.promise;
+      return promiseB.promise;
+    });
+    apiMock.listUserSpaceWorkspaceArchiveExports.mockResolvedValue({
+      exports: [mockArchiveExport()],
+    });
+
+    const { rerender } = renderWizard(baseWorkspace);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Backup/Restore' })[0]);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Export Workspace/ }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(apiMock.listUserSpaceWorkspaceArchiveExports).toHaveBeenCalled();
+    });
+
+    let downloadButton = await screen.findByRole('button', { name: 'Download' });
+    fireEvent.click(downloadButton);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(downloadButton).toHaveProperty('disabled', true);
+
+    const newWorkspace = { ...baseWorkspace, id: 'workspace-2' };
+    apiMock.listUserSpaceWorkspaceArchiveExports.mockResolvedValue({
+      exports: [{ ...mockArchiveExport(), task_id: 'archive-task-2' }],
+    });
+    rerender(
+      <WorkspaceScmWizard
+        workspace={newWorkspace}
+        onClose={vi.fn()}
+        onSyncComplete={vi.fn()}
+        onWorkspaceChanged={vi.fn()}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Backup/Restore' })[0]);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Export Workspace/ }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(apiMock.listUserSpaceWorkspaceArchiveExports).toHaveBeenCalled();
+    });
+
+    downloadButton = await screen.findByRole('button', { name: 'Download' });
+    fireEvent.click(downloadButton);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(downloadButton).toHaveProperty('disabled', true);
+    expect(apiMock.downloadUserSpaceWorkspaceArchiveExportTask).toHaveBeenCalledTimes(2);
+
+    promiseA.resolve();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(downloadButton).toHaveProperty('disabled', true);
+    expect(toastApiMock.success).not.toHaveBeenCalled();
+
+    promiseB.resolve();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(downloadButton).toHaveProperty('disabled', false);
+    expect(toastApiMock.success).toHaveBeenCalledWith('Workspace archive downloaded.');
   });
 });
