@@ -141,6 +141,9 @@ describe('Workbench shell styles contract', () => {
       /\[data-theme-pack='modern'\]\s+#workbench-shell-stack\s*\{[\s\S]*display:\s*flex;[\s\S]*width:\s*100%/,
     );
     expect(adminCss).toMatch(
+      /\[data-theme-pack='modern'\]\s+#workbench-warning-stack\s*\{[\s\S]*display:\s*flex;/,
+    );
+    expect(adminCss).not.toMatch(
       /\[data-theme-pack='modern'\]\s+#workbench-warning-stack\s*\{[\s\S]*order:\s*-1;/,
     );
     expect(adminCss).toMatch(
