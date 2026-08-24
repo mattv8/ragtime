@@ -790,6 +790,15 @@ class AuthStatusResponse(BaseModel):
     )
 
 
+class DebugTotpCodeResponse(BaseModel):
+    """Fresh debug TOTP code for the local admin (DEBUG_MODE only)."""
+
+    code: Optional[str] = Field(
+        None,
+        description="Current 6-digit TOTP code for the local admin, or null when unavailable",
+    )
+
+
 async def _user_response(user: User) -> UserResponse:
     cached_groups = getattr(user, "cachedGroups", None)
     db = await get_db()
@@ -1317,6 +1326,18 @@ async def _get_debug_totp_code() -> Optional[str]:
     except Exception as exc:
         logger.debug("Failed to compute debug TOTP code: %s", exc)
         return None
+
+
+@router.get("/debug/totp", response_model=DebugTotpCodeResponse)
+async def get_debug_totp_code() -> DebugTotpCodeResponse:
+    """Return a freshly computed debug TOTP code (DEBUG_MODE only).
+
+    TOTP codes rotate every 30 seconds while the login page is on screen, so
+    the login UI polls this endpoint to keep its pre-filled code valid.
+    Outside debug mode (or when no local admin TOTP factor exists) this
+    always returns null.
+    """
+    return DebugTotpCodeResponse(code=await _get_debug_totp_code())
 
 
 @router.get("/status", response_model=AuthStatusResponse)

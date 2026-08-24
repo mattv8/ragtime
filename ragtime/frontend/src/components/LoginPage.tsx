@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api } from '@/api';
 import type { User, AuthStatus, AuthMethodStatus, MfaMethod } from '@/types';
 import { BrandName } from '@/utils/buildEnvironment';
@@ -11,6 +11,10 @@ interface LoginPageProps {
   onLoginSuccess: (user: User) => void;
   serverName?: string;
 }
+
+// TOTP window is 30s and verification accepts a +/-1 step grace period, so a
+// 15s refresh keeps the pre-filled code inside its valid window at click time.
+const DEBUG_TOTP_REFRESH_MS = 15_000;
 
 function resolveAuthMethods(authStatus: AuthStatus): AuthMethodStatus[] {
   if (authStatus.auth_methods && authStatus.auth_methods.length > 0) {
@@ -45,6 +49,39 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
   const [mfaPreferredMethod, setMfaPreferredMethod] = useState<MfaMethod | null>(null);
   const [mfaCode, setMfaCode] = useState(authStatus.debug_totp_code || '');
   const [rememberDevice, setRememberDevice] = useState(true);
+  const lastAutoFilledCodeRef = useRef(authStatus.debug_totp_code || '');
+
+  // TOTP codes rotate every 30s, so the code computed when the page loaded
+  // goes stale while the user is on the MFA step. Poll a fresh code from the
+  // debug endpoint (DEBUG_MODE only) and keep the pre-filled field rotating.
+  // If the user typed their own code, auto-fill stops so we never clobber it.
+  useEffect(() => {
+    if (mfaMode !== 'verify' || !authStatus.debug_totp_code) {
+      return;
+    }
+    let disposed = false;
+
+    const refreshDebugCode = async () => {
+      try {
+        const { code } = await api.getDebugTotpCode();
+        if (disposed || !code) return;
+        setMfaCode((prev) => {
+          if (prev !== lastAutoFilledCodeRef.current) return prev;
+          lastAutoFilledCodeRef.current = code;
+          return code;
+        });
+      } catch {
+        // Best effort: transient failures keep the previous code in place.
+      }
+    };
+
+    void refreshDebugCode();
+    const timer = window.setInterval(refreshDebugCode, DEBUG_TOTP_REFRESH_MS);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [mfaMode, authStatus.debug_totp_code]);
 
   const finishLogin = async (userOverride?: User | null) => {
     const user = userOverride || (await api.getCurrentUser());

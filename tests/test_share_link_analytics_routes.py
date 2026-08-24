@@ -46,22 +46,11 @@ def _build_request(path: str) -> Request:
     )
 
 
-class _DisconnectingRequest:
+class _DisconnectingRequest(Request):
     def __init__(self, states: list[bool], path: str = "/") -> None:
         self._states = list(states)
         self._request = _build_request(path)
-
-    @property
-    def url(self) -> Any:
-        return self._request.url
-
-    @property
-    def headers(self) -> Any:
-        return self._request.headers
-
-    @property
-    def base_url(self) -> Any:
-        return self._request.base_url
+        super().__init__(self._request.scope)
 
     async def is_disconnected(self) -> bool:
         if self._states:
@@ -312,7 +301,7 @@ class ShareLinkAnalyticsSseRouteTests(unittest.IsolatedAsyncioTestCase):
                     chunks = await _read_sse_chunks(response, 2)
 
                 event_payload = payload
-                if label == "workspace":
+                if isinstance(payload, UserSpaceWorkspaceShareLinkListResponse):
                     event_payload = payload.model_copy(
                         update={
                             "links": [

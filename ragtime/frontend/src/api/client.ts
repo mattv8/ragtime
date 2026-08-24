@@ -571,6 +571,15 @@ export const api = {
   },
 
   /**
+   * Get the current debug TOTP code for the pre-filled MFA field (DEBUG_MODE
+   * only). Returns null when debug mode is off or no debug code is available.
+   */
+  async getDebugTotpCode(): Promise<{ code: string | null }> {
+    const response = await apiFetch(`${AUTH_BASE}/debug/totp`, { cache: 'no-store' });
+    return handleResponse<{ code: string | null }>(response);
+  },
+
+  /**
    * Login with username and password
    */
   async login(request: LoginRequest): Promise<LoginResponse> {

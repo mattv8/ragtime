@@ -558,6 +558,27 @@ class DebugTotpPrefillTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(status.debug_totp_code)
 
+    async def test_debug_totp_endpoint_returns_current_code_in_debug_mode(self) -> None:
+        secret = mfa.generate_totp_secret()
+        fixed_time = 1_000.0
+        db = self._build_debug_totp_db(secret)
+
+        with self._debug_auth_status_patches(db, debug_mode=True):
+            with mock.patch("ragtime.core.mfa.time", new=SimpleNamespace(time=lambda: fixed_time)):
+                response = await api_auth.get_debug_totp_code()
+
+        self.assertEqual(response.code, mfa.generate_totp_code(secret, for_time=fixed_time))
+        self.assertRegex(response.code or "", r"^\d{6}$")
+
+    async def test_debug_totp_endpoint_returns_null_outside_debug_mode(self) -> None:
+        secret = mfa.generate_totp_secret()
+        db = self._build_debug_totp_db(secret)
+
+        with self._debug_auth_status_patches(db, debug_mode=False):
+            response = await api_auth.get_debug_totp_code()
+
+        self.assertIsNone(response.code)
+
 
 if __name__ == "__main__":
     unittest.main()
