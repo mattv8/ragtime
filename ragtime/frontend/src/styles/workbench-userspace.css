@@ -307,8 +307,12 @@
 
 [data-theme-pack='modern'] .userspace-preview-section {
   flex: 1;
-  padding: var(--space-xs);
+  padding: 0;
   background: var(--color-chrome);
+}
+
+[data-theme-pack='modern'] .userspace-preview-section-console {
+  padding: var(--space-md);
 }
 
 [data-theme-pack='modern'] .userspace-chat-placeholder,
@@ -331,7 +335,18 @@
   background: color-mix(in srgb, var(--color-editor) 78%, var(--color-panel));
 }
 
-[data-theme-pack='modern'] .userspace-preview-frame-wrap,
+[data-theme-pack='modern'] .userspace-preview-frame-wrap {
+  flex: 1;
+  border: none;
+  border-radius: 0;
+  overflow: hidden;
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    outline-color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
 [data-theme-pack='modern'] .userspace-runtime-terminal-wrap,
 [data-theme-pack='modern'] .userspace-snapshot-diff-editor-wrap {
   flex: 1;

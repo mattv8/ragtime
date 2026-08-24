@@ -46,6 +46,12 @@ describe('User Space workbench styles contract', () => {
     expect(css).toMatch(
       /\[data-theme-pack='modern'\]\s+\.userspace-chat-section\s*\{[\s\S]*background:\s*transparent;[\s\S]*border:\s*none;/,
     );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.userspace-preview-section\s*\{[\s\S]*padding:\s*0;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.userspace-preview-frame-wrap\s*\{[\s\S]*border:\s*none;[\s\S]*border-radius:\s*0;/,
+    );
   });
 
   it('scopes every User Space workbench selector to the Modern theme pack, including stateful and responsive rules', () => {
