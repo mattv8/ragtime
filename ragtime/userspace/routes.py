@@ -2242,7 +2242,21 @@ async def stream_workspace_share_link_events(
     request: Request,
     user: Any = Depends(get_current_user),
 ):
-    initial_payload = await userspace_service.list_workspace_share_links(workspace_id, user.id)
+    base_url = get_browser_matched_origin(request)
+
+    async def list_share_links() -> Any:
+        response = await userspace_service.list_workspace_share_links(
+            workspace_id,
+            user.id,
+            base_url=base_url,
+        )
+        return response.model_copy(
+            update={
+                "links": [_apply_share_link_variants(link, base_url=base_url) for link in response.links],
+            }
+        )
+
+    initial_payload = await list_share_links()
 
     async def event_stream() -> AsyncIterator[str]:
         last_payload: str | None = None
@@ -2253,7 +2267,7 @@ async def stream_workspace_share_link_events(
                 break
             try:
                 if not first_iteration:
-                    payload = await userspace_service.list_workspace_share_links(workspace_id, user.id)
+                    payload = await list_share_links()
                 else:
                     first_iteration = False
                 payload_json = json.dumps(payload.model_dump(mode="json"))

@@ -12,6 +12,7 @@ from unittest import mock
 from fastapi import HTTPException
 from starlette.requests import Request
 
+from ragtime.config.settings import settings
 from tests.rag_prompts_stub import install_fake_rag_prompts, remove_fake_rag_prompts
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,8 +47,21 @@ def _build_request(path: str) -> Request:
 
 
 class _DisconnectingRequest:
-    def __init__(self, states: list[bool]) -> None:
+    def __init__(self, states: list[bool], path: str = "/") -> None:
         self._states = list(states)
+        self._request = _build_request(path)
+
+    @property
+    def url(self) -> Any:
+        return self._request.url
+
+    @property
+    def headers(self) -> Any:
+        return self._request.headers
+
+    @property
+    def base_url(self) -> Any:
+        return self._request.base_url
 
     async def is_disconnected(self) -> bool:
         if self._states:
@@ -192,6 +206,48 @@ class PublicShareAnalyticsRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ShareLinkAnalyticsSseRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_workspace_share_link_events_use_external_base_url(self) -> None:
+        payload = UserSpaceWorkspaceShareLinkListResponse(
+            workspace_id="workspace-1",
+            owner_username="alice",
+            links=[
+                UserSpaceWorkspaceShareLinkStatus(
+                    id="ws-share-1",
+                    workspace_id="workspace-1",
+                    has_share_link=True,
+                    owner_username="alice",
+                    share_token="token-123",
+                    share_url="/alice/shared-workspace",
+                )
+            ],
+        )
+        list_links = mock.AsyncMock(return_value=payload)
+
+        with (
+            mock.patch.object(settings, "external_base_url", "https://ragtime.hammerton.com"),
+            mock.patch.object(userspace_routes_module.userspace_service, "list_workspace_share_links", list_links),
+        ):
+            response = await userspace_routes_module.stream_workspace_share_link_events(
+                "workspace-1",
+                _DisconnectingRequest(
+                    [False],
+                    "/indexes/userspace/workspaces/workspace-1/share-links/events",
+                ),
+                user=SimpleNamespace(id="user-1", role="editor"),
+            )
+            chunk = (await _read_sse_chunks(response, 1))[0]
+
+        event_payload = json.loads(chunk.split("data: ", 1)[1])
+        self.assertEqual(
+            event_payload["links"][0]["anonymous_share_url"],
+            "https://ragtime.hammerton.com/shared/token-123",
+        )
+        list_links.assert_awaited_once_with(
+            "workspace-1",
+            "user-1",
+            base_url="https://ragtime.hammerton.com",
+        )
+
     async def test_share_link_events_emit_changed_payload_then_keepalive(self) -> None:
         cases = [
             (
@@ -255,7 +311,20 @@ class ShareLinkAnalyticsSseRouteTests(unittest.IsolatedAsyncioTestCase):
                     )
                     chunks = await _read_sse_chunks(response, 2)
 
-                payload_json = json.dumps(payload.model_dump(mode="json"))
+                event_payload = payload
+                if label == "workspace":
+                    event_payload = payload.model_copy(
+                        update={
+                            "links": [
+                                userspace_routes_module._apply_share_link_variants(
+                                    link,
+                                    base_url="https://ragtime.dev",
+                                )
+                                for link in payload.links
+                            ],
+                        }
+                    )
+                payload_json = json.dumps(event_payload.model_dump(mode="json"))
                 self.assertEqual(chunks[0], f"event: share_links\ndata: {payload_json}\n\n")
                 self.assertEqual(chunks[1], ": keepalive\n\n")
 
