@@ -94,6 +94,9 @@ describe('Workbench shell styles contract', () => {
       /\[data-theme-pack='modern'\][\s\S]*\.toast(?:-container|-viewport|)\S*[\s\S]*var\(--color-widget\)/,
     );
     expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.toast-item\s*\{[\s\S]*padding:\s*6px\s+var\(--space-sm\);[\s\S]*font-size:\s*var\(--text-xs\);/,
+    );
+    expect(css).toMatch(
       /\[data-theme-pack='modern'\][\s\S]*\.katex(?:-display)?[\s\S]*var\(--color-editor\)/,
     );
     expect(css).toMatch(

@@ -81,8 +81,7 @@
 [data-theme-pack='modern'] .tab,
 [data-theme-pack='modern'] .appearance-theme-card,
 [data-theme-pack='modern'] .settings-accordion-header,
-[data-theme-pack='modern'] .modal-close,
-[data-theme-pack='modern'] .toast-dismiss {
+[data-theme-pack='modern'] .modal-close {
   min-height: var(--workbench-control-height);
   border-radius: var(--workbench-control-radius);
 }
@@ -703,21 +702,30 @@
   position: fixed;
   right: max(var(--workbench-padding), env(safe-area-inset-right));
   bottom: max(var(--workbench-padding), env(safe-area-inset-bottom));
-  display: grid;
-  gap: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--workbench-gap);
+  max-width: min(380px, calc(100vw - 2 * var(--workbench-padding)));
   z-index: var(--z-toast);
+  pointer-events: none;
 }
 
 [data-theme-pack='modern'] .toast-item {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-sm);
-  min-width: min(28rem, calc(100vw - 2 * var(--workbench-padding)));
-  padding: var(--space-sm) var(--space-md);
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  width: auto;
+  max-width: 100%;
+  padding: 6px var(--space-sm);
   border: var(--workbench-container-border);
   border-radius: var(--workbench-control-radius);
   box-shadow: var(--shadow-lg);
   background: var(--color-widget);
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+  color: var(--color-text-primary);
+  pointer-events: auto;
 }
 
 [data-theme-pack='modern'] .toast-success {
@@ -735,14 +743,34 @@
 [data-theme-pack='modern'] .toast-message {
   flex: 1;
   min-width: 0;
+  font-size: var(--text-xs);
+  line-height: 1.35;
 }
 
 [data-theme-pack='modern'] .toast-dismiss {
-  width: var(--workbench-control-height);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
   padding: 0;
-  border: 0;
+  border: none;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+[data-theme-pack='modern'] .toast-dismiss:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
 }
 
 [data-theme-pack='modern'] .katex,
