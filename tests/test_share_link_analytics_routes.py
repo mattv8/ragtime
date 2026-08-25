@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import unittest
@@ -76,13 +77,6 @@ def _token_share_launch_patches(*, share_record: SimpleNamespace, analytics_mock
         stack.enter_context(
             mock.patch.object(
                 main_module.userspace_service,
-                "get_share_prompt_metadata_by_token",
-                mock.AsyncMock(return_value=("Shared workspace", None)),
-            )
-        )
-        stack.enter_context(
-            mock.patch.object(
-                main_module.userspace_service,
                 "_resolve_public_share_record_by_token",
                 mock.AsyncMock(return_value=("workspace", share_record)),
             )
@@ -120,6 +114,8 @@ class PublicShareAnalyticsRouteTests(unittest.IsolatedAsyncioTestCase):
 
         with _token_share_launch_patches(share_record=share_record, analytics_mock=record_hit):
             response = await main_module._shared_launch_redirect_by_token("token-123", request, "")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.headers["location"], "https://preview.example/bootstrap")
@@ -141,6 +137,8 @@ class PublicShareAnalyticsRouteTests(unittest.IsolatedAsyncioTestCase):
             analytics_mock=mock.AsyncMock(side_effect=RuntimeError("analytics write failed")),
         ):
             response = await main_module._shared_launch_redirect_by_token("token-123", request, "")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.headers["location"], "https://preview.example/bootstrap")
@@ -166,11 +164,6 @@ class PublicShareAnalyticsRouteTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(main_module, "share_auth_token_from_request", return_value=None),
             mock.patch.object(
                 main_module.userspace_service,
-                "get_share_prompt_metadata_by_slug",
-                mock.AsyncMock(return_value=("Shared chat", "Alice")),
-            ),
-            mock.patch.object(
-                main_module.userspace_service,
                 "_resolve_public_share_record_by_slug",
                 mock.AsyncMock(return_value=("conversation", share_record)),
             ),
@@ -182,6 +175,8 @@ class PublicShareAnalyticsRouteTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(main_module.userspace_service, "record_public_share_hit", record_hit),
         ):
             response = await main_module._shared_launch_redirect_by_slug("alice", "shared-chat", request, "")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
 
         self.assertEqual(response.status_code, 200)
         record_hit.assert_awaited_once_with(

@@ -383,6 +383,11 @@ class _FakeUpstreamClient:
     def __init__(self, response: _FakeUpstreamResponse) -> None:
         self._response = response
         self.sent_headers: dict[str, str] | None = None
+        self.closed = False
+
+    @property
+    def is_closed(self) -> bool:
+        return self.closed
 
     def build_request(self, *, headers: dict[str, str], **_kwargs: object) -> dict[str, object]:
         self.sent_headers = {key.lower(): value for key, value in headers.items()}
@@ -392,7 +397,7 @@ class _FakeUpstreamClient:
         return self._response
 
     async def aclose(self) -> None:
-        return None
+        self.closed = True
 
 
 def _build_proxy_request(host: str, cookie: str) -> Request:
@@ -422,6 +427,12 @@ def _build_proxy_request(host: str, cookie: str) -> Request:
 class ProxyHttpRequestPreviewHostGateTests(unittest.IsolatedAsyncioTestCase):
     """End-to-end gate: app cookies cross the proxy only on a preview host."""
 
+    async def asyncSetUp(self) -> None:
+        await _RUNTIME_ROUTES.close_proxy_client()
+
+    async def asyncTearDown(self) -> None:
+        await _RUNTIME_ROUTES.close_proxy_client()
+
     async def _run(self, *, is_preview_host: bool) -> tuple[_FakeUpstreamClient, Response]:
         app_cookie = f"{_browser_app_cookie_name('sid')}=app-value"
         upstream = _FakeUpstreamResponse(httpx.Headers([("content-type", "text/html"), ("set-cookie", f"{_browser_app_cookie_name('sid')}=rotated; Path=/")]))
@@ -429,7 +440,7 @@ class ProxyHttpRequestPreviewHostGateTests(unittest.IsolatedAsyncioTestCase):
         request = _build_proxy_request("workspace.preview.test", app_cookie)
 
         with (
-            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "_get_proxy_client", return_value=client),
             mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
             mock.patch.object(_RUNTIME_ROUTES, "_is_preview_host_request", return_value=is_preview_host),
         ):
@@ -448,6 +459,7 @@ class ProxyHttpRequestPreviewHostGateTests(unittest.IsolatedAsyncioTestCase):
         # Namespaced rotated cookie comes back to the browser.
         set_cookies = [value for key, value in response.raw_headers if key == b"set-cookie"]
         self.assertEqual(set_cookies, [f"{_browser_app_cookie_name('sid')}=rotated; Path=/".encode("latin-1")])
+        self.assertFalse(client.is_closed)
 
     async def test_non_preview_host_strips_app_cookies_despite_flag(self) -> None:
         client, response = await self._run(is_preview_host=False)
@@ -457,6 +469,7 @@ class ProxyHttpRequestPreviewHostGateTests(unittest.IsolatedAsyncioTestCase):
         # No Set-Cookie is returned to the browser.
         set_cookies = [value for key, value in response.raw_headers if key == b"set-cookie"]
         self.assertEqual(set_cookies, [])
+        self.assertFalse(client.is_closed)
 
 
 class ProxyRequestHeadersShareAuthBlockTests(unittest.TestCase):

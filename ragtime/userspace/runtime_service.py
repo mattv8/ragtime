@@ -785,6 +785,8 @@ class UserSpaceRuntimeService:
         self,
         session: UserSpaceRuntimeSession | None,
         provider_status: dict[str, Any] | None,
+        *,
+        include_last_success: bool = True,
     ) -> UserSpaceRuntimeBridgeStatus:
         if session is None or session.state not in {"starting", "running"}:
             return UserSpaceRuntimeBridgeStatus(
@@ -812,7 +814,7 @@ class UserSpaceRuntimeService:
         token_session_id = str(raw_credential.get("session_id") or "").strip() or None
         issued_at = self._parse_runtime_bridge_datetime(raw_credential.get("issued_at"))
         expires_at = self._parse_runtime_bridge_datetime(raw_credential.get("expires_at"))
-        last_success_at = await self._get_latest_runtime_bridge_success_at(session.workspace_id, session.id)
+        last_success_at = await self._get_latest_runtime_bridge_success_at(session.workspace_id, session.id) if include_last_success else None
 
         base_kwargs: _RuntimeBridgeStatusBaseKwargs = {
             "bridge_url": bridge_url,
@@ -875,13 +877,20 @@ class UserSpaceRuntimeService:
     async def _get_workspace_preview_bridge_status(
         self,
         session: UserSpaceRuntimeSession,
+        *,
+        max_age_seconds: float = 0,
+        include_last_success: bool = True,
     ) -> UserSpaceRuntimeBridgeStatus:
         provider_status = await self._runtime_provider_get_status(
             session.provider_session_id,
-            max_age_seconds=0,
+            max_age_seconds=max_age_seconds,
             allow_stale_on_error=False,
         )
-        return await self._get_runtime_bridge_status_for_session(session, provider_status)
+        return await self._get_runtime_bridge_status_for_session(
+            session,
+            provider_status,
+            include_last_success=include_last_success,
+        )
 
     @staticmethod
     def _workspace_preview_bridge_not_ready_detail(
@@ -898,13 +907,20 @@ class UserSpaceRuntimeService:
         self,
         session: UserSpaceRuntimeSession,
     ) -> None:
-        status = await self._get_workspace_preview_bridge_status(session)
+        status = await self._get_workspace_preview_bridge_status(
+            session,
+            max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
+            include_last_success=False,
+        )
         if not self._workspace_preview_bridge_status_needs_recovery(status):
             return
 
         workspace_lock = await self._get_workspace_preview_bridge_readiness_lock(session.workspace_id)
         async with workspace_lock:
-            status = await self._get_workspace_preview_bridge_status(session)
+            status = await self._get_workspace_preview_bridge_status(
+                session,
+                include_last_success=False,
+            )
             if not self._workspace_preview_bridge_status_needs_recovery(status):
                 return
 
@@ -940,7 +956,10 @@ class UserSpaceRuntimeService:
                     detail="Runtime session changed during bridge refresh",
                 )
 
-            refreshed_status = await self._get_workspace_preview_bridge_status(refreshed_session)
+            refreshed_status = await self._get_workspace_preview_bridge_status(
+                refreshed_session,
+                include_last_success=False,
+            )
             if self._workspace_preview_bridge_status_needs_recovery(refreshed_status):
                 raise HTTPException(
                     status_code=502,

@@ -10345,14 +10345,16 @@ class UserSpaceService:
         include_owner: bool = False,
         include_conversation: bool = False,
     ) -> tuple[str, Any]:
-        workspace = await self._find_workspace_share_by_token(
-            share_token,
-            include_owner=include_owner,
-        )
-        conversation_share = await self._find_conversation_share_by_token(
-            share_token,
-            include_owner=include_owner,
-            include_conversation=include_conversation,
+        workspace, conversation_share = await asyncio.gather(
+            self._find_workspace_share_by_token(
+                share_token,
+                include_owner=include_owner,
+            ),
+            self._find_conversation_share_by_token(
+                share_token,
+                include_owner=include_owner,
+                include_conversation=include_conversation,
+            ),
         )
         match_count = int(workspace is not None) + int(conversation_share is not None)
         if match_count == 0:
@@ -10375,16 +10377,18 @@ class UserSpaceService:
         if not owner_ids:
             raise HTTPException(status_code=404, detail="Shared resource not found")
 
-        workspace = await self._find_workspace_share_by_slug(
-            owner_ids,
-            share_slug,
-            include_owner=include_owner,
-        )
-        conversation_share = await self._find_conversation_share_by_slug(
-            owner_ids,
-            share_slug,
-            include_owner=include_owner,
-            include_conversation=include_conversation,
+        workspace, conversation_share = await asyncio.gather(
+            self._find_workspace_share_by_slug(
+                owner_ids,
+                share_slug,
+                include_owner=include_owner,
+            ),
+            self._find_conversation_share_by_slug(
+                owner_ids,
+                share_slug,
+                include_owner=include_owner,
+                include_conversation=include_conversation,
+            ),
         )
         match_count = int(workspace is not None) + int(conversation_share is not None)
         if match_count == 0:

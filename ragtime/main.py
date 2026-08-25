@@ -1169,23 +1169,27 @@ async def _record_public_share_entry_hit(
     authenticated_user_id = str(getattr(current_user, "id", "") or "") or None
     if authenticated_user_id:
         kwargs["authenticated_user_id"] = authenticated_user_id
-    try:
-        await userspace_service.record_public_share_hit(
-            request,
-            target_type,
-            share_id,
-            outcome,
-            **kwargs,
-        )
-    except Exception:
-        logger.exception(
-            "Failed to record public share analytics hit: route_kind=%s target_type=%s share_id=%s outcome=%s path=%s",
-            route_kind,
-            target_type,
-            share_id,
-            outcome,
-            request.url.path,
-        )
+
+    async def _record() -> None:
+        try:
+            await userspace_service.record_public_share_hit(
+                request,
+                target_type,
+                share_id,
+                outcome,
+                **kwargs,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to record public share analytics hit: route_kind=%s target_type=%s share_id=%s outcome=%s path=%s",
+                route_kind,
+                target_type,
+                share_id,
+                outcome,
+                request.url.path,
+            )
+
+    asyncio.create_task(_record())
 
 
 async def _shared_launch_redirect_by_slug(
@@ -1204,19 +1208,18 @@ async def _shared_launch_redirect_by_slug(
         owner_username=owner_username,
         share_slug=share_slug,
     )
-    workspace_name, owner_display_name = await userspace_service.get_share_prompt_metadata_by_slug(
-        owner_username,
-        share_slug,
-    )
     try:
         target_type, share_record = await userspace_service._resolve_public_share_record_by_slug(
             owner_username,
             share_slug,
+            include_owner=True,
+            include_conversation=True,
         )
     except HTTPException as exc:
         if exc.status_code == 404:
             raise HTTPException(status_code=404, detail="Not found") from exc
         raise
+    workspace_name, owner_display_name = userspace_service._share_prompt_metadata_from_record(share_record)
     share_id = str(getattr(share_record, "id", "") or "")
     if not share_id:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1332,7 +1335,7 @@ async def _shared_launch_redirect_by_slug(
     # Auth (password, group, etc.) was validated above by resolve_shared_workspace_id_by_slug.
     target_path = f"/{path}" if path else "/"
     query = _sanitize_preview_query(request.url.query)
-    current_access_mode = await userspace_service.get_share_access_mode(workspace_id)
+    current_access_mode, _, _, _ = userspace_service._extract_share_access_state(share_record)
     launch = await userspace_runtime_service.issue_shared_preview_launch(
         workspace_id,
         control_plane_origin=get_external_origin(request),
@@ -1365,15 +1368,17 @@ async def _shared_launch_redirect_by_token(
         request.cookies,
         share_token=share_token,
     )
-    workspace_name, _ = await userspace_service.get_share_prompt_metadata_by_token(
-        share_token,
-    )
     try:
-        target_type, share_record = await userspace_service._resolve_public_share_record_by_token(share_token)
+        target_type, share_record = await userspace_service._resolve_public_share_record_by_token(
+            share_token,
+            include_owner=True,
+            include_conversation=True,
+        )
     except HTTPException as exc:
         if exc.status_code == 404:
             raise HTTPException(status_code=404, detail="Not found") from exc
         raise
+    workspace_name, _ = userspace_service._share_prompt_metadata_from_record(share_record)
     share_id = str(getattr(share_record, "id", "") or "")
     if not share_id:
         raise HTTPException(status_code=404, detail="Not found")
@@ -1483,7 +1488,7 @@ async def _shared_launch_redirect_by_token(
     # Auth (password, group, etc.) was validated above by resolve_shared_workspace_id.
     target_path = f"/{path}" if path else "/"
     query = _sanitize_preview_query(request.url.query)
-    current_access_mode = await userspace_service.get_share_access_mode(workspace_id)
+    current_access_mode, _, _, _ = userspace_service._extract_share_access_state(share_record)
     launch = await userspace_runtime_service.issue_shared_preview_launch(
         workspace_id,
         control_plane_origin=get_external_origin(request),

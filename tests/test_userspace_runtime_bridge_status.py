@@ -10,7 +10,7 @@ from unittest import mock
 from fastapi import HTTPException
 
 from ragtime.userspace.models import UserSpaceRuntimeBridgeStatus
-from ragtime.userspace.runtime_service import UserSpaceRuntimeService
+from ragtime.userspace.runtime_service import _RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS, UserSpaceRuntimeService
 
 UTC = timezone.utc
 
@@ -320,10 +320,14 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
 
         get_status.assert_awaited_once_with(
             session.provider_session_id,
-            max_age_seconds=0,
+            max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
             allow_stale_on_error=False,
         )
-        get_bridge_status.assert_awaited_once_with(session, {"provider": "status"})
+        get_bridge_status.assert_awaited_once_with(
+            session,
+            {"provider": "status"},
+            include_last_success=False,
+        )
         restart_wait.assert_not_awaited()
 
     async def test_preview_bridge_readiness_propagates_provider_status_error_without_restart(self) -> None:

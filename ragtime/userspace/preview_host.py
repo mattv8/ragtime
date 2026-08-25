@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -62,6 +63,7 @@ from ragtime.userspace.runtime_routes import (
     _render_uploaded_document_preview_upload,
     _sanitize_preview_query,
     _to_websocket_url,
+    close_proxy_client,
 )
 
 _RUNTIME_PREVIEW_GRANT_KIND = "userspace_preview_grant"
@@ -69,6 +71,15 @@ _RUNTIME_PREVIEW_SESSION_KIND = "userspace_preview_session"
 _RUNTIME_PREVIEW_SESSION_COOKIE_NAME = "userspace_preview_session"
 _RUNTIME_PREVIEW_HANDOFF_QUERY_PARAM = "__ragtime_preview_handoff"
 _RUNTIME_PREVIEW_HANDOFF_TTL_SECONDS = 60
+_SESSION_CLAIMS_CACHE_MAX = 1024
+_BRIDGE_CONTENT_CACHE_TTL_SECONDS = 2.0
+_BRIDGE_CONTENT_CACHE_MAX = 500
+
+# token string -> (claims, exp_epoch_seconds); session-kind tokens only.
+_session_claims_cache: dict[str, tuple[dict[str, Any], float]] = {}
+
+# (workspace_id, runtime bridge version) -> (content, monotonic_expiry)
+_bridge_content_cache: dict[tuple[str, int], tuple[str, float]] = {}
 
 
 def _runtime_service() -> Any:
@@ -85,6 +96,12 @@ def _userspace_service() -> Any:
     return userspace_service
 
 
+def _runtime_bridge_cache_key(workspace_id: str) -> tuple[str, int]:
+    from ragtime.userspace.service import _RUNTIME_BRIDGE_VERSION
+
+    return (workspace_id, _RUNTIME_BRIDGE_VERSION)
+
+
 async def _preview_user_from_id(user_id: str | None) -> Any | None:
     normalized_user_id = str(user_id or "").strip()
     if not normalized_user_id:
@@ -99,6 +116,7 @@ async def _preview_user_from_id(user_id: str | None) -> Any | None:
 preview_host_app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 preview_host_app.state.limiter = limiter
 preview_host_app.add_exception_handler(RateLimitExceeded, cast(Any, _rate_limit_exceeded_handler))
+preview_host_app.router.add_event_handler("shutdown", close_proxy_client)
 
 
 @preview_host_app.exception_handler(HTTPException)
@@ -371,10 +389,24 @@ def _bridge_context_from_claims(claims: dict[str, Any]) -> dict[str, Any]:
 def _verify_preview_session_token(token: str | None) -> dict[str, Any]:
     if not token:
         raise HTTPException(status_code=401, detail="Preview session required")
-    return _runtime_service().verify_preview_token(
+    now = time.time()
+    cached = _session_claims_cache.get(token)
+    if cached is not None:
+        claims, exp = cached
+        if exp > now:
+            return dict(claims)
+        _session_claims_cache.pop(token, None)
+    claims = _runtime_service().verify_preview_token(
         token,
         expected_kind=_RUNTIME_PREVIEW_SESSION_KIND,
     )
+    exp_value = claims.get("exp")
+    if isinstance(exp_value, (int, float)) and exp_value > now:
+        _session_claims_cache.pop(token, None)
+        while len(_session_claims_cache) >= _SESSION_CLAIMS_CACHE_MAX:
+            _session_claims_cache.pop(next(iter(_session_claims_cache)))
+        _session_claims_cache[token] = (dict(claims), float(exp_value))
+    return dict(claims)
 
 
 def _extract_bearer_token(request: Request) -> str | None:
@@ -848,8 +880,19 @@ async def preview_probe() -> Response:
 async def preview_bridge_script(request: Request):
     claims = await _verify_preview_session_cookie(request)
     workspace_id = str(claims.get("workspace_id") or "").strip()
+    cache_key = _runtime_bridge_cache_key(workspace_id)
+    now = time.monotonic()
+    cached = _bridge_content_cache.get(cache_key)
+    if cached is not None and cached[1] > now:
+        content = cached[0]
+    else:
+        content = await _userspace_service().build_runtime_bridge_content(workspace_id)
+        _bridge_content_cache.pop(cache_key, None)
+        while len(_bridge_content_cache) >= _BRIDGE_CONTENT_CACHE_MAX:
+            _bridge_content_cache.pop(next(iter(_bridge_content_cache)))
+        _bridge_content_cache[cache_key] = (content, now + _BRIDGE_CONTENT_CACHE_TTL_SECONDS)
     return Response(
-        content=await _userspace_service().build_runtime_bridge_content(workspace_id),
+        content=content,
         media_type="application/javascript",
         headers={
             "Cache-Control": "no-store",

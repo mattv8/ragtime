@@ -808,7 +808,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=_FakeProxyClient(upstream)),
+            mock.patch.object(_RUNTIME_ROUTES, "_get_proxy_client", return_value=_FakeProxyClient(upstream)),
             mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
         ):
             response = await _RUNTIME_ROUTES._proxy_http_request(
@@ -839,7 +839,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=_FakeProxyClient(upstream)),
+            mock.patch.object(_RUNTIME_ROUTES, "_get_proxy_client", return_value=_FakeProxyClient(upstream)),
             mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
         ):
             response = await _RUNTIME_ROUTES._proxy_http_request(
@@ -917,7 +917,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "_get_proxy_client", return_value=client),
             mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
         ):
             await _RUNTIME_ROUTES._proxy_http_request(
@@ -939,6 +939,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_headers.get("x-ragtime-authenticated-display-name"), "Verified User")
         self.assertEqual(sent_headers.get("x-ragtime-user-fingerprint"), "verified-fingerprint")
         self.assertEqual(len(client.requests), 1)
+        self.assertFalse(client.closed)
         primitive_session_factory.assert_awaited_once()
 
     async def test_authenticated_preview_json_request_injects_verified_identity_without_html_probe(self) -> None:
@@ -958,7 +959,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "_get_proxy_client", return_value=client),
             mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
         ):
             response = await _RUNTIME_ROUTES._proxy_http_request(
@@ -1004,6 +1005,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_headers.get("x-ragtime-authenticated-display-name"), "Verified User")
         self.assertEqual(sent_headers.get("x-ragtime-user-fingerprint"), "verified-fingerprint")
         self.assertEqual(len(client.requests), 1)
+        self.assertFalse(client.closed)
 
     async def test_unauthenticated_preview_json_request_does_not_inject_identity_headers(self) -> None:
         upstream = _FakeProxyUpstreamResponse(b'{"ok":true}', content_type="application/json")
@@ -1023,7 +1025,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "_get_proxy_client", return_value=client),
             mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
         ):
             response = await _RUNTIME_ROUTES._proxy_http_request(
@@ -1043,6 +1045,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("x-ragtime-authenticated-entitlements", sent_headers)
         self.assertNotIn("x-ragtime-internal-authenticated-entitlements", sent_headers)
         self.assertEqual(len(client.requests), 1)
+        self.assertFalse(client.closed)
 
     async def test_authenticated_preview_request_omits_entitlements_header_when_resolved_list_is_empty(self) -> None:
         upstream = _FakeProxyUpstreamResponse(b'{"ok":true}', content_type="application/json")
@@ -1060,7 +1063,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "_get_proxy_client", return_value=client),
             mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
         ):
             response = await _RUNTIME_ROUTES._proxy_http_request(
@@ -1087,6 +1090,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         sent_headers = client.built_request["headers"] if client.built_request else {}
         self.assertNotIn("x-ragtime-authenticated-entitlements", sent_headers)
         self.assertNotIn("x-ragtime-internal-authenticated-entitlements", sent_headers)
+        self.assertFalse(client.closed)
 
     async def test_proxy_request_returns_503_when_entitlement_resolution_fails(self) -> None:
         request = _build_request(
@@ -1102,7 +1106,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         primitive_session_factory = mock.AsyncMock(side_effect=HTTPException(status_code=503, detail="Entitlement resolution unavailable"))
 
         with (
-            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "_get_proxy_client", return_value=client),
             mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
         ):
             with self.assertRaises(HTTPException) as raised:
@@ -1133,7 +1137,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "_get_proxy_client", return_value=client),
             mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
         ):
             await _RUNTIME_ROUTES._proxy_http_request(
@@ -1163,6 +1167,8 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_headers.get("x-ragtime-authenticated-display-name"), "Verified User")
         self.assertEqual(sent_headers.get("x-ragtime-user-fingerprint"), "verified-fingerprint")
         self.assertEqual(len(client.requests), 1)
+        self.assertFalse(client.closed)
+        self.assertTrue(upstream.closed)
 
     async def test_preview_handoff_cleanup_injects_before_app_scripts(self) -> None:
         html = b"""
@@ -1178,7 +1184,7 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            mock.patch.object(_RUNTIME_ROUTES.httpx, "AsyncClient", return_value=_FakeProxyClient(upstream)),
+            mock.patch.object(_RUNTIME_ROUTES, "_get_proxy_client", return_value=_FakeProxyClient(upstream)),
             mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
         ):
             response = await _RUNTIME_ROUTES._proxy_http_request(request, "http://runtime/dashboard")

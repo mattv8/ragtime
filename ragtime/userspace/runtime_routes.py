@@ -76,6 +76,34 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
+_proxy_client: httpx.AsyncClient | None = None
+
+
+def _get_proxy_client() -> httpx.AsyncClient:
+    """Shared connection-pooled client for preview proxying.
+
+    Timeouts are supplied per request via ``build_request(..., timeout=...)``
+    so pooling does not change per-request timeout behavior.
+    """
+    global _proxy_client
+    if _proxy_client is None or _proxy_client.is_closed:
+        _proxy_client = httpx.AsyncClient(
+            follow_redirects=False,
+            limits=httpx.Limits(max_connections=None),
+        )
+    return _proxy_client
+
+
+async def close_proxy_client() -> None:
+    global _proxy_client
+    client = _proxy_client
+    _proxy_client = None
+    if client is not None and not client.is_closed:
+        await client.aclose()
+
+
+router.add_event_handler("shutdown", close_proxy_client)
+
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 _COLLAB_CAPABILITY_COOKIE = "userspace_collab_capability"
@@ -1807,23 +1835,23 @@ async def _proxy_http_request(
             primitive_session = await primitive_session_factory()
         return primitive_session
 
-    async def _send_upstream(request_headers: dict[str, str]) -> tuple[httpx.AsyncClient, Any, Any]:
-        client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+    async def _send_upstream(request_headers: dict[str, str]) -> httpx.Response:
+        client = _get_proxy_client()
         try:
             upstream_request = client.build_request(
                 method=request.method,
                 url=upstream_url,
                 content=body if body else None,
                 headers=request_headers,
+                timeout=timeout,
             )
             upstream_response = await client.send(upstream_request, stream=True)
         except httpx.RequestError as exc:
-            await client.aclose()
             raise HTTPException(
                 status_code=502,
                 detail=f"Runtime preview upstream unavailable: {exc}",
             ) from exc
-        return client, upstream_request, upstream_response
+        return upstream_response
 
     if request.headers.get("upgrade", "").lower() == "websocket":
         raise HTTPException(
@@ -1854,7 +1882,7 @@ async def _proxy_http_request(
     # Falls back to 320 s if no tools are configured.
     proxy_read_timeout = _get_max_proxy_timeout()
     timeout = httpx.Timeout(connect=2.0, read=proxy_read_timeout, write=proxy_read_timeout, pool=5.0)
-    client, _, upstream_response = await _send_upstream(headers)
+    upstream_response = await _send_upstream(headers)
 
     media_type = upstream_response.headers.get("content-type", "")
     resp_headers, set_cookie_headers = _proxy_response_headers(upstream_response.headers, allow_user_cookies=effective_allow_user_cookies)
@@ -1870,7 +1898,6 @@ async def _proxy_http_request(
             content = await upstream_response.aread()
         finally:
             await upstream_response.aclose()
-            await client.aclose()
 
         sandbox_flags: list[str] | None = None
         try:
@@ -1925,7 +1952,6 @@ async def _proxy_http_request(
             return
         finally:
             await upstream_response.aclose()
-            await client.aclose()
 
     return _append_set_cookie_headers(
         _CancellationSafeStreamingResponse(
