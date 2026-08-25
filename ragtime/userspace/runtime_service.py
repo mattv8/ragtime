@@ -2222,7 +2222,11 @@ class UserSpaceRuntimeService:
         owner_user_id = str(getattr(workspace, "ownerUserId", "") or "")
         if not owner_user_id:
             raise HTTPException(status_code=500, detail="Workspace owner unavailable")
-        session = await self._ensure_session_row(workspace_id, owner_user_id)
+        session = await self._ensure_session_row(
+            workspace_id,
+            owner_user_id,
+            auto_start=True,
+        )
         await self._cache_preview_upstream_session(session)
         return session
 

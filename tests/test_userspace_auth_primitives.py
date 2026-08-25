@@ -1429,11 +1429,113 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(matt_claims["sub"], "matt-user-id")
         self.assertEqual(raised.exception.status_code, 401)
 
-    async def test_direct_preview_document_401_does_not_redirect_to_canonical_share_link(self) -> None:
+    async def test_direct_preview_document_401_redirects_to_canonical_share_link(self) -> None:
+        request = _build_request(
+            "/reports/current",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"accept", b"text/html"),
+                (b"sec-fetch-dest", b"document"),
+            ],
+            method="GET",
+            query_string="region=west&__ragtime_preview_handoff=stale",
+        )
+        fake_service = SimpleNamespace(get_share_token=mock.AsyncMock(return_value="share-token"))
+
+        with mock.patch.object(_PREVIEW_HOST, "_userspace_service", return_value=fake_service):
+            response = await _PREVIEW_HOST._handle_preview_auth_error(
+                request,
+                HTTPException(status_code=401, detail="Preview session required"),
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.headers["location"],
+            "https://ragtime.test/shared/share-token/reports/current?region=west",
+        )
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.headers["referrer-policy"], "no-referrer")
+        fake_service.get_share_token.assert_awaited_once_with("workspace-a")
+
+    async def test_direct_preview_root_document_401_redirects_without_trailing_slash(self) -> None:
         request = _build_request(
             "/",
-            headers=[(b"host", b"workspace-a.ragtime.test"), (b"accept", b"text/html"), (b"sec-fetch-dest", b"document")],
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"accept", b"text/html"),
+                (b"sec-fetch-dest", b"document"),
+            ],
             method="GET",
+        )
+        fake_service = SimpleNamespace(get_share_token=mock.AsyncMock(return_value="share-token"))
+
+        with mock.patch.object(_PREVIEW_HOST, "_userspace_service", return_value=fake_service):
+            response = await _PREVIEW_HOST._handle_preview_auth_error(
+                request,
+                HTTPException(status_code=401, detail="Preview session required"),
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["location"], "https://ragtime.test/shared/share-token")
+        fake_service.get_share_token.assert_awaited_once_with("workspace-a")
+
+    async def test_direct_preview_document_navigate_mode_401_redirects_to_canonical_share_link(self) -> None:
+        request = _build_request(
+            "/reports/current",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"accept", b"text/html"),
+                (b"sec-fetch-mode", b"navigate"),
+            ],
+            method="GET",
+            query_string="region=west&__ragtime_preview_handoff=stale",
+        )
+        fake_service = SimpleNamespace(get_share_token=mock.AsyncMock(return_value="share-token"))
+
+        with mock.patch.object(_PREVIEW_HOST, "_userspace_service", return_value=fake_service):
+            response = await _PREVIEW_HOST._handle_preview_auth_error(
+                request,
+                HTTPException(status_code=401, detail="Preview session required"),
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.headers["location"],
+            "https://ragtime.test/shared/share-token/reports/current?region=west",
+        )
+        fake_service.get_share_token.assert_awaited_once_with("workspace-a")
+
+    async def test_direct_preview_document_401_without_share_token_stays_unauthorized(self) -> None:
+        request = _build_request(
+            "/reports/current",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"accept", b"text/html"),
+                (b"sec-fetch-dest", b"document"),
+            ],
+            method="GET",
+        )
+        fake_service = SimpleNamespace(get_share_token=mock.AsyncMock(return_value=None))
+
+        with mock.patch.object(_PREVIEW_HOST, "_userspace_service", return_value=fake_service):
+            response = await _PREVIEW_HOST._handle_preview_auth_error(
+                request,
+                HTTPException(status_code=401, detail="Preview session required"),
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn("location", response.headers)
+        fake_service.get_share_token.assert_awaited_once_with("workspace-a")
+
+    async def test_non_document_preview_auth_error_stays_401_without_share_lookup(self) -> None:
+        request = _build_request(
+            "/reports/current",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"accept", b"application/json"),
+            ],
+            method="GET",
+            query_string="region=west&__ragtime_preview_handoff=stale",
         )
         fake_service = SimpleNamespace(get_share_token=mock.AsyncMock(return_value="share-token"))
 

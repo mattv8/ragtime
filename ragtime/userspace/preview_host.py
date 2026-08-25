@@ -105,7 +105,7 @@ preview_host_app.add_exception_handler(RateLimitExceeded, cast(Any, _rate_limit_
 async def _handle_preview_auth_error(request: StarletteRequest, exc: HTTPException):
     """Fail closed with 401 for direct preview-host requests.
 
-    Only an expired/already-consumed top-level /__ragtime/bootstrap navigation
+    Only expired bootstrap navigations and direct top-level document requests
     may recover by redirecting back to the canonical /shared/{token} link so
     the control plane can mint a fresh bootstrap grant.
     """
@@ -117,29 +117,34 @@ async def _handle_preview_auth_error(request: StarletteRequest, exc: HTTPExcepti
     if request.method != "GET":
         return JSONResponse(status_code=401, content={"detail": exc.detail})
 
-    is_bootstrap = request.url.path.startswith("/__ragtime/bootstrap")
+    path = request.url.path or "/"
+    is_bootstrap = path.startswith("/__ragtime/bootstrap")
+    is_internal_preview_path = path.startswith("/__ragtime/")
     workspace_id = _workspace_id_from_preview_host(request.headers.get("host"))
-    # Sec-Fetch-Dest == "document" identifies a top-level navigation (new tab,
-    # bookmark, reload of the bootstrap URL). In that context the
-    # postMessage() recovery below is useless because there is no parent
-    # frame, which is why users see the subdomain URL stuck on
-    # /__ragtime/bootstrap?grant=... after an expired or already-consumed
-    # grant. For that case we bounce back to the main-origin /shared/{token}
-    # so it can mint a fresh grant and re-enter the subdomain bootstrap.
-    is_top_level_nav = str(request.headers.get("sec-fetch-dest", "")).lower() == "document"
+    fetch_dest = str(request.headers.get("sec-fetch-dest", "")).lower()
+    fetch_mode = str(request.headers.get("sec-fetch-mode", "")).lower()
+    is_top_level_nav = fetch_dest == "document" or (not fetch_dest and fetch_mode == "navigate")
+    should_redirect_to_share = bool(workspace_id and is_top_level_nav and (is_bootstrap or not is_internal_preview_path))
 
-    should_redirect_to_share = bool(workspace_id and is_bootstrap and is_top_level_nav)
     if should_redirect_to_share:
         share_token = await _userspace_service().get_share_token(workspace_id)
         if share_token:
-            # Derive control-plane origin from the subdomain host header:
-            # strip the workspace label to get "base_domain:port".
             hostname, port = _split_host(request.headers.get("host"))
             base_domain = hostname.split(".", 1)[1] if "." in hostname else hostname
             scheme = request.url.scheme or "http"
             port_suffix = f":{port}" if port else ""
-            share_url = f"{scheme}://{base_domain}{port_suffix}/shared/{quote(share_token, safe='')}"
-            return RedirectResponse(url=share_url, status_code=302)
+            share_path = f"/shared/{quote(share_token, safe='')}"
+            if not is_bootstrap:
+                if path not in {"", "/"}:
+                    share_path = f"{share_path}{path if path.startswith('/') else '/'}"
+                sanitized_query = _sanitize_preview_query(request.url.query)
+                if sanitized_query:
+                    share_path = f"{share_path}?{sanitized_query}"
+            share_url = f"{scheme}://{base_domain}{port_suffix}{share_path}"
+            response = RedirectResponse(url=share_url, status_code=302)
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            return response
 
     wants_html = "text/html" in str(request.headers.get("accept", "")).lower()
 
