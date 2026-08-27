@@ -1,3 +1,5 @@
+import { LoginGradientShell } from './LoginGradientShell';
+
 interface OAuthCallbackErrorProps {
   title: string;
   summary: string;
@@ -6,7 +8,7 @@ interface OAuthCallbackErrorProps {
 
 export function OAuthCallbackError({ title, summary, nextSteps = [] }: OAuthCallbackErrorProps) {
   return (
-    <div className="login-container">
+    <LoginGradientShell>
       <div className="login-card" style={{ maxWidth: '560px' }}>
         <p
           style={{
@@ -69,6 +71,6 @@ export function OAuthCallbackError({ title, summary, nextSteps = [] }: OAuthCall
           </div>
         )}
       </div>
-    </div>
+    </LoginGradientShell>
   );
 }

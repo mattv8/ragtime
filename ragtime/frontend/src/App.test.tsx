@@ -101,11 +101,11 @@ vi.mock('./components/MemoryStatus', () => ({
 }));
 
 vi.mock('./components/OAuthCallbackError', () => ({
-  OAuthCallbackError: () => null,
+  OAuthCallbackError: () => <div data-testid="oauth-callback-error-page">OAuth callback error</div>,
 }));
 
 vi.mock('./components/OAuthLoginPage', () => ({
-  OAuthLoginPage: () => null,
+  OAuthLoginPage: () => <div data-testid="oauth-login-page">OAuth login page</div>,
 }));
 
 vi.mock('./components/PublicSharedChatView', () => ({
@@ -315,6 +315,81 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe('App chat fullscreen layout', () => {
+  it('renders initial OAuth loading inside the shared auth gradient surface but leaves plain app loading unchanged', async () => {
+    apiMock.getAuthStatus.mockImplementation(
+      () =>
+        new Promise(() => {
+          // keep loading pending for this assertion
+        }),
+    );
+    apiMock.getSettings.mockResolvedValue({
+      settings: {
+        server_name: 'Ragtime',
+        authenticated_webgl_background_enabled: false,
+      },
+      configuration_warnings: [],
+    });
+
+    window.history.replaceState(
+      {},
+      '',
+      '/?oauth_error_title=OAuth%20pending&oauth_error_summary=Still%20loading',
+    );
+
+    const { unmount } = render(<App />);
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-auth-surface="gradient"]')).toBeTruthy();
+    });
+
+    const oauthSurface = document.querySelector('[data-auth-surface="gradient"]');
+    expect(oauthSurface?.classList.contains('auth-loading')).toBe(true);
+    expect(screen.getByText('Loading...')).toBeTruthy();
+    unmount();
+
+    window.history.replaceState({}, '', '/');
+    render(<App />);
+    expect(document.querySelector('[data-auth-surface="gradient"]')).toBe(null);
+    const plainLoading = document.querySelector('.auth-loading');
+    expect(plainLoading).toBeTruthy();
+    expect(plainLoading?.getAttribute('data-auth-surface')).toBe(null);
+  });
+
+  it('renders authenticated OAuth authorizing inside the shared auth gradient surface', async () => {
+    mockAuthenticatedAdmin();
+    apiMock.getCurrentUser.mockResolvedValue({
+      id: 'user-1',
+      username: 'local:admin',
+      display_name: 'Admin',
+      role: 'admin',
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise(() => {
+            // keep authorizing pending for this assertion
+          }),
+      ),
+    );
+    window.history.replaceState(
+      {},
+      '',
+      '/?client_id=Claude&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback&response_type=code&code_challenge=test',
+    );
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Authorizing...')).toBeTruthy();
+    });
+
+    const surface = document.querySelector('[data-auth-surface="gradient"]');
+    expect(surface).toBeTruthy();
+    expect(surface?.classList.contains('auth-loading')).toBe(true);
+    expect(surface?.textContent).toContain('Authorizing...');
+  });
+
   it('shows a loading fallback before rendering a lazy admin view', async () => {
     const user = userEvent.setup();
     mockAuthenticatedAdmin();

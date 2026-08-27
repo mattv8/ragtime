@@ -3,8 +3,8 @@ import { api } from '@/api';
 import type { User, AuthStatus, AuthMethodStatus, MfaMethod } from '@/types';
 import { BrandName } from '@/utils/buildEnvironment';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
+import { LoginGradientShell } from './LoginGradientShell';
 import { LoginMfaPanel } from './shared/LoginMfaPanel';
-import WebGLGradient from './WebGLGradient';
 
 interface LoginPageProps {
   authStatus: AuthStatus;
@@ -227,9 +227,8 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
 
 export function LoginPage(props: LoginPageProps) {
   return (
-    <div className="login-container login-gradient-container">
-      <WebGLGradient className="login-background-gradient" fullscreen />
+    <LoginGradientShell>
       <LoginCard {...props} />
-    </div>
+    </LoginGradientShell>
   );
 }

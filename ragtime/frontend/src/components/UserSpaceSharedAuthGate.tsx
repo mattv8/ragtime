@@ -1,6 +1,6 @@
 import type { AuthStatus, User } from '@/types';
+import { LoginGradientShell } from './LoginGradientShell';
 import { LoginCard } from './LoginPage';
-import WebGLGradient from './WebGLGradient';
 
 interface UserSpaceSharedAuthGateProps {
   authStatus: AuthStatus | null;
@@ -35,8 +35,7 @@ export function UserSpaceSharedAuthGate({
   const resolvedAuthStatus = authStatus ?? fallbackAuthStatus(serverName);
 
   return (
-    <div className="login-container login-gradient-container userspace-shared-auth-gate">
-      <WebGLGradient className="login-background-gradient" fullscreen />
+    <LoginGradientShell className="userspace-shared-auth-gate">
       <div className="userspace-shared-auth-card-stack">
         <div className="userspace-shared-auth-copy">
           <p className="login-subtitle">This workspace preview is protected.</p>
@@ -51,6 +50,6 @@ export function UserSpaceSharedAuthGate({
           serverName={serverName}
         />
       </div>
-    </div>
+    </LoginGradientShell>
   );
 }

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthStatus, LoginResponse } from '@/types';
 
-import { LoginCard } from './LoginPage';
+import { LoginCard, LoginPage } from './LoginPage';
 
 const apiMock = vi.hoisted(() => ({
   login: vi.fn(),
@@ -13,6 +13,10 @@ const apiMock = vi.hoisted(() => ({
 
 vi.mock('@/api', () => ({
   api: apiMock,
+}));
+
+vi.mock('./WebGLGradient', () => ({
+  default: () => <div data-testid="webgl-gradient" />,
 }));
 
 const mfaRequiredResponse: LoginResponse = {
@@ -127,5 +131,18 @@ describe('LoginCard debug TOTP pre-fill rotation', () => {
     await vi.advanceTimersByTimeAsync(15_000);
 
     expect(apiMock.getDebugTotpCode).not.toHaveBeenCalled();
+  });
+});
+
+describe('LoginPage gradient shell', () => {
+  it('renders the login card inside the shared auth gradient surface', () => {
+    render(<LoginPage authStatus={debugAuthStatus()} onLoginSuccess={vi.fn()} />);
+
+    const surface = document.querySelector('[data-auth-surface="gradient"]');
+    expect(surface).toBeTruthy();
+    expect(surface?.classList.contains('login-container')).toBe(true);
+    expect(surface?.classList.contains('login-gradient-container')).toBe(true);
+    expect(screen.getByTestId('webgl-gradient')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sign In' })).toBeTruthy();
   });
 });

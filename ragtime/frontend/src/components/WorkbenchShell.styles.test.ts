@@ -132,6 +132,10 @@ describe('Workbench shell styles contract', () => {
     const layoutCss = readSource('src/styles/layout.css');
     const adminCss = readSource('src/styles/workbench-admin.css');
     const lockedLayoutBlock = getRuleBody(layoutCss, '.app-shell-locked #workbench-shell-stack');
+    const modernLoginBlock = getRuleBody(
+      adminCss,
+      "[data-theme-pack='modern'] .login-container,\n[data-theme-pack='modern'] .auth-loading",
+    );
 
     expect(layoutCss).toContain('#workbench-shell-stack');
     expect(layoutCss).toContain('#workbench-warning-stack');
@@ -151,6 +155,13 @@ describe('Workbench shell styles contract', () => {
     );
     expect(adminCss).toMatch(
       /\[data-theme-pack='modern'\]\s+#workbench-shell-stack\s*>\s*\.topnav,[\s\S]*>\s*\.container\s*\{[\s\S]*width:\s*100%;[\s\S]*max-width:\s*none;[\s\S]*margin:\s*0;/,
+    );
+    expect(modernLoginBlock).toMatch(/min-height:\s*100dvh;/);
+    expect(modernLoginBlock).toMatch(
+      /padding:\s*max\(var\(--workbench-padding\), env\(safe-area-inset-top\)\)\s+var\(--workbench-padding\)\s+max\(var\(--workbench-padding\), env\(safe-area-inset-bottom\)\);/,
+    );
+    expect(adminCss).not.toMatch(
+      /\[data-theme-pack='modern'\]\s+\.login-gradient-container\s*\{[\s\S]*margin:\s*0;[\s\S]*width:\s*100%;[\s\S]*min-width:\s*0;/,
     );
     expect(adminCss).not.toMatch(
       /\[data-theme-pack='modern'\]\s+\[data-workbench-shell='authenticated'\]\s*>\s*\.container\s*\{/,

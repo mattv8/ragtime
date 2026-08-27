@@ -796,12 +796,6 @@
     max(var(--workbench-padding), env(safe-area-inset-bottom));
 }
 
-[data-theme-pack='modern'] .login-gradient-container {
-  margin: 0;
-  width: 100%;
-  min-width: 0;
-}
-
 [data-theme-pack='modern'] .login-card,
 [data-theme-pack='modern'] .userspace-shared-auth-card-stack {
   border-radius: var(--workbench-surface-radius);

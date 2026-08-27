@@ -3,6 +3,7 @@ import { api } from '@/api';
 import type { MfaMethod } from '@/types';
 import { BrandName } from '@/utils/buildEnvironment';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
+import { LoginGradientShell } from './LoginGradientShell';
 import { LoginMfaPanel } from './shared/LoginMfaPanel';
 
 export interface OAuthParams {
@@ -176,7 +177,7 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
   };
 
   return (
-    <div className="login-container">
+    <LoginGradientShell>
       <div className="login-card">
         <div className="login-header">
           <h1 className="login-title">
@@ -225,6 +226,6 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
           <p className="login-info">Sign in with your LDAP credentials</p>
         </div>
       </div>
-    </div>
+    </LoginGradientShell>
   );
 }

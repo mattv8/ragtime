@@ -3,6 +3,7 @@ import { MoreHorizontal, Waves } from 'lucide-react';
 import { api, onAuthExpired } from '@/api';
 import WebGLGradient from '@/components/WebGLGradient';
 import { ConfigurationBanner } from './components/ConfigurationBanner';
+import { LoginGradientShell } from './components/LoginGradientShell';
 import { LoginPage } from './components/LoginPage';
 import { MemoryStatus } from './components/MemoryStatus';
 import { OAuthCallbackError } from './components/OAuthCallbackError';
@@ -1028,6 +1029,14 @@ export function App() {
     // transition during initial auth resolution would be misread as a fresh
     // sign-in and trigger an unwanted redirect to the authenticated view.
     if (authLoading) {
+      if (oauthParams || oauthCallbackError) {
+        return (
+          <LoginGradientShell className="auth-loading" aria-live="polite">
+            <div className="spinner"></div>
+            <p>Loading...</p>
+          </LoginGradientShell>
+        );
+      }
       return (
         <div className="auth-loading">
           <div className="spinner"></div>
@@ -1059,6 +1068,14 @@ export function App() {
 
   // Show loading state while checking auth
   if (authLoading) {
+    if (oauthParams || oauthCallbackError) {
+      return (
+        <LoginGradientShell className="auth-loading" aria-live="polite">
+          <div className="spinner"></div>
+          <p>Loading...</p>
+        </LoginGradientShell>
+      );
+    }
     return (
       <div className="auth-loading">
         <div className="spinner"></div>
@@ -1083,10 +1100,10 @@ export function App() {
     // If user is authenticated, show authorizing state (auto-completing)
     if (currentUser) {
       return (
-        <div className="auth-loading">
+        <LoginGradientShell className="auth-loading" aria-live="polite">
           <div className="spinner"></div>
           <p>Authorizing...</p>
-        </div>
+        </LoginGradientShell>
       );
     }
     // Not authenticated - show OAuth login page
