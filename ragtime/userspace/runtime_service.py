@@ -350,6 +350,7 @@ class UserSpaceRuntimeService:
         preview_origin: str,
         resolved_base_domain: str,
         source: str,
+        include_network_checks: bool = True,
     ) -> UserSpacePreviewWarning | None:
         parsed = urlsplit(preview_origin)
         preview_host = str(parsed.hostname or "").strip().lower()
@@ -373,6 +374,9 @@ class UserSpaceRuntimeService:
                 preview_host=preview_host,
                 source=cast(Any, source),
             )
+
+        if not include_network_checks:
+            return None
 
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         if not await self._resolve_preview_host_cached(preview_host, port):
@@ -489,6 +493,7 @@ class UserSpaceRuntimeService:
             preview_origin=preview_origin,
             resolved_base_domain=resolved_base_domain,
             source=source,
+            include_network_checks=False,
         )
         return preview_origin, preview_warning
 

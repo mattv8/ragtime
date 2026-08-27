@@ -22,7 +22,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from ragtime.config.settings import settings
@@ -46,7 +46,6 @@ from ragtime.core.userspace_limits import (
 )
 from ragtime.indexer.document_parser import extract_text_from_file_async
 from ragtime.userspace.cross_workspace_sqlite import CrossWorkspaceSqliteError
-from ragtime.userspace.html_templates import render_preview_host_unreachable_page_html
 from ragtime.userspace.models import (
     ExecuteComponentRequest,
     ExecuteComponentResponse,
@@ -300,36 +299,6 @@ def _workspace_preview_entry_launch_response(
         ),
         expires_at=expires_at,
         preview_warning=preview_warning,
-    )
-
-
-def _preview_host_unreachable_response(
-    *,
-    workspace_id: str,
-    preview_origin: str,
-    warning: Any,
-) -> HTMLResponse:
-    """Return an actionable 503 when the preview subdomain is not routed to Ragtime.
-
-    Mirrors the ``preview_host_unreachable`` warning condition but returns a
-    local diagnostic page instead of issuing a 307 into an upstream that will 502 at the
-    reverse proxy.
-    """
-
-    body = render_preview_host_unreachable_page_html(
-        workspace_id=workspace_id,
-        preview_origin=preview_origin,
-        warning=warning,
-    )
-    return HTMLResponse(
-        content=body,
-        status_code=503,
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-            "Referrer-Policy": "no-referrer",
-            "X-Ragtime-Preview-Issue": "preview_host_unreachable",
-        },
     )
 
 
@@ -2738,7 +2707,7 @@ async def issue_workspace_preview_launch(
         control_plane_origin=external_origin,
         session_expires_at=token_data.exp if token_data else None,
     )
-    if warning and warning.issue_code == "preview_host_unreachable":
+    if getattr(warning, "issue_code", None) == "preview_host_unreachable":
         warning = None
     return _workspace_preview_entry_launch_response(
         workspace_id=workspace_id,
@@ -2771,13 +2740,6 @@ async def workspace_preview_entry(
         path=path,
         parent_origin=parent_origin,
     )
-    warning = getattr(launch, "preview_warning", None)
-    if warning and warning.issue_code == "preview_host_unreachable":
-        return _preview_host_unreachable_response(
-            workspace_id=workspace_id,
-            preview_origin=launch.preview_origin,
-            warning=warning,
-        )
     return Response(
         status_code=307,
         headers={

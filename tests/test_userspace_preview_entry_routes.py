@@ -37,6 +37,7 @@ class _FakeRuntimeService:
     def __init__(self) -> None:
         self.describe_calls: list[tuple[str, str, str]] = []
         self.issue_calls: list[tuple[str, str, str, str, str | None]] = []
+        self.issue_warning: UserSpacePreviewWarning | None = None
 
     async def describe_workspace_preview_launch(
         self,
@@ -72,6 +73,7 @@ class _FakeRuntimeService:
             preview_origin="https://workspace-id.ragtime.dev.visnovsky.us",
             preview_url="https://workspace-id.ragtime.dev.visnovsky.us/__ragtime/bootstrap?grant=test",
             expires_at=datetime(2026, 4, 23, tzinfo=timezone.utc),
+            preview_warning=self.issue_warning,
         )
 
 
@@ -125,6 +127,11 @@ class PreviewEntryRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_workspace_preview_entry_redirects_to_bootstrap_url(self) -> None:
         fake_runtime_service = _FakeRuntimeService()
+        fake_runtime_service.issue_warning = UserSpacePreviewWarning(
+            issue_code="preview_host_unreachable",
+            title="probe failed",
+            dismiss_key="preview-warning",
+        )
         request = _build_request("/indexes/userspace/runtime/workspaces/workspace-id/preview-entry")
 
         with (

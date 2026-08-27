@@ -117,5 +117,63 @@ class RuntimePreviewDomainTests(unittest.TestCase):
             self.assertEqual(service.get_preview_base_domains(), {"preview.example.com"})
 
 
+class RuntimePreviewLaunchDescriptionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_describe_preview_launch_skips_public_probe_diagnostics(self) -> None:
+        with (
+            mock.patch.object(settings, "userspace_preview_base_domain", ""),
+            mock.patch.object(settings, "external_base_url", "https://ragtime.hammerton.com"),
+            mock.patch.object(settings, "debug_mode", False),
+        ):
+            service = UserSpaceRuntimeService()
+            with (
+                mock.patch.object(
+                    service,
+                    "_resolve_preview_host_cached",
+                    new=mock.AsyncMock(side_effect=AssertionError("dns probe should not run during launch description")),
+                ),
+                mock.patch.object(
+                    service,
+                    "_probe_public_preview_origin_cached",
+                    new=mock.AsyncMock(side_effect=AssertionError("public probe should not run during launch description")),
+                ),
+            ):
+                preview_origin, warning = await service._describe_preview_launch(
+                    workspace_id="workspace-a",
+                    control_plane_origin="https://ragtime.hammerton.com",
+                )
+
+        self.assertEqual(preview_origin, "https://workspace-a.ragtime.hammerton.com")
+        self.assertIsNone(warning)
+
+    async def test_describe_preview_launch_preserves_dev_domain_warning_without_network_checks(self) -> None:
+        with (
+            mock.patch.object(settings, "userspace_preview_base_domain", "userspace-preview.lvh.me"),
+            mock.patch.object(settings, "external_base_url", "https://ragtime.hammerton.com"),
+            mock.patch.object(settings, "debug_mode", False),
+        ):
+            service = UserSpaceRuntimeService()
+            with (
+                mock.patch.object(
+                    service,
+                    "_resolve_preview_host_cached",
+                    new=mock.AsyncMock(side_effect=AssertionError("dns probe should not run during launch description")),
+                ),
+                mock.patch.object(
+                    service,
+                    "_probe_public_preview_origin_cached",
+                    new=mock.AsyncMock(side_effect=AssertionError("public probe should not run during launch description")),
+                ),
+            ):
+                preview_origin, warning = await service._describe_preview_launch(
+                    workspace_id="workspace-a",
+                    control_plane_origin="https://ragtime.hammerton.com",
+                )
+
+        self.assertEqual(preview_origin, "https://workspace-a.userspace-preview.lvh.me")
+        self.assertIsNotNone(warning)
+        assert warning is not None
+        self.assertEqual(warning.issue_code, "preview_dev_domain_outside_debug")
+
+
 if __name__ == "__main__":
     unittest.main()
