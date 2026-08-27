@@ -806,6 +806,35 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
         build_launch.assert_awaited_once()
         self.assertEqual(call_order, ["ready", "build"])
 
+    async def test_issue_workspace_preview_launch_forwards_auto_start_true(self) -> None:
+        session = self.service._to_runtime_session(_session_row(session_id="sess-1"))
+
+        with (
+            mock.patch.object(
+                self.service,
+                "ensure_workspace_preview_session",
+                mock.AsyncMock(return_value=session),
+            ) as ensure_session,
+            mock.patch.object(
+                self.service,
+                "_ensure_workspace_preview_bridge_ready",
+                mock.AsyncMock(),
+            ),
+            mock.patch.object(
+                self.service,
+                "_build_workspace_preview_launch_response",
+                mock.AsyncMock(return_value=SimpleNamespace(preview_url="https://preview")),
+            ),
+        ):
+            await self.service.issue_workspace_preview_launch(
+                "ws-1",
+                "user-1",
+                control_plane_origin="https://ragtime.dev.visnovsky.us",
+                auto_start=True,
+            )
+
+        ensure_session.assert_awaited_once_with("ws-1", "user-1", auto_start=True)
+
     async def test_issue_workspace_preview_launch_does_not_build_response_when_readiness_fails(self) -> None:
         session = self.service._to_runtime_session(_session_row(session_id="sess-1"))
 
@@ -835,6 +864,34 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(exc_info.exception.detail, "bridge not ready")
         build_launch.assert_not_awaited()
+
+    async def test_issue_workspace_preview_launch_defaults_auto_start_false(self) -> None:
+        session = self.service._to_runtime_session(_session_row(session_id="sess-1"))
+
+        with (
+            mock.patch.object(
+                self.service,
+                "ensure_workspace_preview_session",
+                mock.AsyncMock(return_value=session),
+            ) as ensure_session,
+            mock.patch.object(
+                self.service,
+                "_ensure_workspace_preview_bridge_ready",
+                mock.AsyncMock(),
+            ),
+            mock.patch.object(
+                self.service,
+                "_build_workspace_preview_launch_response",
+                mock.AsyncMock(return_value=SimpleNamespace(preview_url="https://preview")),
+            ),
+        ):
+            await self.service.issue_workspace_preview_launch(
+                "ws-1",
+                "user-1",
+                control_plane_origin="https://ragtime.dev.visnovsky.us",
+            )
+
+        ensure_session.assert_awaited_once_with("ws-1", "user-1", auto_start=False)
 
     async def test_bridge_refresh_watch_only_recovers_active_near_expiry_workspaces(self) -> None:
         healthy_status = _bridge_status(expires_at=datetime.now(UTC) + timedelta(seconds=900), session_id="sess-healthy")

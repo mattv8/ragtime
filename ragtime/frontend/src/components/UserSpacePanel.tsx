@@ -7598,56 +7598,6 @@ export function UserSpacePanel({
     setShowShareModal(true);
   }, [activeWorkspace?.name, activeWorkspaceId, canEditWorkspace, loadShareLinkStatus]);
 
-  const handleEnsureShareLink = useCallback(
-    async () => {
-      if (!activeWorkspaceId || !canEditWorkspace) return null;
-
-      setSharingWorkspace(true);
-      try {
-        const link = await api.createUserSpaceWorkspaceShareLink(activeWorkspaceId, {});
-        await loadShareLinkStatus(link.id);
-        setError(null);
-        return {
-          id: link.id,
-          workspace_id: link.workspace_id,
-          has_share_link: true,
-          owner_username: link.owner_username,
-          label: link.label ?? null,
-          share_slug: link.share_slug,
-          share_token: link.share_token,
-          share_url: link.share_url,
-          anonymous_share_url: link.anonymous_share_url,
-          subdomain_share_url: link.subdomain_share_url,
-          subdomain_share_enabled: link.subdomain_share_enabled,
-          subdomain_share_disabled_reason: link.subdomain_share_disabled_reason,
-          created_at: new Date().toISOString(),
-          public_hit_count: 0,
-          last_public_hit_at: null,
-          share_access_mode: activeShareLinkStatus?.share_access_mode ?? 'token',
-          selected_user_ids: activeShareLinkStatus?.selected_user_ids ?? [],
-          selected_ldap_groups: activeShareLinkStatus?.selected_ldap_groups ?? [],
-          has_password: activeShareLinkStatus?.has_password ?? false,
-          active_share_style: activeShareLinkStatus?.active_share_style ?? 'anonymous',
-        } satisfies UserSpaceWorkspaceShareLinkStatus;
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to create share link');
-        return null;
-      } finally {
-        setSharingWorkspace(false);
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally depends on specific activeShareLinkStatus fields, not active_share_style
-    [
-      activeWorkspaceId,
-      activeShareLinkStatus?.has_password,
-      activeShareLinkStatus?.selected_ldap_groups,
-      activeShareLinkStatus?.selected_user_ids,
-      activeShareLinkStatus?.share_access_mode,
-      canEditWorkspace,
-      loadShareLinkStatus,
-    ],
-  );
-
   const resolveShareUrl = useCallback(
     (status: UserSpaceWorkspaceShareLinkStatus | null | undefined): string | null => {
       if (!status?.has_share_link) return null;
@@ -7685,15 +7635,27 @@ export function UserSpacePanel({
     }
   }, [shareLinkType, shareSubdomainEnabled]);
 
-  const handleOpenFullPreview = useCallback(async () => {
-    let url = resolveShareUrl(activeShareLinkStatus);
-    if (!activeShareLinkStatus?.has_share_link) {
-      const created = await handleEnsureShareLink();
-      url = resolveShareUrl(created);
+  const handleOpenAuthenticatedPreview = useCallback(() => {
+    if (!activeWorkspaceId || !canEditWorkspace) {
+      return;
     }
+    const previewEntryUrl = api.getUserSpaceWorkspacePreviewEntryUrl(activeWorkspaceId, {
+      path: '/',
+      autoStart: true,
+    });
+    window.open(previewEntryUrl, '_blank', 'noopener,noreferrer');
+  }, [activeWorkspaceId, canEditWorkspace]);
+
+  const handleOpenFullPreview = useCallback(() => {
+    if (!activeShareLinkStatus?.has_share_link) {
+      setError('Create a share link first');
+      return;
+    }
+    const url = resolveShareUrl(activeShareLinkStatus);
     if (!url) return;
+    setError(null);
     window.open(url, '_blank', 'noopener,noreferrer');
-  }, [activeShareLinkStatus, handleEnsureShareLink, resolveShareUrl]);
+  }, [activeShareLinkStatus, resolveShareUrl]);
 
   useEffect(() => {
     if (!showShareModal || !activeWorkspaceId || !canEditWorkspace) return;
@@ -7775,6 +7737,11 @@ export function UserSpacePanel({
   const handleSaveShareAccess = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
 
+    if (!activeShareLinkStatus?.has_share_link) {
+      setError('Create a share link first');
+      return;
+    }
+
     const linkIdentityLocked = Boolean(activeShareLinkStatus?.has_share_link);
     const normalizedSlug = normalizeShareSlugInput(shareSlugDraft);
     if (!normalizedSlug) {
@@ -7782,10 +7749,7 @@ export function UserSpacePanel({
       return;
     }
 
-    let currentStatus = activeShareLinkStatus;
-    if (!currentStatus?.has_share_link) {
-      currentStatus = await handleEnsureShareLink();
-    }
+    const currentStatus = activeShareLinkStatus;
     if (!currentStatus) {
       return;
     }
@@ -7845,7 +7809,6 @@ export function UserSpacePanel({
     activeWorkspaceId,
     activeShareLinkStatus,
     canEditWorkspace,
-    handleEnsureShareLink,
     shareAccessMode,
     sharePasswordDraft,
     shareSlugDraft,
@@ -9240,9 +9203,9 @@ export function UserSpacePanel({
             </button>
             <button
               className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"
-              onClick={handleOpenFullPreview}
-              disabled={!activeWorkspaceId || !canEditWorkspace || sharingWorkspace}
-              title="Open shared preview"
+              onClick={handleOpenAuthenticatedPreview}
+              disabled={!activeWorkspaceId || !canEditWorkspace}
+              title="Open authenticated preview"
             >
               <ExternalLink size={14} />
             </button>

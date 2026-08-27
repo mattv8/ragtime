@@ -2728,6 +2728,7 @@ async def workspace_preview_entry(
     request: Request,
     path: str = "/",
     parent_origin: str | None = None,
+    auto_start: bool = False,
     user: Any = Depends(get_current_user),
 ):
     launch = await _runtime_service().issue_workspace_preview_launch(
@@ -2739,6 +2740,7 @@ async def workspace_preview_entry(
         ),
         path=path,
         parent_origin=parent_origin,
+        auto_start=auto_start,
     )
     return Response(
         status_code=307,

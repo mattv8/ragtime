@@ -684,6 +684,7 @@ export function ShareLinkModal({
                 className="btn btn-secondary"
                 onClick={onSaveShareAccess}
                 disabled={
+                  loadingShareStatus ||
                   savingShareAccess ||
                   sharingWorkspace ||
                   checkingShareSlug ||
@@ -696,6 +697,7 @@ export function ShareLinkModal({
                 className="btn btn-secondary"
                 onClick={onOpenFullPreview}
                 disabled={
+                  loadingShareStatus ||
                   sharingWorkspace ||
                   checkingShareSlug ||
                   savingShareAccess ||

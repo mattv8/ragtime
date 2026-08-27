@@ -6005,6 +6005,18 @@ export const api = {
     return handleResponse<UserSpacePreviewLaunchResponse>(response);
   },
 
+  getUserSpaceWorkspacePreviewEntryUrl(
+    workspaceId: string,
+    options?: { path?: string; autoStart?: boolean },
+  ): string {
+    const params = new URLSearchParams();
+    params.set('path', options?.path ?? '/');
+    if (options?.autoStart) {
+      params.set('auto_start', 'true');
+    }
+    return `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/preview-entry?${params.toString()}`;
+  },
+
   async launchUserSpaceSharedPreview(
     shareToken: string,
     request: UserSpacePreviewLaunchRequest,

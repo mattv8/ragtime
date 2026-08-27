@@ -1,6 +1,8 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { UserDirectoryEntry } from '@/types';
+import type { UserSpaceWorkspaceShareLinkStatus } from '@/types';
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -60,7 +62,9 @@ const {
     getLdapConfig: vi.fn(),
     discoverLdapWithStoredCredentials: vi.fn(),
     listUserSpaceWorkspaceShareLinks: vi.fn(),
+    createUserSpaceWorkspaceShareLink: vi.fn(),
     deleteUserSpaceWorkspaceShareLink: vi.fn(),
+    getUserSpaceWorkspacePreviewEntryUrl: vi.fn(),
     subscribeUserSpaceWorkspaceShareLinkAnalytics: vi.fn(),
   },
   panelToastMock: [[], { error: vi.fn(), success: vi.fn(), info: vi.fn() }],
@@ -131,11 +135,19 @@ vi.mock('./shared/WorkspaceObjectStorageExplorer', () => ({
 vi.mock('./shared/ShareLinkModal', () => ({
   ShareLinkModal: ({
     isOpen,
+    loadingShareStatus,
     shareLinks,
+    onCreateShareLink,
+    onOpenFullPreview,
+    onSaveShareAccess,
     onDeleteSelectedShareLink,
   }: {
     isOpen: boolean;
+    loadingShareStatus: boolean;
     shareLinks: Array<{ id: string; label: string | null }>;
+    onCreateShareLink?: () => void;
+    onOpenFullPreview?: () => void;
+    onSaveShareAccess?: () => void;
     onDeleteSelectedShareLink: (shareId: string) => void;
   }) =>
     isOpen ? (
@@ -143,6 +155,15 @@ vi.mock('./shared/ShareLinkModal', () => ({
         {shareLinks.map((link) => (
           <div key={link.id}>{link.label}</div>
         ))}
+        <button type="button" onClick={() => onCreateShareLink?.()}>
+          New Link
+        </button>
+        <button type="button" onClick={() => onOpenFullPreview?.()} disabled={loadingShareStatus}>
+          Open Preview
+        </button>
+        <button type="button" onClick={() => onSaveShareAccess?.()} disabled={loadingShareStatus}>
+          Save Access
+        </button>
         <button
           type="button"
           onClick={() => {
@@ -521,10 +542,33 @@ beforeEach(() => {
     success: true,
     groups: [],
   });
+  previewApiMock.createUserSpaceWorkspaceShareLink.mockResolvedValue({
+    id: 'share-created',
+    workspace_id: WORKSPACE.id,
+    owner_username: SHARE_LINKS_RESPONSE.owner_username,
+    label: null,
+    share_slug: 'share-created',
+    share_token: 'token-created',
+    share_url: 'https://example.test/share-created',
+    anonymous_share_url: 'https://example.test/a/share-created',
+    subdomain_share_url: null,
+    subdomain_share_enabled: false,
+    subdomain_share_disabled_reason: null,
+  });
   previewApiMock.listUserSpaceWorkspaceShareLinks.mockResolvedValue({
     owner_username: SHARE_LINKS_RESPONSE.owner_username,
     links: SHARE_LINKS_RESPONSE.links.map((link) => ({ ...link })),
   });
+  previewApiMock.getUserSpaceWorkspacePreviewEntryUrl.mockImplementation(
+    (workspaceId: string, options?: { path?: string; autoStart?: boolean }) => {
+      const params = new URLSearchParams();
+      params.set('path', options?.path ?? '/');
+      if (options?.autoStart) {
+        params.set('auto_start', 'true');
+      }
+      return `/indexes/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/preview-entry?${params.toString()}`;
+    },
+  );
   previewApiMock.deleteUserSpaceWorkspaceShareLink.mockResolvedValue(undefined);
   previewApiMock.subscribeUserSpaceWorkspaceShareLinkAnalytics.mockReturnValue({
     close: vi.fn(),
@@ -542,6 +586,19 @@ afterEach(() => {
 });
 
 describe('UserSpacePanel workspace tool descriptions', () => {
+  it('builds the authenticated preview-entry URL with encoded workspace and auto-start query', async () => {
+    const { api: realApi } = await import('@/api/client');
+
+    expect(
+      realApi.getUserSpaceWorkspacePreviewEntryUrl('ws /1?#', {
+        path: '/',
+        autoStart: true,
+      }),
+    ).toBe(
+      '/indexes/userspace/runtime/workspaces/ws%20%2F1%3F%23/preview-entry?path=%2F&auto_start=true',
+    );
+  });
+
   it('maps absolute collapse requests to the requested pane side', () => {
     expect(resolveAbsolutePaneFraction(0, 'after')).toBe(1);
     expect(resolveAbsolutePaneFraction(0, 'before')).toBe(0);
@@ -661,6 +718,244 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       'share-1',
     );
     expect(previewApiMock.listUserSpaceWorkspaceShareLinks).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the authenticated preview-entry from the toolbar without touching public shares', async () => {
+    const previewOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const workspaceId = 'ws /1?#';
+    const workspace = { ...WORKSPACE, id: workspaceId };
+    previewApiMock.listUserSpaceWorkspaces.mockResolvedValue({ items: [workspace], total: 1 });
+    previewApiMock.getUserSpaceWorkspace.mockResolvedValue(workspace);
+    previewApiMock.getUserSpaceWorkspaceTabState.mockResolvedValue({
+      workspace_id: workspaceId,
+      runtime_status: { ...STARTING_RUNTIME_STATUS, workspace_id: workspaceId },
+      chat_state: { ...DEFAULT_CHAT_STATE },
+    });
+    try {
+      render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+      await waitFor(() => {
+        expect(document.querySelector('[title="Open authenticated preview"]')).not.toBeNull();
+      });
+
+      const openPreviewButton = document.querySelector('[title="Open authenticated preview"]');
+      expect(openPreviewButton).not.toBeNull();
+
+      fireEvent.click(openPreviewButton as HTMLButtonElement);
+
+      expect(previewOpenSpy).toHaveBeenCalledWith(
+        '/indexes/userspace/runtime/workspaces/ws%20%2F1%3F%23/preview-entry?path=%2F&auto_start=true',
+        '_blank',
+        'noopener,noreferrer',
+      );
+      expect(previewApiMock.getUserSpaceWorkspacePreviewEntryUrl).toHaveBeenCalledWith(
+        workspaceId,
+        {
+          path: '/',
+          autoStart: true,
+        },
+      );
+      expect(previewApiMock.listUserSpaceWorkspaceShareLinks).not.toHaveBeenCalled();
+      expect(previewApiMock.createUserSpaceWorkspaceShareLink).not.toHaveBeenCalled();
+    } finally {
+      previewOpenSpy.mockRestore();
+    }
+  });
+
+  it('opens the selected public share preview without creating another link', async () => {
+    const previewOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+
+    try {
+      await renderPanelWithRuntimeOverlay(false);
+
+      const manageShareButton = document.querySelector('[title="Manage share link"]');
+      expect(manageShareButton).not.toBeNull();
+
+      await act(async () => {
+        (manageShareButton as HTMLButtonElement).click();
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Open Preview' })).toBeTruthy();
+      });
+
+      await act(async () => {
+        screen.getByRole('button', { name: 'Open Preview' }).click();
+      });
+
+      expect(previewOpenSpy).toHaveBeenCalledWith(
+        'https://example.test/a/share-one',
+        '_blank',
+        'noopener,noreferrer',
+      );
+      expect(previewApiMock.createUserSpaceWorkspaceShareLink).not.toHaveBeenCalled();
+    } finally {
+      previewOpenSpy.mockRestore();
+    }
+  });
+
+  it('keeps manage-share disabled during share creation while authenticated preview stays enabled', async () => {
+    const createShareDeferred = createDeferredPromise<{
+      id: string;
+      workspace_id: string;
+      owner_username: string;
+      label: string | null;
+      share_slug: string;
+      share_token: string;
+      share_url: string;
+      anonymous_share_url: string;
+      subdomain_share_url: null;
+      subdomain_share_enabled: false;
+      subdomain_share_disabled_reason: null;
+    }>();
+    previewApiMock.createUserSpaceWorkspaceShareLink.mockImplementationOnce(
+      () => createShareDeferred.promise,
+    );
+
+    await renderPanelWithRuntimeOverlay(false);
+
+    const manageShareButton = document.querySelector('[title="Manage share link"]');
+    const authenticatedPreviewButton = document.querySelector(
+      '[title="Open authenticated preview"]',
+    );
+    expect(manageShareButton).not.toBeNull();
+    expect(authenticatedPreviewButton).not.toBeNull();
+
+    await act(async () => {
+      (manageShareButton as HTMLButtonElement).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'New Link' })).toBeTruthy();
+    });
+
+    await act(async () => {
+      screen.getByRole('button', { name: 'New Link' }).click();
+      await Promise.resolve();
+    });
+
+    expect(
+      (document.querySelector('[title="Manage share link"]') as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (document.querySelector('[title="Open authenticated preview"]') as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+
+    createShareDeferred.resolve({
+      id: 'share-created',
+      workspace_id: WORKSPACE.id,
+      owner_username: SHARE_LINKS_RESPONSE.owner_username,
+      label: null,
+      share_slug: 'share-created',
+      share_token: 'token-created',
+      share_url: 'https://example.test/share-created',
+      anonymous_share_url: 'https://example.test/a/share-created',
+      subdomain_share_url: null,
+      subdomain_share_enabled: false,
+      subdomain_share_disabled_reason: null,
+    });
+  });
+
+  it('does not create a share link when saving access without a selected link', async () => {
+    previewApiMock.listUserSpaceWorkspaceShareLinks.mockResolvedValueOnce({
+      owner_username: SHARE_LINKS_RESPONSE.owner_username,
+      links: [],
+    });
+
+    await renderPanelWithRuntimeOverlay(false);
+
+    const manageShareButton = document.querySelector('[title="Manage share link"]');
+    expect(manageShareButton).not.toBeNull();
+
+    await act(async () => {
+      (manageShareButton as HTMLButtonElement).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save Access' })).toBeTruthy();
+    });
+
+    await act(async () => {
+      screen.getByRole('button', { name: 'Save Access' }).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Create a share link first')).toBeTruthy();
+    });
+    expect(previewApiMock.createUserSpaceWorkspaceShareLink).not.toHaveBeenCalled();
+  });
+
+  it('disables public preview and save actions while share status loads', async () => {
+    const { ShareLinkModal: RealShareLinkModal } =
+      await vi.importActual<typeof import('./shared/ShareLinkModal')>('./shared/ShareLinkModal');
+    const shareUser: UserDirectoryEntry = {
+      id: 'user-2',
+      username: 'grace',
+      display_name: 'Grace',
+    };
+    const modalShareStatus: UserSpaceWorkspaceShareLinkStatus = {
+      ...SHARE_LINKS_RESPONSE.links[0],
+      selected_user_ids: [],
+      selected_ldap_groups: [],
+    };
+    const modalShareLinks: UserSpaceWorkspaceShareLinkStatus[] = SHARE_LINKS_RESPONSE.links.map(
+      (link) => ({
+        ...link,
+        selected_user_ids: [...link.selected_user_ids],
+        selected_ldap_groups: [...link.selected_ldap_groups],
+      }),
+    );
+
+    const baseProps = {
+      isOpen: true,
+      shareLinkType: 'anonymous' as const,
+      shareStatus: modalShareStatus,
+      shareLinks: modalShareLinks,
+      selectedShareId: 'share-1',
+      shareSlugDraft: 'share-one',
+      shareSlugAvailable: true,
+      shareAccessMode: 'token' as const,
+      sharePasswordDraft: '',
+      shareSelectableUsers: [shareUser],
+      shareSelectedUserIdsDraft: [],
+      shareSelectedLdapGroupsDraft: [],
+      shareLdapGroupDraft: '',
+      ldapDiscoveredGroups: [],
+      loadingLdapGroups: false,
+      shareSubdomainEnabled: false,
+      shareSubdomainDisabledReason: null,
+      showProtectedSubdomainNotice: false,
+      effectiveShareUrl: 'https://example.test/a/share-one',
+      activeShareCreatedLabel: 'Created today',
+      savingShareAccess: false,
+      sharingWorkspace: false,
+      checkingShareSlug: false,
+      shareHasUnsavedChanges: false,
+      onClose: () => undefined,
+      onShareSlugChange: () => undefined,
+      onShareAccessModeChange: () => undefined,
+      onSharePasswordDraftChange: () => undefined,
+      onToggleShareSelectedUser: () => undefined,
+      onShareLdapGroupDraftChange: () => undefined,
+      onAddShareLdapGroup: () => undefined,
+      onRemoveShareLdapGroup: () => undefined,
+      onSaveShareAccess: () => undefined,
+      onOpenFullPreview: () => undefined,
+      formatUserLabel: (user: UserDirectoryEntry, fallback: string) =>
+        user.display_name || user.username || fallback,
+    };
+
+    const { rerender } = render(<RealShareLinkModal {...baseProps} loadingShareStatus={false} />);
+
+    await userEvent.setup().click(screen.getAllByRole('button', { name: 'Edit link' })[0]);
+
+    rerender(<RealShareLinkModal {...baseProps} loadingShareStatus />);
+
+    expect(screen.getByRole('button', { name: 'Save Access' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Open Preview' }).hasAttribute('disabled')).toBe(
+      true,
+    );
   });
 
   it('restores share links when delete fails without reloading the share list', async () => {

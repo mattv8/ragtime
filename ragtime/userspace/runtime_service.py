@@ -2229,9 +2229,11 @@ class UserSpaceRuntimeService:
         self,
         workspace_id: str,
         user_id: str,
+        *,
+        auto_start: bool = False,
     ) -> UserSpaceRuntimeSession:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
-        session = await self._ensure_session_row(workspace_id, user_id)
+        session = await self._ensure_session_row(workspace_id, user_id, auto_start=auto_start)
         await self._cache_preview_upstream_session(session)
         return session
 
@@ -2333,8 +2335,13 @@ class UserSpaceRuntimeService:
         control_plane_origin: str,
         path: str = "/",
         parent_origin: str | None = None,
+        auto_start: bool = False,
     ) -> UserSpacePreviewLaunchResponse:
-        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        session = await self.ensure_workspace_preview_session(
+            workspace_id,
+            user_id,
+            auto_start=auto_start,
+        )
         await self._ensure_workspace_preview_bridge_ready(session)
         return await self._build_workspace_preview_launch_response(
             workspace_id=workspace_id,

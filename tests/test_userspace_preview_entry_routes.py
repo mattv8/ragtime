@@ -36,7 +36,7 @@ def _build_request(path: str) -> Request:
 class _FakeRuntimeService:
     def __init__(self) -> None:
         self.describe_calls: list[tuple[str, str, str]] = []
-        self.issue_calls: list[tuple[str, str, str, str, str | None]] = []
+        self.issue_calls: list[tuple[str, str, str, str, str | None, bool]] = []
         self.issue_warning: UserSpacePreviewWarning | None = None
 
     async def describe_workspace_preview_launch(
@@ -66,8 +66,9 @@ class _FakeRuntimeService:
         control_plane_origin: str,
         path: str = "/",
         parent_origin: str | None = None,
+        auto_start: bool = False,
     ):
-        self.issue_calls.append((workspace_id, user_id, control_plane_origin, path, parent_origin))
+        self.issue_calls.append((workspace_id, user_id, control_plane_origin, path, parent_origin, auto_start))
         return UserSpacePreviewLaunchResponse(
             workspace_id=workspace_id,
             preview_origin="https://workspace-id.ragtime.dev.visnovsky.us",
@@ -168,6 +169,47 @@ class PreviewEntryRouteTests(unittest.IsolatedAsyncioTestCase):
                     "https://ragtime.dev.visnovsky.us",
                     "/preview",
                     None,
+                    False,
+                )
+            ],
+        )
+
+    async def test_workspace_preview_entry_forwards_auto_start_true(self) -> None:
+        fake_runtime_service = _FakeRuntimeService()
+        request = _build_request("/indexes/userspace/runtime/workspaces/workspace-id/preview-entry")
+
+        with (
+            mock.patch.object(
+                _RUNTIME_ROUTES,
+                "_runtime_service",
+                return_value=fake_runtime_service,
+            ),
+            mock.patch.object(
+                _RUNTIME_ROUTES,
+                "get_browser_matched_origin",
+                return_value="https://ragtime.dev.visnovsky.us",
+            ),
+        ):
+            response = await workspace_preview_entry(
+                "workspace-id",
+                request,
+                path="/",
+                parent_origin=None,
+                auto_start=True,
+                user=SimpleNamespace(id="user-123"),
+            )
+
+        self.assertEqual(response.status_code, 307)
+        self.assertEqual(
+            fake_runtime_service.issue_calls,
+            [
+                (
+                    "workspace-id",
+                    "user-123",
+                    "https://ragtime.dev.visnovsky.us",
+                    "/",
+                    None,
+                    True,
                 )
             ],
         )
