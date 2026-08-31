@@ -1391,6 +1391,17 @@ async def update_index_config(
             detail="Config updates only supported for git-based indexes",
         )
 
+    if (
+        request.reindex_interval_hours is not None
+        and request.reindex_interval_hours > 0
+        and getattr(metadata, "webhookId", None)
+        and getattr(metadata, "webhookSecret", None)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Disable webhook delivery before enabling scheduled re-indexing.",
+        )
+
     # Merge with existing config snapshot
     existing_snapshot = getattr(metadata, "configSnapshot", None)
     existing_config: dict[str, Any] = existing_snapshot if isinstance(existing_snapshot, dict) else {}

@@ -43,6 +43,7 @@ def _target_row(**overrides: Any) -> SimpleNamespace:
     values: dict[str, Any] = {
         "id": "index-id",
         "name": "git-index",
+        "configSnapshot": None,
         "webhookId": "wh_123",
         "webhookSecret": None,
         "webhookPaused": False,
@@ -603,6 +604,117 @@ class GitWebhookRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response.enabled)
         self.assertTrue(response.paused)
         self.assertTrue(updated["webhookPaused"])
+
+    async def test_enable_index_normalizes_schedule_snapshot_for_new_webhook(self) -> None:
+        repository = GitWebhookRepository()
+        original_snapshot = {
+            "reindex_interval_hours": 24,
+            "reindex_start_minute": 180,
+            "reindex_timezone": "America/Denver",
+            "chunk_size": 500,
+        }
+        row = _target_row(webhookId=None, webhookSecret=None, webhookCreatedAt=None, configSnapshot=original_snapshot)
+        db = FakeLookupDb(row)
+        db.indexmetadata = _LookupDelegate(row)
+        with (
+            mock.patch("ragtime.git_webhooks.repository.get_db", return_value=db),
+            mock.patch("ragtime.git_webhooks.repository.encrypt_secret", side_effect=lambda value: f"enc::{value}"),
+        ):
+            response = await repository.enable_index("git-index", "https://ragtime.example")
+        updated = db.indexmetadata.updated[-1]
+        self.assertTrue(response.enabled)
+        self.assertEqual(
+            updated["configSnapshot"],
+            {
+                "reindex_interval_hours": 0,
+                "reindex_start_minute": None,
+                "reindex_timezone": None,
+                "chunk_size": 500,
+            },
+        )
+        self.assertIsNot(updated["configSnapshot"], original_snapshot)
+        self.assertEqual(
+            original_snapshot,
+            {
+                "reindex_interval_hours": 24,
+                "reindex_start_minute": 180,
+                "reindex_timezone": "America/Denver",
+                "chunk_size": 500,
+            },
+        )
+
+    async def test_enable_index_reuses_credentials_timestamp_and_normalizes_existing_snapshot(self) -> None:
+        repository = GitWebhookRepository()
+        original_created_at = _utcnow()
+        original_secret = "enc::secret"
+        original_snapshot = {
+            "reindex_interval_hours": 24,
+            "reindex_start_minute": 180,
+            "reindex_timezone": "America/Denver",
+            "branch": "main",
+        }
+        row = _target_row(
+            webhookSecret=original_secret,
+            webhookPaused=True,
+            webhookCreatedAt=original_created_at,
+            configSnapshot=original_snapshot,
+        )
+        db = FakeLookupDb(row, tx=FakeTransaction(execute_results=[1]))
+        db.indexmetadata = _LookupDelegate(row)
+        with mock.patch("ragtime.git_webhooks.repository.get_db", return_value=db):
+            response = await repository.enable_index("git-index", "https://ragtime.example")
+        updated = db.indexmetadata.updated[-1]
+        self.assertTrue(response.enabled)
+        self.assertFalse(updated["webhookPaused"])
+        self.assertEqual(
+            updated["configSnapshot"],
+            {
+                "reindex_interval_hours": 0,
+                "reindex_start_minute": None,
+                "reindex_timezone": None,
+                "branch": "main",
+            },
+        )
+        self.assertEqual(row.webhookId, "wh_123")
+        self.assertEqual(row.webhookSecret, original_secret)
+        self.assertEqual(row.webhookCreatedAt, original_created_at)
+        self.assertEqual(
+            original_snapshot,
+            {
+                "reindex_interval_hours": 24,
+                "reindex_start_minute": 180,
+                "reindex_timezone": "America/Denver",
+                "branch": "main",
+            },
+        )
+
+    async def test_enable_workspace_does_not_write_config_snapshot(self) -> None:
+        repository = GitWebhookRepository()
+        row = _target_row(
+            id="workspace-1",
+            webhookId=None,
+            webhookSecret=None,
+            scmWebhookId=None,
+            scmWebhookSecret=None,
+            scmWebhookCreatedAt=None,
+            scmProvider="github",
+            scmGitBranch="main",
+            configSnapshot={
+                "reindex_interval_hours": 24,
+                "reindex_start_minute": 180,
+                "reindex_timezone": "America/Denver",
+            },
+        )
+        db = FakeLookupDb(row, target_type=GitWebhookTargetType.WORKSPACE_SCM)
+        db.workspace = _LookupDelegate(row)
+        with (
+            mock.patch("ragtime.git_webhooks.repository.get_db", return_value=db),
+            mock.patch("ragtime.git_webhooks.repository.encrypt_secret", side_effect=lambda value: f"enc::{value}"),
+        ):
+            response = await repository.enable_workspace("workspace-1", "https://ragtime.example")
+        updated = db.workspace.updated[-1]
+        self.assertTrue(response.enabled)
+        self.assertNotIn("configSnapshot", updated)
 
     async def test_claim_latest_pending_refuses_when_processing_delivery_exists(self) -> None:
         repository = GitWebhookRepository()

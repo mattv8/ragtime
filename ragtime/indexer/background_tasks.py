@@ -764,6 +764,9 @@ class BackgroundTaskService:
                     if not isinstance(config_snapshot, dict):
                         continue
 
+                    if metadata.webhookId and metadata.webhookSecret:
+                        continue
+
                     # Get reindex interval (default 0 = manual only)
                     interval_hours = config_snapshot.get("reindex_interval_hours", 0)
                     if interval_hours <= 0:

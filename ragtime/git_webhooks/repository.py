@@ -696,6 +696,15 @@ class GitWebhookRepository:
             source=str(getattr(row, "scmGitUrl", "") or "") or None,
         )
 
+    def _normalized_git_index_config_snapshot(self, snapshot: Any) -> dict[str, Any] | None:
+        if not isinstance(snapshot, dict):
+            return None
+        normalized = dict(snapshot)
+        normalized["reindex_interval_hours"] = 0
+        normalized["reindex_start_minute"] = None
+        normalized["reindex_timezone"] = None
+        return normalized
+
     async def _enable_target(
         self,
         *,
@@ -716,12 +725,20 @@ class GitWebhookRepository:
             current_created_at_field = "scmWebhookCreatedAt" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookCreatedAt"
             webhook_id = str(getattr(current, current_id_field, "") or "") or None
             encrypted_secret = getattr(current, current_secret_field, None)
+            normalized_snapshot = (
+                self._normalized_git_index_config_snapshot(getattr(current, "configSnapshot", None)) if target_type is GitWebhookTargetType.GIT_INDEX else None
+            )
             if webhook_id and encrypted_secret:
+                update_data: dict[str, Any] = {}
                 if getattr(current, current_paused_field, False):
+                    update_data[current_paused_field] = False
+                if normalized_snapshot is not None and normalized_snapshot != getattr(current, "configSnapshot", None):
+                    update_data["configSnapshot"] = normalized_snapshot
+                if update_data:
                     current = await (
-                        db.workspace.update(where=lookup, data={current_paused_field: False})
+                        db.workspace.update(where=lookup, data=update_data)
                         if target_type is GitWebhookTargetType.WORKSPACE_SCM
-                        else db.indexmetadata.update(where=lookup, data={current_paused_field: False})
+                        else db.indexmetadata.update(where=lookup, data=update_data)
                     )
                 return GitWebhookEnableResponse(
                     **self._config_from_row(current, base_url, target_type=target_type).model_dump(),
@@ -734,6 +751,8 @@ class GitWebhookRepository:
                 current_paused_field: False,
                 current_created_at_field: utc_now(),
             }
+            if normalized_snapshot is not None:
+                update_data["configSnapshot"] = normalized_snapshot
             updated = await (
                 db.workspace.update(where=lookup, data=update_data)
                 if target_type is GitWebhookTargetType.WORKSPACE_SCM

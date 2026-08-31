@@ -207,6 +207,11 @@ export function GitIndexWizard({
       if (requestId !== webhookRequestRef.current) {
         return;
       }
+      if (nextConfig.enabled) {
+        setReindexIntervalHours(0);
+        setReindexStartMinute(null);
+        setReindexTimezone(null);
+      }
       setWebhookConfig(nextConfig);
     } catch (err) {
       if (requestId !== webhookRequestRef.current) {

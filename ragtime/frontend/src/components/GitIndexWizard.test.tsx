@@ -22,6 +22,9 @@ const apiMock = vi.hoisted(() => ({
   rotateIndexWebhookSecret: vi.fn(),
   disableIndexWebhook: vi.fn(),
   reindexFromGit: vi.fn(),
+  renameIndex: vi.fn(),
+  updateIndexDescription: vi.fn(),
+  updateIndexConfig: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({ api: apiMock }));
@@ -218,6 +221,11 @@ beforeEach(() => {
   });
   apiMock.disableIndexWebhook.mockResolvedValue(undefined);
   apiMock.reindexFromGit.mockResolvedValue(startingJob);
+  apiMock.renameIndex.mockResolvedValue({ new_name: 'repo', display_name: 'Repo' });
+  apiMock.updateIndexDescription.mockResolvedValue(undefined);
+  apiMock.updateIndexConfig.mockResolvedValue({
+    config_snapshot: existingGitIndex.config_snapshot,
+  });
 });
 
 afterEach(() => {
@@ -492,6 +500,37 @@ describe('GitIndexWizard', () => {
     render(<GitIndexWizard editIndex={existingGitIndex} />);
 
     expect(await screen.findByText(/failed to load webhook settings: load failed/i)).toBeTruthy();
+  });
+
+  it('saves manual cadence after loading an enabled webhook over a persisted anchored schedule', async () => {
+    apiMock.getIndexWebhook.mockResolvedValue(enabledWebhookConfig);
+
+    const scheduledWebhookIndex: IndexInfo = {
+      ...existingGitIndex,
+      config_snapshot: {
+        ...existingGitIndex.config_snapshot!,
+        reindex_interval_hours: 24,
+        reindex_start_minute: 180,
+        reindex_timezone: 'America/Denver',
+      },
+    };
+
+    const user = userEvent.setup();
+    render(<GitIndexWizard editIndex={scheduledWebhookIndex} />);
+
+    await screen.findByText('webhook:github:main:enabled:active');
+    await user.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+    await waitFor(() => {
+      expect(apiMock.updateIndexConfig).toHaveBeenCalledWith(
+        'repo',
+        expect.objectContaining({
+          reindex_interval_hours: 0,
+          reindex_start_minute: null,
+          reindex_timezone: null,
+        }),
+      );
+    });
   });
 
   it('keeps webhook delivery selected in the create input step before analysis', async () => {
