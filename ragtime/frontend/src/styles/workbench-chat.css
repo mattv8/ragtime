@@ -554,6 +554,16 @@
   border-radius: var(--workbench-control-radius);
 }
 
+[data-theme-pack='modern'] .live-data-refresh-btn {
+  line-height: 1;
+}
+
+[data-theme-pack='modern'] .live-data-refresh-btn .theme-chrome-icon,
+[data-theme-pack='modern'] .live-data-refresh-btn svg,
+[data-theme-pack='modern'] .live-data-refresh-btn .mini-loading-spinner {
+  transform: translateY(1px);
+}
+
 [data-theme-pack='modern'] .visualization-export-menu,
 [data-theme-pack='modern'] .chat-workspace-conversation-dropdown,
 [data-theme-pack='modern'] .chat-shared-context-popover {

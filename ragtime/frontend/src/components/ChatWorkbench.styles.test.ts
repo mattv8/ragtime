@@ -94,6 +94,9 @@ describe('Chat workbench surface contract', () => {
     expect(css).toMatch(
       /\[data-theme-pack='modern'\]\s+\.tool-call\.tool-call-datatable,[\s\S]*background:\s*transparent;[\s\S]*border:\s*none;/,
     );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.live-data-refresh-btn\s+\.theme-chrome-icon,[\s\S]*transform:\s*translateY\(1px\);/,
+    );
     expect(css).toMatch(/\.datatable-container\s*\{[\s\S]*background:\s*var\(--color-editor\);/);
     expect(css).toMatch(/\.chat-panel-embedded\s*\{[\s\S]*border-radius:\s*0;/);
     expect(css).toMatch(/\.chat-panel-shared\s*\{[\s\S]*width:\s*100%;/);

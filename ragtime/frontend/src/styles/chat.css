@@ -1812,9 +1812,16 @@ textarea.chat-header-title-input {
   gap: 4px;
   border-radius: var(--radius-sm);
   font-size: var(--text-xs);
+  line-height: 1;
   transition:
     color var(--transition-fast),
     background var(--transition-fast);
+}
+
+.viz-version-anchor .live-data-refresh-btn .theme-chrome-icon,
+.viz-version-anchor .live-data-refresh-btn svg,
+.viz-version-anchor .live-data-refresh-btn .mini-loading-spinner {
+  transform: translateY(1px);
 }
 
 .viz-version-anchor .live-data-refresh-btn:hover:not(:disabled),
