@@ -98,6 +98,27 @@ describe('Chat workbench surface contract', () => {
       /\[data-theme-pack='modern'\]\s+\.tool-call\.tool-call-chart,[\s\S]*background:\s*transparent;[\s\S]*border:\s*none;/,
     );
     expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.tool-call:not\(:has\(\.tool-call-details\)\),[\s\S]*border-color:\s*transparent;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.tool-call:has\(\.tool-call-details\),[\s\S]*border:\s*var\(--workbench-container-border\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.reasoning-block\s+\.tool-call:not\(:has\(\.tool-call-details\)\),[\s\S]*border-color:\s*transparent;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.reasoning-block\s+\.tool-call:has\(\.tool-call-details\),[\s\S]*border:\s*var\(--workbench-container-border\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.reasoning-embedded-tool\s+\.tool-call:not\(:has\(\.tool-call-details\)\)[\s\S]*margin-inline-start:\s*calc\(var\(--space-xs\)\s*\*\s*-1\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.reasoning-embedded-tool\s+\.tool-call:not\(:has\(\.tool-call-details\)\)[\s\S]*padding:\s*4px\s+var\(--space-xs\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.reasoning-embedded-tool\.chat-tool-calls\s*\{[\s\S]*margin:\s*0\.5em\s+0;/,
+    );
+    expect(css).toMatch(
       /\[data-theme-pack='modern'\]\s+\.tool-call-userspace-diff-card\s*\{[\s\S]*background:\s*var\(--color-editor\);/,
     );
     expect(css).toMatch(

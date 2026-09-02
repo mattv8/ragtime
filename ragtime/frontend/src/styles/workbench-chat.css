@@ -493,8 +493,21 @@
 }
 
 [data-theme-pack='modern'] .chat-tool-calls {
-  margin-top: var(--space-sm);
-  padding-top: var(--space-sm);
+  margin: 0.5em 0;
+  padding: 0;
+}
+
+[data-theme-pack='modern'] .chat-tool-calls:first-child {
+  margin-top: 0;
+}
+
+[data-theme-pack='modern'] .chat-tool-calls:last-child {
+  margin-bottom: 0;
+}
+
+[data-theme-pack='modern'] .reasoning-embedded-tool.chat-tool-calls {
+  margin: 0.5em 0;
+  padding: 0;
 }
 
 [data-theme-pack='modern'] .chat-tool-calls .tool-call,
@@ -505,7 +518,6 @@
   border-radius: var(--workbench-control-radius);
 }
 
-[data-theme-pack='modern'] .chat-tool-calls .tool-call,
 [data-theme-pack='modern'] .tool-call-userspace-diff-card,
 [data-theme-pack='modern'] .chat-subagent-stream-card,
 [data-theme-pack='modern'] .datatable-container,
@@ -516,6 +528,74 @@
 [data-theme-pack='modern'] .chat-shared-context-popover {
   background: var(--color-widget);
   border: var(--workbench-container-border);
+}
+
+[data-theme-pack='modern'] .tool-call,
+[data-theme-pack='modern'] .chat-tool-calls .tool-call {
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+[data-theme-pack='modern'] .tool-call:not(:has(.tool-call-details)),
+[data-theme-pack='modern'] .chat-tool-calls .tool-call:not(:has(.tool-call-details)),
+[data-theme-pack='modern'] .tool-call-load-tools-flat {
+  min-height: 28px;
+  padding: 4px var(--space-xs);
+  margin-inline-start: calc(var(--space-xs) * -1);
+  background: transparent;
+  border-color: transparent;
+  box-sizing: border-box;
+}
+
+[data-theme-pack='modern'] .tool-call:hover:not(:has(.tool-call-details)),
+[data-theme-pack='modern'] .chat-tool-calls .tool-call:hover:not(:has(.tool-call-details)) {
+  background: var(--color-surface-hover);
+  border-color: transparent;
+}
+
+[data-theme-pack='modern'] .tool-call:not(:has(.tool-call-details)) .tool-call-header,
+[data-theme-pack='modern'] .chat-tool-calls .tool-call:not(:has(.tool-call-details)) .tool-call-header {
+  padding: 0;
+  min-height: 20px;
+}
+
+[data-theme-pack='modern'] .tool-call:has(.tool-call-details),
+[data-theme-pack='modern'] .chat-tool-calls .tool-call:has(.tool-call-details) {
+  background: var(--color-widget);
+  border: var(--workbench-container-border);
+  padding: var(--space-sm);
+  margin-inline-start: 0;
+}
+
+[data-theme-pack='modern'] .reasoning-block .tool-call:not(:has(.tool-call-details)),
+[data-theme-pack='modern'] .reasoning-embedded-tool .tool-call:not(:has(.tool-call-details)),
+[data-theme-pack='modern'] .reasoning-embedded-tool .tool-call-load-tools-flat {
+  min-height: 28px;
+  padding: 4px var(--space-xs);
+  margin-inline-start: calc(var(--space-xs) * -1);
+  background: transparent;
+  border-color: transparent;
+  box-sizing: border-box;
+}
+
+[data-theme-pack='modern'] .reasoning-block .tool-call:hover:not(:has(.tool-call-details)),
+[data-theme-pack='modern'] .reasoning-embedded-tool .tool-call:hover:not(:has(.tool-call-details)) {
+  background: var(--color-surface-hover);
+  border-color: transparent;
+}
+
+[data-theme-pack='modern'] .reasoning-block .tool-call:not(:has(.tool-call-details)) .tool-call-header,
+[data-theme-pack='modern'] .reasoning-embedded-tool .tool-call:not(:has(.tool-call-details)) .tool-call-header {
+  padding: 0;
+  min-height: 20px;
+}
+
+[data-theme-pack='modern'] .reasoning-block .tool-call:has(.tool-call-details),
+[data-theme-pack='modern'] .reasoning-embedded-tool .tool-call:has(.tool-call-details) {
+  background: var(--color-widget);
+  border: var(--workbench-container-border);
+  padding: var(--space-sm);
+  margin-inline-start: 0;
 }
 
 [data-theme-pack='modern'] .chart-container,
@@ -538,6 +618,7 @@
   background: transparent;
   border: none;
   padding: 0;
+  margin-inline-start: 0;
 }
 
 [data-theme-pack='modern'] .tool-call.tool-call-datatable:hover,

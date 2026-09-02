@@ -2796,8 +2796,23 @@ textarea.chat-header-title-input {
   border-color: var(--color-text-secondary);
 }
 .reasoning-embedded-tool {
-  margin: var(--space-xs) 0;
+  margin: 0.5em 0;
   white-space: normal;
+}
+.reasoning-embedded-tool.chat-tool-calls {
+  margin: 0.5em 0;
+  padding: 0;
+}
+.reasoning-embedded-tool .tool-call:not(:has(.tool-call-details)),
+.reasoning-embedded-tool .tool-call-load-tools-flat {
+  min-height: 28px;
+  padding: 4px var(--space-xs);
+  margin-inline-start: calc(var(--space-xs) * -1);
+  box-sizing: border-box;
+}
+.reasoning-embedded-tool .tool-call-header {
+  padding: 0;
+  min-height: 20px;
 }
 /* =============================================================================
    TOOL CALLS
@@ -2808,10 +2823,20 @@ textarea.chat-header-title-input {
   gap: 2px;
   width: 460px;
   max-width: 100%;
+  margin: 0.5em 0;
   --tool-call-radius-lg: var(--radius-lg);
   --tool-call-radius-sm: var(--radius-sm);
   --tool-call-font-xs: var(--text-xs);
   --tool-call-font-code: var(--text-xs);
+}
+.chat-tool-calls:first-child {
+  margin-top: 0;
+}
+.chat-tool-calls:last-child {
+  margin-bottom: 0;
+}
+.chat-tool-calls + .chat-tool-calls {
+  margin-top: calc(var(--space-2xs) * -1);
 }
 .chat-tool-calls:has(.tool-call-chart),
 .chat-tool-calls:has(.tool-call-datatable),
@@ -2823,10 +2848,14 @@ textarea.chat-header-title-input {
   align-items: center;
   gap: var(--space-xs);
   min-width: 0;
-  padding: var(--space-2xs) var(--space-xs);
+  min-height: 28px;
+  padding: 4px var(--space-xs);
+  margin-inline-start: calc(var(--space-xs) * -1);
   color: var(--color-text-secondary);
   font-size: var(--tool-call-font-xs);
   line-height: 1.4;
+  box-sizing: border-box;
+  border-radius: var(--tool-call-radius-sm);
 }
 .tool-call-load-tools-flat-icon {
   display: inline-flex;
@@ -2858,6 +2887,19 @@ textarea.chat-header-title-input {
   transition:
     border-color var(--transition-fast),
     background var(--transition-fast);
+}
+.tool-call:not(:has(.tool-call-details)) {
+  min-height: 28px;
+  padding: 4px var(--space-xs);
+  margin-inline-start: calc(var(--space-xs) * -1);
+}
+.tool-call:not(:has(.tool-call-details)) .tool-call-header {
+  padding: 0;
+  min-height: 20px;
+}
+.tool-call:has(.tool-call-details) {
+  padding: var(--space-sm);
+  margin-inline-start: 0;
 }
 .tool-call-chart,
 .tool-call-datatable {
