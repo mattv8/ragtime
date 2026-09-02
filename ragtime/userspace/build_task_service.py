@@ -43,6 +43,19 @@ _MIN_RESULT_CHARS = 1000
 _MAX_RESULT_CHARS = 100_000
 
 
+def _get_model_preferences_module() -> Any:
+    return importlib.import_module("ragtime.indexer.model_preferences")
+
+
+async def _resolve_new_workspace_conversation_model(app_settings: Any, *, user_id: str, workspace_id: str) -> str:
+    model_preferences = _get_model_preferences_module()
+    return await model_preferences.resolve_new_conversation_model(
+        app_settings,
+        user_id=user_id,
+        workspace_id=workspace_id,
+    )
+
+
 def _compute_reply_payload_hash(workspace_id: str, task_id: str, message: str) -> str:
     payload = {
         "message": (message or "").strip(),
@@ -231,10 +244,17 @@ class WorkspaceBuildTaskService:
 
         conversation = None
         try:
+            app_settings = await repository.get_settings()
+            resolved_model = await _resolve_new_workspace_conversation_model(
+                app_settings,
+                user_id=acting_user_id,
+                workspace_id=workspace_id,
+            )
             conversation = await repository.create_conversation(
                 title=brief.title.strip()[:120],
                 user_id=acting_user_id,
                 workspace_id=workspace_id,
+                model=resolved_model,
             )
             await bind_external_build_request_conversation(
                 ledger_row.id,

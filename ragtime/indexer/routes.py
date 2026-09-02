@@ -283,6 +283,8 @@ from ragtime.indexer.models import (
     InfluxdbDiscoverResponse,
     ListVisualizationBranchesResponse,
     MessageSnapshotRestoreResponse,
+    ModelPreferenceRequest,
+    ModelPreferenceResponse,
     MssqlDiscoverRequest,
     MssqlDiscoverResponse,
     MysqlDiscoverRequest,
@@ -385,6 +387,10 @@ def _sanitize_tool_connection_int_fields(connection_config: dict[str, Any]) -> d
             except (ValueError, TypeError):
                 pass
     return sanitized
+
+
+def _get_model_preferences_module() -> Any:
+    return importlib.import_module("ragtime.indexer.model_preferences")
 
 
 def _format_validation_error(exc: Exception) -> str:
@@ -8331,6 +8337,103 @@ async def _resolve_available_default_conversation_model(settings: AppSettings) -
     return _build_scoped_model_identifier(response.models[0])
 
 
+def _is_authoritative_provider_state(state: Optional[ProviderModelState]) -> bool:
+    return bool(state and state.configured and state.connected and not state.loading and not state.error)
+
+
+def _build_model_availability_snapshot(response: AvailableModelsResponse) -> Any:
+    model_preferences = _get_model_preferences_module()
+    authoritative_providers = frozenset(
+        normalized_provider
+        for state in response.provider_states
+        for normalized_provider in [normalize_provider_name(state.provider)]
+        if normalized_provider and _is_authoritative_provider_state(state)
+    )
+    return model_preferences.ModelAvailabilitySnapshot(
+        available_model_ids=frozenset(_build_discovered_model_identifiers(response.models)),
+        authoritative_providers=authoritative_providers,
+    )
+
+
+async def _build_chat_model_preferences_response(
+    *,
+    user_id: str,
+    workspace_id: Optional[str],
+    app_settings: Optional[AppSettings],
+) -> ModelPreferenceResponse:
+    model_preferences = _get_model_preferences_module()
+    user_default = await model_preferences.get_user_default_model(user_id)
+    workspace_default = None
+    if workspace_id:
+        workspace_default = await model_preferences.get_workspace_user_default_model(user_id, workspace_id)
+    effective_default = await model_preferences.resolve_new_conversation_model(
+        app_settings,
+        user_id=user_id,
+        workspace_id=workspace_id,
+    )
+    return ModelPreferenceResponse(
+        user_default_chat_model=user_default,
+        workspace_id=workspace_id,
+        workspace_default_chat_model=workspace_default,
+        global_default_chat_model=_resolve_default_conversation_model(app_settings),
+        effective_default_chat_model=effective_default,
+    )
+
+
+async def _validate_and_canonicalize_model_preference_identifier(identifier: str) -> str:
+    response = await get_available_chat_models()
+    if response.models_loading or not response.models:
+        raise HTTPException(status_code=503, detail="Chat model discovery is still loading. Retry once models are available.")
+
+    states_by_provider = {normalize_provider_name(state.provider): state for state in response.provider_states if normalize_provider_name(state.provider)}
+    match = _find_available_model_for_identifier(response.models, identifier)
+    if match is not None:
+        match_provider = normalize_provider_name(match.provider)
+        if not _is_authoritative_provider_state(states_by_provider.get(match_provider)):
+            raise HTTPException(status_code=503, detail="Chat model discovery is not authoritative for the selected provider.")
+        return _build_scoped_model_identifier(match)
+
+    provider, _model_id = _parse_model_identifier(identifier)
+    if provider:
+        if not _is_authoritative_provider_state(states_by_provider.get(provider)):
+            raise HTTPException(status_code=503, detail="Chat model discovery is not authoritative for the selected provider.")
+        raise HTTPException(status_code=400, detail="Selected model is not available in Chat Models.")
+
+    if any(state.configured and not _is_authoritative_provider_state(state) for state in states_by_provider.values()):
+        raise HTTPException(status_code=503, detail="Chat model discovery is not authoritative enough to validate that model.")
+    raise HTTPException(status_code=400, detail="Selected model is not available in Chat Models.")
+
+
+async def _clear_matching_personal_defaults_if_needed(
+    *,
+    user_id: Optional[str],
+    workspace_id: Optional[str],
+    stored_model: str,
+) -> None:
+    if not user_id:
+        return
+    model_preferences = _get_model_preferences_module()
+    await model_preferences.clear_matching_personal_defaults(user_id, workspace_id, stored_model)
+
+
+async def _resolve_owner_fallback_model(
+    settings: AppSettings,
+    *,
+    user_id: Optional[str],
+    workspace_id: Optional[str],
+) -> Optional[str]:
+    if not user_id:
+        return await _resolve_available_default_conversation_model(settings)
+    available = await get_available_chat_models()
+    model_preferences = _get_model_preferences_module()
+    return await model_preferences.resolve_new_conversation_model(
+        settings,
+        user_id=user_id,
+        workspace_id=workspace_id,
+        availability=_build_model_availability_snapshot(available),
+    )
+
+
 def _find_discovered_model(models: List[LLMModel], model_id: str) -> Optional[LLMModel]:
     """Find a discovered model by exact id, tolerating normalized GitHub prefixes."""
     requested = str(model_id or "").strip().lstrip("/")
@@ -8736,7 +8839,12 @@ async def _validate_conversation_model_selection(
         )
 
 
-async def _validate_conversation_model_before_send(stored_model: str) -> str:
+async def _validate_conversation_model_before_send(
+    stored_model: str,
+    *,
+    user_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+) -> str:
     """Verify the current conversation model still exists, or return a live default fallback."""
     provider, model_id = _parse_model_identifier(stored_model)
     if not model_id:
@@ -8755,12 +8863,21 @@ async def _validate_conversation_model_before_send(stored_model: str) -> str:
     normalized_provider = normalize_provider_name(provider)
     allowed_models = [str(value).strip() for value in (getattr(settings, "allowed_chat_models", None) or []) if str(value).strip()]
     if allowed_models and not _identifier_in_allowed_models(f"{normalized_provider}::{model_id}", allowed_models):
-        fallback_model = await _resolve_available_default_conversation_model(settings)
+        fallback_model = await _resolve_owner_fallback_model(
+            settings,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
         if fallback_model:
             logger.info(
                 "Falling back conversation model from unavailable %s to %s",
                 stored_model,
                 fallback_model,
+            )
+            await _clear_matching_personal_defaults_if_needed(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                stored_model=stored_model,
             )
             return fallback_model
         raise HTTPException(
@@ -8779,12 +8896,21 @@ async def _validate_conversation_model_before_send(stored_model: str) -> str:
     except HTTPException as exc:
         if exc.status_code != 400:
             raise
-        fallback_model = await _resolve_available_default_conversation_model(settings)
+        fallback_model = await _resolve_owner_fallback_model(
+            settings,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
         if fallback_model and fallback_model != f"{normalized_provider}::{model_id}":
             logger.info(
                 "Falling back conversation model from unavailable %s to %s",
                 stored_model,
                 fallback_model,
+            )
+            await _clear_matching_personal_defaults_if_needed(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                stored_model=stored_model,
             )
             return fallback_model
         raise
@@ -8818,12 +8944,19 @@ async def _persist_generation_failure_message(conversation_id: str, error: Excep
 async def _validate_generation_ready_after_user_message(
     conversation_id: str,
     stored_model: str,
+    *,
+    user_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ) -> str:
     """Validate generation readiness after the submitted user message is saved."""
     try:
         if not rag.is_ready:
             raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
-        return await _validate_conversation_model_before_send(stored_model)
+        return await _validate_conversation_model_before_send(
+            stored_model,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
     except Exception as exc:
         await _persist_generation_failure_message(conversation_id, exc)
         raise
@@ -11122,6 +11255,47 @@ async def get_available_chat_models() -> AvailableModelsResponse:
     )
 
 
+@router.get("/chat/model-preferences", response_model=ModelPreferenceResponse, tags=["Chat"])
+async def get_chat_model_preferences(
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    if workspace_id:
+        await _assert_workspace_access(workspace_id, user, "viewer")
+    app_settings = await repository.get_settings()
+    return await _build_chat_model_preferences_response(
+        user_id=user.id,
+        workspace_id=workspace_id,
+        app_settings=app_settings,
+    )
+
+
+@router.put("/chat/model-preferences", response_model=ModelPreferenceResponse, tags=["Chat"])
+async def put_chat_model_preferences(
+    request: ModelPreferenceRequest,
+    user: User = Depends(get_current_user),
+):
+    if request.workspace_id:
+        await _assert_workspace_access(request.workspace_id, user, "viewer")
+
+    model_preferences = _get_model_preferences_module()
+    canonical_model = None
+    if request.default_chat_model is not None:
+        canonical_model = await _validate_and_canonicalize_model_preference_identifier(request.default_chat_model)
+
+    if request.workspace_id:
+        await model_preferences.set_workspace_user_default_model(user.id, request.workspace_id, canonical_model)
+    else:
+        await model_preferences.set_user_default_model(user.id, canonical_model)
+
+    app_settings = await repository.get_settings()
+    return await _build_chat_model_preferences_response(
+        user_id=user.id,
+        workspace_id=request.workspace_id,
+        app_settings=app_settings,
+    )
+
+
 async def _build_available_models_response(app_settings: AppSettings) -> AvailableModelsResponse:
     all_models: List[AvailableModel] = []
     default_model = None
@@ -12090,7 +12264,12 @@ async def _send_message_to_loaded_conversation(
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
 
-    resolved_model = await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    resolved_model = await _validate_generation_ready_after_user_message(
+        conversation_id,
+        conv.model,
+        user_id=conv.user_id,
+        workspace_id=conv.workspace_id,
+    )
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
 
     chat_history = await _build_chat_history_for_conversation(
@@ -12215,7 +12394,12 @@ async def _send_background_message_to_loaded_conversation(
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
 
-    resolved_model = await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    resolved_model = await _validate_generation_ready_after_user_message(
+        conversation_id,
+        conv.model,
+        user_id=conv.user_id,
+        workspace_id=conv.workspace_id,
+    )
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
     current_time_context = _build_current_time_prompt_context(request)
 
@@ -12961,16 +13145,24 @@ async def create_conversation(
     user: User = Depends(get_current_user),
 ):
     """Create a new chat conversation for the current user."""
-    # Get default model from settings (manual override or sensible automatic fallback).
+    workspace_id = request.workspace_id if request else None
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
+
     app_settings = await repository.get_settings()
-    default_model = _resolve_default_conversation_model(app_settings)
 
     title = request.title if request and request.title else "Untitled Chat"
-    model = request.model if request and request.model else default_model
-
-    workspace_id = request.workspace_id if request else None
-
-    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
+    explicit_model = request.model if request else None
+    if explicit_model:
+        model = explicit_model
+    else:
+        available = await get_available_chat_models()
+        model_preferences = _get_model_preferences_module()
+        model = await model_preferences.resolve_new_conversation_model(
+            app_settings,
+            user_id=user.id,
+            workspace_id=workspace_id,
+            availability=_build_model_availability_snapshot(available),
+        )
 
     conv = await repository.create_conversation(
         title=title,
@@ -14410,7 +14602,12 @@ async def send_message_stream(
     if not conv:
         raise HTTPException(status_code=500, detail="Failed to store message")
 
-    resolved_model = await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    resolved_model = await _validate_generation_ready_after_user_message(
+        conversation_id,
+        conv.model,
+        user_id=conv.user_id,
+        workspace_id=conv.workspace_id,
+    )
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
 
     # Build chat history for RAG
@@ -15392,7 +15589,12 @@ async def send_message_background(
     schedule_title_generation(conversation_id, user_message)
 
     try:
-        resolved_model = await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+        resolved_model = await _validate_generation_ready_after_user_message(
+            conversation_id,
+            conv.model,
+            user_id=conv.user_id,
+            workspace_id=conv.workspace_id,
+        )
         conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
     except Exception:
         await repository.cancel_chat_task(claimed_task.id)

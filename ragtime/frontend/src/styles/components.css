@@ -127,6 +127,44 @@
   opacity: 0.8;
 }
 
+.model-preferences-modal {
+  max-width: 720px;
+}
+
+.model-preferences-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+}
+
+.model-preferences-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-secondary);
+}
+
+.model-preferences-section-header h4 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-lg);
+}
+
+.model-preferences-section-header .field-help,
+.model-preferences-summary {
+  margin: var(--space-xs) 0 0;
+}
+
+.model-preferences-actions {
+  justify-content: flex-end;
+  gap: var(--space-sm);
+  margin-top: 0;
+  padding: 0;
+}
+
 /* =============================================================================
    CARDS
    ============================================================================= */

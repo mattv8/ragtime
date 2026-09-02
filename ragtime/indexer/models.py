@@ -3047,6 +3047,38 @@ class CreateConversationRequest(BaseModel):
     )
 
 
+class ModelPreferenceRequest(BaseModel):
+    workspace_id: Optional[str] = Field(
+        default=None,
+        description="Optional User Space workspace ID for a personal workspace-scoped default",
+    )
+    default_chat_model: Optional[str] = Field(
+        default=None,
+        description="Optional provider-scoped chat model identifier; null resets the personal override",
+    )
+
+
+class ModelPreferenceResponse(BaseModel):
+    user_default_chat_model: Optional[str] = Field(
+        default=None,
+        description="The user's general default chat model override, if set",
+    )
+    workspace_id: Optional[str] = Field(
+        default=None,
+        description="Workspace ID for the workspace-scoped preference lookup, if any",
+    )
+    workspace_default_chat_model: Optional[str] = Field(
+        default=None,
+        description="The user's workspace-scoped default chat model override, if set",
+    )
+    global_default_chat_model: str = Field(
+        description="The instance-global default chat model after existing global fallback resolution",
+    )
+    effective_default_chat_model: str = Field(
+        description="The effective new-chat default after workspace, user, and global precedence",
+    )
+
+
 class ClientClockContext(BaseModel):
     """Browser clock sample captured when the user submitted a turn."""
 

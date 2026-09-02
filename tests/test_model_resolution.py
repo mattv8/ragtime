@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import cast
 from unittest import mock
 
+from prisma.models import User
 from pydantic import SecretStr
 
 import ragtime.core.model_limits as model_limits
@@ -1322,6 +1323,126 @@ class ModelSendEligibilityTests(unittest.IsolatedAsyncioTestCase):
             await indexer_routes._validate_conversation_model_before_send("github_copilot::openai/gpt-5.3-codex")
 
         validate_live_model.assert_awaited_once()
+
+    async def test_send_validation_clears_matching_owner_defaults_after_authoritative_fallback(self) -> None:
+        settings = SimpleNamespace(
+            allowed_chat_models=["openrouter::google/gemini-3.1-pro-preview", "openai::gpt-5"],
+            llm_provider="openrouter",
+            default_chat_model="openai::gpt-5",
+        )
+        available = AvailableModelsResponse(
+            models=[AvailableModel(id="gpt-5", name="GPT-5", provider="openai")],
+            provider_states=[
+                indexer_routes.ProviderModelState(provider="openrouter", configured=True, connected=True, available=True),
+                indexer_routes.ProviderModelState(provider="openai", configured=True, connected=True, available=True),
+            ],
+        )
+        fake_module = SimpleNamespace(
+            ModelAvailabilitySnapshot=SimpleNamespace,
+            resolve_new_conversation_model=mock.AsyncMock(return_value="openai::gpt-5"),
+            clear_matching_personal_defaults=mock.AsyncMock(),
+        )
+
+        with (
+            mock.patch.object(indexer_routes.repository, "get_settings", mock.AsyncMock(return_value=settings)),
+            mock.patch.object(
+                indexer_routes,
+                "_validate_conversation_model_selection",
+                mock.AsyncMock(side_effect=indexer_routes.HTTPException(status_code=400, detail="gone")),
+            ),
+            mock.patch.object(indexer_routes, "get_available_chat_models", mock.AsyncMock(return_value=available)),
+            mock.patch.object(indexer_routes, "_get_model_preferences_module", return_value=fake_module),
+        ):
+            resolved_model = await indexer_routes._validate_conversation_model_before_send(
+                "openrouter::google/gemini-3.1-pro-preview",
+                user_id="owner-1",
+                workspace_id="ws-1",
+            )
+
+        self.assertEqual(resolved_model, "openai::gpt-5")
+        fake_module.resolve_new_conversation_model.assert_awaited_once()
+        fake_module.clear_matching_personal_defaults.assert_awaited_once_with(
+            "owner-1",
+            "ws-1",
+            "openrouter::google/gemini-3.1-pro-preview",
+        )
+
+
+class ConversationCreationPreferenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_create_conversation_preserves_explicit_model_precedence(self) -> None:
+        user = cast(User, SimpleNamespace(id="user-1", role="user"))
+        created = SimpleNamespace(id="conv-1", model="anthropic::claude-4")
+
+        with (
+            mock.patch.object(indexer_routes, "_assert_workspace_access", mock.AsyncMock()),
+            mock.patch.object(indexer_routes.repository, "get_settings", mock.AsyncMock(return_value=SimpleNamespace())),
+            mock.patch.object(indexer_routes.repository, "create_conversation", mock.AsyncMock(return_value=created)) as create_mock,
+            mock.patch.object(indexer_routes, "_to_conversation_response", return_value={"id": "conv-1"}),
+            mock.patch.object(indexer_routes, "get_available_chat_models", mock.AsyncMock()) as available_mock,
+            mock.patch.object(indexer_routes, "_get_model_preferences_module") as preferences_mock,
+        ):
+            result = await indexer_routes.create_conversation(
+                indexer_routes.CreateConversationRequest(model="anthropic::claude-4", workspace_id="ws-1"),
+                user,
+            )
+
+        create_mock.assert_awaited_once_with(
+            title="Untitled Chat",
+            model="anthropic::claude-4",
+            user_id="user-1",
+            workspace_id="ws-1",
+        )
+        available_mock.assert_not_awaited()
+        preferences_mock.assert_not_called()
+        self.assertEqual(result, {"id": "conv-1"})
+
+    async def test_create_conversation_uses_cached_availability_and_authoritative_providers(self) -> None:
+        user = cast(User, SimpleNamespace(id="user-1", role="user"))
+        created = SimpleNamespace(id="conv-1", model="openai::gpt-5")
+        available = AvailableModelsResponse(
+            models=[
+                AvailableModel(id="gpt-5", name="GPT-5", provider="openai"),
+                AvailableModel(id="claude-4", name="Claude 4", provider="anthropic"),
+            ],
+            provider_states=[
+                indexer_routes.ProviderModelState(provider="openai", configured=True, connected=True, available=True),
+                indexer_routes.ProviderModelState(provider="anthropic", configured=True, connected=True, loading=True),
+                indexer_routes.ProviderModelState(provider="github_copilot", configured=True, connected=True, error="failed"),
+            ],
+        )
+
+        async def resolve_new_conversation_model(app_settings, **kwargs):
+            snapshot = kwargs["availability"]
+            self.assertEqual(snapshot.available_model_ids, frozenset({"openai::gpt-5", "anthropic::claude-4"}))
+            self.assertEqual(snapshot.authoritative_providers, frozenset({"openai"}))
+            self.assertEqual(kwargs["user_id"], "user-1")
+            self.assertEqual(kwargs["workspace_id"], "ws-1")
+            return "openai::gpt-5"
+
+        fake_module = SimpleNamespace(
+            ModelAvailabilitySnapshot=lambda **kwargs: SimpleNamespace(**kwargs),
+            resolve_new_conversation_model=mock.AsyncMock(side_effect=resolve_new_conversation_model),
+        )
+
+        with (
+            mock.patch.object(indexer_routes, "_assert_workspace_access", mock.AsyncMock()),
+            mock.patch.object(indexer_routes.repository, "get_settings", mock.AsyncMock(return_value=SimpleNamespace())),
+            mock.patch.object(indexer_routes, "get_available_chat_models", mock.AsyncMock(return_value=available)),
+            mock.patch.object(indexer_routes, "_get_model_preferences_module", return_value=fake_module),
+            mock.patch.object(indexer_routes.repository, "create_conversation", mock.AsyncMock(return_value=created)) as create_mock,
+            mock.patch.object(indexer_routes, "_to_conversation_response", return_value={"id": "conv-1"}),
+        ):
+            await indexer_routes.create_conversation(
+                indexer_routes.CreateConversationRequest(workspace_id="ws-1"),
+                user,
+            )
+
+        create_mock.assert_awaited_once_with(
+            title="Untitled Chat",
+            model="openai::gpt-5",
+            user_id="user-1",
+            workspace_id="ws-1",
+        )
 
 
 class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):

@@ -65,6 +65,8 @@ import type {
   AvailableModelsResponse,
   LoginRequest,
   LoginResponse,
+  ModelPreferenceRequest,
+  ModelPreferenceResponse,
   AuthStatus,
   User,
   LdapConfig,
@@ -611,6 +613,30 @@ export const api = {
     const user = await handleResponse<User>(response);
     resetAuthExpiredNotification();
     return user;
+  },
+
+  async getModelPreferences(workspaceId?: string): Promise<ModelPreferenceResponse> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/chat/model-preferences`, workspaceId),
+      { cache: 'no-store' },
+    );
+    return handleResponse<ModelPreferenceResponse>(response);
+  },
+
+  async updateModelPreference(
+    model: string | null,
+    workspaceId?: string,
+  ): Promise<ModelPreferenceResponse> {
+    const request: ModelPreferenceRequest = {
+      workspace_id: workspaceId ?? null,
+      default_chat_model: model,
+    };
+    const response = await apiFetch(`${API_BASE}/chat/model-preferences`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<ModelPreferenceResponse>(response);
   },
 
   /**

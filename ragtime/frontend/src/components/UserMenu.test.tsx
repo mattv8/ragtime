@@ -9,6 +9,9 @@ const apiMock = vi.hoisted(() => ({
   getMfaStatus: vi.fn(),
   listWebauthnCredentials: vi.fn(),
   updateMyThemePack: vi.fn(),
+  getModelPreferences: vi.fn(),
+  updateModelPreference: vi.fn(),
+  listUserSpaceWorkspaces: vi.fn(),
   deleteWebauthnCredential: vi.fn(),
   renameWebauthnCredential: vi.fn(),
   startWebauthnRegistration: vi.fn(),
@@ -34,6 +37,10 @@ vi.mock('./DeleteConfirmButton', () => ({
       {buttonText ?? 'Delete'}
     </button>
   ),
+}));
+vi.mock('./ModelPreferencesModal', () => ({
+  ModelPreferencesModal: ({ isOpen }: { isOpen: boolean }) =>
+    isOpen ? <div id="model-preferences-modal">Preferences modal</div> : null,
 }));
 
 function createStorageStub(): Storage {
@@ -212,5 +219,22 @@ describe('UserMenu passkey management', () => {
     await userInteraction.click(screen.getByRole('button', { name: /alice/i }));
 
     expect(screen.getByText('Theme: Modern')).not.toBeNull();
+  });
+
+  it('shows theme and mode before opening preferences, then closes the dropdown after opening the modal', async () => {
+    const userInteraction = userEvent.setup();
+    render(<UserMenu user={user} onLogout={vi.fn()} />);
+
+    await userInteraction.click(screen.getByRole('button', { name: /alice/i }));
+
+    expect(screen.getByRole('button', { name: /theme:/i })).not.toBeNull();
+    expect(screen.getByRole('button', { name: /mode:/i })).not.toBeNull();
+    expect(screen.getByRole('button', { name: /preferences/i })).not.toBeNull();
+
+    await userInteraction.click(screen.getByRole('button', { name: /preferences/i }));
+
+    expect(document.querySelector('#model-preferences-modal')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: /theme:/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /mode:/i })).toBeNull();
   });
 });

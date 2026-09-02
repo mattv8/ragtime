@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import importlib
 import io
 import json
 import mimetypes
@@ -120,7 +121,7 @@ from ragtime.indexer.models import (
     FilesystemConnectionConfig,
     UpdateConversationShareAccessRequest,
 )
-from ragtime.indexer.repository import _normalize_loaded_tool_skill_ids, _resolve_default_conversation_model, repository
+from ragtime.indexer.repository import _normalize_loaded_tool_skill_ids, repository
 from ragtime.indexer.tool_health import tool_health_monitor
 from ragtime.indexer.tool_selection import resolve_effective_tool_ids
 from ragtime.indexer.utils import safe_tool_name
@@ -297,6 +298,34 @@ from ragtime.userspace.workspace_tool_options import (
 )
 
 logger = get_logger(__name__)
+
+
+def _get_model_preferences_module() -> Any:
+    return importlib.import_module("ragtime.indexer.model_preferences")
+
+
+async def _resolve_new_userspace_conversation_model(
+    app_settings: Any,
+    *,
+    user_id: str,
+    workspace_id: str | None = None,
+) -> str:
+    model_preferences = _get_model_preferences_module()
+    return await model_preferences.resolve_new_conversation_model(
+        app_settings,
+        user_id=user_id,
+        workspace_id=workspace_id,
+    )
+
+
+async def _get_workspace_user_default_model_snapshot(user_id: str, workspace_id: str) -> str | None:
+    model_preferences = _get_model_preferences_module()
+    return await model_preferences.get_workspace_user_default_model(user_id, workspace_id)
+
+
+async def _set_workspace_user_default_model_snapshot(user_id: str, workspace_id: str, model: str | None) -> None:
+    model_preferences = _get_model_preferences_module()
+    await model_preferences.set_workspace_user_default_model(user_id, workspace_id, model)
 
 
 class _WorkspaceOwnerRef(Protocol):
@@ -3437,6 +3466,7 @@ class UserSpaceService:
         source_workspace_id: str,
         request: DuplicateWorkspaceRequest,
         user_id: str,
+        source_workspace_default_model: str | None,
         resolved_model: str,
     ) -> None:
         created_workspace_id: str | None = None
@@ -3476,6 +3506,11 @@ class UserSpaceService:
                     user_id,
                 )
                 created_workspace_id = workspace.id
+                await _set_workspace_user_default_model_snapshot(
+                    user_id,
+                    workspace.id,
+                    source_workspace_default_model,
+                )
 
                 self._set_workspace_duplicate_task_phase(
                     task_id,
@@ -5935,7 +5970,10 @@ class UserSpaceService:
         # Snapshot the default model at enqueue time so the conversation
         # receives the model the user saw when they clicked "create".
         app_settings = await repository.get_settings()
-        resolved_model = _resolve_default_conversation_model(app_settings)
+        resolved_model = await _resolve_new_userspace_conversation_model(
+            app_settings,
+            user_id=user_id,
+        )
 
         task_id = str(uuid4())
         now = utc_now()
@@ -5982,7 +6020,15 @@ class UserSpaceService:
         self._prune_expired_workspace_duplicate_task_statuses()
 
         app_settings = await repository.get_settings()
-        resolved_model = _resolve_default_conversation_model(app_settings)
+        source_workspace_default_model = await _get_workspace_user_default_model_snapshot(
+            user_id,
+            source_workspace.id,
+        )
+        resolved_model = await _resolve_new_userspace_conversation_model(
+            app_settings,
+            user_id=user_id,
+            workspace_id=source_workspace.id,
+        )
         target_name = (request.name or "").strip() or await self._allocate_next_duplicate_workspace_name(
             user_id,
             source_workspace.name,
@@ -6009,6 +6055,7 @@ class UserSpaceService:
                 source_workspace.id,
                 queued_request,
                 user_id,
+                source_workspace_default_model,
                 resolved_model,
             ),
             name=f"userspace-workspace-duplicate:{task_id}",

@@ -869,6 +869,14 @@ class WorkspaceToolOptionDuplicateAndArchiveTests(unittest.IsolatedAsyncioTestCa
         create_requests: list[Any] = []
 
         with (
+            mock.patch.dict(
+                sys.modules,
+                {
+                    "ragtime.indexer.model_preferences": types.SimpleNamespace(
+                        set_workspace_user_default_model=mock.AsyncMock(),
+                    )
+                },
+            ),
             mock.patch.object(service, "_enforce_workspace_access", new=_fake_enforce),
             mock.patch("ragtime.userspace.service.repository.get_settings", mock.AsyncMock(return_value=SimpleNamespace())),
             mock.patch(
@@ -897,6 +905,7 @@ class WorkspaceToolOptionDuplicateAndArchiveTests(unittest.IsolatedAsyncioTestCa
                 "source-ws",
                 DuplicateWorkspaceRequest(copy_metadata=True, copy_files=False, copy_chats=False, copy_mounts=False),
                 "user-1",
+                None,
                 "gpt-test",
             )
 

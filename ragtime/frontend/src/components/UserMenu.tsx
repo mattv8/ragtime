@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { User, ChevronDown, LogOut, Moon, Sun, Monitor, Palette, Shield } from 'lucide-react';
+import { User, ChevronDown, LogOut, Moon, Sun, Monitor, Palette, Settings, Shield } from 'lucide-react';
 import type { User as UserType } from '@/types';
 import { api } from '@/api';
 import { Manage2FAModal } from './Manage2FAModal';
+import { ModelPreferencesModal } from './ModelPreferencesModal';
 import { ThemeChromeIcon } from '@/components/shared/ThemeChromeIcon';
 import {
   THEME_PACKS,
@@ -51,6 +52,7 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
     normalizeThemePackId(user.theme_pack),
   );
   const [mfaHubOpen, setMfaHubOpen] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
   useEffect(() => {
     setThemePackState(normalizeThemePackId(user.theme_pack));
   }, [user.theme_pack]);
@@ -133,6 +135,11 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
     return getThemePack(themePack).label;
   };
 
+  const openPreferences = () => {
+    setIsOpen(false);
+    setPreferencesOpen(true);
+  };
+
   return (
     <div className="user-menu" ref={menuRef} data-workbench-boundary="user-menu">
       <button
@@ -193,6 +200,11 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
               <span>Manage 2FA</span>
             </button>
 
+            <button className="user-menu-item" onClick={openPreferences}>
+              <Settings size={16} />
+              <span>Preferences</span>
+            </button>
+
             <div className="user-menu-divider" />
 
             <button className="user-menu-item user-menu-logout" onClick={onLogout}>
@@ -203,6 +215,7 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
           document.body,
         )}
       <Manage2FAModal isOpen={mfaHubOpen} onClose={() => setMfaHubOpen(false)} />
+      <ModelPreferencesModal isOpen={preferencesOpen} onClose={() => setPreferencesOpen(false)} />
     </div>
   );
 }

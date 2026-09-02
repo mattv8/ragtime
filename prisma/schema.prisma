@@ -1008,6 +1008,7 @@ model User {
   role               UserRole      @default(user)
   roleManuallySet    Boolean       @default(false) @map("role_manually_set") // True when admin manually changed role; cleared on LDAP login
   themePack          String?       @map("theme_pack") // Per-user app theme pack; null means inherit the global default
+  defaultChatModel   String?       @map("default_chat_model")
   mfaPreferredMethod String?       @map("mfa_preferred_method") // Preferred 2FA method presented first at login; null means inherit the global default
   lastLoginAt        DateTime?     @map("last_login_at")
 
@@ -1040,11 +1041,28 @@ model User {
   mfaTrustedDevices                    UserMfaTrustedDevice[]
   webauthnCredentials                  UserWebauthnCredential[]
   toolUserAccess                       ToolUserAccess[]
+  workspacePreferences                 WorkspaceUserPreference[]
 
   @@index([authProvider])
   @@index([sourceProvider, sourceId])
   @@index([sourceExpiresAt])
   @@map("users")
+}
+
+model WorkspaceUserPreference {
+  id               String   @id @default(uuid())
+  workspaceId      String   @map("workspace_id")
+  userId           String   @map("user_id")
+  defaultChatModel String   @map("default_chat_model")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+  @@map("workspace_user_preferences")
 }
 
 /// Global auth-provider behavior flags. Kept provider-neutral for future OIDC/SAML sources.
@@ -1541,6 +1559,7 @@ model Workspace {
   agentAccess                 WorkspaceAgentAccess?
   webhookDeliveries           GitWebhookDelivery[]
   identityEntitlementRules    WorkspaceIdentityEntitlementRule[]
+  userPreferences             WorkspaceUserPreference[]
 
   @@unique([ownerUserId, nameNormalized])
   @@index([ownerUserId])

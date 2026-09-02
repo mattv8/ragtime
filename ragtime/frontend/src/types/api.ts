@@ -222,6 +222,19 @@ export interface MfaStatusResponse {
   default_method?: MfaMethod | null;
 }
 
+export interface ModelPreferenceRequest {
+  workspace_id?: string | null;
+  default_chat_model?: string | null;
+}
+
+export interface ModelPreferenceResponse {
+  user_default_chat_model?: string | null;
+  workspace_id?: string | null;
+  workspace_default_chat_model?: string | null;
+  global_default_chat_model: string;
+  effective_default_chat_model: string;
+}
+
 export type AuthMethodAvailability = 'available' | 'unavailable' | 'not_configured';
 
 export interface AuthMethodStatus {
