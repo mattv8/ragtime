@@ -5420,8 +5420,6 @@ textarea:focus {
 }
 
 .userspace-external-api-access {
-  border-top: 1px solid var(--color-border);
-  padding-top: var(--space-md);
 }
 
 .userspace-external-api-grid {
