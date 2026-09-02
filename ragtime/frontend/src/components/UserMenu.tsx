@@ -1,6 +1,16 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { User, ChevronDown, LogOut, Moon, Sun, Monitor, Palette, Settings, Shield } from 'lucide-react';
+import {
+  User,
+  ChevronDown,
+  LogOut,
+  Moon,
+  Sun,
+  Monitor,
+  Palette,
+  Settings,
+  Shield,
+} from 'lucide-react';
 import type { User as UserType } from '@/types';
 import { api } from '@/api';
 import { Manage2FAModal } from './Manage2FAModal';

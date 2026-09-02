@@ -107,6 +107,9 @@ _RUNTIME_PUBLIC_PREVIEW_PROBE_ATTEMPTS = 2
 _RUNTIME_PUBLIC_PREVIEW_PROBE_RETRY_DELAY_SECONDS = 0.2
 # How often to (re-)log a WARNING for a given unreachable preview origin.
 _RUNTIME_PUBLIC_PREVIEW_UNREACHABLE_LOG_INTERVAL_SECONDS = 300.0
+_WORKSPACE_SERVICE_START_FAILURE_WINDOW_SECONDS = 300.0
+_WORKSPACE_SERVICE_START_FAILURE_LIMIT = 3
+_WORKSPACE_SERVICE_START_STATE_MAX = 512
 
 
 @dataclass
@@ -158,6 +161,12 @@ class UserSpaceRuntimeService:
         self._workspace_preview_bridge_readiness_locks: dict[str, asyncio.Lock] = {}
         self._workspace_preview_bridge_readiness_locks_lock = asyncio.Lock()
         self._workspace_preview_bridge_last_recovery_attempt_ts: dict[str, float] = {}
+        self._workspace_service_start_locks: dict[str, asyncio.Lock] = {}
+        self._workspace_service_start_lock_last_used: dict[str, float] = {}
+        self._workspace_service_start_locks_lock = asyncio.Lock()
+        self._workspace_service_start_failures: dict[str, list[float]] = {}
+        self._workspace_service_start_lock_max = _WORKSPACE_SERVICE_START_STATE_MAX
+        self._workspace_service_start_failure_workspace_max = _WORKSPACE_SERVICE_START_STATE_MAX
         self._runtime_bridge_refresh_watch_task: asyncio.Task[None] | None = None
         self._runtime_bridge_auth_failure_audit_dedupe: dict[str, float] = {}
         self._runtime_bridge_auth_failure_audit_lock = asyncio.Lock()
@@ -860,6 +869,92 @@ class UserSpaceRuntimeService:
                 existing = asyncio.Lock()
                 self._workspace_preview_bridge_readiness_locks[workspace_id] = existing
             return existing
+
+    async def _get_workspace_service_start_lock(self, workspace_id: str) -> asyncio.Lock:
+        async with self._workspace_service_start_locks_lock:
+            now_ts = _time.monotonic()
+            existing = self._workspace_service_start_locks.get(workspace_id)
+            if existing is None:
+                existing = asyncio.Lock()
+                self._workspace_service_start_locks[workspace_id] = existing
+            self._workspace_service_start_lock_last_used[workspace_id] = now_ts
+            self._prune_workspace_service_start_locks_locked(protected_workspace_id=workspace_id)
+            return existing
+
+    def _prune_workspace_service_start_locks_locked(self, *, protected_workspace_id: str) -> None:
+        while len(self._workspace_service_start_locks) > self._workspace_service_start_lock_max:
+            removable_workspace_id: str | None = None
+            removable_last_used: float | None = None
+            for candidate_workspace_id, candidate_lock in self._workspace_service_start_locks.items():
+                if candidate_workspace_id == protected_workspace_id or candidate_lock.locked():
+                    continue
+                candidate_last_used = self._workspace_service_start_lock_last_used.get(candidate_workspace_id, float("-inf"))
+                if removable_last_used is None or candidate_last_used < removable_last_used:
+                    removable_workspace_id = candidate_workspace_id
+                    removable_last_used = candidate_last_used
+            if removable_workspace_id is None:
+                return
+            self._workspace_service_start_locks.pop(removable_workspace_id, None)
+            self._workspace_service_start_lock_last_used.pop(removable_workspace_id, None)
+
+    def _prune_all_workspace_service_start_failures(self, now_ts: float) -> None:
+        latest_failure_by_workspace: list[tuple[str, float]] = []
+        for candidate_workspace_id in list(self._workspace_service_start_failures):
+            failures = [
+                value
+                for value in self._workspace_service_start_failures.get(candidate_workspace_id, [])
+                if now_ts - value < _WORKSPACE_SERVICE_START_FAILURE_WINDOW_SECONDS
+            ]
+            if failures:
+                self._workspace_service_start_failures[candidate_workspace_id] = failures
+                latest_failure_by_workspace.append((candidate_workspace_id, max(failures)))
+            else:
+                self._workspace_service_start_failures.pop(candidate_workspace_id, None)
+        if len(self._workspace_service_start_failures) <= self._workspace_service_start_failure_workspace_max:
+            return
+        latest_failure_by_workspace.sort(key=lambda item: item[1])
+        for candidate_workspace_id, _ in latest_failure_by_workspace:
+            if len(self._workspace_service_start_failures) <= self._workspace_service_start_failure_workspace_max:
+                break
+            self._workspace_service_start_failures.pop(candidate_workspace_id, None)
+
+    def _prune_workspace_service_start_failures(self, workspace_id: str, now_ts: float) -> list[float]:
+        self._prune_all_workspace_service_start_failures(now_ts)
+        return list(self._workspace_service_start_failures.get(workspace_id, []))
+
+    def _workspace_service_start_retry_after_seconds(self, failures: list[float], now_ts: float) -> int:
+        if not failures:
+            return int(_WORKSPACE_SERVICE_START_FAILURE_WINDOW_SECONDS)
+        oldest = min(failures)
+        remaining = _WORKSPACE_SERVICE_START_FAILURE_WINDOW_SECONDS - (now_ts - oldest)
+        return max(1, int(remaining + 0.999999))
+
+    async def ensure_service_preview_session(self, workspace_id: str) -> UserSpaceRuntimeSession:
+        now_ts = _time.monotonic()
+        failures = self._prune_workspace_service_start_failures(workspace_id, now_ts)
+        if len(failures) >= _WORKSPACE_SERVICE_START_FAILURE_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail="Workspace runtime start is temporarily throttled",
+                headers={"Retry-After": str(self._workspace_service_start_retry_after_seconds(failures, now_ts))},
+            )
+        try:
+            session = await self.ensure_shared_preview_session(workspace_id)
+        except HTTPException as exc:
+            if exc.status_code in {502, 503}:
+                failures = self._prune_workspace_service_start_failures(workspace_id, _time.monotonic())
+                failures.append(_time.monotonic())
+                self._workspace_service_start_failures[workspace_id] = failures
+                self._prune_all_workspace_service_start_failures(_time.monotonic())
+                retry_after = self._workspace_service_start_retry_after_seconds(failures, _time.monotonic())
+                raise HTTPException(
+                    status_code=503,
+                    detail=str(exc.detail) or "Workspace runtime unavailable",
+                    headers={"Retry-After": str(retry_after)},
+                ) from exc
+            raise
+        self._workspace_service_start_failures.pop(workspace_id, None)
+        return session
 
     @staticmethod
     def _bridge_recovery_monotonic() -> float:
@@ -2417,6 +2512,27 @@ class UserSpaceRuntimeService:
         if not base_url:
             session = await self.ensure_shared_preview_session(workspace_id)
             base_url = self._resolve_preview_base_url(session)
+        normalized_path = quote((path or "").lstrip("/"), safe="/@._-~")
+        upstream = f"{base_url}/{normalized_path}" if normalized_path else f"{base_url}/"
+        if query:
+            upstream = f"{upstream}?{query}"
+        return upstream
+
+    async def build_service_preview_upstream_url(
+        self,
+        workspace_id: str,
+        path: str,
+        query: str | None = None,
+    ) -> str:
+        base_url = await self._get_cached_preview_upstream_base_url(workspace_id)
+        if not base_url:
+            workspace_lock = await self._get_workspace_service_start_lock(workspace_id)
+            async with workspace_lock:
+                base_url = await self._get_cached_preview_upstream_base_url(workspace_id)
+                if not base_url:
+                    session = await self.ensure_service_preview_session(workspace_id)
+                    await self._cache_preview_upstream_session(session)
+                    base_url = self._resolve_preview_base_url(session)
         normalized_path = quote((path or "").lstrip("/"), safe="/@._-~")
         upstream = f"{base_url}/{normalized_path}" if normalized_path else f"{base_url}/"
         if query:

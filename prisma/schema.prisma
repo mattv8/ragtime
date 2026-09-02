@@ -1042,6 +1042,8 @@ model User {
   webauthnCredentials                  UserWebauthnCredential[]
   toolUserAccess                       ToolUserAccess[]
   workspacePreferences                 WorkspaceUserPreference[]
+  approvedWorkspacePublishedEndpoints  WorkspacePublishedEndpoint[]          @relation("PublishedEndpointApprover")
+  createdWorkspaceServiceCredentials   WorkspaceServiceCredential[]          @relation("WorkspaceServiceCredentialCreator")
 
   @@index([authProvider])
   @@index([sourceProvider, sourceId])
@@ -1560,11 +1562,106 @@ model Workspace {
   webhookDeliveries           GitWebhookDelivery[]
   identityEntitlementRules    WorkspaceIdentityEntitlementRule[]
   userPreferences             WorkspaceUserPreference[]
+  publishedEndpoints          WorkspacePublishedEndpoint[]
+  serviceCredentials          WorkspaceServiceCredential[]
+  apiRequestLogs              WorkspaceApiRequestLog[]
 
   @@unique([ownerUserId, nameNormalized])
   @@index([ownerUserId])
   @@index([updatedAt])
   @@map("workspaces")
+}
+
+model WorkspacePublishedEndpoint {
+  id               String    @id @default(uuid())
+  workspaceId      String    @map("workspace_id")
+  key              String
+  label            String
+  description      String?
+  method           String
+  path             String
+  definitionHash   String    @map("definition_hash")
+  enabled          Boolean   @default(true)
+  approvedByUserId String?   @map("approved_by_user_id")
+  approvedAt       DateTime  @map("approved_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  workspace        Workspace                           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  approvedByUser   User?                               @relation("PublishedEndpointApprover", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  credentialGrants WorkspaceServiceCredentialEndpoint[]
+
+  @@unique([workspaceId, key])
+  @@unique([workspaceId, method, path])
+  @@index([workspaceId])
+  @@index([approvedByUserId])
+  @@map("workspace_published_endpoints")
+}
+
+model WorkspaceServiceCredential {
+  id              String    @id @default(uuid())
+  workspaceId     String    @map("workspace_id")
+  label           String
+  tokenPrefix     String    @unique @map("token_prefix")
+  tokenHash       String    @map("token_hash")
+  enabled         Boolean   @default(true)
+  expiresAt       DateTime? @map("expires_at")
+  lastUsedAt      DateTime? @map("last_used_at")
+  requestCount    Int       @default(0) @map("request_count")
+  createdByUserId String?   @map("created_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+  revokedAt       DateTime? @map("revoked_at")
+
+  workspace      Workspace                           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdByUser  User?                               @relation("WorkspaceServiceCredentialCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  endpointGrants WorkspaceServiceCredentialEndpoint[]
+  requestLogs    WorkspaceApiRequestLog[]
+
+  @@index([workspaceId])
+  @@index([expiresAt])
+  @@index([createdByUserId])
+  @@map("workspace_service_credentials")
+}
+
+model WorkspaceServiceCredentialEndpoint {
+  id           String @id @default(uuid())
+  credentialId String @map("credential_id")
+  endpointId   String @map("endpoint_id")
+
+  credential WorkspaceServiceCredential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+  endpoint   WorkspacePublishedEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([credentialId, endpointId])
+  @@index([credentialId])
+  @@index([endpointId])
+  @@map("workspace_service_credential_endpoints")
+}
+
+model WorkspaceApiRequestLog {
+  id                String    @id @default(uuid())
+  workspaceId       String    @map("workspace_id")
+  credentialId      String?   @map("credential_id")
+  credentialLabel   String    @default("") @map("credential_label")
+  endpointKey       String    @default("") @map("endpoint_key")
+  endpointLabel     String    @default("") @map("endpoint_label")
+  method            String
+  pathTemplate      String    @map("path_template")
+  statusCode        Int       @map("status_code")
+  durationMs        Int       @map("duration_ms")
+  clientFingerprint String?   @map("client_fingerprint")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  workspace  Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  credential WorkspaceServiceCredential? @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([credentialId, createdAt])
+  @@index([endpointKey, createdAt])
+  @@index([statusCode, createdAt])
+  @@map("workspace_api_request_logs")
 }
 
 model WorkspaceIdentityEntitlementRule {

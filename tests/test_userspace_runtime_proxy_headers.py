@@ -174,6 +174,30 @@ class UserSpaceRuntimeProxyHeaderTests(unittest.TestCase):
         self.assertNotIn("x-ragtime-internal-authenticated-display-name", headers)
         self.assertNotIn("x-ragtime-internal-user-fingerprint", headers)
 
+    def test_worker_preview_proxy_translates_private_service_identity_headers(self) -> None:
+        request = _build_request(
+            "http",
+            [
+                (b"host", b"runtime-worker.test"),
+                (b"authorization", b"Bearer worker-token"),
+                (b"x-ragtime-internal-authenticated-actor-type", b"service"),
+                (b"x-ragtime-internal-service-credential-id", b"cred-1"),
+                (b"x-ragtime-internal-service-credential-label", b"August workpapers"),
+                (b"x-ragtime-internal-published-endpoint-key", b"periods"),
+            ],
+        )
+
+        headers = _worker_preview_request_headers(request)
+
+        self.assertEqual(headers.get("x-ragtime-authenticated-actor-type"), "service")
+        self.assertEqual(headers.get("x-ragtime-service-credential-id"), "cred-1")
+        self.assertEqual(headers.get("x-ragtime-service-credential-label"), "August workpapers")
+        self.assertEqual(headers.get("x-ragtime-published-endpoint-key"), "periods")
+        self.assertNotIn("x-ragtime-internal-authenticated-actor-type", headers)
+        self.assertNotIn("x-ragtime-internal-service-credential-id", headers)
+        self.assertNotIn("x-ragtime-internal-service-credential-label", headers)
+        self.assertNotIn("x-ragtime-internal-published-endpoint-key", headers)
+
     def test_worker_preview_proxy_drops_public_identity_spoofs_without_private_claims(self) -> None:
         request = _build_request(
             "http",
@@ -470,6 +494,78 @@ class ProxyHttpRequestPreviewHostGateTests(unittest.IsolatedAsyncioTestCase):
         set_cookies = [value for key, value in response.raw_headers if key == b"set-cookie"]
         self.assertEqual(set_cookies, [])
         self.assertFalse(client.is_closed)
+
+    async def test_service_mode_bypasses_html_rewriting_and_strips_service_spoofs(self) -> None:
+        runtime_bearer = "runtime-internal-token"
+        client_service_bearer = "rtws_secret"
+        html = b'<html><head><script src="/main.js"></script></head><body>Machine response</body></html>'
+        upstream = _FakeUpstreamResponse(
+            httpx.Headers([("content-type", "text/html"), ("set-cookie", f"{_browser_app_cookie_name('sid')}=rotated; Path=/")]),
+            body=html,
+        )
+        client = _FakeUpstreamClient(upstream)
+
+        async def receive() -> dict[str, object]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/periods",
+                "raw_path": b"/api/periods",
+                "query_string": b"",
+                "headers": [
+                    (b"host", b"workspace.preview.test"),
+                    (b"accept", b"text/html"),
+                    (b"authorization", f"Bearer {client_service_bearer}".encode("ascii")),
+                    (b"cookie", f"{_browser_app_cookie_name('sid')}=app-value".encode("ascii")),
+                    (b"x-api-key", b"spoofed"),
+                    (b"x-ragtime-authenticated-actor-type", b"spoofed"),
+                    (b"x-ragtime-service-credential-id", b"spoofed-cred"),
+                    (b"x-ragtime-service-credential-label", b"spoofed-label"),
+                    (b"x-ragtime-published-endpoint-key", b"spoofed-key"),
+                ],
+                "scheme": "https",
+                "server": ("workspace.preview.test", 443),
+                "client": ("127.0.0.1", 12345),
+            },
+            receive,
+        )
+
+        with (
+            mock.patch.object(_RUNTIME_ROUTES, "_get_proxy_client", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES.settings, "userspace_runtime_auth_token", runtime_bearer),
+        ):
+            response = await _RUNTIME_ROUTES._proxy_http_request(
+                request,
+                "http://runtime/api/periods",
+                service_mode=True,
+                verified_identity_headers={
+                    "x-ragtime-internal-authenticated-actor-type": "service",
+                    "x-ragtime-internal-service-credential-id": "cred-1",
+                    "x-ragtime-internal-service-credential-label": "August workpapers",
+                    "x-ragtime-internal-published-endpoint-key": "periods",
+                },
+            )
+
+        self.assertEqual(bytes(response.body), html)
+        self.assertNotIn(b"window.__ragtime_session", bytes(response.body))
+        self.assertNotIn(b"bridge.js", bytes(response.body))
+        sent_headers = client.sent_headers or {}
+        self.assertEqual(sent_headers.get("x-ragtime-internal-authenticated-actor-type"), "service")
+        self.assertEqual(sent_headers.get("x-ragtime-internal-service-credential-id"), "cred-1")
+        self.assertEqual(sent_headers.get("x-ragtime-internal-service-credential-label"), "August workpapers")
+        self.assertEqual(sent_headers.get("x-ragtime-internal-published-endpoint-key"), "periods")
+        self.assertNotEqual(sent_headers.get("authorization"), f"Bearer {client_service_bearer}")
+        self.assertEqual(sent_headers.get("authorization"), f"Bearer {runtime_bearer}")
+        self.assertNotIn("cookie", sent_headers)
+        self.assertNotIn("x-api-key", sent_headers)
+        self.assertNotIn("x-ragtime-authenticated-actor-type", sent_headers)
+        self.assertNotIn("x-ragtime-service-credential-id", sent_headers)
+        self.assertNotIn("x-ragtime-service-credential-label", sent_headers)
+        self.assertNotIn("x-ragtime-published-endpoint-key", sent_headers)
+        self.assertEqual([value for key, value in response.raw_headers if key == b"set-cookie"], [])
 
 
 class ProxyRequestHeadersShareAuthBlockTests(unittest.TestCase):

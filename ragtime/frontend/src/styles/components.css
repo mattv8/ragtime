@@ -5419,6 +5419,188 @@ textarea:focus {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.userspace-external-api-access {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-md);
+}
+
+.userspace-external-api-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-sm);
+}
+
+.userspace-external-api-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.userspace-external-api-card h5 {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.userspace-external-api-callout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-light);
+  color: var(--color-text-primary);
+}
+
+.userspace-external-api-callout ul {
+  margin: 0;
+  padding-left: var(--space-lg);
+}
+
+.userspace-external-api-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.userspace-external-api-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+}
+
+.userspace-external-api-item-header,
+.userspace-external-api-example-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.userspace-external-api-item-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-weight: 600;
+}
+
+.userspace-external-api-item-meta,
+.userspace-external-api-credential-meta,
+.userspace-external-api-checkbox-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
+.userspace-external-api-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.userspace-external-api-status.is-stale {
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
+
+.userspace-external-api-status.is-revoked {
+  border-color: var(--color-error-border);
+  background: var(--color-error-light);
+  color: var(--color-error);
+}
+
+.userspace-external-api-endpoint-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.userspace-external-api-checkbox-row {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: flex-start;
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+}
+
+.userspace-external-api-checkbox-row input {
+  margin-top: 2px;
+}
+
+.userspace-external-api-checkbox-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.userspace-external-api-reveal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.userspace-external-api-examples {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-sm);
+}
+
+.userspace-external-api-code-block {
+  margin: 0;
+  padding: var(--space-sm);
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.userspace-external-api-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.jobs-table.userspace-external-api-table {
+  min-width: max(100%, 760px);
+}
+
+.userspace-external-api-table th,
+.userspace-external-api-table td {
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--text-sm);
+}
+
+.userspace-external-api-table th {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
 @media (max-width: 640px) {
   .userspace-share-edit-header {
     align-items: flex-start;

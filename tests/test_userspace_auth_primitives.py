@@ -12,13 +12,28 @@ import httpx
 from fastapi import HTTPException
 from slowapi.errors import RateLimitExceeded
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import Response, StreamingResponse
 
 import ragtime.userspace.preview_host as _PREVIEW_HOST
 import ragtime.userspace.runtime_routes as _RUNTIME_ROUTES
 from ragtime.core.user_identity import add_workspace_user_fingerprint, build_user_fingerprint_subject, build_workspace_user_fingerprint
 from ragtime.userspace.models import UserSpaceBrowserAuthRequest
 from ragtime.userspace.service import UserSpaceService
+
+
+def _service_principal(**overrides: Any) -> SimpleNamespace:
+    payload = {
+        "credential_id": "cred-1",
+        "credential_label": "August workpapers",
+        "workspace_id": "workspace-a",
+        "endpoint_id": "endpoint-1",
+        "endpoint_key": "periods",
+        "endpoint_label": "Periods",
+        "method": "GET",
+        "path_template": "/api/periods",
+    }
+    payload.update(overrides)
+    return SimpleNamespace(**payload)
 
 
 def _build_request(
@@ -104,6 +119,9 @@ class _FakeProxyUpstreamResponse:
 
     async def aread(self) -> bytes:
         return self._body
+
+    async def aiter_raw(self):
+        yield self._body
 
     async def aclose(self) -> None:
         self.closed = True
@@ -1220,6 +1238,261 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(response, proxied)
         proxy.assert_awaited_once()
+
+    async def test_service_bearer_invalid_fails_closed_without_cookie_fallback(self) -> None:
+        request = _build_request(
+            "/api/periods",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"accept", b"text/html"),
+                (b"authorization", b"bEaReR rtws_bad_token"),
+                (b"cookie", b"userspace_preview_session=preview-cookie"),
+            ],
+            method="GET",
+        )
+
+        with (
+            mock.patch.object(
+                _PREVIEW_HOST,
+                "authenticate_workspace_service_request",
+                new=mock.AsyncMock(side_effect=HTTPException(status_code=401, detail="Invalid service credential")),
+                create=True,
+            ),
+            mock.patch.object(_PREVIEW_HOST, "_verify_preview_session_cookie", new=mock.AsyncMock(), create=True) as verify_cookie,
+        ):
+            response = await _PREVIEW_HOST.preview_proxy(request)
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers.get("www-authenticate"), "Bearer")
+        self.assertEqual(response.headers.get("cache-control"), "no-store")
+        self.assertEqual(response.media_type, "application/json")
+        self.assertIn("Invalid service credential", bytes(response.body).decode("utf-8"))
+        verify_cookie.assert_not_awaited()
+
+    async def test_service_bearer_cannot_access_other_workspace_host(self) -> None:
+        request = _build_request(
+            "/api/periods",
+            headers=[
+                (b"host", b"workspace-b.ragtime.test"),
+                (b"authorization", b"Bearer rtws_valid_token"),
+            ],
+            method="GET",
+        )
+
+        with mock.patch.object(
+            _PREVIEW_HOST,
+            "authenticate_workspace_service_request",
+            new=mock.AsyncMock(return_value=_service_principal(workspace_id="workspace-a")),
+            create=True,
+        ):
+            response = await _PREVIEW_HOST.preview_proxy(request)
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers.get("www-authenticate"), "Bearer")
+        self.assertEqual(response.headers.get("cache-control"), "no-store")
+
+    async def test_service_bearer_on_reserved_preview_path_is_rejected_before_route_dispatch(self) -> None:
+        middleware = _PREVIEW_HOST.PreviewHostDispatchMiddleware(app=mock.AsyncMock())
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/__ragtime/session",
+            "raw_path": b"/__ragtime/session",
+            "query_string": b"",
+            "headers": [
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"authorization", b"Bearer rtws_valid_token"),
+                (b"accept", b"text/html"),
+            ],
+            "scheme": "https",
+            "server": ("workspace-a.ragtime.test", 443),
+            "client": ("127.0.0.1", 12345),
+        }
+        messages: list[dict[str, Any]] = []
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict[str, Any]) -> None:
+            messages.append(message)
+
+        with (
+            mock.patch.object(_PREVIEW_HOST, "preview_host_app", new=mock.AsyncMock()) as preview_app,
+            mock.patch.object(_PREVIEW_HOST, "is_preview_host", return_value=True),
+        ):
+            await middleware(scope, receive, send)
+
+        self.assertFalse(preview_app.await_count)
+        body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
+        start = next(message for message in messages if message["type"] == "http.response.start")
+        headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in start.get("headers", [])}
+        self.assertEqual(start["status"], 403)
+        self.assertEqual(headers.get("cache-control"), "no-store")
+        self.assertNotIn(b"window.parent.postMessage", body)
+
+    async def test_service_bearer_on_userspace_browser_auth_logout_alias_is_rejected_before_route_dispatch(self) -> None:
+        middleware = _PREVIEW_HOST.PreviewHostDispatchMiddleware(app=mock.AsyncMock())
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/indexes/userspace/runtime/workspaces/workspace-a/browser-auth/logout",
+            "raw_path": b"/indexes/userspace/runtime/workspaces/workspace-a/browser-auth/logout",
+            "query_string": b"return_to=%2Fdashboard",
+            "headers": [
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"authorization", b"Bearer rtws_valid_token"),
+                (b"accept", b"text/html"),
+            ],
+            "scheme": "https",
+            "server": ("workspace-a.ragtime.test", 443),
+            "client": ("127.0.0.1", 12345),
+        }
+        messages: list[dict[str, Any]] = []
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict[str, Any]) -> None:
+            messages.append(message)
+
+        with (
+            mock.patch.object(_PREVIEW_HOST, "_clear_preview_browser_auth", new=mock.AsyncMock()) as clear_auth,
+            mock.patch.object(_PREVIEW_HOST, "is_preview_host", return_value=True),
+        ):
+            await middleware(scope, receive, send)
+
+        clear_auth.assert_not_awaited()
+        body = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
+        start = next(message for message in messages if message["type"] == "http.response.start")
+        headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in start.get("headers", [])}
+        self.assertEqual(start["status"], 403)
+        self.assertEqual(headers.get("cache-control"), "no-store")
+        self.assertIn(b"Service credentials cannot access this route", body)
+
+    def test_canonical_workspace_service_path_rejects_noncanonical_inputs(self) -> None:
+        invalid_cases = [
+            ("/api/%2e%2e/periods", b"/api/%2e%2e/periods"),
+            ("/api/periods", b"/api/%2fperiods"),
+            ("/api/periods", b"/api/%5cperiods"),
+            ("/api/./periods", b"/api/./periods"),
+            ("/api//periods", b"/api//periods"),
+            ("/api\\periods", b"/api\\periods"),
+            ("/api/naïve", "/api/naïve".encode("utf-8")),
+            ("/__ragtime/session", b"/__ragtime/session"),
+            ("/auth/login", b"/auth/login"),
+            ("/api/periods/", b"/api/periods/"),
+        ]
+
+        for path, raw_path in invalid_cases:
+            request = Request(
+                {
+                    "type": "http",
+                    "method": "GET",
+                    "path": path,
+                    "raw_path": raw_path,
+                    "query_string": b"",
+                    "headers": [(b"host", b"workspace-a.ragtime.test")],
+                    "scheme": "https",
+                    "server": ("workspace-a.ragtime.test", 443),
+                    "client": ("127.0.0.1", 12345),
+                }
+            )
+
+            with self.assertRaises(HTTPException):
+                _PREVIEW_HOST._canonical_workspace_service_path(request)
+
+    async def test_service_bearer_full_proxy_flow_records_usage_and_forwards_verified_headers(self) -> None:
+        runtime_bearer = "runtime-internal-token"
+        client_service_bearer = "rtws_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_secret"
+        request = _build_request(
+            "/api/periods",
+            headers=[
+                (b"host", b"workspace-a.ragtime.test"),
+                (b"accept", b"application/json"),
+                (b"authorization", f"Bearer {client_service_bearer}".encode("utf-8")),
+                (b"cookie", b"userspace_preview_session=preview-cookie"),
+                (b"x-api-key", b"spoofed"),
+                (b"x-ragtime-authenticated-actor-type", b"spoofed"),
+                (b"x-ragtime-service-credential-id", b"spoofed"),
+                (b"x-ragtime-service-credential-label", b"spoofed"),
+                (b"x-ragtime-published-endpoint-key", b"spoofed"),
+            ],
+            method="GET",
+            query_string="company=1",
+            body=b"",
+        )
+        upstream = _FakeProxyUpstreamResponse(b'{"ok":true}', content_type="application/json")
+        client = _FakeProxyClient(upstream)
+        principal = _service_principal()
+        runtime_service = SimpleNamespace(build_service_preview_upstream_url=mock.AsyncMock(return_value="http://runtime/api/periods?company=1"))
+
+        with (
+            mock.patch.object(
+                _PREVIEW_HOST,
+                "authenticate_workspace_service_request",
+                new=mock.AsyncMock(return_value=principal),
+                create=True,
+            ),
+            mock.patch.object(_PREVIEW_HOST, "_runtime_service", return_value=runtime_service),
+            mock.patch.object(_PREVIEW_HOST, "record_workspace_api_request", new=mock.AsyncMock(), create=True) as record_request,
+            mock.patch.object(_PREVIEW_HOST, "_verify_preview_session_cookie", new=mock.AsyncMock()) as verify_cookie,
+            mock.patch.object(_RUNTIME_ROUTES, "_get_proxy_client", return_value=client),
+            mock.patch.object(_RUNTIME_ROUTES, "get_app_settings", new=mock.AsyncMock(return_value={"userspace_preview_sandbox_flags": []})),
+            mock.patch.object(_RUNTIME_ROUTES.settings, "userspace_runtime_auth_token", runtime_bearer),
+        ):
+            response = await _PREVIEW_HOST.preview_proxy(request)
+            self.assertEqual(response.status_code, 200)
+            body = b""
+            async for chunk in cast(StreamingResponse, response).body_iterator:
+                body += chunk.encode("utf-8") if isinstance(chunk, str) else bytes(chunk)
+            self.assertEqual(body, b'{"ok":true}')
+            verify_cookie.assert_not_awaited()
+            runtime_service.build_service_preview_upstream_url.assert_awaited_once_with(
+                "workspace-a",
+                "/api/periods",
+                query="company=1",
+            )
+            built_request = client.built_request
+            assert built_request is not None
+            sent_headers = built_request["headers"]
+            self.assertNotEqual(sent_headers.get("authorization"), f"Bearer {client_service_bearer}")
+            self.assertEqual(sent_headers.get("authorization"), f"Bearer {runtime_bearer}")
+            self.assertNotIn("cookie", sent_headers)
+            self.assertNotIn("x-api-key", sent_headers)
+            self.assertEqual(sent_headers["x-ragtime-internal-authenticated-actor-type"], "service")
+            self.assertEqual(sent_headers["x-ragtime-internal-service-credential-id"], "cred-1")
+            self.assertEqual(sent_headers["x-ragtime-internal-service-credential-label"], "August workpapers")
+            self.assertEqual(sent_headers["x-ragtime-internal-published-endpoint-key"], "periods")
+            record_request.assert_awaited_once()
+            await_args = record_request.await_args
+            assert await_args is not None
+            args, kwargs = await_args
+            self.assertIs(args[0], principal)
+            self.assertEqual(kwargs["status_code"], 200)
+            self.assertIsInstance(kwargs["duration_ms"], int)
+            self.assertGreaterEqual(kwargs["duration_ms"], 0)
+
+    async def test_service_session_payload_has_zero_primitive_capabilities(self) -> None:
+        payload = await _RUNTIME_ROUTES._service_primitive_session_payload(
+            _service_principal(),
+            client_fingerprint="v1:fingerprint",
+        )
+
+        self.assertEqual(payload["workspace_id"], "workspace-a")
+        self.assertIsNone(payload["user_id"])
+        self.assertEqual(payload["auth"]["actor_type"], "service")
+        self.assertTrue(payload["auth"]["authenticated"])
+        self.assertEqual(payload["auth"]["service"]["credential_id"], "cred-1")
+        self.assertFalse(payload["capabilities"]["can_read_files"])
+        self.assertFalse(payload["capabilities"]["can_write_files"])
+        self.assertFalse(payload["capabilities"]["can_read_objects"])
+        self.assertFalse(payload["capabilities"]["can_write_objects"])
+        self.assertFalse(payload["capabilities"]["can_extract_archives"])
+        self.assertFalse(payload["capabilities"]["can_create_upload_targets"])
+        self.assertFalse(payload["capabilities"]["can_read_progress"])
+        self.assertFalse(payload["capabilities"]["can_write_progress"])
+        self.assertFalse(payload["capabilities"]["can_read_jobs"])
+        self.assertFalse(payload["capabilities"]["can_write_jobs"])
 
     def test_preview_bootstrap_handoff_query_is_internal(self) -> None:
         target = _PREVIEW_HOST._add_preview_handoff_to_target_path("/dashboard?tab=main", "nonce-1")

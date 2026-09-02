@@ -12,6 +12,7 @@ import mimetypes
 import os
 import re
 import tarfile
+import time
 import uuid
 import zipfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
@@ -120,6 +121,18 @@ _PRIVATE_AUTHENTICATED_IDENTITY_HEADER_MAP = {
     "x-ragtime-internal-authenticated-username": ("auth", "user", "username"),
     "x-ragtime-internal-authenticated-display-name": ("auth", "user", "display_name"),
     "x-ragtime-internal-user-fingerprint": ("auth", "user", "user_fingerprint"),
+}
+_SERVICE_AUTHENTICATED_IDENTITY_HEADER_MAP = {
+    "x-ragtime-authenticated-actor-type": ("auth", "actor_type"),
+    "x-ragtime-service-credential-id": ("auth", "service", "credential_id"),
+    "x-ragtime-service-credential-label": ("auth", "service", "credential_label"),
+    "x-ragtime-published-endpoint-key": ("auth", "service", "endpoint_key"),
+}
+_PRIVATE_SERVICE_AUTHENTICATED_IDENTITY_HEADER_MAP = {
+    "x-ragtime-internal-authenticated-actor-type": ("auth", "actor_type"),
+    "x-ragtime-internal-service-credential-id": ("auth", "service", "credential_id"),
+    "x-ragtime-internal-service-credential-label": ("auth", "service", "credential_label"),
+    "x-ragtime-internal-published-endpoint-key": ("auth", "service", "endpoint_key"),
 }
 _PUBLIC_AUTHENTICATED_ENTITLEMENTS_HEADER = "x-ragtime-authenticated-entitlements"
 _PRIVATE_AUTHENTICATED_ENTITLEMENTS_HEADER = "x-ragtime-internal-authenticated-entitlements"
@@ -447,6 +460,66 @@ async def _primitive_session_payload(
             "browser_logout_endpoint": browser_logout_endpoint,
         },
         "capabilities": capabilities,
+    }
+
+
+async def _service_primitive_session_payload(
+    principal: Any,
+    *,
+    client_fingerprint: str | None,
+) -> dict[str, Any]:
+    workspace_id = str(getattr(principal, "workspace_id", "") or "").strip()
+    return {
+        "workspace_id": workspace_id,
+        "mode": "service",
+        "user_id": None,
+        "user_fingerprint": None,
+        "user_fingerprint_scope": None,
+        "share_access_mode": None,
+        "auth": {
+            "authenticated": True,
+            "actor_type": "service",
+            "entitlements": [],
+            "user": None,
+            "methods": [],
+            "binding_strategy": None,
+            "interactive_auth_endpoint": None,
+            "login_endpoint": None,
+            "current_user_endpoint": None,
+            "browser_auth_endpoint": None,
+            "browser_logout_endpoint": None,
+            "service": {
+                "credential_id": str(getattr(principal, "credential_id", "") or "").strip() or None,
+                "credential_label": str(getattr(principal, "credential_label", "") or "").strip() or None,
+                "endpoint_id": str(getattr(principal, "endpoint_id", "") or "").strip() or None,
+                "endpoint_key": str(getattr(principal, "endpoint_key", "") or "").strip() or None,
+                "endpoint_label": str(getattr(principal, "endpoint_label", "") or "").strip() or None,
+                "method": str(getattr(principal, "method", "") or "").strip() or None,
+                "path_template": str(getattr(principal, "path_template", "") or "").strip() or None,
+                "client_fingerprint": str(client_fingerprint or "").strip() or None,
+            },
+        },
+        "capabilities": {
+            "workspace_id": workspace_id,
+            "mode": "service",
+            "can_parse": False,
+            "can_render_preview": False,
+            "can_normalize_tables": False,
+            "can_read_files": False,
+            "can_write_files": False,
+            "can_read_objects": False,
+            "can_write_objects": False,
+            "can_extract_archives": False,
+            "can_create_upload_targets": False,
+            "can_read_progress": False,
+            "can_write_progress": False,
+            "can_read_jobs": False,
+            "can_write_jobs": False,
+            "max_upload_bytes": 0,
+            "max_archive_entries": 0,
+            "object_buckets": [],
+            "endpoints": {},
+        },
     }
 
 
@@ -1427,6 +1500,8 @@ def _proxy_request_headers(request: Request, *, allow_user_cookies: bool = False
         _PRIVATE_AUTHENTICATED_ENTITLEMENTS_HEADER,
         *set(_AUTHENTICATED_IDENTITY_HEADER_MAP),
         *set(_PRIVATE_AUTHENTICATED_IDENTITY_HEADER_MAP),
+        *set(_SERVICE_AUTHENTICATED_IDENTITY_HEADER_MAP),
+        *set(_PRIVATE_SERVICE_AUTHENTICATED_IDENTITY_HEADER_MAP),
     }
     forwarded_headers = {key: value for key, value in request.headers.items() if key.lower() not in _blocked}
     if allow_user_cookies:
@@ -1448,22 +1523,38 @@ def _authenticated_preview_identity_headers(primitive_session: dict[str, Any] | 
     auth_payload = primitive_session.get("auth")
     if not isinstance(auth_payload, dict) or not bool(auth_payload.get("authenticated")):
         return {}
+    if str(auth_payload.get("actor_type") or "").strip() == "service":
+        service_payload = auth_payload.get("service")
+        if not isinstance(service_payload, dict):
+            return {}
+        headers: dict[str, str] = {}
+        for header_name, path in _PRIVATE_SERVICE_AUTHENTICATED_IDENTITY_HEADER_MAP.items():
+            value: Any = primitive_session
+            for key in path:
+                if not isinstance(value, dict):
+                    value = None
+                    break
+                value = value.get(key)
+            normalized = str(value or "").strip()
+            if normalized:
+                headers[header_name] = normalized
+        return headers
     user_payload = auth_payload.get("user")
     if not isinstance(user_payload, dict):
         return {}
-    headers: dict[str, str] = {}
+    user_headers: dict[str, str] = {}
     for header_map in (_AUTHENTICATED_IDENTITY_HEADER_MAP, _PRIVATE_AUTHENTICATED_IDENTITY_HEADER_MAP):
         for header_name, path in header_map.items():
             field_name = path[-1]
             value = str(user_payload.get(field_name) or "").strip()
             if value:
-                headers[header_name] = value
+                user_headers[header_name] = value
     raw_entitlements = auth_payload.get("entitlements")
     if isinstance(raw_entitlements, list):
         entitlements = sorted({str(item).strip() for item in raw_entitlements if str(item).strip()})
         if entitlements:
-            headers[_PRIVATE_AUTHENTICATED_ENTITLEMENTS_HEADER] = ",".join(entitlements)
-    return headers
+            user_headers[_PRIVATE_AUTHENTICATED_ENTITLEMENTS_HEADER] = ",".join(entitlements)
+    return user_headers
 
 
 def _proxy_response_headers(
@@ -1793,8 +1884,12 @@ async def _proxy_http_request(
     bridge_script_src: str | None = None,
     primitive_session_factory: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     allow_user_cookies: bool = False,
+    service_mode: bool = False,
+    verified_identity_headers: dict[str, str] | None = None,
+    on_response_complete: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> Response:
     primitive_session: dict[str, Any] | None = None
+    started_at = time.monotonic()
 
     async def _get_primitive_session() -> dict[str, Any] | None:
         nonlocal primitive_session
@@ -1822,6 +1917,15 @@ async def _proxy_http_request(
             ) from exc
         return upstream_response
 
+    async def _finalize_proxy_response(status_code: int) -> None:
+        if on_response_complete is None:
+            return
+        duration_ms = max(0, int((time.monotonic() - started_at) * 1000))
+        try:
+            await on_response_complete(status_code, duration_ms)
+        except Exception:
+            logger.debug("Userspace proxy response accounting failed", exc_info=True)
+
     if request.headers.get("upgrade", "").lower() == "websocket":
         raise HTTPException(
             status_code=501,
@@ -1840,6 +1944,8 @@ async def _proxy_http_request(
     headers = _proxy_request_headers(request, allow_user_cookies=effective_allow_user_cookies)
     if primitive_session_factory is not None:
         headers.update(_authenticated_preview_identity_headers(await _get_primitive_session()))
+    if verified_identity_headers:
+        headers.update({key: value for key, value in verified_identity_headers.items() if str(value or "").strip()})
 
     # Inject the shared runtime auth token for upstream worker requests
     runtime_token = getattr(settings, "userspace_runtime_auth_token", "") or ""
@@ -1867,6 +1973,19 @@ async def _proxy_http_request(
             content = await upstream_response.aread()
         finally:
             await upstream_response.aclose()
+
+        if service_mode:
+            response = _append_set_cookie_headers(
+                Response(
+                    content=content,
+                    status_code=upstream_response.status_code,
+                    headers=resp_headers,
+                    media_type=media_type or None,
+                ),
+                set_cookie_headers,
+            )
+            await _finalize_proxy_response(upstream_response.status_code)
+            return response
 
         sandbox_flags: list[str] | None = None
         try:
@@ -1903,7 +2022,7 @@ async def _proxy_http_request(
         resp_headers.pop("content-encoding", None)
         resp_headers.pop("content-length", None)
 
-        return _append_set_cookie_headers(
+        response = _append_set_cookie_headers(
             Response(
                 content=content,
                 status_code=upstream_response.status_code,
@@ -1912,6 +2031,8 @@ async def _proxy_http_request(
             ),
             set_cookie_headers,
         )
+        await _finalize_proxy_response(upstream_response.status_code)
+        return response
 
     async def _iter_stream() -> AsyncIterator[bytes]:
         try:
@@ -1921,6 +2042,7 @@ async def _proxy_http_request(
             return
         finally:
             await upstream_response.aclose()
+            await _finalize_proxy_response(upstream_response.status_code)
 
     return _append_set_cookie_headers(
         _CancellationSafeStreamingResponse(

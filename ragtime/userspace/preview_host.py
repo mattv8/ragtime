@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import time
 from collections.abc import MutableMapping, Sequence
@@ -23,6 +25,7 @@ from ragtime.core.auth_methods import AuthMethodStatusPayload, build_auth_method
 from ragtime.core.database import get_db
 from ragtime.core.mfa import MFA_TRUST_COOKIE_NAME, mfa_needed_for_user, trusted_device_satisfies_mfa
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
+from ragtime.core.security import extract_bearer_token
 from ragtime.userspace.html_templates import render_browser_auth_start_page_html
 from ragtime.userspace.models import (
     ExecuteComponentRequest,
@@ -37,6 +40,7 @@ from ragtime.userspace.preview_probe import PREVIEW_HOST_PROBE_HEADER, PREVIEW_H
 from ragtime.userspace.runtime_routes import (
     _PREVIEW_SESSION_CAPABILITY,
     _PROXY_METHODS,
+    _authenticated_preview_identity_headers,
     _authorize_browser_surfaces_for_user_id,
     _clear_browser_surface_cookies,
     _normalize_browser_surfaces,
@@ -62,6 +66,7 @@ from ragtime.userspace.runtime_routes import (
     _proxy_websocket_request,
     _render_uploaded_document_preview_upload,
     _sanitize_preview_query,
+    _service_primitive_session_payload,
     _to_websocket_url,
     close_proxy_client,
 )
@@ -74,6 +79,13 @@ _RUNTIME_PREVIEW_HANDOFF_TTL_SECONDS = 60
 _SESSION_CLAIMS_CACHE_MAX = 1024
 _BRIDGE_CONTENT_CACHE_TTL_SECONDS = 2.0
 _BRIDGE_CONTENT_CACHE_MAX = 500
+_WORKSPACE_SERVICE_TOKEN_PREFIX = "rtws_"
+_WORKSPACE_SERVICE_INVALID_AUTH_WINDOW_SECONDS = 60.0
+_WORKSPACE_SERVICE_INVALID_AUTH_LIMIT = 20
+
+
+_workspace_service_invalid_auth_failures: dict[tuple[str, str], list[float]] = {}
+_workspace_service_invalid_auth_lock = asyncio.Lock()
 
 # token string -> (claims, exp_epoch_seconds); session-kind tokens only.
 _session_claims_cache: dict[str, tuple[dict[str, Any], float]] = {}
@@ -94,6 +106,52 @@ def _userspace_service() -> Any:
     from ragtime.userspace.service import userspace_service
 
     return userspace_service
+
+
+async def authenticate_workspace_service_request(*, workspace_id: str, method: str, path: str, bearer_token: str) -> Any:
+    from ragtime.userspace.external_api import authenticate_workspace_service_request as _impl
+
+    return await _impl(workspace_id=workspace_id, method=method, path=path, bearer_token=bearer_token)
+
+
+async def record_workspace_api_request(
+    principal: Any,
+    *,
+    status_code: int,
+    duration_ms: int,
+    client_fingerprint: str | None,
+) -> None:
+    from ragtime.userspace.external_api import record_workspace_api_request as _impl
+
+    await _impl(
+        principal,
+        status_code=status_code,
+        duration_ms=duration_ms,
+        client_fingerprint=client_fingerprint,
+    )
+
+
+async def record_workspace_api_denied_request(
+    *,
+    workspace_id: str,
+    method: str,
+    path: str,
+    status_code: int,
+    reason: str,
+    token_selector: str | None,
+    client_fingerprint: str | None,
+) -> None:
+    from ragtime.userspace.external_api import record_workspace_api_denied_request as _impl
+
+    await _impl(
+        workspace_id=workspace_id,
+        method=method,
+        path=path,
+        status_code=status_code,
+        reason=reason,
+        token_selector=token_selector,
+        client_fingerprint=client_fingerprint,
+    )
 
 
 def _runtime_bridge_cache_key(workspace_id: str) -> tuple[str, int]:
@@ -410,12 +468,275 @@ def _verify_preview_session_token(token: str | None) -> dict[str, Any]:
 
 
 def _extract_bearer_token(request: Request) -> str | None:
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:].strip()
-        if token:
-            return token
+    token = extract_bearer_token(request.headers)
+    if token:
+        normalized = str(token).strip()
+        return normalized or None
+    auth_header = str(request.headers.get("authorization") or "").strip()
+    if not auth_header.lower().startswith("bearer "):
+        return None
+    candidate = auth_header[7:].strip()
+    if not candidate:
+        return None
+    return extract_bearer_token({"authorization": f"Bearer {candidate}"}) or candidate
+
+
+def _is_workspace_service_token(token: str | None) -> bool:
+    return str(token or "").startswith(_WORKSPACE_SERVICE_TOKEN_PREFIX)
+
+
+def _workspace_service_token_selector(token: str | None) -> str | None:
+    normalized = str(token or "").strip()
+    if not normalized.startswith(_WORKSPACE_SERVICE_TOKEN_PREFIX):
+        return None
+    parts = normalized.split("_", 2)
+    if len(parts) < 3:
+        return None
+    selector = parts[1].strip().lower()
+    return selector or None
+
+
+def _workspace_service_client_fingerprint(request: Request) -> str | None:
+    forwarded_for = str(request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip().lower()
+    client_host = str(getattr(request.client, "host", "") or "").strip().lower()
+    user_agent = str(request.headers.get("user-agent") or "").strip()
+    normalized_identity = "|".join(part for part in (forwarded_for or client_host, user_agent) if part)
+    if not normalized_identity:
+        return None
+    digest = hmac.new(
+        settings.encryption_key.encode("utf-8"),
+        f"workspace_external_api:v1:{normalized_identity}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"v1:{digest}"
+
+
+def _workspace_service_error_response(
+    status_code: int,
+    detail: str,
+    *,
+    www_authenticate: bool = False,
+    retry_after: int | None = None,
+) -> JSONResponse:
+    headers = {"Cache-Control": "no-store"}
+    if www_authenticate:
+        headers["WWW-Authenticate"] = "Bearer"
+    if retry_after is not None:
+        headers["Retry-After"] = str(retry_after)
+    return JSONResponse(status_code=status_code, content={"detail": detail}, headers=headers)
+
+
+def _workspace_service_error_from_http_exception(exc: HTTPException) -> JSONResponse:
+    headers = dict(exc.headers or {})
+    retry_after = headers.get("Retry-After") or headers.get("retry-after")
+    if exc.status_code == 401:
+        return _workspace_service_error_response(401, str(exc.detail), www_authenticate=True)
+    if exc.status_code == 429:
+        return _workspace_service_error_response(429, str(exc.detail), retry_after=int(str(retry_after or "60")))
+    if exc.status_code == 503:
+        return _workspace_service_error_response(503, str(exc.detail), retry_after=int(str(retry_after or "60")))
+    return _workspace_service_error_response(exc.status_code, str(exc.detail))
+
+
+async def _record_workspace_service_denied_request(
+    *,
+    workspace_id: str,
+    method: str,
+    path: str,
+    status_code: int,
+    reason: str,
+    token_selector: str | None,
+    client_fingerprint: str | None,
+) -> None:
+    try:
+        await record_workspace_api_denied_request(
+            workspace_id=workspace_id,
+            method=method,
+            path=path,
+            status_code=status_code,
+            reason=reason,
+            token_selector=token_selector,
+            client_fingerprint=client_fingerprint,
+        )
+    except Exception:
+        pass
+
+
+def _schedule_workspace_service_denied_request(**kwargs: Any) -> None:
+    try:
+        asyncio.create_task(_record_workspace_service_denied_request(**kwargs))
+    except Exception:
+        pass
+
+
+async def _check_workspace_service_invalid_auth_throttle(token_selector: str | None, client_fingerprint: str | None) -> int | None:
+    now = time.monotonic()
+    key = (str(token_selector or "").strip().lower() or "unknown", str(client_fingerprint or "").strip() or "unknown")
+    async with _workspace_service_invalid_auth_lock:
+        failures = [value for value in _workspace_service_invalid_auth_failures.get(key, []) if now - value < _WORKSPACE_SERVICE_INVALID_AUTH_WINDOW_SECONDS]
+        if failures:
+            _workspace_service_invalid_auth_failures[key] = failures
+        else:
+            _workspace_service_invalid_auth_failures.pop(key, None)
+        if len(failures) < _WORKSPACE_SERVICE_INVALID_AUTH_LIMIT:
+            return None
+        remaining = _WORKSPACE_SERVICE_INVALID_AUTH_WINDOW_SECONDS - (now - min(failures))
+        return max(1, int(remaining + 0.999999))
+
+
+async def _record_workspace_service_invalid_auth_failure(token_selector: str | None, client_fingerprint: str | None) -> None:
+    now = time.monotonic()
+    key = (str(token_selector or "").strip().lower() or "unknown", str(client_fingerprint or "").strip() or "unknown")
+    async with _workspace_service_invalid_auth_lock:
+        failures = [value for value in _workspace_service_invalid_auth_failures.get(key, []) if now - value < _WORKSPACE_SERVICE_INVALID_AUTH_WINDOW_SECONDS]
+        failures.append(now)
+        _workspace_service_invalid_auth_failures[key] = failures
+
+
+def _canonical_workspace_service_path(request: Request) -> str:
+    from ragtime.userspace.external_api import _canonicalize_external_api_path
+
+    path = str(request.url.path or "/")
+    raw_path = request.scope.get("raw_path", path.encode("utf-8", errors="ignore"))
+    try:
+        return _canonicalize_external_api_path(
+            path,
+            raw_path_bytes=raw_path,
+            allow_root=False,
+            reject_reserved=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="Service path is not available") from exc
+
+
+def _is_reserved_workspace_service_path(path: str) -> bool:
+    normalized = str(path or "/").lower()
+    return (
+        normalized == "/"
+        or normalized == "/__ragtime"
+        or normalized.startswith("/__ragtime/")
+        or normalized == "/auth"
+        or normalized.startswith("/auth/")
+        or normalized == "/indexes/userspace"
+        or normalized.startswith("/indexes/userspace/")
+    )
+
+
+async def _workspace_service_guard_response(request: Request) -> JSONResponse | None:
+    bearer_token = _extract_bearer_token(request)
+    if not _is_workspace_service_token(bearer_token):
+        return None
+    if request.method.upper() not in {"GET", "HEAD"}:
+        return _workspace_service_error_response(403, "Service credentials cannot access this route")
+    try:
+        path = _canonical_workspace_service_path(request)
+    except HTTPException as exc:
+        return _workspace_service_error_from_http_exception(exc)
+    if _is_reserved_workspace_service_path(path):
+        return _workspace_service_error_response(403, "Service credentials cannot access this route")
     return None
+
+
+async def _proxy_workspace_service_request(request: Request) -> Response:
+    workspace_id = str(_workspace_id_from_preview_host(request.headers.get("host")) or "").strip()
+    token = _extract_bearer_token(request)
+    token_selector = _workspace_service_token_selector(token)
+    client_fingerprint = _workspace_service_client_fingerprint(request)
+    try:
+        canonical_path = _canonical_workspace_service_path(request)
+    except HTTPException as exc:
+        _schedule_workspace_service_denied_request(
+            workspace_id=workspace_id,
+            method=request.method.upper(),
+            path=str(request.url.path or "/"),
+            status_code=exc.status_code,
+            reason="invalid_path",
+            token_selector=token_selector,
+            client_fingerprint=client_fingerprint,
+        )
+        return _workspace_service_error_from_http_exception(exc)
+    if _is_reserved_workspace_service_path(canonical_path):
+        _schedule_workspace_service_denied_request(
+            workspace_id=workspace_id,
+            method=request.method.upper(),
+            path=canonical_path,
+            status_code=403,
+            reason="reserved_path",
+            token_selector=token_selector,
+            client_fingerprint=client_fingerprint,
+        )
+        return _workspace_service_error_response(403, "Service credentials cannot access this route")
+    retry_after = await _check_workspace_service_invalid_auth_throttle(token_selector, client_fingerprint)
+    if retry_after is not None:
+        _schedule_workspace_service_denied_request(
+            workspace_id=workspace_id,
+            method=request.method.upper(),
+            path=canonical_path,
+            status_code=429,
+            reason="invalid_auth_throttled",
+            token_selector=token_selector,
+            client_fingerprint=client_fingerprint,
+        )
+        return _workspace_service_error_response(429, "Service credential authentication is temporarily throttled", retry_after=retry_after)
+    try:
+        principal = await authenticate_workspace_service_request(
+            workspace_id=workspace_id,
+            method=request.method.upper(),
+            path=canonical_path,
+            bearer_token=str(token or ""),
+        )
+        if str(getattr(principal, "workspace_id", "") or "").strip() != workspace_id:
+            raise HTTPException(status_code=401, detail="Invalid service credential")
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            await _record_workspace_service_invalid_auth_failure(token_selector, client_fingerprint)
+        _schedule_workspace_service_denied_request(
+            workspace_id=workspace_id,
+            method=request.method.upper(),
+            path=canonical_path,
+            status_code=exc.status_code,
+            reason="service_auth_failed",
+            token_selector=token_selector,
+            client_fingerprint=client_fingerprint,
+        )
+        return _workspace_service_error_from_http_exception(exc)
+
+    service_session = await _service_primitive_session_payload(principal, client_fingerprint=client_fingerprint)
+    verified_identity_headers = _authenticated_preview_identity_headers(service_session)
+
+    async def on_response_complete(status_code: int, duration_ms: int) -> None:
+        await record_workspace_api_request(
+            principal,
+            status_code=status_code,
+            duration_ms=duration_ms,
+            client_fingerprint=client_fingerprint,
+        )
+
+    try:
+        upstream_url = await _runtime_service().build_service_preview_upstream_url(
+            workspace_id,
+            canonical_path,
+            query=_sanitize_preview_query(request.url.query),
+        )
+    except HTTPException as exc:
+        _schedule_workspace_service_denied_request(
+            workspace_id=workspace_id,
+            method=request.method.upper(),
+            path=canonical_path,
+            status_code=exc.status_code,
+            reason="runtime_unavailable",
+            token_selector=token_selector,
+            client_fingerprint=client_fingerprint,
+        )
+        return _workspace_service_error_from_http_exception(exc)
+
+    return await _proxy_http_request(
+        request,
+        upstream_url,
+        service_mode=True,
+        verified_identity_headers=verified_identity_headers,
+        on_response_complete=on_response_complete,
+    )
 
 
 def _extract_direct_preview_capability_token(request: Request) -> str | None:
@@ -1355,6 +1676,9 @@ async def preview_job_put(
 @preview_host_app.api_route("/", methods=_PROXY_METHODS)
 @preview_host_app.api_route("/{path:path}", methods=_PROXY_METHODS)
 async def preview_proxy(request: Request, path: str = ""):
+    bearer_token = _extract_bearer_token(request)
+    if _is_workspace_service_token(bearer_token):
+        return await _proxy_workspace_service_request(request)
     claims = await _verify_preview_session_cookie(request)
 
     async def primitive_session_factory() -> dict[str, Any]:
@@ -1402,6 +1726,22 @@ class PreviewHostDispatchMiddleware:
 
     async def __call__(self, scope: MutableMapping[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") in {"http", "websocket"} and is_preview_host(_scope_host(scope)):
+            if scope.get("type") == "http":
+                request = Request(scope, receive)
+                service_response = await _workspace_service_guard_response(request)
+                if service_response is not None:
+                    await service_response(scope, receive, send)
+                    return
+            elif scope.get("type") == "websocket":
+                headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
+                token = extract_bearer_token(headers)
+                if not token:
+                    auth_header = str(headers.get("authorization") or "")
+                    if auth_header.lower().startswith("bearer "):
+                        token = auth_header[7:].strip() or None
+                if _is_workspace_service_token(token):
+                    await send({"type": "websocket.close", "code": 4403})
+                    return
             await preview_host_app(scope, receive, send)
             return
         await self.app(scope, receive, send)

@@ -917,6 +917,10 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Auth-required apps are the exception to the `index.html` scaffolding rule: you must edit the initial HTML scaffold/template to include the `ragtime-auth` meta tag before scripts, because JS-only auth gates cannot protect first paint.
 - As complexity grows, split concerns into stable `dashboard/*` subpaths such as components, data, charts, and styles.
 - For multi-page or multi-route apps, keep clear page names, shared layout components, and clean module boundaries.
+- When the user asks for external spreadsheet/API access, Create ordinary app routes first, then maintain the versioned `.ragtime/external-api.json` manifest for publication metadata.
+- Manifest version is exactly `1`. Publish only the requested machine-readable `GET` or `HEAD` endpoints.
+- Do not publish browser pages, mutation routes, auth callbacks, or anything beyond the requested machine endpoints.
+- Do not publish platform primitive paths under `/__ragtime/*`. Authorization is handled by the platform.
 {sqlite_persistence_block}
 
 #### Optional platform primitives

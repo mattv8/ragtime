@@ -80,6 +80,12 @@ _AUTHENTICATED_IDENTITY_HEADER_MAP = {
     "x-ragtime-authenticated-display-name": "x-ragtime-internal-authenticated-display-name",
     "x-ragtime-user-fingerprint": "x-ragtime-internal-user-fingerprint",
 }
+_SERVICE_AUTHENTICATED_IDENTITY_HEADER_MAP = {
+    "x-ragtime-authenticated-actor-type": "x-ragtime-internal-authenticated-actor-type",
+    "x-ragtime-service-credential-id": "x-ragtime-internal-service-credential-id",
+    "x-ragtime-service-credential-label": "x-ragtime-internal-service-credential-label",
+    "x-ragtime-published-endpoint-key": "x-ragtime-internal-published-endpoint-key",
+}
 _PUBLIC_AUTHENTICATED_ENTITLEMENTS_HEADER = "x-ragtime-authenticated-entitlements"
 # The private entitlement header is injected by the ragtime control plane and
 # must reach the workspace backend unchanged (backends authorize against it).
@@ -142,6 +148,8 @@ def _preview_request_headers(request: Request) -> dict[str, str]:
         _PUBLIC_AUTHENTICATED_ENTITLEMENTS_HEADER,
         *set(_AUTHENTICATED_IDENTITY_HEADER_MAP),
         *set(_AUTHENTICATED_IDENTITY_HEADER_MAP.values()),
+        *set(_SERVICE_AUTHENTICATED_IDENTITY_HEADER_MAP),
+        *set(_SERVICE_AUTHENTICATED_IDENTITY_HEADER_MAP.values()),
     }
     forwarded_headers = {key: value for key, value in request.headers.items() if key.lower() not in blocked}
     # The inbound ``Cookie`` header is forwarded verbatim to the devserver. It
@@ -155,6 +163,10 @@ def _preview_request_headers(request: Request) -> dict[str, str]:
     if cookie_header:
         forwarded_headers["cookie"] = cookie_header
     for public_name, private_name in _AUTHENTICATED_IDENTITY_HEADER_MAP.items():
+        value = str(raw_headers.get(private_name, "") or "").strip()
+        if value:
+            forwarded_headers[public_name] = value
+    for public_name, private_name in _SERVICE_AUTHENTICATED_IDENTITY_HEADER_MAP.items():
         value = str(raw_headers.get(private_name, "") or "").strip()
         if value:
             forwarded_headers[public_name] = value

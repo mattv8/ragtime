@@ -6,6 +6,7 @@ import unittest
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Iterator, Protocol, cast
 from unittest import mock
 
 if "ragtime.rag.prompts" not in sys.modules:
@@ -28,14 +29,20 @@ class _CapturedTask:
         self.callback = callback
 
 
+class _ModelPreferencesModule(Protocol):
+    resolve_new_conversation_model: mock.AsyncMock
+    get_workspace_user_default_model: mock.AsyncMock
+    set_workspace_user_default_model: mock.AsyncMock
+
+
 @contextmanager
 def _fake_model_preferences_module(
     *,
     general_model: str = "general-model",
     workspace_model: str = "workspace-model",
     workspace_override: str | None = "workspace-override",
-):
-    module = types.ModuleType("ragtime.indexer.model_preferences")
+) -> Iterator[_ModelPreferencesModule]:
+    module = cast(_ModelPreferencesModule, types.ModuleType("ragtime.indexer.model_preferences"))
 
     async def _resolve_new_conversation_model(app_settings, *, user_id, workspace_id=None):
         _ = app_settings, user_id

@@ -3960,6 +3960,95 @@ export interface WorkspaceAgentAccessStatus {
   hit_count: number;
 }
 
+export type WorkspaceExternalApiMethod = 'GET' | 'HEAD';
+
+export interface WorkspaceExternalApiManifestCandidate {
+  key: string;
+  label: string;
+  description: string;
+  method: WorkspaceExternalApiMethod;
+  path: string;
+  valid: boolean;
+  errors: string[];
+}
+
+export interface WorkspaceExternalApiManifestResponse {
+  preview_origin: string | null;
+  version: number | null;
+  valid: boolean;
+  errors: string[];
+  candidates: WorkspaceExternalApiManifestCandidate[];
+}
+
+export interface WorkspaceExternalApiEndpointItem {
+  id: string;
+  key: string;
+  label: string;
+  description: string;
+  method: WorkspaceExternalApiMethod;
+  path: string;
+  enabled: boolean;
+  stale: boolean;
+  definition_hash: string;
+  approved_at: string | null;
+}
+
+export interface WorkspaceExternalApiEndpointListResponse {
+  preview_origin: string | null;
+  items: WorkspaceExternalApiEndpointItem[];
+}
+
+export interface CreateWorkspaceExternalApiCredentialRequest {
+  label: string;
+  endpoint_keys: string[];
+  expires_at?: string | null;
+}
+
+export interface WorkspaceExternalApiCredentialItem {
+  id: string;
+  label: string;
+  token_prefix: string;
+  enabled: boolean;
+  expires_at: string | null;
+  last_used_at: string | null;
+  request_count: number;
+  revoked_at: string | null;
+  endpoint_keys: string[];
+}
+
+export interface WorkspaceExternalApiCredentialListResponse {
+  items: WorkspaceExternalApiCredentialItem[];
+}
+
+export interface WorkspaceExternalApiCredentialSecretResponse {
+  id: string;
+  label: string;
+  token: string;
+  token_prefix: string;
+  enabled: boolean;
+  expires_at: string | null;
+  endpoint_keys: string[];
+}
+
+export interface WorkspaceExternalApiRequestHistoryItem {
+  id: string;
+  credential_id: string | null;
+  credential_label: string | null;
+  endpoint_key: string | null;
+  endpoint_label: string | null;
+  method: string;
+  path_template: string;
+  status_code: number;
+  duration_ms: number;
+  created_at: string;
+}
+
+export interface WorkspaceExternalApiRequestHistoryResponse {
+  cursor: string | null;
+  limit: number;
+  items: WorkspaceExternalApiRequestHistoryItem[];
+}
+
 export interface UserSpaceWorkspaceShareLink {
   id: string;
   workspace_id: string;

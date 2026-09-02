@@ -11,6 +11,7 @@ from openpyxl import Workbook
 from starlette.datastructures import Headers
 from starlette.requests import Request
 
+from ragtime.core.workspace_ops import PLATFORM_MANAGED_GITIGNORE_PATTERNS
 from ragtime.userspace import preview_host, runtime_routes
 
 
@@ -184,6 +185,14 @@ class UserSpaceDocumentParseTests(unittest.IsolatedAsyncioTestCase):
         svc = UserSpaceService.__new__(UserSpaceService)
         self.assertTrue(svc.is_reserved_internal_path(".ragtime/audit-identity.json"))
         self.assertTrue(svc.is_reserved_internal_path(".ragtime/db/something.txt"))
+
+    def test_primitive_file_path_allows_external_api_manifest_only(self) -> None:
+        from ragtime.userspace.service import UserSpaceService
+
+        svc = UserSpaceService.__new__(UserSpaceService)
+        self.assertFalse(svc.is_reserved_internal_path(".ragtime/external-api.json"))
+        self.assertTrue(svc.is_reserved_internal_path(".ragtime/external-api.yaml"))
+        self.assertNotIn(".ragtime/external-api.json", PLATFORM_MANAGED_GITIGNORE_PATTERNS)
 
     async def test_extracts_text_from_xlsx_upload(self) -> None:
         upload = _make_upload_file(

@@ -185,9 +185,7 @@ describe('ModelPreferencesModal', () => {
     render(<ModelPreferencesModal isOpen onClose={vi.fn()} />);
 
     const generalSection = await waitFor(() => getGeneralSection());
-    expect(
-      within(generalSection).getByRole('button', { name: /openai gpt-5/i }),
-    ).not.toBeNull();
+    expect(within(generalSection).getByRole('button', { name: /openai gpt-5/i })).not.toBeNull();
 
     await user.click(within(generalSection).getByRole('button', { name: /openai gpt-5/i }));
     await user.type(screen.getByRole('textbox', { name: 'Filter models' }), 'claude');
@@ -264,10 +262,14 @@ describe('ModelPreferencesModal', () => {
     });
     expect(screen.getByText('Inherited default: anthropic::claude-sonnet-4')).not.toBeNull();
 
-    await user.click(within(workspaceSection).getByRole('button', { name: /anthropic claude sonnet 4/i }));
+    await user.click(
+      within(workspaceSection).getByRole('button', { name: /anthropic claude sonnet 4/i }),
+    );
     await user.type(screen.getByRole('textbox', { name: 'Filter models' }), 'gpt');
     await user.click(screen.getByRole('button', { name: /openai gpt-5/i }));
-    await user.click(within(workspaceSection).getByRole('button', { name: 'Save workspace default' }));
+    await user.click(
+      within(workspaceSection).getByRole('button', { name: 'Save workspace default' }),
+    );
 
     await waitFor(() => {
       expect(apiMock.updateModelPreference).toHaveBeenCalledWith('openai::gpt-5', 'ws-2');
@@ -282,7 +284,12 @@ describe('ModelPreferencesModal', () => {
 
   it('shows no-workspace and API-error states', async () => {
     apiMock.listUserSpaceWorkspaces.mockReset();
-    apiMock.listUserSpaceWorkspaces.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 50 });
+    apiMock.listUserSpaceWorkspaces.mockResolvedValue({
+      items: [],
+      total: 0,
+      offset: 0,
+      limit: 50,
+    });
     apiMock.getModelPreferences.mockRejectedValueOnce(new Error('General preferences failed'));
     render(<ModelPreferencesModal isOpen onClose={vi.fn()} />);
 

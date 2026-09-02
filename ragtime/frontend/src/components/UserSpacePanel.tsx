@@ -186,6 +186,7 @@ import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { WorkspaceSqliteInspectorModal } from './shared/WorkspaceSqliteInspectorModal';
 import { WorkspaceObjectStorageExplorer } from './shared/WorkspaceObjectStorageExplorer';
 import { AgentAccessSection } from './shared/AgentAccessSection';
+import { ExternalApiAccessSection } from './shared/ExternalApiAccessSection';
 import { ShareLinkModal } from './shared/ShareLinkModal';
 import type { LdapGroup } from './LdapGroupSelect';
 import { Popover, DisabledPopover } from './Popover';
@@ -12070,7 +12071,13 @@ export function UserSpacePanel({
         deletingSelectedShareLink={deletingSelectedShareLink}
         agentAccessSection={
           isOwner && activeWorkspace ? (
-            <AgentAccessSection workspaceId={activeWorkspace.id} />
+            <>
+              <AgentAccessSection workspaceId={activeWorkspace.id} />
+              <ExternalApiAccessSection
+                workspaceId={activeWorkspace.id}
+                previewOrigin={previewOrigin}
+              />
+            </>
           ) : undefined
         }
         onClose={() => setShowShareModal(false)}

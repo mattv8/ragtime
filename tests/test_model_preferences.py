@@ -1,6 +1,18 @@
 import unittest
 from types import SimpleNamespace
+from typing import Callable, TypedDict
 from unittest import mock
+
+from ragtime.indexer.models import AppSettings
+
+
+class _WorkspacePreferenceCompoundKey(TypedDict):
+    workspaceId: str
+    userId: str
+
+
+class _WorkspacePreferenceUpsertWhere(TypedDict):
+    workspaceId_userId: _WorkspacePreferenceCompoundKey
 
 
 class _FakeUserTable:
@@ -8,7 +20,7 @@ class _FakeUserTable:
         self.default_model_by_user_id = default_model_by_user_id
         self.update_calls: list[tuple[dict[str, str], dict[str, str | None]]] = []
         self.update_many_calls: list[tuple[dict[str, object], dict[str, str | None]]] = []
-        self.before_update_many = None
+        self.before_update_many: Callable[[dict[str, object], dict[str, str | None]], None] | None = None
 
     async def find_unique(self, where: dict[str, str]) -> SimpleNamespace | None:
         user_id = where["id"]
@@ -44,8 +56,8 @@ class _FakeWorkspacePreferenceTable:
         self.update_calls: list[tuple[dict[str, str], dict[str, str]]] = []
         self.delete_calls: list[dict[str, str]] = []
         self.delete_many_calls: list[dict[str, str]] = []
-        self.upsert_calls: list[tuple[dict[str, object], dict[str, str], dict[str, str]]] = []
-        self.before_delete_many = None
+        self.upsert_calls: list[tuple[_WorkspacePreferenceUpsertWhere, dict[str, str], dict[str, str]]] = []
+        self.before_delete_many: Callable[[dict[str, str]], None] | None = None
 
     async def find_first(self, where: dict[str, str]) -> SimpleNamespace | None:
         key = (where["workspaceId"], where["userId"])
@@ -88,7 +100,7 @@ class _FakeWorkspacePreferenceTable:
     async def upsert(
         self,
         *,
-        where: dict[str, object],
+        where: _WorkspacePreferenceUpsertWhere,
         create: dict[str, str],
         update: dict[str, str],
     ) -> SimpleNamespace:
@@ -266,14 +278,14 @@ class ModelPreferenceTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(model_preferences, "_resolve_default_conversation_model", return_value="global::fallback"),
         ):
             explicit = await model_preferences.resolve_new_conversation_model(
-                SimpleNamespace(),
+                AppSettings(),
                 user_id="user-1",
                 workspace_id="workspace-1",
                 explicit_model=" manual::choice ",
                 availability=availability,
             )
             resolved = await model_preferences.resolve_new_conversation_model(
-                SimpleNamespace(),
+                AppSettings(),
                 user_id="user-1",
                 workspace_id="workspace-1",
                 availability=availability,
@@ -309,7 +321,7 @@ class ModelPreferenceTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(model_preferences, "_resolve_default_conversation_model", return_value="global::fallback"),
         ):
             resolved = await model_preferences.resolve_new_conversation_model(
-                SimpleNamespace(),
+                AppSettings(),
                 user_id="user-1",
                 availability=availability,
             )
@@ -338,7 +350,7 @@ class ModelPreferenceTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(model_preferences, "_resolve_default_conversation_model", return_value="global::fallback"),
         ):
             resolved = await model_preferences.resolve_new_conversation_model(
-                SimpleNamespace(),
+                AppSettings(),
                 user_id="user-1",
                 workspace_id="workspace-1",
                 availability=availability,

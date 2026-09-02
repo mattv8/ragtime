@@ -216,3 +216,19 @@ class RuntimeBridgePromptTests(unittest.TestCase):
         self.assertNotIn("Beta\nWorkspace", fragment)
         self.assertNotIn("Alpha\r", fragment)
         self.assertIn(fragment, prompt)
+
+    def test_userspace_prompt_guides_external_api_manifest_only_for_machine_endpoints(self) -> None:
+        prompt = build_userspace_mode_prompt_addition(
+            include_sqlite_persistence=False,
+            has_live_data_tools=False,
+            workspace_continuity="### Workspace\n\n- Existing app.\n",
+        )
+
+        self.assertIn("When the user asks for external spreadsheet/API access", prompt)
+        self.assertIn("maintain the versioned `.ragtime/external-api.json` manifest", prompt)
+        self.assertIn("Create ordinary app routes first", prompt)
+        self.assertIn("Manifest version is exactly `1`", prompt)
+        self.assertIn("only the requested machine-readable `GET` or `HEAD` endpoints", prompt)
+        self.assertIn("Do not publish browser pages, mutation routes, auth callbacks", prompt)
+        self.assertIn("Do not publish platform primitive paths under `/__ragtime/*`", prompt)
+        self.assertIn("Authorization is handled by the platform", prompt)

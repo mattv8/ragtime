@@ -107,6 +107,7 @@ from ragtime.userspace.agent_routes import (
     agent_router,
     should_apply_agent_no_store,
 )
+from ragtime.userspace.external_api_routes import router as userspace_external_api_router
 from ragtime.userspace.html_templates import render_share_unlock_prompt_html
 from ragtime.userspace.preview_host import PreviewHostDispatchMiddleware
 from ragtime.userspace.routes import router as userspace_router
@@ -479,6 +480,7 @@ app.include_router(git_webhook_router)
 app.include_router(indexer_router)
 app.include_router(server_backup_router)
 app.include_router(userspace_router)
+app.include_router(userspace_external_api_router)
 app.include_router(userspace_runtime_router)
 app.include_router(agent_router)  # Public workspace agent surface at /agent/w/{token}
 app.include_router(agent_management_router)  # Agent access management under /indexes/userspace

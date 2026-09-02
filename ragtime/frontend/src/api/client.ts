@@ -165,6 +165,14 @@ import type {
   ToolAccessPolicy,
   UserSpaceRuntimeRestartBatchTask,
   WorkspaceAgentAccessStatus,
+  WorkspaceExternalApiManifestResponse,
+  WorkspaceExternalApiEndpointListResponse,
+  WorkspaceExternalApiEndpointItem,
+  WorkspaceExternalApiCredentialListResponse,
+  WorkspaceExternalApiCredentialItem,
+  WorkspaceExternalApiCredentialSecretResponse,
+  WorkspaceExternalApiRequestHistoryResponse,
+  CreateWorkspaceExternalApiCredentialRequest,
   UserSpaceWorkspaceShareLink,
   UserSpaceWorkspaceShareLinkStatus,
   UserSpaceWorkspaceShareLinkListResponse,
@@ -5424,6 +5432,105 @@ export const api = {
       { method: 'POST' },
     );
     return handleResponse<WorkspaceAgentAccessStatus>(response);
+  },
+
+  async getWorkspaceExternalApiManifest(
+    workspaceId: string,
+  ): Promise<WorkspaceExternalApiManifestResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/external-api/manifest`,
+      { cache: 'no-store' },
+    );
+    return handleResponse<WorkspaceExternalApiManifestResponse>(response);
+  },
+
+  async listWorkspaceExternalApiEndpoints(
+    workspaceId: string,
+  ): Promise<WorkspaceExternalApiEndpointListResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/external-api/endpoints`,
+      { cache: 'no-store' },
+    );
+    return handleResponse<WorkspaceExternalApiEndpointListResponse>(response);
+  },
+
+  async createWorkspaceExternalApiEndpoint(
+    workspaceId: string,
+    key: string,
+  ): Promise<WorkspaceExternalApiEndpointItem> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/external-api/endpoints/${encodeURIComponent(key)}/publish`,
+      { method: 'POST' },
+    );
+    return handleResponse<WorkspaceExternalApiEndpointItem>(response);
+  },
+
+  async deleteWorkspaceExternalApiEndpoint(
+    workspaceId: string,
+    endpointId: string,
+  ): Promise<WorkspaceExternalApiEndpointItem> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/external-api/endpoints/${encodeURIComponent(endpointId)}`,
+      { method: 'DELETE' },
+    );
+    return handleResponse<WorkspaceExternalApiEndpointItem>(response);
+  },
+
+  async listWorkspaceExternalApiCredentials(
+    workspaceId: string,
+  ): Promise<WorkspaceExternalApiCredentialListResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/external-api/credentials`,
+      { cache: 'no-store' },
+    );
+    return handleResponse<WorkspaceExternalApiCredentialListResponse>(response);
+  },
+
+  async createWorkspaceExternalApiCredential(
+    workspaceId: string,
+    request: CreateWorkspaceExternalApiCredentialRequest,
+  ): Promise<WorkspaceExternalApiCredentialSecretResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/external-api/credentials`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
+    return handleResponse<WorkspaceExternalApiCredentialSecretResponse>(response);
+  },
+
+  async rotateWorkspaceExternalApiCredential(
+    workspaceId: string,
+    credentialId: string,
+  ): Promise<WorkspaceExternalApiCredentialSecretResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/external-api/credentials/${encodeURIComponent(credentialId)}/rotate`,
+      { method: 'POST' },
+    );
+    return handleResponse<WorkspaceExternalApiCredentialSecretResponse>(response);
+  },
+
+  async revokeWorkspaceExternalApiCredential(
+    workspaceId: string,
+    credentialId: string,
+  ): Promise<WorkspaceExternalApiCredentialItem> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/external-api/credentials/${encodeURIComponent(credentialId)}`,
+      { method: 'DELETE' },
+    );
+    return handleResponse<WorkspaceExternalApiCredentialItem>(response);
+  },
+
+  async listWorkspaceExternalApiRequests(
+    workspaceId: string,
+  ): Promise<WorkspaceExternalApiRequestHistoryResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/external-api/requests`,
+      { cache: 'no-store' },
+    );
+    return handleResponse<WorkspaceExternalApiRequestHistoryResponse>(response);
   },
 
   async listUserSpaceWorkspaceShareLinks(

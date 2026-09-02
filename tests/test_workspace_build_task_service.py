@@ -88,6 +88,16 @@ class StartBuildTaskTests(unittest.IsolatedAsyncioTestCase):
                 "_enforce_editor",
                 mock.AsyncMock(return_value=workspace),
             ),
+            mock.patch.object(
+                self.module.repository,
+                "get_settings",
+                mock.AsyncMock(return_value=SimpleNamespace()),
+            ),
+            mock.patch.object(
+                self.module,
+                "_resolve_new_workspace_conversation_model",
+                mock.AsyncMock(return_value="openai::gpt-5"),
+            ),
         ]
 
     async def test_duplicate_key_same_payload_returns_original(self) -> None:

@@ -25,7 +25,11 @@ function sortWorkspacesByName(workspaces: UserSpaceWorkspace[]): UserSpaceWorksp
   return [...workspaces].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function getSelectorValue(draft: string | null, preference: string | null, effective: string): string {
+function getSelectorValue(
+  draft: string | null,
+  preference: string | null,
+  effective: string,
+): string {
   return draft ?? preference ?? effective;
 }
 
@@ -45,7 +49,9 @@ export function ModelPreferencesModal({ isOpen, onClose }: ModelPreferencesModal
   const [workspacesLoading, setWorkspacesLoading] = useState(false);
   const [workspacesError, setWorkspacesError] = useState<string | null>(null);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('');
-  const [workspacePreference, setWorkspacePreference] = useState<ModelPreferenceResponse | null>(null);
+  const [workspacePreference, setWorkspacePreference] = useState<ModelPreferenceResponse | null>(
+    null,
+  );
   const [workspaceDraft, setWorkspaceDraft] = useState<string | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
@@ -171,7 +177,8 @@ export function ModelPreferencesModal({ isOpen, onClose }: ModelPreferencesModal
     : false;
 
   const catalogUnavailable = modelsLoading || models.length === 0 || Boolean(modelsError);
-  const selectorsDisabled = modelsLoading || generalSaving || workspaceSaving || models.length === 0;
+  const selectorsDisabled =
+    modelsLoading || generalSaving || workspaceSaving || models.length === 0;
 
   async function saveGeneralPreference(nextModel: string | null) {
     setGeneralSaving(true);
