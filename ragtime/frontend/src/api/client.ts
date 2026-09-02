@@ -5523,6 +5523,20 @@ export const api = {
     return handleResponse<WorkspaceExternalApiCredentialItem>(response);
   },
 
+  async deleteWorkspaceExternalApiCredential(
+    workspaceId: string,
+    credentialId: string,
+  ): Promise<void> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/external-api/credentials/${encodeURIComponent(credentialId)}/record`,
+      { method: 'DELETE' },
+    );
+    if (response.status === 204) {
+      return;
+    }
+    await handleResponse<Record<string, never>>(response);
+  },
+
   async listWorkspaceExternalApiRequests(
     workspaceId: string,
   ): Promise<WorkspaceExternalApiRequestHistoryResponse> {

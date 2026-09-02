@@ -1,3 +1,101 @@
+/**
+ * Modern Theme (VS Code Workbench) — Design & Style Guide
+ *
+ * 1. Aesthetic Philosophy: The IDE Workbench
+ * The Modern theme rejects traditional web page design—there are no floating
+ * pill navigations, soft pastel card shadows, or decorative white margins.
+ * Instead, the interface is structured as an integrated desktop engineering
+ * workbench modeled after VS Code. The viewport is treated as a unified,
+ * bounded workstation composed of docked, modular panes separated by strict
+ * structural sashes and gutters. Every component exists within a predictable
+ * physical hierarchy designed for dense information, sustained focus, and
+ * minimal visual fatigue.
+ *
+ * 2. Spatial Hierarchy & Surface Planes
+ * Depth is communicated exclusively through tonal contrast between dark planes
+ * and single-pixel structural borders, never through blurry CSS drop shadows
+ * (--shadow-sm and --shadow-md are explicitly none).
+ * - Base Desk (--color-workbench, #252526): Foundational desk surface peaking
+ *   through 4px gutters between docked panels and around viewport perimeters.
+ * - Docked Chrome & Sidebars (--color-panel / --color-chrome, #181818): Darkest
+ *   resting surface. Used for top application bar, file tree, chat history,
+ *   terminal background, text inputs, and docked cards.
+ * - Active Content & Editors (--color-editor, #1f1f1f): Subtle elevation above
+ *   chrome for CodeMirror editors, chat reading areas, and diff viewers.
+ * - Elevated Overlays (--color-widget, #202020): Used strictly for floating
+ *   transient elements—dropdowns, popovers, modals, and compact toast
+ *   notifications. Only these floating layers receive drop shadows (--shadow-lg).
+ *
+ * 3. Dimensional Rhythm & The 4px Grid
+ * Strict dimensional constraints align panels and controls across split views:
+ * - Gutters & Padding: Panes are spaced by a 4px gap (--workbench-gap: 4px) and
+ *   inset from window edges by 8px (--workbench-padding: 8px).
+ * - Titlebars (35px): Outer application bars, topnav, and pane titlebars sit at
+ *   an exact 35px height (--workbench-titlebar-height).
+ * - Toolbars (32px): Sub-headers, secondary tabs, and toolbar strips sit at
+ *   32px (--workbench-toolbar-height).
+ * - Controls & Inputs (28px): Action buttons, inputs, and search boxes sit at
+ *   28px (--workbench-control-height) with a 4px corner radius.
+ * - Panels & Cards (8px Radius): All major docked panes use an 8px radius
+ *   (--workbench-surface-radius: 8px) with --workbench-container-border (1px
+ *   solid var(--color-border), #2b2b2b).
+ * - Modal Content Grouping: Keep introductory or explanatory copy flat on the
+ *   modal's --color-widget surface. Place distinct functional sections on
+ *   direct child --color-panel panes when the separation improves scanning.
+ *   Stack those panes with --workbench-padding (8px), not the 4px resize
+ *   gutter. Give each pane --workbench-container-border and
+ *   --workbench-surface-radius. Do not use --color-bg-tertiary as a resting
+ *   pane fill; reserve it for stronger state or control contrast.
+ * - Zero Double-Nesting: Treat the modal as the overlay surface and the dark
+ *   functional panes as its direct content regions. Containers inside those
+ *   bordered panes stay transparent, borderless, and free of outer padding.
+ * - Dense Modal Records: Repeated records may shift into a responsive
+ *   two-column grid only when each card keeps a readable width; collapse back
+ *   to one column before labels or actions start to crowd.
+ * - Record Row Fallback: When a single horizontal row cannot hold both status
+ *   and actions comfortably, keep status in the card's top row and move
+ *   actions to a dedicated bottom row.
+ *
+ * 4. Typography & Information Density
+ * - Type Stacks: Headings and body copy use Droid Sans (--font-body /
+ *   --font-heading). Code, terminals, and paths use Fira Code (--font-mono).
+ * - Tonal Contrast: Primary text is soft silver (#cccccc). Secondary text is
+ *   warm grey (#9d9d9d); icons/timestamps are muted grey (#8c8c8c). Crisp
+ *   white (#ffffff / --color-primary-text) is reserved for headings, active
+ *   selections, and text on primary accent backgrounds.
+ * - Scale: Compact 12px-13px body text prioritizing information density.
+ *
+ * 5. Interaction Model & Accent Color
+ * - Primary Accent (--color-primary, #0078d4): Signature VS Code royal blue.
+ * - Active & Selected States: Active topnav tabs, workspace tabs, selected row
+ *   items, and primary buttons wear solid --color-primary with white
+ *   --color-primary-text (#ffffff). Hover darkens slightly to #026ec1.
+ * - Neutral Buttons: Secondary and icon buttons are borderless and transparent
+ *   at rest, gaining a soft highlight (--color-surface-hover, #2a2d2e) on hover.
+ * - Focus Rings: Sharp 1px or 2px solid --color-focus (#0078d4) ring without
+ *   diffuse drop shadows.
+ * - Revealed Controls: Controls that appear on pointer hover must also appear
+ *   on keyboard focus, remain visible for selected records, and stay visible
+ *   on touch interfaces where hover is not dependable.
+ * - Resize Sashes: 4px grab target (--sash-size: 4px), invisible at rest,
+ *   illuminating with --color-sash-hover (#0078d4) on hover/drag.
+ *
+ * 6. The UserSpacePanel Archetype
+ * UserSpacePanel.tsx is the canonical realization of this system:
+ * - Left Pane (File Tree): In --color-panel (#181818) with a 32px toolbar.
+ * - Center Pane (Editor): In --color-editor (#1f1f1f) with integrated line
+ *   numbers, syntax highlighting, and an aligned diff overlay.
+ * - Right Pane (Preview & Console): Edge-to-edge preview iframe with padding: 0
+ *   and border: none. The console tab transitions cleanly into an xterm
+ *   terminal grounded on --color-terminal-surface (#181818).
+ * - Selection-Scoped Forms: Inline forms that depend on a selected record stay
+ *   beneath the selectable records in the same pane instead of splitting into
+ *   a disconnected peer pane.
+ * - Background Ambiance: WebGL motion background runs at low opacity with a
+ *   subtle hint of primary blue behind floating panes without competing for
+ *   legibility.
+ */
+
 [data-theme-pack='modern'] {
   color-scheme: dark light;
 

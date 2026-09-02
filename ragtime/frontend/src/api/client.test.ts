@@ -765,6 +765,47 @@ describe('workspace bridge credential client requests', () => {
   });
 });
 
+describe('workspace external API credential client requests', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('deletes a revoked credential record with encoded ids and accepts 204', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await expect(
+      api.deleteWorkspaceExternalApiCredential('workspace/123', 'cred/abc def'),
+    ).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/userspace/workspaces/workspace%2F123/external-api/credentials/cred%2Fabc%20def/record',
+      expect.objectContaining({ method: 'DELETE', credentials: 'include' }),
+    );
+  });
+
+  it('surfaces delete-record JSON errors through handleResponse when the server rejects deletion', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ detail: 'Only revoked credentials can be deleted' }, 400),
+    );
+
+    await expect(
+      api.deleteWorkspaceExternalApiCredential('workspace/123', 'cred/abc def'),
+    ).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 400,
+      detail: 'Only revoked credentials can be deleted',
+      message: 'Only revoked credentials can be deleted',
+    });
+  });
+});
+
 describe('workspace archive export downloads', () => {
   const fetchMock = vi.fn<typeof fetch>();
 

@@ -11,19 +11,21 @@ import type {
   WorkspaceExternalApiRequestHistoryItem,
 } from '@/types';
 
-import { InlineCopyButton } from './InlineCopyButton';
+import {
+  ExternalApiCredentialConfirmDialog,
+  ExternalApiCredentialTokenDialog,
+  type CredentialAction,
+  type ExternalApiCredentialDialogTokenState,
+} from './ExternalApiCredentialDialogs';
 
 interface ExternalApiAccessSectionProps {
   workspaceId: string;
   previewOrigin?: string | null;
 }
 
-interface TokenRevealState {
-  token: string;
-  tokenPrefix: string;
-  label: string;
-  endpoint: WorkspaceExternalApiManifestCandidate | WorkspaceExternalApiEndpointItem | null;
-  expiresAt: string | null;
+interface PendingCredentialAction {
+  action: CredentialAction;
+  credential: WorkspaceExternalApiCredentialItem;
 }
 
 interface ExternalApiAccessState {
@@ -51,19 +53,6 @@ function formatTimestamp(value: string | null): string {
   });
 }
 
-function buildCurlExample(
-  origin: string,
-  endpointPath: string,
-  token: string,
-  method: string,
-): string {
-  return `curl -X ${method} "${origin}${endpointPath}" -H "Authorization: Bearer ${token}"`;
-}
-
-function buildPowerQueryExample(origin: string, endpointPath: string, token: string): string {
-  return `let\n    Source = Json.Document(Web.Contents("${origin}${endpointPath}", [Headers=[Authorization="Bearer ${token}"]]))\nin\n    Source`;
-}
-
 function toCredentialListItem(
   credential: WorkspaceExternalApiCredentialSecretResponse,
 ): WorkspaceExternalApiCredentialItem {
@@ -84,10 +73,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim() ? error.message : fallback;
 }
 
-export function ExternalApiAccessSection({
-  workspaceId,
-  previewOrigin,
-}: ExternalApiAccessSectionProps) {
+export function ExternalApiAccessSection({ workspaceId }: ExternalApiAccessSectionProps) {
   const [state, setState] = useState<ExternalApiAccessState>({
     workspaceId,
     manifest: null,
@@ -101,7 +87,10 @@ export function ExternalApiAccessSection({
   const [selectedEndpointKeys, setSelectedEndpointKeys] = useState<string[]>([]);
   const [credentialLabel, setCredentialLabel] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
-  const [tokenReveal, setTokenReveal] = useState<TokenRevealState | null>(null);
+  const [tokenReveal, setTokenReveal] = useState<ExternalApiCredentialDialogTokenState | null>(
+    null,
+  );
+  const [pendingAction, setPendingAction] = useState<PendingCredentialAction | null>(null);
   const requestGenerationRef = useRef(0);
 
   const loadSection = async (nextWorkspaceId: string) => {
@@ -157,6 +146,7 @@ export function ExternalApiAccessSection({
     setCredentialLabel('');
     setExpiresAt('');
     setTokenReveal(null);
+    setPendingAction(null);
     void loadSection(workspaceId);
   }, [workspaceId]);
 
@@ -188,23 +178,33 @@ export function ExternalApiAccessSection({
     [state.endpoints],
   );
 
-  const resolvedPreviewOrigin =
-    previewOrigin ?? state.manifest?.preview_origin ?? 'https://workspace-preview.invalid';
+  const selectableEndpointKeySet = useMemo(
+    () => new Set(selectablePublishedEndpoints.map((endpoint) => endpoint.key)),
+    [selectablePublishedEndpoints],
+  );
 
   const revealCredential = (
     credential: WorkspaceExternalApiCredentialSecretResponse,
     endpointKey: string | null,
+    operation: 'Created' | 'Rotated' = 'Created',
   ) => {
+    const endpoint =
+      (endpointKey ? endpointByKey.get(endpointKey) : null) ??
+      (endpointKey ? candidateByKey.get(endpointKey) : null) ??
+      null;
     setTokenReveal({
       token: credential.token,
-      tokenPrefix: credential.token_prefix,
+      prefix: credential.token_prefix,
       label: credential.label,
-      endpoint:
-        (endpointKey ? endpointByKey.get(endpointKey) : null) ??
-        (endpointKey ? candidateByKey.get(endpointKey) : null) ??
-        null,
-      expiresAt: credential.expires_at,
+      operation,
+      endpointPath: endpoint?.path ?? null,
+      method: endpoint?.method ?? 'GET',
     });
+  };
+
+  const loadRequests = async (nextWorkspaceId: string) => {
+    const requestsResponse = await api.listWorkspaceExternalApiRequests(nextWorkspaceId);
+    setState((current) => ({ ...current, requests: requestsResponse.items }));
   };
 
   const runPublish = async (key: string) => {
@@ -231,9 +231,6 @@ export function ExternalApiAccessSection({
   };
 
   const runRevoke = async (credentialId: string) => {
-    if (!window.confirm('Revoke this service credential? This cannot be undone.')) {
-      return;
-    }
     setState((current) => ({ ...current, saving: true, error: null }));
     try {
       const credential = await api.revokeWorkspaceExternalApiCredential(workspaceId, credentialId);
@@ -250,21 +247,20 @@ export function ExternalApiAccessSection({
         saving: false,
         error: getErrorMessage(error, 'Failed to revoke credential'),
       }));
+    } finally {
+      setPendingAction(null);
     }
   };
 
   const runRotate = async (credential: WorkspaceExternalApiCredentialItem) => {
-    if (
-      !window.confirm(
-        'Rotate this service credential? Existing clients will stop working immediately.',
-      )
-    ) {
-      return;
-    }
     setState((current) => ({ ...current, saving: true, error: null }));
     try {
       const rotated = await api.rotateWorkspaceExternalApiCredential(workspaceId, credential.id);
-      revealCredential(rotated, credential.endpoint_keys[0] ?? rotated.endpoint_keys[0] ?? null);
+      revealCredential(
+        rotated,
+        credential.endpoint_keys[0] ?? rotated.endpoint_keys[0] ?? null,
+        'Rotated',
+      );
       setState((current) => ({
         ...current,
         saving: false,
@@ -278,6 +274,29 @@ export function ExternalApiAccessSection({
         saving: false,
         error: getErrorMessage(error, 'Failed to rotate credential'),
       }));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const runDelete = async (credentialId: string) => {
+    setState((current) => ({ ...current, saving: true, error: null }));
+    try {
+      await api.deleteWorkspaceExternalApiCredential(workspaceId, credentialId);
+      setState((current) => ({
+        ...current,
+        saving: false,
+        credentials: current.credentials.filter((item) => item.id !== credentialId),
+      }));
+      await loadRequests(workspaceId);
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        saving: false,
+        error: getErrorMessage(error, 'Failed to delete credential'),
+      }));
+    } finally {
+      setPendingAction(null);
     }
   };
 
@@ -317,19 +336,6 @@ export function ExternalApiAccessSection({
   };
 
   const canCreateCredential = credentialLabel.trim().length > 0 && selectedEndpointKeys.length > 0;
-  const revealEndpointPath = tokenReveal?.endpoint?.path ?? '/';
-  const revealEndpointMethod = tokenReveal?.endpoint?.method ?? 'GET';
-  const curlExample = tokenReveal
-    ? buildCurlExample(
-        resolvedPreviewOrigin,
-        revealEndpointPath,
-        tokenReveal.token,
-        revealEndpointMethod,
-      )
-    : '';
-  const powerQueryExample = tokenReveal
-    ? buildPowerQueryExample(resolvedPreviewOrigin, revealEndpointPath, tokenReveal.token)
-    : '';
 
   if (state.loading) {
     return (
@@ -343,10 +349,9 @@ export function ExternalApiAccessSection({
   return (
     <section
       id="workspace-external-api-access"
-      className="userspace-share-controls userspace-external-api-access"
+      className="userspace-share-controls userspace-external-api-access userspace-external-api-section"
       aria-label="External API Access"
     >
-      <h4>External API Access</h4>
       <p className="userspace-muted">
         Publish machine-readable GET or HEAD routes, issue service credentials, and copy
         bearer-token examples for Power Query or curl.
@@ -369,28 +374,42 @@ export function ExternalApiAccessSection({
         </div>
       )}
 
-      <div className="userspace-external-api-grid">
-        <section className="userspace-external-api-card" aria-label="Candidate endpoints">
-          <h5>Candidate endpoints</h5>
-          {publishableCandidates.length === 0 ? (
-            <p className="userspace-muted">No published endpoints yet.</p>
-          ) : (
-            <div className="userspace-external-api-list">
-              {publishableCandidates.map((candidate) => {
-                const endpoint = endpointByKey.get(candidate.key);
-                const statusLabel = !endpoint
-                  ? 'Not published'
-                  : endpoint.stale
-                    ? 'Stale'
-                    : 'Published';
-                const actionLabel = !endpoint ? 'Publish' : endpoint.stale ? 'Reapprove' : null;
-                return (
-                  <article key={candidate.key} className="userspace-external-api-item">
-                    <div className="userspace-external-api-item-header">
-                      <div>
-                        <label className="userspace-external-api-item-title">
-                          <span>{candidate.label}</span>
-                        </label>
+      <section
+        id="workspace-external-api-endpoints"
+        className="userspace-external-api-section"
+        aria-label="Candidate endpoints"
+      >
+        <div className="userspace-external-api-section-header">
+          <h5 className="userspace-external-api-section-title userspace-external-api-section-heading">
+            Endpoints
+          </h5>
+        </div>
+        {publishableCandidates.length === 0 ? (
+          <p className="userspace-muted">No published endpoints yet.</p>
+        ) : (
+          <div className="userspace-external-api-list">
+            {publishableCandidates.map((candidate) => {
+              const endpoint = endpointByKey.get(candidate.key);
+              const isSelectable = selectableEndpointKeySet.has(candidate.key);
+              const isSelected = selectedEndpointKeys.includes(candidate.key);
+              const statusLabel = !endpoint
+                ? 'Not published'
+                : endpoint.stale
+                  ? 'Stale'
+                  : 'Published';
+              const actionLabel = !endpoint ? 'Publish' : endpoint.stale ? 'Reapprove' : null;
+              return (
+                <article
+                  key={candidate.key}
+                  className={`userspace-external-api-row${isSelected ? ' is-credential-selected' : ''}`}
+                  data-endpoint-key={candidate.key}
+                >
+                  <div className="userspace-external-api-row-main">
+                    <div className="userspace-external-api-row-header">
+                      <div className="userspace-external-api-row-copy">
+                        <strong className="userspace-external-api-row-title">
+                          {candidate.label}
+                        </strong>
                         <div className="userspace-external-api-item-meta">
                           <code>{candidate.method}</code>
                           <code>{candidate.path}</code>
@@ -402,8 +421,23 @@ export function ExternalApiAccessSection({
                         {statusLabel}
                       </span>
                     </div>
-                    <p className="userspace-muted">{candidate.description}</p>
-                    {actionLabel && (
+                    <p className="userspace-muted userspace-external-api-row-description">
+                      {candidate.description}
+                    </p>
+                  </div>
+                  <div className="userspace-external-api-row-actions">
+                    {isSelectable ? (
+                      <label className="userspace-external-api-checkbox-row userspace-external-api-endpoint-selection-control">
+                        <input
+                          type="checkbox"
+                          aria-label={`Use ${candidate.label} for credential`}
+                          checked={isSelected}
+                          onChange={() => toggleEndpointKey(candidate.key)}
+                        />
+                        <span>Use for credential</span>
+                      </label>
+                    ) : null}
+                    {actionLabel ? (
                       <button
                         type="button"
                         className="btn btn-secondary btn-sm"
@@ -414,42 +448,25 @@ export function ExternalApiAccessSection({
                       >
                         {actionLabel}
                       </button>
-                    )}
-                  </article>
-                );
-              })}
+                    ) : null}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+        {selectedEndpointKeys.length > 0 ? (
+          <div id="workspace-external-api-credential-details">
+            <div className="userspace-external-api-section-header">
+              <h5 className="userspace-external-api-section-title userspace-external-api-section-heading">
+                Create credential
+              </h5>
             </div>
-          )}
-        </section>
-
-        <section className="userspace-external-api-card" aria-label="Create service credential">
-          <h5>Create service credential</h5>
-          {selectablePublishedEndpoints.length === 0 ? (
-            <p className="userspace-muted">Publish and approve at least one endpoint first.</p>
-          ) : (
-            <>
-              <div className="userspace-external-api-endpoint-checklist">
-                {selectablePublishedEndpoints.map((endpoint) => (
-                  <label key={endpoint.id} className="userspace-external-api-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={selectedEndpointKeys.includes(endpoint.key)}
-                      onChange={() => toggleEndpointKey(endpoint.key)}
-                    />
-                    <span>
-                      <strong>{endpoint.label}</strong>
-                      <span className="userspace-external-api-checkbox-meta">
-                        {endpoint.method} {endpoint.path}
-                      </span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-
-              <div className="userspace-share-access-row">
+            <div className="userspace-external-api-credential-fields">
+              <div className="userspace-share-access-row userspace-external-api-field">
                 <label
                   htmlFor="workspace-external-api-credential-label"
-                  className="userspace-share-label"
+                  className="userspace-share-label userspace-external-api-field-label"
                 >
                   Credential label
                 </label>
@@ -461,10 +478,10 @@ export function ExternalApiAccessSection({
                 />
               </div>
 
-              <div className="userspace-share-access-row">
+              <div className="userspace-share-access-row userspace-external-api-field">
                 <label
                   htmlFor="workspace-external-api-credential-expiry"
-                  className="userspace-share-label"
+                  className="userspace-share-label userspace-external-api-field-label"
                 >
                   Expiry (optional)
                 </label>
@@ -475,148 +492,98 @@ export function ExternalApiAccessSection({
                   onChange={(event) => setExpiresAt(event.target.value)}
                 />
               </div>
+            </div>
 
-              <div className="userspace-share-actions userspace-share-actions-single">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={!canCreateCredential || state.saving}
-                  onClick={() => {
-                    void runCreateCredential();
-                  }}
-                >
-                  Create Credential
-                </button>
-              </div>
-            </>
-          )}
-        </section>
-      </div>
-
-      {tokenReveal && (
-        <section className="userspace-external-api-card" aria-label="Credential secret reveal">
-          <div className="userspace-external-api-reveal-header">
-            <div>
-              <h5>Copy this token now</h5>
-              <p className="userspace-muted">
-                This secret is shown once for {tokenReveal.label}. Store it in the client now.
-              </p>
+            <div className="userspace-external-api-create-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!canCreateCredential || state.saving}
+                onClick={() => {
+                  void runCreateCredential();
+                }}
+              >
+                Create Credential
+              </button>
             </div>
           </div>
-
-          <div className="userspace-share-access-row userspace-share-link-pane">
-            <label htmlFor="workspace-external-api-token" className="userspace-share-label">
-              Bearer token
-            </label>
-            <div className="userspace-share-url-copy-wrap">
-              <input id="workspace-external-api-token" value={tokenReveal.token} readOnly />
-              <InlineCopyButton
-                copyText={tokenReveal.token}
-                className="userspace-share-inline-copy"
-                title="Copy bearer token"
-                ariaLabel="Copy bearer token"
-                copiedTitle="Bearer token copied"
-                copiedAriaLabel="Bearer token copied"
-                iconSize={12}
-              />
-            </div>
-          </div>
-
-          <div className="userspace-external-api-examples">
-            <div>
-              <div className="userspace-external-api-example-header">
-                <label className="userspace-share-label">curl example</label>
-                <InlineCopyButton
-                  copyText={curlExample}
-                  className="btn btn-secondary btn-sm"
-                  title="Copy curl example"
-                  ariaLabel="Copy curl example"
-                  copiedTitle="Curl example copied"
-                  copiedAriaLabel="Curl example copied"
-                  label="Copy"
-                  copiedLabel="Copied"
-                />
-              </div>
-              <pre className="userspace-external-api-code-block">{curlExample}</pre>
-            </div>
-
-            <div>
-              <div className="userspace-external-api-example-header">
-                <label className="userspace-share-label">Power Query (M)</label>
-                <InlineCopyButton
-                  copyText={powerQueryExample}
-                  className="btn btn-secondary btn-sm"
-                  title="Copy Power Query example"
-                  ariaLabel="Copy Power Query example"
-                  copiedTitle="Power Query example copied"
-                  copiedAriaLabel="Power Query example copied"
-                  label="Copy"
-                  copiedLabel="Copied"
-                />
-              </div>
-              <pre className="userspace-external-api-code-block">{powerQueryExample}</pre>
-            </div>
-          </div>
-        </section>
-      )}
+        ) : null}
+      </section>
 
       <section
-        className="userspace-external-api-card"
+        id="workspace-external-api-credentials"
+        className="userspace-external-api-section"
         role="region"
         aria-label="Service credentials"
       >
-        <h5>Service credentials</h5>
+        <div className="userspace-external-api-section-header">
+          <h5 className="userspace-external-api-section-title userspace-external-api-section-heading">
+            Service credentials
+          </h5>
+        </div>
         {state.credentials.length === 0 ? (
           <p className="userspace-muted">No service credentials yet.</p>
         ) : (
-          <div className="userspace-external-api-list">
+          <div className="userspace-external-api-list userspace-external-api-credential-list">
             {state.credentials.map((credential) => (
-              <article key={credential.id} className="userspace-external-api-item">
-                <div className="userspace-external-api-item-header">
-                  <div>
-                    <strong>{credential.label}</strong>
-                    <div className="userspace-external-api-item-meta">
-                      <code>{credential.token_prefix}</code>
-                      <span>{credential.endpoint_keys.join(', ')}</span>
+              <article
+                key={credential.id}
+                className="userspace-external-api-row userspace-external-api-credential-row"
+                data-credential-id={credential.id}
+              >
+                <div className="userspace-external-api-row-main">
+                  <div className="userspace-external-api-row-header">
+                    <div className="userspace-external-api-row-copy">
+                      <strong className="userspace-external-api-row-title">
+                        {credential.label}
+                      </strong>
+                      <div className="userspace-external-api-item-meta">
+                        <code>{credential.token_prefix}</code>
+                        <span>{credential.endpoint_keys.join(', ')}</span>
+                      </div>
                     </div>
+                    <span
+                      className={`userspace-external-api-status${credential.revoked_at ? ' is-revoked' : ''}`}
+                    >
+                      {credential.revoked_at ? 'Revoked' : credential.enabled ? 'Enabled' : 'Disabled'}
+                    </span>
                   </div>
-                  <span
-                    className={`userspace-external-api-status${credential.revoked_at ? ' is-revoked' : ''}`}
-                  >
-                    {credential.revoked_at
-                      ? 'Revoked'
-                      : credential.enabled
-                        ? 'Enabled'
-                        : 'Disabled'}
-                  </span>
+                  <div className="userspace-external-api-credential-meta">
+                    <span>Expires {formatTimestamp(credential.expires_at)}</span>
+                    <span>Last used {formatTimestamp(credential.last_used_at)}</span>
+                    <span>{credential.request_count} requests</span>
+                  </div>
                 </div>
-                <div className="userspace-external-api-credential-meta">
-                  <span>Created access retained</span>
-                  <span>Expires {formatTimestamp(credential.expires_at)}</span>
-                  <span>Last used {formatTimestamp(credential.last_used_at)}</span>
-                  <span>{credential.request_count} requests</span>
-                </div>
-                <div className="userspace-share-actions userspace-share-actions-edit">
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    disabled={state.saving || Boolean(credential.revoked_at)}
-                    onClick={() => {
-                      void runRotate(credential);
-                    }}
-                  >
-                    Rotate Credential
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    disabled={state.saving || Boolean(credential.revoked_at)}
-                    onClick={() => {
-                      void runRevoke(credential.id);
-                    }}
-                  >
-                    Revoke Credential
-                  </button>
+                <div className="userspace-external-api-row-actions userspace-external-api-credential-actions">
+                  {credential.revoked_at ? (
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-sm"
+                      disabled={state.saving}
+                      onClick={() => setPendingAction({ action: 'delete', credential })}
+                    >
+                      Delete Credential
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={state.saving}
+                        onClick={() => setPendingAction({ action: 'rotate', credential })}
+                      >
+                        Rotate Credential
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={state.saving}
+                        onClick={() => setPendingAction({ action: 'revoke', credential })}
+                      >
+                        Revoke Credential
+                      </button>
+                    </>
+                  )}
                 </div>
               </article>
             ))}
@@ -624,8 +591,17 @@ export function ExternalApiAccessSection({
         )}
       </section>
 
-      <section className="userspace-external-api-card" role="region" aria-label="Request history">
-        <h5>Request history</h5>
+      <section
+        id="workspace-external-api-history"
+        className="userspace-external-api-section"
+        role="region"
+        aria-label="Request history"
+      >
+        <div className="userspace-external-api-section-header">
+          <h5 className="userspace-external-api-section-title userspace-external-api-section-heading">
+            Request history
+          </h5>
+        </div>
         {state.requests.length === 0 ? (
           <p className="userspace-muted">No requests recorded yet.</p>
         ) : (
@@ -657,6 +633,41 @@ export function ExternalApiAccessSection({
           </div>
         )}
       </section>
+
+      {tokenReveal ? (
+        <ExternalApiCredentialTokenDialog
+          workspaceId={workspaceId}
+          tokenState={tokenReveal}
+          onClose={() => setTokenReveal(null)}
+        />
+      ) : null}
+
+      {pendingAction ? (
+        <ExternalApiCredentialConfirmDialog
+          action={pendingAction.action}
+          credential={pendingAction.credential}
+          isSubmitting={state.saving}
+          onCancel={() => {
+            if (!state.saving) {
+              setPendingAction(null);
+            }
+          }}
+          onConfirm={() => {
+            if (state.saving) {
+              return;
+            }
+            if (pendingAction.action === 'rotate') {
+              void runRotate(pendingAction.credential);
+              return;
+            }
+            if (pendingAction.action === 'revoke') {
+              void runRevoke(pendingAction.credential.id);
+              return;
+            }
+            void runDelete(pendingAction.credential.id);
+          }}
+        />
+      ) : null}
     </section>
   );
 }

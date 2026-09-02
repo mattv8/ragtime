@@ -132,11 +132,31 @@ vi.mock('./shared/WorkspaceSqliteInspectorModal', () => ({
 vi.mock('./shared/WorkspaceObjectStorageExplorer', () => ({
   WorkspaceObjectStorageExplorer: () => null,
 }));
+vi.mock('./shared/AgentAccessSection', () => ({
+  AgentAccessSection: ({ workspaceId }: { workspaceId: string }) => (
+    <div data-testid="agent-access-section">agent:{workspaceId}</div>
+  ),
+}));
+vi.mock('./shared/ExternalApiAccessSection', () => ({
+  ExternalApiAccessSection: ({
+    workspaceId,
+    previewOrigin,
+  }: {
+    workspaceId: string;
+    previewOrigin: string | null;
+  }) => (
+    <div data-testid="external-api-access-section">
+      api:{workspaceId}:{previewOrigin ?? ''}
+    </div>
+  ),
+}));
 vi.mock('./shared/ShareLinkModal', () => ({
   ShareLinkModal: ({
     isOpen,
     loadingShareStatus,
     shareLinks,
+    agentAccessSection,
+    apiAccessSection,
     onCreateShareLink,
     onOpenFullPreview,
     onSaveShareAccess,
@@ -145,6 +165,8 @@ vi.mock('./shared/ShareLinkModal', () => ({
     isOpen: boolean;
     loadingShareStatus: boolean;
     shareLinks: Array<{ id: string; label: string | null }>;
+    agentAccessSection?: React.ReactNode;
+    apiAccessSection?: React.ReactNode;
     onCreateShareLink?: () => void;
     onOpenFullPreview?: () => void;
     onSaveShareAccess?: () => void;
@@ -155,6 +177,8 @@ vi.mock('./shared/ShareLinkModal', () => ({
         {shareLinks.map((link) => (
           <div key={link.id}>{link.label}</div>
         ))}
+        <div data-testid="share-link-modal-agent-access">{agentAccessSection}</div>
+        <div data-testid="share-link-modal-api-access">{apiAccessSection}</div>
         <button type="button" onClick={() => onCreateShareLink?.()}>
           New Link
         </button>
@@ -997,6 +1021,24 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       'share-1',
     );
     expect(previewApiMock.listUserSpaceWorkspaceShareLinks).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes owner agent access and external api access to separate share modal props', async () => {
+    await renderPanelWithRuntimeOverlay(false);
+
+    const manageShareButton = document.querySelector('[title="Manage share link"]');
+    expect(manageShareButton).not.toBeNull();
+
+    await act(async () => {
+      (manageShareButton as HTMLButtonElement).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('share-link-modal-agent-access').textContent).toContain(
+        'agent:ws-1',
+      );
+      expect(screen.getByTestId('share-link-modal-api-access').textContent).toContain('api:ws-1:');
+    });
   });
 
   it('treats linked databases with tables as activating the SQLite inspector toolbar state', async () => {

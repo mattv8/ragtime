@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
 from ragtime.core.auth import get_external_origin
 from ragtime.core.security import get_current_user
 from ragtime.userspace.external_api import (
     create_workspace_service_credential,
+    delete_revoked_workspace_service_credential,
     get_external_api_manifest_payload,
     list_workspace_api_requests_payload,
     list_workspace_published_endpoints_payload,
@@ -102,6 +103,17 @@ async def rotate_workspace_external_api_credential(workspace_id: str, credential
 async def revoke_workspace_external_api_credential(workspace_id: str, credential_id: str, user: Any = Depends(get_current_user)) -> dict[str, Any]:
     await _require_workspace_owner_or_admin(workspace_id, user)
     return await revoke_workspace_service_credential(workspace_id=workspace_id, credential_id=credential_id, user_id=user.id)
+
+
+@router.delete("/credentials/{credential_id}/record", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_workspace_external_api_credential_record(
+    workspace_id: str,
+    credential_id: str,
+    user: Any = Depends(get_current_user),
+) -> Response:
+    await _require_workspace_owner_or_admin(workspace_id, user)
+    await delete_revoked_workspace_service_credential(workspace_id=workspace_id, credential_id=credential_id, user_id=user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/requests")

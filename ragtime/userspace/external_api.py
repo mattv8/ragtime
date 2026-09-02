@@ -667,6 +667,22 @@ async def revoke_workspace_service_credential(*, workspace_id: str, credential_i
     )
 
 
+async def delete_revoked_workspace_service_credential(*, workspace_id: str, credential_id: str, user_id: str) -> None:
+    db = await get_db()
+    row = await db.workspaceservicecredential.find_first(where={"id": credential_id, "workspaceId": workspace_id})
+    if row is None:
+        raise HTTPException(status_code=404, detail="Service credential not found")
+    if getattr(row, "revokedAt", None) is None or bool(getattr(row, "enabled", False)):
+        raise HTTPException(status_code=400, detail="Only revoked credentials can be deleted")
+    await _record_management_audit(
+        workspace_id,
+        user_id,
+        "external_api.credential_deleted",
+        {"credential_id": row.id, "credential_label": row.label},
+    )
+    await db.workspaceservicecredential.delete(where={"id": credential_id})
+
+
 async def list_workspace_api_requests_payload(*, workspace_id: str, cursor: str | None, limit: int) -> dict[str, Any]:
     db = await get_db()
     where: WorkspaceApiRequestLogWhereInput = {"workspaceId": workspace_id}

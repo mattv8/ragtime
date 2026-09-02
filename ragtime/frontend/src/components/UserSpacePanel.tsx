@@ -12071,13 +12071,15 @@ export function UserSpacePanel({
         deletingSelectedShareLink={deletingSelectedShareLink}
         agentAccessSection={
           isOwner && activeWorkspace ? (
-            <>
-              <AgentAccessSection workspaceId={activeWorkspace.id} />
-              <ExternalApiAccessSection
-                workspaceId={activeWorkspace.id}
-                previewOrigin={previewOrigin}
-              />
-            </>
+            <AgentAccessSection workspaceId={activeWorkspace.id} />
+          ) : undefined
+        }
+        apiAccessSection={
+          isOwner && activeWorkspace ? (
+            <ExternalApiAccessSection
+              workspaceId={activeWorkspace.id}
+              previewOrigin={previewOrigin}
+            />
           ) : undefined
         }
         onClose={() => setShowShareModal(false)}

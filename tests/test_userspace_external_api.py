@@ -124,6 +124,9 @@ class _FakeCredentialTable:
         self.rows = {row.id: row for row in rows}
         self.created: list[dict] = []
         self.updated: list[dict] = []
+        self.deleted: list[dict] = []
+        self.request_log_table: _FakeRequestLogTable | None = None
+        self.grant_table: _FakeCredentialEndpointTable | None = None
 
     async def find_first(self, *, where: dict, include: dict | None = None) -> SimpleNamespace | None:
         _ = include
@@ -176,6 +179,17 @@ class _FakeCredentialTable:
                 setattr(row, key, int(getattr(row, key, 0) or 0) + int(value["increment"]))
                 continue
             setattr(row, key, value)
+        return row
+
+    async def delete(self, *, where: dict) -> SimpleNamespace:
+        self.deleted.append(where)
+        row = self.rows.pop(where["id"])
+        if self.grant_table is not None:
+            await self.grant_table.delete_many(where={"credentialId": where["id"]})
+        if self.request_log_table is not None:
+            for request_row in self.request_log_table.rows:
+                if getattr(request_row, "credentialId", None) == where["id"]:
+                    request_row.credentialId = None
         return row
 
 
@@ -638,6 +652,226 @@ class AuthenticationAndAccountingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ManagementRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_delete_revoked_credential_service_removes_record_and_preserves_history(self) -> None:
+        endpoint = SimpleNamespace(
+            id="ep-1",
+            workspaceId="ws-1",
+            key="accounting-periods",
+            label="Accounting periods",
+            description="Lists periods.",
+            method="GET",
+            path="/backend/periods",
+            enabled=True,
+            definitionHash="hash-1",
+            approvedAt=_NOW,
+            createdAt=_NOW,
+            updatedAt=_NOW,
+        )
+        credential = SimpleNamespace(
+            id="cred-1",
+            workspaceId="ws-1",
+            label="Revoked key",
+            tokenPrefix="selector",
+            tokenHash="hash",
+            enabled=False,
+            expiresAt=None,
+            lastUsedAt=None,
+            requestCount=2,
+            createdAt=_NOW,
+            updatedAt=_NOW,
+            revokedAt=_NOW,
+            createdByUserId="owner-1",
+            endpointGrants=[SimpleNamespace(endpoint=endpoint)],
+        )
+        credential_table = _FakeCredentialTable(credential)
+        grant_table = _FakeCredentialEndpointTable()
+        grant_table.rows = [SimpleNamespace(id="grant-1", credentialId="cred-1", endpointId="ep-1")]
+        request_log_table = _FakeRequestLogTable(
+            SimpleNamespace(
+                id="req-1",
+                workspaceId="ws-1",
+                credentialId="cred-1",
+                credentialLabel="Revoked key",
+                endpointKey="accounting-periods",
+                endpointLabel="Accounting periods",
+                method="GET",
+                pathTemplate="/backend/periods",
+                statusCode=200,
+                durationMs=20,
+                createdAt=_NOW,
+            )
+        )
+        credential_table.grant_table = grant_table
+        credential_table.request_log_table = request_log_table
+        db = SimpleNamespace(
+            workspaceservicecredential=credential_table,
+            workspaceservicecredentialendpoint=grant_table,
+            workspaceapirequestlog=request_log_table,
+        )
+        fake_userspace_service = SimpleNamespace(_record_runtime_audit_event=mock.AsyncMock(return_value=True))
+
+        with (
+            mock.patch.object(external_api_module, "get_db", mock.AsyncMock(return_value=db)),
+            mock.patch.object(external_api_module, "userspace_service", fake_userspace_service),
+        ):
+            result = await external_api_module.delete_revoked_workspace_service_credential(
+                workspace_id="ws-1",
+                credential_id="cred-1",
+                user_id="owner-1",
+            )
+
+        self.assertIsNone(result)
+        self.assertNotIn("cred-1", credential_table.rows)
+        self.assertEqual(credential_table.deleted, [{"id": "cred-1"}])
+        self.assertEqual(grant_table.deleted, [{"credentialId": "cred-1"}])
+        self.assertIsNone(request_log_table.rows[0].credentialId)
+        fake_userspace_service._record_runtime_audit_event.assert_awaited_once_with(
+            "ws-1",
+            "owner-1",
+            "external_api.credential_deleted",
+            {"credential_id": "cred-1", "credential_label": "Revoked key"},
+        )
+
+    async def test_delete_revoked_credential_service_rejects_active_and_wrong_workspace_records(self) -> None:
+        active = SimpleNamespace(
+            id="cred-active",
+            workspaceId="ws-1",
+            label="Active key",
+            tokenPrefix="selector-a",
+            tokenHash="hash-a",
+            enabled=True,
+            expiresAt=None,
+            lastUsedAt=None,
+            requestCount=0,
+            createdAt=_NOW,
+            updatedAt=_NOW,
+            revokedAt=None,
+            createdByUserId="owner-1",
+            endpointGrants=[],
+        )
+        other_workspace = SimpleNamespace(
+            id="cred-other",
+            workspaceId="ws-2",
+            label="Other workspace key",
+            tokenPrefix="selector-b",
+            tokenHash="hash-b",
+            enabled=False,
+            expiresAt=None,
+            lastUsedAt=None,
+            requestCount=0,
+            createdAt=_NOW,
+            updatedAt=_NOW,
+            revokedAt=_NOW,
+            createdByUserId="owner-2",
+            endpointGrants=[],
+        )
+        db = SimpleNamespace(workspaceservicecredential=_FakeCredentialTable(active, other_workspace))
+
+        with mock.patch.object(external_api_module, "get_db", mock.AsyncMock(return_value=db)):
+            with self.assertRaises(HTTPException) as active_error:
+                await external_api_module.delete_revoked_workspace_service_credential(
+                    workspace_id="ws-1",
+                    credential_id="cred-active",
+                    user_id="owner-1",
+                )
+            with self.assertRaises(HTTPException) as missing_error:
+                await external_api_module.delete_revoked_workspace_service_credential(
+                    workspace_id="ws-1",
+                    credential_id="missing",
+                    user_id="owner-1",
+                )
+            with self.assertRaises(HTTPException) as wrong_workspace_error:
+                await external_api_module.delete_revoked_workspace_service_credential(
+                    workspace_id="ws-1",
+                    credential_id="cred-other",
+                    user_id="owner-1",
+                )
+
+        self.assertEqual(active_error.exception.status_code, 400)
+        self.assertEqual(active_error.exception.detail, "Only revoked credentials can be deleted")
+        self.assertEqual(missing_error.exception.status_code, 404)
+        self.assertEqual(missing_error.exception.detail, "Service credential not found")
+        self.assertEqual(wrong_workspace_error.exception.status_code, 404)
+        self.assertEqual(wrong_workspace_error.exception.detail, "Service credential not found")
+
+    async def test_delete_revoked_credential_service_rejects_enabled_rows_even_if_revoked_at_is_present(self) -> None:
+        inconsistent = SimpleNamespace(
+            id="cred-inconsistent",
+            workspaceId="ws-1",
+            label="Inconsistent key",
+            tokenPrefix="selector-c",
+            tokenHash="hash-c",
+            enabled=True,
+            expiresAt=None,
+            lastUsedAt=None,
+            requestCount=0,
+            createdAt=_NOW,
+            updatedAt=_NOW,
+            revokedAt=_NOW,
+            createdByUserId="owner-1",
+            endpointGrants=[],
+        )
+        db = SimpleNamespace(workspaceservicecredential=_FakeCredentialTable(inconsistent))
+
+        with mock.patch.object(external_api_module, "get_db", mock.AsyncMock(return_value=db)):
+            with self.assertRaises(HTTPException) as inconsistent_error:
+                await external_api_module.delete_revoked_workspace_service_credential(
+                    workspace_id="ws-1",
+                    credential_id="cred-inconsistent",
+                    user_id="owner-1",
+                )
+
+        self.assertEqual(inconsistent_error.exception.status_code, 400)
+        self.assertEqual(inconsistent_error.exception.detail, "Only revoked credentials can be deleted")
+
+    async def test_delete_revoked_credential_route_uses_owner_admin_auth_and_returns_no_content(self) -> None:
+        app = FastAPI()
+        app.include_router(external_api_routes.router)
+        transport = httpx.ASGITransport(app=app)
+
+        service_mock = mock.AsyncMock(return_value=None)
+
+        async def enforce_workspace_role(workspace_id: str, user_id: str, role: str, *, is_admin: bool = False) -> None:
+            _ = workspace_id, role
+            if user_id in {"owner-1", "admin-1"} and (user_id != "admin-1" or is_admin):
+                return
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+        fake_userspace_service = SimpleNamespace(enforce_workspace_role=mock.AsyncMock(side_effect=enforce_workspace_role))
+
+        try:
+            with (
+                mock.patch.object(external_api_routes, "userspace_service", fake_userspace_service),
+                mock.patch.object(external_api_routes, "delete_revoked_workspace_service_credential", service_mock),
+            ):
+                app.dependency_overrides[external_api_routes.get_current_user] = lambda: SimpleNamespace(id="owner-1", role="user")
+                async with httpx.AsyncClient(transport=transport, base_url="https://ragtime.example") as client:
+                    owner_response = await client.delete(
+                        "/indexes/userspace/workspaces/ws-1/external-api/credentials/cred-1/record"
+                    )
+                self.assertEqual(owner_response.status_code, 204)
+                self.assertEqual(owner_response.text, "")
+
+                app.dependency_overrides[external_api_routes.get_current_user] = lambda: SimpleNamespace(id="admin-1", role="admin")
+                async with httpx.AsyncClient(transport=transport, base_url="https://ragtime.example") as client:
+                    admin_response = await client.delete(
+                        "/indexes/userspace/workspaces/ws-1/external-api/credentials/cred-2/record"
+                    )
+                self.assertEqual(admin_response.status_code, 204)
+
+                app.dependency_overrides[external_api_routes.get_current_user] = lambda: SimpleNamespace(id="viewer-1", role="user")
+                async with httpx.AsyncClient(transport=transport, base_url="https://ragtime.example") as client:
+                    forbidden_response = await client.delete(
+                        "/indexes/userspace/workspaces/ws-1/external-api/credentials/cred-3/record"
+                    )
+                self.assertEqual(forbidden_response.status_code, 403)
+        finally:
+            app.dependency_overrides.clear()
+
+        self.assertEqual(service_mock.await_count, 2)
+        service_mock.assert_any_await(workspace_id="ws-1", credential_id="cred-1", user_id="owner-1")
+        service_mock.assert_any_await(workspace_id="ws-1", credential_id="cred-2", user_id="admin-1")
+
     async def test_routes_require_authenticated_owner_or_admin(self) -> None:
         app = FastAPI()
         app.include_router(external_api_routes.router)

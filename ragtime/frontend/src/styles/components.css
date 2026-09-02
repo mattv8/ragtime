@@ -5419,28 +5419,91 @@ textarea:focus {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.modal-content.userspace-share-modal.userspace-share-modal-with-tabs {
+  width: min(720px, calc(100vw - 32px));
+  max-width: 720px;
+}
+
+.userspace-share-modal-with-tabs .modal-body {
+  padding-top: 0;
+}
+
+.userspace-share-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+  margin: 0 0 var(--space-md);
+  padding: 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.userspace-share-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-sm) var(--space-md);
+  margin-bottom: -1px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.userspace-share-tab[aria-selected='true'] {
+  border-bottom-color: var(--color-accent);
+  color: var(--color-text-primary);
+}
+
+.userspace-share-tab:focus-visible {
+  outline: none;
+  border-bottom-color: var(--color-input-focus);
+  box-shadow: inset 0 -2px 0 var(--color-input-focus);
+  color: var(--color-text-primary);
+}
+
+.userspace-share-tab-panel[hidden] {
+  display: none;
+}
+
 .userspace-external-api-access {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
 }
 
-.userspace-external-api-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: var(--space-sm);
-}
-
-.userspace-external-api-card {
+.userspace-external-api-section {
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
   padding: var(--space-md);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  background: var(--color-surface);
+  background: var(--color-bg-secondary);
 }
 
-.userspace-external-api-card h5 {
+.userspace-external-api-access > :first-child,
+.userspace-external-api-access > .userspace-external-api-section:first-of-type {
+  margin-top: 0;
+}
+
+.userspace-external-api-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.userspace-external-api-section-title {
   margin: 0;
   font-size: var(--text-sm);
+  color: var(--color-text-primary);
 }
 
 .userspace-external-api-callout {
@@ -5462,20 +5525,41 @@ textarea:focus {
 .userspace-external-api-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: 0;
 }
 
-.userspace-external-api-item {
+.userspace-external-api-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-md) 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.userspace-external-api-list > :first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.userspace-external-api-list > :last-child {
+  padding-bottom: 0;
+}
+
+.userspace-external-api-row-main,
+.userspace-external-api-row-copy,
+.userspace-external-api-example {
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
-  padding: var(--space-sm);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg-secondary);
 }
 
-.userspace-external-api-item-header,
+.userspace-external-api-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.userspace-external-api-row-header,
 .userspace-external-api-example-header {
   display: flex;
   align-items: flex-start;
@@ -5483,11 +5567,13 @@ textarea:focus {
   gap: var(--space-sm);
 }
 
-.userspace-external-api-item-title {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
+.userspace-external-api-row-title {
   font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.userspace-external-api-row-description {
+  margin: 0;
 }
 
 .userspace-external-api-item-meta,
@@ -5524,6 +5610,79 @@ textarea:focus {
   color: var(--color-error);
 }
 
+.userspace-external-api-row-actions,
+.userspace-external-api-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
+}
+
+.userspace-external-api-credential-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm);
+}
+
+.userspace-external-api-credential-row {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm);
+  background: transparent;
+}
+
+.userspace-external-api-credential-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-wrap: nowrap;
+  margin-top: auto;
+}
+
+.userspace-external-api-row-actions {
+  flex-shrink: 0;
+}
+
+#workspace-external-api-credential-details {
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+}
+
+.userspace-external-api-endpoint-selection-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity var(--transition-fast),
+    visibility var(--transition-fast);
+}
+
+.userspace-external-api-endpoint-selection-control input {
+  margin-top: 0;
+}
+
+.userspace-external-api-row:hover .userspace-external-api-endpoint-selection-control,
+.userspace-external-api-row:focus-within .userspace-external-api-endpoint-selection-control,
+.userspace-external-api-row.is-credential-selected .userspace-external-api-endpoint-selection-control {
+  opacity: 1;
+  visibility: visible;
+}
+
+@media (hover: none) {
+  .userspace-external-api-endpoint-selection-control {
+    opacity: 1;
+    visibility: visible;
+  }
+}
+
 .userspace-external-api-endpoint-checklist {
   display: flex;
   flex-direction: column;
@@ -5534,10 +5693,6 @@ textarea:focus {
   display: flex;
   gap: var(--space-sm);
   align-items: flex-start;
-  padding: var(--space-sm);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg-secondary);
 }
 
 .userspace-external-api-checkbox-row input {
@@ -5548,13 +5703,6 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-
-.userspace-external-api-reveal-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-sm);
 }
 
 .userspace-external-api-examples {
@@ -5599,6 +5747,158 @@ textarea:focus {
   color: var(--color-text-secondary);
 }
 
+.userspace-external-api-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+/* External API Credential Fields - Two-Column Form */
+.userspace-external-api-credential-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-md);
+}
+
+@media (max-width: 560px) {
+  .userspace-external-api-credential-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* External API Form Field */
+.userspace-external-api-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.userspace-external-api-field-label {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+/* External API Portal Dialog */
+.userspace-external-api-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-modal) + 10);
+  background: color-mix(in srgb, var(--color-workbench) 72%, transparent);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.userspace-external-api-dialog-panel {
+  position: relative;
+  z-index: calc(var(--z-modal) + 11);
+  max-width: 720px;
+  width: 90vw;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  background: var(--color-widget);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.userspace-external-api-dialog-metadata {
+  padding: var(--space-lg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.userspace-external-api-dialog-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  background: transparent;
+  border-bottom: 1px solid var(--color-border);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.userspace-external-api-dialog-tab {
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    border-bottom-color var(--transition-fast);
+  white-space: nowrap;
+}
+
+.userspace-external-api-dialog-tab:hover {
+  color: var(--color-text-primary);
+}
+
+.userspace-external-api-dialog-tab[aria-selected='true'] {
+  color: var(--color-text-primary);
+  border-bottom-color: var(--color-accent);
+  background: transparent;
+}
+
+.userspace-external-api-dialog-tab[aria-selected='true']:hover {
+  color: var(--color-text-primary);
+  background: transparent;
+}
+
+.userspace-external-api-dialog-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-lg);
+}
+
+.userspace-external-api-dialog-example {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.userspace-external-api-dialog-example-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.userspace-external-api-dialog-code {
+  padding: var(--space-sm);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  overflow-x: auto;
+}
+
+.userspace-external-api-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+  padding: var(--space-lg);
+  border-top: 1px solid var(--color-border);
+  background: transparent;
+  flex-wrap: wrap;
+}
+
 @media (max-width: 640px) {
   .userspace-share-edit-header {
     align-items: flex-start;
@@ -5616,6 +5916,46 @@ textarea:focus {
 
   .userspace-share-actions.userspace-share-actions-edit {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .userspace-external-api-credential-list {
+    grid-template-columns: 1fr;
+  }
+
+  .userspace-external-api-row,
+  .userspace-external-api-row-header,
+  .userspace-external-api-example-header,
+  .userspace-external-api-credential-actions,
+  .userspace-external-api-row-actions,
+  .userspace-external-api-create-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .userspace-external-api-examples {
+    grid-template-columns: 1fr;
+  }
+
+  .userspace-external-api-endpoint-selection-control,
+  .userspace-external-api-credential-actions .userspace-external-api-status {
+    opacity: 1;
+    visibility: visible;
+    align-self: flex-start;
+  }
+
+  .userspace-external-api-table-wrap {
+    margin-inline: calc(-1 * var(--space-md));
+    border-left: none;
+    border-right: none;
+    border-radius: 0;
+  }
+
+  .userspace-external-api-dialog-panel {
+    width: 95vw;
+  }
+
+  .userspace-external-api-dialog-tabs {
+    overflow-x: auto;
   }
 }
 

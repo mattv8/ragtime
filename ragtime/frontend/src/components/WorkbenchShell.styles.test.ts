@@ -176,4 +176,28 @@ describe('Workbench shell styles contract', () => {
       /:is\([\s\S]*\.active[\s\S]*\.is-selected[\s\S]*\[aria-pressed='true'\][\s\S]*\[aria-selected='true'\][\s\S]*\[data-active='true'\][\s\S]*\)[\s\S]*\{[\s\S]*background:\s*var\(--color-primary\);/,
     );
   });
+  it('protects share modal tabs from the broad Modern selected-state button treatment', () => {
+    const componentsCss = readSource('src/styles/components.css');
+    const adminCss = readSource('src/styles/workbench-admin.css');
+    const broadSelectedRuleIndex = adminCss.lastIndexOf("[data-theme-pack='modern'] :is(");
+    const shareTabOverrideIndex = adminCss.indexOf(
+      "[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-share-tab[aria-selected='true']",
+    );
+
+    expect(componentsCss).toMatch(/\.userspace-share-tabs\s*\{[\s\S]*gap:\s*0;/);
+    expect(componentsCss).toMatch(
+      /\.userspace-share-tab\s*\{[\s\S]*padding:\s*var\(--space-sm\)\s+var\(--space-md\);/,
+    );
+    expect(broadSelectedRuleIndex).toBeGreaterThan(-1);
+    expect(shareTabOverrideIndex).toBeGreaterThan(broadSelectedRuleIndex);
+    expect(adminCss).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.userspace-share-modal-with-tabs\s+\.userspace-share-tab\[aria-selected='true'\]\s*\{[\s\S]*background:\s*transparent;[\s\S]*border-bottom-color:\s*var\(--color-accent\);[\s\S]*color:\s*var\(--color-text-primary\);/,
+    );
+    expect(adminCss).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.userspace-share-modal-with-tabs\s+\.userspace-share-tab\[aria-selected='true'\]:hover:not\(:disabled\)\s*\{[\s\S]*background:\s*transparent;[\s\S]*border-bottom-color:\s*var\(--color-accent\);[\s\S]*color:\s*var\(--color-text-primary\);/,
+    );
+    expect(adminCss).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.userspace-share-modal-with-tabs\s+\.userspace-share-tab:hover:not\(:disabled\)\s*\{[\s\S]*background:\s*transparent;/,
+    );
+  });
 });

@@ -52,6 +52,7 @@ interface ShareLinkModalProps {
   openActionLabel?: string;
   extraAccessControls?: ReactNode;
   agentAccessSection?: ReactNode;
+  apiAccessSection?: ReactNode;
   onClose: () => void;
   onSelectShare?: (shareId: string) => void;
   onCreateShareLink?: () => void;
@@ -70,6 +71,8 @@ interface ShareLinkModalProps {
   onShareUrlInlineCopyError?: (error: Error) => void;
   formatUserLabel: (user: UserDirectoryEntry, fallback: string) => string;
 }
+
+type ShareModalTab = 'links' | 'api';
 
 const SHARE_ACCESS_MODE_LABELS: Record<ShareAccessMode, string> = {
   token: 'Public link',
@@ -143,6 +146,7 @@ export function ShareLinkModal({
   openActionLabel = 'Open Preview',
   extraAccessControls,
   agentAccessSection,
+  apiAccessSection,
   onClose,
   onSelectShare,
   onCreateShareLink,
@@ -162,12 +166,16 @@ export function ShareLinkModal({
   formatUserLabel,
 }: ShareLinkModalProps) {
   const [view, setView] = useState<'list' | 'edit'>('list');
+  const [activeTab, setActiveTab] = useState<ShareModalTab>('links');
+  const [hasMountedApiAccessSection, setHasMountedApiAccessSection] = useState(false);
   const [deleteConfirmShareId, setDeleteConfirmShareId] = useState<string | null>(null);
   const [shareLabelDraft, setShareLabelDraft] = useState('');
   const [isEditingShareTitle, setIsEditingShareTitle] = useState(false);
   const pendingEditAfterCreateRef = useRef(false);
   const previousSelectedShareIdRef = useRef<string | null>(null);
   const previousCreatingShareLinkRef = useRef(creatingShareLink);
+  const shareLinksTabRef = useRef<HTMLButtonElement | null>(null);
+  const apiAccessTabRef = useRef<HTMLButtonElement | null>(null);
 
   const availableShareLinks = useMemo(
     () => (shareLinks.length > 0 ? shareLinks : shareStatus?.id ? [shareStatus] : []),
@@ -181,7 +189,12 @@ export function ShareLinkModal({
     return availableShareLinks.find((link) => link.id === selectedShareId) ?? shareStatus;
   }, [availableShareLinks, selectedShareId, shareStatus]);
 
+  const hasApiAccessTab = Boolean(apiAccessSection);
+
   useEffect(() => {
+    setActiveTab('links');
+    setHasMountedApiAccessSection(false);
+
     if (!isOpen) {
       setView('list');
       setDeleteConfirmShareId(null);
@@ -191,6 +204,13 @@ export function ShareLinkModal({
       previousSelectedShareIdRef.current = null;
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!hasApiAccessTab) {
+      setHasMountedApiAccessSection(false);
+      setActiveTab('links');
+    }
+  }, [hasApiAccessTab]);
 
   useEffect(() => {
     if (
@@ -242,6 +262,48 @@ export function ShareLinkModal({
   const isEditView = view === 'edit' && Boolean(selectedShare);
   const linkIdentityLocked = Boolean(selectedShare?.has_share_link);
 
+  const selectTab = (tab: ShareModalTab) => {
+    if (tab === 'api' && !hasApiAccessTab) {
+      return;
+    }
+    if (tab === 'api') {
+      setHasMountedApiAccessSection(true);
+    }
+    setActiveTab(tab);
+  };
+
+  const moveTabSelection = (tab: ShareModalTab) => {
+    selectTab(tab);
+    if (tab === 'links') {
+      shareLinksTabRef.current?.focus();
+      return;
+    }
+    apiAccessTabRef.current?.focus();
+  };
+
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, tab: ShareModalTab) => {
+    if (!hasApiAccessTab) {
+      return;
+    }
+
+    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      event.preventDefault();
+      moveTabSelection(tab === 'links' ? 'api' : 'links');
+      return;
+    }
+
+    if (event.key === 'Home') {
+      event.preventDefault();
+      moveTabSelection('links');
+      return;
+    }
+
+    if (event.key === 'End') {
+      event.preventDefault();
+      moveTabSelection('api');
+    }
+  };
+
   const handleSaveShareLabel = () => {
     if (!canSaveShareLabel || updatingShareLabel) {
       setIsEditingShareTitle(false);
@@ -271,12 +333,384 @@ export function ShareLinkModal({
     setView('list');
   };
 
+  const linksPanel = loadingShareStatus ? (
+    <p className="userspace-muted">Loading share settings...</p>
+  ) : isEditView && selectedShare ? (
+    <>
+      <div className="userspace-share-link-pane">
+        <div className="userspace-share-edit-header">
+          <div className="userspace-share-edit-heading">
+            {isEditingShareTitle ? (
+              <input
+                className="userspace-share-title-input"
+                type="text"
+                value={shareLabelDraft}
+                onChange={(event) => setShareLabelDraft(event.target.value)}
+                onKeyDown={handleShareLabelKeyDown}
+                onBlur={handleSaveShareLabel}
+                placeholder="Untitled link"
+                disabled={updatingShareLabel}
+                autoFocus
+              />
+            ) : (
+              <button
+                type="button"
+                className="userspace-share-edit-title"
+                onClick={() => setIsEditingShareTitle(true)}
+                title="Edit label"
+              >
+                <span>{selectedShareDisplayLabel}</span>
+                <Pencil size={13} />
+              </button>
+            )}
+            <span className="userspace-share-meta">
+              {activeShareCreatedLabel}
+              {selectedShareScopeSummary ? ` · ${selectedShareScopeSummary}` : ''}
+            </span>
+          </div>
+        </div>
+
+        <div className="userspace-share-edit-grid userspace-share-edit-grid-single">
+          <div className="userspace-share-access-row">
+            <label htmlFor="userspace-share-access-mode" className="userspace-share-label">
+              Access mode
+            </label>
+            <select
+              id="userspace-share-access-mode"
+              value={shareAccessMode}
+              onChange={(event) => onShareAccessModeChange(event.target.value as ShareAccessMode)}
+              disabled={savingShareAccess || sharingWorkspace}
+            >
+              <option value="token">Tokenized public link</option>
+              <option value="password">Password protected</option>
+              <option value="authenticated_users">Any authenticated user</option>
+              <option value="selected_users">Selected users only</option>
+              <option value="ldap_groups">Selected LDAP groups only</option>
+            </select>
+          </div>
+        </div>
+
+        {(!allowSubdomainOption || shareLinkType !== 'subdomain') && (
+          <div className="userspace-share-access-row">
+            <label htmlFor="userspace-share-slug" className="userspace-share-label">
+              Custom slug
+            </label>
+            <div className="userspace-share-slug-row">
+              <input
+                id="userspace-share-slug"
+                value={shareSlugDraft}
+                onChange={(event) => onShareSlugChange(event.target.value)}
+                placeholder="custom_slug"
+                autoComplete="off"
+                disabled={linkIdentityLocked}
+              />
+            </div>
+            {shareSlugAvailable !== null && (
+              <div
+                className={`userspace-share-meta ${shareSlugAvailable ? '' : 'userspace-error'}`}
+              >
+                {shareSlugAvailable ? 'Slug is available' : 'Slug is unavailable'}
+              </div>
+            )}
+          </div>
+        )}
+
+        {linkIdentityLocked && (
+          <div className="userspace-share-meta">
+            Link URL and style are locked after creation. Delete and recreate this link to change
+            them.
+          </div>
+        )}
+
+        {selectedShare.has_share_link &&
+          allowSubdomainOption &&
+          !shareSubdomainEnabled &&
+          shareSubdomainDisabledReason && (
+            <div className="userspace-share-meta">{shareSubdomainDisabledReason}</div>
+          )}
+
+        {showProtectedSubdomainNotice && (
+          <div className="userspace-share-warning-banner" role="alert">
+            Warning: if this workspace has already been unlocked in this browser, opening the
+            subdomain link again may not prompt you to login. Protection is still enforced for new
+            sessions and other browsers.
+          </div>
+        )}
+
+        {selectedShare.has_share_link && effectiveShareUrl ? (
+          <>
+            <label htmlFor="userspace-share-url" className="userspace-share-label">
+              Active share URL
+            </label>
+            <div className="userspace-share-url-copy-wrap">
+              <input id="userspace-share-url" value={effectiveShareUrl} readOnly />
+              <InlineCopyButton
+                copyText={effectiveShareUrl}
+                className="userspace-share-inline-copy"
+                title="Copy share URL"
+                ariaLabel="Copy share URL"
+                copiedTitle="Share URL copied"
+                copiedAriaLabel="Share URL copied"
+                iconSize={12}
+                onCopySuccess={onShareUrlInlineCopySuccess}
+                onCopyError={onShareUrlInlineCopyError}
+              />
+            </div>
+          </>
+        ) : (
+          <p className="userspace-muted">No active share link for this {shareTargetLabel}.</p>
+        )}
+      </div>
+
+      <div className="userspace-share-controls">
+        {shareAccessMode === 'password' && (
+          <div className="userspace-share-access-row">
+            <label htmlFor="userspace-share-password" className="userspace-share-label">
+              Share password {selectedShare.has_password ? '(set)' : '(required)'}
+            </label>
+            <input
+              id="userspace-share-password"
+              type="password"
+              value={sharePasswordDraft}
+              onChange={(event) => onSharePasswordDraftChange(event.target.value)}
+              placeholder={
+                selectedShare.has_password ? 'Enter new password to update' : 'Enter password'
+              }
+              autoComplete="new-password"
+            />
+          </div>
+        )}
+
+        {shareAccessMode === 'selected_users' && (
+          <div className="userspace-share-access-row">
+            <label className="userspace-share-label">Allowed users</label>
+            <div className="userspace-share-user-grid">
+              {shareSelectableUsers.map((user) => (
+                <label key={user.id} className="userspace-share-user-option">
+                  <input
+                    type="checkbox"
+                    checked={shareSelectedUserIdsDraft.includes(user.id)}
+                    onChange={() => onToggleShareSelectedUser(user.id)}
+                  />
+                  <span>{formatUserLabel(user, user.id)}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {shareAccessMode === 'ldap_groups' && (
+          <div className="userspace-share-access-row">
+            <label className="userspace-share-label">Allowed LDAP groups</label>
+            <div className="userspace-share-slug-row">
+              {ldapDiscoveredGroups.length > 0 ? (
+                <LdapGroupSelect
+                  value={shareLdapGroupDraft}
+                  onChange={onShareLdapGroupDraftChange}
+                  groups={ldapDiscoveredGroups}
+                  excludedDns={shareSelectedLdapGroupsDraft}
+                  emptyOptionLabel="Select an LDAP group..."
+                />
+              ) : (
+                <input
+                  value={shareLdapGroupDraft}
+                  onChange={(event) => onShareLdapGroupDraftChange(event.target.value)}
+                  placeholder="cn=group,ou=groups,dc=example,dc=com"
+                  autoComplete="off"
+                />
+              )}
+              <button className="btn btn-secondary" onClick={onAddShareLdapGroup} type="button">
+                Add Group
+              </button>
+            </div>
+            {loadingLdapGroups ? (
+              <p className="userspace-share-meta">Loading LDAP groups…</p>
+            ) : ldapDiscoveredGroups.length > 0 ? (
+              <p className="userspace-share-meta">
+                Groups are discovered from the configured LDAP base domain.
+              </p>
+            ) : (
+              <p className="userspace-share-meta">
+                Could not auto-discover LDAP groups. Enter group DN manually.
+              </p>
+            )}
+            <LdapGroupChips
+              selectedDns={shareSelectedLdapGroupsDraft}
+              groups={ldapDiscoveredGroups}
+              onRemove={onRemoveShareLdapGroup}
+            />
+          </div>
+        )}
+
+        {extraAccessControls}
+      </div>
+    </>
+  ) : (
+    <>
+      <div className="userspace-share-link-pane">
+        <div className="jobs-table-wrapper userspace-share-links-table-wrapper">
+          <table className="jobs-table userspace-share-links-table">
+            <thead>
+              <tr>
+                <th>Label</th>
+                <th>Access</th>
+                <th>Click Count</th>
+                <th>URL</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {availableShareLinks.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="userspace-share-links-empty-cell">
+                    No share links yet for this {shareTargetLabel}.
+                  </td>
+                </tr>
+              ) : (
+                availableShareLinks.map((link, index) => {
+                  const isConfirmingDelete = deleteConfirmShareId === link.id;
+                  const scopeSummary = getScopeSummary(link);
+                  const shareUrl = getShareLinkUrl(link);
+
+                  return (
+                    <tr key={link.id}>
+                      <td>
+                        <div
+                          className="userspace-share-link-cell-primary"
+                          title={getShareDisplayLabel(link, index)}
+                        >
+                          {getShareDisplayLabel(link, index)}
+                        </div>
+                        {scopeSummary && (
+                          <div className="userspace-share-link-cell-secondary">{scopeSummary}</div>
+                        )}
+                      </td>
+                      <td>
+                        <span className="userspace-share-access-badge">
+                          {SHARE_ACCESS_MODE_LABELS[link.share_access_mode]}
+                        </span>
+                      </td>
+                      <td>{link.public_hit_count ?? 0}</td>
+                      <td>
+                        {shareUrl ? (
+                          <span title={shareUrl} className="userspace-share-table-url-text">
+                            {shareUrl}
+                          </span>
+                        ) : (
+                          <span className="userspace-share-link-cell-secondary">-</span>
+                        )}
+                      </td>
+                      <td>
+                        {link.created_at ? new Date(link.created_at).toLocaleDateString() : '-'}
+                      </td>
+                      <td>
+                        <div className="actions-cell userspace-share-table-actions">
+                          {isConfirmingDelete ? (
+                            <>
+                              <button
+                                type="button"
+                                className="action-btn action-btn-confirm"
+                                onClick={() => onDeleteSelectedShareLink?.(link.id)}
+                                disabled={deletingSelectedShareLink}
+                                title="Confirm delete"
+                                aria-label="Confirm delete"
+                              >
+                                <Check size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                className="action-btn userspace-share-table-action"
+                                onClick={() => setDeleteConfirmShareId(null)}
+                                disabled={deletingSelectedShareLink}
+                                title="Cancel delete"
+                                aria-label="Cancel delete"
+                              >
+                                <X size={12} />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              {shareUrl && (
+                                <InlineCopyButton
+                                  copyText={shareUrl}
+                                  className="action-btn userspace-share-copy-action"
+                                  title="Copy share URL"
+                                  ariaLabel="Copy share URL"
+                                  copiedTitle="Share URL copied"
+                                  copiedAriaLabel="Share URL copied"
+                                  iconSize={12}
+                                  onCopySuccess={onShareUrlInlineCopySuccess}
+                                  onCopyError={onShareUrlInlineCopyError}
+                                />
+                              )}
+                              <button
+                                type="button"
+                                className="action-btn userspace-share-table-action"
+                                onClick={() => {
+                                  onSelectShare?.(link.id);
+                                  setDeleteConfirmShareId(null);
+                                  setView('edit');
+                                }}
+                                disabled={listBusy}
+                                title="Edit link"
+                                aria-label="Edit link"
+                              >
+                                <Pencil size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                className="action-btn userspace-share-table-action"
+                                onClick={() => {
+                                  onSelectShare?.(link.id);
+                                  setDeleteConfirmShareId(link.id);
+                                }}
+                                disabled={listBusy}
+                                title="Delete link"
+                                aria-label="Delete link"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className="userspace-share-actions userspace-share-actions-single">
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => {
+            pendingEditAfterCreateRef.current = true;
+            previousSelectedShareIdRef.current = selectedShareId;
+            onCreateShareLink?.();
+          }}
+          disabled={listBusy || loadingShareStatus}
+        >
+          <Plus size={14} />
+          <span>{creatingShareLink ? 'Creating...' : 'New Link'}</span>
+        </button>
+      </div>
+      {agentAccessSection}
+    </>
+  );
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content userspace-share-modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        className={`modal-content userspace-share-modal${hasApiAccessTab ? ' userspace-share-modal-with-tabs' : ''}`}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="modal-header">
           <div className="userspace-share-modal-title">
-            {isEditView && (
+            {activeTab === 'links' && isEditView && (
               <button
                 type="button"
                 className="userspace-share-header-back-btn"
@@ -294,390 +728,62 @@ export function ShareLinkModal({
           </button>
         </div>
         <div className="modal-body">
-          {loadingShareStatus ? (
-            <p className="userspace-muted">Loading share settings...</p>
-          ) : isEditView && selectedShare ? (
+          {hasApiAccessTab ? (
             <>
-              <div className="userspace-share-link-pane">
-                <div className="userspace-share-edit-header">
-                  <div className="userspace-share-edit-heading">
-                    {isEditingShareTitle ? (
-                      <input
-                        className="userspace-share-title-input"
-                        type="text"
-                        value={shareLabelDraft}
-                        onChange={(event) => setShareLabelDraft(event.target.value)}
-                        onKeyDown={handleShareLabelKeyDown}
-                        onBlur={handleSaveShareLabel}
-                        placeholder="Untitled link"
-                        disabled={updatingShareLabel}
-                        autoFocus
-                      />
-                    ) : (
-                      <button
-                        type="button"
-                        className="userspace-share-edit-title"
-                        onClick={() => setIsEditingShareTitle(true)}
-                        title="Edit label"
-                      >
-                        <span>{selectedShareDisplayLabel}</span>
-                        <Pencil size={13} />
-                      </button>
-                    )}
-                    <span className="userspace-share-meta">
-                      {activeShareCreatedLabel}
-                      {selectedShareScopeSummary ? ` · ${selectedShareScopeSummary}` : ''}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="userspace-share-edit-grid userspace-share-edit-grid-single">
-                  <div className="userspace-share-access-row">
-                    <label htmlFor="userspace-share-access-mode" className="userspace-share-label">
-                      Access mode
-                    </label>
-                    <select
-                      id="userspace-share-access-mode"
-                      value={shareAccessMode}
-                      onChange={(event) =>
-                        onShareAccessModeChange(event.target.value as ShareAccessMode)
-                      }
-                      disabled={savingShareAccess || sharingWorkspace}
-                    >
-                      <option value="token">Tokenized public link</option>
-                      <option value="password">Password protected</option>
-                      <option value="authenticated_users">Any authenticated user</option>
-                      <option value="selected_users">Selected users only</option>
-                      <option value="ldap_groups">Selected LDAP groups only</option>
-                    </select>
-                  </div>
-                </div>
-
-                {(!allowSubdomainOption || shareLinkType !== 'subdomain') && (
-                  <div className="userspace-share-access-row">
-                    <label htmlFor="userspace-share-slug" className="userspace-share-label">
-                      Custom slug
-                    </label>
-                    <div className="userspace-share-slug-row">
-                      <input
-                        id="userspace-share-slug"
-                        value={shareSlugDraft}
-                        onChange={(event) => onShareSlugChange(event.target.value)}
-                        placeholder="custom_slug"
-                        autoComplete="off"
-                        disabled={linkIdentityLocked}
-                      />
-                    </div>
-                    {shareSlugAvailable !== null && (
-                      <div
-                        className={`userspace-share-meta ${shareSlugAvailable ? '' : 'userspace-error'}`}
-                      >
-                        {shareSlugAvailable ? 'Slug is available' : 'Slug is unavailable'}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {linkIdentityLocked && (
-                  <div className="userspace-share-meta">
-                    Link URL and style are locked after creation. Delete and recreate this link to
-                    change them.
-                  </div>
-                )}
-
-                {selectedShare.has_share_link &&
-                  allowSubdomainOption &&
-                  !shareSubdomainEnabled &&
-                  shareSubdomainDisabledReason && (
-                    <div className="userspace-share-meta">{shareSubdomainDisabledReason}</div>
-                  )}
-
-                {showProtectedSubdomainNotice && (
-                  <div className="userspace-share-warning-banner" role="alert">
-                    Warning: if this workspace has already been unlocked in this browser, opening
-                    the subdomain link again may not prompt you to login. Protection is still
-                    enforced for new sessions and other browsers.
-                  </div>
-                )}
-
-                {selectedShare.has_share_link && effectiveShareUrl ? (
-                  <>
-                    <label htmlFor="userspace-share-url" className="userspace-share-label">
-                      Active share URL
-                    </label>
-                    <div className="userspace-share-url-copy-wrap">
-                      <input id="userspace-share-url" value={effectiveShareUrl} readOnly />
-                      <InlineCopyButton
-                        copyText={effectiveShareUrl}
-                        className="userspace-share-inline-copy"
-                        title="Copy share URL"
-                        ariaLabel="Copy share URL"
-                        copiedTitle="Share URL copied"
-                        copiedAriaLabel="Share URL copied"
-                        iconSize={12}
-                        onCopySuccess={onShareUrlInlineCopySuccess}
-                        onCopyError={onShareUrlInlineCopyError}
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <p className="userspace-muted">
-                    No active share link for this {shareTargetLabel}.
-                  </p>
-                )}
+              <div className="userspace-share-tabs" id="share-workspace-tabs" role="tablist">
+                <button
+                  ref={shareLinksTabRef}
+                  type="button"
+                  id="share-workspace-tab-links"
+                  role="tab"
+                  className="userspace-share-tab"
+                  aria-selected={activeTab === 'links'}
+                  aria-controls="share-workspace-panel-links"
+                  tabIndex={activeTab === 'links' ? 0 : -1}
+                  onClick={() => selectTab('links')}
+                  onKeyDown={(event) => handleTabKeyDown(event, 'links')}
+                >
+                  Share Links
+                </button>
+                <button
+                  ref={apiAccessTabRef}
+                  type="button"
+                  id="share-workspace-tab-api"
+                  role="tab"
+                  className="userspace-share-tab"
+                  aria-selected={activeTab === 'api'}
+                  aria-controls="share-workspace-panel-api"
+                  tabIndex={activeTab === 'api' ? 0 : -1}
+                  onClick={() => selectTab('api')}
+                  onKeyDown={(event) => handleTabKeyDown(event, 'api')}
+                >
+                  API Access
+                </button>
               </div>
-
-              <div className="userspace-share-controls">
-                {shareAccessMode === 'password' && (
-                  <div className="userspace-share-access-row">
-                    <label htmlFor="userspace-share-password" className="userspace-share-label">
-                      Share password {selectedShare.has_password ? '(set)' : '(required)'}
-                    </label>
-                    <input
-                      id="userspace-share-password"
-                      type="password"
-                      value={sharePasswordDraft}
-                      onChange={(event) => onSharePasswordDraftChange(event.target.value)}
-                      placeholder={
-                        selectedShare.has_password
-                          ? 'Enter new password to update'
-                          : 'Enter password'
-                      }
-                      autoComplete="new-password"
-                    />
-                  </div>
-                )}
-
-                {shareAccessMode === 'selected_users' && (
-                  <div className="userspace-share-access-row">
-                    <label className="userspace-share-label">Allowed users</label>
-                    <div className="userspace-share-user-grid">
-                      {shareSelectableUsers.map((user) => (
-                        <label key={user.id} className="userspace-share-user-option">
-                          <input
-                            type="checkbox"
-                            checked={shareSelectedUserIdsDraft.includes(user.id)}
-                            onChange={() => onToggleShareSelectedUser(user.id)}
-                          />
-                          <span>{formatUserLabel(user, user.id)}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {shareAccessMode === 'ldap_groups' && (
-                  <div className="userspace-share-access-row">
-                    <label className="userspace-share-label">Allowed LDAP groups</label>
-                    <div className="userspace-share-slug-row">
-                      {ldapDiscoveredGroups.length > 0 ? (
-                        <LdapGroupSelect
-                          value={shareLdapGroupDraft}
-                          onChange={onShareLdapGroupDraftChange}
-                          groups={ldapDiscoveredGroups}
-                          excludedDns={shareSelectedLdapGroupsDraft}
-                          emptyOptionLabel="Select an LDAP group..."
-                        />
-                      ) : (
-                        <input
-                          value={shareLdapGroupDraft}
-                          onChange={(event) => onShareLdapGroupDraftChange(event.target.value)}
-                          placeholder="cn=group,ou=groups,dc=example,dc=com"
-                          autoComplete="off"
-                        />
-                      )}
-                      <button
-                        className="btn btn-secondary"
-                        onClick={onAddShareLdapGroup}
-                        type="button"
-                      >
-                        Add Group
-                      </button>
-                    </div>
-                    {loadingLdapGroups ? (
-                      <p className="userspace-share-meta">Loading LDAP groups…</p>
-                    ) : ldapDiscoveredGroups.length > 0 ? (
-                      <p className="userspace-share-meta">
-                        Groups are discovered from the configured LDAP base domain.
-                      </p>
-                    ) : (
-                      <p className="userspace-share-meta">
-                        Could not auto-discover LDAP groups. Enter group DN manually.
-                      </p>
-                    )}
-                    <LdapGroupChips
-                      selectedDns={shareSelectedLdapGroupsDraft}
-                      groups={ldapDiscoveredGroups}
-                      onRemove={onRemoveShareLdapGroup}
-                    />
-                  </div>
-                )}
-
-                {extraAccessControls}
+              <div
+                id="share-workspace-panel-links"
+                role="tabpanel"
+                className="userspace-share-tab-panel"
+                aria-labelledby="share-workspace-tab-links"
+                hidden={activeTab !== 'links'}
+              >
+                {linksPanel}
+              </div>
+              <div
+                id="share-workspace-panel-api"
+                role="tabpanel"
+                className="userspace-share-tab-panel"
+                aria-labelledby="share-workspace-tab-api"
+                hidden={activeTab !== 'api'}
+              >
+                {hasMountedApiAccessSection ? apiAccessSection : null}
               </div>
             </>
           ) : (
-            <>
-              <div className="userspace-share-link-pane">
-                <div className="jobs-table-wrapper userspace-share-links-table-wrapper">
-                  <table className="jobs-table userspace-share-links-table">
-                    <thead>
-                      <tr>
-                        <th>Label</th>
-                        <th>Access</th>
-                        <th>Click Count</th>
-                        <th>URL</th>
-                        <th>Created</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {availableShareLinks.length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="userspace-share-links-empty-cell">
-                            No share links yet for this {shareTargetLabel}.
-                          </td>
-                        </tr>
-                      ) : (
-                        availableShareLinks.map((link, index) => {
-                          const isConfirmingDelete = deleteConfirmShareId === link.id;
-                          const scopeSummary = getScopeSummary(link);
-                          const shareUrl = getShareLinkUrl(link);
-
-                          return (
-                            <tr key={link.id}>
-                              <td>
-                                <div
-                                  className="userspace-share-link-cell-primary"
-                                  title={getShareDisplayLabel(link, index)}
-                                >
-                                  {getShareDisplayLabel(link, index)}
-                                </div>
-                                {scopeSummary && (
-                                  <div className="userspace-share-link-cell-secondary">
-                                    {scopeSummary}
-                                  </div>
-                                )}
-                              </td>
-                              <td>
-                                <span className="userspace-share-access-badge">
-                                  {SHARE_ACCESS_MODE_LABELS[link.share_access_mode]}
-                                </span>
-                              </td>
-                              <td>{link.public_hit_count ?? 0}</td>
-                              <td>
-                                {shareUrl ? (
-                                  <span title={shareUrl} className="userspace-share-table-url-text">
-                                    {shareUrl}
-                                  </span>
-                                ) : (
-                                  <span className="userspace-share-link-cell-secondary">-</span>
-                                )}
-                              </td>
-                              <td>
-                                {link.created_at
-                                  ? new Date(link.created_at).toLocaleDateString()
-                                  : '-'}
-                              </td>
-                              <td>
-                                <div className="actions-cell userspace-share-table-actions">
-                                  {isConfirmingDelete ? (
-                                    <>
-                                      <button
-                                        type="button"
-                                        className="action-btn action-btn-confirm"
-                                        onClick={() => onDeleteSelectedShareLink?.(link.id)}
-                                        disabled={deletingSelectedShareLink}
-                                        title="Confirm delete"
-                                        aria-label="Confirm delete"
-                                      >
-                                        <Check size={12} />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="action-btn userspace-share-table-action"
-                                        onClick={() => setDeleteConfirmShareId(null)}
-                                        disabled={deletingSelectedShareLink}
-                                        title="Cancel delete"
-                                        aria-label="Cancel delete"
-                                      >
-                                        <X size={12} />
-                                      </button>
-                                    </>
-                                  ) : (
-                                    <>
-                                      {shareUrl && (
-                                        <InlineCopyButton
-                                          copyText={shareUrl}
-                                          className="action-btn userspace-share-copy-action"
-                                          title="Copy share URL"
-                                          ariaLabel="Copy share URL"
-                                          copiedTitle="Share URL copied"
-                                          copiedAriaLabel="Share URL copied"
-                                          iconSize={12}
-                                          onCopySuccess={onShareUrlInlineCopySuccess}
-                                          onCopyError={onShareUrlInlineCopyError}
-                                        />
-                                      )}
-                                      <button
-                                        type="button"
-                                        className="action-btn userspace-share-table-action"
-                                        onClick={() => {
-                                          onSelectShare?.(link.id);
-                                          setDeleteConfirmShareId(null);
-                                          setView('edit');
-                                        }}
-                                        disabled={listBusy}
-                                        title="Edit link"
-                                        aria-label="Edit link"
-                                      >
-                                        <Pencil size={12} />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="action-btn userspace-share-table-action"
-                                        onClick={() => {
-                                          onSelectShare?.(link.id);
-                                          setDeleteConfirmShareId(link.id);
-                                        }}
-                                        disabled={listBusy}
-                                        title="Delete link"
-                                        aria-label="Delete link"
-                                      >
-                                        <Trash2 size={12} />
-                                      </button>
-                                    </>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              <div className="userspace-share-actions userspace-share-actions-single">
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => {
-                    pendingEditAfterCreateRef.current = true;
-                    previousSelectedShareIdRef.current = selectedShareId;
-                    onCreateShareLink?.();
-                  }}
-                  disabled={listBusy || loadingShareStatus}
-                >
-                  <Plus size={14} />
-                  <span>{creatingShareLink ? 'Creating...' : 'New Link'}</span>
-                </button>
-              </div>
-              {agentAccessSection}
-            </>
+            linksPanel
           )}
         </div>
-        {isEditView && (
+        {activeTab === 'links' && isEditView && (
           <div className="modal-footer userspace-share-modal-footer">
             <div className="userspace-share-actions userspace-share-actions-edit">
               <button
