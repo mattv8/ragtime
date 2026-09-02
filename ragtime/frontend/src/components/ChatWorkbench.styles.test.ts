@@ -85,6 +85,15 @@ describe('Chat workbench surface contract', () => {
 
     expect(modernErrorRule).toMatch(/margin-inline:\s*0;/);
     expect(modernToolCallsRule).not.toMatch(/border-(?:top|block-start)\s*:/);
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-branch-wrapper-assistant\s*\{[\s\S]*width:\s*80%;[\s\S]*max-width:\s*80%;[\s\S]*align-self:\s*flex-start;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-branch-wrapper-assistant\s+\.chat-message-assistant,[\s\S]*width:\s*100%;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.tool-call\.tool-call-datatable,[\s\S]*background:\s*transparent;[\s\S]*border:\s*none;/,
+    );
     expect(css).toMatch(/\.datatable-container\s*\{[\s\S]*background:\s*var\(--color-editor\);/);
     expect(css).toMatch(/\.chat-panel-embedded\s*\{[\s\S]*border-radius:\s*0;/);
     expect(css).toMatch(/\.chat-panel-shared\s*\{[\s\S]*width:\s*100%;/);
@@ -119,6 +128,9 @@ describe('Chat workbench surface contract', () => {
 
     expectModernScopedSelectors(css);
     expect(css).toMatch(
+      /@media\s*\(max-width:\s*1024px\)[\s\S]*\[data-theme-pack='modern'\]\s+\.chat-branch-wrapper-assistant\s*\{[\s\S]*width:\s*100%;[\s\S]*max-width:\s*100%;/,
+    );
+    expect(css).toMatch(
       /@media\s*\(max-width:\s*768px\)[\s\S]*\[data-theme-pack='modern'\]\s+\.chat-sidebar/,
     );
     expect(css).toMatch(
@@ -148,6 +160,9 @@ describe('Chat workbench surface contract', () => {
     expect(chatPanel).toMatch(/id="chat-mobile-sidebar-toggle"/);
     expect(chatPanel).toMatch(/id="chat-prompt-debug-modal"/);
     expect(chatPanel).toMatch(/id="chat-compaction-review-modal"/);
+    expect(chatPanel).toMatch(
+      /className="chat-branch-wrapper chat-branch-wrapper-assistant chat-branch-wrapper-streaming"/,
+    );
     expect(publicSharedChat).toMatch(/id="public-shared-chat-view"/);
     expect(publicSharedChat).toMatch(/id="public-shared-chat-panel"/);
     expect(publicSharedChat).toMatch(/id="public-shared-chat-composer"/);

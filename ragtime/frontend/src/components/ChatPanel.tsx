@@ -18680,82 +18680,99 @@ export function ChatPanel({
 
                       {/* Streaming assistant message - uses consolidated segments for performance */}
                       {isStreamingForActiveConversation && consolidatedSegments.length > 0 && (
-                        <div className="chat-message chat-message-assistant chat-message-streaming-active">
-                          <div className="chat-message-content">
-                            {consolidatedSegments.map((segment, idx) => {
-                              if (
-                                idx === activeSubagentAnchorIndex &&
-                                segment.type === 'tool' &&
-                                segment.toolCall?.tool === WORKSPACE_SUBAGENTS_TOOL_ID
-                              ) {
-                                return (
-                                  <div
-                                    key={`segment-${idx}-subagents`}
-                                    className="chat-subagent-active-runs"
-                                    aria-label="Subagents"
-                                  >
-                                    {activeSubagentRuns.map((run) => (
-                                      <SubAgentStreamCard
-                                        key={run.taskId}
-                                        run={run}
-                                        workspaceId={workspaceId}
-                                        showToolCalls={showToolCalls}
-                                        onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                        onOpenSubagentConversation={openSubagentConversation}
-                                      />
-                                    ))}
-                                  </div>
-                                );
-                              }
-
-                              return (
-                                <StreamingSegmentDisplay
-                                  key={`segment-${idx}-${segment.type}`}
-                                  segment={segment}
-                                  showToolCalls={showToolCalls}
-                                  workspaceId={workspaceId}
-                                  conversationId={activeConversation.id}
-                                  onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                  onOpenSubagentConversation={openSubagentConversation}
-                                  inChatSearchQuery={
-                                    inChatSearchOpen ? inChatSearchTrimmedQuery : ''
-                                  }
-                                  inChatSearchOptions={activeInChatSearchOptions}
-                                />
-                              );
-                            })}
-                            <div className="chat-message-streaming">
-                              {(() => {
-                                const runningTool = consolidatedSegments.find(
-                                  (seg) =>
-                                    seg.type === 'tool' && seg.toolCall?.status === 'running',
-                                );
-                                if (runningTool && runningTool.type === 'tool') {
-                                  const lines = runningTool.toolCall?.generating_lines;
-                                  return lines
-                                    ? `Running tool... (${lines} lines)`
-                                    : 'Running tool...';
-                                }
-                                // Check for a tool that's being generated (has generating_lines but
-                                // hasn't started executing yet - no input means still generating args)
-                                const generatingTool = consolidatedSegments.find(
-                                  (seg) =>
-                                    seg.type === 'tool' &&
-                                    !seg.toolCall?.input &&
-                                    seg.toolCall?.generating_lines,
-                                );
-                                if (generatingTool && generatingTool.type === 'tool') {
-                                  return `Generating... (${generatingTool.toolCall?.generating_lines} lines)`;
-                                }
+                        <div className="chat-branch-wrapper chat-branch-wrapper-assistant chat-branch-wrapper-streaming">
+                          <div className="chat-message chat-message-assistant chat-message-streaming-active">
+                            <div className="chat-message-content">
+                              {consolidatedSegments.map((segment, idx) => {
                                 if (
-                                  consolidatedSegments.some(
-                                    (seg) => seg.type === 'reasoning' && !seg.isComplete,
-                                  )
+                                  idx === activeSubagentAnchorIndex &&
+                                  segment.type === 'tool' &&
+                                  segment.toolCall?.tool === WORKSPACE_SUBAGENTS_TOOL_ID
                                 ) {
-                                  return 'Reasoning...';
+                                  return (
+                                    <div
+                                      key={`segment-${idx}-subagents`}
+                                      className="chat-subagent-active-runs"
+                                      aria-label="Subagents"
+                                    >
+                                      {activeSubagentRuns.map((run) => (
+                                        <SubAgentStreamCard
+                                          key={run.taskId}
+                                          run={run}
+                                          workspaceId={workspaceId}
+                                          showToolCalls={showToolCalls}
+                                          onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                          onOpenSubagentConversation={openSubagentConversation}
+                                        />
+                                      ))}
+                                    </div>
+                                  );
                                 }
-                                return 'Generating...';
-                              })()}
+
+                                return (
+                                  <StreamingSegmentDisplay
+                                    key={`segment-${idx}-${segment.type}`}
+                                    segment={segment}
+                                    showToolCalls={showToolCalls}
+                                    workspaceId={workspaceId}
+                                    conversationId={activeConversation.id}
+                                    onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                    onOpenSubagentConversation={openSubagentConversation}
+                                    inChatSearchQuery={
+                                      inChatSearchOpen ? inChatSearchTrimmedQuery : ''
+                                    }
+                                    inChatSearchOptions={activeInChatSearchOptions}
+                                  />
+                                );
+                              })}
+                              <div className="chat-message-streaming">
+                                {(() => {
+                                  const runningTool = consolidatedSegments.find(
+                                    (seg) =>
+                                      seg.type === 'tool' && seg.toolCall?.status === 'running',
+                                  );
+                                  if (runningTool && runningTool.type === 'tool') {
+                                    const lines = runningTool.toolCall?.generating_lines;
+                                    return lines
+                                      ? `Running tool... (${lines} lines)`
+                                      : 'Running tool...';
+                                  }
+                                  // Check for a tool that's being generated (has generating_lines but
+                                  // not yet running/has output)
+                                  const generatingTool = consolidatedSegments.find(
+                                    (seg) =>
+                                      seg.type === 'tool' &&
+                                      seg.toolCall?.status !== 'running' &&
+                                      seg.toolCall?.generating_lines,
+                                  );
+                                  if (generatingTool && generatingTool.type === 'tool') {
+                                    return `Generating... (${generatingTool.toolCall?.generating_lines} lines)`;
+                                  }
+                                  if (
+                                    consolidatedSegments.some(
+                                      (seg) => seg.type === 'reasoning' && !seg.isComplete,
+                                    )
+                                  ) {
+                                    return 'Reasoning...';
+                                  }
+                                  return 'Generating...';
+                                })()}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Loading indicator - only when nothing is streaming yet */}
+                      {isStreamingForActiveConversation && consolidatedSegments.length === 0 && (
+                        <div className="chat-branch-wrapper chat-branch-wrapper-assistant chat-branch-wrapper-streaming">
+                          <div className="chat-message chat-message-assistant">
+                            <div className="chat-message-content">
+                              <div className="chat-typing-indicator">
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                              </div>
                             </div>
                           </div>
                         </div>
