@@ -95,6 +95,21 @@ describe('Chat workbench surface contract', () => {
       /\[data-theme-pack='modern'\]\s+\.tool-call\.tool-call-datatable,[\s\S]*background:\s*transparent;[\s\S]*border:\s*none;/,
     );
     expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.tool-call\.tool-call-chart,[\s\S]*background:\s*transparent;[\s\S]*border:\s*none;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.tool-call-userspace-diff-card\s*\{[\s\S]*background:\s*var\(--color-editor\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.markdown-content\s+table\s*\{[\s\S]*background:\s*var\(--color-editor\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.markdown-content\s+\.markdown-codeblock\s+pre,[\s\S]*border:\s*none;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.reasoning-block\s*\{[\s\S]*background:\s*var\(--color-widget\);[\s\S]*border-radius:\s*var\(--workbench-control-radius\);/,
+    );
+    expect(css).toMatch(
       /\[data-theme-pack='modern'\]\s+\.live-data-refresh-btn\s+\.theme-chrome-icon,[\s\S]*transform:\s*translateY\(1px\);/,
     );
     expect(css).toMatch(/\.datatable-container\s*\{[\s\S]*background:\s*var\(--color-editor\);/);

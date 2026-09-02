@@ -523,17 +523,27 @@
   background: var(--color-editor);
 }
 
+[data-theme-pack='modern'] .tool-call-userspace-diff-card {
+  background: var(--color-editor);
+}
+
 [data-theme-pack='modern'] .tool-call.tool-call-datatable,
 [data-theme-pack='modern'] .tool-call.tool-call-datatable.tool-call-complete,
+[data-theme-pack='modern'] .tool-call.tool-call-chart,
+[data-theme-pack='modern'] .tool-call.tool-call-chart.tool-call-complete,
 [data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-datatable,
-[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-datatable.tool-call-complete {
+[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-datatable.tool-call-complete,
+[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-chart,
+[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-chart.tool-call-complete {
   background: transparent;
   border: none;
   padding: 0;
 }
 
 [data-theme-pack='modern'] .tool-call.tool-call-datatable:hover,
-[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-datatable:hover {
+[data-theme-pack='modern'] .tool-call.tool-call-chart:hover,
+[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-datatable:hover,
+[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-chart:hover {
   background: transparent;
   border-color: transparent;
 }
@@ -591,17 +601,39 @@
 [data-theme-pack='modern'] .markdown-content .katex-display,
 [data-theme-pack='modern'] .chat-edit-preview-list,
 [data-theme-pack='modern'] .chat-compaction-divider,
-[data-theme-pack='modern'] .chat-compaction-review-summary-container {
+[data-theme-pack='modern'] .chat-compaction-review-summary-container,
+[data-theme-pack='modern'] .chat-message-generation-error {
   border: var(--workbench-container-border);
   border-radius: var(--workbench-control-radius);
 }
 
 [data-theme-pack='modern'] .markdown-content blockquote,
-[data-theme-pack='modern'] .markdown-content table,
 [data-theme-pack='modern'] .markdown-content .katex-display,
 [data-theme-pack='modern'] .chat-edit-preview-list,
 [data-theme-pack='modern'] .chat-compaction-review-summary-container {
   background: var(--color-widget);
+}
+
+[data-theme-pack='modern'] .markdown-content table {
+  background: var(--color-editor);
+}
+
+[data-theme-pack='modern'] .markdown-content .markdown-codeblock pre,
+[data-theme-pack='modern'] .markdown-content .markdown-codeblock-pre {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  margin: 0;
+}
+
+[data-theme-pack='modern'] .reasoning-block {
+  background: var(--color-widget);
+  border: var(--workbench-container-border);
+  border-radius: var(--workbench-control-radius);
+}
+
+[data-theme-pack='modern'] .reasoning-header {
+  border-radius: var(--workbench-control-radius);
 }
 
 [data-theme-pack='modern'] .markdown-content pre,
