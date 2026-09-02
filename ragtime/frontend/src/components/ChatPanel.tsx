@@ -11,6 +11,7 @@ import {
   type ReactNode,
   type CSSProperties,
 } from 'react';
+import { createPortal } from 'react-dom';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -1522,6 +1523,53 @@ export const LinkifiedText = memo(function LinkifiedText({ text }: { text: strin
     </>
   );
 });
+
+function ChatImageModal({
+  imageUrl,
+  alt,
+  onClose,
+}: {
+  imageUrl: string;
+  alt: string;
+  onClose: () => void;
+}) {
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    overlayRef.current?.focus();
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      ref={overlayRef}
+      className="image-modal-overlay"
+      data-chat-image-modal
+      onClick={onClose}
+      onKeyDown={(event) => event.key === 'Escape' && onClose()}
+      role="dialog"
+      aria-modal="true"
+      tabIndex={-1}
+    >
+      <div className="image-modal-content" onClick={(event) => event.stopPropagation()}>
+        <button className="image-modal-close" onClick={onClose} title="Close">
+          <X size={24} />
+        </button>
+        <img src={imageUrl} alt={alt} />
+      </div>
+    </div>,
+    document.body,
+  );
+}
 
 interface VisualizationDataConnection {
   component_kind?: string;
@@ -8312,25 +8360,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         )}
       </div>
       {zoomedImage && (
-        <div
-          className="image-modal-overlay"
-          onClick={() => setZoomedImage(null)}
-          onKeyDown={(e) => e.key === 'Escape' && setZoomedImage(null)}
-          role="dialog"
-          aria-modal="true"
-          tabIndex={-1}
-        >
-          <div className="image-modal-content" onClick={(e) => e.stopPropagation()}>
-            <button
-              className="image-modal-close"
-              onClick={() => setZoomedImage(null)}
-              title="Close"
-            >
-              <X size={24} />
-            </button>
-            <img src={zoomedImage!} alt="Screenshot full view" />
-          </div>
-        </div>
+        <ChatImageModal
+          imageUrl={zoomedImage}
+          alt="Screenshot full view"
+          onClose={() => setZoomedImage(null)}
+        />
       )}
       {showUserspaceDiffOverlay && userspaceWriteBatch && (
         <FileDiffOverlay
@@ -19541,22 +19575,11 @@ export function ChatPanel({
 
       {/* Image Modal */}
       {modalImageUrl && (
-        <div
-          className="image-modal-overlay"
-          onClick={() => setModalImageUrl(null)}
-          onKeyDown={(e) => e.key === 'Escape' && setModalImageUrl(null)}
-        >
-          <div className="image-modal-content" onClick={(e) => e.stopPropagation()}>
-            <button
-              className="image-modal-close"
-              onClick={() => setModalImageUrl(null)}
-              title="Close"
-            >
-              <X size={24} />
-            </button>
-            <img src={modalImageUrl} alt="Enlarged view" />
-          </div>
-        </div>
+        <ChatImageModal
+          imageUrl={modalImageUrl}
+          alt="Enlarged view"
+          onClose={() => setModalImageUrl(null)}
+        />
       )}
 
       {/* Archived Chats Modal */}

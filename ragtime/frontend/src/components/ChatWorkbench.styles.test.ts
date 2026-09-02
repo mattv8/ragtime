@@ -80,9 +80,11 @@ describe('Chat workbench surface contract', () => {
       /\[data-theme-pack='modern'\]\s+\.chat-message-navigator-tick\s*\{[\s\S]*display:\s*block;/,
     );
     expect(css).toMatch(/\.markdown-content\s*\{[\s\S]*color:\s*var\(--color-text-primary\);/);
-    expect(css).toMatch(
-      /\.chat-tool-calls\s*\{[\s\S]*border-top:\s*var\(--workbench-container-border\);/,
-    );
+    const modernErrorRule = getRuleBody(css, "[data-theme-pack='modern'] .chat-error");
+    const modernToolCallsRule = getRuleBody(css, "[data-theme-pack='modern'] .chat-tool-calls");
+
+    expect(modernErrorRule).toMatch(/margin-inline:\s*0;/);
+    expect(modernToolCallsRule).not.toMatch(/border-(?:top|block-start)\s*:/);
     expect(css).toMatch(/\.datatable-container\s*\{[\s\S]*background:\s*var\(--color-editor\);/);
     expect(css).toMatch(/\.chat-panel-embedded\s*\{[\s\S]*border-radius:\s*0;/);
     expect(css).toMatch(/\.chat-panel-shared\s*\{[\s\S]*width:\s*100%;/);

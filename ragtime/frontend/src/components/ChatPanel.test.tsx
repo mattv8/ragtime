@@ -316,6 +316,41 @@ describe('ToolCallDisplay screenshot rendering', () => {
     const image = screen.getByAltText('Captured User Space screenshot') as HTMLImageElement;
     expect(image.getAttribute('src')).toBe(previewImageUrl);
   });
+
+  it('portals the enlarged screenshot outside the embedded chat container', async () => {
+    const previewImageUrl = '/indexes/userspace/runtime/workspaces/ws/screenshots/capture.png';
+    const toolCall: ActiveToolCall = {
+      tool: 'capture_userspace_screenshot',
+      status: 'complete',
+      output: '',
+      mcp: {
+        ok: true,
+        server_id: 'runtime-playwright',
+        server_name: 'Runtime Playwright',
+        tool_name: 'playwright_capture_screenshot',
+        request: { path: 'admin/users' },
+        response: {
+          ok: true,
+          preview_image_url: previewImageUrl,
+        },
+      },
+    };
+
+    const { container } = render(
+      <div data-testid="embedded-chat-wrapper">
+        <ToolCallDisplay toolCall={toolCall} defaultExpanded />
+      </div>,
+    );
+
+    fireEvent.click(screen.getByAltText('Captured User Space screenshot'));
+
+    const modal = await screen.findByRole('dialog');
+    expect(modal).toBeInstanceOf(HTMLElement);
+    expect(container.contains(modal)).toBe(false);
+    expect(modal.parentElement).toBe(document.body);
+    expect(document.body.contains(modal)).toBe(true);
+    expect(document.body.querySelector('[data-chat-image-modal]')).toBe(modal);
+  });
 });
 
 describe('ToolCallDisplay load_tool_skills rendering', () => {

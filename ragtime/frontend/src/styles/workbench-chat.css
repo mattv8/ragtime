@@ -359,6 +359,10 @@
   box-shadow: none;
 }
 
+[data-theme-pack='modern'] .chat-error {
+  margin-inline: 0;
+}
+
 [data-theme-pack='modern'] .chat-no-conversation {
   flex: 1;
   background: var(--color-panel);
@@ -479,7 +483,6 @@
 [data-theme-pack='modern'] .chat-tool-calls {
   margin-top: var(--space-sm);
   padding-top: var(--space-sm);
-  border-top: var(--workbench-container-border);
 }
 
 [data-theme-pack='modern'] .chat-tool-calls .tool-call,
