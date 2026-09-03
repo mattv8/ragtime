@@ -51,6 +51,15 @@ const apiMock = vi.hoisted(() => ({
   getCopilotAuthStatus: vi.fn(),
   getOpenAICodexAuthStatus: vi.fn(),
   getClaudeCodeAuthStatus: vi.fn(),
+  startCopilotDeviceFlow: vi.fn(),
+  pollCopilotDeviceFlow: vi.fn(),
+  clearCopilotAuth: vi.fn(),
+  startOpenAICodexDeviceFlow: vi.fn(),
+  pollOpenAICodexDeviceFlow: vi.fn(),
+  clearOpenAICodexAuth: vi.fn(),
+  startClaudeCodeAuth: vi.fn(),
+  completeClaudeCodeAuth: vi.fn(),
+  cancelClaudeCodeAuth: vi.fn(),
   getAvailableModels: vi.fn(),
   getAllModels: vi.fn(),
   fetchLLMModels: vi.fn(),
@@ -383,7 +392,41 @@ beforeEach(() => {
     connected: true,
     base_url: 'https://codex.example.com',
   });
-  apiMock.getClaudeCodeAuthStatus.mockResolvedValue({ connected: true });
+  apiMock.getClaudeCodeAuthStatus.mockResolvedValue({
+    connected: true,
+    installed: true,
+    version: '1.0.0',
+    command: 'claude',
+    error: null,
+    has_cli_auth: true,
+    auth_method: 'oauth',
+    subscription_type: 'pro',
+  });
+  apiMock.startCopilotDeviceFlow.mockResolvedValue({
+    request_id: 'copilot-request-1',
+    user_code: 'COPILOT-CODE',
+    verification_uri: 'https://github.com/login/device',
+    interval: 5,
+  });
+  apiMock.pollCopilotDeviceFlow.mockResolvedValue({ status: 'pending', retry_after_seconds: 5 });
+  apiMock.clearCopilotAuth.mockResolvedValue(undefined);
+  apiMock.startOpenAICodexDeviceFlow.mockResolvedValue({
+    request_id: 'codex-request-1',
+    user_code: 'CODEX-CODE',
+    verification_uri: 'https://openai.com/device',
+    interval: 5,
+  });
+  apiMock.pollOpenAICodexDeviceFlow.mockResolvedValue({
+    status: 'pending',
+    retry_after_seconds: 5,
+  });
+  apiMock.clearOpenAICodexAuth.mockResolvedValue(undefined);
+  apiMock.startClaudeCodeAuth.mockResolvedValue({
+    request_id: 'claude-request-1',
+    authorization_url: 'https://claude.ai/device',
+  });
+  apiMock.completeClaudeCodeAuth.mockResolvedValue({ success: true, status: 'connected' });
+  apiMock.cancelClaudeCodeAuth.mockResolvedValue(undefined);
   apiMock.getAvailableModels.mockResolvedValue({ automatic_default_model: null });
   apiMock.getAllModels.mockResolvedValue({
     models: [
@@ -451,8 +494,27 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
+
+async function renderAuthProvider(provider: 'github_copilot' | 'openai_codex' | 'claude_code') {
+  chatModelsSectionState.autoOpenModal = false;
+  const { SettingsPanel } = await import('./SettingsPanel');
+  render(<SettingsPanel />);
+
+  const accordionToggle = await screen.findByRole('button', { name: /LLM Providers/i });
+  fireEvent.click(accordionToggle);
+
+  const providerSection = accordionToggle.closest('section');
+  const providerSelect = providerSection?.querySelector('select');
+  if (!(providerSelect instanceof HTMLSelectElement)) {
+    throw new Error('Expected LLM provider select to be rendered');
+  }
+  fireEvent.change(providerSelect, { target: { value: provider } });
+
+  return { providerSelect };
+}
 
 describe('SettingsPanel', () => {
   it('renders the authentication provider selector as a form field, not an action row', async () => {
@@ -1044,5 +1106,252 @@ describe('SettingsPanel', () => {
     expect(latestPayload).not.toHaveProperty('max_iterations');
     expect(latestPayload).not.toHaveProperty('max_tool_output_chars');
     expect(latestPayload).not.toHaveProperty('scratchpad_window_size');
+  });
+
+  it('shows an inline error and toast when GitHub Copilot authorization start rejects', async () => {
+    apiMock.startCopilotDeviceFlow.mockRejectedValueOnce(new Error('Copilot start denied'));
+
+    await renderAuthProvider('github_copilot');
+
+    const authorizeButton = await screen.findByRole('button', { name: 'Authorize' });
+    fireEvent.click(authorizeButton);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Copilot start denied');
+    expect(toastErrorSpy).toHaveBeenCalledWith('Copilot start denied');
+    await waitFor(() => {
+      expect((authorizeButton as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
+  it('shows an inline error and toast when Claude Code completion returns a terminal HTTP-200 failure payload', async () => {
+    apiMock.completeClaudeCodeAuth.mockResolvedValueOnce({
+      success: false,
+      status: 'failed',
+      message: 'Device approval denied',
+    });
+    const openSpy = vi
+      .spyOn(window, 'open')
+      .mockReturnValue({ opener: window, location: { href: '' } } as unknown as Window);
+
+    await renderAuthProvider('claude_code');
+
+    const authorizeButton = await screen.findByRole('button', { name: /Authorize|Reauthorize/ });
+    fireEvent.click(authorizeButton);
+
+    fireEvent.change(await screen.findByPlaceholderText(/Paste authorization code/i), {
+      target: { value: `${'a'.repeat(40)}#${'b'.repeat(40)}` },
+    });
+
+    await waitFor(() => {
+      expect(toastErrorSpy).toHaveBeenCalledWith('Device approval denied');
+    });
+    expect((await screen.findByRole('alert')).textContent).toContain('Device approval denied');
+    await waitFor(() => {
+      expect((authorizeButton as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    openSpy.mockRestore();
+  }, 10000);
+
+  it('reports a blocked OpenAI Codex popup without advancing the wizard', async () => {
+    apiMock.startOpenAICodexDeviceFlow.mockResolvedValueOnce({
+      request_id: 'codex-request-3',
+      user_code: 'CODEX-CODE',
+      verification_uri: 'https://openai.com/device',
+      interval: 30,
+    });
+    const openSpy = vi.spyOn(window, 'open').mockReturnValueOnce(null);
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: clipboard,
+    });
+
+    await renderAuthProvider('openai_codex');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Authorize|Reauthorize/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy device code' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open OpenAI Authorization' }));
+
+    expect((await screen.findByRole('alert')).textContent || '').toMatch(/popup/i);
+    expect(toastErrorSpy).toHaveBeenCalled();
+    expect(screen.getByText('Step 2: Open the authorization page')).toBeTruthy();
+    expect(screen.queryByText('Step 3: Complete authorization in OpenAI')).toBeNull();
+
+    openSpy.mockRestore();
+  });
+
+  it('advances the OpenAI Codex wizard when the authorization popup opens successfully', async () => {
+    const popup = { opener: window, location: { href: '' } } as unknown as Window;
+    const openSpy = vi.spyOn(window, 'open').mockImplementation((url) => {
+      if (url === '') {
+        return popup;
+      }
+      return null;
+    });
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: clipboard,
+    });
+
+    await renderAuthProvider('openai_codex');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Authorize|Reauthorize/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy device code' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open OpenAI Authorization' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Step 3: Complete authorization in OpenAI')).toBeTruthy();
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(toastErrorSpy).not.toHaveBeenCalled();
+    expect(popup.opener).toBeNull();
+    expect(popup.location.href).toBe('https://openai.com/device');
+
+    openSpy.mockRestore();
+  });
+
+  it('keeps passive Copilot status refresh failures quiet during settings load', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getCopilotAuthStatus.mockRejectedValueOnce(new Error('copilot status failed'));
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(<SettingsPanel />);
+
+    await screen.findByRole('button', { name: /LLM Providers/i });
+
+    await waitFor(() => {
+      expect(apiMock.getCopilotAuthStatus).toHaveBeenCalled();
+    });
+    expect(toastErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it('shows an inline error and toast when explicit Claude Code status checking fails with a malformed payload', async () => {
+    apiMock.getClaudeCodeAuthStatus.mockResolvedValueOnce({} as never);
+
+    await renderAuthProvider('claude_code');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Check Status' }));
+
+    await waitFor(() => {
+      expect(toastErrorSpy).toHaveBeenCalled();
+    });
+    expect((await screen.findByRole('alert')).textContent || '').toMatch(/Claude Code/i);
+  });
+
+  it('shows an inline error and toast when Claude Code model fetching fails from the auth controls', async () => {
+    apiMock.fetchLLMModels
+      .mockResolvedValueOnce({ success: true, models: [] })
+      .mockRejectedValueOnce(new Error('Claude models unavailable'));
+
+    await renderAuthProvider('claude_code');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Fetch Models|Loaded|Fetching/ }));
+
+    await waitFor(() => {
+      expect(toastErrorSpy).toHaveBeenCalledWith('Claude models unavailable');
+    });
+    expect((await screen.findByRole('alert')).textContent).toContain('Claude models unavailable');
+  });
+
+  it.each([
+    ['github_copilot', 'GitHub Copilot models unavailable'],
+    ['openai_codex', 'OpenAI Codex models unavailable'],
+    ['claude_code', 'Claude Code models unavailable'],
+  ] as const)(
+    'shows an inline error and toast when selecting %s triggers a model fetch failure',
+    async (provider, expectedMessage) => {
+      if (provider === 'github_copilot') {
+        apiMock.getCopilotAuthStatus.mockResolvedValueOnce({
+          connected: true,
+          base_url: 'https://api.githubcopilot.test',
+          enterprise_url: null,
+        });
+      }
+
+      apiMock.fetchLLMModels.mockRejectedValueOnce(new Error(expectedMessage));
+
+      await renderAuthProvider(provider);
+
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(expectedMessage);
+      });
+      expect((await screen.findByRole('alert')).textContent).toContain(expectedMessage);
+    },
+  );
+
+  it('reports a blocked GitHub Copilot popup without advancing the wizard', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockReturnValueOnce(null);
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: clipboard,
+    });
+
+    await renderAuthProvider('github_copilot');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Authorize' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy device code' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open GitHub Authorization' }));
+
+    expect((await screen.findByRole('alert')).textContent || '').toMatch(/popup/i);
+    expect(toastErrorSpy).toHaveBeenCalledWith(
+      'GitHub Copilot authorization popup was blocked. Allow popups and try again.',
+    );
+    expect(screen.getByText('Step 2: Open the authorization page')).toBeTruthy();
+    expect(screen.queryByText('Step 3: Complete authorization in GitHub')).toBeNull();
+
+    openSpy.mockRestore();
+  });
+
+  it('advances the GitHub Copilot wizard when the authorization popup opens successfully', async () => {
+    const popup = { opener: window, location: { href: '' } } as unknown as Window;
+    const openSpy = vi.spyOn(window, 'open').mockImplementation((url) => {
+      if (url === '') {
+        return popup;
+      }
+      return null;
+    });
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: clipboard,
+    });
+
+    await renderAuthProvider('github_copilot');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Authorize' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy device code' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open GitHub Authorization' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Step 3: Complete authorization in GitHub')).toBeTruthy();
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(toastErrorSpy).not.toHaveBeenCalled();
+    expect(popup.opener).toBeNull();
+    expect(popup.location.href).toBe('https://github.com/login/device');
+
+    openSpy.mockRestore();
+  });
+
+  it('shows an inline error and toast when OpenAI Codex disconnect fails', async () => {
+    apiMock.clearOpenAICodexAuth.mockRejectedValueOnce(new Error('Codex disconnect denied'));
+
+    await renderAuthProvider('openai_codex');
+
+    const disconnectButton = await screen.findByRole('button', { name: 'Disconnect' });
+    fireEvent.click(disconnectButton);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Codex disconnect denied');
+    expect(toastErrorSpy).toHaveBeenCalledWith('Codex disconnect denied');
+    await waitFor(() => {
+      expect((disconnectButton as HTMLButtonElement).disabled).toBe(false);
+    });
   });
 });

@@ -473,6 +473,37 @@ function getDefaultEmbeddingModelForProvider(provider: SharedLlmEmbeddingProvide
   return '';
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function normalizeProviderFailureMessage(error: unknown, fallback: string): string {
+  if (typeof error === 'string') {
+    const message = error.trim();
+    return message && message.toLowerCase() !== 'unknown' ? message : fallback;
+  }
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    return message && message.toLowerCase() !== 'unknown' ? message : fallback;
+  }
+  return fallback;
+}
+
+function normalizeProviderPayloadMessage(message: unknown, fallback: string): string {
+  if (!isNonEmptyString(message)) {
+    return fallback;
+  }
+  return message.trim().toLowerCase() === 'unknown' ? fallback : message.trim();
+}
+
+function isValidClaudeCodeAuthStatusResponse(
+  status: ClaudeCodeAuthStatusResponse | null | undefined,
+): status is ClaudeCodeAuthStatusResponse {
+  return (
+    status != null && typeof status.connected === 'boolean' && typeof status.installed === 'boolean'
+  );
+}
+
 function formatModelIdentifierForDisplay(
   identifier: string | null | undefined,
   models: AvailableModel[],
@@ -806,6 +837,28 @@ export function SettingsPanel({
   const [automaticDefaultChatModel, setAutomaticDefaultChatModel] = useState<string | null>(null);
   const [chatModelsLoading, setChatModelsLoading] = useState(false);
 
+  const reportLlmModelsFailure = useCallback(
+    (message: string) => {
+      setLlmModelsError(message);
+      toast.error(message);
+    },
+    [toast],
+  );
+
+  const openAuthorizationPopup = useCallback(
+    (url: string, blockedMessage: string) => {
+      const popup = window.open('', '_blank');
+      if (!popup) {
+        reportLlmModelsFailure(blockedMessage);
+        return false;
+      }
+      popup.opener = null;
+      popup.location.href = url;
+      return true;
+    },
+    [reportLlmModelsFailure],
+  );
+
   // OpenAPI model filter modal state
   const [showOpenapiModelModal, setShowOpenapiModelModal] = useState(false);
   const [selectedOpenapiModels, setSelectedOpenapiModels] = useState<Set<string>>(new Set());
@@ -973,6 +1026,7 @@ export function SettingsPanel({
         includeAnthropicModels?: boolean;
         includeGoogleModels?: boolean;
         baseUrl?: string;
+        userTriggered?: boolean;
       },
     ) => {
       if (
@@ -1017,15 +1071,31 @@ export function SettingsPanel({
             });
           }
         } else {
-          setLlmModelsError(response.message);
+          const message = normalizeProviderPayloadMessage(
+            response.message,
+            `Failed to fetch ${formatProviderDisplayName(provider)} models`,
+          );
+          if (options?.userTriggered) {
+            reportLlmModelsFailure(message);
+          } else {
+            setLlmModelsError(message);
+          }
         }
       } catch (err) {
-        setLlmModelsError(err instanceof Error ? err.message : 'Failed to fetch models');
+        const message = normalizeProviderFailureMessage(
+          err,
+          `Failed to fetch ${formatProviderDisplayName(provider)} models`,
+        );
+        if (options?.userTriggered) {
+          reportLlmModelsFailure(message);
+        } else {
+          setLlmModelsError(message);
+        }
       } finally {
         setLlmModelsFetching(false);
       }
     },
-    [],
+    [reportLlmModelsFailure],
   );
 
   const fetchLocalLlmModels = useCallback(
@@ -1093,28 +1163,40 @@ export function SettingsPanel({
     formData.omlx_api_key,
   ]);
 
-  const fetchCopilotModels = useCallback(async () => {
-    await fetchLlmModels('github_copilot', undefined, {
-      authMode: copilotAuthMode,
-      ...COPILOT_MODEL_FETCH_OPTIONS,
-    });
-  }, [copilotAuthMode, fetchLlmModels]);
+  const fetchCopilotModels = useCallback(
+    async (userTriggered = false) => {
+      await fetchLlmModels('github_copilot', undefined, {
+        authMode: copilotAuthMode,
+        ...COPILOT_MODEL_FETCH_OPTIONS,
+        userTriggered,
+      });
+    },
+    [copilotAuthMode, fetchLlmModels],
+  );
 
-  const refreshCopilotStatus = useCallback(async () => {
-    try {
-      const status = await api.getCopilotAuthStatus();
-      setCopilotAuthStatus(status);
-      setFormData((prev) => ({
-        ...prev,
-        github_copilot_base_url: status.base_url,
-        github_copilot_enterprise_url: status.enterprise_url ?? null,
-      }));
-      return status;
-    } catch {
-      setCopilotAuthStatus(null);
-      return null;
-    }
-  }, []);
+  const refreshCopilotStatus = useCallback(
+    async (options?: { quiet?: boolean }) => {
+      try {
+        const status = await api.getCopilotAuthStatus();
+        setCopilotAuthStatus(status);
+        setFormData((prev) => ({
+          ...prev,
+          github_copilot_base_url: status.base_url,
+          github_copilot_enterprise_url: status.enterprise_url ?? null,
+        }));
+        return status;
+      } catch (err) {
+        setCopilotAuthStatus(null);
+        if (!options?.quiet) {
+          reportLlmModelsFailure(
+            normalizeProviderFailureMessage(err, 'Failed to check GitHub Copilot status'),
+          );
+        }
+        return null;
+      }
+    },
+    [reportLlmModelsFailure],
+  );
 
   const clearCopilotPollTimer = useCallback(() => {
     copilotPollGenerationRef.current += 1;
@@ -1142,6 +1224,7 @@ export function SettingsPanel({
             }
 
             if (response.status === 'connected') {
+              clearCopilotPollTimer();
               setCopilotConnecting(false);
               setCopilotRequestId(null);
               setCopilotDeviceCode('');
@@ -1149,23 +1232,36 @@ export function SettingsPanel({
               setCopilotCodeCopied(false);
               setCopilotWizardVisible(false);
               setCopilotWizardStep(1);
-              await refreshCopilotStatus();
+              await refreshCopilotStatus({ quiet: true });
               toast.success('GitHub Copilot connected successfully');
               const selectedProvider = formData.llm_provider || 'openai';
               if (selectedProvider === 'github_copilot') {
-                await fetchCopilotModels();
+                await fetchCopilotModels(true);
               }
               return;
             }
 
+            clearCopilotPollTimer();
             setCopilotConnecting(false);
             setCopilotRequestId(null);
+            setCopilotDeviceCode('');
+            setCopilotVerificationUri('');
+            setCopilotCodeCopied(false);
             setCopilotWizardVisible(false);
             setCopilotWizardStep(1);
-            setLlmModelsError(response.message || 'GitHub Copilot authorization failed');
+            reportLlmModelsFailure(
+              normalizeProviderPayloadMessage(
+                response.message,
+                'GitHub Copilot authorization failed',
+              ),
+            );
           } catch (err) {
+            clearCopilotPollTimer();
             setCopilotConnecting(false);
             setCopilotRequestId(null);
+            setCopilotDeviceCode('');
+            setCopilotVerificationUri('');
+            setCopilotCodeCopied(false);
             setCopilotWizardVisible(false);
             setCopilotWizardStep(1);
             const status =
@@ -1173,12 +1269,12 @@ export function SettingsPanel({
                 ? (err as { status?: number }).status
                 : undefined;
             if (status === 404) {
-              setLlmModelsError(
+              reportLlmModelsFailure(
                 'GitHub Copilot authorization session expired or server reloaded. Click Connect again.',
               );
             } else {
-              setLlmModelsError(
-                err instanceof Error ? err.message : 'GitHub Copilot authorization failed',
+              reportLlmModelsFailure(
+                normalizeProviderFailureMessage(err, 'GitHub Copilot authorization failed'),
               );
             }
           }
@@ -1186,7 +1282,14 @@ export function SettingsPanel({
         Math.max(delaySeconds, 1) * 1000,
       );
     },
-    [clearCopilotPollTimer, fetchCopilotModels, formData.llm_provider, refreshCopilotStatus, toast],
+    [
+      clearCopilotPollTimer,
+      fetchCopilotModels,
+      formData.llm_provider,
+      refreshCopilotStatus,
+      reportLlmModelsFailure,
+      toast,
+    ],
   );
 
   const startCopilotDeviceFlow = useCallback(async () => {
@@ -1199,7 +1302,13 @@ export function SettingsPanel({
 
     try {
       const response = await api.startCopilotDeviceFlow({ deployment_type: 'github.com' });
-      if (!response.verification_uri) {
+      if (!isNonEmptyString(response.request_id)) {
+        throw new Error('GitHub Copilot did not return an authorization request ID');
+      }
+      if (!isNonEmptyString(response.user_code)) {
+        throw new Error('GitHub Copilot did not return a device code');
+      }
+      if (!isNonEmptyString(response.verification_uri)) {
         throw new Error('GitHub did not return an authorization URL');
       }
       setCopilotRequestId(response.request_id);
@@ -1215,11 +1324,11 @@ export function SettingsPanel({
       setCopilotRequestId(null);
       setCopilotWizardVisible(false);
       setCopilotWizardStep(1);
-      setLlmModelsError(
-        err instanceof Error ? err.message : 'Failed to start GitHub Copilot authorization',
+      reportLlmModelsFailure(
+        normalizeProviderFailureMessage(err, 'Failed to start GitHub Copilot authorization'),
       );
     }
-  }, [clearCopilotPollTimer, pollCopilotDeviceFlow]);
+  }, [clearCopilotPollTimer, pollCopilotDeviceFlow, reportLlmModelsFailure]);
 
   const clearCopilotAuth = useCallback(async () => {
     clearCopilotPollTimer();
@@ -1232,13 +1341,21 @@ export function SettingsPanel({
     setCopilotWizardStep(1);
     try {
       await api.clearCopilotAuth();
-      await refreshCopilotStatus();
+      await refreshCopilotStatus({ quiet: true });
       resetLlmModelsState();
       toast.success('GitHub Copilot connection removed');
     } catch (err) {
-      setLlmModelsError(err instanceof Error ? err.message : 'Failed to clear GitHub Copilot auth');
+      reportLlmModelsFailure(
+        normalizeProviderFailureMessage(err, 'Failed to clear GitHub Copilot auth'),
+      );
     }
-  }, [clearCopilotPollTimer, refreshCopilotStatus, resetLlmModelsState, toast]);
+  }, [
+    clearCopilotPollTimer,
+    refreshCopilotStatus,
+    reportLlmModelsFailure,
+    resetLlmModelsState,
+    toast,
+  ]);
 
   const handleCopilotDeviceCodeCopied = useCallback(() => {
     toast.success('Device code copied');
@@ -1254,32 +1371,53 @@ export function SettingsPanel({
     if (!copilotVerificationUri) {
       return;
     }
-    window.open(copilotVerificationUri, '_blank');
-    setCopilotWizardStep(3);
-  }, [copilotVerificationUri]);
-
-  const fetchOpenAiCodexModels = useCallback(async () => {
-    await fetchLlmModels('openai_codex');
-  }, [fetchLlmModels]);
-
-  const fetchClaudeCodeModels = useCallback(async () => {
-    await fetchLlmModels('claude_code');
-  }, [fetchLlmModels]);
-
-  const refreshOpenAiCodexStatus = useCallback(async () => {
-    try {
-      const status = await api.getOpenAICodexAuthStatus();
-      setOpenAiCodexAuthStatus(status);
-      setFormData((prev) => ({
-        ...prev,
-        openai_codex_base_url: status.base_url,
-      }));
-      return status;
-    } catch {
-      setOpenAiCodexAuthStatus(null);
-      return null;
+    if (
+      !openAuthorizationPopup(
+        copilotVerificationUri,
+        'GitHub Copilot authorization popup was blocked. Allow popups and try again.',
+      )
+    ) {
+      return;
     }
-  }, []);
+    setCopilotWizardStep(3);
+  }, [copilotVerificationUri, openAuthorizationPopup]);
+
+  const fetchOpenAiCodexModels = useCallback(
+    async (userTriggered = false) => {
+      await fetchLlmModels('openai_codex', undefined, { userTriggered });
+    },
+    [fetchLlmModels],
+  );
+
+  const fetchClaudeCodeModels = useCallback(
+    async (userTriggered = false) => {
+      await fetchLlmModels('claude_code', undefined, { userTriggered });
+    },
+    [fetchLlmModels],
+  );
+
+  const refreshOpenAiCodexStatus = useCallback(
+    async (options?: { quiet?: boolean }) => {
+      try {
+        const status = await api.getOpenAICodexAuthStatus();
+        setOpenAiCodexAuthStatus(status);
+        setFormData((prev) => ({
+          ...prev,
+          openai_codex_base_url: status.base_url,
+        }));
+        return status;
+      } catch (err) {
+        setOpenAiCodexAuthStatus(null);
+        if (!options?.quiet) {
+          reportLlmModelsFailure(
+            normalizeProviderFailureMessage(err, 'Failed to check OpenAI Codex status'),
+          );
+        }
+        return null;
+      }
+    },
+    [reportLlmModelsFailure],
+  );
 
   const clearOpenAiCodexPollTimer = useCallback(() => {
     openAiCodexPollGenerationRef.current += 1;
@@ -1311,6 +1449,7 @@ export function SettingsPanel({
             }
 
             if (response.status === 'connected') {
+              clearOpenAiCodexPollTimer();
               setOpenAiCodexConnecting(false);
               setOpenAiCodexRequestId(null);
               setOpenAiCodexDeviceCode('');
@@ -1318,23 +1457,36 @@ export function SettingsPanel({
               setOpenAiCodexCodeCopied(false);
               setOpenAiCodexWizardVisible(false);
               setOpenAiCodexWizardStep(1);
-              await refreshOpenAiCodexStatus();
+              await refreshOpenAiCodexStatus({ quiet: true });
               toast.success('OpenAI Codex connected successfully');
               const selectedProvider = formData.llm_provider || 'openai';
               if (selectedProvider === 'openai_codex') {
-                await fetchOpenAiCodexModels();
+                await fetchOpenAiCodexModels(true);
               }
               return;
             }
 
+            clearOpenAiCodexPollTimer();
             setOpenAiCodexConnecting(false);
             setOpenAiCodexRequestId(null);
+            setOpenAiCodexDeviceCode('');
+            setOpenAiCodexVerificationUri('');
+            setOpenAiCodexCodeCopied(false);
             setOpenAiCodexWizardVisible(false);
             setOpenAiCodexWizardStep(1);
-            setLlmModelsError(response.message || 'OpenAI Codex authorization failed');
+            reportLlmModelsFailure(
+              normalizeProviderPayloadMessage(
+                response.message,
+                'OpenAI Codex authorization failed',
+              ),
+            );
           } catch (err) {
+            clearOpenAiCodexPollTimer();
             setOpenAiCodexConnecting(false);
             setOpenAiCodexRequestId(null);
+            setOpenAiCodexDeviceCode('');
+            setOpenAiCodexVerificationUri('');
+            setOpenAiCodexCodeCopied(false);
             setOpenAiCodexWizardVisible(false);
             setOpenAiCodexWizardStep(1);
             const status =
@@ -1342,12 +1494,12 @@ export function SettingsPanel({
                 ? (err as { status?: number }).status
                 : undefined;
             if (status === 404) {
-              setLlmModelsError(
+              reportLlmModelsFailure(
                 'OpenAI Codex authorization session expired or server reloaded. Click Connect again.',
               );
             } else {
-              setLlmModelsError(
-                err instanceof Error ? err.message : 'OpenAI Codex authorization failed',
+              reportLlmModelsFailure(
+                normalizeProviderFailureMessage(err, 'OpenAI Codex authorization failed'),
               );
             }
           }
@@ -1359,6 +1511,7 @@ export function SettingsPanel({
       clearOpenAiCodexPollTimer,
       fetchOpenAiCodexModels,
       formData.llm_provider,
+      reportLlmModelsFailure,
       refreshOpenAiCodexStatus,
       toast,
     ],
@@ -1374,7 +1527,13 @@ export function SettingsPanel({
 
     try {
       const response = await api.startOpenAICodexDeviceFlow({ deployment_type: 'openai.com' });
-      if (!response.verification_uri) {
+      if (!isNonEmptyString(response.request_id)) {
+        throw new Error('OpenAI Codex did not return an authorization request ID');
+      }
+      if (!isNonEmptyString(response.user_code)) {
+        throw new Error('OpenAI Codex did not return a device code');
+      }
+      if (!isNonEmptyString(response.verification_uri)) {
         throw new Error('OpenAI did not return an authorization URL');
       }
       setOpenAiCodexRequestId(response.request_id);
@@ -1390,11 +1549,11 @@ export function SettingsPanel({
       setOpenAiCodexRequestId(null);
       setOpenAiCodexWizardVisible(false);
       setOpenAiCodexWizardStep(1);
-      setLlmModelsError(
-        err instanceof Error ? err.message : 'Failed to start OpenAI Codex authorization',
+      reportLlmModelsFailure(
+        normalizeProviderFailureMessage(err, 'Failed to start OpenAI Codex authorization'),
       );
     }
-  }, [clearOpenAiCodexPollTimer, pollOpenAiCodexDeviceFlow]);
+  }, [clearOpenAiCodexPollTimer, pollOpenAiCodexDeviceFlow, reportLlmModelsFailure]);
 
   const clearOpenAiCodexAuth = useCallback(async () => {
     clearOpenAiCodexPollTimer();
@@ -1407,13 +1566,21 @@ export function SettingsPanel({
     setOpenAiCodexWizardStep(1);
     try {
       await api.clearOpenAICodexAuth();
-      await refreshOpenAiCodexStatus();
+      await refreshOpenAiCodexStatus({ quiet: true });
       resetLlmModelsState();
       toast.success('OpenAI Codex connection removed');
     } catch (err) {
-      setLlmModelsError(err instanceof Error ? err.message : 'Failed to clear OpenAI Codex auth');
+      reportLlmModelsFailure(
+        normalizeProviderFailureMessage(err, 'Failed to clear OpenAI Codex auth'),
+      );
     }
-  }, [clearOpenAiCodexPollTimer, refreshOpenAiCodexStatus, resetLlmModelsState, toast]);
+  }, [
+    clearOpenAiCodexPollTimer,
+    refreshOpenAiCodexStatus,
+    reportLlmModelsFailure,
+    resetLlmModelsState,
+    toast,
+  ]);
 
   const handleOpenAiCodexDeviceCodeCopied = useCallback(() => {
     toast.success('Device code copied');
@@ -1429,20 +1596,38 @@ export function SettingsPanel({
     if (!openAiCodexVerificationUri) {
       return;
     }
-    window.open(openAiCodexVerificationUri, '_blank');
-    setOpenAiCodexWizardStep(3);
-  }, [openAiCodexVerificationUri]);
-
-  const refreshClaudeCodeStatus = useCallback(async () => {
-    try {
-      const status = await api.getClaudeCodeAuthStatus();
-      setClaudeCodeAuthStatus(status);
-      return status;
-    } catch {
-      setClaudeCodeAuthStatus(null);
-      return null;
+    if (
+      !openAuthorizationPopup(
+        openAiCodexVerificationUri,
+        'OpenAI Codex authorization popup was blocked. Allow popups and try again.',
+      )
+    ) {
+      return;
     }
-  }, []);
+    setOpenAiCodexWizardStep(3);
+  }, [openAiCodexVerificationUri, openAuthorizationPopup]);
+
+  const refreshClaudeCodeStatus = useCallback(
+    async (options?: { quiet?: boolean }) => {
+      try {
+        const status = await api.getClaudeCodeAuthStatus();
+        if (!isValidClaudeCodeAuthStatusResponse(status)) {
+          throw new Error('Failed to check Claude Code status');
+        }
+        setClaudeCodeAuthStatus(status);
+        return status;
+      } catch (err) {
+        setClaudeCodeAuthStatus(null);
+        if (!options?.quiet) {
+          reportLlmModelsFailure(
+            normalizeProviderFailureMessage(err, 'Failed to check Claude Code status'),
+          );
+        }
+        return null;
+      }
+    },
+    [reportLlmModelsFailure],
+  );
 
   const startClaudeCodeAuth = useCallback(async () => {
     setLlmModelsError(null);
@@ -1453,25 +1638,31 @@ export function SettingsPanel({
     setClaudeCodeWizardVisible(false);
     try {
       const response = await api.startClaudeCodeAuth();
-      if (!response.authorization_url) {
+      if (!isNonEmptyString(response.request_id)) {
+        throw new Error('Claude Code did not return an authorization request ID');
+      }
+      if (!isNonEmptyString(response.authorization_url)) {
         throw new Error('Claude Code did not return an authorization URL');
       }
       setClaudeCodeRequestId(response.request_id);
       setClaudeCodeAuthorizationUrl(response.authorization_url);
       setClaudeCodeWizardVisible(true);
-      window.open(response.authorization_url, '_blank');
+      openAuthorizationPopup(
+        response.authorization_url,
+        'Claude Code authorization popup was blocked. Allow popups and try again.',
+      );
     } catch (err) {
       setClaudeCodeRequestId(null);
       setClaudeCodeWizardVisible(false);
-      setLlmModelsError(
-        err instanceof Error ? err.message : 'Failed to start Claude Code authorization',
+      reportLlmModelsFailure(
+        normalizeProviderFailureMessage(err, 'Failed to start Claude Code authorization'),
       );
     } finally {
       // Authorization has started; we're now waiting on the user to paste the
       // code, so stop the connecting state to re-enable the input field.
       setClaudeCodeConnecting(false);
     }
-  }, []);
+  }, [openAuthorizationPopup, reportLlmModelsFailure]);
 
   const completeClaudeCodeAuth = useCallback(
     async (codeOverride?: string) => {
@@ -1492,19 +1683,23 @@ export function SettingsPanel({
           code,
         });
         if (!response.success || response.status !== 'connected') {
-          throw new Error(response.message || 'Claude Code authorization failed');
+          throw new Error(
+            normalizeProviderPayloadMessage(response.message, 'Claude Code authorization failed'),
+          );
         }
         setClaudeCodeRequestId(null);
         setClaudeCodeAuthorizationUrl('');
         setClaudeCodeCallbackCode('');
         setClaudeCodeWizardVisible(false);
-        await refreshClaudeCodeStatus();
+        await refreshClaudeCodeStatus({ quiet: true });
         toast.success('Claude Code connected successfully');
         if ((formData.llm_provider || 'openai') === 'claude_code') {
-          await fetchClaudeCodeModels();
+          await fetchClaudeCodeModels(true);
         }
       } catch (err) {
-        setLlmModelsError(err instanceof Error ? err.message : 'Claude Code authorization failed');
+        reportLlmModelsFailure(
+          normalizeProviderFailureMessage(err, 'Claude Code authorization failed'),
+        );
       } finally {
         setClaudeCodeConnecting(false);
       }
@@ -1514,6 +1709,7 @@ export function SettingsPanel({
       claudeCodeRequestId,
       fetchClaudeCodeModels,
       formData.llm_provider,
+      reportLlmModelsFailure,
       refreshClaudeCodeStatus,
       toast,
     ],
@@ -1523,10 +1719,13 @@ export function SettingsPanel({
     if (!claudeCodeAuthorizationUrl) {
       return;
     }
-    window.open(claudeCodeAuthorizationUrl, '_blank');
-  }, [claudeCodeAuthorizationUrl]);
+    openAuthorizationPopup(
+      claudeCodeAuthorizationUrl,
+      'Claude Code authorization popup was blocked. Allow popups and try again.',
+    );
+  }, [claudeCodeAuthorizationUrl, openAuthorizationPopup]);
 
-  const cancelClaudeCodeAuth = useCallback(() => {
+  const cancelClaudeCodeAuth = useCallback(async () => {
     const requestId = claudeCodeRequestId;
     setClaudeCodeRequestId(null);
     setClaudeCodeAuthorizationUrl('');
@@ -1534,11 +1733,15 @@ export function SettingsPanel({
     setClaudeCodeWizardVisible(false);
     setClaudeCodeConnecting(false);
     if (requestId) {
-      api.cancelClaudeCodeAuth({ request_id: requestId }).catch(() => {
-        // Best effort cleanup; expired sessions are also cleaned server-side.
-      });
+      try {
+        await api.cancelClaudeCodeAuth({ request_id: requestId });
+      } catch (err) {
+        reportLlmModelsFailure(
+          normalizeProviderFailureMessage(err, 'Failed to cancel Claude Code authorization'),
+        );
+      }
     }
-  }, [claudeCodeRequestId]);
+  }, [claudeCodeRequestId, reportLlmModelsFailure]);
 
   // Fetch embedding models from hosted provider APIs
   const fetchEmbeddingModels = useCallback(
@@ -2207,7 +2410,7 @@ export function SettingsPanel({
       // --- Lazy background fetches (non-blocking) ---
 
       // Copilot auth status + model list
-      refreshCopilotStatus()
+      refreshCopilotStatus({ quiet: true })
         .then((copilotStatus) => {
           if (normalizedLlmProvider === 'github_copilot') {
             if (data.github_models_api_token || copilotStatus?.connected) {
@@ -2222,7 +2425,7 @@ export function SettingsPanel({
           /* copilot status is best-effort */
         });
 
-      refreshOpenAiCodexStatus()
+      refreshOpenAiCodexStatus({ quiet: true })
         .then((codexStatus) => {
           if (normalizedLlmProvider === 'openai_codex' && codexStatus?.connected) {
             fetchLlmModels('openai_codex');
@@ -5243,16 +5446,16 @@ export function SettingsPanel({
                           (copilotAuthStatus?.connected || settings?.has_github_copilot_auth)) ||
                           (copilotAuthMode === 'pat' && hasCopilotPatToken))
                       ) {
-                        fetchCopilotModels();
+                        void fetchCopilotModels(true);
                       }
                       if (
                         newProvider === 'openai_codex' &&
                         (openAiCodexAuthStatus?.connected || settings?.has_openai_codex_auth)
                       ) {
-                        fetchOpenAiCodexModels();
+                        void fetchOpenAiCodexModels(true);
                       }
                       if (newProvider === 'claude_code' && claudeCodeConfigured) {
-                        fetchClaudeCodeModels();
+                        void fetchClaudeCodeModels(true);
                       }
                     }}
                   >
@@ -5723,7 +5926,7 @@ export function SettingsPanel({
                     <button
                       type="button"
                       className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'github_copilot' ? 'btn-connected' : ''}`}
-                      onClick={() => fetchCopilotModels()}
+                      onClick={() => fetchCopilotModels(true)}
                       disabled={
                         llmModelsFetching ||
                         (copilotAuthMode === 'oauth' ? !copilotConfigured : !hasCopilotPatToken)
@@ -5872,7 +6075,9 @@ export function SettingsPanel({
                       </div>
                     )}
                   {llmModelsError && formData.llm_provider === 'github_copilot' && (
-                    <p className="field-error">{llmModelsError}</p>
+                    <p className="field-error" role="alert">
+                      {llmModelsError}
+                    </p>
                   )}
                   <p className="field-help">
                     {copilotAuthMode === 'oauth'
@@ -5902,7 +6107,7 @@ export function SettingsPanel({
                     <button
                       type="button"
                       className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'openai_codex' ? 'btn-connected' : ''}`}
-                      onClick={() => fetchOpenAiCodexModels()}
+                      onClick={() => fetchOpenAiCodexModels(true)}
                       disabled={llmModelsFetching || !openAiCodexConfigured}
                     >
                       {llmModelsFetching
@@ -6045,7 +6250,9 @@ export function SettingsPanel({
                       </div>
                     )}
                   {llmModelsError && formData.llm_provider === 'openai_codex' && (
-                    <p className="field-error">{llmModelsError}</p>
+                    <p className="field-error" role="alert">
+                      {llmModelsError}
+                    </p>
                   )}
                   <p className="field-help">
                     OAuth uses OpenAI device authorization to access Codex models. Stored
@@ -6074,7 +6281,9 @@ export function SettingsPanel({
                     <button
                       type="button"
                       className="btn btn-test"
-                      onClick={refreshClaudeCodeStatus}
+                      onClick={() => {
+                        void refreshClaudeCodeStatus();
+                      }}
                       disabled={claudeCodeConnecting}
                     >
                       Check Status
@@ -6082,7 +6291,7 @@ export function SettingsPanel({
                     <button
                       type="button"
                       className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'claude_code' ? 'btn-connected' : ''}`}
-                      onClick={() => fetchClaudeCodeModels()}
+                      onClick={() => fetchClaudeCodeModels(true)}
                       disabled={llmModelsFetching || !claudeCodeConfigured}
                     >
                       {llmModelsFetching
@@ -6188,7 +6397,9 @@ export function SettingsPanel({
                       );
                     })()}
                   {llmModelsError && formData.llm_provider === 'claude_code' && (
-                    <p className="field-error">{llmModelsError}</p>
+                    <p className="field-error" role="alert">
+                      {llmModelsError}
+                    </p>
                   )}
                   <p className="field-help">
                     Claude Code uses Claude Code CLI subscription auth, not an Anthropic API key.

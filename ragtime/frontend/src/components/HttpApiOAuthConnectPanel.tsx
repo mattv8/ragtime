@@ -11,6 +11,7 @@ import type {
   HttpApiOAuthStartResponse,
 } from '@/types';
 
+import { ToastContainer, useToast } from './shared/Toast';
 import { InlineCopyButton } from './shared/InlineCopyButton';
 
 export interface HttpApiOAuthConnectPanelProps {
@@ -54,6 +55,16 @@ type PanelStatus =
   | 'error';
 
 const GENERIC_ERROR = 'OAuth connection failed. Check the configuration and try again.';
+const INCOMPLETE_RESPONSE_ERROR = 'OAuth provider returned an incomplete response. Try again.';
+const BLOCKED_POPUP_ERROR = 'Your browser blocked the OAuth popup. Allow popups and try again.';
+
+function safeResponseMessage(message: string | null | undefined, fallback: string): string {
+  return typeof message === 'string' && message.trim() ? message.trim() : fallback;
+}
+
+function hasText(value: string | null | undefined): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
 
 function supportedFlow(value: string): HttpApiOAuthFlow | null {
   if (value === 'device_code' || value === 'urn:ietf:params:oauth:grant-type:device_code') {
@@ -89,6 +100,7 @@ export function HttpApiOAuthConnectPanel({
   const timerRef = useRef<number | null>(null);
   const generationRef = useRef(0);
   const lastConfigRef = useRef(value);
+  const [toasts, toast] = useToast();
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -169,8 +181,20 @@ export function HttpApiOAuthConnectPanel({
   const finish = (
     response: HttpApiOAuthStartResponse | HttpApiOAuthPollResponse,
     generation: number,
+    popup?: Window | null,
+    options?: { requireStartPayload?: boolean },
   ) => {
     if (generation !== generationRef.current) return;
+    if (!hasText(response.session_id)) {
+      popup?.close();
+      clearTimer();
+      setStatus('error');
+      setMessage(INCOMPLETE_RESPONSE_ERROR);
+      setDeviceCode(null);
+      setDeviceUrl(null);
+      toast.error(INCOMPLETE_RESPONSE_ERROR);
+      return;
+    }
     if (response.status === 'connected') {
       clearTimer();
       setStatus('connected');
@@ -179,13 +203,35 @@ export function HttpApiOAuthConnectPanel({
       return;
     }
     if (response.status === 'expired' || response.status === 'failed') {
-      clearTimer();
-      setStatus(response.status === 'expired' ? 'expired' : 'error');
-      setMessage(
+      const errorMessage =
         response.status === 'expired'
           ? 'This OAuth session expired. Reconnect to try again.'
-          : GENERIC_ERROR,
-      );
+          : safeResponseMessage(response.message, GENERIC_ERROR);
+      popup?.close();
+      clearTimer();
+      setStatus('error');
+      setMessage(errorMessage);
+      setDeviceCode(null);
+      setDeviceUrl(null);
+      toast.error(errorMessage);
+      return;
+    }
+    if (
+      (options?.requireStartPayload === true &&
+        value.oauth_flow === 'authorization_code_pkce' &&
+        !hasText(response.authorization_url)) ||
+      (value.oauth_flow === 'device_code' &&
+        !hasText(response.verification_uri) &&
+        !hasText(response.verification_uri_complete) &&
+        !hasText(response.user_code))
+    ) {
+      popup?.close();
+      clearTimer();
+      setStatus('error');
+      setMessage(INCOMPLETE_RESPONSE_ERROR);
+      setDeviceCode(null);
+      setDeviceUrl(null);
+      toast.error(INCOMPLETE_RESPONSE_ERROR);
       return;
     }
     setStatus('pending');
@@ -205,6 +251,9 @@ export function HttpApiOAuthConnectPanel({
         clearTimer();
         setStatus('error');
         setMessage(GENERIC_ERROR);
+        setDeviceCode(null);
+        setDeviceUrl(null);
+        toast.error(GENERIC_ERROR);
       }
     }
   };
@@ -218,6 +267,8 @@ export function HttpApiOAuthConnectPanel({
     }
     setStatus('connecting');
     setMessage('Starting OAuth connection…');
+    setDeviceCode(null);
+    setDeviceUrl(null);
     try {
       const response = await api.startHttpApiOAuth({
         connection_config: value,
@@ -226,7 +277,10 @@ export function HttpApiOAuthConnectPanel({
       if (response.authorization_url) {
         if (!popup) {
           setStatus('error');
-          setMessage('Your browser blocked the OAuth popup. Allow popups and try again.');
+          setMessage(BLOCKED_POPUP_ERROR);
+          setDeviceCode(null);
+          setDeviceUrl(null);
+          toast.error(BLOCKED_POPUP_ERROR);
           return;
         }
         popup.location.href = response.authorization_url;
@@ -236,11 +290,14 @@ export function HttpApiOAuthConnectPanel({
         setDeviceUrl(verificationUrl ?? null);
         if (verificationUrl) window.open(verificationUrl, '_blank', 'noopener,noreferrer');
       }
-      finish(response, generation);
+      finish(response, generation, popup, { requireStartPayload: true });
     } catch {
       popup?.close();
       setStatus('error');
       setMessage(GENERIC_ERROR);
+      setDeviceCode(null);
+      setDeviceUrl(null);
+      toast.error(GENERIC_ERROR);
     }
   };
 
@@ -417,7 +474,9 @@ export function HttpApiOAuthConnectPanel({
       )}
       <div className="http-api-oauth-status-row">
         {(message || hasSavedCredential) && (
-          <p role="status">{message || 'Connected. Save the tool to keep this credential.'}</p>
+          <p role={status === 'error' ? 'alert' : 'status'}>
+            {message || 'Connected. Save the tool to keep this credential.'}
+          </p>
         )}
         <button
           type="button"
@@ -428,6 +487,7 @@ export function HttpApiOAuthConnectPanel({
           {status === 'connected' || hasSavedCredential ? 'Reconnect' : 'Connect'}
         </button>
       </div>
+      <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
     </section>
   );
 }
