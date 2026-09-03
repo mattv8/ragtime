@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { expectModernScopedSelectors, getRuleBody } from '@/testHelpers/cssRuleUtils';
 
 const cssPath = join(cwd(), 'src/styles/workbench-chat.css');
+const chatCssPath = join(cwd(), 'src/styles/chat.css');
 const workbenchCssPath = join(cwd(), 'src/styles/workbench.css');
 const responsiveCssPath = join(cwd(), 'src/styles/responsive.css');
 const adminCssPath = join(cwd(), 'src/styles/workbench-admin.css');
@@ -23,6 +24,7 @@ function read(filePath: string): string {
 describe('Chat workbench surface contract', () => {
   it('defines token-driven chat workbench surfaces and responsive states', () => {
     const css = read(cssPath);
+    const chatCss = read(chatCssPath);
     const workbenchCss = read(workbenchCssPath);
     const responsiveCss = read(responsiveCssPath);
     const responsiveMax768 = getRuleBody(responsiveCss, '@media (max-width: 768px)');
@@ -131,8 +133,30 @@ describe('Chat workbench surface contract', () => {
       /\[data-theme-pack='modern'\]\s+\.reasoning-block\s*\{[\s\S]*background:\s*var\(--color-widget\);[\s\S]*border-radius:\s*var\(--workbench-control-radius\);/,
     );
     expect(css).toMatch(
-      /\[data-theme-pack='modern'\]\s+\.live-data-refresh-btn\s+\.theme-chrome-icon,[\s\S]*transform:\s*translateY\(1px\);/,
+      /\[data-theme-pack='modern'\]\s+\.live-data-refresh-btn\s+\.theme-chrome-icon\s*\{[\s\S]*transform:\s*translateY\(1px\);/,
     );
+    // The animated loading spinner rotates via `transform`, so a competing static
+    // `transform` on the same element (the old `svg` nudge) silently killed the spin
+    // in the Modern theme. Guard against reintroducing a transform on the spinner and
+    // require the alignment nudge to come from `top` instead, in both scopes.
+    expect(css).not.toMatch(
+      /\[data-theme-pack='modern'\]\s+\.live-data-refresh-btn\s+svg\s*(?:,|\{)/,
+    );
+    expect(chatCss).not.toMatch(
+      /\.viz-version-anchor\s+\.live-data-refresh-btn\s+svg\s*(?:,|\{)/,
+    );
+    const modernSpinnerRule = getRuleBody(
+      css,
+      "[data-theme-pack='modern'] .live-data-refresh-btn .userspace-icon-spin",
+    );
+    expect(modernSpinnerRule).toMatch(/top:\s*1px;/);
+    expect(modernSpinnerRule).not.toMatch(/transform:/);
+    const anchorSpinnerRule = getRuleBody(
+      chatCss,
+      '.viz-version-anchor .live-data-refresh-btn .userspace-icon-spin',
+    );
+    expect(anchorSpinnerRule).toMatch(/top:\s*1px;/);
+    expect(anchorSpinnerRule).not.toMatch(/transform:/);
     expect(css).toMatch(/\.datatable-container\s*\{[\s\S]*background:\s*var\(--color-editor\);/);
     expect(css).toMatch(/\.chat-panel-embedded\s*\{[\s\S]*border-radius:\s*0;/);
     expect(css).toMatch(/\.chat-panel-shared\s*\{[\s\S]*width:\s*100%;/);

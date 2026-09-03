@@ -1818,10 +1818,16 @@ textarea.chat-header-title-input {
     background var(--transition-fast);
 }
 
-.viz-version-anchor .live-data-refresh-btn .theme-chrome-icon,
-.viz-version-anchor .live-data-refresh-btn svg,
-.viz-version-anchor .live-data-refresh-btn .mini-loading-spinner {
+.viz-version-anchor .live-data-refresh-btn .theme-chrome-icon {
   transform: translateY(1px);
+}
+
+/* The loading spinner animates `transform: rotate(...)`, so it must NOT receive a
+   static `transform` nudge (that overrides the keyframe and kills the spin). Offset
+   it with `top` instead to keep it optically aligned with the static refresh icon. */
+.viz-version-anchor .live-data-refresh-btn .userspace-icon-spin {
+  position: relative;
+  top: 1px;
 }
 
 .viz-version-anchor .live-data-refresh-btn:hover:not(:disabled),

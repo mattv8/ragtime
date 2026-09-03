@@ -649,10 +649,14 @@
   line-height: 1;
 }
 
-[data-theme-pack='modern'] .live-data-refresh-btn .theme-chrome-icon,
-[data-theme-pack='modern'] .live-data-refresh-btn svg,
-[data-theme-pack='modern'] .live-data-refresh-btn .mini-loading-spinner {
+[data-theme-pack='modern'] .live-data-refresh-btn .theme-chrome-icon {
   transform: translateY(1px);
+}
+
+/* Spinner rotates via `transform`; nudge with `top` so the animation is preserved. */
+[data-theme-pack='modern'] .live-data-refresh-btn .userspace-icon-spin {
+  position: relative;
+  top: 1px;
 }
 
 [data-theme-pack='modern'] .visualization-export-menu,
