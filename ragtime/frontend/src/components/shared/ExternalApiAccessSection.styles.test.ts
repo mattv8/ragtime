@@ -30,8 +30,11 @@ describe('ExternalApiAccessSection Styles', () => {
   });
 
   const countRules = (css: string, selector: string): number =>
-    (css.match(new RegExp(`(^|\\n)${selector.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\s*\\{`, 'g')) ?? [])
-      .length;
+    (
+      css.match(
+        new RegExp(`(^|\\n)${selector.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\s*\\{`, 'g'),
+      ) ?? []
+    ).length;
 
   const expectDeclarations = (body: string, declarations: string[]): void => {
     declarations.forEach((declaration) => {
@@ -151,7 +154,10 @@ describe('ExternalApiAccessSection Styles', () => {
 
   describe('modern modal control geometry', () => {
     it('keeps equal credential columns and scoped shrinkable field controls', () => {
-      const credentialFieldsRule = getRuleBody(componentsCss, '.userspace-external-api-credential-fields');
+      const credentialFieldsRule = getRuleBody(
+        componentsCss,
+        '.userspace-external-api-credential-fields',
+      );
       const fieldShrinkRule = getRuleBody(
         workbenchAdminCss,
         `${modernModalScope} .userspace-external-api-credential-fields > .userspace-external-api-field`,
@@ -182,7 +188,10 @@ describe('ExternalApiAccessSection Styles', () => {
         workbenchAdminCss,
         `${modernModalScope} :is(.userspace-external-api-create-actions, .userspace-external-api-row-actions) > .btn`,
       );
-      const rowRule = getRuleBody(workbenchAdminCss, `${modernModalScope} .userspace-external-api-row`);
+      const rowRule = getRuleBody(
+        workbenchAdminCss,
+        `${modernModalScope} .userspace-external-api-row`,
+      );
       const rowHeaderRule = getRuleBody(
         workbenchAdminCss,
         `${modernModalScope} .userspace-external-api-row-header`,
@@ -245,7 +254,9 @@ describe('ExternalApiAccessSection Styles', () => {
         'padding: var(--space-sm)',
         'background: transparent',
       ]);
-      expect(componentsCss).not.toContain('.userspace-external-api-credential-row + .userspace-external-api-credential-row');
+      expect(componentsCss).not.toContain(
+        '.userspace-external-api-credential-row + .userspace-external-api-credential-row',
+      );
       expectDeclarations(rowMainRule, ['flex: 1']);
       expectDeclarations(credentialActionsRule, [
         'display: flex',

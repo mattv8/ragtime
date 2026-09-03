@@ -545,7 +545,11 @@ export function ExternalApiAccessSection({ workspaceId }: ExternalApiAccessSecti
                     <span
                       className={`userspace-external-api-status${credential.revoked_at ? ' is-revoked' : ''}`}
                     >
-                      {credential.revoked_at ? 'Revoked' : credential.enabled ? 'Enabled' : 'Disabled'}
+                      {credential.revoked_at
+                        ? 'Revoked'
+                        : credential.enabled
+                          ? 'Enabled'
+                          : 'Disabled'}
                     </span>
                   </div>
                   <div className="userspace-external-api-credential-meta">

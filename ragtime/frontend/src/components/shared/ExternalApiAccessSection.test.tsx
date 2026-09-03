@@ -146,13 +146,17 @@ describe('ExternalApiAccessSection', () => {
     await user.click(endpointCheckbox);
     expect(document.querySelector('#workspace-external-api-credential-details')).toBeTruthy();
     expect(endpointArticle?.classList.contains('is-credential-selected')).toBe(true);
-    expect(endpointCheckbox.closest('label')?.classList.contains('userspace-external-api-checkbox-row')).toBe(true);
+    expect(
+      endpointCheckbox.closest('label')?.classList.contains('userspace-external-api-checkbox-row'),
+    ).toBe(true);
     expect(
       endpointCheckbox
         .closest('label')
         ?.classList.contains('userspace-external-api-endpoint-selection-control'),
     ).toBe(true);
-    expect(within(endpointsSection as HTMLElement).getByRole('heading', { name: 'Create credential' })).toBeTruthy();
+    expect(
+      within(endpointsSection as HTMLElement).getByRole('heading', { name: 'Create credential' }),
+    ).toBeTruthy();
 
     const credentialLabelInput = screen.getByLabelText(/credential label/i);
     const expiryInput = screen.getByLabelText(/expiry \(optional\)/i);
@@ -354,13 +358,17 @@ describe('ExternalApiAccessSection', () => {
     );
 
     const credentialsRegion = await screen.findByRole('region', { name: /service credentials/i });
-    const credentialList = credentialsRegion.querySelector('.userspace-external-api-credential-list');
+    const credentialList = credentialsRegion.querySelector(
+      '.userspace-external-api-credential-list',
+    );
     expect(credentialList).toBeTruthy();
     expect(credentialList?.classList.contains('userspace-external-api-list')).toBe(true);
 
     const activeCredential = credentialsRegion.querySelector('[data-credential-id="cred-1"]');
     expect(activeCredential).toBeTruthy();
-    expect(activeCredential?.classList.contains('userspace-external-api-credential-row')).toBe(true);
+    expect(activeCredential?.classList.contains('userspace-external-api-credential-row')).toBe(
+      true,
+    );
 
     const activeHeader = activeCredential?.querySelector('.userspace-external-api-row-header');
     const activeStatus = activeHeader?.querySelector('.userspace-external-api-status');
@@ -372,8 +380,12 @@ describe('ExternalApiAccessSection', () => {
     );
     expect(activeActions).toBeTruthy();
     expect(activeActions?.querySelector('.userspace-external-api-status')).toBeNull();
-    expect(within(activeActions as HTMLElement).getByRole('button', { name: /rotate credential/i })).toBeTruthy();
-    expect(within(activeActions as HTMLElement).getByRole('button', { name: /revoke credential/i })).toBeTruthy();
+    expect(
+      within(activeActions as HTMLElement).getByRole('button', { name: /rotate credential/i }),
+    ).toBeTruthy();
+    expect(
+      within(activeActions as HTMLElement).getByRole('button', { name: /revoke credential/i }),
+    ).toBeTruthy();
     expect(
       within(activeActions as HTMLElement).queryByRole('button', { name: /delete credential/i }),
     ).toBeNull();
@@ -402,13 +414,17 @@ describe('ExternalApiAccessSection', () => {
     const endpointArticle = container.querySelector(
       '#workspace-external-api-endpoints .userspace-external-api-row',
     );
-    expect(endpointArticle?.classList.contains('userspace-external-api-credential-row')).toBe(false);
+    expect(endpointArticle?.classList.contains('userspace-external-api-credential-row')).toBe(
+      false,
+    );
     const endpointHeader = endpointArticle?.querySelector('.userspace-external-api-row-header');
     expect(endpointHeader?.querySelector('.userspace-external-api-status')?.textContent).toContain(
       'Published',
     );
     expect(
-      endpointArticle?.querySelector('.userspace-external-api-row-actions .userspace-external-api-status'),
+      endpointArticle?.querySelector(
+        '.userspace-external-api-row-actions .userspace-external-api-status',
+      ),
     ).toBeNull();
   });
 

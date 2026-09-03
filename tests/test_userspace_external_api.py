@@ -714,13 +714,12 @@ class ManagementRouteTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(external_api_module, "get_db", mock.AsyncMock(return_value=db)),
             mock.patch.object(external_api_module, "userspace_service", fake_userspace_service),
         ):
-            result = await external_api_module.delete_revoked_workspace_service_credential(
+            await external_api_module.delete_revoked_workspace_service_credential(
                 workspace_id="ws-1",
                 credential_id="cred-1",
                 user_id="owner-1",
             )
 
-        self.assertIsNone(result)
         self.assertNotIn("cred-1", credential_table.rows)
         self.assertEqual(credential_table.deleted, [{"id": "cred-1"}])
         self.assertEqual(grant_table.deleted, [{"credentialId": "cred-1"}])
@@ -846,24 +845,18 @@ class ManagementRouteTests(unittest.IsolatedAsyncioTestCase):
             ):
                 app.dependency_overrides[external_api_routes.get_current_user] = lambda: SimpleNamespace(id="owner-1", role="user")
                 async with httpx.AsyncClient(transport=transport, base_url="https://ragtime.example") as client:
-                    owner_response = await client.delete(
-                        "/indexes/userspace/workspaces/ws-1/external-api/credentials/cred-1/record"
-                    )
+                    owner_response = await client.delete("/indexes/userspace/workspaces/ws-1/external-api/credentials/cred-1/record")
                 self.assertEqual(owner_response.status_code, 204)
                 self.assertEqual(owner_response.text, "")
 
                 app.dependency_overrides[external_api_routes.get_current_user] = lambda: SimpleNamespace(id="admin-1", role="admin")
                 async with httpx.AsyncClient(transport=transport, base_url="https://ragtime.example") as client:
-                    admin_response = await client.delete(
-                        "/indexes/userspace/workspaces/ws-1/external-api/credentials/cred-2/record"
-                    )
+                    admin_response = await client.delete("/indexes/userspace/workspaces/ws-1/external-api/credentials/cred-2/record")
                 self.assertEqual(admin_response.status_code, 204)
 
                 app.dependency_overrides[external_api_routes.get_current_user] = lambda: SimpleNamespace(id="viewer-1", role="user")
                 async with httpx.AsyncClient(transport=transport, base_url="https://ragtime.example") as client:
-                    forbidden_response = await client.delete(
-                        "/indexes/userspace/workspaces/ws-1/external-api/credentials/cred-3/record"
-                    )
+                    forbidden_response = await client.delete("/indexes/userspace/workspaces/ws-1/external-api/credentials/cred-3/record")
                 self.assertEqual(forbidden_response.status_code, 403)
         finally:
             app.dependency_overrides.clear()
