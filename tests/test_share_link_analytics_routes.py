@@ -190,6 +190,62 @@ class PublicShareAnalyticsRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ShareLinkAnalyticsSseRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_conversation_share_link_events_use_external_base_url(self) -> None:
+        async def list_links(
+            conversation_id: str,
+            user_id: str,
+            *,
+            is_admin: bool,
+            base_url: str | None = None,
+        ) -> ConversationShareLinkListResponse:
+            prefix = base_url or ""
+            return ConversationShareLinkListResponse(
+                conversation_id=conversation_id,
+                owner_username="alice",
+                links=[
+                    ConversationShareLinkStatus(
+                        id="conv-share-1",
+                        conversation_id=conversation_id,
+                        has_share_link=True,
+                        owner_username="alice",
+                        share_token="token-123",
+                        share_url=f"{prefix}/alice/shared-chat",
+                        anonymous_share_url=f"{prefix}/shared/token-123",
+                    )
+                ],
+            )
+
+        list_conversation_share_links = mock.AsyncMock(side_effect=list_links)
+        with (
+            mock.patch.object(settings, "external_base_url", "https://ragtime.hammerton.com"),
+            mock.patch.object(
+                indexer_routes_module.userspace_service,
+                "list_conversation_share_links",
+                list_conversation_share_links,
+            ),
+        ):
+            response = await indexer_routes_module.stream_conversation_share_link_events(
+                "conversation-1",
+                _DisconnectingRequest(
+                    [False],
+                    "/indexes/conversations/conversation-1/share-links/events",
+                ),
+                user=SimpleNamespace(id="user-1", role="editor"),
+            )
+            chunk = (await _read_sse_chunks(response, 1))[0]
+
+        event_payload = json.loads(chunk.split("data: ", 1)[1])
+        self.assertEqual(
+            event_payload["links"][0]["anonymous_share_url"],
+            "https://ragtime.hammerton.com/shared/token-123",
+        )
+        list_conversation_share_links.assert_awaited_once_with(
+            "conversation-1",
+            "user-1",
+            is_admin=False,
+            base_url="https://ragtime.hammerton.com",
+        )
+
     async def test_workspace_share_link_events_use_external_base_url(self) -> None:
         payload = UserSpaceWorkspaceShareLinkListResponse(
             workspace_id="workspace-1",

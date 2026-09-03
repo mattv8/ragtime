@@ -13244,10 +13244,12 @@ async def stream_conversation_share_link_events(
     request: Request,
     user: User = Depends(get_current_user),
 ):
+    base_url = get_browser_matched_origin(request)
     initial_payload = await userspace_service.list_conversation_share_links(
         conversation_id,
         user.id,
         is_admin=(user.role == "admin"),
+        base_url=base_url,
     )
 
     async def event_stream() -> AsyncIterator[str]:
@@ -13263,6 +13265,7 @@ async def stream_conversation_share_link_events(
                         conversation_id,
                         user.id,
                         is_admin=(user.role == "admin"),
+                        base_url=base_url,
                     )
                 else:
                     first_iteration = False
