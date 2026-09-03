@@ -2907,27 +2907,39 @@ textarea.chat-header-title-input {
 }
 .tool-call:hover,
 .tool-call:has(.tool-call-details) {
-  border-color: var(--color-border);
   background: var(--color-surface);
+}
+.tool-call:hover:not(:has(.tool-call-details)) {
+  border-color: transparent;
+}
+.tool-call:has(.tool-call-details) {
+  border-color: var(--color-border);
 }
 .tool-call-running {
   border-color: transparent;
 }
-.tool-call-running:hover,
+.tool-call-running:hover:not(:has(.tool-call-details)) {
+  border-color: transparent;
+}
 .tool-call-running:has(.tool-call-details) {
   border-color: var(--color-primary-border);
 }
 .tool-call-complete {
   border-color: transparent;
 }
-.tool-call-complete:hover {
-  border-color: var(--color-success-border);
+.tool-call-complete:hover:not(:has(.tool-call-details)) {
+  border-color: transparent;
+}
+.tool-call-complete:has(.tool-call-details) {
+  border-color: var(--color-border);
 }
 .tool-call-failed {
   border-color: transparent;
   background: transparent;
 }
-.tool-call-failed:hover,
+.tool-call-failed:hover:not(:has(.tool-call-details)) {
+  border-color: transparent;
+}
 .tool-call-failed:has(.tool-call-details) {
   border-color: var(--color-error);
   background: color-mix(in srgb, var(--color-error) 5%, var(--color-surface-primary));
