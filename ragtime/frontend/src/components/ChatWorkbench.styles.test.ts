@@ -142,9 +142,7 @@ describe('Chat workbench surface contract', () => {
     expect(css).not.toMatch(
       /\[data-theme-pack='modern'\]\s+\.live-data-refresh-btn\s+svg\s*(?:,|\{)/,
     );
-    expect(chatCss).not.toMatch(
-      /\.viz-version-anchor\s+\.live-data-refresh-btn\s+svg\s*(?:,|\{)/,
-    );
+    expect(chatCss).not.toMatch(/\.viz-version-anchor\s+\.live-data-refresh-btn\s+svg\s*(?:,|\{)/);
     const modernSpinnerRule = getRuleBody(
       css,
       "[data-theme-pack='modern'] .live-data-refresh-btn .userspace-icon-spin",

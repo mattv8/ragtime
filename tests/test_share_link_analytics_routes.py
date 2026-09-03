@@ -7,7 +7,7 @@ import unittest
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 from fastapi import HTTPException
@@ -21,6 +21,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 inserted_fake_rag_prompts = install_fake_rag_prompts()
+
+from prisma.models import User
 
 import ragtime.indexer.routes as indexer_routes_module
 import ragtime.main as main_module
@@ -230,7 +232,7 @@ class ShareLinkAnalyticsSseRouteTests(unittest.IsolatedAsyncioTestCase):
                     [False],
                     "/indexes/conversations/conversation-1/share-links/events",
                 ),
-                user=SimpleNamespace(id="user-1", role="editor"),
+                user=cast(User, SimpleNamespace(id="user-1", role="editor")),
             )
             chunk = (await _read_sse_chunks(response, 1))[0]
 

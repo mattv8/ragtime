@@ -944,6 +944,49 @@ describe('ToolCallDisplay truncated subagent recovery', () => {
 });
 
 describe('ChatPanel streaming subagent placement', () => {
+  it('renders one wrapped typing indicator before streaming content arrives', async () => {
+    const conversation = makeConversation('pending-1', '', {
+      title: 'Pending conversation',
+      workspace_id: 'ws-1',
+      messages: [],
+      active_task_id: 'task-parent-1',
+    });
+    let releaseStream: (() => void) | null = null;
+    apiMock.streamChatTask.mockImplementation(() =>
+      (async function* () {
+        await new Promise<void>((resolve) => {
+          releaseStream = resolve;
+        });
+        yield { type: 'done' };
+      })(),
+    );
+
+    const { container, unmount } = renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={makeWorkspaceChatState(conversation)}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('.chat-typing-indicator')).toHaveLength(1);
+    });
+
+    expect(
+      container.querySelector('.chat-branch-wrapper-assistant .chat-typing-indicator'),
+    ).not.toBeNull();
+
+    const release = releaseStream as unknown as (() => void) | null;
+    unmount();
+    if (typeof release === 'function') {
+      release();
+    }
+  });
+
   it('keeps the active subagent run at the spawn position, skips parent handoff cards, and renders parent final content after it', async () => {
     const parentConversation = makeConversation('parent-1', '', {
       title: 'Parent conversation',

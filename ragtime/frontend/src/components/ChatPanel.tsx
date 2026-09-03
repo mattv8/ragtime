@@ -18777,19 +18777,6 @@ export function ChatPanel({
                           </div>
                         </div>
                       )}
-
-                      {/* Loading indicator - only when nothing is streaming yet */}
-                      {isStreamingForActiveConversation && consolidatedSegments.length === 0 && (
-                        <div className="chat-message chat-message-assistant">
-                          <div className="chat-message-content">
-                            <div className="chat-typing-indicator">
-                              <span></span>
-                              <span></span>
-                              <span></span>
-                            </div>
-                          </div>
-                        </div>
-                      )}
                     </>
                   )}
 
