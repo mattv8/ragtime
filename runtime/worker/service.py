@@ -3220,7 +3220,7 @@ class WorkerService:
             return str(getattr(result, "text", "") or "")
 
         failure_name = getattr(failure, "name", None) or str(failure)
-        if failure_name == "UNSUPPORTED":
+        if failure_name in ("UNSUPPORTED", "NEEDS_OCR"):
             return ""
 
         detail = str(getattr(result, "detail", "") or "").strip()

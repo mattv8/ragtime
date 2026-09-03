@@ -50,6 +50,9 @@ class DocumentConversionTests(unittest.TestCase):
         class UnsupportedError(ConvertError):
             pass
 
+        class NeedsOcrError(ConvertError):
+            pass
+
         class MalformedError(ConvertError):
             pass
 
@@ -65,6 +68,7 @@ class DocumentConversionTests(unittest.TestCase):
         module = types.SimpleNamespace(
             ConvertError=ConvertError,
             UnsupportedError=UnsupportedError,
+            NeedsOcrError=NeedsOcrError,
             MalformedError=MalformedError,
             EncryptedError=EncryptedError,
             ResourceLimitError=ResourceLimitError,
@@ -117,6 +121,7 @@ class DocumentConversionTests(unittest.TestCase):
 
         cases = [
             ("UnsupportedError", DocumentConversionFailure.UNSUPPORTED),
+            ("NeedsOcrError", DocumentConversionFailure.NEEDS_OCR),
             ("MalformedError", DocumentConversionFailure.MALFORMED),
             ("EncryptedError", DocumentConversionFailure.ENCRYPTED),
             ("ResourceLimitError", DocumentConversionFailure.RESOURCE_LIMIT),

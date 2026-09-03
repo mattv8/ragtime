@@ -460,8 +460,8 @@ async def _extract_image_vision_ocr(
     vision_base_url: str,
     vision_model: str,
     provider: str = "ollama",
-    api_key: Optional[str] = None,
-    source_format: Optional[str] = None,
+    api_key: str | None = None,
+    source_format: str | None = None,
     timeout: float = 60.0,
 ) -> str:
     """

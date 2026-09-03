@@ -52,7 +52,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     python /tmp/install_deps_from_pyproject.py /ragtime/pyproject.toml app /tmp/requirements.app.txt && \
     python /tmp/install_deps_from_pyproject.py /ragtime/pyproject.toml test /tmp/requirements.test.txt && \
     pip install --no-cache-dir -r /tmp/requirements.app.txt -r /tmp/requirements.test.txt && \
-    python -c "import chonkie, pandas"
+    python -c "import anydoc, chonkie"
 
 # Copy frontend package.json for npm install layer caching
 COPY ragtime/frontend/package.json ragtime/frontend/package-lock.json* /ragtime/ragtime/frontend/

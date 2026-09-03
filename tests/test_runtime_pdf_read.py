@@ -27,6 +27,7 @@ def _patch_async_client(transport: httpx.MockTransport):
 
 class _FakeConversionFailure(Enum):
     UNSUPPORTED = "unsupported"
+    NEEDS_OCR = "needs_ocr"
     OTHER = "other"
 
 
@@ -163,6 +164,23 @@ class RuntimePdfReadTests(unittest.IsolatedAsyncioTestCase):
         transport = httpx.MockTransport(handler)
         with _patch_async_client(transport), _patch_document_converter(failure=_FakeConversionFailure.UNSUPPORTED):
             result = await service.read_pdf(RuntimePdfReadRequest(url="https://example.com/image-only.pdf"))
+
+        self.assertEqual(result.status, "empty")
+        self.assertEqual(result.failure_mode, "empty_pdf_text")
+
+    async def test_returns_empty_when_document_converter_reports_needs_ocr(self):
+        service = WorkerService()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/pdf"},
+                content=b"%PDF-1.4\nimage only pdf bytes",
+            )
+
+        transport = httpx.MockTransport(handler)
+        with _patch_async_client(transport), _patch_document_converter(failure=_FakeConversionFailure.NEEDS_OCR):
+            result = await service.read_pdf(RuntimePdfReadRequest(url="https://example.com/scanned.pdf"))
 
         self.assertEqual(result.status, "empty")
         self.assertEqual(result.failure_mode, "empty_pdf_text")

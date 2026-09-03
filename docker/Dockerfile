@@ -107,7 +107,7 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
     else \
         pip install -r /tmp/requirements.app.txt; \
     fi && \
-    python -c "import anydoc, chonkie, pandas; assert callable(anydoc.to_markdown_bytes); assert anydoc.format_from_extension('csv') is not None"
+    python -c "import anydoc, chonkie; assert callable(anydoc.to_markdown_bytes); assert anydoc.format_from_extension('csv') is not None"
 
 # =============================================================================
 # Stage 3: Python CI base

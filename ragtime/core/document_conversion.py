@@ -8,6 +8,7 @@ from enum import Enum
 
 class DocumentConversionFailure(str, Enum):
     UNSUPPORTED = "unsupported"
+    NEEDS_OCR = "needs_ocr"
     MALFORMED = "malformed"
     ENCRYPTED = "encrypted"
     RESOURCE_LIMIT = "resource_limit"
@@ -57,6 +58,8 @@ def convert_document_bytes(content: bytes, suffix: str) -> DocumentConversionRes
         )
     except anydoc.UnsupportedError as exc:
         return DocumentConversionResult(text="", failure=DocumentConversionFailure.UNSUPPORTED, detail=str(exc))
+    except anydoc.NeedsOcrError as exc:
+        return DocumentConversionResult(text="", failure=DocumentConversionFailure.NEEDS_OCR, detail=str(exc))
     except anydoc.MalformedError as exc:
         return DocumentConversionResult(text="", failure=DocumentConversionFailure.MALFORMED, detail=str(exc))
     except anydoc.EncryptedError as exc:
