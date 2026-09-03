@@ -44,18 +44,19 @@ cpu_baseline_preflight() {
     if [ "$arch" != "x86_64" ] && [ "$arch" != "amd64" ]; then
         return 0
     fi
-    if [ ! -r /proc/cpuinfo ]; then
+    local cpuinfo="${RAGTIME_CPUINFO_PATH:-/proc/cpuinfo}"
+    if [ ! -r "$cpuinfo" ]; then
         return 0
     fi
 
     local flags
-    flags="$(awk -F': ' '/^flags[[:space:]]*:/ {print $2; exit}' /proc/cpuinfo 2>/dev/null || true)"
+    flags="$(awk -F': ' '/^flags[[:space:]]*:/ {print $2; exit}' "$cpuinfo" 2>/dev/null || true)"
     if [ -z "$flags" ]; then
         return 0
     fi
 
-    # /proc/cpuinfo reports SSE4.1/SSE4.2 as `sse4_1`/`sse4_2`.
-    local required="sse3 ssse3 sse4_1 sse4_2 popcnt"
+    # Linux reports SSE3 as `pni` in /proc/cpuinfo; SSE4.1/SSE4.2 use `sse4_1`/`sse4_2`.
+    local required="pni ssse3 sse4_1 sse4_2 popcnt"
     local missing=""
     local flag
     for flag in $required; do
@@ -83,6 +84,7 @@ cpu_baseline_preflight() {
     echo "wheels require SSE3, SSSE3, SSE4.1, SSE4.2, and POPCNT). Your host"
     echo "CPU does not advertise these flags, so the API will crash during"
     echo "startup with 'NumPy was built with baseline optimizations (X86_V2)'."
+    echo "(On Linux, SSE3 is reported as the 'pni' CPU flag.)"
     echo ""
     echo "Use the legacy image instead, e.g. in docker-compose.yml:"
     echo "  image: hub.docker.visnovsky.us/library/ragtime:legacy"

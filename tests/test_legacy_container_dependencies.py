@@ -1,6 +1,10 @@
 import importlib.util
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
@@ -77,13 +81,141 @@ class LegacyContainerDependencyTests(unittest.TestCase):
         self.assertIn("npm install -g @anthropic-ai/claude-code@2.1.186", production_stage)
         self.assertIn("claude --version", production_stage)
 
-    def test_entrypoint_has_x86_v2_cpu_baseline_preflight(self) -> None:
-        entrypoint = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+    def _entrypoint_text(self) -> str:
+        return (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+
+    def _extract_cpu_preflight_function(self) -> str:
+        lines = self._entrypoint_text().splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith("cpu_baseline_preflight()"))
+
+        brace_depth = 0
+        extracted: list[str] = []
+        for line in lines[start:]:
+            extracted.append(line)
+            brace_depth += line.count("{")
+            brace_depth -= line.count("}")
+            if brace_depth == 0:
+                return "\n".join(extracted) + "\n"
+
+        raise AssertionError("cpu_baseline_preflight function was not closed in docker/entrypoint.sh")
+
+    def _cpuinfo_fixture(self, flags: str) -> str:
+        return (
+            "processor\t: 0\n"
+            "vendor_id\t: GenuineIntel\n"
+            f"flags\t\t: {flags}\n"
+            "model name\t: Test CPU\n"
+            "\n"
+            "processor\t: 1\n"
+            "vendor_id\t: GenuineIntel\n"
+            f"flags\t\t: {flags}\n"
+            "model name\t: Test CPU\n"
+        )
+
+    def _run_cpu_preflight(
+        self,
+        flags: str,
+        *,
+        legacy_cpu: Optional[str] = None,
+        skip_preflight: Optional[str] = None,
+        arch: str = "x86_64",
+        write_cpuinfo: bool = True,
+    ) -> Tuple[int, str]:
+        wrapper = (
+            f"#!/bin/bash\nlog() {{ printf '%s\\n' \"$*\"; }}\nuname() {{ echo {arch}; }}\n{self._extract_cpu_preflight_function()}cpu_baseline_preflight\n"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            cpuinfo_path = tmpdir_path / "cpuinfo"
+            wrapper_path = tmpdir_path / "cpu_preflight.sh"
+            if write_cpuinfo:
+                cpuinfo_path.write_text(self._cpuinfo_fixture(flags), encoding="utf-8")
+            wrapper_path.write_text(wrapper, encoding="utf-8")
+
+            env = os.environ.copy()
+            env["RAGTIME_CPUINFO_PATH"] = str(cpuinfo_path)
+            for name, value in {
+                "RAGTIME_LEGACY_CPU": legacy_cpu,
+                "RAGTIME_SKIP_CPU_PREFLIGHT": skip_preflight,
+            }.items():
+                if value is None:
+                    env.pop(name, None)
+                else:
+                    env[name] = value
+
+            result = subprocess.run(
+                ["bash", str(wrapper_path)],
+                check=False,
+                cwd=ROOT,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            return result.returncode, result.stdout
+
+    def test_entrypoint_cpu_preflight_accepts_linux_pni_x86_v2_flags(self) -> None:
+        returncode, output = self._run_cpu_preflight(
+            "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 pni ssse3 sse4_1 sse4_2 popcnt avx avx2"
+        )
+
+        self.assertEqual(returncode, 0, output)
+        self.assertNotIn("missing", output.lower())
+
+    def test_entrypoint_cpu_preflight_reports_missing_pni_on_non_legacy_hosts(self) -> None:
+        returncode, output = self._run_cpu_preflight("fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2")
+
+        self.assertNotEqual(returncode, 0)
+        self.assertIn("pni", output)
+
+    def test_entrypoint_cpu_preflight_allows_missing_pni_on_legacy_hosts(self) -> None:
+        returncode, output = self._run_cpu_preflight(
+            "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2",
+            legacy_cpu="1",
+        )
+
+        self.assertEqual(returncode, 0, output)
+
+    def test_entrypoint_cpu_preflight_keeps_whole_token_matching_for_pni(self) -> None:
+        # Guards a future substring-matching rewrite; not the primary regression.
+        returncode, output = self._run_cpu_preflight(
+            "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ssse3 sse4_1 sse4_2 popcnt"
+        )
+
+        self.assertNotEqual(returncode, 0)
+        self.assertIn("pni", output)
+
+    def test_entrypoint_cpu_preflight_skip_flag_allows_incompatible_host(self) -> None:
+        returncode, output = self._run_cpu_preflight(
+            "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2",
+            skip_preflight="1",
+        )
+
+        self.assertEqual(returncode, 0, output)
+        self.assertIn("pni", output)
+
+    def test_entrypoint_cpu_preflight_skips_on_non_x86_arch(self) -> None:
+        returncode, output = self._run_cpu_preflight(
+            "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2",
+            arch="aarch64",
+        )
+
+        self.assertEqual(returncode, 0, output)
+        self.assertNotIn("missing", output.lower())
+
+    def test_entrypoint_cpu_preflight_skips_when_cpuinfo_unreadable(self) -> None:
+        returncode, output = self._run_cpu_preflight(
+            "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2",
+            write_cpuinfo=False,
+        )
+
+        self.assertEqual(returncode, 0, output)
+        self.assertNotIn("missing", output.lower())
+
+    def test_entrypoint_still_includes_legacy_image_guidance(self) -> None:
+        entrypoint = self._entrypoint_text()
         self.assertIn("cpu_baseline_preflight", entrypoint)
-        # The preflight must look for every flag implied by the x86_64-v2
-        # baseline so that NumPy 2.x wheels can't crash startup silently.
-        for flag in ("sse3", "ssse3", "sse4_1", "sse4_2", "popcnt"):
-            self.assertIn(flag, entrypoint)
         self.assertIn("RAGTIME_LEGACY_CPU", entrypoint)
         self.assertIn("ragtime:legacy", entrypoint)
 
