@@ -101,6 +101,7 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
     normalize_userspace_preview_sandbox_flags,
 )
+from ragtime.core.visualization_tools import VisualizationToolType
 from ragtime.http_api.models import HTTP_API_SECRET_FIELDS, redact_http_api_connection_config, sanitize_persisted_http_api_connection_config
 
 DEFAULT_USERSPACE_CODE_INDEX_MAX_CONCURRENCY = 1
@@ -3103,12 +3104,34 @@ class ClientClockContext(BaseModel):
         return normalized
 
 
+class UiThemeContext(BaseModel):
+    """Browser theme sample captured when the user submitted a turn.
+
+    Lets the agent tailor inline HTML components to the active color mode and
+    theme pack without being told the concrete token values (those are injected
+    into the component at render time).
+    """
+
+    mode: Literal["light", "dark"] = Field(description="Effective color mode in the browser")
+    pack: str = Field(default="default", max_length=32, description="Active theme pack id (default, modern, serif)")
+
+    @field_validator("pack")
+    @classmethod
+    def normalize_pack(cls, value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        return normalized or "default"
+
+
 class SendMessageRequest(BaseModel):
     """Request to send a message in a conversation."""
 
     message: str = Field(description="The message content to send")
     stream: bool = Field(default=False, description="Whether to stream the response")
     background: bool = Field(default=False, description="Whether to run in background mode")
+    ui_theme: UiThemeContext | None = Field(
+        default=None,
+        description="Browser theme (color mode + pack) so inline HTML components can match the UI",
+    )
     client_clock: ClientClockContext | None = Field(
         default=None,
         description="Optional browser clock sample for prompt-time awareness",
@@ -3199,7 +3222,9 @@ class VisualizationBranchSummary(BaseModel):
 class RefreshLiveVisualizationRequest(BaseModel):
     """Request to rerun a live component-backed chat visualization."""
 
-    tool_type: Literal["datatable", "chart"] = Field(description="Type of visualization to refresh: 'datatable' or 'chart'")
+    tool_type: VisualizationToolType = Field(
+        description="Type of visualization to refresh: 'datatable', 'chart', or 'html_component'",
+    )
     message_id: Optional[str] = Field(
         default=None,
         description="Stable identifier of the assistant message containing the visualization event.",
@@ -3212,6 +3237,24 @@ class RefreshLiveVisualizationRequest(BaseModel):
         ge=0,
         description="Zero-based index of the visualization tool event within the assistant message.",
     )
+
+
+class UpdateHtmlComponentRequest(BaseModel):
+    """Request to persist user-edited markup for an inline html component as a new version."""
+
+    message_id: Optional[str] = Field(
+        default=None,
+        description="Stable identifier of the assistant message containing the html component event.",
+    )
+    message_index: Optional[int] = Field(
+        default=None,
+        description="Zero-based assistant message index fallback for legacy messages.",
+    )
+    event_index: int = Field(
+        ge=0,
+        description="Zero-based index of the html component tool event within the assistant message.",
+    )
+    html: str = Field(min_length=1, description="Edited component markup (fragment or full document).")
 
 
 class ConversationExportTableData(BaseModel):

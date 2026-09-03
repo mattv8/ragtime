@@ -10,7 +10,11 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
 from ragtime.rag import components as rag_components
-from ragtime.rag.prompts import UI_VISUALIZATION_CHAT_PROMPT, UI_VISUALIZATION_COMMON_PROMPT
+from ragtime.rag.prompts import (
+    UI_VISUALIZATION_CHAT_PROMPT,
+    UI_VISUALIZATION_COMMON_PROMPT,
+    build_html_component_theme_prompt,
+)
 from ragtime.rag.tool_skills import ToolSkillBindingState
 from tests.test_tool_skill_shared import (
     FakeAction,
@@ -53,6 +57,17 @@ def _make_chart_tool() -> StructuredTool:
 
 def _make_datatable_tool() -> StructuredTool:
     return make_datatable_tool()
+
+
+def _make_html_component_tool() -> StructuredTool:
+    async def _create_html_component(title: str, html: str) -> str:
+        return f"{title}:{html}"
+
+    return make_tool(
+        "create_html_component",
+        description="Create a sandboxed HTML component.",
+        coroutine=_create_html_component,
+    )
 
 
 def _tool_by_name(tools: list[StructuredTool], name: str) -> StructuredTool:
@@ -1201,6 +1216,24 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(unique_line, UI_VISUALIZATION_COMMON_PROMPT)
         self.assertEqual(prompt.count(unique_line), 1)
 
+    def test_enabled_ui_prompt_with_loaded_html_component_tool_includes_html_line_exactly_once(self) -> None:
+        rag = self._make_rag()
+        prompt = rag._build_request_system_prompt(
+            is_ui=True,
+            mode="chat",
+            allowed_tool_config_ids=None,
+            runtime_tools=[_make_html_component_tool()],
+            hidden_tool_config_ids=[],
+            tool_skill_mode="enabled",
+            loaded_tool_skill_ids=["builtin:create_html_component"],
+            tool_skill_has_loadable=True,
+        )
+
+        html_line = "- **create_html_component** - Custom sandboxed HTML/JS components (maps, heatmaps, network graphs, gauges, custom layouts) rendered inline"
+        self.assertIn(html_line, UI_VISUALIZATION_COMMON_PROMPT)
+        self.assertEqual(prompt.count(html_line), 1)
+        self.assertEqual(prompt.count("### HTML Component Rules"), 1)
+
     async def test_enabled_ui_with_unloaded_visualization_tools_does_not_name_chart_or_datatable(self) -> None:
         rag = self._make_rag()
         executor = SimpleNamespace(tools=[_make_chart_tool(), _make_datatable_tool()])
@@ -1225,6 +1258,69 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("create_chart", context["prompt_additions"])
         self.assertNotIn("create_datatable", context["prompt_additions"])
         self.assertNotIn(UI_VISUALIZATION_CHAT_PROMPT.strip(), context["prompt_additions"])
+
+    def test_html_component_theme_prompt_is_succinct_and_theme_specific(self) -> None:
+        dark_modern = build_html_component_theme_prompt({"mode": "dark", "pack": "modern"})
+        self.assertIn("### HTML Component Theme", dark_modern)
+        self.assertIn("dark mode", dark_modern)
+        self.assertIn("Modern pack", dark_modern)
+        self.assertIn("--ragtime-", dark_modern)
+        self.assertLessEqual(len(dark_modern.splitlines()), 8)
+
+        light_serif = build_html_component_theme_prompt({"mode": "light", "pack": "serif"})
+        self.assertIn("light mode", light_serif)
+        self.assertIn("Serif pack", light_serif)
+        self.assertNotIn("Modern pack", light_serif)
+
+        self.assertIn("Default pack", build_html_component_theme_prompt({"mode": "light", "pack": "default"}))
+        self.assertEqual(build_html_component_theme_prompt({}), "")
+        self.assertEqual(build_html_component_theme_prompt({"mode": "sepia", "pack": "unknown"}), "")
+
+    async def _build_chat_context_with_html_tool(self, *, ui_theme_context: dict[str, str] | None) -> dict[str, Any]:
+        rag = self._make_rag()
+        executor = SimpleNamespace(tools=[_make_html_component_tool()])
+
+        with (
+            mock.patch.object(rag, "_apply_conversation_tool_overrides", new=mock.AsyncMock(return_value=list(executor.tools))),
+            mock.patch.object(rag, "_build_conversation_export_tool", return_value=None),
+            mock.patch.object(rag, "_build_chat_diagnostic_tools", return_value=[]),
+            mock.patch.object(rag, "_apply_mode_specific_tool_description_overrides", side_effect=lambda tools, **_kwargs: tools),
+            mock.patch.object(
+                rag,
+                "_resolve_request_tool_skill_bindings",
+                mock.AsyncMock(
+                    side_effect=lambda **kwargs: {
+                        "runtime_tools": list(kwargs["runtime_tools"]),
+                        "tool_skill_binding_state": None,
+                        "tool_skill_catalog": [],
+                        "tool_skill_hidden_ids": [],
+                        "tool_skill_has_loadable": False,
+                        "tool_skill_mode": "disabled",
+                        "tool_skill_loaded_ids": [],
+                    }
+                ),
+            ),
+        ):
+            return await rag._build_request_runtime_context(
+                is_ui=True,
+                executor=cast(Any, executor),
+                blocked_tool_names=None,
+                workspace_context=None,
+                add_chat_visualization_prompt=True,
+                conversation_id=None,
+                ui_theme_context=ui_theme_context,
+            )
+
+    async def test_chat_context_adds_theme_guidance_only_when_ui_theme_is_known(self) -> None:
+        themed = await self._build_chat_context_with_html_tool(ui_theme_context={"mode": "dark", "pack": "serif"})
+        self.assertIn("create_html_component", {tool.name for tool in themed["runtime_tools"]})
+        self.assertIn("### HTML Component Theme", themed["prompt_additions"])
+        self.assertIn("dark mode", themed["prompt_additions"])
+        self.assertIn("Serif pack", themed["prompt_additions"])
+        self.assertIn(UI_VISUALIZATION_CHAT_PROMPT.strip(), themed["prompt_additions"])
+
+        unthemed = await self._build_chat_context_with_html_tool(ui_theme_context=None)
+        self.assertNotIn("### HTML Component Theme", unthemed["prompt_additions"])
 
     async def test_userspace_prompt_with_unloaded_optional_runtime_tools_does_not_name_them(self) -> None:
         rag = self._make_rag()

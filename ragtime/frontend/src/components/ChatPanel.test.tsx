@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import userEvent from '@testing-library/user-event';
 // @ts-expect-error Vitest runs in Node, but the frontend tsconfig omits Node types.
 import { readFileSync } from 'node:fs';
@@ -56,6 +56,25 @@ const chatMessageNavigatorMock = vi.hoisted(() => ({
 }));
 
 vi.mock('@/api', () => ({ api: apiMock }));
+
+// Stub the sandboxed iframe component so ToolCallDisplay tests never exercise srcdoc/postMessage.
+vi.mock('./HtmlComponentDisplay', () => ({
+  HtmlComponentDisplay: ({
+    component,
+    descriptionNode,
+    anchor,
+  }: {
+    component: { title: string };
+    descriptionNode?: ReactNode;
+    anchor?: ReactNode;
+  }) => (
+    <div data-testid="html-component-stub">
+      <span>{component.title}</span>
+      {descriptionNode}
+      {anchor}
+    </div>
+  ),
+}));
 
 vi.mock('./ChatMessageNavigator', () => ({
   ChatMessageNavigator: ({
@@ -1926,5 +1945,102 @@ describe('ChatPanel resize and mobile sidebar integration', () => {
         document.getElementById('chat-mobile-sidebar-toggle')?.closest('.chat-sidebar'),
       ).toBeNull();
     });
+  });
+});
+
+describe('ToolCallDisplay create_html_component rendering', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  const validEnvelope = JSON.stringify({
+    __html_component__: true,
+    title: 'Shipments by origin',
+    html: '<!doctype html><html><head></head><body><div id="map"></div></body></html>',
+    data: {
+      columns: ['lat', 'lng', 'shipments'],
+      rows: [{ lat: 31.9, lng: -99.9, shipments: 412 }],
+      row_count: 1,
+    },
+    description: 'Shipments by origin state, last 30 days',
+    height: 480,
+    data_connection: null,
+  });
+
+  it('renders a valid envelope inline through HtmlComponentDisplay with export controls', () => {
+    const toolCall: ActiveToolCall = {
+      tool: 'create_html_component',
+      status: 'complete',
+      input: { title: 'Shipments by origin' },
+      output: validEnvelope,
+    };
+
+    const { container } = render(<ToolCallDisplay toolCall={toolCall} defaultExpanded />);
+
+    const wrapper = container.querySelector('.tool-call.tool-call-html-component');
+    expect(wrapper).not.toBeNull();
+    expect(wrapper?.classList.contains('tool-call-complete')).toBe(true);
+    const stub = screen.getByTestId('html-component-stub');
+    expect(stub.textContent).toContain('Shipments by origin');
+    expect(stub.textContent).toContain('Shipments by origin state, last 30 days');
+    expect(stub.querySelector('.chart-description')).toBeNull();
+    // Tabular `data` exposes the export menu inside the injected anchor.
+    expect(stub.querySelector('.viz-version-anchor')).not.toBeNull();
+    expect(container.querySelector('.tool-call-failed')).toBeNull();
+    expect(container.querySelector('.tool-call-retry-btn')).toBeNull();
+  });
+
+  it('hides the export menu when component data is not tabular', () => {
+    const toolCall: ActiveToolCall = {
+      tool: 'create_html_component',
+      status: 'complete',
+      output: JSON.stringify({
+        __html_component__: true,
+        title: 'Gauge',
+        html: '<html><body>gauge</body></html>',
+        data: { threshold: 42 },
+      }),
+    };
+
+    const { container } = render(<ToolCallDisplay toolCall={toolCall} defaultExpanded />);
+
+    expect(container.querySelector('.tool-call-html-component')).not.toBeNull();
+    expect(
+      screen.getByTestId('html-component-stub').querySelector('.viz-version-anchor'),
+    ).toBeNull();
+  });
+
+  it('marks malformed output as failed without offering the visualization retry button', () => {
+    const toolCall: ActiveToolCall = {
+      tool: 'create_html_component',
+      status: 'complete',
+      input: { title: 'Broken' },
+      output: JSON.stringify({ __html_component__: true, title: 'Broken', html: 42 }),
+    };
+
+    const { container } = render(
+      <ToolCallDisplay toolCall={toolCall} conversationId="conv-1" allowRerun defaultExpanded />,
+    );
+
+    expect(container.querySelector('.tool-call-html-component')).toBeNull();
+    expect(screen.queryByTestId('html-component-stub')).toBeNull();
+    expect(container.querySelector('.tool-call.tool-call-failed')).not.toBeNull();
+    expect(container.querySelector('.tool-call-error-icon')).not.toBeNull();
+    expect(container.querySelector('.tool-call-retry-btn')).toBeNull();
+  });
+
+  it('still offers the retry button for malformed chart output', () => {
+    const toolCall: ActiveToolCall = {
+      tool: 'create_chart',
+      status: 'complete',
+      output: JSON.stringify({ __chart__: true }),
+    };
+
+    const { container } = render(
+      <ToolCallDisplay toolCall={toolCall} conversationId="conv-1" allowRerun defaultExpanded />,
+    );
+
+    expect(container.querySelector('.tool-call.tool-call-failed')).not.toBeNull();
+    expect(container.querySelector('.tool-call-retry-btn')).not.toBeNull();
   });
 });

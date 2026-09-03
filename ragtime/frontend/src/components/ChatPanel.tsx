@@ -93,6 +93,7 @@ import type {
   RefreshLiveVisualizationResponse,
   SwitchVisualizationBranchResponse,
   VisualizationBranchSummary,
+  VisualizationToolType,
 } from '@/types';
 import {
   FileAttachment,
@@ -104,6 +105,7 @@ import {
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
 import { ChatMessageNavigator, type ChatMessageNavigationEntry } from './ChatMessageNavigator';
+import { HtmlComponentDisplay, type HtmlComponentData } from './HtmlComponentDisplay';
 import { calculateConversationContextUsage } from '@/utils/contextUsage';
 import {
   applyUserSpaceToolAvailabilityCap,
@@ -1279,7 +1281,11 @@ function getReasoningEventDurationSeconds(event: ReasoningEventLike): number | u
 }
 
 function isVisualizationToolName(toolName?: string): boolean {
-  return toolName === 'create_chart' || toolName === 'create_datatable';
+  return (
+    toolName === 'create_chart' ||
+    toolName === 'create_datatable' ||
+    toolName === 'create_html_component'
+  );
 }
 
 function isVisualizationToolCall(toolCall?: Pick<ActiveToolCall, 'tool'>): boolean {
@@ -1613,9 +1619,11 @@ interface DataTableData {
   data_connection?: VisualizationDataConnection;
 }
 
+// `html_component` follows the datatable rule: a component id plus a request payload
+// is enough for the backend to re-run the query and re-push `data` into the frame.
 function hasRefreshableVisualizationConnection(
   dataConnection: VisualizationDataConnection | undefined,
-  toolType: 'chart' | 'datatable',
+  toolType: VisualizationToolType,
 ): boolean {
   if (!dataConnection) return false;
   const componentId = String(
@@ -1681,6 +1689,18 @@ function parseDataTableData(output: string): DataTableData | null {
     }
   } catch {
     // Failed to parse JSON as datatable data
+  }
+  return null;
+}
+
+function parseHtmlComponentData(output: string): HtmlComponentData | null {
+  try {
+    const parsed = JSON.parse(output);
+    if (parsed && parsed.__html_component__ === true && typeof parsed.html === 'string') {
+      return parsed as HtmlComponentData;
+    }
+  } catch {
+    // Failed to parse JSON as html component data
   }
   return null;
 }
@@ -1755,6 +1775,30 @@ function getChartTable(chartData: ChartData): { columns: string[]; rows: unknown
     ),
   ]);
   return { columns, rows };
+}
+
+// Tabular html component `data` ({ columns: string[], rows: object[] | unknown[][] }) as an
+// exportable table; non-tabular payloads (arbitrary dict/list) yield null so export controls hide.
+function getHtmlComponentTable(
+  data: HtmlComponentData,
+): { columns: string[]; rows: unknown[][] } | null {
+  const payload = data.data;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const { columns, rows } = payload as { columns?: unknown; rows?: unknown };
+  if (!Array.isArray(columns) || !Array.isArray(rows)) return null;
+  if (columns.length === 0 || !columns.every((column) => typeof column === 'string')) return null;
+  const columnNames = columns as string[];
+  return {
+    columns: columnNames,
+    rows: rows.map((row) => {
+      if (Array.isArray(row)) return row;
+      if (row && typeof row === 'object') {
+        const record = row as Record<string, unknown>;
+        return columnNames.map((column) => record[column] ?? '');
+      }
+      return [row];
+    }),
+  };
 }
 
 function validateDataTableData(tableData: DataTableData): string | null {
@@ -5092,8 +5136,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const activeOutput = isRerunning ? retryOutput : latestOutput;
   const parsedTerminalOutput = useMemo(() => parseTerminalOutput(latestOutput), [latestOutput]);
 
-  // Check if this is a visualization tool that can be retried
-  const isVisualizationTool =
+  // Visualization tools render inline and surface parse failures as failed tool calls.
+  const isVisualizationTool = isVisualizationToolCall(toolCall);
+  // Only chart/datatable support AI repair; html components get a Reload button instead.
+  const canRetryVisualization =
     toolCall.tool === 'create_chart' || toolCall.tool === 'create_datatable';
   const isTerminalCommand = isTerminalToolCall(toolCall) || Boolean(parsedTerminalOutput);
   const isSqlTool = isSqlToolCall(toolCall);
@@ -5531,13 +5577,32 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     return null;
   }, [toolCall.tool, effectiveOutput, hasErrorInOutput]);
 
-  const visualizationToolType: 'chart' | 'datatable' | null =
+  // Check if this is an html component tool
+  const htmlComponentData = useMemo(() => {
+    if (toolCall.tool === 'create_html_component' && effectiveOutput && !hasErrorInOutput) {
+      return parseHtmlComponentData(effectiveOutput);
+    }
+    return null;
+  }, [toolCall.tool, effectiveOutput, hasErrorInOutput]);
+  const htmlComponentConnection = htmlComponentData?.data_connection as
+    | VisualizationDataConnection
+    | undefined;
+  const htmlComponentTable = useMemo(
+    () => (htmlComponentData ? getHtmlComponentTable(htmlComponentData) : null),
+    [htmlComponentData],
+  );
+  const [isExportingHtmlComponentXlsx, setIsExportingHtmlComponentXlsx] = useState(false);
+
+  const visualizationToolType: VisualizationToolType | null =
     toolCall.tool === 'create_chart'
       ? 'chart'
       : toolCall.tool === 'create_datatable'
         ? 'datatable'
-        : null;
-  const visualizationDataConnection = chartData?.data_connection ?? datatableData?.data_connection;
+        : toolCall.tool === 'create_html_component'
+          ? 'html_component'
+          : null;
+  const visualizationDataConnection =
+    chartData?.data_connection ?? datatableData?.data_connection ?? htmlComponentConnection;
   const hasRefreshableLiveVisualization = Boolean(
     visualizationToolType &&
     hasRefreshableVisualizationConnection(visualizationDataConnection, visualizationToolType),
@@ -5603,6 +5668,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     if (isVisualizationTool && toolCall.output && toolCall.status === 'complete') {
       if (toolCall.tool === 'create_chart' && !chartData) return true;
       if (toolCall.tool === 'create_datatable' && !datatableData) return true;
+      if (toolCall.tool === 'create_html_component' && !htmlComponentData) return true;
     }
     return false;
   }, [
@@ -5613,6 +5679,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     toolCall.tool,
     chartData,
     datatableData,
+    htmlComponentData,
   ]);
 
   // Parse table metadata from output if present (for SQL results)
@@ -5701,6 +5768,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       e.preventDefault();
       e.stopPropagation();
 
+      if (!canRetryVisualization) return;
       if (!conversationId) {
         setRetryError('Cannot retry: missing conversation context');
         return;
@@ -5769,6 +5837,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       }
     },
     [
+      canRetryVisualization,
       clearRetryProgressTimers,
       conversationId,
       eventIndex,
@@ -5779,6 +5848,81 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       toolCall.output,
       toolCall.tool,
       onRetrySuccess,
+      workspaceId,
+    ],
+  );
+
+  const handleHtmlComponentXlsxExport = useCallback(async () => {
+    if (
+      !conversationId ||
+      !htmlComponentData ||
+      !htmlComponentTable ||
+      isExportingHtmlComponentXlsx
+    ) {
+      return;
+    }
+    const title = htmlComponentData.title?.trim() || 'HTML component';
+    setIsExportingHtmlComponentXlsx(true);
+    try {
+      await api.downloadConversationExport(
+        conversationId,
+        {
+          filename: sanitizeDownloadFilename(title, 'xlsx'),
+          format: 'xlsx',
+          source_kind: 'table',
+          title,
+          table: htmlComponentTable,
+        },
+        workspaceId,
+      );
+    } catch (err) {
+      console.error('Failed to download XLSX export:', err);
+    } finally {
+      setIsExportingHtmlComponentXlsx(false);
+    }
+  }, [
+    conversationId,
+    htmlComponentData,
+    htmlComponentTable,
+    isExportingHtmlComponentXlsx,
+    workspaceId,
+  ]);
+
+  // Persist user-edited html component markup as a new visualization version so the
+  // original stays reachable through the version controls.
+  const handleHtmlComponentSave = useCallback(
+    async (html: string) => {
+      if (!conversationId) {
+        throw new Error('Cannot save: missing conversation context');
+      }
+      if (typeof eventIndex !== 'number') {
+        throw new Error('Cannot save: missing component event context');
+      }
+      const result = await api.updateHtmlComponent(
+        conversationId,
+        {
+          ...(messageId ? { message_id: messageId } : {}),
+          ...(typeof messageIndex === 'number' ? { message_index: messageIndex } : {}),
+          event_index: eventIndex,
+          html,
+        },
+        workspaceId,
+      );
+      if (!result.success || !result.output) {
+        throw new Error(result.error || 'Failed to save component');
+      }
+      setRetryOutput(result.output);
+      setVisualizationBranches(result.branches || []);
+      setActiveVisualizationBranchId(result.active_branch_id || null);
+      setLiveDataRefreshError(null);
+      onLiveVisualizationRefreshSuccess?.(result);
+    },
+    [
+      conversationId,
+      eventIndex,
+      messageId,
+      messageIndex,
+      onLiveVisualizationRefreshSuccess,
       workspaceId,
     ],
   );
@@ -6125,6 +6269,57 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           isSwitchingBranch={isSwitchingVisualizationBranch}
           onSelectBranch={handleVisualizationBranchSelect}
           onDisplayError={onVisualizationDisplayError}
+        />
+      </div>
+    );
+  }
+
+  // Special rendering for html component tool - sandboxed iframe inline without collapsible.
+  // The anchor/description are injected here so HtmlComponentDisplay never imports ChatPanel.
+  if (htmlComponentData) {
+    const canRefreshComponent =
+      hasRefreshableVisualizationConnection(htmlComponentConnection, 'html_component') &&
+      Boolean(conversationId);
+    const componentTitle = htmlComponentData.title?.trim() || 'HTML component';
+    const exportControls = htmlComponentTable ? (
+      <VisualizationExportControls
+        onCsv={() =>
+          downloadCsv(htmlComponentTable.columns, htmlComponentTable.rows, componentTitle)
+        }
+        onXlsx={conversationId ? handleHtmlComponentXlsxExport : undefined}
+        isExportingXlsx={isExportingHtmlComponentXlsx}
+      />
+    ) : undefined;
+    return (
+      <div className="tool-call tool-call-html-component tool-call-complete">
+        <HtmlComponentDisplay
+          component={htmlComponentData}
+          onDisplayError={onVisualizationDisplayError}
+          onSaveHtml={
+            allowRerun !== false && hasPersistedVisualizationContext
+              ? handleHtmlComponentSave
+              : undefined
+          }
+          descriptionNode={
+            htmlComponentData.description ? (
+              <LinkifiedText text={htmlComponentData.description} />
+            ) : undefined
+          }
+          anchor={
+            <VisualizationVersionAnchor
+              canRefresh={canRefreshComponent}
+              isRefreshDisabled={!hasPersistedVisualizationContext}
+              refreshDisabledReason={refreshDisabledReason}
+              isRefreshing={isRefreshingLiveData}
+              refreshError={liveDataRefreshError}
+              onRefresh={handleLiveDataRefresh}
+              branches={visualizationBranches}
+              activeBranchId={activeVisualizationBranchId}
+              isSwitchingBranch={isSwitchingVisualizationBranch}
+              onSelectBranch={handleVisualizationBranchSelect}
+              extraControls={exportControls}
+            />
+          }
         />
       </div>
     );
@@ -8047,7 +8242,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </span>
           </button>
-          {allowRerun && isFailed && isVisualizationTool && !isRetrying && (
+          {allowRerun && isFailed && canRetryVisualization && !isRetrying && (
             <button
               type="button"
               className="tool-call-retry-btn"

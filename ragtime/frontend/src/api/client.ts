@@ -61,6 +61,7 @@ import type {
   ConversationCountResponse,
   CreateConversationRequest,
   SendMessageRequest,
+  UiThemeContext,
   ChatMessage,
   AvailableModelsResponse,
   LoginRequest,
@@ -236,6 +237,7 @@ import type {
   ServerRestoreJob,
   CommitServerRestoreJobRequest,
 } from '@/types';
+import { getThemeSnapshot } from '@/theme/themeSnapshot';
 
 import type {
   AuthProviderConfig,
@@ -360,10 +362,20 @@ function buildClientClockContext(): SendMessageRequest['client_clock'] {
   };
 }
 
+function buildUiThemeContext(): UiThemeContext | undefined {
+  try {
+    const snapshot = getThemeSnapshot();
+    return { mode: snapshot.mode, pack: snapshot.pack };
+  } catch {
+    return undefined;
+  }
+}
+
 function withClientClock(request: SendMessageRequest): SendMessageRequest {
   return {
     ...request,
     client_clock: request.client_clock ?? buildClientClockContext(),
+    ui_theme: request.ui_theme ?? buildUiThemeContext(),
   };
 }
 
@@ -5323,6 +5335,24 @@ export const api = {
     const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
     const response = await apiFetch(
       `${API_BASE}/conversations/${conversationId}/visualizations/refresh-live-data${suffix}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
+    return handleResponse<import('@/types').RefreshLiveVisualizationResponse>(response);
+  },
+
+  /** Persist user-edited markup for an inline html component as a new visualization version. */
+  async updateHtmlComponent(
+    conversationId: string,
+    request: import('@/types').UpdateHtmlComponentRequest,
+    workspaceId?: string,
+  ): Promise<import('@/types').RefreshLiveVisualizationResponse> {
+    const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
+    const response = await apiFetch(
+      `${API_BASE}/conversations/${conversationId}/visualizations/html-component${suffix}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

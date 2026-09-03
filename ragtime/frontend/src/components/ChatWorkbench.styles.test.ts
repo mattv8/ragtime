@@ -258,4 +258,56 @@ describe('Chat workbench surface contract', () => {
     expect(chatPanel).toMatch(/const commitResizeSidebar = useCallback\(/);
     expect(chatPanel).toMatch(/onResizeEnd=\{commitResizeSidebar\}/);
   });
+
+  it('styles sandboxed HTML components like the other inline visualizations', () => {
+    const css = read(cssPath);
+    const chatCss = read(chatCssPath);
+
+    // Modern pack: the tool-call shell around an HTML component is transparent and borderless.
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.tool-call\.tool-call-html-component,[\s\S]*?\{[\s\S]*?background:\s*transparent;[\s\S]*?border:\s*none;[\s\S]*?padding:\s*0;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.chat-tool-calls\s+\.tool-call\.tool-call-html-component\.tool-call-complete/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.tool-call\.tool-call-html-component:hover,[\s\S]*?\{[\s\S]*?background:\s*transparent;[\s\S]*?border-color:\s*transparent;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.html-component-container\s*\{[\s\S]*?background:\s*var\(--color-editor\);[\s\S]*?border-radius:\s*var\(--workbench-control-radius\);/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.html-component-action-btn,[\s\S]*?\{[\s\S]*?border-radius:\s*var\(--workbench-control-radius\);/,
+    );
+
+    // Base chat styles: token-driven container, borderless frame, error and source surfaces.
+    expect(chatCss).toMatch(
+      /\.tool-call-html-component\s*\{[\s\S]*?border:\s*none;[\s\S]*?background:\s*transparent;[\s\S]*?padding:\s*0;/,
+    );
+    expect(chatCss).toMatch(
+      /\.html-component-container\s*\{[\s\S]*?background:\s*var\(--color-surface\);[\s\S]*?border:\s*1px solid var\(--color-border\);[\s\S]*?border-radius:\s*var\(--radius-md\);[\s\S]*?padding:\s*var\(--space-md\);/,
+    );
+    expect(chatCss).toMatch(
+      /\.html-component-frame\s*\{[\s\S]*?display:\s*block;[\s\S]*?width:\s*100%;[\s\S]*?border:\s*0;[\s\S]*?background:\s*transparent;/,
+    );
+    expect(chatCss).toMatch(
+      /\.html-component-error\s*\{[\s\S]*?background:\s*var\(--color-error-light\);[\s\S]*?border:\s*1px solid var\(--color-error-border\);[\s\S]*?color:\s*var\(--color-error\);/,
+    );
+    expect(chatCss).toMatch(/\.html-component-canvas\[hidden\]\s*\{[\s\S]*?display:\s*none;/);
+    expect(chatCss).toMatch(
+      /\.html-component-heading\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?gap:\s*0;[\s\S]*?text-align:\s*left;/,
+    );
+    expect(chatCss).toMatch(
+      /\.html-component-description\s*\{[\s\S]*?margin:\s*0;[\s\S]*?color:\s*var\(--color-text-muted\);/,
+    );
+    expect(chatCss).toMatch(
+      /\.html-component-source\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?border:\s*1px solid var\(--color-border\);[\s\S]*?font-size:\s*var\(--text-xs\);/,
+    );
+    expect(chatCss).toMatch(/\.html-component-source\s+\.cm-editor\s*\{[\s\S]*?height:\s*100%;/);
+    expect(chatCss).toMatch(
+      /\.html-component-source\s*>\s*\.cm-theme-none\s*\{[\s\S]*?height:\s*100%;/,
+    );
+    expect(chatCss).toMatch(/\.html-component-with-anchor\s*\{[\s\S]*?max-width:\s*730px;/);
+    expect(chatCss).toMatch(/\.html-component-with-anchor-expanded\s*\{[\s\S]*?max-width:\s*none;/);
+  });
 });

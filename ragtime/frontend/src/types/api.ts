@@ -2854,6 +2854,7 @@ export interface SendMessageRequest {
   message: string;
   stream?: boolean;
   client_clock?: ClientClockContext;
+  ui_theme?: UiThemeContext;
 }
 
 export interface ChatContextReference {
@@ -2864,6 +2865,12 @@ export interface ChatContextReference {
   content?: string;
   contentTruncated?: boolean;
   source: 'selection' | 'file';
+}
+
+/** Browser color mode + theme pack, sent with each turn so HTML components can match the UI. */
+export interface UiThemeContext {
+  mode: 'light' | 'dark';
+  pack: string;
 }
 
 export interface ClientClockContext {
@@ -4491,8 +4498,17 @@ export interface RetryVisualizationResponse {
   source_rerun_used?: boolean;
 }
 
+export type VisualizationToolType = 'datatable' | 'chart' | 'html_component';
+
+export interface UpdateHtmlComponentRequest {
+  message_id?: string | null;
+  message_index?: number | null;
+  event_index: number;
+  html: string;
+}
+
 export interface RefreshLiveVisualizationRequest {
-  tool_type: 'datatable' | 'chart';
+  tool_type: VisualizationToolType;
   message_id?: string | null;
   message_index?: number | null;
   event_index: number;

@@ -4616,6 +4616,256 @@ button.tool-call-userspace-write-path-link:hover {
 .tool-call-datatable:hover {
   background: transparent;
 }
+/* =============================================================================
+   HTML COMPONENTS
+   ============================================================================= */
+.tool-call-html-component {
+  border: none;
+  background: transparent;
+  padding: 0;
+  overflow: visible;
+}
+.tool-call-html-component:hover {
+  background: transparent;
+}
+.chat-tool-calls:has(.tool-call-html-component) {
+  width: 100%;
+}
+.chat-message-assistant:has(.tool-call-html-component) {
+  width: 100%;
+  max-width: 100%;
+}
+.chat-message-assistant:has(.tool-call-html-component) .chat-message-content {
+  width: 100%;
+}
+.html-component-with-anchor {
+  width: 100%;
+  max-width: 730px;
+}
+.html-component-with-anchor-expanded {
+  max-width: none;
+}
+.html-component-with-anchor > .viz-version-anchor {
+  padding-left: 0;
+  padding-right: 0;
+}
+.html-component-container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  margin: var(--space-sm) 0;
+  width: 100%;
+  max-width: 730px;
+  box-sizing: border-box;
+}
+.html-component-container-expanded {
+  max-width: none;
+}
+.html-component-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  min-height: 28px;
+}
+/* Title with the description directly beneath it, left-aligned, no gap. */
+.html-component-heading {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  text-align: left;
+}
+.html-component-description {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+.html-component-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 28px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.html-component-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.html-component-container:hover .html-component-actions,
+.html-component-container:focus-within .html-component-actions,
+.html-component-container-expanded .html-component-actions {
+  opacity: 1;
+}
+.html-component-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+.html-component-action-btn:hover,
+.html-component-action-btn-active {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+.html-component-canvas {
+  position: relative;
+  width: 100%;
+  min-height: 200px;
+}
+.html-component-frame {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  border-radius: var(--radius-sm);
+}
+.html-component-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  min-height: 120px;
+  padding: var(--space-md);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+.html-component-status-overlay {
+  position: absolute;
+  inset: 0;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--color-surface);
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+  z-index: 2;
+}
+.html-component-ready-warning {
+  max-width: 420px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+}
+.html-component-blocked {
+  padding: var(--space-md);
+  background: var(--color-bg-secondary);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+}
+.html-component-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-error-light);
+  border: 1px solid var(--color-error-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-error);
+  font-size: var(--text-sm);
+}
+.html-component-error-message {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.html-component-error-reload {
+  flex-shrink: 0;
+  min-height: 28px;
+  padding: 0 var(--space-sm);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-error-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-error);
+  font-size: var(--text-xs);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+}
+.html-component-error-reload:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+.html-component-canvas[hidden] {
+  display: none;
+}
+/* Read-only CodeMirror source view; sized to the canvas so the toggle does not reflow the chat. */
+.html-component-source {
+  margin: 0;
+  min-height: 200px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+}
+/* The wrapper's root div is auto-height by default; without this the editor grows to its
+   content and the container clips it, so the editor's own scroller never scrolls. */
+.html-component-source > .cm-theme-none {
+  height: 100%;
+}
+.html-component-source .cm-editor {
+  height: 100%;
+  font-size: var(--text-xs);
+}
+.html-component-source .cm-scroller {
+  overflow: auto;
+}
+.html-component-action-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.html-component-actions-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 var(--space-xs);
+  background: var(--color-border);
+}
+.html-component-action-primary:not(:disabled) {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-text-inverse, #ffffff);
+}
+.html-component-action-primary:not(:disabled):hover {
+  background: var(--color-primary-hover, var(--color-primary));
+  color: var(--color-text-inverse, #ffffff);
+}
+.html-component-save-error {
+  margin-top: var(--space-xs);
+  color: var(--color-error);
+  font-size: var(--text-xs);
+}
 
 .tool-call-screenshot-meta {
   color: var(--color-text-muted);

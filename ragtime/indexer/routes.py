@@ -192,6 +192,7 @@ from ragtime.core.userspace_preview_sandbox import (
 )
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_provider_vision_models, list_vision_models
+from ragtime.core.visualization_tools import HTML_COMPONENT_TOOL_NAME, VisualizationToolType, visualization_tool_name_for_type
 from ragtime.git_webhooks.models import GitWebhookConfigResponse, GitWebhookDeliveryResponse, GitWebhookEnableResponse, GitWebhookTargetType
 from ragtime.git_webhooks.repository import git_webhook_repository
 from ragtime.git_webhooks.service import git_webhook_service
@@ -234,6 +235,7 @@ from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.live_visualizations import (
     LiveVisualizationRefreshError,
     build_component_request_from_visualization,
+    render_edited_html_component,
     render_refreshed_visualization,
 )
 from ragtime.indexer.models import (
@@ -323,6 +325,7 @@ from ragtime.indexer.models import (
     UpdateConversationCompactionRequest,
     UpdateConversationShareAccessRequest,
     UpdateConversationShareLinkRequest,
+    UpdateHtmlComponentRequest,
     UpdateSettingsRequest,
     UpdateToolConfigRequest,
     UpdateToolGroupRequest,
@@ -8985,6 +8988,7 @@ async def _create_background_chat_task_after_user_message(
     blocked_tool_names: Optional[set[str]],
     workspace_context: Optional[dict[str, Any]],
     current_time_context: Optional[dict[str, Any]] = None,
+    ui_theme_context: Optional[dict[str, Any]] = None,
     disabled_builtin_tool_ids: Optional[set[str]] = None,
     existing_task_id: Optional[str] = None,
 ) -> Any:
@@ -9009,6 +9013,7 @@ async def _create_background_chat_task_after_user_message(
                 blocked_tool_names=blocked_tool_names,
                 workspace_context=workspace_context,
                 current_time_context=current_time_context,
+                ui_theme_context=ui_theme_context,
                 current_user_context=current_user_context,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 usage_attempt_id=attempt_id,
@@ -9020,6 +9025,7 @@ async def _create_background_chat_task_after_user_message(
                 blocked_tool_names=blocked_tool_names,
                 workspace_context=workspace_context,
                 current_time_context=current_time_context,
+                ui_theme_context=ui_theme_context,
                 current_user_context=current_user_context,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 usage_attempt_id=attempt_id,
@@ -12300,6 +12306,7 @@ async def _send_message_to_loaded_conversation(
         input_tokens=input_est,
     )
     current_time_context = _build_current_time_prompt_context(request)
+    ui_theme_context = _build_ui_theme_prompt_context(request)
     try:
         current_user_context = _build_current_user_prompt_context(user)
         answer = await rag.process_query(
@@ -12312,6 +12319,7 @@ async def _send_message_to_loaded_conversation(
             user_id=user.id,
             current_user_context=current_user_context,
             current_time_context=current_time_context,
+            ui_theme_context=ui_theme_context,
             message_index=len(conv.messages),
             disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
         )
@@ -12402,6 +12410,7 @@ async def _send_background_message_to_loaded_conversation(
     )
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
     current_time_context = _build_current_time_prompt_context(request)
+    ui_theme_context = _build_ui_theme_prompt_context(request)
 
     task = await _create_background_chat_task_after_user_message(
         conversation_id=conversation_id,
@@ -12411,6 +12420,7 @@ async def _send_background_message_to_loaded_conversation(
         blocked_tool_names=blocked_tool_names,
         workspace_context=workspace_context,
         current_time_context=current_time_context,
+        ui_theme_context=ui_theme_context,
         disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
     )
 
@@ -12812,6 +12822,14 @@ def _build_current_time_prompt_context(
     if client_clock is not None:
         context["client_clock"] = client_clock.model_dump(exclude_none=True)
     return context
+
+
+def _build_ui_theme_prompt_context(request: Any) -> dict[str, Any] | None:
+    """Build request-scoped browser theme context for inline HTML component guidance."""
+    ui_theme = getattr(request, "ui_theme", None)
+    if ui_theme is None:
+        return None
+    return ui_theme.model_dump(exclude_none=True)
 
 
 def _normalize_disabled_builtin_tool_ids(value: Any) -> list[str]:
@@ -14642,6 +14660,7 @@ async def send_message_stream(
         input_tokens=input_est,
     )
     current_time_context = _build_current_time_prompt_context(request)
+    ui_theme_context = _build_ui_theme_prompt_context(request)
 
     async def stream_response() -> AsyncIterator[str]:
         """Generate streaming response tokens."""
@@ -14665,6 +14684,7 @@ async def send_message_stream(
                 user_id=user.id,
                 current_user_context=current_user_context,
                 current_time_context=current_time_context,
+                ui_theme_context=ui_theme_context,
                 message_index=len(conv.messages),
                 disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
             ):
@@ -15209,7 +15229,7 @@ async def refresh_live_visualization(
     workspace_id: Optional[str] = None,
     user: User = Depends(get_current_user),
 ):
-    """Rerun a live component-backed chart/datatable and version this event."""
+    """Rerun a live component-backed chart/datatable/HTML component and version this event."""
     await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
@@ -15224,7 +15244,7 @@ async def refresh_live_visualization(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    expected_tool = "create_chart" if request.tool_type == "chart" else "create_datatable"
+    expected_tool = visualization_tool_name_for_type(request.tool_type)
     try:
         message_index, original_output = _get_visualization_event_output(conversation, request, expected_tool)
         component_request = build_component_request_from_visualization(
@@ -15285,20 +15305,21 @@ async def refresh_live_visualization(
     )
 
 
-@router.get(
-    "/conversations/{conversation_id}/visualizations/branches",
-    response_model=ListVisualizationBranchesResponse,
+@router.post(
+    "/conversations/{conversation_id}/visualizations/html-component",
+    response_model=RefreshLiveVisualizationResponse,
 )
-async def list_visualization_branches(
+async def update_html_component(
     conversation_id: str,
-    tool_type: Literal["datatable", "chart"],
-    event_index: int,
-    message_id: Optional[str] = None,
-    message_index: Optional[int] = None,
+    request: UpdateHtmlComponentRequest,
     workspace_id: Optional[str] = None,
     user: User = Depends(get_current_user),
 ):
-    """List stored versions for one chart/datatable event."""
+    """Persist user-edited markup for an inline html component as a new version.
+
+    The edit is stored through the same visualization-branch mechanism as live
+    refresh, so the previous markup stays reachable via the version controls.
+    """
     await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
@@ -15308,7 +15329,73 @@ async def list_visualization_branches(
     )
     if not has_access:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    expected_tool = "create_chart" if tool_type == "chart" else "create_datatable"
+
+    conversation = await repository.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(conversation)
+
+    locator = RefreshLiveVisualizationRequest(
+        tool_type="html_component",
+        message_id=request.message_id,
+        message_index=request.message_index,
+        event_index=request.event_index,
+    )
+    try:
+        message_index, original_output = _get_visualization_event_output(conversation, locator, HTML_COMPONENT_TOOL_NAME)
+        edited_output = render_edited_html_component(original_output=original_output, html=request.html)
+    except LiveVisualizationRefreshError as exc:
+        return RefreshLiveVisualizationResponse(success=False, error=str(exc))
+
+    updated, branches, active_branch_id = await repository.create_visualization_refresh_version(
+        conversation_id,
+        message_id=request.message_id,
+        message_index=message_index,
+        event_index=request.event_index,
+        new_output=edited_output,
+        expected_tool=HTML_COMPONENT_TOOL_NAME,
+        user_id=user.id,
+    )
+    if not updated or not active_branch_id:
+        return RefreshLiveVisualizationResponse(
+            success=False,
+            error="Failed to persist edited component version.",
+        )
+
+    decorated = await repository.attach_message_snapshot_links(updated)
+    return RefreshLiveVisualizationResponse(
+        success=True,
+        output=edited_output,
+        conversation=_to_conversation_response(decorated or updated),
+        branches=branches,
+        active_branch_id=active_branch_id,
+    )
+
+
+@router.get(
+    "/conversations/{conversation_id}/visualizations/branches",
+    response_model=ListVisualizationBranchesResponse,
+)
+async def list_visualization_branches(
+    conversation_id: str,
+    tool_type: VisualizationToolType,
+    event_index: int,
+    message_id: Optional[str] = None,
+    message_index: Optional[int] = None,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """List stored versions for one chart/datatable/HTML component event."""
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    expected_tool = visualization_tool_name_for_type(tool_type)
     branches = await repository.get_visualization_branches(
         conversation_id,
         message_id=message_id,
@@ -15576,6 +15663,7 @@ async def send_message_background(
         raise HTTPException(status_code=400, detail="Message is required")
 
     current_time_context = _build_current_time_prompt_context(request)
+    ui_theme_context = _build_ui_theme_prompt_context(request)
 
     updated_conversation, claimed_task, created_task = await repository.add_user_message_and_create_chat_task_if_idle(
         conversation_id,
@@ -15612,6 +15700,7 @@ async def send_message_background(
             blocked_tool_names=blocked_tool_names,
             workspace_context=workspace_context,
             current_time_context=current_time_context,
+            ui_theme_context=ui_theme_context,
             disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
             existing_task_id=claimed_task.id,
         )

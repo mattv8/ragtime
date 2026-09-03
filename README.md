@@ -50,7 +50,7 @@ What Ragtime provides and how the main pieces fit together.
 
 ### Features
 
-- **Chat UI** built in, with tool visualization, interactive charts, and DataTables: no external client required
+- **Chat UI** built in, with tool visualization, interactive charts, DataTables, and sandboxed HTML components: no external client required
 - **[Model providers](#model-providers)**: hosted APIs, subscription auth (OpenAI Codex, Claude Code), and local runtimes, all configurable in Settings
 - **[Workspaces](#workspaces)** with live previews run in isolated runtime sessions; shared links use clean public URLs (`/{owner}/{slug}`), with optional password-protected full-page access
 - **[MCP server](#model-context-protocol-mcp-integration)** (HTTP Streamable + stdio transports) exposing tools to Claude Desktop, VS Code Copilot, Cursor, and JetBrains IDEs with auth

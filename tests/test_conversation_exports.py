@@ -305,5 +305,131 @@ class ConversationExportServiceTests(unittest.TestCase):
         self.assertEqual(context["rows"], [["Acme", 42]])
 
 
+class HtmlComponentToTableTests(unittest.TestCase):
+    def test_dict_rows_are_mapped_by_column_order(self) -> None:
+        payload = {
+            "__html_component__": True,
+            "title": "Shipments by origin",
+            "html": "<!doctype html><html><body></body></html>",
+            "data": {
+                "columns": ["lat", "lng", "shipments"],
+                # Row keys deliberately out of column order and one key missing.
+                "rows": [
+                    {"shipments": 412, "lat": 31.9, "lng": -99.9},
+                    {"lat": 40.7, "shipments": 7},
+                ],
+                "row_count": 2,
+            },
+        }
+
+        columns, rows = export_service.html_component_to_table(payload)
+
+        self.assertEqual(columns, ["lat", "lng", "shipments"])
+        self.assertEqual(rows, [[31.9, -99.9, 412], [40.7, "", 7]])
+
+    def test_array_rows_pass_through_normalize_table(self) -> None:
+        payload = {
+            "__html_component__": True,
+            "html": "<div/>",
+            "data": {
+                "columns": ["name", "total"],
+                "rows": [["Acme", 42], ["Globex"], ["Initech", 1, "extra"]],
+            },
+        }
+
+        columns, rows = export_service.html_component_to_table(payload)
+
+        self.assertEqual(columns, ["name", "total"])
+        self.assertEqual(rows, [["Acme", 42], ["Globex", ""], ["Initech", 1]])
+
+    def test_non_tabular_data_raises_value_error(self) -> None:
+        non_tabular: list[Any] = [
+            None,
+            {"lookup": {"TX": [31.9, -99.9]}},
+            [{"lat": 1, "lng": 2}],
+            {"columns": ["a"]},
+            {"rows": [[1]]},
+            {"columns": "a,b", "rows": [[1, 2]]},
+            {"columns": ["a"], "rows": {"a": 1}},
+        ]
+        for data in non_tabular:
+            with self.subTest(data=data):
+                with self.assertRaises(ValueError):
+                    export_service.html_component_to_table({"__html_component__": True, "html": "<div/>", "data": data})
+        with self.assertRaises(ValueError):
+            export_service.html_component_to_table({"__html_component__": True, "html": "<div/>"})
+
+
+class HtmlComponentExportContextTests(unittest.TestCase):
+    """Export context extraction for create_html_component tool output (PRD 6.7)."""
+
+    _DATA_CONNECTION = {
+        "component_kind": "tool_config",
+        "component_id": "tool-1",
+        "request": {"query": "select lat, lng, shipments from origins"},
+    }
+
+    @classmethod
+    def _envelope(cls, data: Any, *, data_connection: dict[str, Any] | None = None) -> str:
+        return json.dumps(
+            {
+                "__html_component__": True,
+                "title": "Shipments by origin",
+                "html": '<!doctype html><html><head></head><body><div id="map"></div></body></html>',
+                "data": data,
+                "description": "Shipments by origin state",
+                "height": 480,
+                "data_connection": cls._DATA_CONNECTION if data_connection is None else data_connection,
+            }
+        )
+
+    def test_tabular_html_component_output_yields_export_context(self) -> None:
+        output = self._envelope(
+            {
+                "columns": ["lat", "lng", "shipments"],
+                "rows": [{"lat": 31.9, "lng": -99.9, "shipments": 412}],
+                "row_count": 1,
+            }
+        )
+
+        context = RAGComponents()._build_export_context_from_visualization_output(
+            tool_name="create_html_component",
+            tool_args={},
+            tool_output=output,
+        )
+
+        assert context is not None
+        self.assertEqual(context["source_tool"], "create_html_component")
+        self.assertEqual(context["title"], "Shipments by origin")
+        self.assertEqual(context["data_connection"]["component_id"], "tool-1")
+        self.assertEqual(context["columns"], ["lat", "lng", "shipments"])
+        self.assertEqual(context["rows"], [[31.9, -99.9, 412]])
+
+    def test_non_tabular_html_component_output_yields_no_export_context(self) -> None:
+        output = self._envelope({"nodes": [{"id": "a"}, {"id": "b"}], "edges": [["a", "b"]]})
+
+        context = RAGComponents()._build_export_context_from_visualization_output(
+            tool_name="create_html_component",
+            tool_args={},
+            tool_output=output,
+        )
+
+        self.assertIsNone(context)
+
+    def test_html_component_output_without_data_connection_yields_no_export_context(self) -> None:
+        output = self._envelope(
+            {"columns": ["lat"], "rows": [{"lat": 31.9}], "row_count": 1},
+            data_connection={},
+        )
+
+        context = RAGComponents()._build_export_context_from_visualization_output(
+            tool_name="create_html_component",
+            tool_args={},
+            tool_output=output,
+        )
+
+        self.assertIsNone(context)
+
+
 if __name__ == "__main__":
     unittest.main()

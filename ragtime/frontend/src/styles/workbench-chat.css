@@ -614,7 +614,11 @@
 [data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-datatable,
 [data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-datatable.tool-call-complete,
 [data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-chart,
-[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-chart.tool-call-complete {
+[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-chart.tool-call-complete,
+[data-theme-pack='modern'] .tool-call.tool-call-html-component,
+[data-theme-pack='modern'] .tool-call.tool-call-html-component.tool-call-complete,
+[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-html-component,
+[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-html-component.tool-call-complete {
   background: transparent;
   border: none;
   padding: 0;
@@ -624,7 +628,9 @@
 [data-theme-pack='modern'] .tool-call.tool-call-datatable:hover,
 [data-theme-pack='modern'] .tool-call.tool-call-chart:hover,
 [data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-datatable:hover,
-[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-chart:hover {
+[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-chart:hover,
+[data-theme-pack='modern'] .tool-call.tool-call-html-component:hover,
+[data-theme-pack='modern'] .chat-tool-calls .tool-call.tool-call-html-component:hover {
   background: transparent;
   border-color: transparent;
 }
@@ -633,7 +639,13 @@
   border-radius: var(--workbench-control-radius);
 }
 
+[data-theme-pack='modern'] .html-component-container {
+  background: var(--color-editor);
+  border-radius: var(--workbench-control-radius);
+}
+
 [data-theme-pack='modern'] .chart-resize-btn,
+[data-theme-pack='modern'] .html-component-action-btn,
 [data-theme-pack='modern'] .live-data-refresh-btn,
 [data-theme-pack='modern'] .visualization-branch-btn,
 [data-theme-pack='modern'] .visualization-export-btn,

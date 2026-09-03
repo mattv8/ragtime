@@ -207,7 +207,12 @@ def _coerce_chart_number(value: Any, field: str) -> float | int:
     raise ValueError(f"Chart field {field} contains non-numeric values")
 
 
-def _source_data_to_rows(source_data: Any) -> tuple[list[str], list[dict[str, Any]]]:
+def source_data_to_rows(source_data: Any) -> tuple[list[str], list[dict[str, Any]]]:
+    """Normalize a raw query result ({columns, rows}) into column names and row dicts.
+
+    Shared by the chart and HTML component tools so both canonicalize source data
+    identically (rows may arrive as dicts or positional arrays).
+    """
     if not isinstance(source_data, dict):
         raise ValueError("source_data must be an object with columns and rows")
 
@@ -255,7 +260,7 @@ def _build_chart_data_from_source(
     if not label_field:
         raise ValueError("data_connection.result_mapping is missing label_field")
 
-    columns, rows = _source_data_to_rows(source_data)
+    columns, rows = source_data_to_rows(source_data)
     if label_field not in columns and not any(label_field in row for row in rows):
         raise ValueError(f"source_data is missing label field {label_field}")
 

@@ -160,6 +160,7 @@ from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
 from ragtime.core.tool_access import ToolAccessLevel, resolve_tool_access
 from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata, coerce_nonnegative_int_metadata
+from ragtime.core.visualization_tools import HTML_COMPONENT_TOOL_NAME, VISUALIZATION_TOOL_NAMES
 from ragtime.http_api.guidance import build_http_api_headers_description, build_http_api_request_guidance
 from ragtime.http_api.models import (
     HttpApiConnectionConfig,
@@ -182,6 +183,7 @@ from ragtime.indexer.export_service import (
     content_source,
     create_export_spec,
     datatable_to_table,
+    html_component_to_table,
     live_table_source,
     table_source,
 )
@@ -206,6 +208,7 @@ from ragtime.rag.prompts import (
     build_current_time_turn_reminder_line,
     build_current_user_prompt_fragment,
     build_current_user_turn_reminder_line,
+    build_html_component_theme_prompt,
     build_index_system_prompt,
     build_subagent_model_guidance_prompt,
     build_tool_system_prompt,
@@ -246,6 +249,11 @@ from ragtime.tools.git_history import (
     _is_shallow_repository,
     create_aggregate_git_history_tool,
     create_per_index_git_history_tool,
+)
+from ragtime.tools.html_component import (
+    CHAT_HTML_COMPONENT_DESCRIPTION_SUFFIX,
+    USERSPACE_HTML_COMPONENT_DESCRIPTION_SUFFIX,
+    create_html_component_tool,
 )
 from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
@@ -313,8 +321,7 @@ STREAM_DISPLAY_COMPACT_USERSPACE_WRITE_TOOL_NAMES = frozenset(
 )
 STREAM_DISPLAY_UNTRUNCATED_TOOL_NAMES = frozenset(
     {
-        "create_chart",
-        "create_datatable",
+        *VISUALIZATION_TOOL_NAMES,
         "read_userspace_file",
         "list_userspace_files",
         *FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES,
@@ -4716,7 +4723,7 @@ class RAGComponents:
             logger.info(f"Wrapped {len(tools)} tools with output truncation (max {max_tool_output_chars:,} chars)")
 
         self._runtime_tools = list(tools)
-        self._runtime_tools_ui = [*self._runtime_tools, create_chart_tool, create_datatable_tool]
+        self._runtime_tools_ui = [*self._runtime_tools, create_chart_tool, create_datatable_tool, create_html_component_tool]
 
         # Skip agent creation if LLM is not configured
         if self.llm is None:
@@ -4827,8 +4834,8 @@ class RAGComponents:
             self.agent_executor = None
 
         # Create UI agent (with visualization tools and UI prompt)
-        # Note: create_chart_tool and create_datatable_tool are NOT wrapped with
-        # truncation because their JSON output must be complete for rendering
+        # Note: create_chart_tool, create_datatable_tool, and create_html_component_tool
+        # are NOT wrapped with truncation because their JSON output must be complete for rendering
         ui_tools = list(self._runtime_tools_ui)
 
         prompt_ui = ChatPromptTemplate.from_messages(
@@ -4856,7 +4863,7 @@ class RAGComponents:
                 max_iterations=max_iterations,
                 return_intermediate_steps=False,
             )
-            logger.info("Created UI agent with chart and datatable tools")
+            logger.info("Created UI agent with chart, datatable, and html component tools")
         else:
             self.agent_executor_ui = None
 
@@ -9554,7 +9561,7 @@ class RAGComponents:
         chat_query_suffix = (
             "\n\nChat mode override:\n"
             "- Use this tool for current-response analysis and follow the tool's own query-safety requirements.\n"
-            "- When a result is rendered with create_chart or create_datatable, pass the returned columns/rows as visualization source_data, then copy this tool's active ToolConfig ID and exact successful input payload into the visualization data_connection so the chat UI can refresh the same live data."
+            "- When a result is rendered with create_chart, create_datatable, or create_html_component, pass the returned columns/rows as visualization source_data, then copy this tool's active ToolConfig ID and exact successful input payload into the visualization data_connection so the chat UI can refresh the same live data."
         )
 
         overridden_tools: list[Any] = []
@@ -9576,6 +9583,11 @@ class RAGComponents:
                     description_suffix = USERSPACE_DATATABLE_DESCRIPTION_SUFFIX
                 elif mode == "chat":
                     description_suffix = CHAT_DATATABLE_DESCRIPTION_SUFFIX
+            elif tool_name == HTML_COMPONENT_TOOL_NAME:
+                if mode == "userspace":
+                    description_suffix = USERSPACE_HTML_COMPONENT_DESCRIPTION_SUFFIX
+                elif mode == "chat":
+                    description_suffix = CHAT_HTML_COMPONENT_DESCRIPTION_SUFFIX
             elif mode == "userspace" and tool_name.startswith(("query_", "request_")):
                 description_suffix = live_wiring_suffix
             elif mode == "userspace" and tool_name.startswith("search_") and not tool_name.endswith("_api"):
@@ -9593,6 +9605,9 @@ class RAGComponents:
                 "description": description.rstrip() + "\n" + description_suffix.strip(),
             }
             if mode == "chat" and require_live_visualizations:
+                # create_html_component intentionally has no "Live" args_schema swap: components
+                # legitimately embed static/synthesized reference data (coordinates, thresholds),
+                # so data_connection stays optional even when live tool connections exist.
                 if tool_name == "create_chart":
                     overrides["args_schema"] = CreateLiveChartInput
                 elif tool_name == "create_datatable":
@@ -13984,8 +13999,8 @@ class RAGComponents:
         tool_args: Any,
         tool_output: Any,
     ) -> dict[str, Any] | None:
-        """Extract reusable export context from chart/datatable tool output."""
-        if tool_name not in {"create_chart", "create_datatable"}:
+        """Extract reusable export context from chart/datatable/html component tool output."""
+        if tool_name not in VISUALIZATION_TOOL_NAMES:
             return None
         payload = self._parse_json_object(tool_output)
         if not payload:
@@ -14002,6 +14017,9 @@ class RAGComponents:
             elif tool_name == "create_datatable" and payload.get("__datatable__"):
                 columns, rows = datatable_to_table(payload)
                 source_tool = "create_datatable"
+            elif tool_name == HTML_COMPONENT_TOOL_NAME and payload.get("__html_component__"):
+                columns, rows = html_component_to_table(payload)
+                source_tool = HTML_COMPONENT_TOOL_NAME
             else:
                 return None
         except Exception as exc:
@@ -14139,7 +14157,7 @@ class RAGComponents:
         for tool in tools:
             tool_name = getattr(tool, "name", "")
             original_coroutine = getattr(tool, "coroutine", None)
-            is_visualization_tool = tool_name in {"create_chart", "create_datatable"}
+            is_visualization_tool = tool_name in VISUALIZATION_TOOL_NAMES
             is_query_tool = tool_name.startswith("query_") and self._get_tool_connection_metadata(tool_name) is not None
             if (not is_visualization_tool and not is_query_tool) or original_coroutine is None:
                 wrapped_tools.append(tool)
@@ -15036,6 +15054,7 @@ class RAGComponents:
         conversation_model: Optional[str] = None,
         chat_task_id: Optional[str] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
+        ui_theme_context: Optional[dict[str, Any]] = None,
         runtime_tool_source_override: list[Any] | None = None,
         tool_skill_binding_state_override: ToolSkillBindingState | None = None,
         request_tool_state_override: dict[str, Any] | None = None,
@@ -15279,7 +15298,7 @@ class RAGComponents:
                     request_user_id=request_user_id,
                     enabled_builtin_tool_ids=workspace_builtin_tool_ids,
                 )
-            runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in {"create_chart", "create_datatable"}]
+            runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in VISUALIZATION_TOOL_NAMES]
             runtime_tools.extend(userspace_tools)
             runtime_tools.extend(workspace_builtin_tools)
             if conversation_export_tool is not None:
@@ -15380,12 +15399,12 @@ class RAGComponents:
             prompt_additions += self._build_userspace_object_storage_prompt_fragment(object_storage_config)
         else:
             has_workspace_payload = workspace_context is not None
-            has_inline_viz_tools = any(getattr(tool, "name", "") in {"create_chart", "create_datatable"} for tool in runtime_tools)
+            has_inline_viz_tools = any(getattr(tool, "name", "") in VISUALIZATION_TOOL_NAMES for tool in runtime_tools)
             if has_workspace_payload or has_inline_viz_tools:
                 has_live_tool_connections = any(
                     self._get_tool_connection_metadata(getattr(tool, "name", ""))
                     for tool in runtime_tools
-                    if getattr(tool, "name", "") not in {"create_chart", "create_datatable"}
+                    if getattr(tool, "name", "") not in VISUALIZATION_TOOL_NAMES
                 )
                 runtime_tools = self._apply_mode_specific_tool_description_overrides(
                     runtime_tools,
@@ -15475,8 +15494,10 @@ class RAGComponents:
                     include_web_browse=("web_browse" in runtime_tool_names),
                     include_web_read_pdf=("web_read_pdf" in runtime_tool_names),
                 )
-            if {"create_chart", "create_datatable"}.intersection(runtime_tool_names):
+            if VISUALIZATION_TOOL_NAMES.intersection(runtime_tool_names):
                 prompt_additions += UI_VISUALIZATION_CHAT_PROMPT
+            if HTML_COMPONENT_TOOL_NAME in runtime_tool_names and ui_theme_context:
+                prompt_additions += build_html_component_theme_prompt(ui_theme_context)
             if "create_download_link" in runtime_tool_names:
                 prompt_additions += download_export_prompt
 
@@ -15583,7 +15604,7 @@ class RAGComponents:
         base_prompt = BASE_USERSPACE_SYSTEM_PROMPT if mode == "userspace" else BASE_CHAT_SYSTEM_PROMPT
         prompt = base_prompt + index_prompt_section + tool_prompt_section
         if is_ui:
-            has_loaded_visualization_tools = any(getattr(tool, "name", "") in {"create_chart", "create_datatable"} for tool in (runtime_tools or []))
+            has_loaded_visualization_tools = any(getattr(tool, "name", "") in VISUALIZATION_TOOL_NAMES for tool in (runtime_tools or []))
             if tool_skill_mode != "enabled" or has_loaded_visualization_tools:
                 prompt += UI_VISUALIZATION_COMMON_PROMPT
             if self._app_settings and self._app_settings.get("tool_output_mode", "default") == "auto":
@@ -16895,6 +16916,7 @@ class RAGComponents:
         chat_task_id: Optional[str] = None,
         message_index: Optional[int] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
+        ui_theme_context: Optional[dict[str, Any]] = None,
     ) -> str:
         """
         Process a user query through the RAG pipeline (non-streaming).
@@ -16943,6 +16965,7 @@ class RAGComponents:
                 conversation_model=conversation_model,
                 chat_task_id=chat_task_id,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+                ui_theme_context=ui_theme_context,
             )
             system_prompt = self._build_request_system_prompt(
                 is_ui=request_context["prompt_is_ui"],
@@ -17267,6 +17290,7 @@ class RAGComponents:
         chat_task_id: Optional[str] = None,
         message_index: Optional[int] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
+        ui_theme_context: Optional[dict[str, Any]] = None,
     ):
         """
         Process a user query with true token-by-token streaming.
@@ -17325,6 +17349,7 @@ class RAGComponents:
                 conversation_model=conversation_model,
                 chat_task_id=chat_task_id,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+                ui_theme_context=ui_theme_context,
             )
         except Exception as e:
             logger.exception("Error preparing streaming query")

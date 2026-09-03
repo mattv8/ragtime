@@ -514,7 +514,7 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([tool.name for tool in rag._runtime_tools], ["ssh_proxy_dca"])
         self.assertEqual(
             [tool.name for tool in rag._runtime_tools_ui],
-            ["ssh_proxy_dca", "create_chart", "create_datatable"],
+            ["ssh_proxy_dca", "create_chart", "create_datatable", "create_html_component"],
         )
 
         with (

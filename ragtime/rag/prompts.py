@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Iterable, List, Mapping, Optional, Sequence
 
 from ragtime.core.entrypoint_status import EntrypointStatus
 from ragtime.core.type_coercion import coerce_nonnegative_int_metadata
@@ -215,8 +215,8 @@ This is a turn-level reminder to follow real tool-calling behavior.
 - Keep channels distinct: reasoning belongs only in the reasoning/analysis stream,
     visible prose belongs in normal assistant content, and tool outputs must come
     only from real tool calls.
-- For live/query-backed visualizations, call create_chart/create_datatable. Never inline chart/table
-    JSON, __chart__/__datatable__ markers, or tool-result payloads in reasoning or visible message text.
+- For live/query-backed visualizations, call create_chart/create_datatable/create_html_component. Never inline chart/table/component
+    JSON, __chart__/__datatable__/__html_component__ markers, or tool-result payloads in reasoning or visible message text.
 - For synthesized non-live tabular data compiled from prose, web pages, or several sources without
     one authoritative refreshable tool request, render a normal markdown table in visible final text.
 ]
@@ -743,6 +743,7 @@ You have visualization tools for rich, interactive displays.
 
 - **create_chart** - Chart.js visualizations (bar, line, pie, doughnut)
 - **create_datatable** - Interactive DataTables with sorting/search/pagination
+- **create_html_component** - Custom sandboxed HTML/JS components (maps, heatmaps, network graphs, gauges, custom layouts) rendered inline
 - Runtime note: use built-in visualization runtime support; do not add external CDN/npm script imports for chart/table libraries in generated User Space modules.
 
 ### When to Use Each
@@ -754,6 +755,7 @@ You have visualization tools for rich, interactive displays.
 | Parts of whole, distribution | create_chart (pie/doughnut) - max 7 segments |
 | Live/query-backed tabular data | create_datatable |
 | Synthesized non-live tabular data | markdown table |
+| Spatial, network, gauge, or custom interactive visuals not covered above | create_html_component |
 | Aggregations with raw data | BOTH: chart for viz + datatable for details |
 
 ### Chart Type Guide
@@ -761,6 +763,14 @@ You have visualization tools for rich, interactive displays.
 - **Bar**: Category comparisons (by region, status, type)
 - **Line**: Sequential/time data (daily, monthly, trends)
 - **Pie/Doughnut**: Proportions, market share (<7 categories)
+
+### HTML Component Rules
+
+- Prefer create_chart/create_datatable whenever they fit; use create_html_component only for visuals they cannot express.
+- The component runs in a sandboxed iframe: no cookies, storage, Ragtime API calls, or navigation. Load libraries only via https CDN `<script>`/`<link>` tags (Leaflet, D3, ECharts, etc.).
+- Never call fetch() for Ragtime data. Read `window.ragtime.data` and subscribe with `window.ragtime.onData(cb)` so Refresh re-renders with new rows.
+- Make the root container responsive (100% width) with an explicit pixel height (for example `#map { height: 420px }`); avoid `100vh`.
+- Use `window.ragtime.theme.tokens` or the `--ragtime-*` CSS variables for colors and fonts so the component matches light/dark mode.
 """
 
 
@@ -775,7 +785,41 @@ UI_VISUALIZATION_CHAT_PROMPT = """
 5. **Use executable components, not descriptive metadata** - `data_connection` is not a notes field. Never use `component_kind=web_research`, research dates, source labels, or prose metadata as a substitute for `component_id` and `request`. If the current rows were synthesized from research instead of returned by a refreshable query/tool component, render a markdown table instead of calling create_datatable.
 6. **Map chart rows deterministically** - For charts sourced from row data, include `data_connection.result_mapping` with a label field and dataset field mappings so initial render and refresh rebuild the same chart without guessing
 7. **Visualize proactively** - Don't wait to be asked; render charts and tables automatically
+8. **HTML components carry data separately** - For create_html_component, pass query rows as `source_data` (plus `data_connection` when they came from an active query tool) and read them from `window.ragtime.data` in the HTML; embed only synthesized lookup data (coordinates, thresholds) inline, and omit `data_connection` when nothing is refreshable.
 """
+
+
+_HTML_COMPONENT_THEME_PACK_HINTS: dict[str, str] = {
+    "default": "Default pack: clean sans-serif UI, rounded corners (`--ragtime-radius-md`).",
+    "modern": "Modern pack: compact, flat, editor-like surfaces; small radii; sans-serif body font.",
+    "serif": "Serif pack: editorial feel; body text is a serif face via `--ragtime-font-body`; sharper corners, softer contrast.",
+}
+
+
+def build_html_component_theme_prompt(theme: Mapping[str, Any]) -> str:
+    """Return a short prompt fragment describing the user's current UI theme.
+
+    Kept to a few bullets: the concrete token values are injected into the
+    component at render time, so the agent only needs the mode, the pack, and
+    the rule to use tokens instead of hard-coded colors.
+    """
+    mode = str(theme.get("mode") or "").strip().lower()
+    pack = str(theme.get("pack") or "").strip().lower()
+    pack_hint = _HTML_COMPONENT_THEME_PACK_HINTS.get(pack)
+    if mode not in {"light", "dark"} and not pack_hint:
+        return ""
+
+    lines = ["", "", "### HTML Component Theme (current user)"]
+    if mode in {"light", "dark"}:
+        lines.append(
+            f'- The chat is in {mode} mode; the component frame stamps `data-theme="{mode}"` and its `--ragtime-*` tokens already match, so never hard-code light or dark colors.'
+        )
+    if pack_hint:
+        lines.append(f"- {pack_hint}")
+    lines.append(
+        "- Style with `--ragtime-*` CSS variables (color-text-primary/secondary/muted, color-bg-primary/secondary, color-surface, color-border, color-primary, color-accent, font-body, font-mono, radius-md) or `window.ragtime.theme.tokens`; keep the body background transparent and pick data colors that read on the current background."
+    )
+    return "\n".join(lines) + "\n"
 
 
 _USERSPACE_DATA_WIRING_BLOCK = """

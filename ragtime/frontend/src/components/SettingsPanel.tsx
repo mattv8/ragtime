@@ -4456,7 +4456,10 @@ export function SettingsPanel({
                 <div>
                   <h4 style={{ margin: '0 0 8px' }}>Preview Sandbox</h4>
                   <p className="field-help">
-                    Control which HTML iframe sandbox flags are granted to User Space previews.
+                    Control which HTML iframe sandbox flags are granted to User Space previews. Chat
+                    HTML components built by the assistant use the same flags, except
+                    allow-same-origin and top-navigation flags, which are always withheld for
+                    in-chat components.
                   </p>
                   <div className="form-group">
                     <button
@@ -8382,7 +8385,9 @@ export function SettingsPanel({
             <div className="modal-body">
               <p className="field-help" style={{ margin: '0 0 0.75rem 0' }}>
                 Control which HTML iframe sandbox flags are granted to User Space previews. Broader
-                navigation and origin-related flags reduce iframe isolation.
+                navigation and origin-related flags reduce iframe isolation. Chat HTML components
+                built by the assistant use the same flags, except allow-same-origin and
+                top-navigation flags, which are always withheld for in-chat components.
               </p>
               <div className="model-filter-actions">
                 <button

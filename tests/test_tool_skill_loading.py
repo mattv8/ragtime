@@ -1600,6 +1600,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("create_chart", prompt)
         self.assertNotIn("create_datatable", prompt)
+        self.assertNotIn("create_html_component", prompt)
 
     async def test_userspace_diagnostics_turn_hint_uses_generic_guidance_when_optional_tool_is_hidden(self) -> None:
         rag = self._make_rag()

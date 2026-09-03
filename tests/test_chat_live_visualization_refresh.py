@@ -26,6 +26,7 @@ from ragtime.core.sql_utils import enforce_max_results, format_psql_csv_output, 
 from ragtime.indexer.live_visualizations import (
     LiveVisualizationRefreshError,
     build_component_request_from_visualization,
+    render_edited_html_component,
     render_refreshed_visualization,
 )
 from ragtime.tools.chart import CreateLiveChartInput, create_chart, create_chart_tool
@@ -761,6 +762,192 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
                 tool_type="chart",
                 component_response=component_response,
             )
+
+
+def _html_component_output(**overrides: object) -> str:
+    """Raw persisted ``create_html_component`` envelope (PRD 6.1) built without importing the tool."""
+    payload: dict[str, object] = {
+        "__html_component__": True,
+        "title": "Shipments by origin",
+        "html": '<!doctype html><html><head></head><body><div id="map"></div></body></html>',
+        "data": {
+            "columns": ["lat", "lng", "shipments"],
+            "rows": [{"lat": 31.9, "lng": -99.9, "shipments": 412}],
+            "row_count": 1,
+        },
+        "description": "Shipments by origin state, last 30 days",
+        "height": 480,
+        "data_connection": {
+            "component_id": "tool-1",
+            "request": {"query": "select lat, lng, shipments from shipments"},
+        },
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
+class HtmlComponentLiveRefreshTests(unittest.TestCase):
+    def test_html_refresh_replaces_only_data(self) -> None:
+        output = _html_component_output()
+        component_response = ExecuteComponentResponse(
+            component_id="tool-1",
+            columns=["lat", "lng", "shipments"],
+            rows=[
+                {"lat": 40.7, "lng": -74.0, "shipments": 7},
+                {"lat": 34.1, "lng": -118.2, "shipments": 3},
+            ],
+            row_count=2,
+        )
+
+        refreshed = json.loads(
+            render_refreshed_visualization(
+                original_output=output,
+                tool_type="html_component",
+                component_response=component_response,
+            )
+        )
+
+        original = json.loads(output)
+        self.assertEqual(
+            refreshed["data"],
+            {
+                "columns": ["lat", "lng", "shipments"],
+                "rows": [
+                    {"lat": 40.7, "lng": -74.0, "shipments": 7},
+                    {"lat": 34.1, "lng": -118.2, "shipments": 3},
+                ],
+                "row_count": 2,
+            },
+        )
+        for key in ("__html_component__", "title", "html", "height", "description", "data_connection"):
+            self.assertEqual(refreshed[key], original[key])
+        self.assertEqual(set(refreshed), set(original))
+
+    def test_html_refresh_falls_back_to_row_keys_and_fills_missing_cells(self) -> None:
+        component_response = ExecuteComponentResponse(
+            component_id="tool-1",
+            columns=[],
+            rows=[{"lat": 1, "lng": 2}, {"lat": 3}],
+            row_count=2,
+        )
+
+        refreshed = json.loads(
+            render_refreshed_visualization(
+                original_output=_html_component_output(),
+                tool_type="html_component",
+                component_response=component_response,
+            )
+        )
+
+        self.assertEqual(refreshed["data"]["columns"], ["lat", "lng"])
+        self.assertEqual(refreshed["data"]["rows"], [{"lat": 1, "lng": 2}, {"lat": 3, "lng": None}])
+        self.assertEqual(refreshed["data"]["row_count"], 2)
+
+    def test_html_refresh_requires_columns(self) -> None:
+        component_response = ExecuteComponentResponse(
+            component_id="tool-1",
+            columns=[],
+            rows=[],
+            row_count=0,
+        )
+
+        with self.assertRaises(LiveVisualizationRefreshError) as ctx:
+            render_refreshed_visualization(
+                original_output=_html_component_output(),
+                tool_type="html_component",
+                component_response=component_response,
+            )
+        self.assertIn("no columns for the component", str(ctx.exception))
+
+    def test_html_refresh_propagates_component_error(self) -> None:
+        component_response = ExecuteComponentResponse(
+            component_id="tool-1",
+            columns=[],
+            rows=[],
+            row_count=0,
+            error="query failed",
+        )
+
+        with self.assertRaises(LiveVisualizationRefreshError) as ctx:
+            render_refreshed_visualization(
+                original_output=_html_component_output(),
+                tool_type="html_component",
+                component_response=component_response,
+            )
+        self.assertEqual(str(ctx.exception), "query failed")
+
+    def test_build_component_request_supports_html_component(self) -> None:
+        request = build_component_request_from_visualization(_html_component_output(), "html_component")
+
+        self.assertEqual(request.component_id, "tool-1")
+        self.assertEqual(request.request, {"query": "select lat, lng, shipments from shipments"})
+
+    def test_build_component_request_requires_html_component_data_connection(self) -> None:
+        with self.assertRaises(LiveVisualizationRefreshError):
+            build_component_request_from_visualization(_html_component_output(data_connection=None), "html_component")
+
+
+class HtmlComponentPayloadLoaderTests(unittest.TestCase):
+    def test_loader_requires_html_component_marker(self) -> None:
+        # A datatable envelope must not be accepted as an HTML component (and vice versa).
+        datatable_output = json.dumps(
+            {
+                "__datatable__": True,
+                "config": {"columns": [{"title": "lat"}], "data": [[1]]},
+                "data_connection": {"component_id": "tool-1", "request": {"query": "select 1"}},
+            }
+        )
+        with self.assertRaises(LiveVisualizationRefreshError):
+            build_component_request_from_visualization(datatable_output, "html_component")
+        with self.assertRaises(LiveVisualizationRefreshError):
+            build_component_request_from_visualization(_html_component_output(), "datatable")
+
+    def test_loader_requires_string_html(self) -> None:
+        for bad_html in (None, 42, {"body": "<div/>"}, ["<div/>"]):
+            with self.subTest(html=bad_html):
+                with self.assertRaises(LiveVisualizationRefreshError):
+                    build_component_request_from_visualization(_html_component_output(html=bad_html), "html_component")
+
+    def test_loader_does_not_require_config_for_html_component(self) -> None:
+        output = _html_component_output()
+        self.assertNotIn("config", json.loads(output))
+
+        request = build_component_request_from_visualization(output, "html_component")
+
+        self.assertEqual(request.component_id, "tool-1")
+
+    def test_loader_rejects_marker_that_is_not_true(self) -> None:
+        with self.assertRaises(LiveVisualizationRefreshError):
+            build_component_request_from_visualization(_html_component_output(__html_component__="yes"), "html_component")
+
+
+class HtmlComponentEditTests(unittest.TestCase):
+    def test_edit_replaces_html_and_wraps_fragments(self) -> None:
+        original = _html_component_output()
+        edited = json.loads(render_edited_html_component(original_output=original, html='<div id="edited">hi</div>'))
+        payload = json.loads(original)
+
+        self.assertTrue(edited["__html_component__"])
+        self.assertTrue(edited["html"].startswith("<!doctype html><html>"))
+        self.assertIn('<div id="edited">hi</div>', edited["html"])
+        for key in ("title", "data", "description", "height", "data_connection"):
+            self.assertEqual(edited[key], payload[key])
+
+    def test_edit_keeps_full_documents_verbatim(self) -> None:
+        document = "<html><body><p>full</p></body></html>"
+        edited = json.loads(render_edited_html_component(original_output=_html_component_output(), html=document))
+        self.assertEqual(edited["html"], document)
+
+    def test_edit_rejects_invalid_markup(self) -> None:
+        for html in ("", "   ", '<script src="http://cdn.example/x.js"></script>'):
+            with self.subTest(html=html):
+                with self.assertRaises(LiveVisualizationRefreshError):
+                    render_edited_html_component(original_output=_html_component_output(), html=html)
+
+    def test_edit_requires_html_component_payload(self) -> None:
+        chart_output = json.dumps({"__chart__": True, "config": {"type": "bar"}})
+        with self.assertRaises(LiveVisualizationRefreshError):
+            render_edited_html_component(original_output=chart_output, html="<div>x</div>")
 
 
 if __name__ == "__main__":

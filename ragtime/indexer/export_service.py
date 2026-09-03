@@ -216,6 +216,26 @@ def datatable_to_table(payload: dict[str, Any]) -> tuple[list[str], list[list[An
     return normalize_table(config.get("columns"), config.get("data"))
 
 
+def html_component_to_table(payload: dict[str, Any]) -> tuple[list[str], list[list[Any]]]:
+    """Convert a canonical HTML component ``data`` block into an exportable table.
+
+    Rows may be dicts keyed by column (canonical envelope) or positional arrays.
+    Raises ``ValueError`` when ``data`` is not tabular so callers can treat the
+    component as non-exportable.
+    """
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("HTML component data is not tabular")
+    columns = data.get("columns")
+    rows = data.get("rows")
+    if not isinstance(columns, list) or not isinstance(rows, list):
+        raise ValueError("HTML component data is missing columns or rows")
+
+    column_keys = [str(column) for column in columns]
+    ordered_rows: list[Any] = [[row.get(key) for key in column_keys] if isinstance(row, dict) else row for row in rows]
+    return normalize_table(column_keys, ordered_rows)
+
+
 def create_token(conversation_id: str, export_id: str, filename: str, expires_at: datetime) -> str:
     del expires_at
     payload = {"conversation_id": conversation_id, "export_id": export_id, "filename": filename}

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from typing import Any, Literal
+from typing import Any
 
 from ragtime.core.chart_mappings import normalize_dataset_mappings
+from ragtime.core.visualization_tools import VISUALIZATION_MARKER_BY_TYPE, VisualizationToolType
+from ragtime.tools.html_component import normalize_component_html
 from ragtime.userspace.live_data import normalize_live_data_connection
 from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse
 
@@ -15,7 +17,7 @@ class LiveVisualizationRefreshError(ValueError):
     """Raised when a visualization cannot be refreshed from live metadata."""
 
 
-def _load_visualization_payload(output: str, tool_type: Literal["chart", "datatable"]) -> dict[str, Any]:
+def _load_visualization_payload(output: str, tool_type: VisualizationToolType) -> dict[str, Any]:
     try:
         payload = json.loads(output)
     except Exception as exc:
@@ -23,8 +25,12 @@ def _load_visualization_payload(output: str, tool_type: Literal["chart", "datata
     if not isinstance(payload, dict):
         raise LiveVisualizationRefreshError("Visualization output is not an object.")
 
-    marker = "__chart__" if tool_type == "chart" else "__datatable__"
-    if payload.get(marker) is not True or not isinstance(payload.get("config"), dict):
+    marker = VISUALIZATION_MARKER_BY_TYPE[tool_type]
+    # HTML components carry their renderable body in ``html``; chart/datatable
+    # payloads carry a Chart.js/DataTables ``config`` object.
+    body_key = "html" if tool_type == "html_component" else "config"
+    body_type: type = str if tool_type == "html_component" else dict
+    if payload.get(marker) is not True or not isinstance(payload.get(body_key), body_type):
         raise LiveVisualizationRefreshError("Target event is not a refreshable visualization payload.")
     return payload
 
@@ -38,7 +44,7 @@ def _extract_data_connection(payload: dict[str, Any]) -> dict[str, Any]:
 
 def build_component_request_from_visualization(
     output: str,
-    tool_type: Literal["chart", "datatable"],
+    tool_type: VisualizationToolType,
 ) -> ExecuteComponentRequest:
     """Build an ExecuteComponentRequest from a persisted visualization payload."""
     payload = _load_visualization_payload(output, tool_type)
@@ -64,22 +70,47 @@ def build_component_request_from_visualization(
 def render_refreshed_visualization(
     *,
     original_output: str,
-    tool_type: Literal["chart", "datatable"],
+    tool_type: VisualizationToolType,
     component_response: ExecuteComponentResponse,
 ) -> str:
     """Render a refreshed visualization using returned component rows.
 
-    This preserves the existing Chart.js/DataTables payload shape and options,
-    replacing only the data-bearing fields.
+    This preserves the existing Chart.js/DataTables/HTML component payload
+    shape and options, replacing only the data-bearing fields.
     """
     if component_response.error:
         raise LiveVisualizationRefreshError(component_response.error)
     payload = _load_visualization_payload(original_output, tool_type)
     if tool_type == "datatable":
         refreshed = _refresh_datatable_payload(payload, component_response)
+    elif tool_type == "html_component":
+        refreshed = _refresh_html_component_payload(payload, component_response)
     else:
         refreshed = _refresh_chart_payload(payload, component_response)
     return json.dumps(refreshed, indent=2, default=str)
+
+
+def _response_columns(component_response: ExecuteComponentResponse) -> list[str]:
+    columns = list(component_response.columns or [])
+    if not columns and component_response.rows:
+        columns = list(component_response.rows[0].keys())
+    return columns
+
+
+def render_edited_html_component(*, original_output: str, html: str) -> str:
+    """Return the html component payload with user-edited markup substituted.
+
+    Only ``html`` changes; title, data, description, height, and the live data
+    connection are preserved so refresh keeps working on the edited version.
+    """
+    payload = _load_visualization_payload(original_output, "html_component")
+    try:
+        normalized_html = normalize_component_html(html)
+    except ValueError as exc:
+        raise LiveVisualizationRefreshError(str(exc)) from exc
+    edited = deepcopy(payload)
+    edited["html"] = normalized_html
+    return json.dumps(edited, indent=2, default=str)
 
 
 def _refresh_datatable_payload(
@@ -88,9 +119,7 @@ def _refresh_datatable_payload(
 ) -> dict[str, Any]:
     refreshed = deepcopy(payload)
     config = dict(refreshed.get("config") or {})
-    columns = list(component_response.columns or [])
-    if not columns and component_response.rows:
-        columns = list(component_response.rows[0].keys())
+    columns = _response_columns(component_response)
     if not columns:
         raise LiveVisualizationRefreshError("Live query returned no columns for the table.")
 
@@ -108,6 +137,30 @@ def _refresh_datatable_payload(
     config.setdefault("paging", len(component_response.rows) > 10)
     config.setdefault("info", len(component_response.rows) > 5)
     refreshed["config"] = config
+    return refreshed
+
+
+def _refresh_html_component_payload(
+    payload: dict[str, Any],
+    component_response: ExecuteComponentResponse,
+) -> dict[str, Any]:
+    """Replace only the canonical tabular ``data`` block of an HTML component.
+
+    The frontend pushes ``data`` into the sandboxed iframe via postMessage, so
+    ``html``, ``title``, ``height``, ``description`` and ``data_connection``
+    are preserved verbatim.
+    """
+    columns = _response_columns(component_response)
+    if not columns:
+        raise LiveVisualizationRefreshError("Live query returned no columns for the component.")
+
+    refreshed = deepcopy(payload)
+    rows = component_response.rows
+    refreshed["data"] = {
+        "columns": columns,
+        "rows": [{column: row.get(column) for column in columns} for row in rows],
+        "row_count": len(rows),
+    }
     return refreshed
 
 

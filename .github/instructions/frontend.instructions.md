@@ -72,6 +72,7 @@ Charts render to `<canvas>`, so CSS fonts/colors cannot inherit. Both chart surf
 - Admin charts (`react-chartjs-2` in `UsersPanel.tsx`) update the default font in the existing `useThemeColors` observer and re-render when colors change.
 - DataTables inherit `--font-body` (also set explicitly on `.datatable-container table.dataTable`).
 - Other script-rendered visuals that sample theme variables from the DOM must also observe theme attribute changes. `WebGLGradient` follows the same rule and refreshes on `data-theme`, `data-theme-pack`, and relevant root-style changes.
+- Chat HTML components (`HtmlComponentDisplay`) run agent HTML in a sandboxed iframe that cannot read the parent's CSS, so they sample theme tokens via `sampleHtmlComponentTheme()` (`src/utils/htmlComponent/buildSrcdoc.ts`) into the frame and re-post them on `subscribeToThemeChanges` instead of reloading.
 
 ## Radius, Shadow, Spacing
 
