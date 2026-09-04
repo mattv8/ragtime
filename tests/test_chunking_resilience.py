@@ -385,9 +385,14 @@ function Example(props: Props) {
                     use_tokens=False,
                 )
                 # Dispatcher should have routed to RecursiveChunker, never
-                # to the slow chonkie_code path.
+                # to the slow chonkie_code path. AnyDoc-extracted documents
+                # use markdown-aware recursive rules; email formats use the
+                # plain recursive path.
                 self.assertNotIn("chonkie_code", counts)
-                self.assertIn("chonkie_recursive", counts)
+                if ext in chunking.MARKDOWN_STRUCTURED_EXTENSIONS:
+                    self.assertIn("chonkie_recursive_markdown", counts)
+                else:
+                    self.assertIn("chonkie_recursive", counts)
                 self.assertGreaterEqual(len(chunks), 1)
                 # Chunks must contain actual content, not be empty.
                 for content, _meta in chunks:

@@ -27,13 +27,18 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, get_args
 
 from chonkie import CodeChunker, OverlapRefinery, RecursiveChunker
+from chonkie.types import RecursiveLevel, RecursiveRules
 from langchain_core.documents import Document
 
 from ragtime.core.app_setting_defaults import (
     DEFAULT_CHUNKING_MAX_BATCH_SIZE,
     DEFAULT_CHUNKING_MAX_WORKERS,
 )
-from ragtime.core.file_constants import DOCUMENT_EXTENSIONS, LANG_MAPPING
+from ragtime.core.file_constants import (
+    ANYDOC_DOCUMENT_EXTENSIONS,
+    DOCUMENT_EXTENSIONS,
+    LANG_MAPPING,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
 from ragtime.indexer.embedding_errors import iter_exception_chain
@@ -793,6 +798,48 @@ def _chunk_with_chonkie_code(
     return docs
 
 
+# Extensions whose extracted or raw content is GitHub-Flavored Markdown:
+# AnyDoc-converted documents plus native markdown files.
+MARKDOWN_STRUCTURED_EXTENSIONS: frozenset[str] = frozenset(ANYDOC_DOCUMENT_EXTENSIONS) | {
+    ".md",
+    ".markdown",
+}
+
+
+def _markdown_recursive_rules() -> RecursiveRules:
+    """Heading-first recursive splitting rules for markdown-structured text.
+
+    Split at ATX heading boundaries first (keeping each heading attached to
+    the section it introduces via include_delim="next"), then fall back to
+    the paragraph/newline/sentence hierarchy of the default rules.
+    """
+    return RecursiveRules(
+        levels=[
+            # Known limitation: heading delimiters can also match "# " lines
+            # inside fenced code blocks of native .md files, splitting the
+            # fence. AnyDoc-extracted documents rarely contain fences, and a
+            # split only occurs when a section already exceeds chunk_size.
+            RecursiveLevel(
+                delimiters=["\n# ", "\n## ", "\n### ", "\n#### ", "\n##### ", "\n###### "],
+                include_delim="next",
+            ),
+            RecursiveLevel(delimiters=["\n\n", "\r\n\r\n"]),
+            RecursiveLevel(delimiters=["\n", "\r\n"]),
+            RecursiveLevel(delimiters=[". ", "! ", "? "]),
+            RecursiveLevel(whitespace=True),
+            RecursiveLevel(),
+        ]
+    )
+
+
+def _is_markdown_structured_source(source_path: str) -> bool:
+    """True when the chunk source's extension carries markdown-structured text."""
+    name = source_path.rsplit("/", 1)[-1]
+    if "." not in name:
+        return False
+    return ("." + name.rsplit(".", 1)[-1]).lower() in MARKDOWN_STRUCTURED_EXTENSIONS
+
+
 def _chunk_with_recursive(
     text: str,
     chunk_size: int,
@@ -825,17 +872,33 @@ def _chunk_with_recursive(
 
     # min_characters_per_chunk needs adjustment for token mode
     min_chars = 20 if use_tokens else 50
-    chunker = RecursiveChunker(
-        tokenizer,
-        chunk_size=chunk_size,
-        min_characters_per_chunk=min_chars,
-    )
+
+    # Branch on markdown-structured source for heading-aware splitting
+    source_path = metadata.get("source", "")
+    is_markdown = _is_markdown_structured_source(source_path)
+
+    if is_markdown:
+        chunker = RecursiveChunker(
+            tokenizer,
+            chunk_size=chunk_size,
+            rules=_markdown_recursive_rules(),
+            min_characters_per_chunk=min_chars,
+        )
+        chunker_tag = "chonkie_recursive_markdown"
+    else:
+        chunker = RecursiveChunker(
+            tokenizer,
+            chunk_size=chunk_size,
+            min_characters_per_chunk=min_chars,
+        )
+        chunker_tag = "chonkie_recursive"
+
     chunks = chunker.chunk(text)
 
     docs = []
     for c in chunks:
         new_meta = metadata.copy()
-        new_meta["chunker"] = "chonkie_recursive"
+        new_meta["chunker"] = chunker_tag
         docs.append(Document(page_content=c.text, metadata=new_meta))
     return docs
 
@@ -888,6 +951,9 @@ def chunk_semantic_segments(
             segment_docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, seg_meta)
             for doc in segment_docs:
                 doc.metadata["chunk_index"] = chunk_index
+                # Intentional overwrite: semantic-segment chunking owns the tag.
+                # These segments carry vision/OCR text, not AnyDoc markdown, even
+                # when the source file extension is a document format.
                 doc.metadata["chunker"] = "semantic_recursive"
                 docs.append(doc)
                 chunk_index += 1
@@ -954,7 +1020,14 @@ def _chunk_document_batch_sync(
                 if is_recursive_fallback_error(e):
                     logger.debug(f"Code chunking not available for {file_path}, using recursive: {e}")
                     docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, metadata, use_tokens)
-                    splitter_counts["chonkie_recursive"] = splitter_counts.get("chonkie_recursive", 0) + 1
+                    # Count markdown-aware recursive chunking separately so log
+                    # summaries stay accurate; all other outcomes keep the
+                    # historical "chonkie_recursive" key.
+                    if docs and docs[0].metadata.get("chunker") == "chonkie_recursive_markdown":
+                        recursive_key = "chonkie_recursive_markdown"
+                    else:
+                        recursive_key = "chonkie_recursive"
+                    splitter_counts[recursive_key] = splitter_counts.get(recursive_key, 0) + 1
                 else:
                     raise
 
