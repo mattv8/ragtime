@@ -697,7 +697,6 @@
 [data-theme-pack='modern'] .markdown-content pre,
 [data-theme-pack='modern'] .markdown-content .katex-display,
 [data-theme-pack='modern'] .chat-edit-preview-list,
-[data-theme-pack='modern'] .chat-compaction-divider,
 [data-theme-pack='modern'] .chat-compaction-review-summary-container,
 [data-theme-pack='modern'] .chat-message-generation-error {
   border: var(--workbench-container-border);
