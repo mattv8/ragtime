@@ -45,6 +45,7 @@ from ragtime.indexer.chunking import (
     _chunk_with_recursive,
     chunk_semantic_segments,
     is_context_length_error,
+    is_recursive_fallback_error,
     rechunk_oversized_text,
     rechunk_texts_batch,
 )
@@ -1864,8 +1865,7 @@ class FilesystemIndexerService:
                 return [doc.page_content for doc in docs]
             except (ValueError, RuntimeError, LookupError) as e:
                 # Language not supported by Chonkie - use recursive chunker
-                err_lower = str(e).lower()
-                if "not supported" in err_lower or "detected language" in err_lower or "could not find language" in err_lower:
+                if is_recursive_fallback_error(e):
                     logger.debug(f"Code chunking not available for {file_path.name}, using recursive chunker")
                     docs = await asyncio.to_thread(
                         _chunk_with_recursive,

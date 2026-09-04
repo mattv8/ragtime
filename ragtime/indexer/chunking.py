@@ -895,6 +895,23 @@ def chunk_semantic_segments(
     return docs
 
 
+def is_recursive_fallback_error(error: Exception) -> bool:
+    """True when a chunking error signals falling back to RecursiveChunker.
+
+    Covers Chonkie/Magika "language not supported" errors and the intentional
+    plain-text sentinel raised by _chunk_with_chonkie_code for extensions
+    mapped to plain-text chunking.
+    """
+    err_lower = str(error).lower()
+    return (
+        "not supported" in err_lower
+        or "detected language" in err_lower
+        or "could not find language" in err_lower
+        or "mapped to plain text" in err_lower
+        or "should use recursivechunker" in err_lower
+    )
+
+
 def _chunk_document_batch_sync(
     batch_data: List[Tuple[str, dict]],
     chunk_size: int,
@@ -934,14 +951,7 @@ def _chunk_document_batch_sync(
                 # - Extension explicitly mapped to plain text (e.g., .txt, .csv)
                 # - Magika couldn't detect a supported language
                 # - tree-sitter grammar not available
-                err_lower = str(e).lower()
-                if (
-                    "not supported" in err_lower
-                    or "detected language" in err_lower
-                    or "could not find language" in err_lower
-                    or "mapped to plain text" in err_lower
-                    or "should use recursivechunker" in err_lower
-                ):
+                if is_recursive_fallback_error(e):
                     logger.debug(f"Code chunking not available for {file_path}, using recursive: {e}")
                     docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, metadata, use_tokens)
                     splitter_counts["chonkie_recursive"] = splitter_counts.get("chonkie_recursive", 0) + 1
