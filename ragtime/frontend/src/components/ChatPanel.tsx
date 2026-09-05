@@ -148,6 +148,7 @@ import {
 } from './shared/ToolSelectorDropdown';
 import { UserSpaceFileDiffView, formatDiffStatus } from './shared/UserSpaceFileDiffView';
 import { ThemeChromeIcon } from './shared/ThemeChromeIcon';
+import { FileTypeIcon } from './shared/FileTypeIcon';
 import { useToast, ToastContainer } from './shared/Toast';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import {
@@ -6425,6 +6426,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         )}
         <div className="tool-call-userspace-write-summary">
           <div className="tool-call-userspace-write-summary-row">
+            <FileTypeIcon path={entry.path} size={13} />
             {batched && (
               <span className="tool-call-userspace-batched-op" title={opLabel}>
                 {opLabel}
@@ -7009,6 +7011,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               )}
               <div className="tool-call-userspace-write-summary">
                 <div className="tool-call-userspace-write-summary-row">
+                  <FileTypeIcon path={entry.path} size={13} />
                   {batched && <span className="tool-call-userspace-batched-op">Read</span>}
                   {onOpenWorkspaceFile ? (
                     <button
@@ -7197,7 +7200,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                       className="tool-call-userspace-list-item tool-call-userspace-list-item-file"
                     >
                       <span className="tool-call-userspace-list-icon" aria-hidden="true">
-                        <FileText size={12} />
+                        <FileTypeIcon path={entry.path} size={14} />
                       </span>
                       {onOpenWorkspaceFile ? (
                         <button
@@ -7496,6 +7499,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                     <ul className="tool-call-userspace-json-list">
                       {visibleValidatedFiles.map((path) => (
                         <li key={path}>
+                          <FileTypeIcon path={path} size={12} />
                           {onOpenWorkspaceFile ? (
                             <button
                               type="button"
@@ -7611,6 +7615,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                           typeof file.line_count === 'number' ? `${file.line_count} lines` : '';
                         return (
                           <li key={`${path}:${idx}`}>
+                            <FileTypeIcon path={path} size={12} />
                             {onOpenWorkspaceFile ? (
                               <button
                                 type="button"
@@ -9920,7 +9925,11 @@ export const MessageAttachments = memo(function MessageAttachments({
         } else if (attachment.type === 'file') {
           return (
             <div key={idx} className="message-attachment message-attachment-file">
-              <FileText className="message-attachment-file-icon" size={16} />
+              <FileTypeIcon
+                path={attachment.filename}
+                className="message-attachment-file-icon"
+                size={14}
+              />
               <span className="message-attachment-file-name" title={attachment.file_path}>
                 {attachment.filename}
               </span>

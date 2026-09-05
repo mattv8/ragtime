@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import type { DirectoryEntry } from '@/types';
+import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
 import { Icon } from './Icon';
 
 export interface DirectoryBrowserProps {
@@ -158,7 +159,7 @@ export function DirectoryBrowser({
             .map((entry) => (
               <div key={entry.path} className="browser-entry file">
                 <span className="entry-icon">
-                  <Icon name="file" size={16} />
+                  <FileTypeIcon path={entry.name} size={16} />
                 </span>
                 <span className="entry-name">{entry.name}</span>
               </div>

@@ -26,6 +26,7 @@ import type {
 import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO, HTTP_API_SECRET_FIELDS } from '@/types';
 import { DisabledPopover } from './Popover';
 import { Icon, getToolIconType } from './Icon';
+import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
 import { OcrVectorStoreFields, OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
 import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
@@ -558,7 +559,7 @@ function FilesystemBrowser({
                         .map((entry) => (
                           <div key={entry.path} className="browser-entry file">
                             <span className="entry-icon">
-                              <Icon name="file" size={16} />
+                              <FileTypeIcon path={entry.name} size={16} />
                             </span>
                             <span className="entry-name">{entry.name}</span>
                           </div>
@@ -5677,6 +5678,7 @@ export function ToolWizard({
                                 }}
                                 style={{ width: 'auto', margin: 0 }}
                               />
+                              <FileTypeIcon extension={ext} size={14} />
                               <span style={{ fontSize: '0.9rem' }}>{ext}</span>
                             </label>
                           );

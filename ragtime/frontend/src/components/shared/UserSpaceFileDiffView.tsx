@@ -16,6 +16,7 @@ import {
 } from '@/theme/codemirrorTheme';
 import { getThemeSnapshot, subscribeToThemeChanges } from '@/theme/themeSnapshot';
 import { useCodeMirrorLanguageExtension } from '@/utils/codemirrorLanguage';
+import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
 
 type DiffSourceLineNumber = number | null;
 
@@ -543,7 +544,10 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
         <div className="userspace-snapshot-diff-column userspace-snapshot-diff-column-current">
           <div className="userspace-snapshot-diff-column-header">
             <span>{singleLabel}</span>
-            <code>{singlePath}</code>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
+              <FileTypeIcon path={singlePath} size={13} />
+              <code>{singlePath}</code>
+            </span>
           </div>
           <div
             className={`userspace-snapshot-diff-editor-wrap${compact ? ' userspace-snapshot-diff-editor-wrap-compact' : ''}`}
@@ -585,7 +589,10 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
       <div className="userspace-snapshot-diff-column">
         <div className="userspace-snapshot-diff-column-header">
           <span>{beforeLabel}</span>
-          <code>{diff.before_path ?? diff.path}</code>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
+            <FileTypeIcon path={diff.before_path ?? diff.path} size={13} />
+            <code>{diff.before_path ?? diff.path}</code>
+          </span>
         </div>
         <div
           className={`userspace-snapshot-diff-editor-wrap${compact ? ' userspace-snapshot-diff-editor-wrap-compact' : ''}`}
@@ -608,7 +615,10 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
       <div className="userspace-snapshot-diff-column userspace-snapshot-diff-column-current">
         <div className="userspace-snapshot-diff-column-header">
           <span>{afterLabel}</span>
-          <code>{diff.after_path ?? diff.path}</code>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', minWidth: 0 }}>
+            <FileTypeIcon path={diff.after_path ?? diff.path} size={13} />
+            <code>{diff.after_path ?? diff.path}</code>
+          </span>
         </div>
         <div
           className={`userspace-snapshot-diff-editor-wrap${compact ? ' userspace-snapshot-diff-editor-wrap-compact' : ''}`}

@@ -44,6 +44,7 @@ import {
   defaultScheduleTimezone,
   ScheduleStartTimeInput,
 } from './ScheduleStartTimeInput';
+import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToastContainer, useToast } from './shared/Toast';
 
@@ -2347,6 +2348,7 @@ export function WorkspaceScmWizard({
                         }}
                       >
                         <Check size={16} style={{ color: 'var(--color-success, #2b7a2b)' }} />
+                        <FileTypeIcon path={archiveFile.name} size={14} />
                         <span>{archiveFile.name}</span>
                         <span className="userspace-muted" style={{ fontSize: 12 }}>
                           ({(archiveFile.size / 1024).toFixed(1)} KB)
@@ -2657,6 +2659,7 @@ export function WorkspaceScmWizard({
                                 whiteSpace: 'nowrap',
                               }}
                             >
+                              <FileTypeIcon path={item.archive_file_name} size={14} />
                               {item.archive_file_name}
                             </div>
                             <div
@@ -3383,6 +3386,7 @@ export function WorkspaceScmWizard({
                     }}
                   >
                     <Check size={16} style={{ color: 'var(--color-success, #2b7a2b)' }} />
+                    <FileTypeIcon path={sqlFile.name} size={14} />
                     <span>{sqlFile.name}</span>
                     <span className="userspace-muted" style={{ fontSize: 12 }}>
                       ({formatBytes(sqlFile.size)})
@@ -3504,7 +3508,10 @@ export function WorkspaceScmWizard({
                     <span className="userspace-muted">Dialect detected:</span>
                     <span>{sqlImportResult.dialect_detected}</span>
                     <span className="userspace-muted">File:</span>
-                    <span>{sqlImportResult.filename}</span>
+                    <span>
+                      <FileTypeIcon path={sqlImportResult.filename} size={14} />
+                      {sqlImportResult.filename}
+                    </span>
                     <span className="userspace-muted">Tables created:</span>
                     <span>{sqlImportResult.tables_created}</span>
                     <span className="userspace-muted">Rows inserted:</span>

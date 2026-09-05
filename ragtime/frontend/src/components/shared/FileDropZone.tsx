@@ -1,4 +1,5 @@
 import { useCallback, useState, type ChangeEvent, type DragEvent, type ReactNode } from 'react';
+import { FileTypeIcon } from './FileTypeIcon';
 
 interface FileDropZoneProps {
   accept: string;
@@ -60,7 +61,11 @@ export function FileDropZone({
       <div style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginTop: 8 }}>
         {helpText}
       </div>
-      {file && <div className="file-name">{file.name}</div>}
+      {file && (
+        <div className="file-name">
+          <FileTypeIcon path={file.name} size={16} /> {file.name}
+        </div>
+      )}
       <input
         type="file"
         name="file"

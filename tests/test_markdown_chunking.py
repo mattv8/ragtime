@@ -61,11 +61,7 @@ class IsMarkdownStructuredSourceTests(unittest.TestCase):
 
     def test_deep_path_extracts_filename(self) -> None:
         """Only the filename extension matters, not the path."""
-        self.assertTrue(
-            _is_markdown_structured_source(
-                "/very/deep/path/to/some/report.pdf"
-            )
-        )
+        self.assertTrue(_is_markdown_structured_source("/very/deep/path/to/some/report.pdf"))
 
 
 class MarkdownRecursiveRulesTests(unittest.TestCase):
@@ -75,11 +71,13 @@ class MarkdownRecursiveRulesTests(unittest.TestCase):
         """Verify the rules structure has the expected hierarchy."""
         rules = _markdown_recursive_rules()
         # Should have 6 levels: headings, paragraphs, newlines, sentences, whitespace, char
+        assert rules.levels is not None
         self.assertEqual(len(rules.levels), 6)
 
     def test_heading_delimiter_patterns(self) -> None:
         """Verify heading delimiters include all ATX levels."""
         rules = _markdown_recursive_rules()
+        assert rules.levels is not None
         heading_level = rules.levels[0]
         expected_delimiters = [
             "\n# ",
@@ -94,6 +92,7 @@ class MarkdownRecursiveRulesTests(unittest.TestCase):
     def test_heading_delimiter_includes_next(self) -> None:
         """Verify heading delimiter uses include_delim='next'."""
         rules = _markdown_recursive_rules()
+        assert rules.levels is not None
         heading_level = rules.levels[0]
         self.assertEqual(heading_level.include_delim, "next")
 
@@ -163,10 +162,7 @@ class ChunkWithRecursiveMarkdownTests(unittest.TestCase):
 
     def test_plain_text_file_uses_default_chunker(self) -> None:
         """Plain .txt files use default (non-markdown) recursive chunking."""
-        text = (
-            "First section. " * 30
-            + "\nSecond section. " * 30
-        )
+        text = "First section. " * 30 + "\nSecond section. " * 30
 
         docs = _chunk_with_recursive(
             text,
@@ -222,12 +218,7 @@ class ChunkWithRecursiveMarkdownTests(unittest.TestCase):
 
     def test_metadata_preserved_in_chunks(self) -> None:
         """Original metadata is preserved in chunked documents."""
-        text = (
-            "# Section A\n"
-            + "Content " * 50
-            + "\n# Section B\n"
-            + "More content " * 50
-        )
+        text = "# Section A\n" + "Content " * 50 + "\n# Section B\n" + "More content " * 50
         original_meta = {"source": "/tmp/test.pdf", "doc_id": "doc123"}
 
         docs = _chunk_with_recursive(

@@ -1,4 +1,5 @@
 import { formatBytes } from '@/utils';
+import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
 
 interface FileTypeStat {
   extension: string;
@@ -48,7 +49,7 @@ export function FileTypeStatsTable({
           {displayedStats.map((stat) => (
             <tr key={stat.extension} style={{ borderBottom: '1px solid #333' }}>
               <td style={{ padding: '4px 8px', fontFamily: 'var(--font-mono)' }}>
-                {stat.extension}
+                <FileTypeIcon extension={stat.extension} size={14} /> {stat.extension}
               </td>
               <td style={{ padding: '4px 8px' }}>{stat.file_count}</td>
               <td style={{ padding: '4px 8px' }}>{formatBytes(stat.total_size_bytes)}</td>

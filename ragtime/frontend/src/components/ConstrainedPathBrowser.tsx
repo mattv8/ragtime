@@ -9,6 +9,7 @@ import {
   type CloudPathDisplayOptions,
 } from '@/utils/mountPaths';
 
+import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
 import { Icon } from './Icon';
 
 interface ConstrainedPathBrowserProps {
@@ -520,7 +521,7 @@ export function ConstrainedPathBrowser({
                     filteredFileEntries.slice(0, 3).map((entry) => (
                       <div key={entry.path} className="browser-entry file">
                         <span className="entry-icon">
-                          <Icon name="file" size={16} />
+                          <FileTypeIcon path={entry.name} size={16} />
                         </span>
                         <span className="entry-name">{entry.name}</span>
                       </div>

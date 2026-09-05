@@ -43,3 +43,17 @@
 [data-theme-pack='modern'] .theme-chrome-icon-codicon {
   display: inline-flex;
 }
+
+/*
+ * Filetype codicons (FileTypeIcon). Rendered in ALL theme packs (unlike ThemeChromeIcon).
+ * Size is driven solely by the inline `font-size` style set by the component.
+ */
+.file-type-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  line-height: 1;
+  color: currentColor;
+  vertical-align: middle;
+}

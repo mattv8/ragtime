@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { UserSpaceSnapshotFileDiff } from '@/types';
 import { MiniLoadingSpinner } from './MiniLoadingSpinner';
 import { UserSpaceFileDiffView, formatDiffStatus } from './UserSpaceFileDiffView';
+import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
 
 export interface FileDiffOverlayEntry {
   key: string;
@@ -89,6 +90,7 @@ export function FileDiffOverlay({
             </div>
             {activeDiff && (
               <div className="userspace-snapshot-diff-overlay-subtitle">
+                <FileTypeIcon path={activeDiff.path} size={13} />
                 <span>{activeDiff.path}</span>
                 <span>{formatDiffStatus(activeDiff.status)}</span>
                 <span>
@@ -98,6 +100,7 @@ export function FileDiffOverlay({
             )}
             {!activeDiff && activeEntry && (
               <div className="userspace-snapshot-diff-overlay-subtitle">
+                <FileTypeIcon path={activeEntry.path} size={13} />
                 <span>{activeEntry.path}</span>
                 {activeEntry.op ? <span>{activeEntry.op}</span> : null}
               </div>
@@ -131,6 +134,7 @@ export function FileDiffOverlay({
                     >
                       {status}
                     </span>
+                    <FileTypeIcon path={entry.path} size={13} />
                     <span className="userspace-snapshot-diff-overlay-nav-path">{entry.path}</span>
                     {(adds > 0 || dels > 0) && (
                       <span className="userspace-snapshot-diff-overlay-nav-meta">

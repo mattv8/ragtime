@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { X, FileText, Upload, Link } from 'lucide-react';
+import { X, Upload, Link } from 'lucide-react';
+import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
 import { api } from '@/api/client';
 import type { ContentPart } from '@/types';
 
@@ -287,7 +288,11 @@ export function FileAttachment({
                 </div>
               ) : (
                 <div className="attachment-file-preview">
-                  {attachment.filePath ? <Link size={20} /> : <FileText size={20} />}
+                  {attachment.filePath ? (
+                    <Link size={20} />
+                  ) : (
+                    <FileTypeIcon path={attachment.name} size={20} />
+                  )}
                 </div>
               )}
               <div className="attachment-info">

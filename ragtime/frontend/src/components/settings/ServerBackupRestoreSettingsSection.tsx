@@ -16,6 +16,7 @@ import {
   type ExportPasswordPolicy,
 } from '@/utils/exportPasswordPolicy';
 import { DeleteConfirmButton } from '../DeleteConfirmButton';
+import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
 import { InlineCopyButton } from '../shared/InlineCopyButton';
 import { PasswordRequirementsChecklist } from '../shared/PasswordRequirementsChecklist';
 import { SERVER_BACKUP_RESTORE_HIGHLIGHT } from '../shared/securityWarnings';
@@ -994,6 +995,7 @@ export function ServerBackupRestoreSettingsSection(
                       <div key={item.job_id} className="server-backup-export-item">
                         <div className="server-backup-export-main">
                           <div className="server-backup-export-name" title={item.file_name}>
+                            <FileTypeIcon path={item.file_name} size={14} />
                             {item.file_name}
                           </div>
                           <div className="server-backup-export-meta userspace-muted">

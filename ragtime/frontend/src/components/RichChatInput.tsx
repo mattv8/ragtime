@@ -11,6 +11,7 @@ import {
 } from 'react';
 
 import type { ChatContextReference } from '@/types';
+import { getFileTypeCodicon } from '@/utils/fileTypeIcon';
 
 // Inline SVG markup mirroring lucide-react's `Code` and `X` icons so the
 // imperatively-built chip DOM is self-contained.
@@ -274,9 +275,17 @@ export const RichChatInput = forwardRef<RichChatInputHandle, RichChatInputProps>
         void onOpenReferenceRef.current?.(reference);
       });
 
+      const fileIcon = document.createElement('span');
+      fileIcon.className =
+        'chat-context-chip-icon file-type-icon codicon codicon-' +
+        getFileTypeCodicon(reference.path);
+      fileIcon.setAttribute('aria-hidden', 'true');
+      fileIcon.style.fontSize = '12px';
+
       const label = document.createElement('span');
       label.className = 'chat-context-chip-label';
       label.textContent = formatReferenceLabel(reference);
+      open.appendChild(fileIcon);
       open.appendChild(label);
 
       if (reference.contentTruncated) {

@@ -190,6 +190,7 @@ import { ExternalApiAccessSection } from './shared/ExternalApiAccessSection';
 import { ShareLinkModal } from './shared/ShareLinkModal';
 import type { LdapGroup } from './LdapGroupSelect';
 import { Popover, DisabledPopover } from './Popover';
+import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
 import {
   UserSpaceStatusOverlay,
   type UserSpaceStatusOverlayItem,
@@ -8250,6 +8251,7 @@ export function UserSpacePanel({
               onMouseLeave={isFileChanged ? handleTreeFileHoverEnd : undefined}
               style={indentStyle}
             >
+              <FileTypeIcon path={node.name} size={14} />
               <span className="userspace-tree-file-label">{node.name}</span>
               {isFileChanged && (
                 <span
@@ -9310,6 +9312,7 @@ export function UserSpacePanel({
                   {renderTreeNodes(fileTree)}
                   {newFileName !== null ? (
                     <div className="userspace-file-item userspace-tree-row userspace-tree-new-file-row">
+                      <FileTypeIcon path={newFileName} size={14} />
                       <input
                         className="userspace-file-rename-input"
                         style={{ paddingLeft: `${newFileParentPath ? 20 : 6}px` }}
@@ -9387,7 +9390,7 @@ export function UserSpacePanel({
               {!canEditWorkspace && <div className="userspace-readonly-badge">Read-only</div>}
               {selectedFileUnsupportedMessage ? (
                 <div className="userspace-nontext-file-placeholder">
-                  <File size={18} />
+                  <FileTypeIcon path={selectedFileDisplayName} size={18} />
                   <div className="userspace-nontext-file-copy">
                     <strong>{selectedFileDisplayName || 'Selected file'}</strong>
                     <p
@@ -10053,6 +10056,7 @@ export function UserSpacePanel({
                                         >
                                           {file.status}
                                         </span>
+                                        <FileTypeIcon path={file.path} size={14} />
                                         <span
                                           className="userspace-snapshot-diff-path"
                                           title={
