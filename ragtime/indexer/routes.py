@@ -249,6 +249,7 @@ from ragtime.indexer.models import (
     CompactConversationRequest,
     ConfigurationWarning,
     Conversation,
+    ConversationBranch,
     ConversationBranchKind,
     ConversationBranchPointInfo,
     ConversationBranchSummary,
@@ -14262,6 +14263,82 @@ async def restore_message_snapshot(
 # -------------------------------------------------------------------------
 
 
+async def _create_workspace_chat_branch_auto_snapshot(
+    workspace_id: Optional[str],
+    user_id: str,
+    from_message_index: int,
+    auto_snapshot: bool,
+) -> Optional[str]:
+    """Best-effort workspace snapshot creation before a chat branch mutation."""
+    if not auto_snapshot or not workspace_id:
+        return None
+
+    try:
+        should_create_snapshot = await userspace_service.should_create_snapshot_for_workspace_chat_branch(
+            workspace_id,
+            user_id,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to determine whether chat branch auto-snapshot is needed: {e}")
+        should_create_snapshot = True
+
+    if not should_create_snapshot:
+        return None
+
+    try:
+        snapshot = await userspace_service.create_snapshot(
+            workspace_id,
+            user_id,
+            message=f"Auto-snapshot before chat branch at message {from_message_index}",
+            auto_sync_to_scm=False,
+        )
+        return snapshot.id
+    except Exception as e:
+        logger.warning(f"Failed to auto-create snapshot for branch: {e}")
+        return None
+
+
+async def _link_branch_snapshot_to_anchor_message(
+    *,
+    conversation_id: str,
+    workspace_id: Optional[str],
+    associated_snapshot_id: Optional[str],
+    from_message_index: int,
+    pre_branch_messages: List[ChatMessage],
+    branch: ConversationBranch,
+) -> None:
+    """Anchor a branch auto-snapshot to the original branch-point message.
+
+    Lets the in-chat restore action resolve the snapshot after a branch
+    switch. Preserves any existing link on that message so a delete rollback
+    continues to target the user-visible snapshot it was already associated
+    with.
+    """
+    if not associated_snapshot_id or not workspace_id:
+        return
+
+    anchor_msg: Optional[ChatMessage] = None
+    if 0 <= from_message_index < len(pre_branch_messages):
+        anchor_msg = pre_branch_messages[from_message_index]
+    elif branch.preserved_messages:
+        anchor_msg = branch.preserved_messages[0]
+
+    if not anchor_msg or not anchor_msg.message_id or anchor_msg.snapshot_restore:
+        return
+
+    keep_count = from_message_index + 1 if anchor_msg.role == "user" else from_message_index
+    try:
+        await repository.upsert_message_snapshot_link(
+            conversation_id=conversation_id,
+            workspace_id=workspace_id,
+            message_id=anchor_msg.message_id,
+            snapshot_id=associated_snapshot_id,
+            restore_message_count=max(keep_count, 0),
+        )
+    except Exception as e:
+        logger.warning(f"Failed to link branch snapshot to anchor message: {e}")
+
+
 @router.get(
     "/conversations/{conversation_id}/branches",
     response_model=List[ConversationBranchSummary],
@@ -14365,29 +14442,12 @@ async def create_conversation_branch(
                 detail="Cannot branch conversation while a chat is in progress. Wait for the current response to finish before editing.",
             )
 
-    # Auto-snapshot for workspace conversations
-    associated_snapshot_id: Optional[str] = None
-    if request.auto_snapshot and workspace_id:
-        try:
-            should_create_snapshot = await userspace_service.should_create_snapshot_for_workspace_chat_branch(
-                workspace_id,
-                user.id,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to determine whether chat branch auto-snapshot is needed: {e}")
-            should_create_snapshot = True
-
-        if should_create_snapshot:
-            try:
-                snapshot = await userspace_service.create_snapshot(
-                    workspace_id,
-                    user.id,
-                    message=f"Auto-snapshot before chat branch at message {request.from_message_index}",
-                    auto_sync_to_scm=False,
-                )
-                associated_snapshot_id = snapshot.id
-            except Exception as e:
-                logger.warning(f"Failed to auto-create snapshot for branch: {e}")
+    associated_snapshot_id = await _create_workspace_chat_branch_auto_snapshot(
+        workspace_id,
+        user.id,
+        request.from_message_index,
+        request.auto_snapshot,
+    )
 
     branch = await repository.create_conversation_branch(
         conversation_id=conversation_id,
@@ -14408,30 +14468,14 @@ async def create_conversation_branch(
             detail="Failed to create branch. The conversation may be locked by an active streaming response.",
         )
 
-    # Per-message snapshot link: anchor the branch snapshot to the original
-    # branch-point message so the in-chat restore action can resolve it after
-    # a branch switch. Preserve any existing link on that message so a delete
-    # rollback continues to target the user-visible snapshot it was already
-    # associated with.
-    if associated_snapshot_id and workspace_id:
-        anchor_msg: Optional[ChatMessage] = None
-        if 0 <= request.from_message_index < len(conv.messages):
-            anchor_msg = conv.messages[request.from_message_index]
-        elif branch.preserved_messages:
-            anchor_msg = branch.preserved_messages[0]
-
-        if anchor_msg and anchor_msg.message_id and not anchor_msg.snapshot_restore:
-            keep_count = request.from_message_index + 1 if anchor_msg.role == "user" else request.from_message_index
-            try:
-                await repository.upsert_message_snapshot_link(
-                    conversation_id=conversation_id,
-                    workspace_id=workspace_id,
-                    message_id=anchor_msg.message_id,
-                    snapshot_id=associated_snapshot_id,
-                    restore_message_count=max(keep_count, 0),
-                )
-            except Exception as e:
-                logger.warning(f"Failed to link branch snapshot to anchor message: {e}")
+    await _link_branch_snapshot_to_anchor_message(
+        conversation_id=conversation_id,
+        workspace_id=workspace_id,
+        associated_snapshot_id=associated_snapshot_id,
+        from_message_index=request.from_message_index,
+        pre_branch_messages=conv.messages,
+        branch=branch,
+    )
 
     # Return summary
     branches = await repository.get_conversation_branches(conversation_id)
@@ -14442,6 +14486,140 @@ async def create_conversation_branch(
     raise HTTPException(
         status_code=500,
         detail="Branch created but not found in the database after creation.",
+    )
+
+
+class EditResendRequest(SendMessageRequest):
+    """Request to replace a branch tail with an edited user message and regenerate."""
+
+    from_message_index: int
+    branch_kind: ConversationBranchKind = ConversationBranchKind.EDIT
+    auto_snapshot: bool = True
+
+
+class EditResendResponse(BaseModel):
+    """Branch, conversation, and background task created by an edit-resend operation."""
+
+    branch: ConversationBranchSummary
+    conversation: ConversationResponse
+    task: ChatTaskResponse
+
+
+@router.post(
+    "/conversations/{conversation_id}/branches/edit-resend",
+    response_model=EditResendResponse,
+)
+async def edit_resend_conversation_branch(
+    conversation_id: str,
+    request: EditResendRequest,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Atomically replace a branch tail with an edited message and start generation."""
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(conv)
+
+    _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
+        conv,
+        user,
+        workspace_id,
+        "editor",
+    )
+
+    user_message = request.message.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    current_time_context = _build_current_time_prompt_context(request)
+    ui_theme_context = _build_ui_theme_prompt_context(request)
+    associated_snapshot_id = await _create_workspace_chat_branch_auto_snapshot(
+        workspace_id,
+        user.id,
+        request.from_message_index,
+        request.auto_snapshot,
+    )
+    branch, updated_conversation, claimed_task, outcome = await repository.create_branch_and_start_edit_resend(
+        conversation_id,
+        request.from_message_index,
+        user_message,
+        branch_kind=request.branch_kind,
+        user_id=user.id,
+        parent_branch_id=conv.active_branch_id,
+        associated_snapshot_id=associated_snapshot_id,
+    )
+    outcome_statuses = {
+        "conversation_not_found": (404, "Conversation not found"),
+        "invalid_branch_point": (400, "Invalid message index"),
+        "active_task": (409, "Cannot branch conversation while a chat is in progress. Wait for the current response to finish before editing."),
+        "claim_failed": (409, "Conversation was claimed by another request. Please try again."),
+    }
+    if outcome in outcome_statuses:
+        status_code, detail = outcome_statuses[outcome]
+        raise HTTPException(status_code=status_code, detail=detail)
+    if outcome != "created" or not branch or not updated_conversation or not claimed_task:
+        raise HTTPException(status_code=500, detail="Failed to create edit-resend background task")
+
+    await _link_branch_snapshot_to_anchor_message(
+        conversation_id=conversation_id,
+        workspace_id=workspace_id,
+        associated_snapshot_id=associated_snapshot_id,
+        from_message_index=request.from_message_index,
+        pre_branch_messages=conv.messages,
+        branch=branch,
+    )
+
+    conv = updated_conversation
+    try:
+        resolved_model = await _validate_generation_ready_after_user_message(
+            conversation_id,
+            conv.model,
+            user_id=conv.user_id,
+            workspace_id=conv.workspace_id,
+        )
+        conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
+    except Exception:
+        await repository.cancel_chat_task(claimed_task.id)
+        raise
+
+    try:
+        task = await _create_background_chat_task_after_user_message(
+            conversation_id=conversation_id,
+            user_message=user_message,
+            user=user,
+            conv=conv,
+            blocked_tool_names=blocked_tool_names,
+            workspace_context=workspace_context,
+            current_time_context=current_time_context,
+            ui_theme_context=ui_theme_context,
+            disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
+            existing_task_id=claimed_task.id,
+        )
+    except Exception:
+        await repository.cancel_chat_task(claimed_task.id)
+        raise
+
+    schedule_title_generation(conversation_id, user_message)
+    branches = await repository.get_conversation_branches(conversation_id)
+    branch_summary = next((candidate for candidate in branches if candidate.id == branch.id), None)
+    if not branch_summary:
+        raise HTTPException(status_code=500, detail="Branch created but not found in the database after creation.")
+
+    return EditResendResponse(
+        branch=branch_summary,
+        conversation=_to_conversation_response(conv),
+        task=_to_chat_task_response(task),
     )
 
 

@@ -2777,6 +2777,18 @@ export interface CreateConversationBranchRequest {
   auto_snapshot?: boolean;
 }
 
+export interface EditResendRequest extends SendMessageRequest {
+  from_message_index: number;
+  branch_kind?: ConversationBranchKind;
+  auto_snapshot?: boolean;
+}
+
+export interface EditResendResponse {
+  branch: ConversationBranchSummary;
+  conversation: Conversation;
+  task: ChatTask;
+}
+
 export interface MessageSnapshotRestoreResponse {
   conversation: Conversation;
   restored_snapshot_id: string;

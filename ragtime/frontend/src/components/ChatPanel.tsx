@@ -16292,19 +16292,24 @@ export function ChatPanel({
 
     const truncateAt = Math.max(0, editingMessageIdx);
 
-    let createdBranch = false;
-
     try {
-      // 1. Create a branch to preserve the original messages
-      await createBranchForMessageMutation(
-        conversationId,
-        truncateAt,
-        activeConversation.messages.length,
-        'edit',
-      );
-      createdBranch = true;
+      const blockReason = await getBranchSendBlockReason('edit', activeConversation);
+      if (blockReason) {
+        throw new Error(blockReason);
+      }
 
-      // Clear the edit state after branch creation succeeds.
+      const response = await api.editResendConversationMessage(
+        conversationId,
+        {
+          message: messageToSend,
+          from_message_index: truncateAt,
+          branch_kind: 'edit',
+          auto_snapshot: Boolean(workspaceId),
+        },
+        workspaceId,
+      );
+
+      // Clear edit state only after the atomic branch-and-resend succeeds.
       setEditingMessageIdx(null);
       editMessageSegmentsRef.current = EMPTY_RICH_SEGMENTS;
       setEditMessageSegments(EMPTY_RICH_SEGMENTS);
@@ -16312,38 +16317,9 @@ export function ChatPanel({
       activeComposerRef.current = 'main';
       setError(null);
 
-      // 2. Local Optimistic Update
-      const messagesToKeep = activeConversation.messages.slice(0, truncateAt);
-
-      let content: string | ContentPart[] = messageToSend;
-      try {
-        const parsed = JSON.parse(messageToSend);
-        if (Array.isArray(parsed) && parsed.some((p) => p.type)) {
-          content = parsed;
-        }
-      } catch {
-        // Not JSON
-      }
-
-      const optimisticMsg: ChatMessage = {
-        role: 'user',
-        content: content as ChatMessage['content'],
-        timestamp: new Date().toISOString(),
-      };
-
-      // The backend cleared active_branch_id when it created the new branch
-      // (we are now on the live path). Mirror that here so the branch nav
-      // lineage walk does not still resolve to the prior branch and show
-      // e.g. "5/11" when the user is actually on the new "11/11" branch.
-      const optimisticConv: Conversation = {
-        ...activeConversation,
-        messages: [...messagesToKeep, optimisticMsg],
-        active_branch_id: null,
-      };
-
-      setActiveConversation(optimisticConv);
+      setActiveConversation(response.conversation);
       setConversations((prev) =>
-        prev.map((c) => (c.id === optimisticConv.id ? optimisticConv : c)),
+        prev.map((c) => (c.id === response.conversation.id ? response.conversation : c)),
       );
 
       setIsStreaming(true);
@@ -16353,32 +16329,27 @@ export function ChatPanel({
       setHitMaxIterations(false);
       setIsConnectionError(false);
 
-      // 3. Start background task
-      const task = await api.sendMessageBackground(conversationId, messageToSend, workspaceId);
-      setActiveTask(task);
+      setActiveTask(response.task);
       setInterruptedTask(null);
-      syncConversationActiveTaskId(conversationId, task.id);
+      syncConversationActiveTaskId(conversationId, response.task.id);
 
-      // 4. Connect to stream
-      await connectTaskStream(task.id, conversationId);
+      await connectTaskStream(response.task.id, conversationId);
 
-      // 5. Refresh branch points for UI
       void refreshBranchPoints(conversationId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to resend message');
       setIsStreaming(false);
       setStreamingContent('');
       setStreamingEvents([]);
+      setStreamingConversationId(null);
 
-      if (createdBranch) {
-        // Restore authoritative state from server on error after branch mutation.
-        try {
-          const refreshed = await api.getConversation(conversationId, workspaceId);
-          setActiveConversation(refreshed);
-          setConversations((prev) => prev.map((c) => (c.id === refreshed.id ? refreshed : c)));
-        } catch (refreshErr) {
-          console.error('Failed to refresh conversation after edit error:', refreshErr);
-        }
+      try {
+        const refreshed = await api.getConversation(conversationId, workspaceId);
+        setActiveConversation(refreshed);
+        setConversations((prev) => prev.map((c) => (c.id === refreshed.id ? refreshed : c)));
+        syncConversationActiveTaskId(conversationId, refreshed.active_task_id ?? null);
+      } catch (refreshErr) {
+        console.error('Failed to refresh conversation after edit error:', refreshErr);
       }
     } finally {
       setIsSubmittingEdit(false);

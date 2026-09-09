@@ -5015,7 +5015,7 @@ class IndexerRepository:
         db = await self._get_db()
         user_message = _sanitize_for_postgres(user_message)
 
-        async with db.tx() as tx:
+        async with db.tx(max_wait=timedelta(seconds=10), timeout=timedelta(seconds=30)) as tx:
             prisma_conv = await tx.conversation.find_unique(
                 where={"id": conversation_id},
                 include={"user": True},
@@ -5070,34 +5070,153 @@ class IndexerRepository:
                         return None, self._prisma_task_to_model(current_active_task), False
                 return None, None, False
 
-            claimed_conv = await tx.conversation.find_unique(
+            new_message = {
+                "role": "user",
+                "content": user_message,
+                "timestamp": utc_now().isoformat(),
+                "message_id": str(uuid.uuid4()),
+            }
+            token_delta = _estimate_message_tokens(new_message)
+            updated_rows = await tx.execute_raw(f"""
+                UPDATE conversations
+                SET
+                    messages = COALESCE(messages, '[]'::jsonb) || {_sql_jsonb_literal(new_message)},
+                    total_tokens = total_tokens + {int(token_delta)},
+                    updated_at = NOW()
+                WHERE id = {_sql_quote_literal(conversation_id)}
+                AND active_task_id = {_sql_quote_literal(task_id)}
+                """)
+            if updated_rows != 1:
+                # Post-claim failure: raise so the transaction rolls back instead
+                # of committing a claimed task without the user message.
+                raise RuntimeError("Failed to append user message after claiming conversation task")
+
+            updated_conv = await tx.conversation.find_unique(
                 where={"id": conversation_id},
                 include={"user": True},
             )
-            if not claimed_conv:
-                return None, None, False
+            if not updated_conv:
+                raise RuntimeError("Conversation disappeared after claiming conversation task")
 
-            messages: List[dict[str, Any]] = _normalize_message_payloads(claimed_conv.messages)
-            messages.append(
-                {
+            return self._prisma_conversation_to_model(updated_conv), self._prisma_task_to_model(prisma_task), True
+
+    async def create_branch_and_start_edit_resend(
+        self,
+        conversation_id: str,
+        branch_point_index: int,
+        user_message: str,
+        *,
+        branch_kind: Optional[ConversationBranchKind],
+        user_id: Optional[str],
+        parent_branch_id: Optional[str],
+        associated_snapshot_id: Optional[str],
+    ) -> tuple[Optional[ConversationBranch], Optional[Conversation], Optional[ChatTask], str]:
+        """Atomically preserve an edit branch, replace its live path, and start generation."""
+        db = await self._get_db()
+        user_message = _sanitize_for_postgres(user_message)
+
+        class ClaimFailed(Exception):
+            pass
+
+        try:
+            async with db.tx(max_wait=timedelta(seconds=10), timeout=timedelta(seconds=30)) as tx:
+                prisma_conv = await tx.conversation.find_unique(
+                    where={"id": conversation_id},
+                    include={"user": True},
+                )
+                if not prisma_conv:
+                    return None, None, None, "conversation_not_found"
+
+                messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                if branch_point_index < 0 or branch_point_index > len(messages):
+                    return None, None, None, "invalid_branch_point"
+
+                active_task_id = getattr(prisma_conv, "activeTaskId", None)
+                if active_task_id:
+                    active_task = await tx.chattask.find_unique(where={"id": active_task_id})
+                    if active_task and active_task.status in {PrismaChatTaskStatus.pending, PrismaChatTaskStatus.running}:
+                        return None, None, self._prisma_task_to_model(active_task), "active_task"
+
+                branch_id = str(uuid.uuid4())
+                await tx.conversationbranch.create(
+                    data={
+                        "id": branch_id,
+                        "conversationId": conversation_id,
+                        "parentBranchId": parent_branch_id,
+                        "branchPointIndex": branch_point_index,
+                        "branchKind": cast(Any, branch_kind.value if branch_kind else None),
+                        "preservedMessages": Json(list(messages[branch_point_index:])),
+                        "associatedSnapshotId": associated_snapshot_id,
+                        "createdByUserId": user_id,
+                    }
+                )
+
+                task_id = str(uuid.uuid4())
+                prisma_task = await tx.chattask.create(
+                    data={  # type: ignore[arg-type]
+                        "id": task_id,
+                        "conversation": {"connect": {"id": conversation_id}},
+                        "status": _to_prisma_task_status(ChatTaskStatus.pending),
+                        "userMessage": user_message,
+                    }
+                )
+
+                claim_guard = "active_task_id IS NULL"
+                if active_task_id:
+                    claim_guard = f"active_task_id = {_sql_quote_literal(active_task_id)}"
+                claimed_rows = await tx.execute_raw(f"""
+                    UPDATE conversations
+                    SET active_task_id = {_sql_quote_literal(task_id)}, updated_at = NOW()
+                    WHERE id = {_sql_quote_literal(conversation_id)}
+                    AND {claim_guard}
+                    """)
+                if claimed_rows != 1:
+                    raise ClaimFailed
+
+                new_message = {
                     "role": "user",
                     "content": user_message,
                     "timestamp": utc_now().isoformat(),
                     "message_id": str(uuid.uuid4()),
                 }
-            )
-            total_tokens = _estimate_effective_conversation_tokens(messages)
-            updated_conv = await tx.conversation.update(
-                where={"id": conversation_id},
-                data={
-                    "messages": Json(messages),
-                    "totalTokens": total_tokens,
-                    "updatedAt": utc_now(),
-                },
-                include={"user": True},
-            )
+                token_delta = _estimate_message_tokens(new_message)
+                computed_total = _estimate_effective_conversation_tokens(messages[:branch_point_index]) + token_delta
+                updated_rows = await tx.execute_raw(f"""
+                    UPDATE conversations
+                    SET
+                        messages = (
+                            SELECT COALESCE(jsonb_agg(elem ORDER BY ord), '[]'::jsonb)
+                            FROM jsonb_array_elements(messages) WITH ORDINALITY AS t(elem, ord)
+                            WHERE ord <= {int(branch_point_index)}
+                        ) || {_sql_jsonb_literal(new_message)},
+                        total_tokens = {int(computed_total)},
+                        active_branch_id = NULL,
+                        updated_at = NOW()
+                    WHERE id = {_sql_quote_literal(conversation_id)}
+                    AND active_task_id = {_sql_quote_literal(task_id)}
+                    """)
+                if updated_rows != 1:
+                    raise ClaimFailed
 
-            return self._prisma_conversation_to_model(updated_conv), self._prisma_task_to_model(prisma_task), True
+                created_branch = await tx.conversationbranch.find_unique(
+                    where={"id": branch_id},
+                    include={"createdByUser": True},
+                )
+                updated_conv = await tx.conversation.find_unique(
+                    where={"id": conversation_id},
+                    include={"user": True},
+                )
+                if not created_branch or not updated_conv:
+                    raise ClaimFailed
+
+                return (
+                    self._prisma_branch_to_model(created_branch),
+                    self._prisma_conversation_to_model(updated_conv),
+                    self._prisma_task_to_model(prisma_task),
+                    "created",
+                )
+        except ClaimFailed:
+            return None, None, None, "claim_failed"
 
     async def get_chat_task(self, task_id: str) -> Optional[ChatTask]:
         """Get a chat task by ID."""

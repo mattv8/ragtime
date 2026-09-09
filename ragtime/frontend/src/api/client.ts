@@ -3240,6 +3240,28 @@ export const api = {
   },
 
   /**
+   * Atomically branch, replace a user message, and start its background task.
+   */
+  async editResendConversationMessage(
+    conversationId: string,
+    request: import('@/types').EditResendRequest,
+    workspaceId?: string,
+  ): Promise<import('@/types').EditResendResponse> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/branches/edit-resend`,
+        workspaceId,
+      ),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withClientClock(request)),
+      },
+    );
+    return handleResponse<import('@/types').EditResendResponse>(response);
+  },
+
+  /**
    * Switch to a different conversation branch.
    */
   async switchConversationBranch(
