@@ -20,6 +20,7 @@ from ragtime.core.model_providers import (
     resolve_provider_base_url,
 )
 from ragtime.core.ollama import NUM_GPU, is_reachable, list_models
+from ragtime.core.openai_codex_auth import ensure_openai_codex_token_fresh
 
 logger = get_logger(__name__)
 
@@ -67,6 +68,7 @@ async def validate_embedding_provider() -> ValidationResult:
             "omlx": _validate_omlx_embeddings,
             "openai": _validate_openai_embeddings,
             "openrouter": _validate_openrouter_embeddings,
+            "openai_codex": _validate_openai_codex_embeddings,
         }
         validator = validators.get(provider)
         if validator is None:
@@ -213,6 +215,84 @@ async def _validate_openai_embeddings(settings: object, model: str) -> Validatio
         return ValidationResult(
             valid=False,
             error="OpenAI validation failed",
+            details=str(e),
+        )
+
+    return ValidationResult(valid=True)
+
+
+async def _validate_openai_codex_embeddings(settings: object, model: str) -> ValidationResult:
+    """Validate OpenAI Codex OAuth credentials and the selected embedding model."""
+    try:
+        token = await ensure_openai_codex_token_fresh(settings=settings)
+    except Exception as e:
+        return ValidationResult(
+            valid=False,
+            error="OpenAI Codex authentication failed",
+            details=str(e),
+        )
+
+    if not token:
+        return ValidationResult(
+            valid=False,
+            error="OpenAI Codex is not authenticated",
+            details="Connect OpenAI Codex in Settings to use Codex embeddings.",
+        )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    account_id = str(getattr(settings, "openai_codex_account_id", "") or "").strip()
+    if account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/embeddings",
+                headers=headers,
+                json={"model": model, "input": "test"},
+            )
+
+        if response.status_code in {401, 403}:
+            return ValidationResult(
+                valid=False,
+                error="OpenAI Codex authentication failed",
+                details="The configured Codex credentials were rejected. Reconnect OpenAI Codex in Settings.",
+            )
+        if response.status_code == 404:
+            return ValidationResult(
+                valid=False,
+                error=f"OpenAI Codex model '{model}' not found",
+                details=f"The embedding model '{model}' does not exist. Check the model in Settings.",
+            )
+        if response.status_code != 200:
+            try:
+                error_msg = response.json().get("error", {}).get("message", response.text[:200])
+            except (TypeError, ValueError):
+                error_msg = response.text[:200]
+            return ValidationResult(
+                valid=False,
+                error="OpenAI Codex API error",
+                details=f"API returned status {response.status_code}: {error_msg}",
+            )
+    except httpx.ConnectError:
+        return ValidationResult(
+            valid=False,
+            error="Cannot connect to OpenAI Codex embeddings",
+            details="Failed to reach the OpenAI embeddings API. Check your internet connection.",
+        )
+    except httpx.TimeoutException:
+        return ValidationResult(
+            valid=False,
+            error="OpenAI Codex embeddings timeout",
+            details="Connection to the OpenAI embeddings API timed out.",
+        )
+    except Exception as e:
+        return ValidationResult(
+            valid=False,
+            error="OpenAI Codex validation failed",
             details=str(e),
         )
 
