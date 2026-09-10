@@ -3353,13 +3353,16 @@ class RAGComponents:
                     mismatch_msg = (
                         f"Embedding dimension mismatch: index has {embedding_dim} dims, "
                         f"but current model produces {current_embedding_dim} dims. "
-                        f"Re-index required."
+                        "Restore the original embedding model and dimensions, then retry loading, "
+                        "or re-index with the current configuration."
                     )
                     logger.warning(f"Index {index_name}: {mismatch_msg}")
                     self._index_details[index_name]["status"] = "error"
                     self._index_details[index_name]["error"] = mismatch_msg
                     self._index_details[index_name]["embedding_dimension"] = embedding_dim
+                    error_details = self._index_details[index_name].copy()
                     self.unload_index(index_name)
+                    self._index_details[index_name] = error_details
                     await self._create_agent()
                     return False
 

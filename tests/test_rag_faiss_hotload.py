@@ -103,6 +103,62 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
             load_local.assert_called_once()
             rag._create_agent.assert_awaited_once()
 
+    async def test_load_faiss_index_from_metadata_retains_dimension_mismatch_error_after_unload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            index_path = Path(directory) / "hot-index"
+            index_path.mkdir()
+            rag = RAGComponents()
+            rag._core_ready = True
+            rag._app_settings = {
+                "aggregate_search": True,
+                "search_results_k": 5,
+                "search_use_mmr": True,
+                "search_mmr_lambda": 0.5,
+                "tool_output_mode": "default",
+            }
+            rag._tool_configs = []
+            rag._embedding_model = FakeEmbeddings()
+            rag._create_agent = AsyncMock()
+            rag.retrievers["hot-index"] = object()
+            rag.faiss_dbs["hot-index"] = object()
+            rag._load_index_metadata = AsyncMock(
+                return_value=[
+                    {
+                        "name": "hot-index",
+                        "path": str(index_path),
+                        "enabled": True,
+                        "chunk_count": 1,
+                        "size_bytes": 1024,
+                    }
+                ]
+            )
+            corrected_db = FakeFaissIndex()
+            corrected_db.index.d = 4
+
+            with (
+                patch("ragtime.rag.components.get_app_settings", new=AsyncMock(return_value=rag._app_settings)),
+                patch("ragtime.rag.components.get_tool_configs", new=AsyncMock(return_value=[])),
+                patch(
+                    "ragtime.rag.components.FAISS.load_local",
+                    side_effect=[SimpleNamespace(index=SimpleNamespace(d=4)), corrected_db],
+                ),
+                patch("ragtime.rag.components.repository.update_index_memory_stats", new=AsyncMock(return_value=True)),
+            ):
+                loaded = await rag.load_faiss_index_from_metadata("hot-index")
+                self.assertFalse(loaded)
+                self.assertNotIn("hot-index", rag.retrievers)
+                self.assertNotIn("hot-index", rag.faiss_dbs)
+                self.assertEqual(rag._index_details["hot-index"]["status"], "error")
+                self.assertIn("Embedding dimension mismatch", rag._index_details["hot-index"]["error"])
+                rag._embedding_model = SimpleNamespace(aembed_query=AsyncMock(return_value=[0.1, 0.2, 0.3, 0.4]))
+                reloaded = await rag.load_faiss_index_from_metadata("hot-index")
+
+        self.assertTrue(reloaded)
+        self.assertIn("hot-index", rag.retrievers)
+        self.assertIn("hot-index", rag.faiss_dbs)
+        self.assertEqual(rag._index_details["hot-index"]["status"], "loaded")
+        self.assertIsNone(rag._index_details["hot-index"]["error"])
+
     async def test_hot_loaded_retriever_invokes_faiss_search_coordinator(self):
         rag = RAGComponents()
         rag._app_settings = {

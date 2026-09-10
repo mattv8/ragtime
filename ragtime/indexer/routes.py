@@ -1799,6 +1799,8 @@ class ImportFaissIndexResponse(BaseModel):
     source_type: str
     vector_store_type: str
     message: str
+    loaded: bool
+    load_error: Optional[str] = None
 
 
 @router.post("/import-faiss", response_model=ImportFaissIndexResponse)
@@ -2047,11 +2049,25 @@ async def import_faiss_index(
             display_name=display_name_value,
         )
 
-        # Hot-load into the running RAG components so it is searchable immediately
+        # Hot-load into the running RAG components so it is searchable immediately.
+        # Disk persistence succeeded above even if the in-memory load cannot.
+        loaded = False
+        load_error: Optional[str] = None
         try:
-            await rag.load_faiss_index_from_metadata(safe_name)
+            loaded = await rag.load_faiss_index_from_metadata(safe_name)
         except Exception as load_err:
-            logger.warning(f"FAISS import: hot-load failed for '{safe_name}': {load_err}")
+            logger.exception(f"FAISS import: hot-load failed for '{safe_name}': {load_err}")
+
+        if not loaded:
+            index_details = rag.loading_status.get("index_details", [])
+            load_error = next(
+                (details.get("error") for details in index_details if details.get("name") == safe_name and details.get("error")),
+                None,
+            )
+            if not load_error:
+                load_error = (
+                    "The index could not be loaded for search. Check the embedding configuration and index status, then retry loading or re-index if needed."
+                )
 
         logger.info(f"Imported FAISS index '{safe_name}': {doc_count} chunks, {size_bytes} bytes, source_type={source_type}")
 
@@ -2064,7 +2080,13 @@ async def import_faiss_index(
             size_bytes=size_bytes,
             source_type=source_type,
             vector_store_type=metadata_payload.get("vector_store_type") or "faiss",
-            message=(f"Imported FAISS index '{safe_name}' with {chunk_count} chunks. It is now available for search."),
+            message=(
+                f"Imported FAISS index '{safe_name}' with {chunk_count} chunks. It is now available for search."
+                if loaded
+                else f"Imported FAISS index '{safe_name}' with {chunk_count} chunks. It was saved but unavailable for search."
+            ),
+            loaded=loaded,
+            load_error=load_error,
         )
     finally:
         # Best-effort cleanup of the upload tmp dir

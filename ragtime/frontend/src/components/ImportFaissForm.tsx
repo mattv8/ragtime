@@ -25,7 +25,7 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
   const [isLoading, setIsLoading] = useState(false);
   const [showRiskConfirm, setShowRiskConfirm] = useState(false);
   const [status, setStatus] = useState<{
-    type: 'info' | 'success' | 'error';
+    type: 'info' | 'success' | 'warning' | 'error';
     message: string;
   } | null>(null);
   const [result, setResult] = useState<ImportFaissIndexResponse | null>(null);
@@ -73,7 +73,16 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
 
       const response = await api.importFaissIndex(formData);
       setResult(response);
-      setStatus({ type: 'success', message: response.message });
+      if (response.loaded === true) {
+        setStatus({ type: 'success', message: response.message });
+      } else {
+        setStatus({
+          type: 'warning',
+          message: `The index was saved but is unavailable for search.${
+            response.load_error ? ` ${response.load_error}` : ''
+          }`,
+        });
+      }
       onImported?.(response);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Import failed';
@@ -84,7 +93,7 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
   };
 
   return (
-    <div>
+    <div id="import-faiss-form">
       <div className="form-group">
         <FileDropZone
           file={file}
@@ -192,17 +201,22 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
 
       {result && (
         <div
+          id="import-faiss-result"
           style={{
             marginTop: '16px',
             padding: '12px',
-            background: 'var(--color-success-light)',
-            border: '1px solid var(--color-success-border)',
-            borderRadius: '8px',
+            background:
+              result.loaded === true ? 'var(--color-success-light)' : 'var(--color-warning-light)',
+            border: `1px solid ${
+              result.loaded === true ? 'var(--color-success-border)' : 'var(--color-warning-border)'
+            }`,
+            borderRadius: 'var(--radius-md)',
             fontSize: '0.9rem',
           }}
         >
           <div style={{ marginBottom: '6px' }}>
-            <strong>Imported</strong> &quot;{result.display_name || result.name}&quot;
+            <strong>{result.loaded === true ? 'Imported' : 'Saved but not loaded'}</strong> &quot;
+            {result.display_name || result.name}&quot;
           </div>
           <div>Chunks: {result.chunk_count.toLocaleString()}</div>
           <div>Source type: {result.source_type}</div>
@@ -212,10 +226,23 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
               Description: {result.description}
             </div>
           )}
+          {result.loaded !== true && result.load_error && (
+            <div style={{ marginTop: '6px', color: 'var(--color-text-secondary)' }}>
+              Load error: {result.load_error}
+            </div>
+          )}
         </div>
       )}
 
-      {status && <div className={`status-message ${status.type}`}>{status.message}</div>}
+      {status && (
+        <div
+          id="import-faiss-status"
+          className={`status-message ${status.type}`}
+          role={status.type === 'warning' || status.type === 'error' ? 'alert' : undefined}
+        >
+          {status.message}
+        </div>
+      )}
 
       {showRiskConfirm && (
         <div className="modal-overlay" onClick={() => setShowRiskConfirm(false)}>

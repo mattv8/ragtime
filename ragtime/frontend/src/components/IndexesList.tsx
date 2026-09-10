@@ -2,7 +2,13 @@ import { useEffect, useState } from 'react';
 import { HardDrive, MemoryStick, GitCommitHorizontal, AlertTriangle } from 'lucide-react';
 import { api } from '@/api';
 import { formatSizeMB } from '@/utils';
-import type { IndexInfo, IndexJob, RepoVisibilityResponse, IndexLoadingDetail } from '@/types';
+import type {
+  ImportFaissIndexResponse,
+  IndexInfo,
+  IndexJob,
+  RepoVisibilityResponse,
+  IndexLoadingDetail,
+} from '@/types';
 import { GitIndexWizard } from './GitIndexWizard';
 import { UploadForm } from './UploadForm';
 import { ImportFaissForm } from './ImportFaissForm';
@@ -306,6 +312,13 @@ export function IndexesList({
     onJobCreated?.();
   };
 
+  const handleImportedFaiss = (result: ImportFaissIndexResponse) => {
+    onJobCreated?.();
+    if (result.loaded === true) {
+      setShowCreateWizard(false);
+    }
+  };
+
   const handleDeleteIndex = async (name: string) => {
     setDeleting(name);
     try {
@@ -573,12 +586,7 @@ export function IndexesList({
               onNavigateToSettings={onNavigateToSettings}
             />
           ) : (
-            <ImportFaissForm
-              onImported={() => {
-                handleCompletedCreate();
-              }}
-              onCancel={handleCancelWizard}
-            />
+            <ImportFaissForm onImported={handleImportedFaiss} onCancel={handleCancelWizard} />
           )}
         </div>
       )}

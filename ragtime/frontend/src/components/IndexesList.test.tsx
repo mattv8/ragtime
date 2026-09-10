@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IndexesList } from './IndexesList';
-import type { IndexInfo, IndexJob } from '@/types';
+import type { ImportFaissIndexResponse, IndexInfo, IndexJob } from '@/types';
 
 const apiMock = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -48,9 +48,28 @@ vi.mock('./ImportFaissForm', () => ({
   ImportFaissForm: (props: Record<string, unknown>) => {
     importFaissPropsMock.current = props;
     return (
-      <button type="button" onClick={() => (props.onImported as (() => void) | undefined)?.()}>
-        trigger import job
-      </button>
+      <>
+        <button
+          type="button"
+          onClick={() =>
+            (props.onImported as ((result: ImportFaissIndexResponse) => void) | undefined)?.({
+              loaded: false,
+            } as ImportFaissIndexResponse)
+          }
+        >
+          trigger partial import
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            (props.onImported as ((result: ImportFaissIndexResponse) => void) | undefined)?.({
+              loaded: true,
+            } as ImportFaissIndexResponse)
+          }
+        >
+          trigger loaded import
+        </button>
+      </>
     );
   },
 }));
@@ -159,7 +178,7 @@ afterEach(() => {
 });
 
 describe('IndexesList create wizard handlers', () => {
-  it('keeps the git wizard open for git jobs but still closes for upload and import flows', async () => {
+  it('keeps the git wizard open for git jobs and closes for upload jobs', async () => {
     const user = userEvent.setup();
     const onJobCreated = vi.fn();
 
@@ -188,10 +207,33 @@ describe('IndexesList create wizard handlers', () => {
 
     await user.click(screen.getByRole('button', { name: /Add Document Index open/i }));
     await user.click(screen.getByRole('button', { name: 'Import FAISS' }));
-    await user.click(screen.getByRole('button', { name: 'trigger import job' }));
+    await user.click(screen.getByRole('button', { name: 'trigger loaded import' }));
 
     expect(onJobCreated).toHaveBeenCalledTimes(3);
-    expect(screen.queryByRole('button', { name: 'trigger import job' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'trigger loaded import' })).toBeNull();
+  });
+
+  it('keeps the import form open after a saved but unloaded import while refreshing the list', async () => {
+    const user = userEvent.setup();
+    const onJobCreated = vi.fn();
+
+    render(
+      <IndexesList
+        indexes={[]}
+        jobs={[]}
+        loading={false}
+        error={null}
+        onDelete={vi.fn()}
+        onJobCreated={onJobCreated}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /Add Document Index open/i }));
+    await user.click(screen.getByRole('button', { name: 'Import FAISS' }));
+    await user.click(screen.getByRole('button', { name: 'trigger partial import' }));
+
+    expect(onJobCreated).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'trigger partial import' })).toBeTruthy();
   });
 });
 

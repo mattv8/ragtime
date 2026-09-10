@@ -620,6 +620,8 @@ export interface ImportFaissIndexResponse {
   source_type: string;
   vector_store_type: string;
   message: string;
+  loaded: boolean;
+  load_error: string | null;
 }
 
 // Index Analysis Types (pre-indexing estimation)

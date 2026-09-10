@@ -109,6 +109,8 @@ class ImportFaissIndexTests(unittest.IsolatedAsyncioTestCase):
         temp: _TempDir,
         *,
         load_return: bool | None = None,
+        load_side_effect: Exception | None = None,
+        load_error: str | None = None,
         metadata_return: Any = None,
     ) -> tuple[IndexerService, SimpleNamespace, SimpleNamespace]:
         service = IndexerService(index_base_path=str(temp.path))
@@ -118,7 +120,10 @@ class ImportFaissIndexTests(unittest.IsolatedAsyncioTestCase):
         )
         fake_rag = SimpleNamespace(
             unload_index=lambda _name: None,
-            load_faiss_index_from_metadata=AsyncMock(return_value=load_return),
+            load_faiss_index_from_metadata=AsyncMock(return_value=load_return, side_effect=load_side_effect),
+            loading_status={
+                "index_details": ([{"name": "odev_proj", "error": load_error}] if load_error else []),
+            },
         )
         return service, fake_repo, fake_rag
 
@@ -165,6 +170,66 @@ class ImportFaissIndexTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.description, description)
         self.assertEqual(response.chunk_count, 7)
         self.assertEqual(response.source_type, "upload")
+        self.assertTrue(response.loaded)
+        self.assertIsNone(response.load_error)
+        fake_rag.load_faiss_index_from_metadata.assert_awaited_once_with("odev_proj")
+
+    async def test_import_faiss_index_reports_saved_but_unavailable_when_hot_load_returns_false(self) -> None:
+        zip_bytes = _build_faiss_zip("odev_proj", description="", chunks=1)
+
+        with _TempDir() as temp:
+            service, fake_repo, fake_rag = self._make_service_and_patches(
+                temp,
+                load_return=False,
+                load_error=(
+                    "Embedding dimension mismatch: index has 768 dims, but current model produces 1024 dims. "
+                    "Restore the original embedding model and dimensions, then retry loading, "
+                    "or re-index with the current configuration."
+                ),
+            )
+            with self._patch_routes(service, fake_repo, fake_rag):
+                response = await import_faiss_index(
+                    file=_make_upload("odev_proj.zip", zip_bytes),
+                    name=None,
+                    description=None,
+                    overwrite=False,
+                    _user=_make_admin(),
+                )
+
+        self.assertFalse(response.loaded)
+        self.assertEqual(
+            response.load_error,
+            (
+                "Embedding dimension mismatch: index has 768 dims, but current model produces 1024 dims. "
+                "Restore the original embedding model and dimensions, then retry loading, "
+                "or re-index with the current configuration."
+            ),
+        )
+        self.assertIn("saved but unavailable for search", response.message)
+        fake_rag.load_faiss_index_from_metadata.assert_awaited_once_with("odev_proj")
+
+    async def test_import_faiss_index_reports_saved_but_unavailable_when_hot_load_raises(self) -> None:
+        zip_bytes = _build_faiss_zip("odev_proj", description="", chunks=1)
+
+        with _TempDir() as temp:
+            service, fake_repo, fake_rag = self._make_service_and_patches(
+                temp,
+                load_side_effect=RuntimeError("loader failed"),
+            )
+            with self._patch_routes(service, fake_repo, fake_rag):
+                response = await import_faiss_index(
+                    file=_make_upload("odev_proj.zip", zip_bytes),
+                    name=None,
+                    description=None,
+                    overwrite=False,
+                    _user=_make_admin(),
+                )
+
+        self.assertFalse(response.loaded)
+        self.assertTrue(response.load_error)
+        self.assertNotIn("loader failed", response.load_error)
+        self.assertIn("saved but unavailable for search", response.message)
+        fake_rag.load_faiss_index_from_metadata.assert_awaited_once_with("odev_proj")
 
     async def test_import_faiss_index_rejects_missing_faiss_files(self) -> None:
         from fastapi import HTTPException
