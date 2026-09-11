@@ -140,6 +140,57 @@ docker exec ragtime-dev restore --files-only --replace-existing-data /tmp/backup
 
 > **Recovery note:** Plain backups do not include `.encryption_key`. If you need a backup that can restore encrypted secrets on its own, make an encrypted backup with `--include-secret` so the managed key is only present inside ciphertext, or preserve `.encryption_key` separately alongside your restore materials.
 
+### Import and Export Individual Fixtures
+
+The app containers provide `export <type>` and `import <type>` commands. Currently
+`chat` is implemented. These commands transfer individual records; use the
+existing `backup`/`restore` commands above for whole-server recovery.
+
+```bash
+# Export by full/partial ID or a unique title fragment. JSON goes to stdout.
+umask 077
+docker exec ragtime export chat 'Plan Infoscan Odoo PRs' > chat.json
+
+# Import into the dev database via stdin; specify an existing destination owner.
+docker exec -i ragtime-dev import chat --owner 'local:admin' < chat.json
+
+# Or copy the file into the destination container and import by path.
+docker cp chat.json ragtime-dev:/tmp/chat.json
+docker exec ragtime-dev import chat /tmp/chat.json \
+  --owner 'local:admin' --title 'Imported chat for debugging'
+
+docker exec ragtime-dev export chat --help
+docker exec ragtime-dev import chat --help
+```
+
+Run the commands directly through `docker exec`; `sh -c 'export ...'` invokes the
+shell's environment-variable builtin. Use `-i` for stdin imports and avoid `-t`
+when piping fixtures. Each command uses the selected app container's
+`DATABASE_URL`. Rebuild an older image to install the PATH commands; the equivalent
+entry point with current mounted source is `python -m ragtime.fixtures.cli`.
+
+**Chat selection:** case-insensitive exact ID takes precedence over exact title,
+then a literal partial match against either field. Ambiguous matches produce a
+bounded candidate list on stderr and a nonzero exit status. No match is selected
+automatically. Errors leave stdout empty, so keep stderr separate from exported
+JSON and check exit status before importing.
+
+**Chat import:** the source is a UTF-8 JSON file or stdin (`-`, also the default).
+The importer validates the fixture and creates a clone in one database transaction.
+It assigns fresh conversation, branch and completed-task IDs, remaps branch parent
+and active pointers, and preserves messages, events, saved prefixes/suffixes and
+completed task responses. The required `--owner` is an exact existing username.
+The default title is `[Imported] <source title>`; `--title` overrides it. Successful
+imports print a JSON summary containing `conversation_id`, `title`, `message_count`,
+`branch_count` and `completed_task_count`.
+
+The clone has no active task, workspace binding, shares, tool grants or imported
+accounts/sessions. Completed tasks remain completed and are not queued. Version-1
+chat exports from the earlier helper remain accepted. Legacy missing branch
+prefixes remain missing; import does not repair history that was already lost.
+Fixtures can contain sensitive chat/tool output and should stay out of source
+control.
+
 ### Reset Database
 
 ```bash
