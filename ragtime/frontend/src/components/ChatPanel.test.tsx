@@ -17,6 +17,7 @@ import {
   applyConversationToolGroupWriteToggle,
   getConversationToolGroupWriteMenuItem,
   isToolEffectivelyWritableForConversation,
+  mergeConversationFromWorkspaceSnapshot,
   type ActiveToolCall,
 } from './ChatPanel';
 import type { ChatMessageNavigationEntry } from './ChatMessageNavigator';
@@ -24,6 +25,8 @@ import type { ChatMessageNavigationEntry } from './ChatMessageNavigator';
 const apiMock = vi.hoisted(() => ({
   getConversation: vi.fn().mockResolvedValue(null),
   getConversationBranchPoints: vi.fn().mockResolvedValue([]),
+  switchConversationBranch: vi.fn(),
+  releaseConversationBranch: vi.fn(),
   getConversationMembers: vi.fn().mockResolvedValue([]),
   getConversationTaskState: vi
     .fn()
@@ -248,6 +251,303 @@ function makeWorkspaceChatState(conversation: Conversation): WorkspaceChatStateR
     interrupted_task: null,
   };
 }
+
+describe('mergeConversationFromWorkspaceSnapshot', () => {
+  it('keeps a stale incoming branch and its messages from splitting the active pair', () => {
+    const current = makeConversation('conversation-1', 'Current branch reply', {
+      active_branch_id: 'branch-current',
+      updated_at: '2026-09-11T12:00:02.000Z',
+    });
+    const staleIncoming = makeConversation('conversation-1', 'Older, longer branch reply', {
+      active_branch_id: 'branch-stale',
+      updated_at: '2026-09-11T12:00:01.000Z',
+      messages: [
+        ...current.messages,
+        {
+          role: 'assistant',
+          content: 'Older extra reply',
+          timestamp: '2026-09-11T12:00:01.000Z',
+        },
+      ],
+    });
+
+    const merged = mergeConversationFromWorkspaceSnapshot(current, staleIncoming);
+
+    expect(merged.active_branch_id).toBe('branch-current');
+    expect(merged.messages).toBe(current.messages);
+  });
+
+  it('accepts an authoritative empty branch when its identity changes', () => {
+    const current = makeConversation('conversation-1', 'Current branch reply', {
+      active_branch_id: 'branch-current',
+      updated_at: '2026-09-11T12:00:01.000Z',
+    });
+    const incoming = makeConversation('conversation-1', '', {
+      active_branch_id: 'branch-empty',
+      messages: [],
+      updated_at: '2026-09-11T12:00:02.000Z',
+    });
+
+    const merged = mergeConversationFromWorkspaceSnapshot(current, incoming);
+
+    expect(merged.active_branch_id).toBe('branch-empty');
+    expect(merged.messages).toEqual([]);
+  });
+});
+
+describe('ChatPanel branch navigation', () => {
+  const branchPoint = {
+    branch_point_index: 0,
+    branches: [
+      {
+        id: 'branch-a',
+        conversation_id: 'conversation-branches',
+        branch_point_index: 0,
+        branch_kind: 'edit' as const,
+        message_count: 2,
+        created_at: '2026-09-11T12:00:00.000Z',
+      },
+      {
+        id: 'branch-current',
+        conversation_id: 'conversation-branches',
+        branch_point_index: 0,
+        branch_kind: null,
+        message_count: 2,
+        created_at: '2026-09-11T12:00:01.000Z',
+      },
+      {
+        id: 'branch-b',
+        conversation_id: 'conversation-branches',
+        branch_point_index: 0,
+        branch_kind: 'replay' as const,
+        message_count: 2,
+        created_at: '2026-09-11T12:00:02.000Z',
+      },
+    ],
+  };
+
+  it('renders an explicit live Current option and blocks switching during generation', async () => {
+    apiMock.getConversationBranchPoints.mockResolvedValue([branchPoint]);
+    const conversation = makeConversation('conversation-branches', 'Reply', {
+      workspace_id: 'ws-1',
+      active_task_id: 'running-task',
+      active_branch_id: null,
+    });
+    apiMock.getConversation.mockResolvedValue(conversation);
+
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={makeWorkspaceChatState(conversation)}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('4/4')).toBeDefined());
+    expect(screen.getByRole('button', { name: 'Previous branch' }).hasAttribute('disabled')).toBe(
+      true,
+    );
+    expect(screen.getByRole('button', { name: 'Next branch' }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('keeps the release option reachable for a legacy branch without saved Current', async () => {
+    apiMock.getConversationBranchPoints.mockResolvedValue([
+      { ...branchPoint, branches: [branchPoint.branches[0]] },
+    ]);
+    const conversation = makeConversation('conversation-branches', 'Legacy reply', {
+      workspace_id: 'ws-1',
+      active_branch_id: 'branch-a',
+    });
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('1/2')).toBeDefined());
+    expect(screen.getByRole('button', { name: 'Next branch' }).hasAttribute('disabled')).toBe(
+      false,
+    );
+  });
+
+  it('commits a delayed switch after an intervening same-conversation refresh', async () => {
+    apiMock.getConversationBranchPoints.mockResolvedValue([branchPoint]);
+    let resolveSwitch: ((conversation: Conversation) => void) | undefined;
+    apiMock.switchConversationBranch.mockImplementation(
+      () => new Promise<Conversation>((resolve) => (resolveSwitch = resolve)),
+    );
+    const conversation = makeConversation('conversation-branches', 'Current reply', {
+      workspace_id: 'ws-1',
+      active_branch_id: 'branch-current',
+      updated_at: '2026-09-11T12:00:01.000Z',
+    });
+    const { rerender } = renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('2/3')).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Previous branch' }));
+    expect(apiMock.switchConversationBranch).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <AvailableModelsProvider>
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="ws-1"
+          workspaceChatState={{
+            ...makeWorkspaceChatState({ ...conversation, title: 'Refreshed title' }),
+            active_task: null,
+          }}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          embedded
+        />
+      </AvailableModelsProvider>,
+    );
+    resolveSwitch?.(
+      makeConversation('conversation-branches', 'Switched branch reply', {
+        workspace_id: 'ws-1',
+        active_branch_id: 'branch-a',
+        updated_at: '2026-09-11T12:00:02.000Z',
+      }),
+    );
+
+    await waitFor(() => expect(screen.getByText('Switched branch reply')).toBeDefined());
+  });
+
+  it('sends only one request for rapid repeated branch clicks', async () => {
+    apiMock.getConversationBranchPoints.mockResolvedValue([branchPoint]);
+    apiMock.switchConversationBranch.mockReturnValue(new Promise(() => undefined));
+    const conversation = makeConversation('conversation-branches', 'Current reply', {
+      workspace_id: 'ws-1',
+      active_branch_id: 'branch-current',
+    });
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('2/3')).toBeDefined());
+    const previous = screen.getByRole('button', { name: 'Previous branch' });
+    fireEvent.click(previous);
+    fireEvent.click(previous);
+    expect(apiMock.switchConversationBranch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the displayed branch unchanged when a switch fails', async () => {
+    apiMock.getConversationBranchPoints.mockResolvedValue([branchPoint]);
+    apiMock.switchConversationBranch.mockRejectedValue(new Error('Branch switch failed'));
+    const conversation = makeConversation('conversation-branches', 'Current reply', {
+      workspace_id: 'ws-1',
+      active_branch_id: 'branch-current',
+    });
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('2/3')).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Previous branch' }));
+    await waitFor(() => expect(screen.getByText('Branch switch failed')).toBeDefined());
+    expect(screen.getByText('Current reply')).toBeDefined();
+    expect(screen.getByText('2/3')).toBeDefined();
+  });
+
+  it('drops a delayed switch after leaving and returning to the conversation', async () => {
+    apiMock.getConversationBranchPoints.mockResolvedValue([branchPoint]);
+    let resolveSwitch: ((conversation: Conversation) => void) | undefined;
+    apiMock.switchConversationBranch.mockImplementation(
+      () => new Promise<Conversation>((resolve) => (resolveSwitch = resolve)),
+    );
+    const conversation = makeConversation('conversation-branches', 'Current reply', {
+      workspace_id: 'ws-1',
+      active_branch_id: 'branch-current',
+    });
+    const otherConversation = makeConversation('conversation-other', 'Other reply', {
+      workspace_id: 'ws-1',
+    });
+    const stateFor = (selectedConversationId: string): WorkspaceChatStateResponse => ({
+      ...makeWorkspaceChatState(conversation),
+      conversations: [conversation, otherConversation],
+      selected_conversation_id: selectedConversationId,
+      active_task: null,
+    });
+    const { rerender } = renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={stateFor(conversation.id)}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('2/3')).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Previous branch' }));
+    rerender(
+      <AvailableModelsProvider>
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="ws-1"
+          workspaceChatState={stateFor(otherConversation.id)}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          embedded
+        />
+      </AvailableModelsProvider>,
+    );
+    await waitFor(() => expect(screen.getByText('Other reply')).toBeDefined());
+    rerender(
+      <AvailableModelsProvider>
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="ws-1"
+          workspaceChatState={stateFor(conversation.id)}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          embedded
+        />
+      </AvailableModelsProvider>,
+    );
+    await waitFor(() => expect(screen.getByText('Current reply')).toBeDefined());
+    resolveSwitch?.(
+      makeConversation('conversation-branches', 'Late switched reply', {
+        workspace_id: 'ws-1',
+        active_branch_id: 'branch-a',
+      }),
+    );
+
+    await waitFor(() => expect(screen.queryByText('Late switched reply')).toBeNull());
+    expect(screen.getByText('Current reply')).toBeDefined();
+  });
+});
 
 function renderChatPanel(ui: ReactElement) {
   return render(<AvailableModelsProvider>{ui}</AvailableModelsProvider>);
