@@ -140,6 +140,7 @@ COPY .jscpd.json /ragtime/.jscpd.json
 COPY docker/Dockerfile /ragtime/docker/Dockerfile
 COPY docker/entrypoint.sh /ragtime/docker/entrypoint.sh
 COPY docker/scripts/ /ragtime/docker/scripts/
+COPY scripts/chat_branch_fixture.py /ragtime/scripts/chat_branch_fixture.py
 COPY prisma/ /ragtime/prisma/
 COPY typings/ /ragtime/typings/
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
@@ -298,6 +299,7 @@ RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
 
 # Copy application code (includes indexer module)
 COPY ragtime/ /ragtime/ragtime/
+COPY scripts/chat_branch_fixture.py /ragtime/scripts/chat_branch_fixture.py
 
 # Copy built frontend from the builder stage
 # Code expects it at ragtime/frontend/dist (see indexer/routes.py DIST_DIR)
@@ -308,16 +310,20 @@ COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/scripts/backup-restore.sh /docker-scripts/backup-restore.sh
 COPY docker/scripts/init-pgvector.sh /docker-scripts/init-pgvector.sh
 COPY docker/scripts/functions.sh /docker-scripts/functions.sh
+COPY docker/scripts/export.sh /docker-scripts/export.sh
+COPY docker/scripts/import.sh /docker-scripts/import.sh
 
 # Create data directory
 RUN mkdir -p /ragtime/data/faiss_index && \
     chown -R ragtime:ragtime /ragtime
 
 # Fix line endings (Windows CRLF -> Unix LF) and make scripts executable
-RUN dos2unix /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh /docker-scripts/functions.sh \
-    && chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh /docker-scripts/functions.sh \
+RUN dos2unix /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh /docker-scripts/functions.sh /docker-scripts/export.sh /docker-scripts/import.sh \
+    && chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh /docker-scripts/functions.sh /docker-scripts/export.sh /docker-scripts/import.sh \
     && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/backup \
-    && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/restore
+    && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/restore \
+    && ln -sf /docker-scripts/export.sh /usr/local/bin/export \
+    && ln -sf /docker-scripts/import.sh /usr/local/bin/import
 
 # Expose port
 EXPOSE 8000

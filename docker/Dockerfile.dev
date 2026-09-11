@@ -67,12 +67,17 @@ COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/scripts/backup-restore.sh /docker-scripts/backup-restore.sh
 COPY docker/scripts/init-pgvector.sh /docker-scripts/init-pgvector.sh
 COPY docker/scripts/functions.sh /docker-scripts/functions.sh
+COPY docker/scripts/export.sh /docker-scripts/export.sh
+COPY docker/scripts/import.sh /docker-scripts/import.sh
+COPY scripts/chat_branch_fixture.py /ragtime/scripts/chat_branch_fixture.py
 
 # Fix line endings (Windows CRLF -> Unix LF) and make scripts executable
-RUN dos2unix /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh /docker-scripts/functions.sh \
-    && chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh /docker-scripts/functions.sh \
+RUN dos2unix /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh /docker-scripts/functions.sh /docker-scripts/export.sh /docker-scripts/import.sh \
+    && chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh /docker-scripts/functions.sh /docker-scripts/export.sh /docker-scripts/import.sh \
     && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/backup \
-    && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/restore
+    && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/restore \
+    && ln -sf /docker-scripts/export.sh /usr/local/bin/export \
+    && ln -sf /docker-scripts/import.sh /usr/local/bin/import
 
 # Expose ports (API on 8000, Vite dev server on 8001)
 EXPOSE 8000 8001
