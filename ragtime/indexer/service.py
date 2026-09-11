@@ -1167,16 +1167,13 @@ class IndexerService:
             is_optimistic = meta.documentCount == 0
             is_active = meta.name in active_index_names
 
-            # Skip if directory doesn't exist on disk (for FAISS indexes)
-            # But allow optimistic indexes through so they show in UI while job is processing
+            # Diagnose missing FAISS artifacts while retaining persisted rows for management.
             if vector_store_type == VectorStoreType.FAISS and not is_optimistic and not is_active:
                 if not path.exists() or not path.is_dir():
                     logger.warning(f"Index {meta.name} in database but not on disk: {path}")
-                    return None
-
                 # Both files are required; a partial pair is not a usable index.
-                if not (path / "index.faiss").exists() or not (path / "index.pkl").exists():
-                    return None
+                elif not (path / "index.faiss").exists() or not (path / "index.pkl").exists():
+                    logger.warning(f"Index {meta.name} in database but missing FAISS artifacts: {path}")
 
             # Extract metadata fields
             doc_count = meta.documentCount

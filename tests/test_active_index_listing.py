@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -47,7 +48,7 @@ class ActiveIndexListingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(indexes[0].document_count, 1255)
         self.assertEqual(indexes[0].chunk_count, 5699)
 
-    async def test_list_indexes_skips_inactive_missing_faiss_metadata(self) -> None:
+    async def test_list_indexes_retains_inactive_missing_faiss_metadata(self) -> None:
         metadata = self._metadata()
 
         with (
@@ -56,7 +57,27 @@ class ActiveIndexListingTests(unittest.IsolatedAsyncioTestCase):
         ):
             indexes = await self.service.list_indexes()
 
-        self.assertEqual(indexes, [])
+        self.assertEqual([index.name for index in indexes], ["ragtime"])
+        self.assertEqual(indexes[0].document_count, 1255)
+        self.assertEqual(indexes[0].chunk_count, 5699)
+        self.assertTrue(indexes[0].enabled)
+        self.assertEqual(indexes[0].source_type, "git")
+        self.assertEqual(indexes[0].vector_store_type.value, "faiss")
+
+    async def test_list_indexes_retains_inactive_partial_faiss_metadata(self) -> None:
+        metadata = self._metadata()
+        index_path = Path(self.temp_dir.name) / "partial-index"
+        index_path.mkdir()
+        (index_path / "index.faiss").touch()
+        metadata.path = str(index_path)
+
+        with (
+            mock.patch("ragtime.indexer.service.repository.list_index_metadata", new=mock.AsyncMock(return_value=[metadata])),
+            mock.patch("ragtime.indexer.service.repository.list_active_index_names", new=mock.AsyncMock(return_value=set())),
+        ):
+            indexes = await self.service.list_indexes()
+
+        self.assertEqual([index.name for index in indexes], ["ragtime"])
 
     async def test_list_indexes_propagates_active_lookup_failure(self) -> None:
         metadata = self._metadata()
