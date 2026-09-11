@@ -48,6 +48,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_HTTP_PROXY_SAFE_TIMEOUT_SECONDS,
     DEFAULT_IMAGE_PAYLOAD_LIMITS,
     DEFAULT_INCLUDE_COPILOT_THIRD_PARTY_MODELS,
+    DEFAULT_INDEXING_MEMORY_BUDGET_MB,
     DEFAULT_IVFFLAT_LISTS,
     DEFAULT_LEGACY_ODOO_CONTAINER,
     DEFAULT_LEGACY_POSTGRES_CONTAINER,
@@ -1474,6 +1475,11 @@ class IndexerRepository:
                 "chunkingMaxBatchSize",
                 DEFAULT_CHUNKING_MAX_BATCH_SIZE,
             ),
+            indexing_memory_budget_mb=getattr(
+                settings,
+                "indexingMemoryBudgetMb",
+                DEFAULT_INDEXING_MEMORY_BUDGET_MB,
+            ),
             # API Tool Output configuration
             tool_output_mode=ToolOutputMode(getattr(settings, "toolOutputMode", DEFAULT_TOOL_OUTPUT_MODE) or DEFAULT_TOOL_OUTPUT_MODE),
             # MCP configuration
@@ -1712,6 +1718,7 @@ class IndexerRepository:
             "sequential_index_loading": "sequentialIndexLoading",
             "chunking_max_workers": "chunkingMaxWorkers",
             "chunking_max_batch_size": "chunkingMaxBatchSize",
+            "indexing_memory_budget_mb": "indexingMemoryBudgetMb",
             # API Tool Output configuration
             "tool_output_mode": "toolOutputMode",
             # MCP configuration

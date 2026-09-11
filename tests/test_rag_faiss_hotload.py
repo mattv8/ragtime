@@ -10,6 +10,7 @@ from langchain_core.documents import Document
 
 from ragtime.indexer.embedding_errors import EmbeddingFailureKind, EmbeddingOperationError
 from ragtime.indexer.models import IndexJobPhase, IndexStatus
+from ragtime.indexer.resource_governor import resource_governor
 from ragtime.indexer.service import IndexerService
 from ragtime.rag.components import RAGComponents
 from ragtime.rag.components import rag as global_rag
@@ -44,6 +45,12 @@ class FakeFaissIndex:
 
 
 class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        await resource_governor.start()
+
+    async def asyncTearDown(self) -> None:
+        await resource_governor.stop()
+
     async def test_load_faiss_index_from_metadata_loads_index_before_returning(self):
         with tempfile.TemporaryDirectory() as directory:
             index_path = Path(directory) / "hot-index"
@@ -291,7 +298,7 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             service = IndexerService(index_base_path=directory)
             load_index = AsyncMock(return_value=True)
-            job = SimpleNamespace(status=IndexStatus.COMPLETED, name="hot-index")
+            job = SimpleNamespace(id="job-hot-index", status=IndexStatus.COMPLETED, name="hot-index")
 
             with (
                 patch.object(

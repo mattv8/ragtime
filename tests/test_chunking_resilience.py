@@ -200,24 +200,19 @@ function Example(props: Props) {
     # ------------------------------------------------------------------
 
     def test_get_or_create_returns_same_pool_for_same_key(self) -> None:
-        pool_a = pool_manager.get_or_create("job-a", max_workers=2)
-        pool_b = pool_manager.get_or_create("job-a", max_workers=2)
-        self.assertIs(pool_a, pool_b)
-        self.assertEqual(pool_a.max_workers, 2)
+        with self.assertRaises(ChunkingPoolError):
+            pool_manager.get_or_create("job-a", max_workers=2)
+        self.assertEqual(pool_manager.active_keys(), [])
 
     def test_get_or_create_isolates_jobs(self) -> None:
-        pool_a = pool_manager.get_or_create("job-a", max_workers=2)
-        pool_b = pool_manager.get_or_create("job-b", max_workers=2)
-        self.assertIsNot(pool_a, pool_b)
-        # Releasing job-a's pool must not affect job-b's pool.
-        pool_manager.release("job-a")
-        self.assertIsNone(pool_manager.get("job-a"))
-        self.assertIs(pool_manager.get("job-b"), pool_b)
-        self.assertFalse(pool_b.is_closed())
+        for key in ("job-a", "job-b"):
+            with self.assertRaises(ChunkingPoolError):
+                pool_manager.get_or_create(key, max_workers=2)
+        self.assertEqual(pool_manager.active_keys(), [])
 
     def test_release_marks_pool_closed(self) -> None:
-        pool = pool_manager.get_or_create("job-x", max_workers=1)
-        self.assertFalse(pool.is_closed())
+        pool = ChunkingPool(key="job-x", executor=_FakeExecutor([]), max_workers=1)
+        pool_manager._pools["job-x"] = pool  # type: ignore[attr-defined]
         pool_manager.release("job-x")
         self.assertTrue(pool.is_closed())
 
@@ -254,7 +249,8 @@ function Example(props: Props) {
         original_workers = chunking._configured_max_workers
         try:
             chunking.configure_chunking_pool(max_workers=4, max_batch_size=100)
-            pool = pool_manager.get_or_create("job-resize", max_workers=2)
+            pool = ChunkingPool(key="job-resize", executor=_FakeExecutor([]), max_workers=2)
+            pool_manager._pools["job-resize"] = pool  # type: ignore[attr-defined]
             self.assertIs(pool_manager.get("job-resize"), pool)
 
             chunking.configure_chunking_pool(max_workers=3, max_batch_size=100)
@@ -267,8 +263,8 @@ function Example(props: Props) {
             )
 
     def test_shutdown_process_pool_releases_every_registered_pool(self) -> None:
-        pool_manager.get_or_create("job-a", max_workers=2)
-        pool_manager.get_or_create("job-b", max_workers=2)
+        pool_manager._pools["job-a"] = ChunkingPool(key="job-a", executor=_FakeExecutor([]), max_workers=2)  # type: ignore[attr-defined]
+        pool_manager._pools["job-b"] = ChunkingPool(key="job-b", executor=_FakeExecutor([]), max_workers=2)  # type: ignore[attr-defined]
         chunking.shutdown_process_pool(terminate_workers=True)
         self.assertEqual(pool_manager.active_keys(), [])
 
@@ -323,6 +319,26 @@ function Example(props: Props) {
         self.assertIn("chonkie_code", counts)
         self.assertNotIn("chonkie_recursive", counts)
         self.assertGreater(len(chunks), 0)
+
+    def test_sql_uses_explicit_code_grammar_without_auto_detection(self) -> None:
+        sql = "CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL);\n" * 120
+        with mock.patch.object(chunking, "CodeChunker", wraps=chunking.CodeChunker) as code_chunker:
+            chunks, counts = chunking._chunk_document_batch_sync(
+                [(sql, {"source": "prisma/migrations/001_init/migration.sql"})],
+                chunk_size=300,
+                chunk_overlap=20,
+                use_tokens=False,
+            )
+
+        self.assertEqual(code_chunker.call_args.kwargs["language"], "sql")
+        self.assertIn("chonkie_code", counts)
+        self.assertTrue(chunks)
+
+    def test_chunking_fingerprint_includes_native_parser_versions(self) -> None:
+        fingerprint = chunking.chunking_implementation_fingerprint()
+        self.assertEqual(fingerprint["pipeline_schema_version"], chunking.CHUNKING_PIPELINE_SCHEMA_VERSION)
+        self.assertIn("chonkie", fingerprint)
+        self.assertIn("tree_sitter_language_pack", fingerprint)
 
     def test_all_parseable_documents_route_to_recursive_chunker(self) -> None:
         """Every extension in PARSEABLE_DOCUMENT_EXTENSIONS must skip tree-sitter.
@@ -440,13 +456,8 @@ function Example(props: Props) {
         return path
 
     def test_legacy_get_process_pool_returns_shared_pool(self) -> None:
-        executor_a = chunking._get_process_pool()
-        executor_b = chunking._get_process_pool()
-        self.assertIs(executor_a, executor_b)
-        shared_pool = pool_manager.get(SHARED_CHUNKING_POOL_KEY)
-        self.assertIsNotNone(shared_pool)
-        assert shared_pool is not None
-        self.assertIs(shared_pool.executor, executor_a)
+        with self.assertRaises(ChunkingPoolError):
+            chunking._get_process_pool()
 
     def test_unknown_extension_always_bypasses_tree_sitter(self) -> None:
         """Unmapped extensions (e.g. CAD .stp/.eps, PostScript .eps) have no
@@ -572,6 +583,30 @@ class PerJobChunkingTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         pool_manager.shutdown_all(terminate_workers=False)
 
+    async def test_compatibility_chunking_is_globally_admitted_and_cancellable(self) -> None:
+        docs = [Document(page_content="alpha", metadata={"source": "a.txt"})]
+        with mock.patch.object(chunking, "run_resource_task", new=mock.AsyncMock()) as runner:
+            with self.assertRaises(asyncio.CancelledError):
+                await chunking.chunk_documents_parallel(docs, 50, 0, False, pool_key="job-a", is_cancelled=lambda: True)
+        runner.assert_not_awaited()
+
+    async def test_compatibility_chunking_uses_one_bounded_recursive_retry(self) -> None:
+        docs = [Document(page_content="alpha", metadata={"source": "a.txt"})]
+        with (
+            mock.patch.object(
+                chunking,
+                "run_resource_task",
+                new=mock.AsyncMock(
+                    side_effect=[
+                        chunking.ResourceTaskError("native failure"),
+                        ([("alpha", {"source": "a.txt", "chunker": "fallback"})], {}),
+                    ]
+                ),
+            ),
+        ):
+            result = await chunking.chunk_documents_parallel(docs, 50, 0, False, pool_key="job-a")
+        self.assertEqual([document.page_content for document in result], ["alpha"])
+
     @staticmethod
     def _install_inproc_pool(key: str) -> ChunkingPool:
         """Insert a ChunkingPool backed by a ThreadPoolExecutor (in-process).
@@ -586,25 +621,21 @@ class PerJobChunkingTests(unittest.IsolatedAsyncioTestCase):
         return pool
 
     async def test_pool_key_routes_to_per_job_pool(self) -> None:
-        from concurrent.futures import ThreadPoolExecutor
-
-        pool = self._install_inproc_pool("job-per-job")
-
         docs = [Document(page_content=f"hello {i}", metadata={"source": f"f{i}.txt"}) for i in range(3)]
-        results = await chunking.chunk_documents_parallel(
-            documents=docs,
-            chunk_size=50,
-            chunk_overlap=0,
-            use_tokens=False,
-            batch_size=2,
-            pool_key="job-per-job",
-        )
+
+        async def run(request, function, args):
+            self.assertEqual(request.job_id, "job-per-job")
+            return function(*args)
+
+        with (
+            mock.patch.object(chunking.resource_governor, "estimate_request", return_value=mock.Mock(job_id="job-per-job")),
+            mock.patch.object(chunking, "run_resource_task", side_effect=run) as runner,
+        ):
+            results = await chunking.chunk_documents_parallel(docs, 50, 0, False, batch_size=2, pool_key="job-per-job")
 
         self.assertEqual(len(results), 3)
         self.assertEqual(sorted(d.page_content for d in results), ["hello 0", "hello 1", "hello 2"])
-        # The job's pool was used (not the shared pool).
-        self.assertIs(pool_manager.get("job-per-job"), pool)
-        pool.executor.shutdown(wait=True)
+        self.assertEqual(runner.await_count, 2)
 
     async def test_releasing_one_job_pool_does_not_affect_another(self) -> None:
         from concurrent.futures import ThreadPoolExecutor
@@ -628,20 +659,11 @@ class PerJobChunkingTests(unittest.IsolatedAsyncioTestCase):
         executor_b.shutdown(wait=True)
 
     async def test_chunking_raises_pool_error_when_pool_closed_before_run(self) -> None:
-        pool = self._install_inproc_pool("closed-up-front")
-        pool.closed.set()
-
         docs = [Document(page_content="x", metadata={"source": "a.txt"})]
-        with self.assertRaises(ChunkingPoolError):
-            await chunking.chunk_documents_parallel(
-                documents=docs,
-                chunk_size=50,
-                chunk_overlap=0,
-                use_tokens=False,
-                batch_size=10,
-                pool_key="closed-up-front",
-            )
-        pool.executor.shutdown(wait=True)
+        with mock.patch.object(chunking, "run_resource_task", new=mock.AsyncMock()) as runner:
+            with self.assertRaises(asyncio.CancelledError):
+                await chunking.chunk_documents_parallel(docs, 50, 0, False, is_cancelled=lambda: True)
+        runner.assert_not_awaited()
 
     async def test_individual_retry_recycles_pool_after_broken_worker(self) -> None:
         loop = asyncio.get_running_loop()
@@ -698,28 +720,24 @@ class PerJobChunkingTests(unittest.IsolatedAsyncioTestCase):
         get_or_create_mock.assert_called_once_with("job-retry", 1)
 
     async def test_timeout_falls_back_for_entire_wave_in_original_order(self) -> None:
-        pool = self._install_inproc_pool("job-timeout")
         docs = [Document(page_content=name, metadata={"source": f"{name}.txt"}) for name in ("alpha", "beta", "gamma")]
         progress_calls: list[tuple[int, int]] = []
 
         async def record_progress(processed_docs: int, total_docs: int) -> None:
             progress_calls.append((processed_docs, total_docs))
 
-        fallback_chunks = [(name, {"source": f"{name}.txt", "chunker": "fallback"}) for name in ("alpha", "beta", "gamma")]
-
         with (
+            mock.patch.object(chunking.resource_governor, "estimate_request", return_value=mock.Mock()),
             mock.patch.object(
                 chunking,
-                "_await_pool_futures_or_closed",
-                side_effect=asyncio.TimeoutError,
-            ),
-            mock.patch.object(pool_manager, "release", return_value=True) as release_mock,
-            mock.patch.object(pool_manager, "get_or_create", return_value=pool) as get_or_create_mock,
-            mock.patch.object(
-                chunking,
-                "_chunk_document_batch_recursive_sync",
-                return_value=(fallback_chunks, {"chonkie_recursive_pool_fallback": 3}),
-            ) as fallback_mock,
+                "run_resource_task",
+                new=mock.AsyncMock(
+                    side_effect=[
+                        chunking.ResourceTaskError("timeout"),
+                        ([(name, {"source": f"{name}.txt", "chunker": "fallback"}) for name in ("alpha", "beta", "gamma")], {}),
+                    ]
+                ),
+            ) as runner,
         ):
             results = await chunking.chunk_documents_parallel(
                 documents=docs,
@@ -732,49 +750,19 @@ class PerJobChunkingTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual([doc.page_content for doc in results], ["alpha", "beta", "gamma"])
-        release_mock.assert_called_once_with("job-timeout", terminate_workers=True)
-        fallback_mock.assert_called_once()
-        self.assertEqual([item[0] for item in fallback_mock.call_args.args[0]], ["alpha", "beta", "gamma"])
+        self.assertEqual(runner.await_count, 2)
+        self.assertIs(runner.await_args_list[1].args[1], chunking._chunk_document_batch_recursive_sync)
         self.assertEqual(progress_calls, [(3, 3)])
-        self.assertEqual(get_or_create_mock.call_args_list[-1], mock.call("job-timeout", 1))
-        pool.executor.shutdown(wait=True)
 
     async def test_timeout_recreates_pool_for_later_waves(self) -> None:
-        loop = asyncio.get_running_loop()
-        original_pool = ChunkingPool(key="job-timeout-later", executor=mock.Mock(name="original-executor"), max_workers=1)
-        recycled_pool = ChunkingPool(key="job-timeout-later", executor=mock.Mock(name="recycled-executor"), max_workers=1)
         docs = [Document(page_content=f"doc-{idx}", metadata={"source": f"doc-{idx}.txt"}) for idx in range(6)]
-        executor_calls = []
-
-        def fake_run_in_executor(executor, func, *args):
-            if executor is None:
-                future = loop.create_future()
-                future.set_result(func())
-                return future
-            batch, chunk_size, chunk_overlap, use_tokens = args
-            executor_calls.append(executor)
-            future = loop.create_future()
-            future.set_result(([(content, {**metadata, "chunker": "worker"}) for content, metadata in batch], {"worker": len(batch)}))
-            return future
-
-        async def fake_await_pool_futures_or_closed(futures, pool):
-            if len(executor_calls) == 1:
-                raise asyncio.TimeoutError
-            return [future.result() for future in futures]
-
-        fallback_chunks = [(f"doc-{idx}", {"source": f"doc-{idx}.txt", "chunker": "fallback"}) for idx in range(3)]
-
+        fallback = [(f"doc-{idx}", {"source": f"doc-{idx}.txt", "chunker": "fallback"}) for idx in range(3)]
+        normal = [(f"doc-{idx}", {"source": f"doc-{idx}.txt", "chunker": "worker"}) for idx in range(3, 6)]
         with (
-            mock.patch.object(loop, "run_in_executor", side_effect=fake_run_in_executor),
-            mock.patch.object(pool_manager, "get", return_value=original_pool),
-            mock.patch.object(pool_manager, "get_or_create", side_effect=[original_pool, recycled_pool]),
-            mock.patch.object(pool_manager, "release", return_value=True) as release_mock,
-            mock.patch.object(chunking, "_await_pool_futures_or_closed", side_effect=fake_await_pool_futures_or_closed),
+            mock.patch.object(chunking.resource_governor, "estimate_request", return_value=mock.Mock()),
             mock.patch.object(
-                chunking,
-                "_chunk_document_batch_recursive_sync",
-                return_value=(fallback_chunks, {"chonkie_recursive_pool_fallback": 3}),
-            ) as fallback_mock,
+                chunking, "run_resource_task", new=mock.AsyncMock(side_effect=[chunking.ResourceTaskError("timeout"), (fallback, {}), (normal, {})])
+            ) as runner,
         ):
             results = await chunking.chunk_documents_parallel(
                 documents=docs,
@@ -786,9 +774,7 @@ class PerJobChunkingTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual([doc.page_content for doc in results], [f"doc-{idx}" for idx in range(6)])
-        self.assertEqual(executor_calls, [original_pool.executor, recycled_pool.executor])
-        release_mock.assert_called_once_with("job-timeout-later", terminate_workers=True)
-        fallback_mock.assert_called_once()
+        self.assertEqual(runner.await_count, 3)
 
 
 if __name__ == "__main__":

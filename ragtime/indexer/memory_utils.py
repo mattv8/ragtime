@@ -14,6 +14,35 @@ from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+
+def estimate_stage_peak_bytes(
+    *,
+    stage: str,
+    text_bytes: int = 0,
+    record_count: int = 0,
+    dimensions: int = 0,
+    steady_bytes: int = 0,
+) -> int:
+    """Return a conservative *incremental* stage estimate, not app RSS.
+
+    This centralizes the FAISS factors so the governor does not duplicate the
+    index estimator.  Input text is UTF-8 bytes and vectors are float32.
+    """
+    text_bytes = max(0, text_bytes)
+    records = max(0, record_count)
+    vector_bytes = records * max(0, dimensions) * 4
+    if stage in {"finalizing", "index_loading"}:
+        # Loading/building transiently holds serialization plus final residency.
+        return max(steady_bytes, int(steady_bytes * PEAK_MEMORY_FACTOR), vector_bytes + text_bytes)
+    if stage == "embedding":
+        # Bounded provider batches retain text plus a single vector response.
+        return max(4 * 1024 * 1024, text_bytes + vector_bytes * 2)
+    if stage in {"loading", "chunking"}:
+        # Supervised parser/chunker has a conservative fixed native envelope.
+        return max(512 * 1024 * 1024, text_bytes * 3 + vector_bytes)
+    return max(text_bytes + vector_bytes, 1)
+
+
 # Memory overhead factors observed in practice
 # During pickle deserialization, Python temporarily holds both serialized
 # and deserialized data, which can roughly double memory usage

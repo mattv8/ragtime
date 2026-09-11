@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowUp, ArrowDown, Search } from 'lucide-react';
 import { api } from '@/api';
 import { formatElapsedTime } from '@/utils';
@@ -12,6 +12,8 @@ import type {
 } from '@/types';
 import { InlineCopyButton } from './shared/InlineCopyButton';
 import { useToast, ToastContainer } from './shared/Toast';
+import { useIndexResourceStatus } from '@/hooks/useIndexResourceStatus';
+import type { IndexResourceReason } from '@/types';
 
 interface JobsTableProps {
   jobs: IndexJob[];
@@ -384,6 +386,17 @@ function clampProgressPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+const resourceWaitLabels: Record<IndexResourceReason, string> = {
+  none: 'Waiting for scheduler admission',
+  memory_headroom: 'Waiting for memory headroom',
+  memory_budget: 'Waiting for indexing memory budget',
+  cpu_capacity: 'Waiting for CPU capacity',
+  provider_limit: 'Waiting for embedding provider capacity',
+  user_limit: 'Waiting for configured resource limit',
+  memory_pressure: 'Waiting for memory pressure to settle',
+  metrics_unavailable: 'Waiting for resource metrics',
+};
+
 function toUnifiedUserSpaceCodeJob(job: UserSpaceCodeIndexJob): UnifiedJob {
   const commonPhase = getCommonIndexingJobPhase(job.status, job.cancel_requested);
   let phase = commonPhase?.phase ?? '';
@@ -456,6 +469,7 @@ export function JobsTable({
   onCancelSchemaJob,
   onCancelPdmJob,
 }: JobsTableProps) {
+  const indexingResources = useIndexResourceStatus(true);
   const [toasts, toast] = useToast();
   const [showAll, setShowAll] = useState(false);
   const [searchText, setSearchText] = useState('');
@@ -469,6 +483,15 @@ export function JobsTable({
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
   const [retryConfirmId, setRetryConfirmId] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const resourceWaits = useMemo(
+    () =>
+      new Map(
+        (indexingResources.data?.jobs ?? [])
+          .filter((resourceJob) => resourceJob.state === 'waiting')
+          .map((resourceJob) => [resourceJob.job_id, resourceJob.reason]),
+      ),
+    [indexingResources.data],
+  );
 
   const handleSort = (key: keyof UnifiedJob) => {
     if (sortConfig && sortConfig.key === key) {
@@ -770,6 +793,8 @@ export function JobsTable({
                     isActionableJobType(job.type) || job.type === 'userspace_code'
                       ? job.type
                       : null;
+                  const waitReason =
+                    job.type === 'document' ? resourceWaits.get(job.id) : undefined;
 
                   return (
                     <tr key={`${job.type}-${job.id}`}>
@@ -817,6 +842,11 @@ export function JobsTable({
                             </div>
                             <div className="progress-details">
                               <span className="progress-phase">{job.phase}</span>
+                              {waitReason && (
+                                <span className="field-help" data-resource-wait-reason={waitReason}>
+                                  {resourceWaitLabels[waitReason]}
+                                </span>
+                              )}
                               <span className="progress-stats">
                                 {job.type === 'schema' ? (
                                   // Schema jobs: show appropriate progress based on phase

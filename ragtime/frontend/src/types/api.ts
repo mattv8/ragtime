@@ -498,6 +498,51 @@ export interface IndexJob {
   vector_store_type?: VectorStoreType; // Vector store backend used
 }
 
+export type IndexResourceStage =
+  | 'loading'
+  | 'chunking'
+  | 'embedding'
+  | 'finalizing'
+  | 'index_loading';
+export type IndexResourceReason =
+  | 'none'
+  | 'memory_headroom'
+  | 'memory_budget'
+  | 'cpu_capacity'
+  | 'provider_limit'
+  | 'user_limit'
+  | 'memory_pressure'
+  | 'metrics_unavailable';
+
+/** Cached, admin-only indexing scheduler telemetry. */
+export interface IndexResourceStatus {
+  sampled_at: string;
+  stale: boolean;
+  memory_source: 'cgroup_v2' | 'cgroup_v1' | 'system' | 'unavailable';
+  system_available_bytes: number | null;
+  container_limit_bytes: number | null;
+  container_usage_bytes: number | null;
+  application_rss_bytes: number | null;
+  effective_budget_bytes: number;
+  committed_bytes: number;
+  effective_cpu_capacity: number;
+  event_loop_lag_ms: number | null;
+  worker_limit: number;
+  worker_target: number;
+  workers_active: number;
+  workers_live: number;
+  active_jobs: number;
+  waiting_jobs: number;
+  limiting_reason: IndexResourceReason;
+  jobs: Array<{
+    job_id: string;
+    stage: IndexResourceStage;
+    state: 'running' | 'waiting';
+    reason: IndexResourceReason;
+    committed_bytes: number;
+  }>;
+}
+
 export interface IndexConfigSnapshot {
   file_patterns: string[];
   exclude_patterns: string[];
@@ -1016,6 +1061,7 @@ export interface AppSettings {
   sequential_index_loading: boolean;
   chunking_max_workers: number;
   chunking_max_batch_size: number;
+  indexing_memory_budget_mb?: number;
   // API Tool Output Configuration
   tool_output_mode: ToolOutputMode;
   // MCP Configuration
@@ -1167,6 +1213,7 @@ export interface UpdateSettingsRequest {
   sequential_index_loading?: boolean;
   chunking_max_workers?: number;
   chunking_max_batch_size?: number;
+  indexing_memory_budget_mb?: number;
   // OCR settings
   default_ocr_mode?: OcrMode;
   default_ocr_provider?: OcrProvider | null;

@@ -15,6 +15,15 @@ vi.mock('@/api', () => ({
   },
 }));
 
+vi.mock('@/hooks/useIndexResourceStatus', () => ({
+  useIndexResourceStatus: () => ({
+    stale: false,
+    data: {
+      jobs: [{ job_id: 'job-waiting', state: 'waiting', reason: 'memory_headroom' }],
+    },
+  }),
+}));
+
 afterEach(() => {
   cleanup();
 });
@@ -68,5 +77,26 @@ describe('JobsTable', () => {
     expect(screen.getByText('Embedding')).toBeTruthy();
     expect(screen.getByText('300/1,573 chunks')).toBeTruthy();
     expect(screen.queryByText('300/1,573 documents')).toBeNull();
+  });
+
+  it('adds a resource wait explanation without replacing the persisted phase', () => {
+    const job: IndexJob = {
+      id: 'job-waiting',
+      name: 'Git repo',
+      status: 'processing',
+      phase: 'embedding',
+      progress_percent: 81,
+      total_files: 1,
+      processed_files: 1,
+      total_chunks: 2,
+      processed_chunks: 1,
+      error_message: null,
+      created_at: '2026-07-15T12:00:00Z',
+      started_at: '2026-07-15T12:00:10Z',
+      completed_at: null,
+    };
+    render(<JobsTable jobs={[job]} loading={false} error={null} />);
+    expect(screen.getByText('Embedding')).toBeTruthy();
+    expect(screen.getByText('Waiting for memory headroom')).toBeTruthy();
   });
 });

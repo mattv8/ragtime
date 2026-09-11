@@ -1,3 +1,4 @@
+import asyncio
 import subprocess
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ from ragtime.git_webhooks.models import GitWebhookDelivery, GitWebhookDeliverySt
 from ragtime.git_webhooks.repository import format_git_webhook_target_key
 from ragtime.git_webhooks.service import GitWebhookService
 from ragtime.indexer.models import IndexConfig, IndexJob, IndexStatus
+from ragtime.indexer.resource_governor import resource_governor
 from ragtime.indexer.service import IndexerService
 
 
@@ -211,16 +213,16 @@ class GitWebhookIndexingContractTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             _, _, repo_dir, commit_shas = _build_git_remote(tmpdir)
             depth_one_docs = await self._capture_documents_for_depth(repo_dir, depth=1)
-            depth_three_docs = await self._capture_documents_for_depth(repo_dir, depth=3)
+            depth_two_docs = await self._capture_documents_for_depth(repo_dir, depth=2)
             full_depth_docs = await self._capture_documents_for_depth(repo_dir, depth=0)
 
             depth_one_history = [doc for doc in depth_one_docs if doc.metadata.get("type") == "git_commit"]
-            depth_three_history = [doc for doc in depth_three_docs if doc.metadata.get("type") == "git_commit"]
+            depth_two_history = [doc for doc in depth_two_docs if doc.metadata.get("type") == "git_commit"]
             full_depth_history = [doc for doc in full_depth_docs if doc.metadata.get("type") == "git_commit"]
 
             self.assertEqual(depth_one_history, [])
-            self.assertEqual(len(depth_three_history), 3)
-            self.assertEqual([doc.metadata.get("commit_hash") for doc in depth_three_history], list(reversed(commit_shas[-3:])))
+            self.assertEqual(len(depth_two_history), 2)
+            self.assertEqual([doc.metadata.get("commit_hash") for doc in depth_two_history], list(reversed(commit_shas[-2:])))
             self.assertEqual(len(full_depth_history), len(commit_shas))
             self.assertEqual([doc.metadata.get("commit_hash") for doc in full_depth_history], list(reversed(commit_shas)))
 
@@ -236,20 +238,37 @@ class GitWebhookIndexingContractTests(unittest.IsolatedAsyncioTestCase):
             git_branch="main",
         )
 
-        async def capture_chunk_documents(*, documents, **_kwargs):
-            captured["documents"] = documents
+        async def capture_stage_chunks(pipeline, **_kwargs):
+            def read_spooled_documents() -> list[SimpleNamespace]:
+                documents = []
+                for batch in pipeline.spool.iter_documents(max_documents=10, max_text_bytes=4 * 1024 * 1024):
+                    for record in batch.records:
+                        documents.append(
+                            SimpleNamespace(
+                                page_content=pipeline.spool._file(record.text_path).read_text(encoding="utf-8"),
+                                metadata=record.metadata,
+                            )
+                        )
+                return documents
+
+            captured["documents"] = await asyncio.to_thread(read_spooled_documents)
             raise _StopAfterDocuments("captured documents before chunking")
 
-        with (
-            mock.patch("ragtime.indexer.service.repository.update_job", new=mock.AsyncMock()),
-            mock.patch(
-                "ragtime.indexer.service.repository.get_settings",
-                new=mock.AsyncMock(return_value=SimpleNamespace(chunking_use_tokens=False)),
-            ),
-            mock.patch("ragtime.indexer.service.chunk_documents_parallel", side_effect=capture_chunk_documents),
-        ):
-            with self.assertRaises(_StopAfterDocuments):
-                await service._create_faiss_index(job, repo_dir)
+        await resource_governor.start()
+        try:
+            with (
+                mock.patch("ragtime.indexer.service.UPLOAD_TMP_DIR", repo_dir.parent / "index-data" / "_tmp"),
+                mock.patch("ragtime.indexer.service.repository.update_job", new=mock.AsyncMock()),
+                mock.patch(
+                    "ragtime.indexer.service.repository.get_settings",
+                    new=mock.AsyncMock(return_value=SimpleNamespace(chunking_use_tokens=False)),
+                ),
+                mock.patch("ragtime.indexer.service.BoundedIndexingPipeline.stage_chunks", new=capture_stage_chunks),
+            ):
+                with self.assertRaises(_StopAfterDocuments):
+                    await service._create_faiss_index(job, repo_dir)
+        finally:
+            await resource_governor.stop()
 
         return captured["documents"]
 

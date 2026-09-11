@@ -27,16 +27,38 @@ from typing import Any, Literal, Optional
 from ragtime.core.document_conversion import convert_document_bytes
 from ragtime.core.file_constants import ANYDOC_DOCUMENT_EXTENSIONS, DOCUMENT_EXTENSIONS, OCR_EXTENSIONS, RAW_CAMERA_EXTENSIONS
 from ragtime.core.logging import get_logger
-from ragtime.core.vision_models import (
-    VisionOcrResult,
-    extract_text_with_vision,
-    extract_text_with_vision_structured,
-)
 
 logger = get_logger(__name__)
 
 # Type alias for OCR mode
 OcrModeType = Literal["disabled", "tesseract", "vision"]
+MAX_EXTRACTED_TEXT_BYTES = 16 * 1024 * 1024
+
+
+class ExtractedTextTooLargeError(ValueError):
+    """Extraction produced more text than the bounded indexing contract allows."""
+
+
+def extract_text_from_file_process_safe(
+    file_path: str,
+    *,
+    ocr_mode: OcrModeType = "disabled",
+    max_text_bytes: int = MAX_EXTRACTED_TEXT_BYTES,
+) -> str:
+    """Process-safe extraction entry point for supervised indexing workers.
+
+    It accepts only a path and non-secret parser options.  Vision OCR remains
+    in the parent process because its client credentials must not be serialized
+    into worker task arguments.
+    """
+    if ocr_mode == "vision":
+        raise ValueError("vision OCR must run in the parent process")
+    path = Path(file_path)
+    text = extract_text_from_file(path, ocr_mode=ocr_mode)
+    measured = len(text.encode("utf-8"))
+    if measured > max_text_bytes:
+        raise ExtractedTextTooLargeError(f"extracted text from {path.name} is {measured} bytes; limit is {max_text_bytes} bytes")
+    return text
 
 
 def extract_text_from_file(
@@ -156,6 +178,9 @@ async def extract_image_structured_async(
             return None
 
     try:
+        # Keep provider/settings/Prisma imports out of local parser workers.
+        from ragtime.core.vision_models import extract_text_with_vision_structured
+
         return await extract_text_with_vision_structured(
             image_content=content,
             base_url=effective_base_url,
@@ -489,6 +514,8 @@ async def _extract_image_vision_ocr(
     start_time = time.time()
 
     try:
+        from ragtime.core.vision_models import extract_text_with_vision
+
         text = await extract_text_with_vision(
             image_content=content,
             base_url=vision_base_url,

@@ -17,7 +17,7 @@ Supported languages include:
 from typing import Any, Dict, List, cast
 
 from tree_sitter import Query, QueryCursor
-from tree_sitter_language_pack import get_language, get_parser
+from tree_sitter_language_pack import SupportedLanguage, get_language, get_parser
 
 from ragtime.core.file_constants import LANG_MAPPING
 from ragtime.core.logging import get_logger
@@ -221,11 +221,12 @@ def extract_metadata(text: str, file_ext: str) -> tuple[List[str], List[str]]:
     lang_name = LANG_MAPPING.get(file_ext.lower())
     if not lang_name:
         return [], []
+    language_name = cast(SupportedLanguage, lang_name)
 
     try:
         # Get parser and language
-        parser = get_parser(lang_name)
-        language = get_language(lang_name)
+        parser = get_parser(language_name)
+        language = get_language(language_name)
     except Exception as e:
         logger.debug(f"Failed to load tree-sitter parser for {lang_name}: {e}")
         return [], []

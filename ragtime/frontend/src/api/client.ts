@@ -4,6 +4,7 @@
 
 import type {
   IndexJob,
+  IndexResourceStatus,
   IndexInfo,
   GitWebhookConfig,
   GitWebhookDelivery,
@@ -1156,6 +1157,11 @@ export const api = {
   async listJobs(): Promise<IndexJob[]> {
     const response = await apiFetch(`${API_BASE}/jobs`, {});
     return handleResponse<IndexJob[]>(response);
+  },
+
+  async getIndexResourceStatus(): Promise<IndexResourceStatus> {
+    const response = await apiFetch(`${API_BASE}/resources`, { cache: 'no-store' });
+    return handleResponse<IndexResourceStatus>(response);
   },
 
   /**

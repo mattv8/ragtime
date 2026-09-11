@@ -9,6 +9,7 @@ This module centralizes:
 """
 
 import asyncio
+import time
 from types import SimpleNamespace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -287,6 +288,7 @@ async def embed_documents_subbatched(
     *,
     sub_batch_size: int = EMBEDDING_SUB_BATCH_SIZE,
     logger_override=None,
+    resource_job_id: str | None = None,
 ) -> List[List[float]]:
     """Generate embeddings in sub-batches with event loop yields.
 
@@ -319,12 +321,44 @@ async def embed_documents_subbatched(
         batch_texts = texts[batch_start:batch_end]
 
         try:
-            batch_embeddings = await _embed_documents_guarded(
-                embeddings,
-                batch_texts,
-                logger_override=log,
-                timeout_seconds=embedding_timeout,
-            )
+            if resource_job_id:
+                # Provider requests execute in the API process, so they acquire
+                # their own lease rather than using the subprocess supervisor.
+                from ragtime.indexer.resource_governor import resource_governor
+
+                provider_key = f"{getattr(embeddings, 'provider', type(embeddings).__name__)}:{getattr(embeddings, 'model', '')}"
+                request = resource_governor.estimate_request(
+                    job_id=resource_job_id,
+                    stage="embedding",
+                    text_bytes=sum(len(text.encode("utf-8")) for text in batch_texts),
+                    record_count=len(batch_texts),
+                    cpu_slots=0,
+                    provider_key=provider_key,
+                )
+                started = time.monotonic()
+                try:
+                    # The lease is deliberately scoped to one provider request.
+                    # Retried sub-batches must re-enter admission rather than
+                    # retaining a provider slot while backing off.
+                    async with resource_governor.acquire(request):
+                        batch_embeddings = await _embed_documents_guarded(embeddings, batch_texts, logger_override=log, timeout_seconds=embedding_timeout)
+                except BaseException as exc:
+                    resource_governor.record_outcome(
+                        stage="embedding",
+                        elapsed_seconds=time.monotonic() - started,
+                        provider_key=provider_key,
+                        throttled="rate" in str(exc).lower(),
+                        failed=True,
+                    )
+                    raise
+                else:
+                    resource_governor.record_outcome(
+                        stage="embedding",
+                        elapsed_seconds=time.monotonic() - started,
+                        provider_key=provider_key,
+                    )
+            else:
+                batch_embeddings = await _embed_documents_guarded(embeddings, batch_texts, logger_override=log, timeout_seconds=embedding_timeout)
         except EmbeddingBatchTimeoutError as exc:
             if len(batch_texts) > 1 and current_sub_batch_size > 1:
                 next_batch_size = max(1, current_sub_batch_size // 2)

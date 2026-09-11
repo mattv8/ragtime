@@ -57,7 +57,7 @@ from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS, CHAT_
 from ragtime.chat_runtime.service import chat_runtime_service
 from ragtime.config.settings import settings
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
-from ragtime.core.app_settings import invalidate_settings_cache
+from ragtime.core.app_settings import _apply_runtime_setting_hooks, invalidate_settings_cache
 from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.claude_code import (
     ANTHROPIC_API_BASE,
@@ -281,6 +281,7 @@ from ragtime.indexer.models import (
     IndexConfig,
     IndexInfo,
     IndexJobResponse,
+    IndexResourceStatus,
     IndexStatus,
     InfluxdbDiscoverRequest,
     InfluxdbDiscoverResponse,
@@ -337,6 +338,7 @@ from ragtime.indexer.models import (
 )
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import _estimate_conversation_tokens, _resolve_default_conversation_model, repository
+from ragtime.indexer.resource_governor import resource_governor
 from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import UPLOAD_TMP_DIR, indexer
 from ragtime.indexer.title_generation import schedule_title_generation
@@ -654,6 +656,12 @@ async def _get_or_build_available_models(
 async def list_indexes(_user: User = Depends(require_admin)):
     """List all available FAISS indexes. Admin only."""
     return await indexer.list_indexes()
+
+
+@router.get("/resources", response_model=IndexResourceStatus)
+async def get_index_resource_status(_user: User = Depends(require_admin)) -> IndexResourceStatus:
+    """Return the governor's cached resource snapshot. Admin only."""
+    return IndexResourceStatus.model_validate(resource_governor.snapshot())
 
 
 @router.post("/analyze", response_model=IndexAnalysisResult)
@@ -1645,14 +1653,16 @@ async def download_index(name: str, _user: User = Depends(require_admin)):
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(status_code=400, detail="Invalid index name")
 
-    # Get index path from indexer service
-    index_path = indexer.index_base_path / name
-
-    # Ensure the resolved path is within index_base_path (defense in depth)
+    # Resolve once through artifact metadata so both exported files are from
+    # the active immutable generation. Legacy root-level indexes remain valid.
     try:
-        index_path = index_path.resolve()
-        if not str(index_path).startswith(str(indexer.index_base_path.resolve())):
-            raise HTTPException(status_code=400, detail="Invalid index path")
+        metadata = await repository.get_index_metadata(name)
+        from ragtime.indexer.faiss_artifacts import resolve_document_artifact_path
+
+        index_path = resolve_document_artifact_path(
+            indexer.index_base_path / name,
+            getattr(metadata, "path", None) if metadata is not None else None,
+        )
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Invalid index name") from exc
 
@@ -1678,7 +1688,7 @@ async def download_index(name: str, _user: User = Depends(require_admin)):
         "exported_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        meta = await repository.get_index_metadata(name)
+        meta = metadata
         if meta is not None:
             metadata_payload.update(
                 {
@@ -2235,7 +2245,18 @@ async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(
 
     # Invalidate cache and reinitialize RAG agent to pick up LLM/embedding changes
     invalidate_settings_cache()
-    await rag.initialize()
+    resource_setting_fields = {
+        "indexing_memory_budget_mb",
+        "chunking_max_workers",
+        "chunking_max_batch_size",
+        "sequential_index_loading",
+    }
+    if set(updates).issubset(resource_setting_fields):
+        # Policy changes wake future admissions without replacing active pools
+        # or reloading current indexes.
+        _apply_runtime_setting_hooks(result.model_dump())
+    else:
+        await rag.initialize()
 
     # Reset OCR semaphore if concurrency limit was changed
     if "ocr_concurrency_limit" in updates:

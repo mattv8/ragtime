@@ -315,8 +315,9 @@ model AppSettings {
 
   // Performance / Memory Configuration
   sequentialIndexLoading Boolean @default(false) @map("sequential_index_loading") // Load indexes one-by-one (lower peak RAM) vs parallel (faster)
-  chunkingMaxWorkers     Int     @default(4) @map("chunking_max_workers") // Max parallel processes used by the chunking pool (1-16)
-  chunkingMaxBatchSize   Int     @default(100) @map("chunking_max_batch_size") // Max documents submitted to each chunking worker batch (1-500)
+  chunkingMaxWorkers     Int     @default(0) @map("chunking_max_workers") // Aggregate chunking worker ceiling; 0 = adaptive
+  chunkingMaxBatchSize   Int     @default(0) @map("chunking_max_batch_size") // Chunking batch ceiling; 0 = adaptive
+  indexingMemoryBudgetMb Int     @default(0) @map("indexing_memory_budget_mb") // Indexing memory budget in MiB; 0 = adaptive
 
   // Security
   enableWriteOps Boolean @default(false) @map("enable_write_ops")

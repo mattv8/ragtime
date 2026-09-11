@@ -111,15 +111,6 @@ class IndexJobPhaseTransitionTests(unittest.IsolatedAsyncioTestCase):
             phases.append(current_job.phase)
             return current_job
 
-        async def chunk_documents_parallel_stub(*, progress_callback, **_kwargs):
-            await progress_callback(1, 1)
-            return [
-                SimpleNamespace(
-                    page_content="chunk",
-                    metadata={"source": "notes.txt", "index_name": job.name},
-                )
-            ]
-
         app_settings = SimpleNamespace(
             chunking_use_tokens=False,
             embedding_provider="openai",
@@ -131,8 +122,10 @@ class IndexJobPhaseTransitionTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("ragtime.indexer.service.repository.update_job", new=mock.AsyncMock(side_effect=update_job)),
             mock.patch("ragtime.indexer.service.repository.get_settings", new=mock.AsyncMock(return_value=app_settings)),
             mock.patch("ragtime.indexer.service.collect_files_recursive", return_value=[(source_file, source_file.stat().st_size)]),
-            mock.patch("ragtime.indexer.service.chunk_documents_parallel", new=chunk_documents_parallel_stub),
+            mock.patch("ragtime.indexer.service.BoundedIndexingPipeline.stage_documents", new=mock.AsyncMock(return_value=1)),
+            mock.patch("ragtime.indexer.service.BoundedIndexingPipeline.stage_chunks", new=mock.AsyncMock(return_value=1)),
             mock.patch.object(self.service, "_get_embeddings", new=mock.AsyncMock(side_effect=RuntimeError("embedding sentinel"))),
+            mock.patch("ragtime.indexer.service.IndexingSpool.summary", return_value={"document_count": 1, "chunk_count": 1, "embedded_count": 0}),
         ):
             with self.assertRaisesRegex(RuntimeError, "embedding sentinel"):
                 await self.service._create_faiss_index(job, source_dir)
@@ -173,14 +166,6 @@ class IndexJobPhaseTransitionTests(unittest.IsolatedAsyncioTestCase):
             phases.append(current_job.phase)
             return current_job
 
-        async def chunk_documents_parallel_stub(**_kwargs):
-            return [
-                SimpleNamespace(
-                    page_content="chunk",
-                    metadata={"source": "notes.txt", "index_name": job.name},
-                )
-            ]
-
         app_settings = SimpleNamespace(
             chunking_use_tokens=False,
             embedding_provider="openai",
@@ -188,20 +173,20 @@ class IndexJobPhaseTransitionTests(unittest.IsolatedAsyncioTestCase):
             ollama_base_url=None,
         )
         fake_embeddings = SimpleNamespace()
+        artifact = SimpleNamespace(generation_path=source_dir, document_count=1, chunk_count=1, size_bytes=1)
 
         with (
             mock.patch("ragtime.indexer.service.repository.update_job", new=mock.AsyncMock(side_effect=update_job)),
             mock.patch("ragtime.indexer.service.repository.get_settings", new=mock.AsyncMock(return_value=app_settings)),
             mock.patch("ragtime.indexer.service.collect_files_recursive", return_value=[(source_file, source_file.stat().st_size)]),
-            mock.patch("ragtime.indexer.service.chunk_documents_parallel", new=chunk_documents_parallel_stub),
+            mock.patch("ragtime.indexer.service.BoundedIndexingPipeline.stage_documents", new=mock.AsyncMock(return_value=1)),
+            mock.patch("ragtime.indexer.service.BoundedIndexingPipeline.stage_chunks", new=mock.AsyncMock(return_value=1)),
+            mock.patch("ragtime.indexer.service.BoundedIndexingPipeline.stage_embeddings", new=mock.AsyncMock(return_value=1)),
+            mock.patch("ragtime.indexer.service.IndexingSpool.summary", return_value={"document_count": 1, "chunk_count": 1, "embedded_count": 1}),
             mock.patch.object(self.service, "_get_embeddings", new=mock.AsyncMock(return_value=fake_embeddings)),
             mock.patch("ragtime.indexer.service.get_embedding_model_context_limit", new=mock.AsyncMock(return_value=8192)),
-            mock.patch(
-                "ragtime.indexer.service.rechunk_documents_batch",
-                return_value=([SimpleNamespace(page_content="chunk", metadata={"source": "notes.txt", "index_name": job.name})], 0),
-            ),
-            mock.patch("ragtime.indexer.service.embed_documents_subbatched", new=mock.AsyncMock(return_value=[[0.1, 0.2, 0.3]])),
-            mock.patch("ragtime.indexer.service.FAISS.from_embeddings", side_effect=RuntimeError("finalizing sentinel")),
+            mock.patch("ragtime.indexer.service.get_embedding_safety_margin", return_value=0.8),
+            mock.patch("ragtime.indexer.service.prepare_faiss_artifact", new=mock.AsyncMock(side_effect=RuntimeError("finalizing sentinel"))),
         ):
             with self.assertRaisesRegex(RuntimeError, "finalizing sentinel"):
                 await self.service._create_faiss_index(job, source_dir)

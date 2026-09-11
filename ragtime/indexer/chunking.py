@@ -16,17 +16,23 @@ document_parser.py BEFORE this module is called. This module only chunks text.
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import multiprocessing
 import os
 import threading
+import uuid
 import warnings
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, get_args
 
-from chonkie import CodeChunker, OverlapRefinery, RecursiveChunker
+from chonkie.chunker.code import CodeChunker
+from chonkie.chunker.recursive import RecursiveChunker
+from chonkie.refinery.overlap import OverlapRefinery
 from chonkie.types import RecursiveLevel, RecursiveRules
 from langchain_core.documents import Document
 
@@ -42,6 +48,9 @@ from ragtime.core.file_constants import (
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
 from ragtime.indexer.embedding_errors import iter_exception_chain
+from ragtime.indexer.indexing_spool import SpoolTaskOutput
+from ragtime.indexer.resource_governor import ResourceRequest, resource_governor
+from ragtime.indexer.resource_workers import ResourceTaskError, run_resource_task
 
 # Suppress Chonkie warnings we intentionally trigger:
 # - tokenizers library: we use tiktoken intentionally
@@ -63,6 +72,23 @@ logger = get_logger(__name__)
 # cl100k_base is used by GPT-4, text-embedding-3-*, and is a good general-purpose
 # tokenizer that roughly matches most embedding model tokenization
 TIKTOKEN_ENCODING = "cl100k_base"
+CHUNKING_PIPELINE_SCHEMA_VERSION = 2
+
+
+def chunking_implementation_fingerprint() -> dict[str, str | int]:
+    """Return the parser versions that define persisted chunk output."""
+
+    def package_version(distribution: str) -> str:
+        try:
+            return version(distribution)
+        except PackageNotFoundError:
+            return "not-installed"
+
+    return {
+        "pipeline_schema_version": CHUNKING_PIPELINE_SCHEMA_VERSION,
+        "chonkie": package_version("chonkie"),
+        "tree_sitter_language_pack": package_version("tree-sitter-language-pack"),
+    }
 
 
 # Pool sizing caps. Defaults preserve historical behavior; the active values
@@ -131,6 +157,14 @@ class ChunkingPoolManager:
         self._lock = threading.Lock()
 
     def get_or_create(self, key: str, max_workers: int) -> ChunkingPool:
+        # Per-job executors were the source of the indexing OOM incident.  New
+        # work must go through run_resource_task(), where the process-wide
+        # governor owns every live child.  Keep this registry's release APIs
+        # for shutdown compatibility, but do not let a stale caller create a
+        # policy-bypassing pool.
+        raise ChunkingPoolError("private chunking pools are retired; use run_resource_task or chunk_spooled_batch")
+        # Kept below temporarily for source compatibility with old tracebacks;
+        # it is unreachable and can be removed with the next pool API cleanup.
         with self._lock:
             existing = self._pools.get(key)
             if existing is not None:
@@ -324,12 +358,8 @@ def _terminate_pool(pool: ChunkingPool, *, terminate_workers: bool) -> None:
 
 
 def _get_process_pool() -> ProcessPoolExecutor:
-    """Return the shared sentinel pool's executor (legacy compatibility shim)."""
-    max_workers, _cpu, memory_limit_bytes = _resolve_max_workers()
-    pool = pool_manager.get_or_create(SHARED_CHUNKING_POOL_KEY, max_workers)
-    memory_note = f", memory limit ~{memory_limit_bytes / _GIB:.1f}GiB" if memory_limit_bytes else ""
-    logger.debug(f"Using shared chunking pool '{SHARED_CHUNKING_POOL_KEY}' ({pool.max_workers} workers{memory_note})")
-    return pool.executor
+    """Retired private pool factory; global admission is asynchronous."""
+    raise ChunkingPoolError("_get_process_pool is retired; use chunk_documents_parallel")
 
 
 def shutdown_process_pool(
@@ -897,6 +927,8 @@ def _chunk_with_recursive(
 
     docs = []
     for c in chunks:
+        if not c.text.strip():
+            continue
         new_meta = metadata.copy()
         new_meta["chunker"] = chunker_tag
         docs.append(Document(page_content=c.text, metadata=new_meta))
@@ -1071,6 +1103,174 @@ def _chunk_document_batch_recursive_sync(
     return all_chunks, splitter_counts
 
 
+def _attempt_relative_path(attempt_root: Path, path: Path) -> str:
+    """Return a validated attempt-relative path for spool manifests."""
+    root = attempt_root.resolve()
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(root))
+    except ValueError as exc:
+        raise ValueError("spool path escaped attempt root") from exc
+
+
+def _chunk_spooled_batch_sync(
+    attempt_root_text: str,
+    records: tuple[tuple[str, str, int, dict], ...],
+    chunk_size: int,
+    chunk_overlap: int,
+    use_tokens: bool,
+    task_id: str,
+    recursive_only: bool = False,
+) -> tuple[str, int, int]:
+    """Chunk a spool batch and write a compact JSONL descriptor manifest.
+
+    This function receives only paths and small record metadata.  The parent
+    ingests the manifest into SQLite after the worker has closed every file.
+    """
+    attempt_root = Path(attempt_root_text).resolve()
+    task_dir = attempt_root / "tasks" / f"chunk-{task_id}"
+    text_dir = task_dir / "text"
+    text_dir.mkdir(parents=True, exist_ok=False)
+    manifest = task_dir / "chunks.jsonl"
+    total_bytes = 0
+    count = 0
+    with manifest.open("w", encoding="utf-8") as output:
+        for record_id, text_path, document_ordinal, metadata in records:
+            source_path = attempt_root / text_path
+            relative_source = _attempt_relative_path(attempt_root, source_path)
+            content = source_path.read_text(encoding="utf-8")
+            chunk_function = _chunk_document_batch_recursive_sync if recursive_only else _chunk_document_batch_sync
+            chunks, _counts = chunk_function([(content, dict(metadata))], chunk_size, chunk_overlap, use_tokens)
+            for output_ordinal, (chunk_text, chunk_metadata) in enumerate(chunks):
+                digest = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
+                stable_id = hashlib.sha256(f"{record_id}\0{document_ordinal}\0{output_ordinal}\0{digest}".encode("utf-8")).hexdigest()
+                text_file = text_dir / f"{document_ordinal:012d}-{output_ordinal:08d}.txt"
+                text_file.write_text(chunk_text, encoding="utf-8")
+                chunk_metadata = dict(chunk_metadata)
+                chunk_metadata.update(
+                    {
+                        "chunk_id": stable_id,
+                        "document_ordinal": document_ordinal,
+                        "chunk_ordinal": output_ordinal,
+                    }
+                )
+                item = {
+                    "record_id": stable_id,
+                    "source": chunk_metadata.get("source", metadata.get("source", relative_source)),
+                    "ordinal": document_ordinal,
+                    "text_path": _attempt_relative_path(attempt_root, text_file),
+                    "metadata": chunk_metadata,
+                    "text_bytes": len(chunk_text.encode("utf-8")),
+                }
+                output.write(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n")
+                total_bytes += item["text_bytes"]
+                count += 1
+    return _attempt_relative_path(attempt_root, manifest), count, total_bytes
+
+
+def _combine_spool_manifests(attempt_root: Path, manifests: list[tuple[str, int, int]]) -> tuple[str, int, int]:
+    """Stream retry manifests into one descriptor without materializing chunks."""
+    output = attempt_root / "tasks" / f"chunk-combined-{uuid.uuid4().hex}.jsonl"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    count = text_bytes = 0
+    with output.open("w", encoding="utf-8") as destination:
+        for manifest_path, expected_count, expected_bytes in manifests:
+            actual_count = actual_bytes = 0
+            with (attempt_root / manifest_path).open(encoding="utf-8") as source:
+                for line in source:
+                    destination.write(line)
+                    item = json.loads(line)
+                    actual_count += 1
+                    actual_bytes += int(item["text_bytes"])
+            if (actual_count, actual_bytes) != (expected_count, expected_bytes):
+                raise ValueError("chunk retry manifest does not match its task descriptor")
+            count += actual_count
+            text_bytes += actual_bytes
+    return _attempt_relative_path(attempt_root, output), count, text_bytes
+
+
+async def chunk_spooled_batch(
+    job_id: str,
+    attempt_root: Path,
+    batch: Any,
+    *,
+    chunk_size: int,
+    chunk_overlap: int,
+    use_tokens: bool,
+) -> Any:
+    """Chunk a disk-backed batch in a supervised process.
+
+    The result is ``SpoolTaskOutput`` only; chunk bodies remain task-private
+    files.  Manifest ordering follows the source batch and per-document output
+    ordinal, never worker completion order.
+    """
+    records = tuple((record.record_id, record.text_path, record.ordinal, dict(record.metadata)) for record in batch.records)
+    diagnostic_source = ", ".join(str(record.metadata.get("source") or record.text_path) for record in batch.records[:3])
+    text_bytes = sum(record.text_bytes for record in batch.records)
+    request = resource_governor.estimate_request(
+        job_id=job_id,
+        stage="chunking",
+        text_bytes=text_bytes,
+        record_count=len(records),
+        cpu_slots=1,
+    )
+    request = ResourceRequest(
+        request.job_id,
+        request.stage,
+        request.estimated_peak_bytes,
+        request.cpu_slots,
+        request.provider_key,
+        request.kind,
+        diagnostic_source,
+    )
+    task_args = (str(attempt_root), records, chunk_size, chunk_overlap, use_tokens, uuid.uuid4().hex)
+    try:
+        manifest_path, record_count, output_bytes = await run_resource_task(request, _chunk_spooled_batch_sync, task_args)
+    except (ResourceTaskError, asyncio.TimeoutError) as error:
+        # A poisoned/native-heavy batch is retried one document at a time with
+        # the deterministic recursive fallback, still in supervised children.
+        # Descriptors are stream-merged on a thread; no chunk collection enters
+        # the API process.
+        logger.warning(
+            "Chunking fallback: job=%s source=%s error=%s",
+            job_id,
+            diagnostic_source or "unknown",
+            error,
+        )
+        outputs: list[tuple[str, int, int]] = []
+        for record in records:
+            single_request = resource_governor.estimate_request(
+                job_id=job_id,
+                stage="chunking",
+                text_bytes=next(item.text_bytes for item in batch.records if item.record_id == record[0]),
+                record_count=1,
+                cpu_slots=1,
+            )
+            single_request = ResourceRequest(
+                single_request.job_id,
+                single_request.stage,
+                single_request.estimated_peak_bytes,
+                single_request.cpu_slots,
+                single_request.provider_key,
+                single_request.kind,
+                str(record[3].get("source") or record[1]),
+            )
+            outputs.append(
+                await run_resource_task(
+                    single_request,
+                    _chunk_spooled_batch_sync,
+                    (str(attempt_root), (record,), chunk_size, chunk_overlap, use_tokens, uuid.uuid4().hex, True),
+                )
+            )
+        manifest_path, record_count, output_bytes = await asyncio.to_thread(_combine_spool_manifests, attempt_root, outputs)
+    return SpoolTaskOutput(
+        manifest_path=manifest_path,
+        record_count=record_count,
+        text_bytes=output_bytes,
+        peak_rss_bytes=0,
+    )
+
+
 async def _await_pool_futures_or_closed(
     futures: List,
     pool: ChunkingPool,
@@ -1172,137 +1372,54 @@ async def chunk_documents_parallel(
     batch_size = _effective_batch_size(batch_size)
     key = pool_key or SHARED_CHUNKING_POOL_KEY
 
-    # If a pool already exists for this key but is closed, the owning job was
-    # cancelled. Do NOT silently hand the caller a brand-new pool; surface the
-    # failure so the caller can decide whether to abort.
-    existing = pool_manager.get(key)
-    if existing is not None and existing.is_closed():
-        raise ChunkingPoolError(f"Chunking pool '{key}' was terminated before chunking started")
-
-    max_workers, _, _ = _resolve_max_workers()
-    pool = pool_manager.get_or_create(key, max_workers)
-    total_docs = len(documents)
+    # Compatibility callers still receive Documents, but execution is routed
+    # through the same global governor as the spool pipeline.  The bounded IPC
+    # guard in run_resource_task deliberately makes this unsuitable for a
+    # corpus-sized result; document indexing uses chunk_spooled_batch instead.
     all_chunks: List[Document] = []
-    all_splitter_counts: Dict[str, int] = {}
-
-    logger.debug(f"Starting parallel chunking: pool='{pool.key}' total_docs={total_docs} batch_size={batch_size} workers={pool.max_workers}")
-
-    loop = asyncio.get_event_loop()
-
-    # Submit batches in waves of pool_workers to keep all workers busy
-    wave_size = pool.max_workers
-    batch_ranges = list(range(0, total_docs, batch_size))
-
-    for wave_start in range(0, len(batch_ranges), wave_size):
-        # Check for cancellation before submitting each wave
+    for start in range(0, len(documents), batch_size):
         if is_cancelled and is_cancelled():
-            logger.info("Chunking cancelled, stopping early")
             raise asyncio.CancelledError("Job cancelled by user")
-
-        if pool.is_closed():
-            raise ChunkingPoolError(f"Chunking pool '{pool.key}' was terminated before wave submit")
-
-        wave_indices = batch_ranges[wave_start : wave_start + wave_size]
-        futures = []
-        wave_doc_data: List[Tuple[str, dict]] = []
-
-        for i in wave_indices:
-            batch_docs = documents[i : i + batch_size]
-            # Prepare serializable data for the subprocess.
-            # This list comprehension and the subsequent run_in_executor submit()
-            # both run in the event loop thread (ProcessPoolExecutor pickles args
-            # synchronously). Keep batch_size bounded to limit blocking and memory spikes.
-            batch_data = [(doc.page_content, doc.metadata) for doc in batch_docs]
-            wave_doc_data.extend(batch_data)
-            future = loop.run_in_executor(
-                pool.executor,
-                _chunk_document_batch_sync,
-                batch_data,
-                chunk_size,
-                chunk_overlap,
-                use_tokens,
-            )
-            futures.append(future)
-
-        # Await all futures in this wave concurrently, with shutdown detection.
+        batch_documents = documents[start : start + batch_size]
+        batch_data = [(document.page_content, dict(document.metadata)) for document in batch_documents]
+        text_bytes = sum(len(content.encode("utf-8")) for content, _metadata in batch_data)
+        request = resource_governor.estimate_request(
+            job_id=key,
+            stage="chunking",
+            text_bytes=text_bytes,
+            record_count=len(batch_data),
+            cpu_slots=1,
+            kind="shared" if key == SHARED_CHUNKING_POOL_KEY else "document_job",
+        )
+        request = ResourceRequest(
+            request.job_id,
+            request.stage,
+            request.estimated_peak_bytes,
+            request.cpu_slots,
+            request.provider_key,
+            request.kind,
+            ", ".join(str(metadata.get("source") or "unknown") for _content, metadata in batch_data[:3]),
+        )
         try:
-            results = await asyncio.wait_for(
-                _await_pool_futures_or_closed(futures, pool),
-                timeout=_CHUNKING_WAVE_TIMEOUT_SECONDS,
+            result_chunks, _counts = await run_resource_task(
+                request,
+                _chunk_document_batch_sync,
+                (batch_data, chunk_size, chunk_overlap, use_tokens),
             )
-        except asyncio.CancelledError:
-            for future in futures:
-                future.cancel()
-            logger.info(f"Chunking cancelled; terminating active workers for pool '{pool.key}'")
-            pool_manager.release(pool.key, terminate_workers=True)
-            raise
-        except asyncio.TimeoutError:
-            for future in futures:
-                if not future.done():
-                    future.cancel()
-            logger.warning(
-                f"Chunking pool '{pool.key}' timed out after {_CHUNKING_WAVE_TIMEOUT_SECONDS:.1f}s while processing {len(wave_doc_data)} document(s); "
-                "terminating that pool, falling back to recursive chunking for the entire wave, and recreating the pool for later waves"
-            )
-            pool_manager.release(pool.key, terminate_workers=True)
-            fallback_result = await asyncio.to_thread(
+        except (ChunkingPoolError, BrokenProcessPool, ResourceTaskError, asyncio.TimeoutError):
+            # A single recursive retry is still off-loop and supervised.  Do
+            # not revive a private pool after a native failure.
+            result_chunks, _counts = await run_resource_task(
+                request,
                 _chunk_document_batch_recursive_sync,
-                wave_doc_data,
-                chunk_size,
-                chunk_overlap,
-                use_tokens,
+                (batch_data, chunk_size, chunk_overlap, use_tokens),
             )
-            results = [fallback_result]
-            pool = pool_manager.get_or_create(pool.key, pool.max_workers)
-        except ChunkingPoolError:
-            logger.warning(f"Chunking pool '{pool.key}' was terminated mid-wave")
-            raise
-        except BrokenProcessPool as e:
-            for future in futures:
-                future.cancel()
-            logger.warning(
-                f"Chunking pool '{pool.key}' broke while processing {len(wave_doc_data)} document(s); recycling pool and retrying one document at a time: {e}"
-            )
-            pool_manager.release(pool.key, terminate_workers=True)
-            new_pool = pool_manager.get_or_create(pool.key, pool.max_workers)
-            results = await _retry_chunk_documents_individually(
-                wave_doc_data,
-                chunk_size,
-                chunk_overlap,
-                use_tokens,
-                new_pool,
-            )
-            pool = new_pool
-        except Exception as e:
-            logger.error(f"Batch chunking error: {e}")
-            raise
-
-        for result_chunks, splitter_counts in results:
-            # Collect results in batches, yielding periodically to keep the
-            # event loop responsive. Creating 50K+ Document objects in a tight
-            # loop without yielding blocks HTTP/UI/MCP request handling.
-            for idx, (content, meta) in enumerate(result_chunks):
-                all_chunks.append(Document(page_content=content, metadata=meta))
-                if idx % 5000 == 4999:
-                    await asyncio.sleep(0)
-            for k, v in splitter_counts.items():
-                all_splitter_counts[k] = all_splitter_counts.get(k, 0) + v
-
-        processed_docs = min(wave_indices[-1] + batch_size, total_docs)
+        all_chunks.extend(Document(page_content=content, metadata=metadata) for content, metadata in result_chunks)
         if progress_callback:
-            cb_result = progress_callback(processed_docs, total_docs)
-            if asyncio.iscoroutine(cb_result):
-                await cb_result
-
-        # Yield to event loop between waves with a real time delay
-        # asyncio.sleep(0) only switches coroutines but doesn't free CPU
-        # for HTTP request processing; a small delay ensures responsiveness
-        await asyncio.sleep(0.05)
-
-    # Log summary
-    summary = ", ".join(f"{k}:{v}" for k, v in sorted(all_splitter_counts.items()))
-    logger.info(f"Chunking complete. Pool='{pool.key}'. Splitters used: {summary}")
-
+            callback_result = progress_callback(min(start + len(batch_documents), len(documents)), len(documents))
+            if asyncio.iscoroutine(callback_result):
+                await callback_result
+        await asyncio.sleep(0)
     return all_chunks
 
 

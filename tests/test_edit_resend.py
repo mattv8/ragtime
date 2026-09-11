@@ -87,22 +87,12 @@ class EditResendRouteTests(unittest.IsolatedAsyncioTestCase):
         repository = SimpleNamespace(
             check_conversation_access=mock.AsyncMock(return_value=True),
             get_conversation=mock.AsyncMock(return_value=existing_conversation),
-            create_branch_and_start_edit_resend=mock.AsyncMock(
-                return_value=(branch, updated_conversation, task, outcome)
-            ),
+            create_branch_and_start_edit_resend=mock.AsyncMock(return_value=(branch, updated_conversation, task, outcome)),
             cancel_chat_task=mock.AsyncMock(),
             get_conversation_branches=mock.AsyncMock(return_value=[branch_summary]),
         )
-        validate_mock = (
-            mock.AsyncMock(side_effect=validate_error)
-            if validate_error is not None
-            else mock.AsyncMock(return_value="test-model")
-        )
-        start_task = (
-            mock.AsyncMock(side_effect=start_error)
-            if start_error is not None
-            else mock.AsyncMock(return_value=task)
-        )
+        validate_mock = mock.AsyncMock(side_effect=validate_error) if validate_error is not None else mock.AsyncMock(return_value="test-model")
+        start_task = mock.AsyncMock(side_effect=start_error) if start_error is not None else mock.AsyncMock(return_value=task)
         route_kwargs = {
             "conversation_id": "conversation-1",
             "request": request,
@@ -194,9 +184,7 @@ class EditResendRepositoryTests(unittest.IsolatedAsyncioTestCase):
         )
         refreshed_conversation = SimpleNamespace(id="conversation-1", messages=messages[:1])
         tx = SimpleNamespace(
-            conversation=SimpleNamespace(
-                find_unique=mock.AsyncMock(side_effect=[initial_conversation, refreshed_conversation])
-            ),
+            conversation=SimpleNamespace(find_unique=mock.AsyncMock(side_effect=[initial_conversation, refreshed_conversation])),
             conversationbranch=SimpleNamespace(create=mock.AsyncMock(return_value=SimpleNamespace(id="branch-row"))),
             chattask=SimpleNamespace(create=mock.AsyncMock(return_value=SimpleNamespace(id="task-row"))),
             execute_raw=mock.AsyncMock(side_effect=[1, 1]),
@@ -231,11 +219,7 @@ class EditResendRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         new_message = {"role": "user", "content": "replacement"}
         expected_total = estimate_effective_tokens(messages[:1]) + estimate_message_tokens(new_message)
-        update_statements = [
-            call.args[0]
-            for call in tx.execute_raw.await_args_list
-            if "jsonb_array_elements(messages)" in call.args[0]
-        ]
+        update_statements = [call.args[0] for call in tx.execute_raw.await_args_list if "jsonb_array_elements(messages)" in call.args[0]]
 
         self.assertEqual((branch.id, conversation.id, task.id, outcome), ("branch-1", "conversation-1", "task-1", "created"))
         self.assertEqual(len(update_statements), 1)

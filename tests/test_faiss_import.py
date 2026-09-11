@@ -227,6 +227,8 @@ class ImportFaissIndexTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(response.loaded)
         self.assertTrue(response.load_error)
+        self.assertIsNotNone(response.load_error)
+        assert response.load_error is not None
         self.assertNotIn("loader failed", response.load_error)
         self.assertIn("saved but unavailable for search", response.message)
         fake_rag.load_faiss_index_from_metadata.assert_awaited_once_with("odev_proj")

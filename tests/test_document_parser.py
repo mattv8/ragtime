@@ -1,4 +1,5 @@
 import importlib.util
+import subprocess
 import sys
 import types
 import unittest
@@ -40,6 +41,26 @@ def _load_document_parser_module():
     ):
         spec.loader.exec_module(module)
     return module
+
+
+class ParserWorkerImportTests(unittest.TestCase):
+    def test_local_parser_does_not_load_provider_settings_or_prisma(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; import ragtime.indexer.document_parser; "
+                "assert 'ragtime.core.vision_models' not in sys.modules; "
+                "assert 'ragtime.core.app_settings' not in sys.modules; "
+                "assert 'prisma' not in sys.modules",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class DocumentConversionTests(unittest.TestCase):

@@ -187,6 +187,7 @@ from ragtime.indexer.export_service import (
     live_table_source,
     table_source,
 )
+from ragtime.indexer.memory_utils import estimate_index_memory
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
@@ -3264,6 +3265,85 @@ class RAGComponents:
         if self._app_settings.get("tool_output_mode", "default") == "auto":
             self._system_prompt_ui += TOOL_OUTPUT_VISIBILITY_PROMPT
 
+    async def _load_faiss_local_admitted(
+        self,
+        *,
+        index_name: str,
+        index_path: Path,
+        embedding_model: Any,
+        metadata: dict[str, Any],
+    ) -> Any:
+        """Load one document index without releasing admission before its thread ends."""
+        from ragtime.indexer.resource_governor import resource_governor
+
+        dimensions = int(metadata.get("embedding_dimension") or (self._app_settings or {}).get("embedding_dimension") or 0)
+        chunks = int(metadata.get("chunk_count") or 0)
+        # Existing replacement residency is already measured by the governor;
+        # reserve only the new load's peak/steady contribution here.
+        estimated = (
+            estimate_index_memory(chunks, dimensions)
+            if dimensions > 0
+            else {"steady_memory_bytes": int(metadata.get("steady_memory_bytes") or metadata.get("size_bytes") or 0)}
+        )
+        request = resource_governor.estimate_request(
+            job_id=f"faiss-load:{index_name}",
+            stage="index_loading",
+            record_count=chunks,
+            dimensions=dimensions,
+            steady_bytes=int(metadata.get("steady_memory_bytes") or estimated["steady_memory_bytes"]),
+            kind="index_load",
+        )
+        details = self._index_details.get(index_name)
+        if details is not None:
+            details["status"] = "waiting_resources"
+            details["error"] = None
+        async with resource_governor.acquire(request):
+            if details is not None:
+                details["status"] = "loading"
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    FAISS.load_local,
+                    str(index_path),
+                    embedding_model,
+                    allow_dangerous_deserialization=True,
+                )
+            )
+            cancelled = 0
+            timed_out = False
+            deadline = 300.0
+            while not task.done():
+                try:
+                    if not timed_out:
+                        await asyncio.wait_for(asyncio.shield(task), timeout=deadline)
+                    else:
+                        await asyncio.shield(task)
+                except asyncio.TimeoutError:
+                    # Native FAISS load has no safe in-process kill operation.
+                    # Retain admission until the thread exits, then report the
+                    # deadline honestly instead of claiming memory was freed.
+                    timed_out = True
+                    if details is not None:
+                        details["error"] = f"FAISS native load exceeded {deadline:.0f}s; waiting for cleanup"
+                except asyncio.CancelledError:
+                    # A second cancellation can interrupt the cleanup await as
+                    # well. Consume it locally and keep shielding until the
+                    # thread has actually returned, then restore cancellation.
+                    cancelled += 1
+                    current = asyncio.current_task()
+                    if current is not None:
+                        current.uncancel()
+            try:
+                result = task.result()
+            except BaseException:
+                if cancelled:
+                    raise asyncio.CancelledError()
+                raise
+            if timed_out:
+                raise TimeoutError(f"FAISS native load for '{index_name}' exceeded {deadline:.0f}s and completed only after the deadline")
+            if cancelled:
+                raise asyncio.CancelledError()
+            return result
+
     async def load_faiss_index_from_metadata(self, index_name: str) -> bool:
         """Synchronously load or reload one completed FAISS index into memory."""
         if not index_name:
@@ -3339,11 +3419,11 @@ class RAGComponents:
             try:
                 start = time.time()
                 mem_before = get_process_memory_bytes()
-                db = await asyncio.to_thread(
-                    FAISS.load_local,
-                    str(index_path),
-                    self._embedding_model,
-                    allow_dangerous_deserialization=True,
+                db = await self._load_faiss_local_admitted(
+                    index_name=index_name,
+                    index_path=index_path,
+                    embedding_model=self._embedding_model,
+                    metadata=metadata,
                 )
                 elapsed = time.time() - start
                 mem_after = get_process_memory_bytes()
@@ -3544,7 +3624,33 @@ class RAGComponents:
             for index_name in disk_indexes:
                 try:
                     start_time = time.time()
-                    success = await faiss_backend.load_index(index_name, self._embedding_model)
+                    # Filesystem FAISS stores do not have DB metadata.  Their
+                    # loader still participates in the same process-wide
+                    # admission policy, with disk bytes as a conservative
+                    # steady-state floor.
+                    index_path = faiss_backend._get_index_path(index_name)
+                    size_bytes = await asyncio.to_thread(lambda: sum(item.stat().st_size for item in index_path.glob("index.*") if item.is_file()))
+                    from ragtime.indexer.resource_governor import resource_governor
+
+                    request = resource_governor.estimate_request(
+                        job_id=f"faiss-load:{index_name}",
+                        stage="index_loading",
+                        steady_bytes=size_bytes,
+                        kind="index_load",
+                    )
+                    self._index_details[index_name] = {
+                        "name": index_name,
+                        "display_name": index_name,
+                        "status": "waiting_resources",
+                        "type": "filesystem_faiss",
+                        "chunk_count": None,
+                        "size_mb": size_bytes / (1024 * 1024) if size_bytes else None,
+                        "load_time_seconds": None,
+                        "error": None,
+                    }
+                    async with resource_governor.acquire(request):
+                        self._index_details[index_name]["status"] = "loading"
+                        success = await faiss_backend.load_index(index_name, self._embedding_model)
                     if success:
                         loaded += 1
                         load_time = time.time() - start_time
@@ -4270,10 +4376,11 @@ class RAGComponents:
                     index_path = Path(index_path_str)
                     if index_path.exists():
                         try:
-                            db = FAISS.load_local(
-                                str(index_path),
-                                embedding_model,
-                                allow_dangerous_deserialization=True,
+                            db = await self._load_faiss_local_admitted(
+                                index_name=index_name,
+                                index_path=index_path,
+                                embedding_model=embedding_model,
+                                metadata=idx,
                             )
                             # Create retriever with MMR support if enabled
                             self.retrievers[index_name] = self._create_retriever_from_faiss(db, index_name)
@@ -4350,9 +4457,9 @@ class RAGComponents:
             if not index_name:
                 return None
 
-            # Mark as loading
+            # Admission may wait; do not claim this index is loading yet.
             if index_name in self._index_details:
-                self._index_details[index_name]["status"] = "loading"
+                self._index_details[index_name]["status"] = "waiting_resources"
 
             index_path_str = idx.get("path")
             if not index_path_str:
@@ -4374,12 +4481,11 @@ class RAGComponents:
                 start = time.time()
                 mem_before = get_process_memory_bytes()
 
-                # Offload blocking I/O to thread pool
-                db = await asyncio.to_thread(
-                    FAISS.load_local,
-                    str(index_path),
-                    embedding_model,
-                    allow_dangerous_deserialization=True,
+                db = await self._load_faiss_local_admitted(
+                    index_name=index_name,
+                    index_path=index_path,
+                    embedding_model=embedding_model,
+                    metadata=idx,
                 )
 
                 elapsed = time.time() - start
@@ -4517,10 +4623,10 @@ class RAGComponents:
             if not index_name:
                 continue
 
-            # Mark as currently loading
+            # Admission may wait; do not claim this index is loading yet.
             self._loading_index = index_name
             if index_name in self._index_details:
-                self._index_details[index_name]["status"] = "loading"
+                self._index_details[index_name]["status"] = "waiting_resources"
 
             index_path_str = idx.get("path")
             if not index_path_str:
@@ -4542,22 +4648,12 @@ class RAGComponents:
                 start = time.time()
                 mem_before = get_process_memory_bytes()
 
-                # Track peak memory during loading
-                peak_mem = mem_before
-
-                def load_and_track_peak():
-                    nonlocal peak_mem
-                    db = FAISS.load_local(
-                        str(index_path),
-                        embedding_model,
-                        allow_dangerous_deserialization=True,
-                    )
-                    # Check memory after loading (this is approximate)
-                    current_mem = get_process_memory_bytes()
-                    peak_mem = max(peak_mem, current_mem)
-                    return db
-
-                db = await asyncio.to_thread(load_and_track_peak)
+                db = await self._load_faiss_local_admitted(
+                    index_name=index_name,
+                    index_path=index_path,
+                    embedding_model=embedding_model,
+                    metadata=idx,
+                )
 
                 elapsed = time.time() - start
                 mem_after = get_process_memory_bytes()
@@ -4581,7 +4677,7 @@ class RAGComponents:
 
                 # Calculate memory stats
                 steady_mem = max(0, mem_after - mem_before)
-                observed_peak = max(0, peak_mem - mem_before)
+                observed_peak = steady_mem
 
                 # Create retriever with MMR support if enabled
                 retriever = self._create_retriever_from_faiss(db, index_name)

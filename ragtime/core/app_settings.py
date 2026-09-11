@@ -25,6 +25,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_HTTP_PROXY_SAFE_TIMEOUT_SECONDS,
     DEFAULT_IMAGE_PAYLOAD_LIMITS,
     DEFAULT_INCLUDE_COPILOT_THIRD_PARTY_MODELS,
+    DEFAULT_INDEXING_MEMORY_BUDGET_MB,
     DEFAULT_IVFFLAT_LISTS,
     DEFAULT_LEGACY_ODOO_CONTAINER,
     DEFAULT_LEGACY_POSTGRES_CONTAINER,
@@ -438,6 +439,11 @@ class SettingsCache:
                     "chunkingMaxBatchSize",
                     DEFAULT_CHUNKING_MAX_BATCH_SIZE,
                 ),
+                "indexing_memory_budget_mb": getattr(
+                    prisma_settings,
+                    "indexingMemoryBudgetMb",
+                    DEFAULT_INDEXING_MEMORY_BUDGET_MB,
+                ),
                 # API Tool Output configuration
                 "tool_output_mode": getattr(
                     prisma_settings,
@@ -662,6 +668,7 @@ class SettingsCache:
                 "sequential_index_loading": DEFAULT_SEQUENTIAL_INDEX_LOADING,
                 "chunking_max_workers": DEFAULT_CHUNKING_MAX_WORKERS,
                 "chunking_max_batch_size": DEFAULT_CHUNKING_MAX_BATCH_SIZE,
+                "indexing_memory_budget_mb": DEFAULT_INDEXING_MEMORY_BUDGET_MB,
                 # API Tool Output configuration
                 "tool_output_mode": DEFAULT_TOOL_OUTPUT_MODE,
                 # LLM settings
@@ -772,14 +779,16 @@ async def get_app_settings() -> dict:
 def _apply_runtime_setting_hooks(settings: dict) -> None:
     """Push setting values into runtime singletons that need them."""
     try:
-        from ragtime.indexer.chunking import configure_chunking_pool
+        from ragtime.indexer.resource_governor import resource_governor
 
-        configure_chunking_pool(
-            max_workers=settings.get("chunking_max_workers"),
-            max_batch_size=settings.get("chunking_max_batch_size"),
+        resource_governor.configure(
+            memory_budget_mb=settings.get("indexing_memory_budget_mb", DEFAULT_INDEXING_MEMORY_BUDGET_MB),
+            max_workers=settings.get("chunking_max_workers", DEFAULT_CHUNKING_MAX_WORKERS),
+            max_batch_documents=settings.get("chunking_max_batch_size", DEFAULT_CHUNKING_MAX_BATCH_SIZE),
+            sequential_index_loading=settings.get("sequential_index_loading", DEFAULT_SEQUENTIAL_INDEX_LOADING),
         )
     except Exception as exc:  # pragma: no cover - defensive
-        logger.warning(f"Failed to apply chunking pool settings: {exc}")
+        logger.warning(f"Failed to apply indexing resource settings: {exc}")
 
 
 async def get_tool_configs() -> List[dict]:

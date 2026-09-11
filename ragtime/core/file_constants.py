@@ -403,18 +403,33 @@ DOCUMENT_EXTENSIONS: set[str] = (
 #   3. Content that should use RecursiveChunker (None)
 LANG_MAPPING: dict[str, str | None] = {
     # =========================================================================
-    # FILE EXTENSIONS (non-obvious mappings only)
+    # FILE EXTENSIONS
     # =========================================================================
-    # Python variants
+    # Python
+    ".py": "python",
     ".pyi": "python",
     ".pyx": "python",
-    # JavaScript variants
+    # JavaScript
+    ".js": "javascript",
     ".jsx": "javascript",
     ".mjs": "javascript",
     ".cjs": "javascript",
     # TypeScript
     ".ts": "typescript",
     ".tsx": "tsx",
+    # Other first-class source extensions
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".rb": "ruby",
+    ".php": "php",
+    # SQL migrations and schema files must not fall through to Chonkie's
+    # expensive auto-detection over every installed grammar.
+    ".sql": "sql",
     # C/C++ ambiguous headers
     ".h": "c",
     ".hpp": "cpp",
@@ -426,7 +441,9 @@ LANG_MAPPING: dict[str, str | None] = {
     ".m": "objc",
     ".mm": "objc",
     # Web aliases
+    ".html": "html",
     ".htm": "html",
+    ".xml": "xml",
     # Template languages -> HTML
     ".j2": "html",
     ".jinja": "html",
@@ -439,6 +456,9 @@ LANG_MAPPING: dict[str, str | None] = {
     ".erb": "embeddedtemplate",
     # Config files
     ".yml": "yaml",
+    ".yaml": "yaml",
+    ".toml": "toml",
+    ".ini": "ini",
     ".conf": "ini",
     ".cfg": "ini",
     ".env": "properties",

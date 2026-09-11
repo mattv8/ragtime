@@ -83,6 +83,7 @@ from ragtime.indexer.chunking import shutdown_process_pool
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
+from ragtime.indexer.resource_governor import resource_governor
 from ragtime.indexer.routes import ASSETS_DIR as INDEXER_ASSETS_DIR
 from ragtime.indexer.routes import DIST_DIR
 from ragtime.indexer.routes import router as indexer_router
@@ -243,6 +244,9 @@ async def lifespan(app: FastAPI):
     tool_health_monitor.start(on_change=_handle_tool_health_change)
 
     # Initialize RAG components
+    # Resource admission must be live before RAG schedules FAISS loads or
+    # interrupted indexing jobs resume.
+    await resource_governor.start()
     await rag.initialize()
 
     # Recover any interrupted indexing jobs (survives hot-reloads)
@@ -326,6 +330,10 @@ async def lifespan(app: FastAPI):
 
     # Stop filesystem indexer tasks (filesystem_indexer imported above)
     await filesystem_indexer.shutdown()
+
+    # All indexing/loading consumers and their pools have stopped before the
+    # governor cancels outstanding admissions and its sampling task.
+    await resource_governor.stop()
 
     await disconnect_db()
     logger.info("Shutting down RAG API")

@@ -7,11 +7,13 @@ If the server restarts mid-job (e.g., hot-reload), jobs in 'pending' or
 """
 
 import asyncio
+import functools
 import json
 import os
 import pickle
 import re
 import shutil
+import sqlite3
 import subprocess
 import uuid
 from collections import defaultdict
@@ -49,13 +51,15 @@ from ragtime.core.userspace_limits import (
 )
 from ragtime.indexer.chunking import (
     chunk_documents_parallel,
+    chunking_implementation_fingerprint,
     is_context_length_error,
     pool_manager,
     rechunk_documents_batch,
     rechunk_oversized_content,
 )
-from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
+from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async, extract_text_from_file_process_safe
 from ragtime.indexer.embedding_errors import iter_exception_chain
+from ragtime.indexer.faiss_artifacts import prepare_faiss_artifact
 from ragtime.indexer.file_utils import (
     build_authenticated_git_url,
     collect_files_recursive,
@@ -69,6 +73,8 @@ from ragtime.indexer.file_utils import (
     is_excluded_directory,
     should_index_file_type,
 )
+from ragtime.indexer.indexing_pipeline import DEFAULT_BATCH_TEXT_BYTES, MAX_SOURCE_TEXT_BYTES, BoundedIndexingPipeline
+from ragtime.indexer.indexing_spool import IndexingSpool
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
 from ragtime.indexer.memory_utils import (
     estimate_index_memory,
@@ -93,6 +99,8 @@ from ragtime.indexer.models import (
     VectorStoreType,
 )
 from ragtime.indexer.repository import repository
+from ragtime.indexer.resource_governor import ResourceRequest, resource_governor
+from ragtime.indexer.resource_workers import run_resource_task
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_utils import (
     EMBEDDING_SUB_BATCH_SIZE,
@@ -327,6 +335,9 @@ class IndexerService:
         # Strong references to background tasks so they are not garbage-collected.
         # asyncio only keeps weak references to tasks created via create_task().
         self._processing_tasks: Dict[str, asyncio.Task] = {}
+        # Successful attempts remain available until the published generation
+        # has been verified by the live RAG loader.
+        self._completed_spools: Dict[str, Path] = {}
         # Cancellation flags for cooperative cancellation
         self._cancellation_flags: Dict[str, bool] = {}
         self._git_job_creation_lock = asyncio.Lock()
@@ -361,7 +372,7 @@ class IndexerService:
 
         return int(round(max(min_timeout, min(max_timeout, timeout))))
 
-    async def _reinitialize_rag_components(self, index_name: Optional[str] = None) -> None:
+    async def _reinitialize_rag_components(self, index_name: Optional[str] = None) -> bool:
         """
         Refresh RAG components to load newly created indexes.
 
@@ -383,16 +394,20 @@ class IndexerService:
                 loaded = await rag.load_faiss_index_from_metadata(index_name)
                 if loaded:
                     logger.info(f"RAG components refreshed successfully for index '{index_name}'")
+                    return True
                 else:
                     logger.warning(f"RAG refresh completed but index '{index_name}' was not loaded")
+                    return False
             else:
                 await rag.initialize()
                 logger.info("RAG components reinitialized successfully")
+                return True
         except Exception as e:
             # Log but don't fail the indexing job if RAG reinitialization fails
             logger.warning(f"Failed to reinitialize RAG components: {e}")
+            return False
 
-    async def _maybe_reinitialize_rag(self, job: IndexJob) -> None:
+    async def _maybe_reinitialize_rag(self, job: IndexJob) -> bool:
         """
         Conditionally reinitialize RAG components for completed jobs.
 
@@ -405,7 +420,12 @@ class IndexerService:
             job: The index job to check
         """
         if job.status == IndexStatus.COMPLETED:
-            await self._reinitialize_rag_components(job.name)
+            loaded = await self._reinitialize_rag_components(job.name)
+            spool_root = self._completed_spools.pop(job.id, None) if loaded else None
+            if spool_root is not None:
+                await asyncio.to_thread(shutil.rmtree, spool_root, ignore_errors=True)
+            return loaded
+        return False
 
     async def recover_interrupted_jobs(self) -> int:
         """
@@ -418,6 +438,7 @@ class IndexerService:
             Number of jobs recovered
         """
         jobs = await repository.list_jobs()
+        await self._reconcile_published_spools(jobs)
         interrupted = [j for j in jobs if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)]
 
         recovered = 0
@@ -441,6 +462,37 @@ class IndexerService:
         await self._cleanup_orphaned_git_repos()
 
         return recovered
+
+    async def _reconcile_published_spools(self, jobs: List[IndexJob]) -> None:
+        """Remove only journals durably published by a terminal completed job.
+
+        A process restart loses ``_completed_spools``.  The journal markers
+        below make recovery safe without treating failed/resumable attempts or
+        persistent git clones as disposable.
+        """
+        for job in jobs:
+            if job.status != IndexStatus.COMPLETED:
+                continue
+            metadata = await repository.get_index_metadata(job.name)
+            if not metadata or not getattr(metadata, "path", None):
+                continue
+            job_root = UPLOAD_TMP_DIR / "indexing" / job.id
+            if not job_root.is_dir():
+                continue
+            for attempt in job_root.iterdir():
+                if not attempt.is_dir() or attempt.is_symlink():
+                    continue
+                try:
+                    spool = await asyncio.to_thread(IndexingSpool.open_existing, attempt)
+                    try:
+                        published = spool.get_state("published_generation")
+                        index_name = spool.get_state("published_index_name")
+                    finally:
+                        await asyncio.to_thread(spool.close)
+                    if index_name == job.name and published and Path(str(published)).resolve() == Path(metadata.path).resolve():
+                        await asyncio.to_thread(shutil.rmtree, attempt, ignore_errors=True)
+                except (OSError, ValueError, sqlite3.Error):
+                    continue
 
     async def _cleanup_orphaned_tmp_dirs(self) -> None:
         """Remove tmp directories for jobs that no longer exist or are completed."""
@@ -479,10 +531,15 @@ class IndexerService:
                 continue
 
             git_repo = index_dir / ".git_repo"
+            # A published document artifact may live in an immutable generation.
             faiss_index = index_dir / "index.faiss"
+            generations = index_dir / ".generations"
+            has_completed_generation = generations.is_dir() and any(
+                child.is_dir() and (child / "index.faiss").is_file() and (child / "index.pkl").is_file() for child in generations.iterdir()
+            )
 
             # If there's a git repo but no FAISS index, it might be orphaned
-            if git_repo.exists() and not faiss_index.exists():
+            if git_repo.exists() and not faiss_index.exists() and not has_completed_generation:
                 # Don't delete if there's an active job for this index
                 if index_dir.name in active_index_names:
                     logger.debug(f"Keeping .git_repo for {index_dir.name}: active job exists")
@@ -546,7 +603,7 @@ class IndexerService:
                 if path.name in filesystem_faiss_index_names:
                     continue
 
-                # Check if it's a valid FAISS index
+                # Orphan discovery never promotes unpublished generations.
                 faiss_file = path / "index.faiss"
                 pkl_file = path / "index.pkl"
 
@@ -1117,8 +1174,8 @@ class IndexerService:
                     logger.warning(f"Index {meta.name} in database but not on disk: {path}")
                     return None
 
-                # Verify it's a valid FAISS index
-                if not (path / "index.faiss").exists() and not (path / "index.pkl").exists():
+                # Both files are required; a partial pair is not a usable index.
+                if not (path / "index.faiss").exists() or not (path / "index.pkl").exists():
                     return None
 
             # Extract metadata fields
@@ -2743,497 +2800,207 @@ class IndexerService:
     async def _create_faiss_index(self, job: IndexJob, source_dir: Path, git_token: Optional[str] = None):
         """Create FAISS index from source directory."""
         config = job.config
-        ocr_mode = config.ocr_mode
-        ocr_provider = config.ocr_provider
-        ocr_vision_model = config.ocr_vision_model
-        ocr_enabled = ocr_mode != OcrMode.DISABLED
-
-        # Collect all files to process (run in thread pool as rglob can be slow on large repos)
-        logger.info(f"Job {job.id}: Scanning directory for matching files (this may take a while for large repos)...")
         job.phase = IndexJobPhase.SCANNING
         job.error_message = None
         await repository.update_job(job)
-
-        def collect_files_sync() -> List[Path]:
-            """Synchronous file collection - runs in thread pool."""
-            return [
-                file_path
-                for file_path, _size in collect_files_recursive(
-                    source_dir,
-                    config.file_patterns,
-                    config.exclude_patterns,
-                    max_file_size_bytes=config.max_file_size_kb * 1024,
-                    ocr_enabled=ocr_enabled,
-                )
-            ]
-
-        all_files = await asyncio.to_thread(collect_files_sync)
-
-        job.total_files = len(all_files)
+        ocr_enabled = config.ocr_mode != OcrMode.DISABLED
+        files_with_sizes = await asyncio.to_thread(
+            collect_files_recursive,
+            source_dir,
+            config.file_patterns,
+            config.exclude_patterns,
+            max_file_size_bytes=config.max_file_size_kb * 1024,
+            ocr_enabled=ocr_enabled,
+        )
+        job.total_files = len(files_with_sizes)
+        job.processed_files = 0
         job.phase = IndexJobPhase.LOADING
         await repository.update_job(job)
-        logger.info(f"Found {len(all_files)} files to index")
-
-        # Load documents in parallel
-        # Use asyncio.Semaphore to limit concurrent file loads (prevents memory spikes
-        # and I/O saturation). Files are loaded concurrently while respecting limits.
-        documents = []
-
-        # Concurrency limit: scale with hardware but leave headroom for
-        # the chunking process pool and embedding work
-        max_concurrent_loads = min((os.cpu_count() or 8) // 2, 16)
-        load_semaphore = asyncio.Semaphore(max_concurrent_loads)
-
-        vision_base_url = None
-        vision_api_key = None
-        effective_ocr_provider = ocr_provider.value if ocr_provider else None
-        if ocr_mode == OcrMode.VISION:
-            settings = await get_app_settings()
-            if not effective_ocr_provider:
-                effective_ocr_provider = str(settings.get("default_ocr_provider") or "ollama")
-            effective_ocr_provider = normalize_provider_name(effective_ocr_provider)
-            if not ocr_vision_model:
-                ocr_vision_model = settings.get("default_ocr_vision_model")
-            vision_base_url = resolve_provider_base_url(
-                settings,
-                effective_ocr_provider,
-                "llm",
-            )
-            api_key_field = f"{effective_ocr_provider}_api_key"
-            if effective_ocr_provider == "openai":
-                api_key_field = "openai_api_key"
-            vision_api_key = settings.get(api_key_field)
-
-        async def load_file_async(file_path: Path) -> tuple[Path, List, str | None]:
-            """Async file loading with OCR support. Returns (path, docs, error)."""
-            async with load_semaphore:
-                try:
-                    ext_lower = file_path.suffix.lower()
-
-                    # Use document parser for Office/PDF files and images (when OCR enabled)
-                    if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS or (ocr_enabled and ext_lower in OCR_EXTENSIONS):
-                        content = await extract_text_from_file_async(
-                            file_path,
-                            ocr_mode=ocr_mode.value,
-                            ocr_provider=effective_ocr_provider,
-                            ocr_vision_model=ocr_vision_model,
-                            vision_base_url=vision_base_url,
-                            vision_api_key=vision_api_key,
-                        )
-                        if content:
-                            return (
-                                file_path,
-                                [LangChainDocument(page_content=content)],
-                                None,
-                            )
-                        return (file_path, [], None)
-
-                    # Use TextLoader for plain text files (run in thread pool)
-                    def load_text():
-                        loader = TextLoader(str(file_path), autodetect_encoding=True)
-                        return loader.load()
-
-                    docs = await asyncio.to_thread(load_text)
-                    return (file_path, docs, None)
-                except Exception as e:
-                    return (file_path, [], str(e))
-
-        # Build list of files to load
-        # Binary/unparseable files are already excluded by collect_files_sync.
-        files_to_load = []
-        for idx, file_path in enumerate(all_files):
-            # Check for cancellation periodically
-            if idx % 500 == 0:
-                if self._is_cancelled(job.id):
-                    logger.info(f"Job {job.id} was cancelled during file preparation")
-                    raise asyncio.CancelledError("Job cancelled by user")
-                # Yield to event loop every 500 files to keep server responsive
-                await asyncio.sleep(0)
-
-            ext_lower = file_path.suffix.lower()
-            if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS:
-                logger.debug(f"Parsing document file {file_path.name} with document parser")
-            files_to_load.append(file_path)
-
-        # Load files in parallel batches
-        # Process in batches to allow periodic progress updates and cancellation checks
-        batch_size = max_concurrent_loads * 2  # 2x concurrency for good pipeline
-        total_to_load = len(files_to_load)
-        logger.info(f"Loading {total_to_load} files with {max_concurrent_loads} concurrent workers")
-
-        for batch_start in range(0, total_to_load, batch_size):
-            # Check for cancellation at batch boundaries
-            if self._is_cancelled(job.id):
-                logger.info(f"Job {job.id} was cancelled during file loading")
-                raise asyncio.CancelledError("Job cancelled by user")
-
-            batch_end = min(batch_start + batch_size, total_to_load)
-            batch_files = files_to_load[batch_start:batch_end]
-
-            # Load all files in this batch concurrently
-            load_tasks = [load_file_async(fp) for fp in batch_files]
-            results = await asyncio.gather(*load_tasks, return_exceptions=True)
-
-            # Process results
-            for result in results:
-                if isinstance(result, BaseException):
-                    # Unexpected exception during gather
-                    logger.debug(f"File load exception: {result}")
-                    job.processed_files += 1
-                    continue
-
-                # result is now guaranteed to be tuple[Path, List, str | None]
-                file_path, docs, error = result
-                if error:
-                    logger.debug(f"Skipped {file_path.name}: {error}")
-                    job.processed_files += 1
-                    continue
-
-                # Add source metadata
-                rel_path_str = str(file_path.relative_to(source_dir))
-                for doc in docs:
-                    doc.metadata["source"] = rel_path_str
-                    doc.metadata["index_name"] = job.name
-
-                documents.extend(docs)
-                job.processed_files += 1
-
-            # Update progress after each batch
-            # Wrap in try/except so transient DB errors don't kill the job
-            try:
-                await repository.update_job(job)
-            except Exception as progress_err:
-                logger.warning(f"Job {job.id}: Progress update failed ({job.processed_files}/{job.total_files}), continuing: {progress_err}")
-            logger.info(f"Loaded {job.processed_files}/{job.total_files} files")
-
-            # Brief yield to event loop between batches
-            await asyncio.sleep(0)
-
-        # Index git commit history if depth > 1
-        history_depth = getattr(config, "git_history_depth", 1)
-        if history_depth != 1:
-            commit_docs = await self._index_git_history(source_dir, job.name, history_depth)
-            if commit_docs:
-                documents.extend(commit_docs)
-                logger.info(f"Added {len(commit_docs)} commit history documents")
-
-        if not documents:
-            raise ValueError("No documents were loaded")
-
-        logger.info(f"Loaded {len(documents)} documents, splitting into chunks...")
-
-        # Get app settings for chunking configuration
         app_settings = await repository.get_settings()
 
-        # Determine if we should use token-based chunking
-        use_tokens = getattr(app_settings, "chunking_use_tokens", True)
-        if use_tokens:
-            logger.info("Using token-based chunking for accurate chunk sizes")
-        else:
-            logger.info("Using character-based chunking")
+        def setting(name: str, default: Any = None) -> Any:
+            return app_settings.get(name, default) if isinstance(app_settings, dict) else getattr(app_settings, name, default)
 
-        # Split into chunks using parallel process pool
-        # This runs CPU-intensive tiktoken work in separate processes,
-        # leaving the main event loop responsive for API/UI/MCP
-        job.phase = IndexJobPhase.CHUNKING
-        job.error_message = None
-        job.total_chunks = len(documents)
-        job.processed_chunks = 0
-        await repository.update_job(job)
+        def source_snapshot() -> dict[str, Any]:
+            files = [
+                {
+                    "path": str(path.relative_to(source_dir)),
+                    "size": size,
+                    "mtime_ns": path.stat().st_mtime_ns,
+                }
+                for path, size in files_with_sizes
+            ]
+            snapshot: dict[str, Any] = {"files": files}
+            if job.source_type == "git":
+                try:
+                    snapshot["head"] = subprocess.check_output(["git", "-C", str(source_dir), "rev-parse", "HEAD"], text=True).strip()
+                except (OSError, subprocess.CalledProcessError):
+                    snapshot["head"] = None
+            return snapshot
 
-        async def _chunking_progress(processed_docs: int, _total_docs: int) -> None:
-            # Track per-document progress so the UI is not stuck at
-            # total_files=processed_files while chunking runs.
-            job.processed_chunks = processed_docs
+        fingerprint = json.dumps(
+            {
+                "config": config.model_dump(mode="json"),
+                "provider": setting("embedding_provider"),
+                "model": setting("embedding_model"),
+                "dimensions": setting("embedding_dimensions"),
+                "chunking_use_tokens": setting("chunking_use_tokens", True),
+                "chunking_implementation": chunking_implementation_fingerprint(),
+                "source": await asyncio.to_thread(source_snapshot),
+            },
+            sort_keys=True,
+            default=str,
+        )
+        spool = await asyncio.to_thread(IndexingSpool.open_attempt, UPLOAD_TMP_DIR / "indexing", job.id, fingerprint)
+        pipeline = BoundedIndexingPipeline(spool, job_id=job.id, cancelled=lambda: self._is_cancelled(job.id))
+        vision_base_url = vision_api_key = None
+        effective_ocr_provider = config.ocr_provider.value if config.ocr_provider else None
+        if config.ocr_mode == OcrMode.VISION:
+            runtime_settings = await get_app_settings()
+            effective_ocr_provider = normalize_provider_name(effective_ocr_provider or str(runtime_settings.get("default_ocr_provider") or "ollama"))
+            vision_base_url = resolve_provider_base_url(runtime_settings, effective_ocr_provider, "llm")
+            vision_api_key = runtime_settings.get("openai_api_key" if effective_ocr_provider == "openai" else f"{effective_ocr_provider}_api_key")
+        effective_ocr_vision_model = config.ocr_vision_model or (
+            runtime_settings.get("default_ocr_vision_model") if config.ocr_mode == OcrMode.VISION else None
+        )
+
+        async def load(path: Path) -> list[LangChainDocument]:
+            if config.ocr_mode == OcrMode.VISION and (path.suffix.lower() in PARSEABLE_DOCUMENT_EXTENSIONS or path.suffix.lower() in OCR_EXTENSIONS):
+                request = resource_governor.estimate_request(
+                    job_id=job.id,
+                    stage="loading",
+                    text_bytes=min(path.stat().st_size, MAX_SOURCE_TEXT_BYTES),
+                    record_count=1,
+                    cpu_slots=0,
+                    provider_key=f"ocr:{effective_ocr_provider}",
+                )
+                async with resource_governor.acquire(request):
+                    text = await extract_text_from_file_async(
+                        path,
+                        ocr_mode=config.ocr_mode.value,
+                        ocr_provider=effective_ocr_provider,
+                        ocr_vision_model=effective_ocr_vision_model,
+                        vision_base_url=vision_base_url,
+                        vision_api_key=vision_api_key,
+                    )
+                    if len(text.encode("utf-8")) > MAX_SOURCE_TEXT_BYTES:
+                        raise ValueError(f"Extracted text for {path} exceeds {MAX_SOURCE_TEXT_BYTES} byte limit")
+            elif path.suffix.lower() not in PARSEABLE_DOCUMENT_EXTENSIONS and path.suffix.lower() not in OCR_EXTENSIONS:
+                # Plain text is source-size bounded and needs no native parser.
+                request = ResourceRequest(job.id, "loading", 32 * 1024 * 1024, cpu_slots=0)
+                async with resource_governor.acquire(request):
+                    documents = await asyncio.to_thread(TextLoader(str(path), autodetect_encoding=True).load)
+                return documents
+            else:
+                request = resource_governor.estimate_request(job_id=job.id, stage="loading", text_bytes=path.stat().st_size, record_count=1, cpu_slots=1)
+                parser = functools.partial(extract_text_from_file_process_safe, ocr_mode=config.ocr_mode.value)
+                text = await run_resource_task(request, parser, (str(path),), timeout_seconds=300.0)
+            return [LangChainDocument(page_content=text)] if text else []
+
+        async def loaded_progress(processed: int) -> None:
+            job.processed_files = processed
             await repository.update_job(job)
 
-        chunks = await chunk_documents_parallel(
-            documents=documents,
-            chunk_size=config.chunk_size,
-            chunk_overlap=config.chunk_overlap,
-            use_tokens=use_tokens,
-            batch_size=10,  # Smaller batches bound chunking progress latency per wave.
-            progress_callback=_chunking_progress,
-            is_cancelled=lambda: self._is_cancelled(job.id),
-            pool_key=job.id,
-        )
+        async def chunk_progress(processed_documents: int, total_chunks: int) -> None:
+            job.processed_chunks = min(job.total_chunks, job.processed_chunks + processed_documents)
+            await repository.update_job(job)
 
-        job.phase = IndexJobPhase.EMBEDDING
-        job.total_chunks = len(chunks)
-        job.processed_chunks = 0
-        job.error_message = None
-        await repository.update_job(job)
+        async def embedding_progress(committed: int) -> None:
+            job.processed_chunks = committed
+            await repository.update_job(job)
 
-        logger.info(f"Created {len(chunks)} chunks, generating embeddings...")
-
-        # Get embeddings model
-        embeddings = await self._get_embeddings(app_settings)
-
-        logger.info(f"Using {app_settings.embedding_provider} embeddings with model: {app_settings.embedding_model}")
-
-        # Process in batches to show progress and throttle embedding calls
-        batch_size = EMBEDDING_SUB_BATCH_SIZE
-        batch_pause_seconds = 0.5
-        max_retries = 5
-        db = None
-
-        # Get embedding model context limit dynamically from LiteLLM or Ollama API
-        max_allowed_tokens = await get_embedding_model_context_limit(
-            model_name=app_settings.embedding_model,
-            provider=app_settings.embedding_provider,
-            ollama_base_url=app_settings.ollama_base_url,
-            llama_cpp_base_url=getattr(app_settings, "llama_cpp_base_url", None),
-            lmstudio_base_url=getattr(app_settings, "lmstudio_base_url", None),
-        )
-        logger.debug(
-            f"Embedding model context limit: {max_allowed_tokens} tokens (provider: {app_settings.embedding_provider}, model: {app_settings.embedding_model})"
-        )
-
-        # Re-chunk oversized chunks before embedding
-        # Some chunks may exceed the limit due to headers, overlap, or small files
-        # that weren't split but combined with headers exceed the limit
-        #
-        # IMPORTANT: We use tiktoken (cl100k_base) for counting, but embedding models
-        # may use different tokenizers (e.g., BERT WordPiece for nomic-embed-text).
-        # BERT tokenizers typically produce MORE tokens than tiktoken for the same text
-        # because they have smaller vocabularies (~30k vs ~100k tokens).
-        # We apply safety margins to account for this mismatch.
-        rechunked_count = 0
-
-        # Get safety margin based on embedding provider
-        safety_margin = get_embedding_safety_margin(app_settings.embedding_provider)
-
-        # Calculate the safe token limit (e.g., 2048 * 0.70 = 1433 for Ollama)
-        # Any chunk exceeding this TIKTOKEN count may exceed the BERT limit
-        safe_token_limit = int(max_allowed_tokens * safety_margin)
-
-        # Process chunks and re-chunk any that exceed the safe limit
-        # Run in thread pool to avoid blocking event loop with count_tokens on 50K+ chunks
-        final_chunks, rechunked_count = await asyncio.to_thread(
-            rechunk_documents_batch,
-            chunks,
-            safe_token_limit,
-            config.chunk_overlap,
-            5,  # max_warnings
-            lambda: self._is_cancelled(job.id),  # cancellation check
-        )
-
-        if rechunked_count > 0:
-            logger.info(
-                f"Re-chunked {rechunked_count} oversized chunks "
-                f"(total chunks: {len(chunks)} -> {len(final_chunks)}, "
-                f"safe_limit: {safe_token_limit}, safety_margin: {safety_margin:.0%})"
-            )
-
-        # Use final_chunks for embedding
-        chunks = final_chunks
-
-        # Pre-compute embeddings in sub-batches, then build FAISS index once.
-        # This is dramatically faster than FAISS.from_documents in a loop because:
-        # 1. Sub-batches of 50 scale much better on CPU-only Ollama than 100+
-        # 2. Building one FAISS index from all embeddings avoids O(n^2) merge_from
-        # 3. embed_documents_subbatched yields to event loop between sub-batches
-
-        # Extract texts and metadata from Document objects.
-        # For large corpora (50K+ chunks) this list comprehension can briefly
-        # block the event loop, so offload to a worker thread.
-        def _extract_texts_and_meta(docs):
-            return (
-                [doc.page_content for doc in docs],
-                [doc.metadata for doc in docs],
-            )
-
-        all_texts, all_metadatas = await asyncio.to_thread(_extract_texts_and_meta, chunks)
-
-        # Embed all chunks with sub-batching, cancellation checks, and
-        # progressive context-length error recovery
-        all_embeddings: list[list[float]] = []
-        context_retry_factors = [0.70, 0.50, 0.35]
-        context_retries = 0
-        embed_progress = 0
-
-        for i in range(0, len(all_texts), batch_size):
-            # Check for cancellation
-            if self._is_cancelled(job.id):
-                logger.info(f"Job {job.id} was cancelled during embedding")
-                raise asyncio.CancelledError("Job cancelled by user")
-
-            batch_texts = all_texts[i : i + batch_size]
-            batch_num = i // batch_size + 1
-            attempt = 0
-
-            while True:
-                try:
-                    # embed_documents_subbatched handles sub-batching and
-                    # event loop yielding internally (50 docs per API call)
-                    batch_embeddings = await embed_documents_subbatched(embeddings, batch_texts, logger_override=logger)
-                    all_embeddings.extend(batch_embeddings)
-                    break
-                except Exception as e:
-                    if self._is_rate_limit_error(e) and attempt < max_retries:
-                        wait_seconds = self._retry_delay_seconds(e, attempt)
-                        job.error_message = f"Rate limit hit, retrying batch {batch_num} in {wait_seconds:.1f}s"
-                        await repository.update_job(job)
-                        logger.warning(job.error_message)
-                        await asyncio.sleep(wait_seconds)
-                        if self._is_cancelled(job.id):
-                            raise asyncio.CancelledError("Job cancelled by user")
-                        attempt += 1
-                        continue
-
-                    if is_context_length_error(e):
-                        # Progressive re-chunking at lower token limits
-                        modified = False
-                        while context_retries < len(context_retry_factors):
-                            factor = context_retry_factors[context_retries]
-                            context_retries += 1
-                            aggressive_limit = int(safe_token_limit * factor)
-
-                            _batch_texts = batch_texts
-                            _aggressive_limit = aggressive_limit
-                            _chunk_overlap = config.chunk_overlap
-                            _metadatas = all_metadatas[i : i + batch_size]
-
-                            def rechunk_batch():
-                                new_texts = []
-                                new_metas = []
-                                rechunked = 0
-                                for text, meta in zip(_batch_texts, _metadatas):
-                                    tokens = count_tokens(text)
-                                    if tokens > _aggressive_limit:
-                                        sub_docs = rechunk_oversized_content(
-                                            text,
-                                            _aggressive_limit,
-                                            chunk_overlap=_chunk_overlap,
-                                            metadata=meta,
-                                        )
-                                        for sd in sub_docs:
-                                            new_texts.append(sd.page_content)
-                                            new_metas.append(sd.metadata)
-                                        rechunked += 1
-                                    else:
-                                        new_texts.append(text)
-                                        new_metas.append(meta)
-                                return new_texts, new_metas, rechunked
-
-                            new_texts, new_metas, rechunked_count_batch = await asyncio.to_thread(rechunk_batch)
-
-                            if rechunked_count_batch > 0:
-                                logger.warning(
-                                    f"Context length error in batch {batch_num}: "
-                                    f"re-chunked {rechunked_count_batch} at "
-                                    f"limit {aggressive_limit} tokens, "
-                                    f"retry {context_retries}/{len(context_retry_factors)}"
-                                )
-                                batch_texts = new_texts
-                                # Update the master lists to reflect re-chunked content
-                                all_texts[i : i + batch_size] = new_texts
-                                all_metadatas[i : i + batch_size] = new_metas
-                                modified = True
-                                await asyncio.sleep(0)
-                                break
-
-                        if modified:
-                            continue  # Retry with re-chunked batch
-
-                        # Fallback: embed individually, skipping failures
-                        logger.warning(f"Context retries exhausted for batch {batch_num}, embedding individually")
-                        for text in batch_texts:
-                            if self._is_cancelled(job.id):
-                                raise asyncio.CancelledError("Job cancelled by user")
-                            try:
-                                single_emb = await embeddings.aembed_documents([text])
-                                all_embeddings.extend(single_emb)
-                            except Exception as single_err:
-                                logger.warning(f"Skipping chunk ({len(text)} chars): {single_err}")
-                                # Use zero vector as placeholder to keep alignment
-                                if all_embeddings:
-                                    all_embeddings.append([0.0] * len(all_embeddings[0]))
-                                else:
-                                    # Skip - will be caught by alignment check
-                                    pass
-                        break
-
-                    raise
-
-            # Update progress
-            embed_progress = min(i + batch_size, len(all_texts))
-            job.error_message = None
-            job.processed_chunks = embed_progress
-            try:
-                await repository.update_job(job)
-            except Exception as progress_err:
-                logger.warning(f"Job {job.id}: Chunk progress update failed ({embed_progress}/{len(all_texts)}), continuing: {progress_err}")
-            logger.info(f"Embedded {embed_progress}/{len(all_texts)} chunks")
-
-            # Brief pause for rate limits and event loop
-            if embed_progress < len(all_texts):
-                await asyncio.sleep(max(batch_pause_seconds, 0.1))
-
-        if not all_embeddings:
-            raise ValueError("No documents were embedded - embedding generation failed")
-
-        # Build FAISS index from pre-computed embeddings in one shot.
-        # This avoids O(n^2) merge_from overhead entirely.
-        # Run list construction + FAISS build together in thread to avoid
-        # blocking the event loop when zipping 200K+ items.
-        job.phase = IndexJobPhase.FINALIZING
-        job.error_message = None
-        await repository.update_job(job)
-
-        logger.info(f"Building FAISS index from {len(all_embeddings)} pre-computed embeddings...")
-
-        _texts = all_texts
-        _embeds = all_embeddings
-        _metas = all_metadatas
-
-        def build_faiss_index():
-            pairs = list(zip(_texts, _embeds))
-            return FAISS.from_embeddings(pairs, embeddings, metadatas=_metas)
-
-        db = await asyncio.to_thread(build_faiss_index)
-
-        # Save the index
-        index_path = self.index_base_path / job.name
-        index_path.mkdir(parents=True, exist_ok=True)
-
-        logger.info(f"Saving index to {index_path}")
-        await asyncio.to_thread(db.save_local, str(index_path))
-
-        # Calculate index size in thread to avoid blocking event loop
-        size_bytes = await asyncio.to_thread(get_directory_size_bytes, index_path)
-
-        # Auto-generate description if not provided, but preserve existing description if available
-        description = getattr(config, "description", "")
-        existing_metadata = await repository.get_index_metadata(job.name)
-        if not description:
-            # Check if there's an existing description in the database
-            if existing_metadata and existing_metadata.description:
-                description = existing_metadata.description
-                logger.info(f"Preserving existing description for {job.name}")
-            else:
-                description = await generate_index_description(
-                    index_name=job.name,
-                    documents=documents,
-                    source_type=job.source_type,
-                    source=job.git_url or job.source_path,
+        try:
+            if not await asyncio.to_thread(spool.is_stage_complete, "documents"):
+                await pipeline.stage_documents((path for path, _ in files_with_sizes), source_dir, job.name, load, loaded_progress)
+                if job.source_type == "git" and config.git_history_depth != 1:
+                    await pipeline.stage_extra_documents(await self._index_git_history(source_dir, job.name, config.git_history_depth))
+                await asyncio.to_thread(spool.mark_stage_complete, "documents")
+            summary = await asyncio.to_thread(spool.summary)
+            if not summary["document_count"]:
+                raise ValueError("No indexable documents were loaded; check file patterns, exclusions, and OCR settings")
+            job.processed_files = job.total_files
+            job.total_chunks = summary["document_count"]
+            job.processed_chunks = 0
+            job.phase = IndexJobPhase.CHUNKING
+            await repository.update_job(job)
+            if not await asyncio.to_thread(spool.is_stage_complete, "chunks"):
+                await pipeline.stage_chunks(
+                    chunk_size=config.chunk_size,
+                    chunk_overlap=config.chunk_overlap,
+                    use_tokens=setting("chunking_use_tokens", True),
+                    max_documents=max(1, resource_governor.batch_document_limit()),
+                    progress=chunk_progress,
                 )
-                logger.info(f"Generated new description for {job.name}")
-
-        # Build config_snapshot for metadata.
-        # Re-read the LATEST config_snapshot from the database to preserve any
-        # user edits made while this job was running (e.g., user changed
-        # git_history_depth via the edit modal during a scheduled re-index).
-        # The job's config reflects what was in the DB when the job STARTED,
-        # but user settings like depth/interval/patterns may have been updated
-        # since then. We merge: latest DB snapshot wins for user-configurable
-        # fields, job config provides the fallback.
-        job_config_snapshot = config.model_dump(mode="json")
-        if existing_metadata:
-            db_snapshot = getattr(existing_metadata, "configSnapshot", None)
-            if isinstance(db_snapshot, dict):
-                # User-configurable fields that should be preserved from DB
-                user_config_keys = [
+                await asyncio.to_thread(spool.mark_stage_complete, "chunks")
+            summary = await asyncio.to_thread(spool.summary)
+            job.total_chunks = summary["chunk_count"]
+            job.processed_chunks = summary["embedded_count"]
+            job.phase = IndexJobPhase.EMBEDDING
+            await repository.update_job(job)
+            embeddings = await self._get_embeddings(app_settings)
+            context_limit = await get_embedding_model_context_limit(
+                model_name=setting("embedding_model"),
+                provider=setting("embedding_provider"),
+                ollama_base_url=setting("ollama_base_url"),
+                llama_cpp_base_url=setting("llama_cpp_base_url"),
+                lmstudio_base_url=setting("lmstudio_base_url"),
+            )
+            safe_token_limit = int(context_limit * get_embedding_safety_margin(setting("embedding_provider")))
+            if not await asyncio.to_thread(spool.is_stage_complete, "embeddings"):
+                await pipeline.stage_embeddings(
+                    embeddings,
+                    max_documents=max(1, resource_governor.batch_document_limit()),
+                    max_text_bytes=DEFAULT_BATCH_TEXT_BYTES,
+                    resource_job_id=job.id,
+                    safe_token_limit=safe_token_limit,
+                    chunk_overlap=config.chunk_overlap,
+                    progress=embedding_progress,
+                )
+                await asyncio.to_thread(spool.mark_stage_complete, "embeddings")
+            summary = await asyncio.to_thread(spool.summary)
+            job.processed_chunks = summary["embedded_count"]
+            job.total_chunks = summary["embedded_count"]
+            job.phase = IndexJobPhase.FINALIZING
+            await repository.update_job(job)
+            # The artifact worker opens its own readonly connection; it must
+            # never race this attempt's single SQLite writer.
+            await asyncio.to_thread(spool.close)
+            artifact = await prepare_faiss_artifact(job.id, self.index_base_path / job.name, spool.root)
+            journal = await asyncio.to_thread(IndexingSpool.open_existing, spool.root, readonly=False)
+            try:
+                # This marker is durable before metadata publication, allowing
+                # startup reconciliation to distinguish a prepared artifact
+                # from the generation that actually became authoritative.
+                await asyncio.to_thread(journal.set_state, "prepared_generation", str(artifact.generation_path))
+            finally:
+                await asyncio.to_thread(journal.close)
+            existing = await repository.get_index_metadata(job.name)
+            description = config.description or (getattr(existing, "description", "") if existing else "")
+            if not description:
+                sample_spool = await asyncio.to_thread(IndexingSpool.open_existing, spool.root)
+                try:
+                    sample_documents = []
+                    for batch in sample_spool.iter_documents(max_documents=5, max_text_bytes=DEFAULT_BATCH_TEXT_BYTES):
+                        for record in batch.records:
+                            content = await asyncio.to_thread(sample_spool._file(record.text_path).read_text, encoding="utf-8")
+                            sample_documents.append(
+                                LangChainDocument(
+                                    page_content=content,
+                                    metadata=record.metadata,
+                                )
+                            )
+                            if len(sample_documents) == 5:
+                                break
+                        break
+                finally:
+                    await asyncio.to_thread(sample_spool.close)
+                description = await generate_index_description(
+                    index_name=job.name, documents=sample_documents, source_type=job.source_type, source=job.git_url or job.source_path
+                )
+            snapshot = config.model_dump(mode="json")
+            existing_snapshot = getattr(existing, "configSnapshot", None) if existing else None
+            if isinstance(existing_snapshot, dict):
+                for key in (
                     "file_patterns",
                     "exclude_patterns",
                     "chunk_size",
@@ -3247,28 +3014,38 @@ class IndexerService:
                     "reindex_interval_hours",
                     "reindex_start_minute",
                     "reindex_timezone",
-                ]
-                for key in user_config_keys:
-                    if key in db_snapshot:
-                        job_config_snapshot[key] = db_snapshot[key]
-
-        # Save metadata to database
-        await repository.upsert_index_metadata(
-            name=job.name,
-            path=str(index_path),
-            document_count=len(documents),
-            chunk_count=len(chunks),
-            size_bytes=size_bytes,
-            source_type=job.source_type,
-            source=job.git_url or job.source_path,
-            config_snapshot=job_config_snapshot,
-            description=description,
-            git_branch=job.git_branch if job.source_type == "git" else None,
-            git_token=git_token,
-            vector_store_type=config.vector_store_type,
-        )
-
-        logger.info(f"Index {job.name} created successfully!")
+                ):
+                    if key in existing_snapshot:
+                        snapshot[key] = existing_snapshot[key]
+            await repository.upsert_index_metadata(
+                name=job.name,
+                path=str(artifact.generation_path),
+                document_count=artifact.document_count,
+                chunk_count=artifact.chunk_count,
+                size_bytes=artifact.size_bytes,
+                source_type=job.source_type,
+                source=job.git_url or job.source_path,
+                config_snapshot=snapshot,
+                description=description,
+                git_branch=job.git_branch if job.source_type == "git" else None,
+                git_token=git_token,
+                vector_store_type=config.vector_store_type,
+            )
+            journal = await asyncio.to_thread(IndexingSpool.open_existing, spool.root, readonly=False)
+            try:
+                await asyncio.to_thread(journal.set_state, "published_generation", str(artifact.generation_path))
+                await asyncio.to_thread(journal.set_state, "published_index_name", job.name)
+            finally:
+                await asyncio.to_thread(journal.close)
+            self._completed_spools[job.id] = spool.root
+        finally:
+            # Successful attempts are removed only after metadata publication;
+            # failed attempts retain their journal for fingerprinted recovery.
+            try:
+                await asyncio.to_thread(spool.close)
+            except Exception:
+                pass
+        return
 
 
 # Global indexer instance - uses configured path

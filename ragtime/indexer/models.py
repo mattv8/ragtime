@@ -7,9 +7,9 @@ import json
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Any, List, Literal, Optional
+from typing import Annotated, Any, List, Literal, Optional
 
-from pydantic import BaseModel, Field, computed_field, field_serializer, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, Field, computed_field, field_serializer, field_validator, model_validator
 
 from ragtime.core.app_setting_defaults import (
     DEFAULT_AGGREGATE_SEARCH,
@@ -34,6 +34,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_IMAGE_PAYLOAD_MAX_PIXELS,
     DEFAULT_IMAGE_PAYLOAD_MAX_WIDTH,
     DEFAULT_INCLUDE_COPILOT_THIRD_PARTY_MODELS,
+    DEFAULT_INDEXING_MEMORY_BUDGET_MB,
     DEFAULT_IVFFLAT_LISTS,
     DEFAULT_LEGACY_ODOO_CONTAINER,
     DEFAULT_LEGACY_POSTGRES_CONTAINER,
@@ -107,6 +108,16 @@ from ragtime.http_api.models import HTTP_API_SECRET_FIELDS, redact_http_api_conn
 DEFAULT_USERSPACE_CODE_INDEX_MAX_CONCURRENCY = 1
 MIN_USERSPACE_CODE_INDEX_MAX_CONCURRENCY = 1
 MAX_USERSPACE_CODE_INDEX_MAX_CONCURRENCY = 8
+
+
+def validate_indexing_memory_budget_mb(value: int) -> int:
+    """Validate the persisted Auto-or-MiB indexing memory budget contract."""
+    if value == 0 or 256 <= value <= 1_048_576:
+        return value
+    raise ValueError("indexing_memory_budget_mb must be 0 or between 256 and 1048576 MiB")
+
+
+IndexingMemoryBudgetMb = Annotated[int, AfterValidator(validate_indexing_memory_budget_mb)]
 
 
 class IndexStatus(str, Enum):
@@ -917,15 +928,19 @@ class AppSettings(BaseModel):
     )
     chunking_max_workers: int = Field(
         default=DEFAULT_CHUNKING_MAX_WORKERS,
-        ge=1,
+        ge=0,
         le=16,
-        description="Maximum parallel processes the chunking pool may use. Lower this if indexing causes OOMs or starves the API; raise on high-memory hosts.",
+        description="Aggregate chunking worker ceiling. 0 selects adaptive scheduling.",
     )
     chunking_max_batch_size: int = Field(
         default=DEFAULT_CHUNKING_MAX_BATCH_SIZE,
-        ge=1,
+        ge=0,
         le=500,
-        description="Maximum documents submitted to each chunking worker batch. Smaller batches reduce per-worker memory spikes at the cost of throughput.",
+        description="Chunking batch ceiling. 0 selects adaptive scheduling.",
+    )
+    indexing_memory_budget_mb: IndexingMemoryBudgetMb = Field(
+        default=DEFAULT_INDEXING_MEMORY_BUDGET_MB,
+        description="Indexing memory scheduling budget in MiB. 0 selects adaptive scheduling.",
     )
 
     # API Tool Output Configuration
@@ -1351,6 +1366,58 @@ class ConfigurationWarning(BaseModel):
     recommendation: Optional[str] = Field(default=None, description="Suggested action to resolve")
 
 
+class IndexResourceJobStatus(BaseModel):
+    """One admitted or waiting document indexing job in the resource snapshot."""
+
+    job_id: str
+    stage: Literal["loading", "chunking", "embedding", "finalizing", "index_loading"]
+    state: Literal["running", "waiting"]
+    reason: Literal[
+        "none",
+        "memory_headroom",
+        "memory_budget",
+        "cpu_capacity",
+        "provider_limit",
+        "user_limit",
+        "memory_pressure",
+        "metrics_unavailable",
+    ]
+    committed_bytes: int
+
+
+class IndexResourceStatus(BaseModel):
+    """Cached indexing resource-governor snapshot exposed to administrators."""
+
+    sampled_at: datetime
+    stale: bool
+    memory_source: Literal["cgroup_v2", "cgroup_v1", "system", "unavailable"]
+    system_available_bytes: Optional[int]
+    container_limit_bytes: Optional[int]
+    container_usage_bytes: Optional[int]
+    application_rss_bytes: Optional[int]
+    effective_budget_bytes: int
+    committed_bytes: int
+    effective_cpu_capacity: float
+    event_loop_lag_ms: Optional[float]
+    worker_limit: int
+    worker_target: int
+    workers_active: int
+    workers_live: int
+    active_jobs: int
+    waiting_jobs: int
+    limiting_reason: Literal[
+        "none",
+        "memory_headroom",
+        "memory_budget",
+        "cpu_capacity",
+        "provider_limit",
+        "user_limit",
+        "memory_pressure",
+        "metrics_unavailable",
+    ]
+    jobs: List[IndexResourceJobStatus]
+
+
 class UpdateSettingsRequest(BaseModel):
     """Request to update application settings."""
 
@@ -1537,15 +1604,19 @@ class UpdateSettingsRequest(BaseModel):
     sequential_index_loading: Optional[bool] = None
     chunking_max_workers: Optional[int] = Field(
         default=None,
-        ge=1,
+        ge=0,
         le=16,
-        description="Maximum parallel chunking worker processes (1-16).",
+        description="Aggregate chunking worker ceiling (0 = adaptive).",
     )
     chunking_max_batch_size: Optional[int] = Field(
         default=None,
-        ge=1,
+        ge=0,
         le=500,
-        description="Maximum documents per chunking worker batch (1-500).",
+        description="Chunking batch ceiling (0 = adaptive).",
+    )
+    indexing_memory_budget_mb: Optional[IndexingMemoryBudgetMb] = Field(
+        default=None,
+        description="Indexing memory scheduling budget in MiB (0 = adaptive). Null does not select Auto.",
     )
     # API Tool Output configuration
     tool_output_mode: Optional[str] = Field(
