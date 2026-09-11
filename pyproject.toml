@@ -46,6 +46,7 @@ app = [
     "slowapi>=0.1.9,<1.0.0",
     "firecrawl-anydoc==0.2.4",
     "python-docx>=1.1.0,<2.0.0",
+    "markdown-it-py>=3.0.0,<5.0.0",
     "openpyxl>=3.1.0,<4.0.0",
     "xlrd>=2.0.1,<3.0.0",
     "chonkie[code]==1.3.1",

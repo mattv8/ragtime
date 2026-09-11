@@ -14324,13 +14324,23 @@ class RAGComponents:
                 default="csv",
                 description=(
                     "Requested file extension/format. Supported generated formats include csv, tsv, xlsx, xls, json, txt, md, html, xml, pdf, doc, and docx. "
+                    "For a Word document, prefer docx and pass Markdown in text; Ragtime creates a natively formatted Word document. "
                     "For other common filetypes, provide content_base64 and the matching filename extension."
                 ),
             )
             columns: list[Any] = Field(default_factory=list, description="Optional table column names or column metadata objects.")
             rows: list[Any] = Field(default_factory=list, description="Optional table rows as arrays or objects.")
-            text: str = Field(default="", description="Optional text content for document-style exports such as pdf, doc, docx, txt, md, html, or json.")
-            content_base64: str = Field(default="", description="Optional base64-encoded binary content for arbitrary filetypes or prebuilt files.")
+            text: str = Field(
+                default="",
+                description=(
+                    "Optional text content for document-style exports such as pdf, doc, docx, txt, md, html, or json. "
+                    "For docx, pass Markdown text to create native Word formatting; do not base64-encode raw Markdown."
+                ),
+            )
+            content_base64: str = Field(
+                default="",
+                description="Optional base64-encoded content for genuine prebuilt binary files, not raw Markdown renamed as DOCX.",
+            )
             mime_type: str = Field(default="", description="Optional MIME type for base64 or text content.")
             data_connection: dict[str, Any] | None = Field(
                 default=None,
@@ -14391,6 +14401,7 @@ class RAGComponents:
                 "format": spec["format"],
                 "source_kind": source_kind,
                 "reused_previous_source": reused_context,
+                "markdown_formatted": "prepared_docx" in spec,
                 "download_url": spec["download_url"],
                 "markdown_link": f"[{spec['filename']}]({spec['download_url']})",
                 "expires_at": spec["expires_at"],
@@ -14406,7 +14417,9 @@ class RAGComponents:
                 "Use this when the user asks for Excel/XLSX, CSV, PDF, DOC/DOCX, or another downloadable file. "
                 "If the user asks to export the immediately previous live chart/table/query, you may omit rows/text/content and this tool will reuse the latest exportable live source. "
                 "Pass data_connection explicitly when the user refers to a different result or when you need to override that default so the file is queried just in time on click; "
-                "otherwise pass rows/columns for table exports, text for generated documents, or content_base64 for an already-built binary file. "
+                "For a Word document, use format='docx' with Markdown text: Ragtime formats it natively during creation. "
+                "Do not base64-encode raw Markdown and call it DOCX; content_base64 is only for a genuine already-built binary file. "
+                "Otherwise pass rows/columns for table exports, text for generated documents, or content_base64 for an already-built binary file. "
                 "After this tool returns, include only the markdown_link in the final response using the filename.extension as the visible link text."
             ),
             args_schema=_CreateDownloadLinkInput,

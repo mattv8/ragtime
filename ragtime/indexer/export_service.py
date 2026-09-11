@@ -13,6 +13,7 @@ import mimetypes
 import os
 import re
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
@@ -25,6 +26,7 @@ from openpyxl.utils import get_column_letter
 
 from ragtime.config import settings
 from ragtime.core.logging import get_logger
+from ragtime.indexer.markdown_docx import render_markdown_docx
 
 logger = get_logger(__name__)
 
@@ -33,6 +35,8 @@ EXPORT_DEFAULT_TTL_SECONDS = 60 * 60
 EXPORT_MAX_ROWS = 100_000
 EXPORT_MAX_CELL_CHARS = 32_000
 EXPORT_MAX_CONTENT_BYTES = 25 * 1024 * 1024
+_PREPARED_DOCX_VERSION = 1
+_PREPARED_DOCX_MAX_BASE64_CHARS = 4 * ((EXPORT_MAX_CONTENT_BYTES + 2) // 3)
 EXPORT_BASE_DIR = Path(settings.index_data_path) / "_exports" / "conversation_downloads"
 EXPORT_NEVER_EXPIRES_AT = datetime.max.replace(tzinfo=timezone.utc)
 
@@ -139,6 +143,52 @@ def _coerce_text(value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _prepared_docx_source_sha256(text: str, title: str) -> str:
+    payload = json.dumps([text, title], ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _prepare_markdown_docx(text: str, title: str) -> dict[str, Any] | None:
+    try:
+        rendered = render_markdown_docx(text, title)
+        if rendered is None:
+            return None
+        return {
+            "version": _PREPARED_DOCX_VERSION,
+            "source_sha256": _prepared_docx_source_sha256(text, title),
+            "content_base64": base64.b64encode(rendered).decode("ascii"),
+        }
+    except Exception as exc:
+        logger.warning("DOCX preparation failed: %s", type(exc).__name__)
+        return None
+
+
+def _prepared_docx_bytes(spec: dict[str, Any], text: str, title: str) -> bytes | None:
+    prepared = spec.get("prepared_docx")
+    if not isinstance(prepared, dict) or prepared.get("version") != _PREPARED_DOCX_VERSION:
+        return None
+    content_base64 = prepared.get("content_base64")
+    source_sha256 = prepared.get("source_sha256")
+    if (
+        not isinstance(content_base64, str)
+        or len(content_base64) > _PREPARED_DOCX_MAX_BASE64_CHARS
+        or not isinstance(source_sha256, str)
+        or source_sha256 != _prepared_docx_source_sha256(text, title)
+    ):
+        return None
+    try:
+        content = base64.b64decode(content_base64.encode("ascii"), validate=True)
+        if len(content) > EXPORT_MAX_CONTENT_BYTES:
+            return None
+        with zipfile.ZipFile(io.BytesIO(content)) as package:
+            names = set(package.namelist())
+    except (UnicodeEncodeError, ValueError, zipfile.BadZipFile):
+        return None
+    if {"[Content_Types].xml", "word/document.xml"}.issubset(names):
+        return content
+    return None
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -285,6 +335,7 @@ def create_export_spec(
     expires_at = EXPORT_NEVER_EXPIRES_AT
     export_id = uuid.uuid4().hex
     safe_filename = sanitize_export_filename(filename or title or "export", export_format)
+    resolved_title = title or safe_filename.rsplit(".", 1)[0]
     spec = {
         "version": EXPORT_SPEC_VERSION,
         "id": export_id,
@@ -292,12 +343,16 @@ def create_export_spec(
         "workspace_id": workspace_id or None,
         "filename": safe_filename,
         "format": export_format,
-        "title": title or safe_filename.rsplit(".", 1)[0],
+        "title": resolved_title,
         "mime_type": mime_type or MIME_TYPES.get(export_format) or mimetypes.guess_type(safe_filename)[0] or "application/octet-stream",
         "source": source,
         "created_at": created_at.isoformat(),
         "expires_at": expires_at.isoformat(),
     }
+    if export_format == "docx" and source.get("kind") == "content_snapshot" and isinstance(source.get("text"), str):
+        prepared_docx = _prepare_markdown_docx(source["text"], resolved_title)
+        if prepared_docx is not None:
+            spec["prepared_docx"] = prepared_docx
     path = _spec_path(conversation_id, export_id)
     path.write_text(json.dumps(spec, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     token = create_token(conversation_id, export_id, safe_filename, expires_at)
@@ -522,7 +577,11 @@ async def render_export(spec: dict[str, Any], live_table_resolver: LiveTableReso
         if export_format == "pdf":
             return _simple_pdf_bytes(text, title), MIME_TYPES["pdf"]
         if export_format == "docx":
-            return _docx_bytes(text, title), MIME_TYPES["docx"]
+            prepared = _prepared_docx_bytes(spec, text, title)
+            if prepared is not None:
+                return prepared, MIME_TYPES["docx"]
+            formatted = render_markdown_docx(text, title)
+            return (formatted if formatted is not None else _docx_bytes(text, title)), MIME_TYPES["docx"]
         if export_format == "doc":
             content = f'<!doctype html><html><head><meta charset="utf-8"></head><body><pre>{html.escape(text)}</pre></body></html>'
             return content.encode("utf-8"), MIME_TYPES["doc"]
