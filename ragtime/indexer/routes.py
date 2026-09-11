@@ -337,7 +337,12 @@ from ragtime.indexer.models import (
     WorkspaceChatStateResponse,
 )
 from ragtime.indexer.pdm_service import pdm_indexer
-from ragtime.indexer.repository import _estimate_conversation_tokens, _resolve_default_conversation_model, repository
+from ragtime.indexer.repository import (
+    ConversationBranchMutationError,
+    _estimate_conversation_tokens,
+    _resolve_default_conversation_model,
+    repository,
+)
 from ragtime.indexer.resource_governor import resource_governor
 from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import UPLOAD_TMP_DIR, indexer
@@ -14492,14 +14497,17 @@ async def create_conversation_branch(
         request.auto_snapshot,
     )
 
-    branch = await repository.create_conversation_branch(
-        conversation_id=conversation_id,
-        branch_point_index=request.from_message_index,
-        branch_kind=request.branch_kind,
-        user_id=user.id,
-        parent_branch_id=conv.active_branch_id,
-        associated_snapshot_id=associated_snapshot_id,
-    )
+    try:
+        branch = await repository.create_conversation_branch(
+            conversation_id=conversation_id,
+            branch_point_index=request.from_message_index,
+            branch_kind=request.branch_kind,
+            user_id=user.id,
+            parent_branch_id=conv.active_branch_id,
+            associated_snapshot_id=associated_snapshot_id,
+        )
+    except ConversationBranchMutationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     if not branch:
         logger.warning(
             "Repository returned None for branch creation: conversation=%s index=%s",
@@ -14691,7 +14699,10 @@ async def switch_conversation_branch(
     if not has_access:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    conv = await repository.switch_conversation_branch(conversation_id, request.branch_id)
+    try:
+        conv = await repository.switch_conversation_branch(conversation_id, request.branch_id)
+    except ConversationBranchMutationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     if not conv:
         raise HTTPException(status_code=404, detail="Branch not found")
 
@@ -14724,7 +14735,10 @@ async def release_conversation_branch(
     if not has_access:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    conv = await repository.release_conversation_branch(conversation_id)
+    try:
+        conv = await repository.release_conversation_branch(conversation_id)
+    except ConversationBranchMutationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -14752,7 +14766,10 @@ async def delete_conversation_branch(
     if not has_access:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    deleted = await repository.delete_conversation_branch(conversation_id, branch_id)
+    try:
+        deleted = await repository.delete_conversation_branch(conversation_id, branch_id)
+    except ConversationBranchMutationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="Branch not found")
 

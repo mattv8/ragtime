@@ -187,9 +187,13 @@ class EditResendRepositoryTests(unittest.IsolatedAsyncioTestCase):
             conversation=SimpleNamespace(find_unique=mock.AsyncMock(side_effect=[initial_conversation, refreshed_conversation])),
             conversationbranch=SimpleNamespace(create=mock.AsyncMock(return_value=SimpleNamespace(id="branch-row"))),
             chattask=SimpleNamespace(create=mock.AsyncMock(return_value=SimpleNamespace(id="task-row"))),
+            # The row lock runs before any branch read/modify/write; the
+            # following statements claim and update it.
+            query_raw=mock.AsyncMock(return_value=[{"id": "conversation-1"}]),
             execute_raw=mock.AsyncMock(side_effect=[1, 1]),
         )
         tx.conversationbranch.find_unique = mock.AsyncMock(return_value=SimpleNamespace(id="branch-row"))
+        tx.conversationbranch.find_many = mock.AsyncMock(return_value=[])
 
         class Transaction:
             async def __aenter__(self):
@@ -223,6 +227,7 @@ class EditResendRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((branch.id, conversation.id, task.id, outcome), ("branch-1", "conversation-1", "task-1", "created"))
         self.assertEqual(len(update_statements), 1)
+        self.assertIn("FOR UPDATE", tx.query_raw.await_args_list[0].args[0])
         self.assertIn("WITH ORDINALITY", update_statements[0])
         self.assertIn("WHERE ord <= 1", update_statements[0])
         self.assertIn("||", update_statements[0])

@@ -226,13 +226,12 @@ class ConversationAccessPerfRefactorTests(unittest.IsolatedAsyncioTestCase):
             self.fail("query_raw was not awaited")
         self.assertIn("jsonb_array_length", await_args.args[0])
 
-    async def test_get_conversation_branches_returns_empty_list_on_query_error(self) -> None:
+    async def test_get_conversation_branches_raises_on_query_error(self) -> None:
         db = SimpleNamespace(query_raw=mock.AsyncMock(side_effect=RuntimeError("boom")))
 
         with mock.patch.object(repository, "_get_db", mock.AsyncMock(return_value=db)):
-            branches = await repository.get_conversation_branches("conv-1")
-
-        self.assertEqual(branches, [])
+            with self.assertRaises(RuntimeError):
+                await repository.get_conversation_branches("conv-1")
 
     async def test_get_conversation_active_branch_id_variants(self) -> None:
         cases = [

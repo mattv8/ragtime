@@ -1401,6 +1401,19 @@ class BackgroundTaskService:
                     finalize_reasoning_block(events, reasoning_block_started_at)
                     reasoning_block_started_at = None
 
+                # Persist the assistant response before releasing the active task slot.
+                # Branch mutations reject active conversations, so releasing that slot
+                # first can otherwise let a branch switch move the final response.
+                persisted_conv = await repository.add_message(
+                    conversation_id,
+                    "assistant",
+                    full_response,
+                    events=events if events else None,
+                )
+                if not persisted_conv:
+                    raise RuntimeError("Failed to persist final assistant response")
+                partial_message_persisted = True
+
                 await repository.complete_chat_task(
                     task_id,
                     full_response,
@@ -1410,13 +1423,6 @@ class BackgroundTaskService:
                     current_version,
                 )
 
-                # Add the assistant response to the conversation
-                persisted_conv = await repository.add_message(
-                    conversation_id,
-                    "assistant",
-                    full_response,
-                    events=events if events else None,
-                )
                 try:
                     await repository.link_assistant_snapshot_tool_calls(
                         persisted_conv,
@@ -1424,7 +1430,6 @@ class BackgroundTaskService:
                     )
                 except Exception as link_err:
                     logger.warning(f"Failed to link agent-created snapshot to assistant message: {link_err}")
-                partial_message_persisted = True
 
                 # Notify completion
                 await task_event_bus.publish(

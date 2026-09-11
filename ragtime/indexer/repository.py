@@ -177,6 +177,14 @@ from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 logger = get_logger(__name__)
 
 
+class ConversationBranchMutationError(RuntimeError):
+    """A branch mutation was rejected without changing persisted state."""
+
+    def __init__(self, detail: str, *, status_code: int = 409) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+
+
 def _is_unique_violation(exc: Exception) -> bool:
     try:
         unique_violation_error = getattr(importlib.import_module("prisma.errors"), "UniqueViolationError", None)
@@ -626,6 +634,138 @@ class IndexerRepository:
     async def _get_db(self) -> Prisma:
         """Get database connection."""
         return await get_db()
+
+    async def _lock_conversation_for_branch_mutation(self, tx: Any, conversation_id: str) -> Any:
+        """Serialize all branch/message RMW operations across application workers."""
+        rows = await tx.query_raw(f"SELECT id FROM conversations WHERE id = {_sql_quote_literal(conversation_id)} FOR UPDATE")
+        if not rows:
+            return None
+        return await tx.conversation.find_unique(where={"id": conversation_id}, include={"user": True})
+
+    async def _freeze_and_validate_branch_bases(
+        self,
+        tx: Any,
+        conversation_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        active_branch_id: Optional[str] = None,
+    ) -> dict[str, tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]]:
+        """Freeze legacy branch prefixes and return validated (row, base, suffix).
+
+        Legacy unparented rows have no authoritative ancestry.  Their current
+        conversation prefix is used once as a compatibility snapshot; a prefix
+        overwritten before this migration cannot be recovered.
+        """
+        rows = await tx.conversationbranch.find_many(where={"conversationId": conversation_id})
+        by_id = {str(row.id): row for row in rows}
+        resolved: dict[str, tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]] = {}
+        resolving: set[str] = set()
+
+        async def resolve(branch_id: str) -> tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]:
+            if branch_id in resolved:
+                return resolved[branch_id]
+            if branch_id in resolving:
+                raise ConversationBranchMutationError("Conversation branch lineage contains a cycle")
+            row = by_id.get(branch_id)
+            if row is None:
+                raise ConversationBranchMutationError("Conversation branch lineage is missing its parent")
+            resolving.add(branch_id)
+            point = int(getattr(row, "branchPointIndex", -1))
+            if point < 0:
+                raise ConversationBranchMutationError("Conversation branch has an invalid branch point")
+            raw_base = getattr(row, "baseMessages", None)
+            raw_suffix = getattr(row, "preservedMessages", None)
+            if not isinstance(raw_suffix, list) or any(not isinstance(message, dict) for message in raw_suffix):
+                raise ConversationBranchMutationError("Conversation branch contains malformed messages")
+            suffix = list(raw_suffix)
+            if raw_base is None:
+                parent_id = getattr(row, "parentBranchId", None)
+                if str(row.id) == active_branch_id:
+                    if point > len(messages):
+                        raise ConversationBranchMutationError("Active branch has a short prefix")
+                    base = list(messages[:point])
+                elif parent_id:
+                    _parent, parent_base, parent_suffix = await resolve(str(parent_id))
+                    inherited = parent_base + parent_suffix
+                    if point > len(inherited):
+                        raise ConversationBranchMutationError("Conversation branch lineage has a short prefix")
+                    base = list(inherited[:point])
+                else:
+                    if point > len(messages):
+                        raise ConversationBranchMutationError("Conversation branch has a short legacy prefix")
+                    base = list(messages[:point])
+                await tx.conversationbranch.update(where={"id": row.id}, data={"baseMessages": Json(base), "updatedAt": utc_now()})
+            else:
+                if not isinstance(raw_base, list):
+                    raise ConversationBranchMutationError("Conversation branch has malformed prefix data")
+                if any(not isinstance(message, dict) for message in raw_base):
+                    raise ConversationBranchMutationError("Conversation branch contains malformed prefix data")
+                base = list(raw_base)
+            if len(base) != point:
+                raise ConversationBranchMutationError("Conversation branch prefix length does not match its branch point")
+            resolving.remove(branch_id)
+            resolved[branch_id] = (row, base, suffix)
+            return resolved[branch_id]
+
+        branch_ids = list(by_id)
+        if active_branch_id in by_id:
+            branch_ids.remove(cast(str, active_branch_id))
+            branch_ids.insert(0, cast(str, active_branch_id))
+        for branch_id in branch_ids:
+            await resolve(branch_id)
+        return resolved
+
+    async def _has_legacy_branch_bases(self, tx: Any, conversation_id: str) -> bool:
+        rows = await tx.query_raw(
+            f"SELECT id FROM conversation_branches WHERE conversation_id = {_sql_quote_literal(conversation_id)} AND base_messages IS NULL LIMIT 1"
+        )
+        return bool(rows)
+
+    @staticmethod
+    def _validated_branch_payload(row: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        point = int(getattr(row, "branchPointIndex", -1))
+        base = getattr(row, "baseMessages", None)
+        suffix = getattr(row, "preservedMessages", None)
+        if point < 0 or not isinstance(base, list) or not isinstance(suffix, list):
+            raise ConversationBranchMutationError("Conversation branch has malformed snapshot data")
+        if any(not isinstance(message, dict) for message in base + suffix):
+            raise ConversationBranchMutationError("Conversation branch contains malformed messages")
+        if len(base) != point:
+            raise ConversationBranchMutationError("Conversation branch prefix length does not match its branch point")
+        return list(base), list(suffix)
+
+    async def _freeze_and_preserve_active_branch(
+        self, tx: Any, conversation_id: str, messages: list[dict[str, Any]], active_branch_id: Optional[str]
+    ) -> dict[str, tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]]:
+        """Freeze legacy prefixes and save the active source at its own point."""
+        if await self._has_legacy_branch_bases(tx, conversation_id):
+            branches = await self._freeze_and_validate_branch_bases(tx, conversation_id, messages, active_branch_id=active_branch_id)
+        else:
+            branches = {}
+            if active_branch_id:
+                row = await tx.conversationbranch.find_unique(where={"id": active_branch_id})
+                if not row or getattr(row, "conversationId", None) != conversation_id:
+                    raise ConversationBranchMutationError("Conversation has a stale active branch")
+                base, suffix = self._validated_branch_payload(row)
+                branches[str(active_branch_id)] = (row, base, suffix)
+        if not active_branch_id:
+            return branches
+        source = branches.get(str(active_branch_id))
+        if source is None:
+            raise ConversationBranchMutationError("Conversation has a stale active branch")
+        row, _base, _suffix = source
+        point = int(getattr(row, "branchPointIndex", -1))
+        if point < 0 or point > len(messages):
+            raise ConversationBranchMutationError("Active branch has a short prefix")
+        await tx.conversationbranch.update(
+            where={"id": row.id},
+            data={
+                "baseMessages": Json(list(messages[:point])),
+                "preservedMessages": Json(list(messages[point:])),
+                "updatedAt": utc_now(),
+            },
+        )
+        return branches
 
     # -------------------------------------------------------------------------
     # Job Operations
@@ -3293,37 +3433,26 @@ class IndexerRepository:
             else None
         )
 
-        # Get current conversation
-        prisma_conv = await db.conversation.find_unique(where={"id": conversation_id})
-        if not prisma_conv:
-            return None
-
-        # Add new message
-        messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
-        new_message: dict[str, Any] = {
-            "role": role,
-            "content": content,
-            "timestamp": utc_now().isoformat(),
-            "message_id": str(uuid.uuid4()),
-        }
-        # Store chronological events only; compatibility tool_calls are derived on read.
-        if sanitized_events:
-            new_message["events"] = sanitized_events
-        messages.append(new_message)
-
-        # Recompute conversation token total from persisted messages (tiktoken-backed)
-        total_tokens = _estimate_effective_conversation_tokens(messages)
-
-        # Update conversation
-        updated = await db.conversation.update(
-            where={"id": conversation_id},
-            data={
-                "messages": Json(messages),
-                "totalTokens": total_tokens,
-                "updatedAt": utc_now(),
-            },
-            include={"user": True},
-        )
+        async with self._get_conversation_branch_lock(conversation_id):
+            async with db.tx() as tx:
+                prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
+                if not prisma_conv:
+                    return None
+                messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                new_message: dict[str, Any] = {
+                    "role": role,
+                    "content": content,
+                    "timestamp": utc_now().isoformat(),
+                    "message_id": str(uuid.uuid4()),
+                }
+                if sanitized_events:
+                    new_message["events"] = sanitized_events
+                messages.append(new_message)
+                updated = await tx.conversation.update(
+                    where={"id": conversation_id},
+                    data={"messages": Json(messages), "totalTokens": _estimate_effective_conversation_tokens(messages), "updatedAt": utc_now()},
+                    include={"user": True},
+                )
 
         return self._prisma_conversation_to_model(updated)
 
@@ -3500,14 +3629,19 @@ class IndexerRepository:
         try:
             async with self._get_conversation_branch_lock(conversation_id):
                 async with db.tx() as tx:
-                    prisma_conv = await tx.conversation.find_unique(where={"id": conversation_id})
+                    prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
+
                     active_task_id = getattr(prisma_conv, "activeTaskId", None)
                     if active_task_id and active_task_id != expected_active_task_id:
                         return None
 
                     messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                    if await self._has_legacy_branch_bases(tx, conversation_id):
+                        await self._freeze_and_validate_branch_bases(
+                            tx, conversation_id, messages, active_branch_id=getattr(prisma_conv, "activeBranchId", None)
+                        )
                     replacing_marker = bool(replace_message_id) or replace_message_index is not None
                     if expected_message_count is not None:
                         if replacing_marker and len(messages) != expected_message_count:
@@ -3613,6 +3747,7 @@ class IndexerRepository:
                                 branch_point_index,
                                 branch_kind,
                                 preserved_messages,
+                                base_messages,
                                 associated_snapshot_id,
                                 created_by_user_id,
                                 created_at,
@@ -3625,6 +3760,7 @@ class IndexerRepository:
                                 0,
                                 {branch_kind_literal}::"ConversationBranchKind",
                                 messages,
+                                '[]'::jsonb,
                                 NULL,
                                 {_sql_quote_literal(snapshot_user_id)},
                                 {compacted_at_literal}::timestamp,
@@ -3702,7 +3838,7 @@ class IndexerRepository:
         try:
             async with self._get_conversation_branch_lock(conversation_id):
                 async with db.tx() as tx:
-                    prisma_conv = await tx.conversation.find_unique(where={"id": conversation_id})
+                    prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
 
@@ -3786,11 +3922,15 @@ class IndexerRepository:
         try:
             async with self._get_conversation_branch_lock(conversation_id):
                 async with db.tx() as tx:
-                    prisma_conv = await tx.conversation.find_unique(where={"id": conversation_id})
+                    prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
+                    if getattr(prisma_conv, "activeTaskId", None):
+                        raise ConversationBranchMutationError("Cannot branch conversation while a chat is in progress")
 
                     messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+
+                    await self._freeze_and_preserve_active_branch(tx, conversation_id, messages, getattr(prisma_conv, "activeBranchId", None))
 
                     if branch_point_index < 0 or branch_point_index > len(messages):
                         return None
@@ -3802,10 +3942,11 @@ class IndexerRepository:
                         data={
                             "id": branch_id,
                             "conversationId": conversation_id,
-                            "parentBranchId": parent_branch_id,
+                            "parentBranchId": getattr(prisma_conv, "activeBranchId", None),
                             "branchPointIndex": branch_point_index,
                             "branchKind": cast(Any, branch_kind.value if branch_kind else None),
                             "preservedMessages": Json(preserved),
+                            "baseMessages": Json(list(messages[:branch_point_index])),
                             "associatedSnapshotId": associated_snapshot_id,
                             "createdByUserId": user_id,
                         }
@@ -3829,6 +3970,8 @@ class IndexerRepository:
                     )
 
                 return self._prisma_branch_to_model(created_branch)
+        except ConversationBranchMutationError:
+            raise
         except Exception as e:
             logger.warning(
                 "Failed to create conversation branch for conversation=%s branch_point=%s: %s: %s",
@@ -3852,28 +3995,34 @@ class IndexerRepository:
         db = await self._get_db()
         try:
             async with self._get_conversation_branch_lock(conversation_id):
-                prisma_conv = await db.conversation.find_unique(where={"id": conversation_id})
-                if not prisma_conv:
-                    return None
-
-                messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
-                if branch_point_index < 0 or branch_point_index > len(messages):
-                    return None
-
-                created = await db.conversationbranch.create(
-                    data={
-                        "id": str(uuid.uuid4()),
-                        "conversationId": conversation_id,
-                        "parentBranchId": parent_branch_id,
-                        "branchPointIndex": branch_point_index,
-                        "branchKind": cast(Any, branch_kind.value if branch_kind else None),
-                        "preservedMessages": Json(list(messages[branch_point_index:])),
-                        "associatedSnapshotId": associated_snapshot_id,
-                        "createdByUserId": user_id,
-                    },
-                    include={"createdByUser": True},
-                )
+                async with db.tx() as tx:
+                    prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
+                    if not prisma_conv:
+                        return None
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                    if await self._has_legacy_branch_bases(tx, conversation_id):
+                        await self._freeze_and_validate_branch_bases(
+                            tx, conversation_id, messages, active_branch_id=getattr(prisma_conv, "activeBranchId", None)
+                        )
+                    if branch_point_index < 0 or branch_point_index > len(messages):
+                        return None
+                    created = await tx.conversationbranch.create(
+                        data={
+                            "id": str(uuid.uuid4()),
+                            "conversationId": conversation_id,
+                            "parentBranchId": getattr(prisma_conv, "activeBranchId", None),
+                            "branchPointIndex": branch_point_index,
+                            "branchKind": cast(Any, branch_kind.value if branch_kind else None),
+                            "preservedMessages": Json(list(messages[branch_point_index:])),
+                            "baseMessages": Json(list(messages[:branch_point_index])),
+                            "associatedSnapshotId": associated_snapshot_id,
+                            "createdByUserId": user_id,
+                        },
+                        include={"createdByUser": True},
+                    )
                 return self._prisma_branch_to_model(created)
+        except ConversationBranchMutationError:
+            raise
         except Exception as e:
             logger.warning(
                 "Failed to create conversation snapshot branch for conversation=%s branch_point=%s: %s: %s",
@@ -3889,23 +4038,16 @@ class IndexerRepository:
         conversation_id: str,
         branch_id: str,
     ) -> Optional[Conversation]:
-        """Switch to a different branch by restoring its preserved messages.
-
-        If the conversation is on the live path (active_branch_id is None),
-        the current downstream messages are saved into a new auto-created
-        branch so they can be recovered later.  If it's already on a saved
-        branch, the downstream messages are written back to that branch.
-        """
+        """Switch using immutable branch prefixes, preserving the source first."""
         db = await self._get_db()
         try:
             async with self._get_conversation_branch_lock(conversation_id):
                 async with db.tx() as tx:
-                    prisma_conv = await tx.conversation.find_unique(
-                        where={"id": conversation_id},
-                        include={"user": True},
-                    )
+                    prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
+                    if getattr(prisma_conv, "activeTaskId", None):
+                        raise ConversationBranchMutationError("Cannot switch branches while a chat is in progress")
 
                     current_branch_id = getattr(prisma_conv, "activeBranchId", None)
                     if current_branch_id == branch_id:
@@ -3916,57 +4058,79 @@ class IndexerRepository:
                         return None
 
                     messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                    if await self._has_legacy_branch_bases(tx, conversation_id):
+                        branches = await self._freeze_and_validate_branch_bases(tx, conversation_id, messages, active_branch_id=current_branch_id)
+                        target_row, target_base, target_preserved = branches[branch_id]
+                    else:
+                        target_row = target_branch
+                        target_base, target_preserved = self._validated_branch_payload(target_row)
+                        branches = {branch_id: (target_row, target_base, target_preserved)}
+                    source_row: Any = None
+                    source_point: Optional[int] = None
+                    source_parent_id: Optional[str] = None
+                    if current_branch_id:
+                        source_row = await tx.conversationbranch.find_unique(where={"id": current_branch_id})
+                        if not source_row or getattr(source_row, "conversationId", None) != conversation_id:
+                            raise ConversationBranchMutationError("Conversation has a stale active branch")
+                        if getattr(source_row, "baseMessages", None) is not None:
+                            self._validated_branch_payload(source_row)
+                        source_point = int(getattr(source_row, "branchPointIndex", -1))
+                        if source_point < 0 or source_point > len(messages):
+                            raise ConversationBranchMutationError("Active branch has a short prefix")
+                        source_parent_id = getattr(source_row, "parentBranchId", None)
+                        await tx.conversationbranch.update(
+                            where={"id": source_row.id},
+                            data={
+                                "baseMessages": Json(list(messages[:source_point])),
+                                "preservedMessages": Json(list(messages[source_point:])),
+                                "updatedAt": utc_now(),
+                            },
+                        )
 
-                    branch_point = target_branch.branchPointIndex
-                    current_downstream = messages[branch_point:]
-                    if current_downstream:
-                        if current_branch_id:
-                            await tx.conversationbranch.update(
-                                where={"id": current_branch_id},
-                                data={
-                                    "preservedMessages": Json(current_downstream),
-                                    "updatedAt": utc_now(),
+                    target_group = (getattr(target_row, "parentBranchId", None), int(target_row.branchPointIndex))
+                    source_group = (source_parent_id, source_point) if source_row else None
+                    if source_group is None or source_group != target_group:
+                        # Current is only an alternative when moving between groups.
+                        # Its own immutable base records the outgoing view; it is
+                        # never merged with a same-group row whose prefix differs.
+                        current_point = min(target_group[1], len(messages))
+                        current_base = list(messages[:current_point])
+                        current_suffix = list(messages[current_point:])
+                        candidates = await tx.conversationbranch.find_many(
+                            where=cast(
+                                Any,
+                                {
+                                    "conversationId": conversation_id,
+                                    "parentBranchId": target_group[0],
+                                    "branchPointIndex": current_point,
+                                    "branchKind": None,
                                 },
                             )
-                        else:
-                            user_id = str(prisma_conv.userId) if prisma_conv.userId else None
-                            parent_branch_id = getattr(target_branch, "parentBranchId", None)
-                            live_branch = await tx.conversationbranch.find_first(
-                                where=cast(
-                                    Any,
-                                    {
-                                        "conversationId": conversation_id,
-                                        "parentBranchId": parent_branch_id,
-                                        "branchPointIndex": branch_point,
-                                        "branchKind": None,
-                                    },
-                                ),
-                                order=[{"createdAt": "desc"}],
+                        )
+                        # Saved Current rows are immutable alternatives.  Only
+                        # the active source may be updated above; an inactive
+                        # Current with the same prefix can still have a
+                        # distinct suffix.  Reuse is therefore read-only and
+                        # requires the complete outgoing view to match.
+                        exact_outgoing = next(
+                            (row for row in candidates if self._validated_branch_payload(row) == (current_base, current_suffix)),
+                            None,
+                        )
+                        if exact_outgoing is None:
+                            await tx.conversationbranch.create(
+                                data={
+                                    "id": str(uuid.uuid4()),
+                                    "conversationId": conversation_id,
+                                    "parentBranchId": target_group[0],
+                                    "branchPointIndex": current_point,
+                                    "branchKind": None,
+                                    "createdByUserId": getattr(prisma_conv, "userId", None),
+                                    "baseMessages": Json(current_base),
+                                    "preservedMessages": Json(current_suffix),
+                                }
                             )
-                            if live_branch:
-                                await tx.conversationbranch.update(
-                                    where={"id": live_branch.id},
-                                    data={
-                                        "preservedMessages": Json(current_downstream),
-                                        "updatedAt": utc_now(),
-                                    },
-                                )
-                            else:
-                                await tx.conversationbranch.create(
-                                    data={
-                                        "id": str(uuid.uuid4()),
-                                        "conversationId": conversation_id,
-                                        "parentBranchId": parent_branch_id,
-                                        "branchPointIndex": branch_point,
-                                        "branchKind": None,
-                                        "preservedMessages": Json(current_downstream),
-                                        "createdByUserId": user_id,
-                                    }
-                                )
 
-                    base_messages = messages[:branch_point]
-                    target_preserved: List[dict[str, Any]] = _normalize_message_payloads(target_branch.preservedMessages)
-                    new_messages = base_messages + target_preserved
+                    new_messages = target_base + target_preserved
                     total_tokens = _estimate_effective_conversation_tokens(new_messages)
 
                     updated = await tx.conversation.update(
@@ -3981,15 +4145,11 @@ class IndexerRepository:
                     )
 
                 return self._prisma_conversation_to_model(updated)
-        except Exception as e:
-            logger.warning(
-                "Failed to switch conversation branch for conversation=%s branch=%s: %s: %s",
-                conversation_id,
-                branch_id,
-                type(e).__name__,
-                e,
-            )
-            return None
+        except ConversationBranchMutationError:
+            raise
+        except Exception:
+            logger.exception("Failed to switch conversation branch for conversation=%s branch=%s", conversation_id, branch_id)
+            raise
 
     @staticmethod
     def _locate_visualization_event_in_messages(
@@ -4336,7 +4496,7 @@ class IndexerRepository:
                 FROM conversation_branches cb
                 LEFT JOIN users u ON u.id = cb.created_by_user_id
                 WHERE cb.conversation_id = {_sql_quote_literal(conversation_id)}
-                ORDER BY cb.created_at ASC
+                ORDER BY cb.created_at ASC, cb.id ASC
             """)
             return [
                 ConversationBranchSummary(
@@ -4355,7 +4515,7 @@ class IndexerRepository:
             ]
         except Exception as e:
             logger.warning(f"Failed to list conversation branches: {e}")
-            return []
+            raise
 
     async def get_conversation_active_branch_id(self, conversation_id: str) -> Optional[str]:
         """Fetch only the active branch pointer without materializing messages."""
@@ -4381,79 +4541,95 @@ class IndexerRepository:
         try:
             async with self._get_conversation_branch_lock(conversation_id):
                 async with db.tx() as tx:
-                    prisma_conv = await tx.conversation.find_unique(
-                        where={"id": conversation_id},
-                        include={"user": True},
-                    )
+                    prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
+                    if getattr(prisma_conv, "activeTaskId", None):
+                        raise ConversationBranchMutationError("Cannot release a branch while a chat is in progress")
 
                     active_branch_id = getattr(prisma_conv, "activeBranchId", None)
                     if not active_branch_id:
                         return self._prisma_conversation_to_model(prisma_conv)
 
-                    active_branch = await tx.conversationbranch.find_unique(where={"id": active_branch_id})
-                    if not active_branch or active_branch.conversationId != conversation_id:
-                        # Active branch pointer is stale; just clear it.
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                    if await self._has_legacy_branch_bases(tx, conversation_id):
+                        branches = await self._freeze_and_validate_branch_bases(tx, conversation_id, messages, active_branch_id=active_branch_id)
+                    else:
+                        row = await tx.conversationbranch.find_unique(where={"id": active_branch_id})
+                        if not row or getattr(row, "conversationId", None) != conversation_id:
+                            raise ConversationBranchMutationError("Conversation has a stale active branch")
+                        base, suffix = self._validated_branch_payload(row)
+                        branches = {str(active_branch_id): (row, base, suffix)}
+                    active = branches.get(str(active_branch_id))
+                    if active is None:
+                        raise ConversationBranchMutationError("Conversation has a stale active branch")
+                    active_row, active_base, _active_suffix = active
+                    branch_point = int(getattr(active_row, "branchPointIndex", -1))
+                    if branch_point < 0 or branch_point > len(messages):
+                        raise ConversationBranchMutationError("Active branch has a short prefix")
+                    await tx.conversationbranch.update(
+                        where={"id": active_row.id},
+                        data={
+                            "baseMessages": Json(list(messages[:branch_point])),
+                            "preservedMessages": Json(list(messages[branch_point:])),
+                            "updatedAt": utc_now(),
+                        },
+                    )
+                    if getattr(active_row, "branchKind", None) is None:
                         updated = await tx.conversation.update(
                             where={"id": conversation_id},
-                            data={
-                                "activeBranchId": None,
-                                "updatedAt": utc_now(),
-                            },
+                            data={"activeBranchId": None, "updatedAt": utc_now()},
                             include={"user": True},
                         )
                         return self._prisma_conversation_to_model(updated)
-
-                    messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
-                    branch_point = active_branch.branchPointIndex
-                    downstream = messages[branch_point:]
-
-                    if downstream:
-                        await tx.conversationbranch.update(
-                            where={"id": active_branch_id},
-                            data={
-                                "preservedMessages": Json(downstream),
-                                "updatedAt": utc_now(),
-                            },
-                        )
-
-                    if getattr(active_branch, "branchKind", None) is None:
-                        return self._prisma_conversation_to_model(prisma_conv)
-
-                    live_branches = await tx.conversationbranch.find_many(
+                    candidate_rows = await tx.conversationbranch.find_many(
                         where=cast(
                             Any,
                             {
                                 "conversationId": conversation_id,
-                                "parentBranchId": getattr(active_branch, "parentBranchId", None),
+                                "parentBranchId": getattr(active_row, "parentBranchId", None),
                                 "branchPointIndex": branch_point,
                                 "branchKind": None,
                             },
-                        ),
-                        order=[{"createdAt": "desc"}],
+                        )
                     )
-                    live_branch = next(
-                        (branch for branch in live_branches if branch.id != active_branch_id),
-                        None,
+                    current_candidates = [(row, *self._validated_branch_payload(row)) for row in candidate_rows if row.id != active_row.id]
+                    exact_current = [item for item in current_candidates if item[1] == active_base]
+                    candidates = exact_current or current_candidates
+
+                    def current_order_key(item: tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]) -> tuple[float, float, str]:
+                        row = item[0]
+                        updated_at = getattr(row, "updatedAt", None) or getattr(row, "createdAt", None)
+                        created_at = getattr(row, "createdAt", None)
+                        return (
+                            updated_at.timestamp() if isinstance(updated_at, datetime) else float("-inf"),
+                            created_at.timestamp() if isinstance(created_at, datetime) else float("-inf"),
+                            str(row.id),
+                        )
+
+                    current = max(
+                        candidates,
+                        key=current_order_key,
+                        default=None,
                     )
-                    if live_branch:
-                        target_preserved = _normalize_message_payloads(live_branch.preservedMessages)
-                        new_messages = messages[:branch_point] + target_preserved
+                    if current:
+                        current_row, current_base, current_suffix = current
+                        new_messages = current_base + current_suffix
                         total_tokens = _estimate_effective_conversation_tokens(new_messages)
                         updated = await tx.conversation.update(
                             where={"id": conversation_id},
                             data={
                                 "messages": Json(new_messages),
                                 "totalTokens": total_tokens,
-                                "activeBranchId": live_branch.id,
+                                "activeBranchId": current_row.id,
                                 "updatedAt": utc_now(),
                             },
                             include={"user": True},
                         )
                         return self._prisma_conversation_to_model(updated)
 
-                    truncated = messages[:branch_point]
+                    # Legacy conversations may not yet have a Current sibling.
+                    truncated = active_base
                     total_tokens = _estimate_effective_conversation_tokens(truncated)
                     updated = await tx.conversation.update(
                         where={"id": conversation_id},
@@ -4467,9 +4643,11 @@ class IndexerRepository:
                     )
 
                 return self._prisma_conversation_to_model(updated)
-        except Exception as e:
-            logger.warning(f"Failed to release conversation branch: {e}")
-            return None
+        except ConversationBranchMutationError:
+            raise
+        except Exception:
+            logger.exception("Failed to release conversation branch for conversation=%s", conversation_id)
+            raise
 
     async def delete_conversation_branch(
         self,
@@ -4481,12 +4659,18 @@ class IndexerRepository:
         try:
             async with self._get_conversation_branch_lock(conversation_id):
                 async with db.tx() as tx:
+                    conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
+                    if not conv:
+                        return False
+                    if getattr(conv, "activeTaskId", None):
+                        raise ConversationBranchMutationError("Cannot delete a branch while a chat is in progress")
                     branch = await tx.conversationbranch.find_unique(where={"id": branch_id})
                     if not branch or branch.conversationId != conversation_id:
                         return False
-
-                    conv = await tx.conversation.find_unique(where={"id": conversation_id})
-                    if conv and getattr(conv, "activeBranchId", None) == branch_id:
+                    child = await tx.conversationbranch.find_first(where={"conversationId": conversation_id, "parentBranchId": branch_id})
+                    if child:
+                        raise ConversationBranchMutationError("Cannot delete a branch that has child branches")
+                    if getattr(conv, "activeBranchId", None) == branch_id:
                         await tx.conversation.update(
                             where={"id": conversation_id},
                             data={
@@ -4498,6 +4682,8 @@ class IndexerRepository:
                     await tx.conversationbranch.delete(where={"id": branch_id})
 
                 return True
+        except ConversationBranchMutationError:
+            raise
         except Exception as e:
             logger.warning(f"Failed to delete conversation branch: {e}")
             return False
@@ -5126,33 +5312,31 @@ class IndexerRepository:
             pass
 
         try:
-            async with db.tx(max_wait=timedelta(seconds=10), timeout=timedelta(seconds=30)) as tx:
-                prisma_conv = await tx.conversation.find_unique(
-                    where={"id": conversation_id},
-                    include={"user": True},
-                )
+            async with self._get_conversation_branch_lock(conversation_id), db.tx(max_wait=timedelta(seconds=10), timeout=timedelta(seconds=30)) as tx:
+                prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                 if not prisma_conv:
                     return None, None, None, "conversation_not_found"
 
                 messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
-                if branch_point_index < 0 or branch_point_index > len(messages):
-                    return None, None, None, "invalid_branch_point"
-
                 active_task_id = getattr(prisma_conv, "activeTaskId", None)
                 if active_task_id:
                     active_task = await tx.chattask.find_unique(where={"id": active_task_id})
                     if active_task and active_task.status in {PrismaChatTaskStatus.pending, PrismaChatTaskStatus.running}:
                         return None, None, self._prisma_task_to_model(active_task), "active_task"
+                if branch_point_index < 0 or branch_point_index > len(messages):
+                    return None, None, None, "invalid_branch_point"
+                await self._freeze_and_preserve_active_branch(tx, conversation_id, messages, getattr(prisma_conv, "activeBranchId", None))
 
                 branch_id = str(uuid.uuid4())
                 await tx.conversationbranch.create(
                     data={
                         "id": branch_id,
                         "conversationId": conversation_id,
-                        "parentBranchId": parent_branch_id,
+                        "parentBranchId": getattr(prisma_conv, "activeBranchId", None),
                         "branchPointIndex": branch_point_index,
                         "branchKind": cast(Any, branch_kind.value if branch_kind else None),
                         "preservedMessages": Json(list(messages[branch_point_index:])),
+                        "baseMessages": Json(list(messages[:branch_point_index])),
                         "associatedSnapshotId": associated_snapshot_id,
                         "createdByUserId": user_id,
                     }

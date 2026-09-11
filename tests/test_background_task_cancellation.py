@@ -103,7 +103,139 @@ class _FirstChunkRetryLLM:
         yield SimpleNamespace(content="Retried answer.")
 
 
+class _SingleResponseStream:
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if getattr(self, "_sent", False):
+            raise StopAsyncIteration
+        self._sent = True
+        return "final answer"
+
+
+class _AppendGate:
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls = 0
+
+    async def __call__(self, *_args, **_kwargs):
+        self.calls += 1
+        self.entered.set()
+        await self.release.wait()
+        return SimpleNamespace(workspace_id=None)
+
+
 class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _completed_task_dependencies(add_message: Any, link_assistant_snapshot_tool_calls: Any) -> tuple[Any, Any, Any, Any]:
+        fake_conversation = SimpleNamespace(
+            messages=[
+                SimpleNamespace(role="user", content="hello", events=None),
+            ],
+            user_id="user-1",
+            model="lmstudio::openai/gpt-oss-20b",
+            workspace_id=None,
+        )
+        fake_repository = SimpleNamespace(
+            get_chat_task=mock.AsyncMock(return_value=SimpleNamespace(id="task-final")),
+            update_chat_task_status=mock.AsyncMock(),
+            get_conversation=mock.AsyncMock(return_value=fake_conversation),
+            update_chat_task_streaming_state=mock.AsyncMock(),
+            complete_chat_task=mock.AsyncMock(),
+            add_message=add_message,
+            link_assistant_snapshot_tool_calls=link_assistant_snapshot_tool_calls,
+            cancel_chat_task=mock.AsyncMock(),
+        )
+        fake_event_bus = SimpleNamespace(publish=mock.AsyncMock())
+        fake_rag = SimpleNamespace(is_ready=True, process_query_stream=mock.Mock(return_value=_SingleResponseStream()))
+        fake_settings_cache = SimpleNamespace(get_settings=mock.AsyncMock(return_value={"max_tool_output_chars": 5000}))
+        return fake_repository, fake_event_bus, fake_rag, fake_settings_cache
+
+    async def test_final_response_is_appended_before_task_is_completed(self) -> None:
+        service = background_tasks.BackgroundTaskService()
+        append_gate = _AppendGate()
+        fake_repository, fake_event_bus, fake_rag, fake_settings_cache = self._completed_task_dependencies(
+            append_gate,
+            mock.AsyncMock(),
+        )
+
+        with (
+            mock.patch.object(background_tasks, "repository", fake_repository),
+            mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
+            mock.patch.object(background_tasks, "rag", fake_rag),
+            mock.patch.object(background_tasks.SettingsCache, "get_instance", return_value=fake_settings_cache),
+        ):
+            service.start_task("conv-final", "hello", existing_task_id="task-final")
+            running_task = service._running_tasks["task-final"]
+            await asyncio.wait_for(append_gate.entered.wait(), timeout=1.0)
+            fake_repository.complete_chat_task.assert_not_awaited()
+
+            append_gate.release.set()
+            await asyncio.wait_for(running_task, timeout=1.0)
+
+        fake_repository.complete_chat_task.assert_awaited_once()
+
+    async def test_cancellation_after_final_append_does_not_append_partial_duplicate(self) -> None:
+        service = background_tasks.BackgroundTaskService()
+        append_gate = _AppendGate()
+        link_started = asyncio.Event()
+        link_never_finishes = asyncio.Event()
+
+        async def wait_while_linking(*_args, **_kwargs) -> None:
+            link_started.set()
+            await link_never_finishes.wait()
+
+        fake_repository, fake_event_bus, fake_rag, fake_settings_cache = self._completed_task_dependencies(
+            append_gate,
+            wait_while_linking,
+        )
+
+        with (
+            mock.patch.object(background_tasks, "repository", fake_repository),
+            mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
+            mock.patch.object(background_tasks, "rag", fake_rag),
+            mock.patch.object(background_tasks.SettingsCache, "get_instance", return_value=fake_settings_cache),
+        ):
+            service.start_task("conv-final", "hello", existing_task_id="task-final")
+            running_task = service._running_tasks["task-final"]
+            await asyncio.wait_for(append_gate.entered.wait(), timeout=1.0)
+            append_gate.release.set()
+            await asyncio.wait_for(link_started.wait(), timeout=1.0)
+
+            self.assertTrue(service.cancel_task("task-final"))
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(running_task, timeout=1.0)
+
+        self.assertEqual(append_gate.calls, 1)
+
+    async def test_error_after_final_append_does_not_append_partial_duplicate(self) -> None:
+        service = background_tasks.BackgroundTaskService()
+        add_message = mock.AsyncMock(return_value=SimpleNamespace(workspace_id=None))
+
+        async def fail_completed_event(_channel, payload) -> None:
+            if payload.get("status") == "completed":
+                raise RuntimeError("event bus unavailable")
+
+        fake_repository, _fake_event_bus, fake_rag, fake_settings_cache = self._completed_task_dependencies(
+            add_message,
+            mock.AsyncMock(),
+        )
+        fake_event_bus = SimpleNamespace(publish=mock.AsyncMock(side_effect=fail_completed_event))
+
+        with (
+            mock.patch.object(background_tasks, "repository", fake_repository),
+            mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
+            mock.patch.object(background_tasks, "rag", fake_rag),
+            mock.patch.object(background_tasks.SettingsCache, "get_instance", return_value=fake_settings_cache),
+        ):
+            service.start_task("conv-final", "hello", existing_task_id="task-final")
+            await asyncio.wait_for(service._running_tasks["task-final"], timeout=1.0)
+
+        add_message.assert_awaited_once()
+        fake_repository.complete_chat_task.assert_awaited_once()
+
     async def test_cancelled_task_closes_stream_iterator(self) -> None:
         service = background_tasks.BackgroundTaskService()
         stream = _HangingAsyncStream()

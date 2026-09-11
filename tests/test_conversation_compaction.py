@@ -51,7 +51,13 @@ class _FakeConversationDelegate:
 class _FakeCompactionTransaction:
     def __init__(self, initial: Any, updated: Any) -> None:
         self.conversation = _FakeConversationDelegate(initial, updated)
+        self.conversationbranch = SimpleNamespace(find_many=mock.AsyncMock(return_value=[]))
         self.executed_sql: list[str] = []
+
+    async def query_raw(self, sql: str) -> list[dict[str, str]]:
+        if "FOR UPDATE" in sql:
+            return [{"id": "conversation"}]
+        return []
 
     async def execute_raw(self, sql: str) -> int:
         self.executed_sql.append(sql)

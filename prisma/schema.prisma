@@ -1441,6 +1441,10 @@ model ConversationBranch {
   // Preserved messages: the original messages from branch_point_index onward (JSON array)
   preservedMessages Json @default("[]") @map("preserved_messages")
 
+  // Immutable prefix at the branch point.  This makes a branch reconstructible
+  // even when another branch at a different depth is active.
+  baseMessages Json? @map("base_messages")
+
   // Associated UserSpace snapshot (taken before the branch was created)
   associatedSnapshotId String? @map("associated_snapshot_id")
 
