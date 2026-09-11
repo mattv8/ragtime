@@ -187,6 +187,7 @@ export function IndexesList({
   // Create wizard state
   const [showCreateWizard, setShowCreateWizard] = useState(false);
   const [activeSource, setActiveSource] = useState<SourceType>('git');
+  const [recoverName, setRecoverName] = useState<string | null>(null);
 
   // Git index edit state
   const [editingGitIndex, setEditingGitIndex] = useState<IndexInfo | null>(null);
@@ -300,6 +301,7 @@ export function IndexesList({
   }, [reindexingIndex?.source, reindexingIndex?.name, reindexingIndex?.has_stored_token]);
 
   const handleCancelWizard = () => {
+    setRecoverName(null);
     setShowCreateWizard(false);
   };
 
@@ -308,6 +310,7 @@ export function IndexesList({
   };
 
   const handleCompletedCreate = () => {
+    setRecoverName(null);
     setShowCreateWizard(false);
     onJobCreated?.();
   };
@@ -483,13 +486,20 @@ export function IndexesList({
         {showCreateWizard ? (
           <AnimatedCreateButton
             isExpanded={true}
-            onClick={() => setShowCreateWizard(false)}
+            onClick={() => {
+              setRecoverName(null);
+              setShowCreateWizard(false);
+            }}
             label="Add Document Index"
           />
         ) : (
           <AnimatedCreateButton
             isExpanded={false}
-            onClick={() => setShowCreateWizard(true)}
+            onClick={() => {
+              setRecoverName(null);
+              setActiveSource('git');
+              setShowCreateWizard(true);
+            }}
             label="Add Document Index"
           />
         )}
@@ -579,6 +589,7 @@ export function IndexesList({
             />
           ) : activeSource === 'upload' ? (
             <UploadForm
+              initialName={recoverName ?? undefined}
               onJobCreated={handleCompletedCreate}
               onCancel={handleCancelWizard}
               onAnalysisStart={() => setIsAnalyzing(true)}
@@ -764,7 +775,7 @@ export function IndexesList({
                 // So we can remove the Edit button for non-git indexes.
                 null}
                 {/* Only show Download for completed indexes */}
-                {!hasActiveGitJob && !isFailedOrInterrupted && (
+                {!hasActiveGitJob && !isFailedOrInterrupted && !hasError && (
                   <button
                     className="btn btn-sm btn-secondary"
                     onClick={() => handleDownload(idx.name)}
@@ -772,6 +783,19 @@ export function IndexesList({
                     title="Download FAISS index files as zip"
                   >
                     {downloading === idx.name ? 'Downloading...' : 'Download'}
+                  </button>
+                )}
+                {!hasActiveGitJob && hasError && idx.source_type !== 'git' && (
+                  <button
+                    className="btn btn-sm btn-primary"
+                    onClick={() => {
+                      setRecoverName(idx.name);
+                      setActiveSource('upload');
+                      setShowCreateWizard(true);
+                    }}
+                    title="Rebuild this index by re-uploading its source archive"
+                  >
+                    Recover
                   </button>
                 )}
                 {/* Retry button for failed/interrupted indexes (git or upload) */}

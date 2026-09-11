@@ -19,6 +19,8 @@ interface UploadFormProps {
   onNavigateToSettings?: () => void;
   /** If set, locks vector store type to match existing indexes */
   existingVectorStoreType?: VectorStoreType | null;
+  /** Locks the target index name for recovery/re-upload flows. */
+  initialName?: string;
 }
 
 type StatusType = 'info' | 'success' | 'error' | null;
@@ -42,9 +44,10 @@ export function UploadForm({
   onAnalysisComplete,
   onNavigateToSettings,
   existingVectorStoreType,
+  initialName,
 }: UploadFormProps) {
   const [file, setFile] = useState<File | null>(null);
-  const [indexName, setIndexName] = useState('');
+  const [indexName, setIndexName] = useState(initialName ?? '');
   const [description, setDescription] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -80,7 +83,7 @@ export function UploadForm({
 
   const resetState = useCallback(() => {
     setFile(null);
-    setIndexName('');
+    setIndexName(initialName ?? '');
     setDescription('');
     setIsLoading(false);
     setProgress(0);
@@ -99,7 +102,7 @@ export function UploadForm({
     setVectorStoreType(existingVectorStoreType ?? 'faiss');
     setExclusionsApplied(false);
     setPatternsExpanded(false);
-  }, [existingVectorStoreType]);
+  }, [existingVectorStoreType, initialName]);
 
   // Fetch global OCR default settings to show in helptext
   useEffect(() => {
@@ -121,10 +124,15 @@ export function UploadForm({
       });
   }, []);
 
-  const handleFileSelected = useCallback((selectedFile: File) => {
-    setFile(selectedFile);
-    setIndexName(getIndexNameFromFile(selectedFile.name));
-  }, []);
+  const handleFileSelected = useCallback(
+    (selectedFile: File) => {
+      setFile(selectedFile);
+      if (!initialName) {
+        setIndexName(getIndexNameFromFile(selectedFile.name));
+      }
+    },
+    [initialName],
+  );
 
   const handleAnalyze = async () => {
     if (!file) {
@@ -313,8 +321,9 @@ export function UploadForm({
         {file && (
           <>
             <p className="field-help" style={{ marginBottom: '16px' }}>
-              Index name will be derived from the archive filename. Click "Analyze" to preview the
-              index before creating.
+              {initialName
+                ? `This archive will rebuild the existing index "${initialName}". Click "Analyze" to preview the index before creating.`
+                : 'Index name will be derived from the archive filename. Click "Analyze" to preview the index before creating.'}
             </p>
 
             {renderIndexConfigurationFields()}

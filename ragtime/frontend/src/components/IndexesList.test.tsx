@@ -322,3 +322,92 @@ describe('IndexesList active and terminal git card controls', () => {
     expect(screen.getByText('Search Weight: repo')).toBeTruthy();
   });
 });
+
+describe('IndexesList broken index recovery controls', () => {
+  it('shows Recover instead of Download for a broken upload index', async () => {
+    apiMock.getHealth.mockResolvedValue({
+      index_details: [{ name: 'repo', status: 'error', error: 'Index files missing' }],
+    });
+
+    render(
+      <IndexesList
+        indexes={[makeIndex({ source_type: 'upload', source: 'archive.zip', git_branch: null })]}
+        jobs={[]}
+        loading={false}
+        error={null}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole('button', { name: 'Recover' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Download' })).toBeNull();
+  });
+
+  it('opens the upload wizard prefilled with the broken index name on Recover', async () => {
+    const user = userEvent.setup();
+    apiMock.getHealth.mockResolvedValue({
+      index_details: [{ name: 'repo', status: 'error', error: 'Index files missing' }],
+    });
+
+    render(
+      <IndexesList
+        indexes={[makeIndex({ source_type: 'upload', source: 'archive.zip', git_branch: null })]}
+        jobs={[]}
+        loading={false}
+        error={null}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole('button', { name: 'Recover' }));
+
+    expect(screen.getByRole('button', { name: 'trigger upload job' })).toBeTruthy();
+    expect(uploadFormPropsMock.current?.initialName).toBe('repo');
+  });
+
+  it('opens a fresh create wizard on the Git Repository tab after closing Recover', async () => {
+    const user = userEvent.setup();
+    apiMock.getHealth.mockResolvedValue({
+      index_details: [{ name: 'repo', status: 'error', error: 'Index files missing' }],
+    });
+
+    render(
+      <IndexesList
+        indexes={[makeIndex({ source_type: 'upload', source: 'archive.zip', git_branch: null })]}
+        jobs={[]}
+        loading={false}
+        error={null}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole('button', { name: 'Recover' }));
+    expect(screen.getByRole('button', { name: 'trigger upload job' })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: /Add Document Index close/i }));
+    await user.click(screen.getByRole('button', { name: /Add Document Index open/i }));
+
+    expect(screen.getByRole('button', { name: 'trigger git job' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'trigger upload job' })).toBeNull();
+  });
+
+  it('keeps Pull & Re-index and hides Download for a broken git index', async () => {
+    apiMock.getHealth.mockResolvedValue({
+      index_details: [{ name: 'repo', status: 'error', error: 'Index files missing' }],
+    });
+
+    render(
+      <IndexesList
+        indexes={[makeIndex()]}
+        jobs={[]}
+        loading={false}
+        error={null}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    await screen.findByTestId('index-card-Repo');
+    expect(screen.getByRole('button', { name: 'Pull & Re-index' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Download' })).toBeNull();
+  });
+});
