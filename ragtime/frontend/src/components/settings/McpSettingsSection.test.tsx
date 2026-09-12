@@ -90,6 +90,7 @@ function buildSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     search_use_mmr: false,
     search_mmr_lambda: 0.5,
     context_token_budget: 10000,
+    chat_attachment_token_budget: 0,
     chunking_use_tokens: true,
     ivfflat_lists: 100,
     default_ocr_mode: 'disabled',

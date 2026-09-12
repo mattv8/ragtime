@@ -16,13 +16,14 @@ from fastapi import HTTPException, UploadFile
 from langchain_core.documents import Document
 
 from ragtime.config import settings
+from ragtime.core.app_setting_defaults import DEFAULT_CHAT_ATTACHMENT_TOKEN_BUDGET
+from ragtime.core.app_settings import get_app_settings
 from ragtime.core.file_constants import (
     OCR_EXTENSIONS,
     PARSEABLE_DOCUMENT_EXTENSIONS,
     UNPARSEABLE_BINARY_EXTENSIONS,
 )
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import get_context_limit
 from ragtime.core.model_providers import normalize_provider_name, resolve_provider_api_key, resolve_provider_base_url
 from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
 from ragtime.core.vision_models import OPENAI_DEFAULT_BASE_URL
@@ -36,8 +37,6 @@ CHAT_ATTACHMENT_TTL = timedelta(days=7)
 CHAT_ATTACHMENT_MAX_FILE_SIZE = 20 * 1024 * 1024
 CHAT_ATTACHMENT_CHUNK_SIZE = 800
 CHAT_ATTACHMENT_CHUNK_OVERLAP = 80
-CHAT_ATTACHMENT_MIN_BUDGET_TOKENS = 2048
-CHAT_ATTACHMENT_MAX_BUDGET_TOKENS = 12000
 CHAT_ATTACHMENT_SOURCE = "chat_upload"
 _METADATA_FILE = "metadata.json"
 _CHUNKS_FILE = "chunks.json"
@@ -285,21 +284,16 @@ async def _extract_attachment_chunks(metadata: dict[str, Any], payload_path: Pat
     return chunk_texts
 
 
-async def get_chat_attachment_budget_tokens(model_id: Optional[str]) -> int:
-    effective_model = (model_id or "").strip()
-    context_limit = 8192
-    if effective_model:
-        try:
-            context_limit = max(1, int(await get_context_limit(effective_model)))
-        except Exception:
-            logger.debug(
-                "Falling back to default chat attachment context budget for model %s",
-                effective_model,
-            )
-    return min(
-        CHAT_ATTACHMENT_MAX_BUDGET_TOKENS,
-        max(CHAT_ATTACHMENT_MIN_BUDGET_TOKENS, context_limit // 4),
-    )
+async def get_chat_attachment_budget_tokens(model_id: Optional[str] = None) -> Optional[int]:
+    """Return the shared attachment budget; ``None`` represents unlimited."""
+    del model_id  # Retain caller compatibility without deriving a model-specific budget.
+    app_settings = await get_app_settings()
+    raw_budget = app_settings.get("chat_attachment_token_budget", DEFAULT_CHAT_ATTACHMENT_TOKEN_BUDGET)
+    try:
+        budget = max(0, int(raw_budget))
+    except (TypeError, ValueError):
+        budget = DEFAULT_CHAT_ATTACHMENT_TOKEN_BUDGET
+    return budget or None
 
 
 def _format_chunk_block(filename: str, chunk_text: str, chunk_index: int, total_chunks: int) -> str:
@@ -471,7 +465,7 @@ async def preprocess_chat_attachment_content_parts(
         attachment_id = str(part.get("attachment_id"))
         filename = str(part.get("filename") or "attachment")
 
-        if remaining_budget <= 0:
+        if remaining_budget is not None and remaining_budget <= 0:
             transformed.append(
                 {
                     "type": "text",
@@ -505,9 +499,9 @@ async def preprocess_chat_attachment_content_parts(
             for index, chunk_text in enumerate(chunks, start=1):
                 block = _format_chunk_block(filename, chunk_text, index, total_chunks)
                 block_tokens = count_tokens(block)
-                if selected_blocks and block_tokens > remaining_budget:
+                if remaining_budget is not None and selected_blocks and block_tokens > remaining_budget:
                     break
-                if not selected_blocks and block_tokens > remaining_budget:
+                if remaining_budget is not None and not selected_blocks and block_tokens > remaining_budget:
                     truncated, used_tokens = truncate_to_token_budget([block], remaining_budget)
                     if truncated.strip():
                         selected_blocks.append(truncated)
@@ -517,7 +511,8 @@ async def preprocess_chat_attachment_content_parts(
                     break
 
                 selected_blocks.append(block)
-                remaining_budget = max(0, remaining_budget - block_tokens)
+                if remaining_budget is not None:
+                    remaining_budget = max(0, remaining_budget - block_tokens)
                 stats["used_tokens"] += block_tokens
                 included_chunks += 1
 
@@ -525,7 +520,7 @@ async def preprocess_chat_attachment_content_parts(
             stats["included_chunk_count"] += included_chunks
             stats["omitted_chunk_count"] += omitted_chunks
 
-            if omitted_chunks > 0:
+            if omitted_chunks > 0 and remaining_budget is not None:
                 note = f'[Omitted {omitted_chunks} additional chunk(s) from "{filename}" to stay within the attachment context budget.]'
                 note_tokens = count_tokens(note)
                 if note_tokens <= remaining_budget:

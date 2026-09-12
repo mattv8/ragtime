@@ -2351,6 +2351,7 @@ export function SettingsPanel({
         search_use_mmr: data.search_use_mmr,
         search_mmr_lambda: data.search_mmr_lambda,
         context_token_budget: data.context_token_budget,
+        chat_attachment_token_budget: data.chat_attachment_token_budget,
         chunking_use_tokens: data.chunking_use_tokens,
         ivfflat_lists: data.ivfflat_lists,
         // API Tool Output settings
@@ -3010,6 +3011,7 @@ export function SettingsPanel({
         available_models_cache_enabled: formData.available_models_cache_enabled,
         // Token optimization settings
         context_token_budget: formData.context_token_budget,
+        chat_attachment_token_budget: formData.chat_attachment_token_budget,
         // API output settings
         tool_output_mode: formData.tool_output_mode,
       };
@@ -6737,6 +6739,30 @@ export function SettingsPanel({
                     <p className="field-help">
                       Max encoded size of each image. Larger images are re-compressed with lower
                       JPEG quality.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label htmlFor="chat-attachment-token-budget">Chat Attachment Token Budget</label>
+                    <input
+                      id="chat-attachment-token-budget"
+                      type="number"
+                      min="0"
+                      step="100"
+                      style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                      value={formData.chat_attachment_token_budget ?? settings?.chat_attachment_token_budget ?? 0}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          chat_attachment_token_budget: Math.max(0, parseInt(e.target.value, 10) || 0),
+                        })
+                      }
+                    />
+                    <p className="field-help">
+                      Cap combined extracted text from all file attachments in one message (0 =
+                      unlimited). Model context limits still apply.
                     </p>
                   </div>
                 </div>

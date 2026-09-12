@@ -1046,6 +1046,7 @@ export interface AppSettings {
   search_use_mmr: boolean;
   search_mmr_lambda: number;
   context_token_budget: number;
+  chat_attachment_token_budget: number;
   chunking_use_tokens: boolean;
   ivfflat_lists: number;
   // Embedding dimension tracking (pgvector)
@@ -1207,6 +1208,7 @@ export interface UpdateSettingsRequest {
   search_use_mmr?: boolean;
   search_mmr_lambda?: number;
   context_token_budget?: number;
+  chat_attachment_token_budget?: number;
   chunking_use_tokens?: boolean;
   ivfflat_lists?: number;
   // Performance / Memory settings

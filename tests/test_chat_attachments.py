@@ -13,6 +13,7 @@ from fastapi import HTTPException, UploadFile
 from starlette.datastructures import Headers
 
 from ragtime.indexer import chat_attachments
+from ragtime.indexer.models import AppSettings, UpdateSettingsRequest
 
 
 def _make_upload_file(filename: str, content: bytes, content_type: str) -> UploadFile:
@@ -83,11 +84,7 @@ class ChatAttachmentTests(unittest.IsolatedAsyncioTestCase):
                         "chunk_documents_parallel",
                         new=mock.AsyncMock(return_value=fake_chunks),
                     ),
-                    mock.patch.object(
-                        chat_attachments,
-                        "get_context_limit",
-                        new=mock.AsyncMock(return_value=8192),
-                    ),
+                    mock.patch.object(chat_attachments, "get_app_settings", new=mock.AsyncMock(return_value={})),
                 ):
                     processed, stats = await chat_attachments.preprocess_chat_attachment_content_parts(
                         content,
@@ -109,6 +106,55 @@ class ChatAttachmentTests(unittest.IsolatedAsyncioTestCase):
         assert stats is not None
         self.assertEqual(stats["file_count"], 1)
         self.assertEqual(stats["included_chunk_count"], 2)
+
+    async def test_attachment_budget_default_and_zero_retain_trailing_text_across_files(self) -> None:
+        content = [
+            {"type": "file", "attachment_id": "attachment-1", "attachment_source": "chat_upload", "filename": "first.txt"},
+            {"type": "file", "attachment_id": "attachment-2", "attachment_source": "chat_upload", "filename": "second.txt"},
+        ]
+        chunks = [
+            ["first " + ("content " * 3_000) + "FIRST_TRAILING"],
+            ["second " + ("content " * 3_000) + "SECOND_TRAILING"],
+        ]
+
+        for app_settings in ({}, {"chat_attachment_token_budget": 0}):
+            with (
+                mock.patch.object(chat_attachments, "get_app_settings", new=mock.AsyncMock(return_value=app_settings)),
+                mock.patch.object(chat_attachments, "resolve_chat_attachment", return_value=({}, Path("unused"))),
+                mock.patch.object(chat_attachments, "_extract_attachment_chunks", new=mock.AsyncMock(side_effect=chunks)),
+            ):
+                processed, stats = await chat_attachments.preprocess_chat_attachment_content_parts(content)
+
+            self.assertIn("FIRST_TRAILING", processed[0]["text"])
+            self.assertIn("SECOND_TRAILING", processed[1]["text"])
+            assert stats is not None
+            self.assertGreater(stats["used_tokens"], 2_048)
+
+    async def test_positive_attachment_budget_caps_files_and_exhaustion_does_not_become_unlimited(self) -> None:
+        content = [
+            {"type": "file", "attachment_id": "attachment-1", "attachment_source": "chat_upload", "filename": "first.txt"},
+            {"type": "file", "attachment_id": "attachment-2", "attachment_source": "chat_upload", "filename": "second.txt"},
+        ]
+        chunks = [["first"], ["SECOND_TRAILING"]]
+        budget = chat_attachments.count_tokens(chat_attachments._format_chunk_block("first.txt", "first", 1, 1))
+
+        with (
+            mock.patch.object(chat_attachments, "get_app_settings", new=mock.AsyncMock(return_value={"chat_attachment_token_budget": budget})),
+            mock.patch.object(chat_attachments, "resolve_chat_attachment", return_value=({}, Path("unused"))),
+            mock.patch.object(chat_attachments, "_extract_attachment_chunks", new=mock.AsyncMock(side_effect=chunks)),
+        ):
+            processed, stats = await chat_attachments.preprocess_chat_attachment_content_parts(content)
+
+        self.assertNotIn("SECOND_TRAILING", processed[1]["text"])
+        self.assertIn("budget was exhausted", processed[1]["text"])
+        assert stats is not None
+        self.assertGreater(stats["used_tokens"], 0)
+
+    def test_attachment_budget_settings_reject_negative_values(self) -> None:
+        with self.assertRaises(ValueError):
+            AppSettings(chat_attachment_token_budget=-1)
+        with self.assertRaises(ValueError):
+            UpdateSettingsRequest(chat_attachment_token_budget=-1)
 
     async def test_extract_chat_image_context_uses_structured_ocr_chunks(self) -> None:
         payload = base64.b64encode(b"image-bytes").decode("ascii")

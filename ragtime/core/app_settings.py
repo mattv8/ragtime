@@ -13,6 +13,7 @@ from prisma.enums import McpAuthMethod
 from ragtime.core.app_setting_defaults import (
     DEFAULT_AGGREGATE_SEARCH,
     DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
+    DEFAULT_CHAT_ATTACHMENT_TOKEN_BUDGET,
     DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT,
     DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT,
     DEFAULT_CHUNKING_MAX_BATCH_SIZE,
@@ -416,6 +417,11 @@ class SettingsCache:
                     "contextTokenBudget",
                     DEFAULT_CONTEXT_TOKEN_BUDGET,
                 ),
+                "chat_attachment_token_budget": getattr(
+                    prisma_settings,
+                    "chatAttachmentTokenBudget",
+                    DEFAULT_CHAT_ATTACHMENT_TOKEN_BUDGET,
+                ),
                 "chunking_use_tokens": getattr(
                     prisma_settings,
                     "chunkingUseTokens",
@@ -661,6 +667,7 @@ class SettingsCache:
                 "search_use_mmr": DEFAULT_SEARCH_USE_MMR,
                 "search_mmr_lambda": DEFAULT_SEARCH_MMR_LAMBDA,
                 "context_token_budget": DEFAULT_CONTEXT_TOKEN_BUDGET,
+                "chat_attachment_token_budget": DEFAULT_CHAT_ATTACHMENT_TOKEN_BUDGET,
                 "chunking_use_tokens": DEFAULT_CHUNKING_USE_TOKENS,
                 # pgvector configuration
                 "ivfflat_lists": DEFAULT_IVFFLAT_LISTS,

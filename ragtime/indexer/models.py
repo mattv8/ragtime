@@ -14,6 +14,7 @@ from pydantic import AfterValidator, BaseModel, Field, computed_field, field_ser
 from ragtime.core.app_setting_defaults import (
     DEFAULT_AGGREGATE_SEARCH,
     DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
+    DEFAULT_CHAT_ATTACHMENT_TOKEN_BUDGET,
     DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT,
     DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT,
     DEFAULT_CHUNKING_MAX_BATCH_SIZE,
@@ -908,6 +909,11 @@ class AppSettings(BaseModel):
         le=32000,
         description="Maximum tokens for retrieved context sent to LLM. 0=unlimited. Prevents context overflow for models with smaller context windows.",
     )
+    chat_attachment_token_budget: int = Field(
+        default=DEFAULT_CHAT_ATTACHMENT_TOKEN_BUDGET,
+        ge=0,
+        description="Maximum combined extracted-text tokens from chat file attachments in one message. 0=unlimited; model context limits still apply.",
+    )
     chunking_use_tokens: bool = Field(
         default=DEFAULT_CHUNKING_USE_TOKENS,
         description="Use token-based chunking instead of character-based. More accurate chunk sizes aligned with model tokenization.",
@@ -1589,6 +1595,11 @@ class UpdateSettingsRequest(BaseModel):
         ge=0,
         le=32000,
         description="Max tokens for retrieved context sent to LLM. 0=unlimited.",
+    )
+    chat_attachment_token_budget: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Max combined extracted-text tokens from chat file attachments in one message. 0=unlimited.",
     )
     chunking_use_tokens: Optional[bool] = Field(
         default=None,

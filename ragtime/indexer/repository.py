@@ -31,6 +31,7 @@ from ragtime.chat_runtime.presets import CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.core.app_setting_defaults import (
     DEFAULT_AGGREGATE_SEARCH,
     DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
+    DEFAULT_CHAT_ATTACHMENT_TOKEN_BUDGET,
     DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT,
     DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT,
     DEFAULT_CHUNKING_MAX_BATCH_SIZE,
@@ -1593,6 +1594,11 @@ class IndexerRepository:
                 "contextTokenBudget",
                 DEFAULT_CONTEXT_TOKEN_BUDGET,
             ),
+            chat_attachment_token_budget=getattr(
+                settings,
+                "chatAttachmentTokenBudget",
+                DEFAULT_CHAT_ATTACHMENT_TOKEN_BUDGET,
+            ),
             chunking_use_tokens=getattr(
                 settings,
                 "chunkingUseTokens",
@@ -1852,6 +1858,7 @@ class IndexerRepository:
             "search_use_mmr": "searchUseMmr",
             "search_mmr_lambda": "searchMmrLambda",
             "context_token_budget": "contextTokenBudget",
+            "chat_attachment_token_budget": "chatAttachmentTokenBudget",
             "chunking_use_tokens": "chunkingUseTokens",
             "ivfflat_lists": "ivfflatLists",
             # Performance configuration
