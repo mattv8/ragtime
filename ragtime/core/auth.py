@@ -1129,14 +1129,6 @@ async def _resolve_ldap_profile_user(profile: AuthUserProfile, *, db: Any) -> An
     return legacy_user
 
 
-def _ldap_identity_update_data(profile: AuthUserProfile) -> dict[str, Any]:
-    """Return only identity fields safe to update in non-lazy LDAP login mode."""
-    data = {"username": profile.username}
-    if profile.ldap_identity_key:
-        data["ldapIdentityKey"] = profile.ldap_identity_key
-    return data
-
-
 async def _claim_legacy_ldap_identity_key(*, db: Any, user: Any, profile: AuthUserProfile) -> bool:
     """Atomically attach a key to a legacy row without overwriting a race winner."""
     if not profile.ldap_identity_key or getattr(user, "ldapIdentityKey", None):
@@ -1173,7 +1165,7 @@ async def _upsert_provider_user_profile(
         "sourceExpiresAt": expires_at,
     }
     if provider == AuthProvider.ldap and profile.ldap_identity_key:
-        update_data["ldapIdentityKey"] = profile.ldap_identity_key
+        update_data["ldapIdentityKey"] = profile.ldap_identity_key  # type: ignore[typeddict-unknown-key]
     if mark_login:
         update_data["lastLoginAt"] = now
     if password_hash is not None:
@@ -1214,7 +1206,7 @@ async def _upsert_provider_user_profile(
                     "role": role,
                 }
                 if provider == AuthProvider.ldap and profile.ldap_identity_key:
-                    create_data["ldapIdentityKey"] = profile.ldap_identity_key
+                    create_data["ldapIdentityKey"] = profile.ldap_identity_key  # type: ignore[typeddict-unknown-key]
                 if mark_login:
                     create_data["lastLoginAt"] = now
                 if password_hash is not None:
@@ -1265,13 +1257,13 @@ async def _mark_existing_ldap_login(profile: AuthUserProfile) -> Any | None:
         try:
             if not await _claim_legacy_ldap_identity_key(db=db, user=user, profile=profile):
                 continue
-            return await db.user.update(
-                where={"id": user.id},
-                data={
-                    "lastLoginAt": datetime.now(timezone.utc),
-                    **_ldap_identity_update_data(profile),
-                },
-            )
+            update_data: types.UserUpdateInput = {
+                "username": profile.username,
+                "lastLoginAt": datetime.now(timezone.utc),
+            }
+            if profile.ldap_identity_key:
+                update_data["ldapIdentityKey"] = profile.ldap_identity_key  # type: ignore[typeddict-unknown-key]
+            return await db.user.update(where={"id": user.id}, data=update_data)
         except UniqueViolationError as exc:
             if attempt:
                 raise LdapIdentityResolutionError("LDAP identity changed concurrently") from exc

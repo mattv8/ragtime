@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 
 try:
-    import psycopg2
+    import psycopg2  # type: ignore[import-untyped]
 except ImportError:  # pragma: no cover - depends on the optional app dependency set
     psycopg2 = None
 
@@ -201,18 +201,18 @@ class LdapIdentityMigrationPostgresTests(unittest.TestCase):
             cursor.execute("SELECT count(*) FROM users")
             self.assertEqual(cursor.fetchone()[0], 2)
 
-    def test_remote_duplicate_names_rolls_back(self) -> None:
+    def test_matching_case_duplicate_merges_without_affecting_local_names(self) -> None:
         self._insert_user("old", "Matt", "uid=matt,dc=example", "2026-01-01")
         self._insert_user("new", "matt", "UID=MATT,DC=EXAMPLE", "2026-02-01")
-        with self.assertRaises(psycopg2.Error):
-            self._execute_migration()
-        self._rollback_failed_migration()
+        self._execute_migration()
         with self.connection.cursor() as cursor:
-            cursor.execute("DELETE FROM users")
+            cursor.execute("SELECT id FROM users")
+            self.assertEqual(cursor.fetchall(), [("old",)])
             cursor.execute(
                 "INSERT INTO users (id, username, auth_provider, created_at, updated_at) VALUES ('local-one', 'Case', 'local'::\"AuthProvider\", now(), now()), ('local-two', 'case', 'local'::\"AuthProvider\", now(), now())"
             )
-        self._execute_migration()
+            cursor.execute("SELECT count(*) FROM users WHERE auth_provider = 'local'::\"AuthProvider\"")
+            self.assertEqual(cursor.fetchone()[0], 2)
 
     def test_recovery_codes_are_revoked_without_an_enabled_totp_factor(self) -> None:
         self._insert_user("old", "Matt", "uid=matt,dc=example", "2026-01-01")
@@ -225,10 +225,11 @@ class LdapIdentityMigrationPostgresTests(unittest.TestCase):
             cursor.execute("SELECT count(*) FROM user_mfa_recovery_codes")
             self.assertEqual(cursor.fetchone()[0], 0)
 
-    def test_any_ambiguous_group_rolls_back_all_groups(self) -> None:
+    def test_invalid_ldap_dn_group_rolls_back_all_groups(self) -> None:
         self._insert_user("safe-old", "Safe", "uid=safe,dc=example", "2026-01-01")
-        self._insert_user("loser-one", "Matt", "uid=Matt,dc=example", "2026-01-01")
-        self._insert_user("loser-two", "matt", "UID=matt,DC=example", "2026-02-01")
+        self._insert_user("safe-new", "safe", "UID=SAFE,DC=example", "2026-02-01")
+        self._insert_user("loser-one", "Matt", "uid=one,dc=example", "2026-01-01")
+        self._insert_user("loser-two", "matt", "uid=two,dc=example", "2026-02-01")
         with self.connection.cursor() as cursor:
             for number in range(12):
                 cursor.execute("INSERT INTO auth_group_memberships VALUES (%s, %s, %s)", (f"old-group-{number}", "safe-old", str(number)))
@@ -239,11 +240,13 @@ class LdapIdentityMigrationPostgresTests(unittest.TestCase):
             )
             cursor.execute("INSERT INTO user_mfa_factors VALUES ('last-factor', 'loser-two', 'totp', 'last-secret', true)")
             cursor.execute("INSERT INTO user_mfa_recovery_codes VALUES ('last-recovery', 'loser-two')")
-        self._execute_migration()
+        with self.assertRaises(psycopg2.Error):
+            self._execute_migration()
+        self._rollback_failed_migration()
         with self.connection.cursor() as cursor:
-            cursor.execute("SELECT id FROM users")
-            self.assertEqual(cursor.fetchall(), [("old",)])
-            cursor.execute("SELECT count(*) FROM auth_group_memberships WHERE user_id = 'old'")
-            self.assertEqual(cursor.fetchone()[0], 12)
+            cursor.execute("SELECT id FROM users ORDER BY id")
+            self.assertEqual(cursor.fetchall(), [("loser-one",), ("loser-two",), ("safe-new",), ("safe-old",)])
+            cursor.execute("SELECT count(*) FROM auth_group_memberships")
+            self.assertEqual(cursor.fetchone()[0], 36)
             cursor.execute("SELECT user_id, secret_encrypted FROM user_mfa_factors")
-            self.assertEqual(cursor.fetchall(), [("old", "last-secret")])
+            self.assertEqual(cursor.fetchall(), [("loser-two", "last-secret")])

@@ -1,11 +1,14 @@
 import unittest
+from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 from uuid import UUID
 
 from fastapi import HTTPException
 from ldap3.core.exceptions import LDAPException
 from prisma.enums import AuthProvider
+from prisma.models import User
 
 from ragtime.api import auth as auth_api
 from ragtime.core import auth
@@ -18,11 +21,13 @@ class _FakeUserTable:
         self.create = mock.AsyncMock()
         self.update = mock.AsyncMock()
         self.update_many = mock.AsyncMock(return_value=1)
+        self.find_many: Callable[..., Awaitable[list[object]]] = self._find_many
+        self.find_unique: Callable[..., Awaitable[object | None]] = self._find_unique
 
-    async def find_many(self, *, where: dict) -> list[object]:
+    async def _find_many(self, *, where: dict) -> list[object]:
         return self.username_matches
 
-    async def find_unique(self, *, where: dict) -> object | None:
+    async def _find_unique(self, *, where: dict) -> object | None:
         if "ldapIdentityKey" in where:
             return self.identity_match
         return None
@@ -38,7 +43,7 @@ class LdapIdentityTests(unittest.IsolatedAsyncioTestCase):
             "ldap_identity_key": "entryuuid:6fcba6a6-5c5c-103c-8c0c-dd0077222c00",
         }
         values.update(overrides)
-        return auth.AuthUserProfile(**values)
+        return auth.AuthUserProfile.model_validate(values)
 
     def test_extracts_canonical_entryuuid_and_ad_objectguid_variants(self) -> None:
         entry_uuid = SimpleNamespace(
@@ -123,9 +128,12 @@ class LdapIdentityTests(unittest.IsolatedAsyncioTestCase):
             user = await auth._mark_existing_ldap_login(self._profile())
 
         self.assertIs(user, legacy)
-        self.assertEqual(table.update.await_args.kwargs["data"]["username"], "matt")
+        update_call = table.update.await_args
+        assert update_call is not None
+        update_data = update_call.kwargs["data"]
+        self.assertEqual(update_data["username"], "matt")
         self.assertEqual(
-            table.update.await_args.kwargs["data"]["ldapIdentityKey"],
+            update_data["ldapIdentityKey"],
             "entryuuid:6fcba6a6-5c5c-103c-8c0c-dd0077222c00",
         )
 
@@ -163,7 +171,7 @@ class LdapIdentityTests(unittest.IsolatedAsyncioTestCase):
                 self.attributes: list[list[str]] = []
 
             def search(self, **kwargs: object) -> bool:
-                attributes = list(kwargs["attributes"])
+                attributes = cast(list[str], kwargs["attributes"])
                 self.attributes.append(attributes)
                 if "+" in attributes:
                     raise LDAPException("invalid attribute type")
@@ -172,7 +180,7 @@ class LdapIdentityTests(unittest.IsolatedAsyncioTestCase):
 
         conn = StrictConnection()
         found = auth._search_first_matching_entry(
-            conn=conn,
+            conn=cast(auth.Connection, conn),
             search_base="dc=example,dc=com",
             search_filters=["(uid=matt)"],
             attributes=auth._get_user_entry_search_attributes(),
@@ -193,7 +201,7 @@ class LdapIdentityTests(unittest.IsolatedAsyncioTestCase):
                 self.attributes: list[list[str]] = []
 
             def search(self, **kwargs: object) -> bool:
-                attributes = list(kwargs["attributes"])
+                attributes = cast(list[str], kwargs["attributes"])
                 self.attributes.append(attributes)
                 if "+" in attributes:
                     raise LDAPException("undefined attribute type")
@@ -259,7 +267,9 @@ class LdapIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolution_queries, 1)
         self.assertEqual(table.update_many.await_count, 1)
         self.assertEqual(table.update.await_count, 1)
-        update_data = table.update.await_args.kwargs["data"]
+        update_call = table.update.await_args
+        assert update_call is not None
+        update_data = update_call.kwargs["data"]
         self.assertEqual(update_data["ldapIdentityKey"], profile.ldap_identity_key)
         self.assertEqual(update_data["displayName"], "Matthew")
         self.assertEqual(update_data["email"], "matt@example.com")
@@ -273,7 +283,7 @@ class LdapIdentityTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException) as raised:
                 await auth_api.import_ldap_user(
                     auth_api.LdapUserSearchRequest(username="matt"),
-                    _user=SimpleNamespace(),
+                    _user=cast(User, SimpleNamespace()),
                 )
 
         self.assertEqual(raised.exception.status_code, 409)
