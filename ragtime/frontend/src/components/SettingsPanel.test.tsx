@@ -517,6 +517,28 @@ async function renderAuthProvider(provider: 'github_copilot' | 'openai_codex' | 
 }
 
 describe('SettingsPanel', () => {
+  it('renders and updates the chat attachment token budget slider', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(<SettingsPanel />);
+
+    const budget = (await screen.findByLabelText(
+      'Chat Attachment Token Budget',
+    )) as HTMLInputElement;
+
+    expect(budget.type).toBe('range');
+    expect(budget.min).toBe('0');
+    expect(budget.max).toBe('32000');
+    expect(budget.step).toBe('500');
+    const formGroup = budget.closest('.form-group');
+    expect(formGroup?.textContent).toContain('Unlimited');
+
+    fireEvent.change(budget, { target: { value: '4000' } });
+
+    expect(budget.value).toBe('4000');
+    expect(formGroup?.textContent).toContain('4.0K');
+  });
+
   it('renders the authentication provider selector as a form field, not an action row', async () => {
     const { SettingsPanel } = await import('./SettingsPanel');
 

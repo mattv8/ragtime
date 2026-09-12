@@ -6745,21 +6745,43 @@ export function SettingsPanel({
 
                 <div className="form-row">
                   <div className="form-group" style={{ flex: 1 }}>
-                    <label htmlFor="chat-attachment-token-budget">Chat Attachment Token Budget</label>
-                    <input
-                      id="chat-attachment-token-budget"
-                      type="number"
-                      min="0"
-                      step="100"
-                      style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
-                      value={formData.chat_attachment_token_budget ?? settings?.chat_attachment_token_budget ?? 0}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          chat_attachment_token_budget: Math.max(0, parseInt(e.target.value, 10) || 0),
-                        })
-                      }
-                    />
+                    <label htmlFor="chat-attachment-token-budget">
+                      Chat Attachment Token Budget
+                    </label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        id="chat-attachment-token-budget"
+                        type="range"
+                        min="0"
+                        max="32000"
+                        step="500"
+                        style={{ flex: 1 }}
+                        value={
+                          formData.chat_attachment_token_budget ??
+                          settings?.chat_attachment_token_budget ??
+                          0
+                        }
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            chat_attachment_token_budget: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span
+                        style={{
+                          minWidth: '60px',
+                          textAlign: 'right',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {(formData.chat_attachment_token_budget ??
+                          settings?.chat_attachment_token_budget ??
+                          0) === 0
+                          ? 'Unlimited'
+                          : `${((formData.chat_attachment_token_budget ?? settings?.chat_attachment_token_budget ?? 0) / 1000).toFixed(1)}K`}
+                      </span>
+                    </div>
                     <p className="field-help">
                       Cap combined extracted text from all file attachments in one message (0 =
                       unlimited). Model context limits still apply.
