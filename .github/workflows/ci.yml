@@ -2,409 +2,106 @@ name: CI
 
 on:
   push:
-    branches-ignore:
-      - main
-      - beta
+    branches-ignore: [main, beta]
   pull_request:
-    branches:
-      - main
-      - beta
+    branches: [main, beta]
   workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  compose-manifests:
-    name: Docker Compose Manifests
+  deduplicate:
+    name: Determine CI coverage
     runs-on: self-hosted
-
+    outputs:
+      run_quality: ${{ steps.coverage.outputs.run_quality }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Check README with source files
-        uses: ./.github/actions/sync-readme
-        with:
-          fail-on-diff: 'true'
-
-      - name: Validate docker compose manifests
-        run: |
-          cp -n .env.example .env
-          docker compose -f docker-compose.yml config >/dev/null
-          docker compose -f docker/docker-compose.dev.yml config >/dev/null
-
-      - name: Summarize docker compose manifests
-        if: always()
-        run: |
-          cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
-          ### Docker Compose Manifests
-
-          Validates the root production compose file and the development compose file.
-
-          Local equivalent:
-
-          ```bash
-          bash tests/check_readme_sync.sh --check
-          cp -n .env.example .env
-          docker compose -f docker-compose.yml config >/dev/null
-          docker compose -f docker/docker-compose.dev.yml config >/dev/null
-          ```
-
-          If this job failed, inspect the `Validate docker compose manifests` step for the compose parser or variable error.
-          MD
-
-  backend-checks:
-    name: ${{ matrix.name }}
-    runs-on: self-hosted
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Compile Python
-            target: python-compile-check
-            cache-scope: compile
-            local-command: python -m compileall ragtime/userspace/runtime_service.py runtime/manager runtime/main.py
-            explanation: Catches syntax errors and broken Python bytecode compilation in runtime-critical modules.
-          - name: Ruff Critical Lint
-            target: python-ruff-check
-            cache-scope: ruff
-            local-command: python -m ruff check --select E9,F821,F822,F823 ragtime runtime tests
-            explanation: Catches syntax errors, undefined names, and other high-signal Python failures.
-          - name: Ruff Format and Imports
-            target: python-ruff-style-check
-            cache-scope: ruff-style
-            local-command: python -m ruff format --check docker/scripts ragtime runtime tests && python -m ruff check --select I docker/scripts ragtime runtime tests
-            explanation: Ensures Python files are formatted by Ruff and imports match Ruff's configured section ordering.
-          - name: Duplicate Code
-            target: python-duplicate-check
-            cache-scope: duplicate
-            local-command: npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests
-            explanation: Fails when duplicate-code drift exceeds the configured jscpd threshold.
-          - name: Mypy Type Check
-            target: python-mypy-check
-            cache-scope: mypy
-            local-command: python -m mypy --config-file pyproject.toml docker/scripts ragtime runtime tests
-            explanation: Runs mypy using the repository configuration in pyproject.toml, scoped to changed Python files on pushes and pull requests when the selector can resolve them, and full-repository on manual runs or selector fallback.
-          - name: Pylance/Pyright Problem Check
-            target: python-pyright-check
-            cache-scope: pyright
-            local-command: python -m pyright --pythonpath .venv/bin/python
-            explanation: Runs Pyright, the same static analysis engine used by Pylance, across the configured Python workspace.
-          - name: Pytest Suite
-            target: python-pytest
-            cache-scope: pytest
-            local-command: python -m pytest tests
-            explanation: Runs the backend pytest suite inside the CI Docker environment.
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Determine mypy scope
-        if: matrix.target == 'python-mypy-check'
-        id: mypy_scope
-        shell: bash
+      - id: coverage
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
-          case "$GITHUB_EVENT_NAME" in
-            workflow_dispatch)
-              selector_output=$'mypy_scope=all\neslint_scope=all'
-              ;;
-            push)
-              selector_output="$(python3 docker/scripts/changed_lint_files.py --base-ref "${{ github.event.before }}" --head-ref "${{ github.sha }}")"
-              ;;
-            pull_request)
-              selector_output="$(python3 docker/scripts/changed_lint_files.py --base-ref "${{ github.event.pull_request.base.sha }}" --head-ref "${{ github.event.pull_request.head.sha }}")"
-              ;;
-            *)
-              echo "Unsupported event for changed-file scope: $GITHUB_EVENT_NAME" >&2
-              exit 1
-              ;;
-          esac
-
-          mypy_scope=""
-          while IFS= read -r line; do
-            case "$line" in
-              mypy_scope=*)
-                mypy_scope="${line#mypy_scope=}"
-                ;;
-            esac
-          done <<< "$selector_output"
-
-          if [ -z "$mypy_scope" ]; then
-            echo "changed_lint_files.py did not emit mypy_scope" >&2
-            exit 1
+          echo 'run_quality=true' >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" != push ]; then
+            exit 0
           fi
 
-          printf 'value=%s\n' "$mypy_scope" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Extract cache key
-        id: cache_key
-        run: |
-          REF_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          SAFE_REF=$(echo "$REF_NAME" | sed 's/[\/:@]/-/g')
-          echo "ref=$SAFE_REF" >> "$GITHUB_OUTPUT"
-          echo "short-sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-
-      - name: Run ${{ matrix.name }}
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./docker/Dockerfile
-          target: ${{ matrix.target }}
-          push: false
-          build-args: ${{ matrix.target == 'python-mypy-check' && format('MYPY_SCOPE={0}', steps.mypy_scope.outputs.value) || '' }}
-          cache-from: |
-            type=gha,scope=backend-${{ matrix.cache-scope }}-${{ steps.cache_key.outputs.ref }}
-            type=gha,scope=backend-${{ matrix.cache-scope }}-main
-            type=gha
-          cache-to: |
-            type=gha,mode=max,scope=backend-${{ matrix.cache-scope }}-${{ steps.cache_key.outputs.ref }}
-
-      - name: Explain ${{ matrix.name }}
-        if: always()
-        run: |
-          cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
-          ### ${{ matrix.name }}
-
-          ${{ matrix.explanation }}
-
-          Local equivalent:
-
-          ```bash
-          ${{ matrix.local-command }}
-          ```
-
-          If this job failed, open the `Run ${{ matrix.name }}` step above; the tool output immediately before the Docker build error contains the actionable failure.
-          MD
-
-  inline-imports:
-    name: Inline Import Organization
-    runs-on: self-hosted
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run inline import organizer
-        run: |
-          set -euo pipefail
-          PYTHON_BIN="$(command -v python3 || command -v python)"
-
-          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py docker --check
-          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py ragtime --check
-          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py runtime --check
-          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py tests --check
-
-      - name: Summarize inline import organization
-        if: always()
-        run: |
-          cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
-          ### Inline Import Organization
-
-          Runs `docker/scripts/fix_inline_imports.py --check` against `docker`, `ragtime`, `runtime`, and `tests`, then fails if any safe-to-hoist inline imports remain.
-
-          Local equivalent:
-
-          ```bash
-          python3 docker/scripts/fix_inline_imports.py docker --check
-          python3 docker/scripts/fix_inline_imports.py ragtime --check
-          python3 docker/scripts/fix_inline_imports.py runtime --check
-          python3 docker/scripts/fix_inline_imports.py tests --check
-          ```
-
-          To resolve failures, run:
-
-          ```bash
-          python3 docker/scripts/fix_inline_imports.py docker --apply
-          python3 docker/scripts/fix_inline_imports.py ragtime --apply
-          python3 docker/scripts/fix_inline_imports.py runtime --apply
-          python3 docker/scripts/fix_inline_imports.py tests --apply
-          ```
-          MD
-
-  backend:
-    name: Backend Quality and Tests
-    runs-on: self-hosted
-    needs:
-      - compose-manifests
-      - backend-checks
-      - inline-imports
-    if: always()
-
-    steps:
-      - name: Summarize backend quality gate
-        run: |
-          compose_manifests="${{ needs.compose-manifests.result }}"
-          backend_checks="${{ needs.backend-checks.result }}"
-          inline_imports="${{ needs.inline-imports.result }}"
-          failed=0
-
-          if [ "$compose_manifests" != "success" ]; then
-            failed=1
-          fi
-          if [ "$backend_checks" != "success" ]; then
-            failed=1
-          fi
-          if [ "$inline_imports" != "success" ]; then
-            failed=1
-          fi
-
-          {
-            echo "### Backend Quality and Tests"
-            echo
-            echo "| Check group | Result | Where to look if it failed |"
-            echo "| --- | --- | --- |"
-            echo "| Docker Compose manifests | $compose_manifests | Open the Docker Compose Manifests job for parser or variable errors. |"
-            echo "| Compile, Ruff, duplicate-code, mypy, Pylance/Pyright, and pytest matrix | $backend_checks | Open the failing backend matrix job; each job has a focused name and local command. |"
-            echo "| Inline import organization | $inline_imports | Open the Inline Import Organization job; it prints the exact local commands to run. |"
-            echo
-            if [ "$failed" -eq 0 ]; then
-              echo "All backend quality checks passed."
+          # An API failure deliberately leaves the default enabled: never skip a gate
+          # merely because duplicate-check detection is unavailable.
+          for base in main beta; do
+            if response="$(curl --fail --silent --show-error \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              --get \
+              --data-urlencode 'state=open' \
+              --data-urlencode "base=${base}" \
+              --data-urlencode "head=${GITHUB_REPOSITORY_OWNER}:${GITHUB_REF_NAME}" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/pulls")"; then
+              if printf '%s' "$response" | jq -e --arg base "$base" --arg sha "$GITHUB_SHA" \
+                'type == "array" and any(.[]; .base.ref == $base and .head.sha == $sha)' >/dev/null; then
+                echo 'run_quality=false' >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
             else
-              echo "One or more backend checks failed. The failed job name identifies the category before you inspect logs."
+              echo "Unable to check open ${base} pull requests; running quality." >&2
+              exit 0
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          done
 
-          if [ "$failed" -ne 0 ]; then
-            exit 1
-          fi
+  quality:
+    name: Quality
+    needs: deduplicate
+    if: needs.deduplicate.outputs.run_quality == 'true'
+    uses: ./.github/workflows/quality.yml
+    secrets: inherit
 
-  frontend:
-    name: Frontend Build
+  backend-status:
+    name: Backend Quality and Tests
+    needs: [deduplicate, quality]
+    if: >-
+      always() &&
+      (github.event_name != 'push' || needs.deduplicate.result != 'success' || needs.deduplicate.outputs.run_quality != 'false')
     runs-on: self-hosted
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Determine ESLint scope
-        id: eslint_scope
+      - name: Verify backend quality result
         shell: bash
         run: |
-          set -euo pipefail
+          test "${{ needs.quality.result }}" = success
+          test "${{ needs.quality.outputs.backend_result }}" = success
 
-          case "$GITHUB_EVENT_NAME" in
-            workflow_dispatch)
-              selector_output=$'mypy_scope=all\neslint_scope=all'
-              ;;
-            push)
-              selector_output="$(python3 docker/scripts/changed_lint_files.py --base-ref "${{ github.event.before }}" --head-ref "${{ github.sha }}")"
-              ;;
-            pull_request)
-              selector_output="$(python3 docker/scripts/changed_lint_files.py --base-ref "${{ github.event.pull_request.base.sha }}" --head-ref "${{ github.event.pull_request.head.sha }}")"
-              ;;
-            *)
-              echo "Unsupported event for changed-file scope: $GITHUB_EVENT_NAME" >&2
-              exit 1
-              ;;
-          esac
-
-          eslint_scope=""
-          while IFS= read -r line; do
-            case "$line" in
-              eslint_scope=*)
-                eslint_scope="${line#eslint_scope=}"
-                ;;
-            esac
-          done <<< "$selector_output"
-
-          if [ -z "$eslint_scope" ]; then
-            echo "changed_lint_files.py did not emit eslint_scope" >&2
-            exit 1
-          fi
-
-          printf 'value=%s\n' "$eslint_scope" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Extract cache key
-        id: cache_key
+  frontend-status:
+    name: Frontend Build
+    needs: [deduplicate, quality]
+    if: >-
+      always() &&
+      (github.event_name != 'push' || needs.deduplicate.result != 'success' || needs.deduplicate.outputs.run_quality != 'false')
+    runs-on: self-hosted
+    steps:
+      - name: Verify frontend quality result
+        shell: bash
         run: |
-          REF_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          SAFE_REF=$(echo "$REF_NAME" | sed 's/[\/:@]/-/g')
-          echo "ref=$SAFE_REF" >> "$GITHUB_OUTPUT"
-          echo "short-sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          test "${{ needs.quality.result }}" = success
+          test "${{ needs.quality.outputs.frontend_result }}" = success
 
-      - name: Frontend format check
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./docker/Dockerfile
-          target: frontend-format-check
-          push: false
-          cache-from: |
-            type=gha,scope=frontend-${{ steps.cache_key.outputs.ref }}
-            type=gha,scope=frontend-main
-            type=gha
-          cache-to: |
-            type=gha,mode=max,scope=frontend-${{ steps.cache_key.outputs.ref }}
-
-      - name: Frontend ESLint
-        id: frontend_eslint
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./docker/Dockerfile
-          target: frontend-lint
-          push: false
-          build-args: |
-            ESLINT_SCOPE=${{ steps.eslint_scope.outputs.value }}
-          cache-from: |
-            type=gha,scope=frontend-${{ steps.cache_key.outputs.ref }}
-            type=gha,scope=frontend-main
-            type=gha
-
-      - name: Build frontend
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./docker/Dockerfile
-          target: frontend-builder
-          push: false
-          build-args: |
-            ENVIRONMENT=${{ github.head_ref || github.ref_name }}
-            APP_VERSION=${{ steps.cache_key.outputs.short-sha }}
-          cache-from: |
-            type=gha,scope=frontend-${{ steps.cache_key.outputs.ref }}
-            type=gha,scope=frontend-main
-            type=gha
-          cache-to: |
-            type=gha,mode=max,scope=frontend-${{ steps.cache_key.outputs.ref }}
-
-      - name: Summarize frontend build
-        if: always()
-        run: |
-          cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
-          ### Frontend Build and Quality
-
-          - Builds the Vite frontend through the Docker `frontend-builder` target.
-          - Gates JS/TS formatting via the `frontend-format-check` target (Prettier). This is a blocking check.
-          - Gates ESLint via the `frontend-lint` target. This is a blocking check, scoped to changed frontend files for pushes and pull requests when the selector can scope them (result: ${{ steps.frontend_eslint.outcome }}).
-
-          Local equivalents:
-
-          ```bash
-          bash tests/check_frontend_format.sh           # format gate (+ reported lint)
-          bash tests/check_frontend_format.sh --write    # auto-fix formatting and lint
-          docker build --target frontend-format-check -f docker/Dockerfile .
-          docker build --target frontend-lint -f docker/Dockerfile .
-          docker build --target frontend-builder -f docker/Dockerfile .
-          ```
-
-          If the format check failed, run `bash tests/check_frontend_format.sh --write` and commit the result.
-          MD
+  container:
+    name: Container builds
+    needs: quality
+    if: >-
+      needs.quality.result == 'success' &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.quality.outputs.container_changed == 'true'
+    uses: ./.github/workflows/build-container.yml
+    with:
+      quality_checked: true
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+      id-token: write

@@ -16,6 +16,9 @@ while IFS= read -r line; do
     eslint_scope=*)
       eslint_scope="${line#eslint_scope=}"
       ;;
+    ruff_scope=*|container_changed=*)
+      # These selector outputs are consumed by CI/container workflows.
+      ;;
     '')
       ;;
     *)

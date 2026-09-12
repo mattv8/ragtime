@@ -57,6 +57,11 @@ class ChangedLintFilesCliTests(unittest.TestCase):
                 _decode_scope(scopes["eslint_scope"]),
                 ["ragtime/frontend/a-view.ts", "ragtime/frontend/view.tsx"],
             )
+            self.assertEqual(
+                _decode_scope(scopes["ruff_scope"]),
+                ["docker/scripts/a_script.py", "runtime/data.pyi", "tests/z_test.py"],
+            )
+            self.assertEqual(scopes["container_changed"], "true")
 
     def test_all_zero_base_uses_empty_tree(self) -> None:
         with _GitRepo() as repo:
@@ -70,6 +75,8 @@ class ChangedLintFilesCliTests(unittest.TestCase):
             scopes = _parse_output(result.stdout)
             self.assertEqual(_decode_scope(scopes["mypy_scope"]), ["ragtime/new.py"])
             self.assertEqual(_decode_scope(scopes["eslint_scope"]), ["ragtime/frontend/new.ts"])
+            self.assertEqual(_decode_scope(scopes["ruff_scope"]), ["ragtime/new.py"])
+            self.assertEqual(scopes["container_changed"], "true")
 
             raw_paths = repo.git("diff", "--name-only", f"{_EMPTY_TREE}..{head_ref}").stdout.splitlines()
             self.assertIn("ragtime/new.py", raw_paths)
@@ -111,16 +118,20 @@ class ChangedLintFilesCliTests(unittest.TestCase):
                 _decode_scope(scopes["eslint_scope"]),
                 ["ragtime/frontend/untracked.tsx"],
             )
+            self.assertEqual(
+                _decode_scope(scopes["ruff_scope"]),
+                ["docker/scripts/staged.py", "runtime/committed.pyi", "tests/unstaged.py"],
+            )
 
-    def test_local_mode_without_upstream_fails_clearly(self) -> None:
+    def test_local_mode_without_upstream_falls_back_to_all_scopes(self) -> None:
         with _GitRepo() as repo:
             repo.write_file("ragtime/local.py", "print('local')\n")
             repo.commit("initial")
 
             result = repo.run_script("--local")
 
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("upstream", result.stderr.lower())
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertEqual(_parse_output(result.stdout), _all_scopes())
 
     def test_missing_base_or_head_ref_falls_back_to_all_scopes(self) -> None:
         with _GitRepo() as repo:
@@ -131,14 +142,14 @@ class ChangedLintFilesCliTests(unittest.TestCase):
             self.assertEqual(missing_base.returncode, 0, msg=missing_base.stderr)
             self.assertEqual(
                 _parse_output(missing_base.stdout),
-                {"mypy_scope": "all", "eslint_scope": "all"},
+                _all_scopes(),
             )
 
             missing_head = repo.run_script("--base-ref", "HEAD", "--head-ref", "missing-head")
             self.assertEqual(missing_head.returncode, 0, msg=missing_head.stderr)
             self.assertEqual(
                 _parse_output(missing_head.stdout),
-                {"mypy_scope": "all", "eslint_scope": "all"},
+                _all_scopes(),
             )
 
     def test_cli_requires_exactly_one_mode(self) -> None:
@@ -165,7 +176,7 @@ class ChangedLintFilesCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             self.assertEqual(
                 _parse_output(result.stdout),
-                {"mypy_scope": "none", "eslint_scope": "none"},
+                _scopes_with_container_changed(),
             )
 
     def test_range_with_only_ignored_changes_emits_none_scopes(self) -> None:
@@ -181,8 +192,136 @@ class ChangedLintFilesCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             self.assertEqual(
                 _parse_output(result.stdout),
-                {"mypy_scope": "none", "eslint_scope": "none"},
+                _scopes_with_container_changed(),
             )
+
+    def test_non_container_docs_only_change_is_a_complete_no_op(self) -> None:
+        with _GitRepo() as repo:
+            repo.write_file("notes.txt", "base\n")
+            base_ref = repo.commit("base")
+            repo.write_file("notes.txt", "changed\n")
+            head_ref = repo.commit("docs only")
+
+            result = repo.run_script("--base-ref", base_ref, "--head-ref", head_ref)
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertEqual(_parse_output(result.stdout), _none_scopes())
+
+    def test_all_mode_forces_every_scope_and_container(self) -> None:
+        with _GitRepo() as repo:
+            repo.write_file("README.md", "initial\n")
+            repo.commit("initial")
+
+            result = repo.run_script("--all")
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertEqual(_parse_output(result.stdout), _all_scopes())
+
+    def test_merge_base_excludes_base_branch_only_changes(self) -> None:
+        with _GitRepo() as repo:
+            repo.write_file("README.md", "initial\n")
+            repo.commit("initial")
+            base_branch = repo.rev_parse("HEAD")
+
+            repo.write_file("ragtime/base_only.py", "value = 'base'\n")
+            repo.commit("base-only")
+            base_head = repo.rev_parse("HEAD")
+            repo.git("checkout", "-b", "feature", base_branch)
+            repo.write_file("tests/feature.py", "value = 'feature'\n")
+            feature_head = repo.commit("feature-only")
+
+            result = repo.run_script("--merge-base", "--base-ref", base_head, "--head-ref", feature_head)
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            scopes = _parse_output(result.stdout)
+            self.assertEqual(_decode_scope(scopes["mypy_scope"]), ["tests/feature.py"])
+            self.assertEqual(_decode_scope(scopes["ruff_scope"]), ["tests/feature.py"])
+
+    def test_config_rename_or_removal_forces_relevant_full_scopes(self) -> None:
+        with _GitRepo() as repo:
+            repo.write_file("pyproject.toml", "[tool.ruff]\n")
+            repo.write_file("ragtime/frontend/package.json", "{}\n")
+            base_ref = repo.commit("base")
+            repo.git("mv", "pyproject.toml", "old-pyproject.toml")
+            repo.delete_file("ragtime/frontend/package.json")
+            head_ref = repo.commit("remove configs")
+
+            result = repo.run_script("--base-ref", base_ref, "--head-ref", head_ref)
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            scopes = _parse_output(result.stdout)
+            self.assertEqual(scopes["mypy_scope"], "all")
+            self.assertEqual(scopes["ruff_scope"], "all")
+            self.assertEqual(scopes["eslint_scope"], "all")
+
+    def test_schema_and_typing_changes_force_python_scope_and_container_rebuild(self) -> None:
+        with _GitRepo() as repo:
+            repo.write_file("README.md", "base\n")
+            base_ref = repo.commit("base")
+            repo.write_file("prisma/schema.prisma", "model User { id String @id }\n")
+            repo.write_file("typings/generated.pyi", "value: str\n")
+            head_ref = repo.commit("schema and typing changes")
+
+            result = repo.run_script("--base-ref", base_ref, "--head-ref", head_ref)
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            scopes = _parse_output(result.stdout)
+            self.assertEqual(scopes["mypy_scope"], "all")
+            self.assertEqual(scopes["ruff_scope"], "all")
+            self.assertEqual(scopes["eslint_scope"], "none")
+            self.assertEqual(scopes["container_changed"], "true")
+
+    def test_quality_helper_change_forces_all_lint_scopes(self) -> None:
+        with _GitRepo() as repo:
+            repo.write_file("README.md", "base\n")
+            base_ref = repo.commit("base")
+            repo.write_file("docker/scripts/run_scoped_ruff.py", "print('changed')\n")
+            head_ref = repo.commit("ruff runner change")
+
+            result = repo.run_script("--base-ref", base_ref, "--head-ref", head_ref)
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertEqual(_parse_output(result.stdout), _all_scopes())
+
+    def test_nested_ruff_config_removal_forces_python_scope(self) -> None:
+        with _GitRepo() as repo:
+            repo.write_file("ragtime/submodule/.ruff.toml", "line-length = 100\n")
+            base_ref = repo.commit("base")
+            repo.delete_file("ragtime/submodule/.ruff.toml")
+            head_ref = repo.commit("remove nested ruff config")
+
+            result = repo.run_script("--base-ref", base_ref, "--head-ref", head_ref)
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            scopes = _parse_output(result.stdout)
+            self.assertEqual(scopes["mypy_scope"], "all")
+            self.assertEqual(scopes["ruff_scope"], "all")
+
+    def test_safe_filename_is_encoded(self) -> None:
+        with _GitRepo() as repo:
+            repo.write_file("README.md", "initial\n")
+            base_ref = repo.commit("base")
+            repo.write_file("tests/name with spaces.py", "value = 1\n")
+            head_ref = repo.commit("safe names")
+
+            result = repo.run_script("--base-ref", base_ref, "--head-ref", head_ref)
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            scopes = _parse_output(result.stdout)
+            self.assertEqual(_decode_scope(scopes["ruff_scope"]), ["tests/name with spaces.py"])
+            self.assertEqual(scopes["container_changed"], "true")
+
+    def test_quality_workflow_change_forces_all_lint_scopes(self) -> None:
+        with _GitRepo() as repo:
+            repo.write_file("README.md", "base\n")
+            base_ref = repo.commit("base")
+            repo.write_file(".github/workflows/quality.yml", "name: quality\n")
+            head_ref = repo.commit("quality workflow change")
+
+            result = repo.run_script("--base-ref", base_ref, "--head-ref", head_ref)
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertEqual(_parse_output(result.stdout), _all_scopes())
 
 
 class _GitRepo:
@@ -273,10 +412,32 @@ class _ClonedGitRepo(_GitRepo):
 
 def _parse_output(stdout: str) -> dict[str, str]:
     lines = [line for line in stdout.splitlines() if line]
-    if len(lines) != 2:
-        raise AssertionError(f"Expected two output lines, got {lines!r}")
+    if len(lines) != 4:
+        raise AssertionError(f"Expected four output lines, got {lines!r}")
     result: dict[str, str] = {}
     for line in lines:
         key, value = line.split("=", 1)
         result[key] = value
     return result
+
+
+def _all_scopes() -> dict[str, str]:
+    return {
+        "mypy_scope": "all",
+        "eslint_scope": "all",
+        "ruff_scope": "all",
+        "container_changed": "true",
+    }
+
+
+def _none_scopes() -> dict[str, str]:
+    return {
+        "mypy_scope": "none",
+        "eslint_scope": "none",
+        "ruff_scope": "none",
+        "container_changed": "false",
+    }
+
+
+def _scopes_with_container_changed() -> dict[str, str]:
+    return {**_none_scopes(), "container_changed": "true"}

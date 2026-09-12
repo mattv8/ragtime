@@ -10,11 +10,6 @@
 # =============================================================================
 FROM node:24-alpine3.22 AS frontend-base
 
-ARG ENVIRONMENT=main
-ARG APP_VERSION=dev
-ENV VITE_RAGTIME_ENVIRONMENT=${ENVIRONMENT}
-ENV VITE_RAGTIME_VERSION=${APP_VERSION}
-
 WORKDIR /frontend
 
 RUN npm install -g npm@latest
@@ -33,6 +28,11 @@ COPY ragtime/frontend/ ./
 # Stage 1a: Build frontend (produces /frontend/dist consumed by production)
 # -----------------------------------------------------------------------------
 FROM frontend-base AS frontend-builder
+
+ARG ENVIRONMENT=main
+ARG APP_VERSION=dev
+ENV VITE_RAGTIME_ENVIRONMENT=${ENVIRONMENT}
+ENV VITE_RAGTIME_VERSION=${APP_VERSION}
 
 RUN npm run build
 
@@ -146,6 +146,7 @@ COPY typings/ /ragtime/typings/
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     --mount=type=cache,id=ragtime-prisma-cache,target=/root/.cache/prisma-python,sharing=locked \
     python -m prisma generate
+COPY .github/workflows/ /ragtime/.github/workflows/
 COPY ragtime/ /ragtime/ragtime/
 COPY runtime/ /ragtime/runtime/
 COPY tests/ /ragtime/tests/
@@ -163,6 +164,36 @@ FROM python-ci-base AS python-ruff-style-check
 
 RUN python -m ruff format --check docker/scripts ragtime runtime tests && \
     python -m ruff check --select I docker/scripts ragtime runtime tests && \
+    python docker/scripts/fix_inline_imports.py docker --check && \
+    python docker/scripts/fix_inline_imports.py ragtime --check && \
+    python docker/scripts/fix_inline_imports.py runtime --check && \
+    python docker/scripts/fix_inline_imports.py tests --check
+
+# -----------------------------------------------------------------------------
+# Consolidated fast Python quality gate. It intentionally avoids application
+# dependencies and Prisma generation; these checks only need Ruff and source.
+# -----------------------------------------------------------------------------
+FROM python:3.12-slim-trixie AS python-quality-base
+
+ENV INDEX_DATA_PATH=/tmp/ragtime-data \
+    PYTHONPYCACHEPREFIX=/tmp/pycache
+
+WORKDIR /ragtime
+COPY pyproject.toml /ragtime/pyproject.toml
+RUN RUFF_REQUIREMENT="$(python -c 'import tomllib; from pathlib import Path; dependencies = tomllib.loads(Path("pyproject.toml").read_text())["project"]["optional-dependencies"]["test"]; print(next(dependency for dependency in dependencies if dependency.lower().startswith("ruff")))')" && \
+    python -m pip install --no-cache-dir "$RUFF_REQUIREMENT"
+COPY docker/scripts/ /ragtime/docker/scripts/
+COPY ragtime/ /ragtime/ragtime/
+COPY runtime/ /ragtime/runtime/
+COPY tests/ /ragtime/tests/
+
+FROM python-quality-base AS python-quality-check
+
+ARG RUFF_SCOPE=all
+
+RUN python docker/scripts/run_scoped_ruff.py && \
+    mkdir -p "$INDEX_DATA_PATH" && \
+    python -m compileall ragtime/userspace/runtime_service.py runtime/manager runtime/main.py && \
     python docker/scripts/fix_inline_imports.py docker --check && \
     python docker/scripts/fix_inline_imports.py ragtime --check && \
     python docker/scripts/fix_inline_imports.py runtime --check && \
@@ -218,22 +249,14 @@ RUN \
 # =============================================================================
 FROM python:3.12-slim-trixie AS production
 
-ARG APP_VERSION=dev
 # Propagated from the builder stage so the runtime entrypoint can warn or
 # fail fast on hosts whose CPUs cannot run the selected build variant.
 ARG LEGACY_CPU=0
-
-# Labels
-LABEL maintainer="elastropy.com"
-LABEL description="Ragtime - OpenAI-compatible RAG server with tool calling and indexer"
-LABEL version="${APP_VERSION}"
 
 # Environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/ragtime \
-    RAGTIME_VERSION=${APP_VERSION} \
-    RAGTIME_LEGACY_CPU=${LEGACY_CPU} \
     PATH="/opt/venv/bin:$PATH"
 
 # Install runtime dependencies
@@ -273,20 +296,25 @@ RUN groupadd -r ragtime && useradd -r -g ragtime ragtime
 # Copy virtual environment from builder
 COPY --from=python-builder /opt/venv /opt/venv
 
-# Create working directory
+# Create writable application directories before copying application files.
+RUN mkdir -p /ragtime/data/faiss_index && \
+    chown ragtime:ragtime /ragtime /ragtime/data /ragtime/data/faiss_index
+
 WORKDIR /ragtime
 
 # Copy Prisma schema and migrations, then generate client
-COPY prisma/ /ragtime/prisma/
+COPY --chown=ragtime:ragtime prisma/ /ragtime/prisma/
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
-    python -m prisma generate
+    python -m prisma generate && \
+    chown -R ragtime:ragtime /ragtime/prisma
 
 # Install frontend node modules for runtime tooling (Playwright screenshots)
-COPY ragtime/frontend/package.json ragtime/frontend/package-lock.json* /ragtime/ragtime/frontend/
+COPY --chown=ragtime:ragtime ragtime/frontend/package.json ragtime/frontend/package-lock.json* /ragtime/ragtime/frontend/
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     cd /ragtime/ragtime/frontend \
     && npm ci --loglevel=error \
-    && npx playwright install --with-deps chromium
+    && npx playwright install --with-deps chromium \
+    && chown -R ragtime:ragtime /ragtime/ragtime/frontend
 
 # Claude Code 2.1.113+ uses a native AVX binary; legacy images need the last JS release.
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
@@ -298,12 +326,12 @@ RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     && claude --version
 
 # Copy application code (includes indexer module)
-COPY ragtime/ /ragtime/ragtime/
-COPY scripts/chat_branch_fixture.py /ragtime/scripts/chat_branch_fixture.py
+COPY --chown=ragtime:ragtime ragtime/ /ragtime/ragtime/
+COPY --chown=ragtime:ragtime scripts/chat_branch_fixture.py /ragtime/scripts/chat_branch_fixture.py
 
 # Copy built frontend from the builder stage
 # Code expects it at ragtime/frontend/dist (see indexer/routes.py DIST_DIR)
-COPY --from=frontend-builder /frontend/dist /ragtime/ragtime/frontend/dist/
+COPY --from=frontend-builder --chown=ragtime:ragtime /frontend/dist /ragtime/ragtime/frontend/dist/
 
 # Copy entrypoint and scripts
 COPY docker/entrypoint.sh /entrypoint.sh
@@ -313,10 +341,6 @@ COPY docker/scripts/functions.sh /docker-scripts/functions.sh
 COPY docker/scripts/export.sh /docker-scripts/export.sh
 COPY docker/scripts/import.sh /docker-scripts/import.sh
 
-# Create data directory
-RUN mkdir -p /ragtime/data/faiss_index && \
-    chown -R ragtime:ragtime /ragtime
-
 # Fix line endings (Windows CRLF -> Unix LF) and make scripts executable
 RUN dos2unix /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh /docker-scripts/functions.sh /docker-scripts/export.sh /docker-scripts/import.sh \
     && chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh /docker-scripts/functions.sh /docker-scripts/export.sh /docker-scripts/import.sh \
@@ -324,6 +348,15 @@ RUN dos2unix /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/in
     && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/restore \
     && ln -sf /docker-scripts/export.sh /usr/local/bin/export \
     && ln -sf /docker-scripts/import.sh /usr/local/bin/import
+
+# Keep release metadata after all costly filesystem layers so version-only
+# changes reuse the production build cache.
+ARG APP_VERSION=dev
+LABEL maintainer="elastropy.com"
+LABEL description="Ragtime - OpenAI-compatible RAG server with tool calling and indexer"
+LABEL version="${APP_VERSION}"
+ENV RAGTIME_VERSION=${APP_VERSION} \
+    RAGTIME_LEGACY_CPU=${LEGACY_CPU}
 
 # Expose port
 EXPOSE 8000
