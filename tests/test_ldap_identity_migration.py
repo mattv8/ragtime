@@ -23,7 +23,10 @@ DATABASE_URL = os.environ.get("LDAP_MIGRATION_TEST_DATABASE_URL")
 @unittest.skipUnless(DATABASE_URL and psycopg2, "requires disposable LDAP_MIGRATION_TEST_DATABASE_URL and psycopg2")
 class LdapIdentityMigrationPostgresTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.connection = psycopg2.connect(DATABASE_URL)
+        assert psycopg2 is not None
+        driver = psycopg2
+        self.connection = driver.connect(DATABASE_URL)
+        self.database_error = driver.Error
         self.connection.autocommit = True
         self.schema = f"ldap_migration_{uuid.uuid4().hex}"
         with self.connection.cursor() as cursor:
@@ -141,15 +144,15 @@ class LdapIdentityMigrationPostgresTests(unittest.TestCase):
             cursor.execute("SELECT id, role::text, email, ldap_identity_key FROM users ORDER BY id")
             self.assertEqual(cursor.fetchall(), [("old", "user", "matt@example.test", "entryuuid:6fcba6a6-5c5c-103c-8c0c-dd0077222c")])
             cursor.execute("SELECT count(*) FROM auth_group_memberships WHERE user_id = 'old'")
-            self.assertEqual(cursor.fetchone()[0], 12)
+            self.assertEqual(cursor.fetchone(), (12,))
             cursor.execute("SELECT user_id, secret_encrypted FROM user_mfa_factors")
             self.assertEqual(cursor.fetchall(), [("old", "encrypted-secret")])
             cursor.execute("SELECT user_id FROM user_mfa_recovery_codes")
             self.assertEqual(cursor.fetchall(), [("old",)])
             cursor.execute("SELECT count(*) FROM sessions")
-            self.assertEqual(cursor.fetchone()[0], 0)
+            self.assertEqual(cursor.fetchone(), (0,))
             cursor.execute("SELECT name_normalized FROM workspaces WHERE id = 'loser-ws'")
-            self.assertEqual(cursor.fetchone()[0], "project-merged-loser-ws-1")
+            self.assertEqual(cursor.fetchone(), ("project-merged-loser-ws-1",))
             for table_name in (
                 "workspace_members",
                 "conversation_members",
@@ -158,29 +161,29 @@ class LdapIdentityMigrationPostgresTests(unittest.TestCase):
                 "userspace_changed_file_acknowledgements",
             ):
                 cursor.execute(f"SELECT count(*) FROM {table_name} WHERE user_id = 'old'")
-                self.assertEqual(cursor.fetchone()[0], 1, table_name)
+                self.assertEqual(cursor.fetchone(), (1,), table_name)
             cursor.execute("SELECT share_selected_user_ids FROM workspace_shares")
-            self.assertEqual(cursor.fetchone()[0], ["old"])
+            self.assertEqual(cursor.fetchone(), (["old"],))
             cursor.execute("SELECT share_selected_user_ids FROM conversation_shares")
-            self.assertEqual(cursor.fetchone()[0], ["old"])
+            self.assertEqual(cursor.fetchone(), (["old"],))
             cursor.execute("SELECT access_user_ids FROM userspace_mount_sources")
-            self.assertEqual(cursor.fetchone()[0], ["old"])
+            self.assertEqual(cursor.fetchone(), (["old"],))
             cursor.execute("SELECT created_by_user_id FROM userspace_snapshots")
-            self.assertEqual(cursor.fetchone()[0], "old")
+            self.assertEqual(cursor.fetchone(), ("old",))
             cursor.execute("SELECT created_by_user_id FROM workspace_agent_access")
-            self.assertEqual(cursor.fetchone()[0], "old")
+            self.assertEqual(cursor.fetchone(), ("old",))
             cursor.execute("SELECT authenticated_user_id FROM share_link_request_logs")
-            self.assertEqual(cursor.fetchone()[0], "old")
+            self.assertEqual(cursor.fetchone(), ("old",))
             cursor.execute("SELECT request_id FROM external_build_requests WHERE id = 'new-build'")
-            self.assertEqual(cursor.fetchone()[0], "same:merged:new:1")
-            with self.assertRaises(psycopg2.Error):
+            self.assertEqual(cursor.fetchone(), ("same:merged:new:1",))
+            with self.assertRaises(self.database_error):
                 cursor.execute(
                     "INSERT INTO users (id, username, auth_provider, created_at, updated_at) VALUES ('ldap-case', 'MATT', 'ldap'::\"AuthProvider\", now(), now())"
                 )
             cursor.execute(
                 "INSERT INTO users (id, username, auth_provider, created_at, updated_at) VALUES ('local-case', 'MATT', 'local'::\"AuthProvider\", now(), now())"
             )
-            with self.assertRaises(psycopg2.Error):
+            with self.assertRaises(self.database_error):
                 cursor.execute(
                     "INSERT INTO users (id, username, auth_provider, ldap_identity_key, created_at, updated_at) VALUES ('key-collision', 'other-ldap', 'ldap'::\"AuthProvider\", 'entryuuid:6fcba6a6-5c5c-103c-8c0c-dd0077222c', now(), now())"
                 )
@@ -194,12 +197,12 @@ class LdapIdentityMigrationPostgresTests(unittest.TestCase):
         self._insert_user("new", "matt", "UID=MATT,DC=EXAMPLE", "2026-02-01")
         with self.connection.cursor() as cursor:
             cursor.execute("INSERT INTO user_mfa_factors VALUES ('one', 'old', 'totp', 'one', true), ('two', 'new', 'sms', 'two', true)")
-        with self.assertRaises(psycopg2.Error):
+        with self.assertRaises(self.database_error):
             self._execute_migration()
         self._rollback_failed_migration()
         with self.connection.cursor() as cursor:
             cursor.execute("SELECT count(*) FROM users")
-            self.assertEqual(cursor.fetchone()[0], 2)
+            self.assertEqual(cursor.fetchone(), (2,))
 
     def test_matching_case_duplicate_merges_without_affecting_local_names(self) -> None:
         self._insert_user("old", "Matt", "uid=matt,dc=example", "2026-01-01")
@@ -212,7 +215,7 @@ class LdapIdentityMigrationPostgresTests(unittest.TestCase):
                 "INSERT INTO users (id, username, auth_provider, created_at, updated_at) VALUES ('local-one', 'Case', 'local'::\"AuthProvider\", now(), now()), ('local-two', 'case', 'local'::\"AuthProvider\", now(), now())"
             )
             cursor.execute("SELECT count(*) FROM users WHERE auth_provider = 'local'::\"AuthProvider\"")
-            self.assertEqual(cursor.fetchone()[0], 2)
+            self.assertEqual(cursor.fetchone(), (2,))
 
     def test_recovery_codes_are_revoked_without_an_enabled_totp_factor(self) -> None:
         self._insert_user("old", "Matt", "uid=matt,dc=example", "2026-01-01")
@@ -223,7 +226,7 @@ class LdapIdentityMigrationPostgresTests(unittest.TestCase):
         self._execute_migration()
         with self.connection.cursor() as cursor:
             cursor.execute("SELECT count(*) FROM user_mfa_recovery_codes")
-            self.assertEqual(cursor.fetchone()[0], 0)
+            self.assertEqual(cursor.fetchone(), (0,))
 
     def test_invalid_ldap_dn_group_rolls_back_all_groups(self) -> None:
         self._insert_user("safe-old", "Safe", "uid=safe,dc=example", "2026-01-01")
@@ -240,13 +243,13 @@ class LdapIdentityMigrationPostgresTests(unittest.TestCase):
             )
             cursor.execute("INSERT INTO user_mfa_factors VALUES ('last-factor', 'loser-two', 'totp', 'last-secret', true)")
             cursor.execute("INSERT INTO user_mfa_recovery_codes VALUES ('last-recovery', 'loser-two')")
-        with self.assertRaises(psycopg2.Error):
+        with self.assertRaises(self.database_error):
             self._execute_migration()
         self._rollback_failed_migration()
         with self.connection.cursor() as cursor:
             cursor.execute("SELECT id FROM users ORDER BY id")
             self.assertEqual(cursor.fetchall(), [("loser-one",), ("loser-two",), ("safe-new",), ("safe-old",)])
             cursor.execute("SELECT count(*) FROM auth_group_memberships")
-            self.assertEqual(cursor.fetchone()[0], 36)
+            self.assertEqual(cursor.fetchone(), (36,))
             cursor.execute("SELECT user_id, secret_encrypted FROM user_mfa_factors")
             self.assertEqual(cursor.fetchall(), [("loser-two", "last-secret")])
