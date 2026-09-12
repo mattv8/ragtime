@@ -78,9 +78,8 @@ class DockerPrismaEngineTests(unittest.TestCase):
 
     def test_python_test_stage_installs_git_for_git_history_tests(self):
         dockerfile = self._read_dockerfile()
-        apt_install_instructions = [
-            instruction for instruction in _effective_stage_run_instructions(dockerfile, "python-test") if "apt-get install" in instruction
-        ]
+        ci_deps = dockerfile.split("FROM python-builder AS python-ci-deps", 1)[1].split("\nFROM ", 1)[0]
+        apt_install_instructions = [instruction for instruction in ci_deps.split("RUN ") if "apt-get install" in instruction]
 
         self.assertTrue(any("git" in instruction.split() for instruction in apt_install_instructions))
 

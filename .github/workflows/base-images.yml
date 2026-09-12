@@ -1,0 +1,164 @@
+name: Prepare Harbor Dependency Images
+
+on:
+  workflow_call:
+    inputs:
+      use_harbor:
+        description: Trusted caller may use Harbor credentials and publish bases.
+        required: false
+        type: boolean
+        default: false
+      refresh:
+        description: Deliberately rebuild matching base tags.
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      frontend_image:
+        value: ${{ jobs.resolve.outputs.frontend_image }}
+      python_ci_image:
+        value: ${{ jobs.resolve.outputs.python_ci_image }}
+      production_image:
+        value: ${{ jobs.resolve.outputs.production_image }}
+  workflow_dispatch:
+    inputs:
+      refresh:
+        description: Deliberately rebuild and republish the current dependency bases.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: hub.docker.visnovsky.us
+
+jobs:
+  access:
+    name: Determine Harbor base access
+    runs-on: self-hosted
+    outputs:
+      can_publish: ${{ steps.access.outputs.can_publish }}
+    steps:
+      - id: access
+        shell: bash
+        env:
+          REQUESTED: ${{ inputs.use_harbor }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          PR_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          can_publish=false
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            can_publish=true
+          elif [ "$REQUESTED" = true ] && { [ "$EVENT_NAME" = push ] || { [ "$EVENT_NAME" = pull_request ] && [ "$PR_REPOSITORY" = "$REPOSITORY" ]; }; }; then
+            can_publish=true
+          fi
+          printf 'can_publish=%s\n' "$can_publish" >> "$GITHUB_OUTPUT"
+
+  hashes:
+    needs: access
+    if: ${{ needs.access.outputs.can_publish == 'true' }}
+    runs-on: self-hosted
+    outputs:
+      frontend_tag: ${{ steps.tags.outputs.frontend_tag }}
+      python_ci_tag: ${{ steps.tags.outputs.python_ci_tag }}
+      production_tag: ${{ steps.tags.outputs.production_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tags
+        run: python3 docker/scripts/base_image_tags.py --registry "$REGISTRY" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: hashes
+    if: ${{ needs.hashes.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: frontend-deps
+            tag_output: frontend_tag
+          - kind: python-ci-deps
+            tag_output: python_ci_tag
+          - kind: production-deps
+            tag_output: production_tag
+    concurrency:
+      group: base-image-${{ matrix.kind }}-${{ needs.hashes.outputs[matrix.tag_output] }}
+      cancel-in-progress: false
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+      - id: manifest
+        env:
+          IMAGE: ${{ needs.hashes.outputs[matrix.tag_output] }}
+        run: |
+          set -euo pipefail
+          if output="$(docker buildx imagetools inspect "$IMAGE" 2>&1)"; then
+            echo 'missing=false' >> "$GITHUB_OUTPUT"
+          elif [ "$output" = "ERROR: $IMAGE: not found" ] || { printf '%s' "$output" | grep -Eqi '(manifest unknown|manifest not found|name unknown)' && ! printf '%s' "$output" | grep -Eqi '(unauthorized|authentication required|denied|forbidden|timeout|network|connection|tls)'; }; then
+            echo 'missing=true' >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$output" >&2
+            exit 1
+          fi
+      - name: Build and push missing or refreshed base
+        if: ${{ steps.manifest.outputs.missing == 'true' || inputs.refresh }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          target: ${{ matrix.kind }}
+          platforms: linux/amd64
+          pull: true
+          no-cache: ${{ inputs.refresh }}
+          push: true
+          tags: ${{ needs.hashes.outputs[matrix.tag_output] }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/library/ragtime-base:buildcache-${{ matrix.kind }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/library/ragtime-base:buildcache-${{ matrix.kind }},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd
+
+  resolve:
+    needs: [access, hashes, build]
+    if: ${{ always() }}
+    runs-on: self-hosted
+    outputs:
+      frontend_image: ${{ steps.digest-images.outputs.frontend_image || steps.empty-images.outputs.frontend_image }}
+      python_ci_image: ${{ steps.digest-images.outputs.python_ci_image || steps.empty-images.outputs.python_ci_image }}
+      production_image: ${{ steps.digest-images.outputs.production_image || steps.empty-images.outputs.production_image }}
+    steps:
+      - id: empty-images
+        if: ${{ needs.access.outputs.can_publish != 'true' }}
+        run: |
+          printf 'frontend_image=\npython_ci_image=\nproduction_image=\n' >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+        if: ${{ needs.access.outputs.can_publish == 'true' }}
+      - uses: docker/login-action@v3
+        if: ${{ needs.access.outputs.can_publish == 'true' }}
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+      - id: digest-images
+        if: ${{ needs.access.outputs.can_publish == 'true' }}
+        env:
+          FRONTEND: ${{ needs.hashes.outputs.frontend_tag }}
+          PYTHON_CI: ${{ needs.hashes.outputs.python_ci_tag }}
+          PRODUCTION: ${{ needs.hashes.outputs.production_tag }}
+        run: |
+          set -euo pipefail
+          for kind in FRONTEND PYTHON_CI PRODUCTION; do
+            image="${!kind}"
+            digest="$(docker buildx imagetools inspect "$image" --format '{{.Manifest.Digest}}')"
+            if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+              echo "Could not resolve a SHA-256 digest for $image" >&2
+              exit 1
+            fi
+            key="$(printf '%s' "$kind" | tr '[:upper:]' '[:lower:]')"
+            printf '%s_image=%s@%s\n' "$key" "$image" "$digest" >> "$GITHUB_OUTPUT"

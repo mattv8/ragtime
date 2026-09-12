@@ -3,48 +3,34 @@ name: Build and Push Container
 on:
   workflow_call:
     inputs:
-      quality_checked:
-        description: 'Caller has already completed the reusable quality gate.'
-        required: false
-        type: boolean
-        default: false
-      build_legacy_image:
-        description: 'Build and sign the legacy CPU image.'
-        required: false
-        type: boolean
-        default: false
+      build_images: {description: 'Publish candidates and promote them when allowed.', required: false, type: boolean, default: false}
+      caller_event: {description: 'Non-empty only when invoked by the top-level CI workflow.', required: false, type: string, default: ''}
+      build_legacy_image: {description: 'Build the legacy CPU image.', required: false, type: boolean, default: false}
+    outputs:
+      backend_result: {value: '${{ jobs.quality.outputs.backend_result }}'}
+      frontend_result: {value: '${{ jobs.quality.outputs.frontend_result }}'}
+      container_changed: {value: '${{ jobs.scope.outputs.container_changed }}'}
   push:
     branches: [main, beta]
     paths:
-      # Docker build files
       - 'docker/**'
       - 'docker-compose.yml'
       - '.dockerignore'
       - '.jscpd.json'
-      # Application code
       - 'ragtime/**'
       - 'runtime/**'
       - 'tests/**'
       - 'typings/**'
-      # Dependencies and build config
       - 'pyproject.toml'
       - '.env.example'
       - 'README.md'
-      - 'tests/check_readme_sync.sh'
-      # Database schema (requires container rebuild for migrations)
       - 'prisma/**'
-      # CI workflow itself
-      - '.github/workflows/ci.yml'
-      - '.github/workflows/build-container.yml'
-      - '.github/workflows/quality.yml'
+      - '.github/workflows/**'
       - '.github/actions/**'
   workflow_dispatch:
     inputs:
-      build_legacy_image:
-        description: 'Build and sign the legacy CPU image'
-        required: false
-        type: boolean
-        default: false
+      build_images: {description: 'Build application and runtime candidates.', required: false, type: boolean, default: true}
+      build_legacy_image: {description: 'Build the legacy CPU image.', required: false, type: boolean, default: false}
 
 env:
   REGISTRY: hub.docker.visnovsky.us
@@ -52,504 +38,263 @@ env:
   IMAGE_RUNTIME_NAME: library/runtime
 
 jobs:
-  quality:
-    name: Quality
-    if: inputs.quality_checked != true
-    uses: ./.github/workflows/quality.yml
+  trust:
+    name: Determine registry access
+    runs-on: self-hosted
+    outputs:
+      use_harbor: ${{ steps.access.outputs.use_harbor }}
+    steps:
+      - id: access
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] || [ '${{ github.event.pull_request.head.repo.full_name }}' = "$GITHUB_REPOSITORY" ]; then
+            echo use_harbor=true >> "$GITHUB_OUTPUT"
+          else
+            echo use_harbor=false >> "$GITHUB_OUTPUT"
+          fi
+
+  scope:
+    name: Determine candidate scope
+    runs-on: self-hosted
+    outputs:
+      container_changed: ${{ steps.scope.outputs.container_changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then result="$(python3 docker/scripts/changed_lint_files.py --all)"
+          elif [ "$GITHUB_EVENT_NAME" = pull_request ]; then result="$(python3 docker/scripts/changed_lint_files.py --merge-base --base-ref '${{ github.event.pull_request.base.sha }}' --head-ref '${{ github.event.pull_request.head.sha }}')"
+          else result="$(python3 docker/scripts/changed_lint_files.py --base-ref '${{ github.event.before }}' --head-ref '${{ github.sha }}')"; fi
+          printf '%s\n' "$result" | while IFS= read -r line; do case "$line" in container_changed=*) printf '%s\n' "$line" >> "$GITHUB_OUTPUT";; esac; done
+
+  plan:
+    name: Determine publication plan
+    needs: [scope, trust]
+    runs-on: self-hosted
+    outputs:
+      trusted: ${{ steps.plan.outputs.trusted }}
+      branch: ${{ steps.plan.outputs.branch }}
+      short_sha: ${{ steps.plan.outputs.short_sha }}
+      environment: ${{ steps.plan.outputs.environment }}
+      cache_scope: ${{ steps.plan.outputs.cache_scope }}
+      cache_fallback: ${{ steps.plan.outputs.cache_fallback }}
+      build_main: ${{ steps.plan.outputs.build_main }}
+      build_runtime: ${{ steps.plan.outputs.build_runtime }}
+      build_legacy: ${{ steps.plan.outputs.build_legacy }}
+      promote: ${{ steps.plan.outputs.promote }}
+      app_tags: ${{ steps.plan.outputs.app_tags }}
+      runtime_tags: ${{ steps.plan.outputs.runtime_tags }}
+      legacy_tag: ${{ steps.plan.outputs.legacy_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        env:
+          BUILD_IMAGES: ${{ inputs.build_images || false }}
+          BUILD_LEGACY: ${{ inputs.build_legacy_image || false }}
+          CALLER_EVENT: ${{ inputs.caller_event }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CALLER_EVENT" ] && [ "$GITHUB_EVENT_NAME" = push ] && { [ "$GITHUB_REF_NAME" = main ] || [ "$GITHUB_REF_NAME" = beta ]; }; then BUILD_IMAGES=true; fi
+          python3 docker/scripts/ci_build_plan.py --event "$GITHUB_EVENT_NAME" --ref-name "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --repository "$GITHUB_REPOSITORY" --pr-repository '${{ github.event.pull_request.head.repo.full_name }}' --pr-number '${{ github.event.pull_request.number }}' --base-ref '${{ github.base_ref }}' --container-changed '${{ needs.scope.outputs.container_changed }}' --build-images "$BUILD_IMAGES" --build-legacy "$BUILD_LEGACY" >> "$GITHUB_OUTPUT"
+
+  bases:
+    name: Prepare dependency images
+    needs: trust
+    uses: ./.github/workflows/base-images.yml
+    with:
+      use_harbor: ${{ needs.trust.outputs.use_harbor == 'true' }}
     secrets: inherit
 
-  build-main:
-    name: Build Application Image
-    runs-on: self-hosted
-    needs: [quality]
+  quality:
+    name: Quality
+    needs: [bases, trust, plan]
+    if: '!cancelled() && needs.bases.result == ''success'' && needs.trust.result == ''success'' && needs.plan.result == ''success'''
+    uses: ./.github/workflows/quality.yml
+    with:
+      frontend_image: ${{ needs.bases.outputs.frontend_image }}
+      python_ci_image: ${{ needs.bases.outputs.python_ci_image }}
+      production_image: ${{ needs.bases.outputs.production_image }}
+      use_harbor: ${{ needs.trust.outputs.use_harbor == 'true' }}
+      cache_scope: ${{ needs.plan.outputs.cache_scope }}
+      cache_fallback: ${{ needs.plan.outputs.cache_fallback }}
+    secrets: inherit
+
+  candidate-main:
+    name: Build application candidate
+    needs: [scope, bases, trust, plan]
     if: >-
-      !cancelled() &&
-      (needs.quality.result == 'success' || (needs.quality.result == 'skipped' && inputs.quality_checked == true)) &&
-      ((
-        github.event_name == 'pull_request' &&
-        github.event.pull_request.head.repo.full_name == github.repository
-      ) ||
-      (
-        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta') &&
-        !(github.event_name == 'workflow_dispatch' && inputs.build_legacy_image == true)
-      ))
-    permissions:
-      contents: read
-      packages: write
+      !cancelled() && needs.scope.result == 'success' && needs.bases.result == 'success' && needs.trust.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.build_main == 'true'
+    runs-on: self-hosted
+    permissions: {contents: read, packages: write}
     outputs:
-      branch: ${{ steps.extract_branch.outputs.branch }}
-      tags: ${{ steps.meta.outputs.tags }}
-      digest: ${{ steps.build-main.outputs.digest }}
-      image-name: ${{ steps.meta.outputs.image-name }}
-      short-sha: ${{ steps.meta.outputs.short-sha }}
-
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.meta.outputs.image }}
+      branch: ${{ steps.meta.outputs.branch }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Extract branch name
-        id: extract_branch
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Validate resolved base references
+        env:
+          FRONTEND: ${{ needs.bases.outputs.frontend_image }}
+          PYTHON_CI: ${{ needs.bases.outputs.python_ci_image }}
+          PRODUCTION: ${{ needs.bases.outputs.production_image }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            SAFE_BRANCH="pr-${{ github.event.pull_request.number }}"
-          else
-            REF_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-            SAFE_BRANCH=$(echo "$REF_NAME" | sed 's/[\/:@]/-/g')
-          fi
-          echo "branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
-          echo "Building for branch: $SAFE_BRANCH"
-
-      - name: Determine Docker tags
-        id: meta
-        run: |
-          BRANCH="${{ steps.extract_branch.outputs.branch }}"
-          SHORT_SHA="${GITHUB_SHA::7}"
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-
-          TAGS="${IMAGE}:${BRANCH}"
-
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TAGS="${TAGS},${IMAGE}:${BRANCH}-${SHORT_SHA}"
-          else
-            TAGS="${TAGS},${IMAGE}:${SHORT_SHA}"
-          fi
-
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            TAGS="${TAGS},${IMAGE}:latest"
-          fi
-
-          if [ "${GITHUB_REF}" = "refs/heads/beta" ]; then
-            TAGS="${TAGS},${IMAGE}:latest-beta"
-          fi
-
-          APP_VERSION="${SHORT_SHA}"
-
-          ENVIRONMENT="main"
-          if [ "${GITHUB_REF}" = "refs/heads/beta" ]; then
-            ENVIRONMENT="beta"
-          fi
-
-          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
-          echo "short-sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "image-name=${IMAGE}:${BRANCH}" >> $GITHUB_OUTPUT
-          echo "app-version=${APP_VERSION}" >> $GITHUB_OUTPUT
-          echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
-          echo "Tags to be pushed: ${TAGS}"
-
-      - name: Log in to Harbor Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
-
-      - name: Build and push Docker image
-        id: build-main
+          set -euo pipefail
+          for image in "$FRONTEND" "$PYTHON_CI" "$PRODUCTION"; do case "$image" in *@sha256:*) ;; *) exit 1;; esac; done
+      - id: meta
+        run: printf 'image=%s\nbranch=%s\n' "${REGISTRY}/${IMAGE_NAME}" '${{ needs.plan.outputs.branch }}' >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with: {registry: '${{ env.REGISTRY }}', username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
+      - id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=${{ steps.meta.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
-            APP_VERSION=${{ steps.meta.outputs.app-version }}
-            ENVIRONMENT=${{ steps.meta.outputs.environment }}
+            FRONTEND_DEPS_IMAGE=${{ needs.bases.outputs.frontend_image }}
+            PYTHON_CI_DEPS_IMAGE=${{ needs.bases.outputs.python_ci_image }}
+            PRODUCTION_DEPS_IMAGE=${{ needs.bases.outputs.production_image }}
+            APP_VERSION=${{ needs.plan.outputs.short_sha }}
+            ENVIRONMENT=${{ needs.plan.outputs.environment }}
+          platforms: linux/amd64
           cache-from: |
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ steps.extract_branch.outputs.branch }}
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-main
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
-            type=gha,scope=ragtime-${{ steps.extract_branch.outputs.branch }}
-            type=gha,scope=ragtime-main
-            type=gha
-          cache-to: |
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ steps.extract_branch.outputs.branch }},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd
-            type=gha,mode=max,scope=ragtime-${{ steps.extract_branch.outputs.branch }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-app-${{ needs.plan.outputs.cache_scope }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-app-${{ needs.plan.outputs.cache_fallback }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-app-${{ needs.plan.outputs.cache_scope }},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd
+          sbom: generator=docker.io/docker/buildkit-syft-scanner@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
 
-      - name: Cleanup old Docker images
-        if: github.event_name != 'pull_request'
-        uses: ./.github/actions/cleanup
-        with:
-          repositories: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # Match all tags, but exclude stable branch, legacy, and buildcache tags from deletion
-          tagPattern: '.'
-          excludePattern: ':(latest|main|beta|latest-beta|legacy|legacy-beta)$|:buildcache($|-.*$)'
-          keep: '3'
-
-  build-runtime:
-    name: Build Runtime Image
-    runs-on: self-hosted
-    needs: [quality]
+  candidate-runtime:
+    name: Build runtime candidate
+    needs: [scope, bases, trust, plan]
     if: >-
-      !cancelled() &&
-      (needs.quality.result == 'success' || (needs.quality.result == 'skipped' && inputs.quality_checked == true)) &&
-      ((
-        github.event_name == 'pull_request' &&
-        github.event.pull_request.head.repo.full_name == github.repository
-      ) ||
-      (
-        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta') &&
-        !(github.event_name == 'workflow_dispatch' && inputs.build_legacy_image == true)
-      ))
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      digest: ${{ steps.build-runtime.outputs.digest }}
-
+      !cancelled() && needs.scope.result == 'success' && needs.bases.result == 'success' && needs.trust.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.build_runtime == 'true'
+    runs-on: self-hosted
+    permissions: {contents: read, packages: write}
+    outputs: {digest: '${{ steps.build.outputs.digest }}', image: '${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}'}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Extract branch name
-        id: extract_branch
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            SAFE_BRANCH="pr-${{ github.event.pull_request.number }}"
-          else
-            REF_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-            SAFE_BRANCH=$(echo "$REF_NAME" | sed 's/[\/:@]/-/g')
-          fi
-          echo "branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
-
-      - name: Determine Runtime Docker tags
-        id: meta
-        run: |
-          BRANCH="${{ steps.extract_branch.outputs.branch }}"
-          SHORT_SHA="${GITHUB_SHA::7}"
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}"
-
-          TAGS="${IMAGE}:${BRANCH}"
-
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TAGS="${TAGS},${IMAGE}:${BRANCH}-${SHORT_SHA}"
-          else
-            TAGS="${TAGS},${IMAGE}:${SHORT_SHA}"
-          fi
-
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            TAGS="${TAGS},${IMAGE}:latest"
-          fi
-
-          if [ "${GITHUB_REF}" = "refs/heads/beta" ]; then
-            TAGS="${TAGS},${IMAGE}:latest-beta"
-          fi
-
-          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
-          echo "image-name=${IMAGE}:${BRANCH}" >> $GITHUB_OUTPUT
-
-      - name: Log in to Harbor Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
-
-      - name: Build and push runtime Docker image
-        id: build-runtime
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: {registry: '${{ env.REGISTRY }}', username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
+      - id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/Dockerfile.runtime
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }},push-by-digest=true,name-canonical=true,push=true
+          platforms: linux/amd64
           cache-from: |
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:buildcache-${{ steps.extract_branch.outputs.branch }}
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:buildcache-main
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:buildcache
-            type=gha,scope=runtime-${{ steps.extract_branch.outputs.branch }}
-            type=gha,scope=runtime-main
-            type=gha
-          cache-to: |
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:buildcache-${{ steps.extract_branch.outputs.branch }},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd
-            type=gha,mode=max,scope=runtime-${{ steps.extract_branch.outputs.branch }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:buildcache-runtime-${{ needs.plan.outputs.cache_scope }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:buildcache-runtime-${{ needs.plan.outputs.cache_fallback }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:buildcache-runtime-${{ needs.plan.outputs.cache_scope }},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd
 
-      - name: Cleanup old runtime Docker images
-        if: github.event_name != 'pull_request'
-        uses: ./.github/actions/cleanup
-        with:
-          repositories: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}
-          tagPattern: '.'
-          excludePattern: ':(latest|main|beta|latest-beta)$|:buildcache($|-.*$)'
-          keep: '3'
-
-  # Build legacy image for older CPUs without X86_V2 support
-  build-legacy:
-    name: Build Legacy Image
-    runs-on: self-hosted
-    needs: [quality]
+  candidate-legacy:
+    name: Build legacy candidate
+    needs: [bases, trust, plan]
     if: >-
-      !cancelled() &&
-      (needs.quality.result == 'success' || (needs.quality.result == 'skipped' && inputs.quality_checked == true)) &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (inputs.build_legacy_image == true &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta')))
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      digest: ${{ steps.build-legacy.outputs.digest }}
-      image-name: ${{ steps.meta.outputs.image-name }}
-
+      !cancelled() && needs.bases.result == 'success' && needs.trust.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.build_legacy == 'true'
+    runs-on: self-hosted
+    permissions: {contents: read, packages: write}
+    outputs: {digest: '${{ steps.build.outputs.digest }}'}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Determine legacy Docker tags
-        id: meta
-        run: |
-          REF_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          SAFE_BRANCH=$(echo "$REF_NAME" | sed 's/[\/:@]/-/g')
-          SHORT_SHA="${GITHUB_SHA::7}"
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-
-          ENVIRONMENT="main"
-          if [ "${GITHUB_REF}" = "refs/heads/beta" ]; then
-            ENVIRONMENT="beta"
-          fi
-
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            LEGACY_TAG="legacy"
-          else
-            LEGACY_TAG="legacy-${SAFE_BRANCH}"
-          fi
-
-          TAGS="${IMAGE}:${LEGACY_TAG}"
-
-          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
-          echo "image-name=${IMAGE}:${LEGACY_TAG}" >> "$GITHUB_OUTPUT"
-          echo "short-sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "environment=${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
-          echo "Legacy tags to be pushed: ${TAGS}"
-
-      - name: Log in to Harbor Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
-
-      - name: Build and push legacy Docker image
-        id: build-legacy
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: {registry: '${{ env.REGISTRY }}', username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
+      - id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             LEGACY_CPU=1
-            APP_VERSION=${{ steps.meta.outputs.short-sha }}
-            ENVIRONMENT=${{ steps.meta.outputs.environment }}
-          # Don't use cache for legacy build to ensure clean numpy compilation
+            APP_VERSION=${{ needs.plan.outputs.short_sha }}
+            ENVIRONMENT=${{ needs.plan.outputs.environment }}
           no-cache: true
 
-  sign:
-    name: Sign Container Images
-    runs-on: self-hosted
-    needs: [build-main, build-runtime]
-    if: >-
-      always() &&
-      github.event_name != 'pull_request' &&
-      needs.build-main.result == 'success' &&
-      needs.build-runtime.result == 'success'
-    permissions:
-      contents: read
-      id-token: write
-
-    steps:
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v3
-        with:
-          cosign-release: 'v2.4.1'
-
-      - name: Log in to Harbor Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
-
-      - name: Sign the main container image with Cosign
-        env:
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-        run: |
-          # Construct the full image reference from build outputs
-          IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-main.outputs.digest }}"
-
-          echo "Signing image: ${IMAGE_DIGEST}"
-
-          # Sign using the full digest reference (registry/repo@sha256:...)
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
-
-      - name: Sign the runtime image with Cosign
-        env:
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-        run: |
-          IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}@${{ needs.build-runtime.outputs.digest }}"
-          echo "Signing runtime image: ${IMAGE_DIGEST}"
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
-
-  sign-legacy:
-    name: Sign Legacy Container Image
-    runs-on: self-hosted
-    needs: [build-legacy]
-    if: always() && needs.build-legacy.result == 'success'
-    permissions:
-      contents: read
-      id-token: write
-
-    steps:
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v3
-        with:
-          cosign-release: 'v2.4.1'
-
-      - name: Log in to Harbor Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
-
-      - name: Sign the legacy container image with Cosign
-        env:
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-        run: |
-          IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-legacy.outputs.digest }}"
-          echo "Signing legacy image: ${IMAGE_DIGEST}"
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
-
   sbom:
-    name: Generate SBOM
+    name: Extract BuildKit SBOM
+    needs: candidate-main
+    if: '!cancelled() && needs.candidate-main.result == ''success'''
     runs-on: self-hosted
-    needs: [build-main, build-runtime]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: {registry: '${{ env.REGISTRY }}', username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
+      - run: docker buildx imagetools inspect --format '{{json .SBOM}}' '${{ needs.candidate-main.outputs.image }}@${{ needs.candidate-main.outputs.digest }}' > sbom.inspect.json
+      - run: python3 docker/scripts/extract_build_sbom.py sbom.inspect.json sbom.spdx.json
+      - uses: actions/upload-artifact@v4
+        with: {name: 'sbom-${{ needs.candidate-main.outputs.branch }}', path: sbom.spdx.json, retention-days: 90}
+
+  promote:
+    name: Promote, sign, and tag candidates
+    needs: [quality, plan, candidate-main, candidate-runtime, candidate-legacy, sbom]
     if: >-
-      always() &&
-      github.event_name != 'pull_request' &&
-      needs.build-main.result == 'success' &&
-      needs.build-runtime.result == 'success'
-    permissions:
-      contents: read
-
-    steps:
-      - name: Log in to Harbor Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
-
-      - name: Generate SBOM
-        uses: anchore/sbom-action@v0
-        with:
-          image: ${{ needs.build-main.outputs.image-name }}
-          format: spdx-json
-          output-file: sbom.spdx.json
-
-      - name: Upload SBOM
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-${{ needs.build-main.outputs.branch }}
-          path: sbom.spdx.json
-          retention-days: 90
-
-  summary:
-    name: Build Summary
+      !cancelled() && needs.quality.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.promote == 'true' &&
+      ((needs.plan.outputs.build_main == 'true' && needs.candidate-main.result == 'success' && needs.sbom.result == 'success') || (needs.plan.outputs.build_main != 'true' && needs.candidate-main.result == 'skipped' && needs.sbom.result == 'skipped')) &&
+      ((needs.plan.outputs.build_runtime == 'true' && needs.candidate-runtime.result == 'success') || (needs.plan.outputs.build_runtime != 'true' && needs.candidate-runtime.result == 'skipped')) &&
+      ((needs.plan.outputs.build_legacy == 'true' && needs.candidate-legacy.result == 'success') || (needs.plan.outputs.build_legacy != 'true' && needs.candidate-legacy.result == 'skipped'))
     runs-on: self-hosted
-    needs: [build-main, build-runtime, build-legacy, sign, sign-legacy, sbom]
-    if: always()
-    permissions:
-      contents: read
-
+    concurrency:
+      group: harbor-moving-tags-${{ github.ref_name }}
+      cancel-in-progress: false
+    permissions: {contents: read, id-token: write, packages: write}
     steps:
-      - name: Generate Summary
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: {registry: '${{ env.REGISTRY }}', username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
+      - name: Reject stale branch ref
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Check job statuses
-          BUILD_PUSH_STATUS="${{ needs.build-main.result }}"
-          SIGN_STATUS="${{ needs.sign.result }}"
-          LEGACY_BUILD_STATUS="${{ needs.build-legacy.result }}"
-          LEGACY_SIGN_STATUS="${{ needs.sign-legacy.result }}"
-          SBOM_STATUS="${{ needs.sbom.result }}"
-          RUNTIME_STATUS="${{ needs.build-runtime.result }}"
-
-          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ needs.build-main.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Short SHA:** ${{ needs.build-main.outputs.short-sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "$BUILD_PUSH_STATUS" = "success" ]; then
-            echo "### Pull Command" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "docker pull ${{ needs.build-main.outputs.image-name }}" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          if [ "$RUNTIME_STATUS" = "success" ]; then
-            echo "### Runtime Pull Command" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:${{ needs.build-main.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          echo "**Digest:** \`${{ needs.build-main.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "$SIGN_STATUS" = "success" ]; then
-            echo "**Signed:** Yes (Cosign)" >> $GITHUB_STEP_SUMMARY
-          elif [ "$SIGN_STATUS" = "skipped" ]; then
-            echo "**Signed:** Skipped" >> $GITHUB_STEP_SUMMARY
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            test "$(git ls-remote origin "refs/heads/$PR_HEAD_REF" | cut -f1)" = "$PR_HEAD_SHA"
           else
-            echo "**Signed:** Failed" >> $GITHUB_STEP_SUMMARY
+            test "$(git ls-remote origin "refs/heads/$GITHUB_REF_NAME" | cut -f1)" = "$GITHUB_SHA"
           fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "$SBOM_STATUS" = "success" ]; then
-            echo "**SBOM:** Generated" >> $GITHUB_STEP_SUMMARY
-          elif [ "$SBOM_STATUS" = "skipped" ]; then
-            echo "**SBOM:** Skipped" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "**SBOM:** Failed" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "$LEGACY_BUILD_STATUS" = "success" ] && [ "$LEGACY_SIGN_STATUS" = "success" ]; then
-            echo "**Legacy Image:** Built and signed (${{ needs.build-legacy.outputs.image-name }})" >> $GITHUB_STEP_SUMMARY
-          elif [ "$LEGACY_BUILD_STATUS" = "skipped" ]; then
-            echo "**Legacy Image:** Skipped" >> $GITHUB_STEP_SUMMARY
-          elif [ "$LEGACY_BUILD_STATUS" = "success" ]; then
-            echo "**Legacy Image:** Built, signing $LEGACY_SIGN_STATUS" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "**Legacy Image:** $LEGACY_BUILD_STATUS" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "$RUNTIME_STATUS" = "success" ]; then
-            echo "**Runtime Image:** Built" >> $GITHUB_STEP_SUMMARY
-          elif [ "$RUNTIME_STATUS" = "skipped" ]; then
-            echo "**Runtime Image:** Skipped" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "**Runtime Image:** Failed" >> $GITHUB_STEP_SUMMARY
-          fi
+      - name: Promote immutable candidates
+        env:
+          APP: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          RUNTIME: ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}
+          APP_DIGEST: ${{ needs.candidate-main.outputs.digest }}
+          RUNTIME_DIGEST: ${{ needs.candidate-runtime.outputs.digest }}
+          LEGACY_DIGEST: ${{ needs.candidate-legacy.outputs.digest }}
+          APP_TAGS: ${{ needs.plan.outputs.app_tags }}
+          RUNTIME_TAGS: ${{ needs.plan.outputs.runtime_tags }}
+          LEGACY_TAG: ${{ needs.plan.outputs.legacy_tag }}
+        run: |
+          set -euo pipefail
+          promote() { local image="$1" digest="$2" tags="$3" tag args=(); IFS=, read -r -a tag_list <<< "$tags"; for tag in "${tag_list[@]}"; do args+=(--tag "$image:$tag"); done; docker buildx imagetools create "${args[@]}" "$image@$digest"; for tag in "${tag_list[@]}"; do test "$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$tag")" = "$digest"; done; }
+          [ -z "$APP_DIGEST" ] || promote "$APP" "$APP_DIGEST" "$APP_TAGS"
+          [ -z "$RUNTIME_DIGEST" ] || promote "$RUNTIME" "$RUNTIME_DIGEST" "$RUNTIME_TAGS"
+          [ -z "$LEGACY_DIGEST" ] || promote "$APP" "$LEGACY_DIGEST" "$LEGACY_TAG"
+      - uses: sigstore/cosign-installer@v3
+        if: github.event_name != 'pull_request'
+        with: {cosign-release: v2.4.1}
+      - name: Sign promoted immutable digests
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          APP: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          RUNTIME: ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}
+          APP_DIGEST: ${{ needs.candidate-main.outputs.digest }}
+          RUNTIME_DIGEST: ${{ needs.candidate-runtime.outputs.digest }}
+          LEGACY_DIGEST: ${{ needs.candidate-legacy.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [ -z "$APP_DIGEST" ] || cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$APP@$APP_DIGEST"
+          [ -z "$RUNTIME_DIGEST" ] || cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$RUNTIME@$RUNTIME_DIGEST"
+          [ -z "$LEGACY_DIGEST" ] || cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$APP@$LEGACY_DIGEST"

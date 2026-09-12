@@ -66,15 +66,15 @@ class LegacyContainerDependencyTests(unittest.TestCase):
     def test_production_stage_propagates_legacy_cpu_env(self) -> None:
         # The production stage must reset the ARG so the build-arg flows in,
         # and expose it to the entrypoint so the CPU preflight can branch.
-        production_marker = "FROM python:3.12-slim-trixie AS production"
+        production_marker = "FROM ${PRODUCTION_DEPS_IMAGE} AS production"
         self.assertIn(production_marker, self.dockerfile_text)
         production_stage = self.dockerfile_text.split(production_marker, 1)[1]
         self.assertIn("ARG LEGACY_CPU=0", production_stage)
         self.assertIn("RAGTIME_LEGACY_CPU=${LEGACY_CPU}", production_stage)
 
     def test_legacy_build_uses_pre_native_claude_cli(self) -> None:
-        production_marker = "FROM python:3.12-slim-trixie AS production"
-        production_stage = self.dockerfile_text.split(production_marker, 1)[1]
+        production_marker = "FROM python:3.12-slim-trixie AS production-deps"
+        production_stage = self.dockerfile_text.split(production_marker, 1)[1].split("\nFROM ", 1)[0]
 
         self.assertIn('if [ "$LEGACY_CPU" = "1" ]; then', production_stage)
         self.assertIn("npm install -g @anthropic-ai/claude-code@2.1.112", production_stage)

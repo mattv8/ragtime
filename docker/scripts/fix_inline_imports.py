@@ -35,8 +35,8 @@ class ModuleIndex:
     local_import_graph: dict[str, set[str]]
 
 
-_DUPLICATE_TAIL_LINE_RE = re.compile(r"(?P<line>[^\n]*\S[^\n]*)(?:\n(?P=line)){1,2}\n?\Z")
 _INLINE_IMPORT_KEEP_MARKER = "# inline-import: keep"
+_NON_WHITESPACE_RE = re.compile(r"\S")
 
 
 def main() -> None:
@@ -558,17 +558,53 @@ def remove_spans(lines: Sequence[str], spans: Sequence[Tuple[int, int]]) -> list
 
 
 def collapse_duplicate_tail_lines(text: str) -> tuple[str, int]:
-    match = _DUPLICATE_TAIL_LINE_RE.search(text)
-    if not match:
+    """Collapse the final two or three matching nonblank line suffixes.
+
+    This deliberately retains the former unanchored regex behavior: a suffix
+    of the first repeated physical line may match complete following lines.
+    Only the last three physical lines can participate, so inspect them
+    directly instead of retrying a backtracking regex at every byte.
+    """
+    trailing_newline = text.endswith("\n")
+    content = text[:-1] if trailing_newline else text
+    if not content or content.endswith("\n"):
         return text, 0
 
-    block = match.group(0)
-    line = match.group("line")
-    duplicates_removed = len(block.rstrip("\n").split("\n")) - 1
-    cleaned = text[: match.start()] + line
-    if block.endswith("\n"):
-        cleaned += "\n"
-    return cleaned, duplicates_removed
+    last_line_start = content.rfind("\n") + 1
+    last_line = content[last_line_start:]
+
+    def matching_suffix(previous_line: str) -> str | None:
+        if len(previous_line) < len(last_line):
+            return None
+        suffix = previous_line[-len(last_line) :] if last_line else previous_line
+        if suffix != last_line or not _NON_WHITESPACE_RE.search(suffix):
+            return None
+        return suffix
+
+    # The old regex search selects a three-line match first because it begins
+    # earlier than any two-line match.
+    second_separator = content.rfind("\n", 0, last_line_start - 1)
+    second_line_start = second_separator + 1
+    second_line = content[second_line_start : last_line_start - 1]
+
+    if second_separator >= 0 and second_line == last_line:
+        third_separator = content.rfind("\n", 0, second_line_start - 1)
+        third_line_start = third_separator + 1
+        third_line = content[third_line_start : second_line_start - 1]
+        suffix = matching_suffix(third_line)
+        if suffix is not None:
+            match_start = third_line_start + len(third_line) - len(suffix)
+            cleaned = content[:match_start] + suffix
+            return (cleaned + "\n" if trailing_newline else cleaned), 2
+
+    if last_line_start:
+        suffix = matching_suffix(second_line)
+        if suffix is not None:
+            match_start = second_line_start + len(second_line) - len(suffix)
+            cleaned = content[:match_start] + suffix
+            return (cleaned + "\n" if trailing_newline else cleaned), 1
+
+    return text, 0
 
 
 def find_insertion_idx_in_lines(lines: List[str]) -> int:

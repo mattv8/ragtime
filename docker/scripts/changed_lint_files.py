@@ -25,6 +25,9 @@ PYTHON_FULL_SCOPE_PATHS = (
     "poetry.lock",
     "Pipfile",
     "Pipfile.lock",
+    "docker/scripts/base_image_tags.py",
+    "docker/scripts/ci_build_plan.py",
+    "docker/scripts/extract_build_sbom.py",
 )
 FRONTEND_FULL_SCOPE_PATHS = ("ragtime/frontend/package.json", "ragtime/frontend/package-lock.json")
 QUALITY_ENVIRONMENT_PATHS = (
@@ -35,9 +38,13 @@ QUALITY_ENVIRONMENT_PATHS = (
     "docker/scripts/scoped_python_paths.py",
     "docker/scripts/fix_inline_imports.py",
     "docker/scripts/install_deps_from_pyproject.py",
+    "docker/scripts/extract_build_sbom.py",
+    "docker/scripts/ci_build_plan.py",
+    "docker/scripts/base_image_tags.py",
     ".github/workflows/ci.yml",
     ".github/workflows/quality.yml",
     ".github/workflows/build-container.yml",
+    ".github/workflows/base-images.yml",
 )
 CONTAINER_PATHS = (
     "docker",
@@ -55,6 +62,7 @@ CONTAINER_PATHS = (
     ".github/workflows/build-container.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/quality.yml",
+    ".github/workflows/base-images.yml",
     ".github/actions",
 )
 

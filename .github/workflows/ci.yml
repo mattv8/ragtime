@@ -28,42 +28,34 @@ jobs:
         run: |
           set -euo pipefail
           echo 'run_quality=true' >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_EVENT_NAME" != push ]; then
-            exit 0
-          fi
-
-          # An API failure deliberately leaves the default enabled: never skip a gate
-          # merely because duplicate-check detection is unavailable.
+          if [ "$GITHUB_EVENT_NAME" != push ]; then exit 0; fi
           for base in main beta; do
-            if response="$(curl --fail --silent --show-error \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H 'Accept: application/vnd.github+json' \
-              --get \
-              --data-urlencode 'state=open' \
-              --data-urlencode "base=${base}" \
-              --data-urlencode "head=${GITHUB_REPOSITORY_OWNER}:${GITHUB_REF_NAME}" \
-              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/pulls")"; then
-              if printf '%s' "$response" | jq -e --arg base "$base" --arg sha "$GITHUB_SHA" \
-                'type == "array" and any(.[]; .base.ref == $base and .head.sha == $sha)' >/dev/null; then
-                echo 'run_quality=false' >> "$GITHUB_OUTPUT"
-                exit 0
+            if response="$(curl --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' --get --data-urlencode state=open --data-urlencode "base=${base}" --data-urlencode "head=${GITHUB_REPOSITORY_OWNER}:${GITHUB_REF_NAME}" "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/pulls")"; then
+              if printf '%s' "$response" | jq -e --arg base "$base" --arg sha "$GITHUB_SHA" 'type == "array" and any(.[]; .base.ref == $base and .head.sha == $sha)' >/dev/null; then
+                echo 'run_quality=false' >> "$GITHUB_OUTPUT"; exit 0
               fi
             else
-              echo "Unable to check open ${base} pull requests; running quality." >&2
-              exit 0
+              echo "Unable to check open ${base} pull requests; running quality." >&2; exit 0
             fi
           done
 
-  quality:
-    name: Quality
+  pipeline:
+    name: Container pipeline
     needs: deduplicate
     if: needs.deduplicate.outputs.run_quality == 'true'
-    uses: ./.github/workflows/quality.yml
+    uses: ./.github/workflows/build-container.yml
+    with:
+      build_images: ${{ github.event_name == 'pull_request' }}
+      caller_event: ${{ github.event_name }}
     secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
 
   backend-status:
     name: Backend Quality and Tests
-    needs: [deduplicate, quality]
+    needs: [deduplicate, pipeline]
     if: >-
       always() &&
       (github.event_name != 'push' || needs.deduplicate.result != 'success' || needs.deduplicate.outputs.run_quality != 'false')
@@ -72,12 +64,12 @@ jobs:
       - name: Verify backend quality result
         shell: bash
         run: |
-          test "${{ needs.quality.result }}" = success
-          test "${{ needs.quality.outputs.backend_result }}" = success
+          test "${{ needs.pipeline.result }}" = success
+          test "${{ needs.pipeline.outputs.backend_result }}" = success
 
   frontend-status:
     name: Frontend Build
-    needs: [deduplicate, quality]
+    needs: [deduplicate, pipeline]
     if: >-
       always() &&
       (github.event_name != 'push' || needs.deduplicate.result != 'success' || needs.deduplicate.outputs.run_quality != 'false')
@@ -86,22 +78,5 @@ jobs:
       - name: Verify frontend quality result
         shell: bash
         run: |
-          test "${{ needs.quality.result }}" = success
-          test "${{ needs.quality.outputs.frontend_result }}" = success
-
-  container:
-    name: Container builds
-    needs: quality
-    if: >-
-      needs.quality.result == 'success' &&
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      needs.quality.outputs.container_changed == 'true'
-    uses: ./.github/workflows/build-container.yml
-    with:
-      quality_checked: true
-    secrets: inherit
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
+          test "${{ needs.pipeline.result }}" = success
+          test "${{ needs.pipeline.outputs.frontend_result }}" = success

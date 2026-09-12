@@ -2,16 +2,17 @@ name: Quality
 
 on:
   workflow_call:
+    inputs:
+      frontend_image: {required: false, type: string, default: ''}
+      python_ci_image: {required: false, type: string, default: ''}
+      production_image: {required: false, type: string, default: ''}
+      use_harbor: {required: false, type: boolean, default: false}
+      cache_scope: {required: false, type: string, default: 'local'}
+      cache_fallback: {required: false, type: string, default: 'main'}
     outputs:
-      container_changed:
-        description: Whether a container-affecting path changed
-        value: ${{ jobs.scope.outputs.container_changed }}
-      backend_result:
-        description: Result of the aggregate backend quality gate
-        value: ${{ jobs.backend.outputs.result }}
-      frontend_result:
-        description: Result of the frontend quality gate
-        value: ${{ jobs.frontend.outputs.result }}
+      container_changed: {value: '${{ jobs.scope.outputs.container_changed }}'}
+      backend_result: {value: '${{ jobs.backend.outputs.result }}'}
+      frontend_result: {value: '${{ jobs.frontend.outputs.result }}'}
   workflow_dispatch:
 
 permissions:
@@ -28,22 +29,15 @@ jobs:
       container_changed: ${{ steps.selector.outputs.container_changed }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        with: {fetch-depth: 0}
       - id: selector
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            selector_output="$(python3 docker/scripts/changed_lint_files.py --all)"
-          elif [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            selector_output="$(python3 docker/scripts/changed_lint_files.py --merge-base --base-ref '${{ github.event.pull_request.base.sha }}' --head-ref '${{ github.event.pull_request.head.sha }}')"
-          elif [ "$GITHUB_EVENT_NAME" = push ]; then
-            selector_output="$(python3 docker/scripts/changed_lint_files.py --base-ref '${{ github.event.before }}' --head-ref '${{ github.sha }}')"
-          else
-            echo "Unsupported event for changed-file scope: $GITHUB_EVENT_NAME" >&2
-            exit 1
-          fi
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then selector_output="$(python3 docker/scripts/changed_lint_files.py --all)"
+          elif [ "$GITHUB_EVENT_NAME" = pull_request ]; then selector_output="$(python3 docker/scripts/changed_lint_files.py --merge-base --base-ref '${{ github.event.pull_request.base.sha }}' --head-ref '${{ github.event.pull_request.head.sha }}')"
+          elif [ "$GITHUB_EVENT_NAME" = push ]; then selector_output="$(python3 docker/scripts/changed_lint_files.py --base-ref '${{ github.event.before }}' --head-ref '${{ github.sha }}')"
+          else echo "Unsupported event for changed-file scope: $GITHUB_EVENT_NAME" >&2; exit 1; fi
           for key in mypy_scope eslint_scope ruff_scope container_changed; do
             value="$(printf '%s\n' "$selector_output" | while IFS= read -r line; do case "$line" in "$key="*) printf '%s' "${line#*=}"; break;; esac; done)"
             [ -n "$value" ] || { echo "changed_lint_files.py did not emit $key" >&2; exit 1; }
@@ -57,24 +51,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/sync-readme
-        with:
-          fail-on-diff: 'true'
+        with: {fail-on-diff: 'true'}
       - name: Validate docker compose manifests
         run: |
-          set -euo pipefail
-          cp -n .env.example .env
+          set -euo pipefail; cp -n .env.example .env
           docker compose -f docker-compose.yml config >/dev/null
           docker compose -f docker/docker-compose.dev.yml config >/dev/null
       - uses: docker/setup-buildx-action@v3
+      - name: Log in to Harbor Registry
+        if: inputs.use_harbor
+        uses: docker/login-action@v3
+        with: {registry: hub.docker.visnovsky.us, username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
       - uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/Dockerfile
           target: python-quality-check
           push: false
-          build-args: RUFF_SCOPE=${{ needs.scope.outputs.ruff_scope }}
-          cache-from: type=gha,scope=backend-quality-fast
-          cache-to: type=gha,mode=max,scope=backend-quality-fast
+          build-args: |
+            RUFF_SCOPE=${{ needs.scope.outputs.ruff_scope }}
+          cache-from: |
+            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-fast-{0}', inputs.cache_scope) || '' }}
+            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-fast-{0}', inputs.cache_fallback) || '' }}
+          cache-to: ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-fast-{0},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd', inputs.cache_scope) || '' }}
 
   backend-analysis:
     name: Backend Analysis
@@ -83,6 +82,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      - name: Log in to Harbor Registry
+        if: inputs.use_harbor
+        uses: docker/login-action@v3
+        with: {registry: hub.docker.visnovsky.us, username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
       - name: Build shared backend check image
         uses: docker/build-push-action@v5
         with:
@@ -91,38 +94,32 @@ jobs:
           target: python-ci-base
           load: true
           tags: ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }}
-          cache-from: type=gha,scope=backend-ci-base
-          cache-to: type=gha,mode=max,scope=backend-ci-base
-      - name: Restore mypy cache
-        id: mypy-cache
+          build-args: |
+            ${{ inputs.python_ci_image != '' && format('PYTHON_CI_DEPS_IMAGE={0}', inputs.python_ci_image) || '' }}
+          cache-from: |
+            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-analysis-{0}', inputs.cache_scope) || '' }}
+            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-analysis-{0}', inputs.cache_fallback) || '' }}
+          cache-to: ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-analysis-{0},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd', inputs.cache_scope) || '' }}
+      - id: mypy-cache
         uses: actions/cache/restore@v4
         with:
           path: .mypy_cache
-          key: mypy-${{ runner.os }}-${{ runner.arch }}-python312-${{ hashFiles('pyproject.toml') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: mypy-${{ runner.os }}-${{ runner.arch }}-python312-${{ hashFiles('pyproject.toml') }}-
+          key: mypy-${{ runner.os }}-${{ runner.arch }}-${{ inputs.python_ci_image || hashFiles('pyproject.toml') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: mypy-${{ runner.os }}-${{ runner.arch }}-${{ inputs.python_ci_image || hashFiles('pyproject.toml') }}-
       - name: Mypy type check
         env:
           MYPY_SCOPE: ${{ needs.scope.outputs.mypy_scope }}
-        run: |
-          set -euo pipefail
-          mkdir -p .mypy_cache
-          chmod ugo+rwx .mypy_cache
-          docker run --rm --user "$(id -u):$(id -g)" \
-            -e MYPY_SCOPE -v "$PWD/.mypy_cache:/ragtime/.mypy_cache" \
-            ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }} \
-            python docker/scripts/run_scoped_mypy.py
+        run: mkdir -p .mypy_cache && chmod ugo+rwx .mypy_cache && docker run --rm --user "$(id -u):$(id -g)" -e MYPY_SCOPE -v "$PWD/.mypy_cache:/ragtime/.mypy_cache" ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }} python docker/scripts/run_scoped_mypy.py
       - name: Pyright problem check
         run: docker run --rm ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }} python -m pyright --pythonpath .venv/bin/python
       - name: Duplicate code check
-        run: docker run --rm ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }} npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests
+        run: docker run --rm ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }} jscpd --config .jscpd.json ragtime runtime tests
       - name: Pytest suite
         run: docker run --rm ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }} sh -c 'mkdir -p "$INDEX_DATA_PATH" && python -m pytest tests'
       - name: Save mypy cache
         if: always() && steps.mypy-cache.outcome == 'success'
         uses: actions/cache/save@v4
-        with:
-          path: .mypy_cache
-          key: ${{ steps.mypy-cache.outputs.cache-primary-key }}
+        with: {path: .mypy_cache, key: '${{ steps.mypy-cache.outputs.cache-primary-key }}'}
       - name: Remove shared backend check image
         if: always()
         run: docker image rm -f ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }} || true
@@ -132,31 +129,25 @@ jobs:
     needs: [backend-fast, backend-analysis]
     if: always()
     runs-on: self-hosted
-    outputs:
-      result: ${{ steps.result.outputs.value }}
+    outputs: {result: '${{ steps.result.outputs.value }}'}
     steps:
       - id: result
         run: |
-          set -euo pipefail
-          failed=0
-          for result in '${{ needs.backend-fast.result }}' '${{ needs.backend-analysis.result }}'; do
-            [ "$result" = success ] || failed=1
-          done
-          if [ "$failed" -ne 0 ]; then
-            echo 'value=failure' >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          echo 'value=success' >> "$GITHUB_OUTPUT"
+          test '${{ needs.backend-fast.result }}' = success && test '${{ needs.backend-analysis.result }}' = success || { echo value=failure >> "$GITHUB_OUTPUT"; exit 1; }
+          echo value=success >> "$GITHUB_OUTPUT"
 
   frontend:
     name: Frontend Build
     needs: scope
     runs-on: self-hosted
-    outputs:
-      result: ${{ steps.result.outputs.value }}
+    outputs: {result: '${{ steps.result.outputs.value }}'}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      - name: Log in to Harbor Registry
+        if: inputs.use_harbor
+        uses: docker/login-action@v3
+        with: {registry: hub.docker.visnovsky.us, username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
       - name: Frontend format check
         uses: docker/build-push-action@v5
         with:
@@ -164,7 +155,11 @@ jobs:
           file: ./docker/Dockerfile
           target: frontend-format-check
           push: false
-          cache-from: type=gha,scope=frontend-quality
+          build-args: |
+            ${{ inputs.frontend_image != '' && format('FRONTEND_DEPS_IMAGE={0}', inputs.frontend_image) || '' }}
+          cache-from: |
+            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0}', inputs.cache_scope) || '' }}
+            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0}', inputs.cache_fallback) || '' }}
       - name: Frontend ESLint
         uses: docker/build-push-action@v5
         with:
@@ -172,8 +167,12 @@ jobs:
           file: ./docker/Dockerfile
           target: frontend-lint
           push: false
-          build-args: ESLINT_SCOPE=${{ needs.scope.outputs.eslint_scope }}
-          cache-from: type=gha,scope=frontend-quality
+          build-args: |
+            ${{ inputs.frontend_image != '' && format('FRONTEND_DEPS_IMAGE={0}', inputs.frontend_image) || '' }}
+            ESLINT_SCOPE=${{ needs.scope.outputs.eslint_scope }}
+          cache-from: |
+            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0}', inputs.cache_scope) || '' }}
+            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0}', inputs.cache_fallback) || '' }}
       - name: Build frontend
         uses: docker/build-push-action@v5
         with:
@@ -182,10 +181,13 @@ jobs:
           target: frontend-builder
           push: false
           build-args: |
-            ENVIRONMENT=${{ github.head_ref || github.ref_name }}
+            ${{ inputs.frontend_image != '' && format('FRONTEND_DEPS_IMAGE={0}', inputs.frontend_image) || '' }}
+            ENVIRONMENT=${{ (github.base_ref || github.ref_name) == 'beta' && 'beta' || 'main' }}
             APP_VERSION=${{ github.sha }}
-          cache-from: type=gha,scope=frontend-quality
-          cache-to: type=gha,mode=max,scope=frontend-quality
+          cache-from: |
+            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0}', inputs.cache_scope) || '' }}
+            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0}', inputs.cache_fallback) || '' }}
+          cache-to: ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd', inputs.cache_scope) || '' }}
       - id: result
         if: always()
         run: echo "value=${{ job.status }}" >> "$GITHUB_OUTPUT"
