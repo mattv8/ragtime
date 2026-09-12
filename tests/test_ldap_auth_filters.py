@@ -33,8 +33,11 @@ class LdapAuthFilterTests(unittest.TestCase):
             "matt@visnovsky.us",
         )
 
-    def test_user_entry_search_attributes_avoid_explicit_primary_group_id(self) -> None:
-        self.assertEqual(_get_user_entry_search_attributes(), ["*", "memberOf"])
+    def test_user_entry_search_attributes_request_operational_attributes_without_schema_specific_names(self) -> None:
+        self.assertEqual(
+            _get_user_entry_search_attributes(),
+            ["*", "+", "memberOf"],
+        )
 
     def test_group_entry_format_includes_display_name_when_available(self) -> None:
         entry = SimpleNamespace(

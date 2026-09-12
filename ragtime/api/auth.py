@@ -43,6 +43,7 @@ from ragtime.core.app_setting_defaults import (
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.auth import (
     _UNSET,
+    LdapIdentityResolutionError,
     authenticate,
     create_or_update_local_managed_user,
     discover_ldap_structure,
@@ -2522,7 +2523,13 @@ async def import_ldap_user(
     _user: User = Depends(require_admin),
 ):
     """Import one LDAP identity into the local cache without storing a password."""
-    imported = await import_ldap_user_profile(body.username)
+    try:
+        imported = await import_ldap_user_profile(body.username)
+    except LdapIdentityResolutionError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="LDAP identity conflicts with an existing account",
+        ) from None
     if imported is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

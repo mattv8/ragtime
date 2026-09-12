@@ -996,9 +996,11 @@ enum WorkspaceScmAutoSyncPolicy {
 /// User account (synced from LDAP or local admin)
 model User {
   id                 String        @id @default(uuid())
+  // SQL also enforces LDAP-only lower(username) uniqueness via users_ldap_username_lower_unique.
   username           String        @unique // For LDAP: samAccountName/uid, for local: prefixed with "local:"
   authProvider       AuthProvider  @default(ldap) @map("auth_provider")
   ldapDn             String?       @map("ldap_dn") // LDAP distinguished name (null for local users)
+  ldapIdentityKey     String?       @unique @map("ldap_identity_key") // entryuuid:<UUID> or objectguid:<UUID>
   sourceProvider     AuthProvider? @map("source_provider") // Original upstream provider for cached/synced identities
   sourceId           String?       @map("source_id") // Provider-specific immutable identifier when available
   passwordHash       String?       @map("password_hash") // PBKDF2 hash for local_managed users only

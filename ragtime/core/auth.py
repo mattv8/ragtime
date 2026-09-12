@@ -19,6 +19,7 @@ import ssl
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
+from uuid import UUID
 
 from fastapi import Request, Response
 from jose import JWTError, jwt  # type: ignore[import-untyped]
@@ -38,6 +39,7 @@ from ldap3.core.exceptions import (  # type: ignore[import-untyped]
 from ldap3.utils.conv import escape_filter_chars  # type: ignore[import-untyped]
 from prisma import Json, types
 from prisma.enums import AuthProvider, TotpPolicy, UserRole
+from prisma.errors import UniqueViolationError
 from pydantic import BaseModel
 
 from ragtime.config.settings import settings
@@ -111,6 +113,7 @@ class AuthUserProfile(BaseModel):
     source_provider: str
     source_id: Optional[str] = None
     source_dn: Optional[str] = None
+    ldap_identity_key: Optional[str] = None
     display_name: Optional[str] = None
     email: Optional[str] = None
     role: str = "user"
@@ -757,7 +760,10 @@ def _format_ldap_group_entry(entry: Any) -> dict[str, str]:
 
 def _get_user_entry_search_attributes() -> list[str]:
     """Return LDAP attributes needed for user lookup and role checks."""
-    return ["*", "memberOf"]
+    # ``+`` asks LDAP servers for operational attributes, notably entryUUID.
+    # AD returns objectGUID through ``*``. Avoid explicitly naming either
+    # schema-specific attribute: strict LDAP servers reject unknown names.
+    return ["*", "+", "memberOf"]
 
 
 def _build_user_search_filters(configured_filter: str, username: str) -> list[str]:
@@ -781,6 +787,39 @@ def _build_user_search_filters(configured_filter: str, username: str) -> list[st
     return filters
 
 
+def _compatible_ldap_search_attributes(attributes: list[str]) -> list[str]:
+    """Drop operational-attribute requests for directories that reject them."""
+    return [attribute for attribute in attributes if attribute != "+"]
+
+
+def _search_with_attribute_fallback(
+    conn: Connection,
+    *,
+    search_base: str,
+    search_filter: str,
+    search_scope: Any,
+    attributes: list[str],
+    size_limit: int | None = None,
+) -> bool:
+    """Search with operational attributes, then retry compatibly if unsupported."""
+    kwargs: dict[str, Any] = {
+        "search_base": search_base,
+        "search_filter": search_filter,
+        "search_scope": search_scope,
+        "attributes": attributes,
+    }
+    if size_limit is not None:
+        kwargs["size_limit"] = size_limit
+    try:
+        return bool(conn.search(**kwargs))
+    except LDAPException as error:
+        compatible_attributes = _compatible_ldap_search_attributes(attributes)
+        if not _is_invalid_attribute_error(error) or compatible_attributes == attributes:
+            raise
+        kwargs["attributes"] = compatible_attributes
+        return bool(conn.search(**kwargs))
+
+
 def _search_first_matching_entry(
     conn: Connection,
     search_base: str,
@@ -791,7 +830,8 @@ def _search_first_matching_entry(
     """Try search filters in order and return first matching LDAP entry."""
     for search_filter in search_filters:
         try:
-            conn.search(
+            _search_with_attribute_fallback(
+                conn,
                 search_base=search_base,
                 search_filter=search_filter,
                 search_scope=SUBTREE,
@@ -806,6 +846,43 @@ def _search_first_matching_entry(
 
             logger.debug(f"LDAP search failed in {context} for filter {search_filter}: {e}")
 
+    return None
+
+
+def _ldap_entry_identity_key(user_entry: Any) -> str | None:
+    """Return a canonical immutable LDAP identity key when the server exposes one."""
+
+    def attribute_value(attribute_name: str) -> Any:
+        if not hasattr(user_entry, attribute_name):
+            return None
+        attribute = getattr(user_entry, attribute_name)
+        raw_values = getattr(attribute, "raw_values", None)
+        if raw_values:
+            return raw_values[0]
+        value = getattr(attribute, "value", attribute)
+        if isinstance(value, (list, tuple)):
+            return value[0] if value else None
+        return value
+
+    def parse_uuid(value: Any, *, little_endian_bytes: bool = False) -> str | None:
+        if value is None:
+            return None
+        try:
+            if isinstance(value, bytes):
+                if little_endian_bytes and len(value) == 16:
+                    return str(UUID(bytes_le=value))
+                value = value.decode("ascii")
+            return str(UUID(str(value).strip()))
+        except (TypeError, ValueError, UnicodeDecodeError, AttributeError):
+            return None
+
+    entry_uuid = parse_uuid(attribute_value("entryUUID"))
+    if entry_uuid:
+        return f"entryuuid:{entry_uuid}"
+
+    object_guid = parse_uuid(attribute_value("objectGUID"), little_endian_bytes=True)
+    if object_guid:
+        return f"objectguid:{object_guid}"
     return None
 
 
@@ -835,6 +912,7 @@ def _ldap_profile_from_entry(
         source_provider="ldap",
         source_id=str(user_entry.entry_dn),
         source_dn=str(user_entry.entry_dn),
+        ldap_identity_key=_ldap_entry_identity_key(user_entry),
         display_name=display_name or ldap_username,
         email=email,
         role=role,
@@ -991,6 +1069,85 @@ def _normalized_group_dns(values: list[str] | None) -> set[str]:
     return {str(value).strip().casefold() for value in (values or []) if str(value).strip()}
 
 
+class LdapIdentityResolutionError(RuntimeError):
+    """LDAP profile cannot be safely associated with one local user."""
+
+
+def _folded_ldap_value(value: str | None) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _is_ldap_user(user: Any) -> bool:
+    return _provider_value(getattr(user, "authProvider", None)) == AuthProvider.ldap.value
+
+
+async def _resolve_ldap_profile_user(profile: AuthUserProfile, *, db: Any) -> Any | None:
+    """Resolve an LDAP profile without ever converting a local account to LDAP.
+
+    The immutable directory key is authoritative.  Rows which predate that key
+    may only be attached through an unambiguous, case-folded username *and*
+    matching DN.  This deliberately fails closed rather than guessing when old
+    records or local account names conflict.
+    """
+    if profile.source_provider != "ldap":
+        return None
+
+    folded_username = _folded_ldap_value(profile.username)
+    if not folded_username:
+        raise LdapIdentityResolutionError("LDAP profile has no username")
+
+    username_matches = await db.user.find_many(where={"username": {"equals": profile.username, "mode": "insensitive"}})
+    local_matches = [user for user in username_matches if not _is_ldap_user(user)]
+    if local_matches:
+        raise LdapIdentityResolutionError("LDAP username conflicts with a local account")
+
+    identity_match = None
+    if profile.ldap_identity_key:
+        identity_match = await db.user.find_unique(where={"ldapIdentityKey": profile.ldap_identity_key})
+        if identity_match is not None:
+            if not _is_ldap_user(identity_match):
+                raise LdapIdentityResolutionError("LDAP identity key conflicts with a local account")
+            if any(user.id != identity_match.id for user in username_matches):
+                raise LdapIdentityResolutionError("LDAP username is ambiguous")
+            return identity_match
+
+    ldap_matches = [user for user in username_matches if _is_ldap_user(user)]
+    if not ldap_matches:
+        return None
+    if len(ldap_matches) != 1:
+        raise LdapIdentityResolutionError("LDAP username is ambiguous")
+
+    legacy_user = ldap_matches[0]
+    existing_identity_key = getattr(legacy_user, "ldapIdentityKey", None)
+    if existing_identity_key:
+        raise LdapIdentityResolutionError("LDAP immutable identity does not match")
+
+    stored_dn = _folded_ldap_value(getattr(legacy_user, "ldapDn", None))
+    profile_dn = _folded_ldap_value(profile.source_dn)
+    if not stored_dn or not profile_dn or stored_dn != profile_dn:
+        raise LdapIdentityResolutionError("LDAP legacy identity DN does not match")
+    return legacy_user
+
+
+def _ldap_identity_update_data(profile: AuthUserProfile) -> dict[str, Any]:
+    """Return only identity fields safe to update in non-lazy LDAP login mode."""
+    data = {"username": profile.username}
+    if profile.ldap_identity_key:
+        data["ldapIdentityKey"] = profile.ldap_identity_key
+    return data
+
+
+async def _claim_legacy_ldap_identity_key(*, db: Any, user: Any, profile: AuthUserProfile) -> bool:
+    """Atomically attach a key to a legacy row without overwriting a race winner."""
+    if not profile.ldap_identity_key or getattr(user, "ldapIdentityKey", None):
+        return True
+    result = await db.user.update_many(
+        where={"id": user.id, "ldapIdentityKey": None},
+        data={"ldapIdentityKey": profile.ldap_identity_key},
+    )
+    return int(result) == 1
+
+
 async def _upsert_provider_user_profile(
     profile: AuthUserProfile,
     *,
@@ -1003,8 +1160,6 @@ async def _upsert_provider_user_profile(
     auth_config = await get_auth_provider_config()
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=auth_config.cache_ttl_minutes)
-    existing_user = await db.user.find_unique(where={"username": profile.username})
-
     role = UserRole.admin if profile.role == "admin" else UserRole.user
     update_data: types.UserUpdateInput = {
         "authProvider": provider,
@@ -1017,34 +1172,58 @@ async def _upsert_provider_user_profile(
         "sourceSyncedAt": now,
         "sourceExpiresAt": expires_at,
     }
+    if provider == AuthProvider.ldap and profile.ldap_identity_key:
+        update_data["ldapIdentityKey"] = profile.ldap_identity_key
     if mark_login:
         update_data["lastLoginAt"] = now
     if password_hash is not None:
         update_data["passwordHash"] = password_hash
 
-    if existing_user:
-        if not (auth_config.manual_role_override_wins and existing_user.roleManuallySet):
-            update_data["role"] = await _apply_local_group_role(existing_user, role)
-        user = await db.user.update(where={"id": existing_user.id}, data=update_data)
-    else:
-        create_data: types.UserCreateInput = {
-            "username": profile.username,
-            "authProvider": provider,
-            "ldapDn": profile.source_dn if provider == AuthProvider.ldap else None,
-            "sourceProvider": provider,
-            "sourceId": profile.source_id,
-            "email": profile.email,
-            "displayName": profile.display_name,
-            "cachedGroups": Json(profile.groups),
-            "sourceSyncedAt": now,
-            "sourceExpiresAt": expires_at,
-            "role": role,
-        }
-        if mark_login:
-            create_data["lastLoginAt"] = now
-        if password_hash is not None:
-            create_data["passwordHash"] = password_hash
-        user = await db.user.create(data=create_data)
+    user = None
+    for attempt in range(2):
+        existing_user = (
+            await _resolve_ldap_profile_user(profile, db=db)
+            if provider == AuthProvider.ldap
+            else await db.user.find_unique(where={"username": profile.username})
+        )
+        try:
+            if existing_user:
+                if provider == AuthProvider.ldap and not await _claim_legacy_ldap_identity_key(
+                    db=db,
+                    user=existing_user,
+                    profile=profile,
+                ):
+                    continue
+                if provider == AuthProvider.ldap:
+                    update_data["username"] = profile.username
+                if not (auth_config.manual_role_override_wins and existing_user.roleManuallySet):
+                    update_data["role"] = await _apply_local_group_role(existing_user, role)
+                user = await db.user.update(where={"id": existing_user.id}, data=update_data)
+            else:
+                create_data: types.UserCreateInput = {
+                    "username": profile.username,
+                    "authProvider": provider,
+                    "ldapDn": profile.source_dn if provider == AuthProvider.ldap else None,
+                    "sourceProvider": provider,
+                    "sourceId": profile.source_id,
+                    "email": profile.email,
+                    "displayName": profile.display_name,
+                    "cachedGroups": Json(profile.groups),
+                    "sourceSyncedAt": now,
+                    "sourceExpiresAt": expires_at,
+                    "role": role,
+                }
+                if provider == AuthProvider.ldap and profile.ldap_identity_key:
+                    create_data["ldapIdentityKey"] = profile.ldap_identity_key
+                if mark_login:
+                    create_data["lastLoginAt"] = now
+                if password_hash is not None:
+                    create_data["passwordHash"] = password_hash
+                user = await db.user.create(data=create_data)
+            break
+        except UniqueViolationError as exc:
+            if attempt:
+                raise LdapIdentityResolutionError("LDAP identity changed concurrently") from exc
 
     if user is None:
         raise RuntimeError("Failed to upsert user profile")
@@ -1074,6 +1253,29 @@ async def _upsert_provider_user_profile(
         user_id=user.id,
     )
     return user
+
+
+async def _mark_existing_ldap_login(profile: AuthUserProfile) -> Any | None:
+    """Record a non-lazy LDAP login while still enforcing identity resolution."""
+    db = await get_db()
+    for attempt in range(2):
+        user = await _resolve_ldap_profile_user(profile, db=db)
+        if user is None:
+            return None
+        try:
+            if not await _claim_legacy_ldap_identity_key(db=db, user=user, profile=profile):
+                continue
+            return await db.user.update(
+                where={"id": user.id},
+                data={
+                    "lastLoginAt": datetime.now(timezone.utc),
+                    **_ldap_identity_update_data(profile),
+                },
+            )
+        except UniqueViolationError as exc:
+            if attempt:
+                raise LdapIdentityResolutionError("LDAP identity changed concurrently") from exc
+    return None
 
 
 def _discover_ldap_structure_sync(
@@ -1445,14 +1647,8 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
                 mark_login=True,
             )
         else:
-            db = await get_db()
-            existing_user = await db.user.find_unique(where={"username": profile.username})
-            if existing_user:
-                user = await db.user.update(
-                    where={"id": existing_user.id},
-                    data={"lastLoginAt": datetime.now(timezone.utc)},
-                )
-            else:
+            user = await _mark_existing_ldap_login(profile)
+            if user is None:
                 user = await _upsert_provider_user_profile(
                     profile,
                     provider=AuthProvider.ldap,
@@ -1471,6 +1667,9 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
             role=user.role,
         )
 
+    except LdapIdentityResolutionError as exc:
+        logger.warning(f"LDAP identity resolution rejected for {username}: {exc}")
+        return AuthResult(success=False, error="LDAP identity conflict")
     except LDAPBindError:
         return AuthResult(success=False, error="Invalid credentials")
     except LDAPException as e:
@@ -1557,7 +1756,8 @@ async def search_ldap_user_profiles(query: str, *, limit: int = 8) -> list[AuthU
 
         for search_filter in _build_ldap_typeahead_filters(query):
             try:
-                conn.search(
+                _search_with_attribute_fallback(
+                    conn,
                     search_base=search_base,
                     search_filter=search_filter,
                     search_scope=SUBTREE,
@@ -1681,7 +1881,8 @@ async def resolve_ldap_role_for_user_dn(
         return None, "Failed to connect to LDAP server"
 
     try:
-        conn.search(
+        _search_with_attribute_fallback(
+            conn,
             search_base=user_dn,
             search_filter="(objectClass=*)",
             search_scope="BASE",
@@ -1738,7 +1939,8 @@ async def ldap_user_is_member_of_group_strict(user_dn: str, group_dn: str) -> bo
         raise RuntimeError("Failed to connect to LDAP server")
 
     try:
-        conn.search(
+        _search_with_attribute_fallback(
+            conn,
             search_base=user_dn,
             search_filter="(objectClass=*)",
             search_scope="BASE",
