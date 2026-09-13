@@ -123,7 +123,12 @@ jobs:
       - name: Duplicate code check
         run: docker run --rm '${{ steps.buildx.outputs.image_tag }}' jscpd --config .jscpd.json ragtime runtime tests
       - name: Pytest suite
-        run: docker run --rm '${{ steps.buildx.outputs.image_tag }}' sh -c 'mkdir -p "$INDEX_DATA_PATH" && python -m pytest tests'
+        run: |
+          docker run --rm \
+            -v "$PWD/docker/buildkitd.ci.toml:/ragtime/docker/buildkitd.ci.toml:ro" \
+            -v "$PWD/.github/actions:/ragtime/.github/actions:ro" \
+            '${{ steps.buildx.outputs.image_tag }}' \
+            sh -c 'mkdir -p "$INDEX_DATA_PATH" && python -m pytest tests'
       - name: Save mypy cache
         if: always() && steps.mypy-cache.outcome == 'success'
         uses: actions/cache/save@v4
