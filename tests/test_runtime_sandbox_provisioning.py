@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -873,47 +873,75 @@ class SandboxProvisioningTests(unittest.TestCase):
         )
 
     def test_exec_path_rearms_status_fd_cloexec_so_parent_sees_eof_after_exec(self) -> None:
-        read_fd, write_fd = os.pipe()
-        ready_read_fd, ready_write_fd = os.pipe()
-        target = "import os, sys, time; os.write(int(sys.argv[1]), b'ready'); time.sleep(10)"
+        status_read_fd, status_write_fd = os.pipe()
+        progress_read_fd, progress_write_fd = os.pipe()
+        control_read_fd, control_write_fd = os.pipe()
+        parent_fds = {
+            status_read_fd,
+            status_write_fd,
+            progress_read_fd,
+            progress_write_fd,
+            control_read_fd,
+            control_write_fd,
+        }
+        target = "import os, sys; ready_fd = int(sys.argv[1]); control_fd = int(sys.argv[2]); os.write(ready_fd, b'ready'); os.read(control_fd, 7)"
         helper = (
             "import os, sys; "
             "from runtime.worker import sandbox_launcher; "
             "status_fd = int(sys.argv[1]); "
-            "ready_fd = int(sys.argv[2]); "
+            "progress_fd = int(sys.argv[2]); "
+            "control_fd = int(sys.argv[3]); "
+            "os.write(progress_fd, b'loaded'); "
+            "os.read(control_fd, 2); "
             "sandbox_launcher._arm_status_fd_cloexec(status_fd); "
-            f"os.execv(sys.executable, [sys.executable, '-c', {target!r}, str(ready_fd)])"
+            f"os.execv(sys.executable, [sys.executable, '-c', {target!r}, str(progress_fd), str(control_fd)])"
         )
         repo_root = str(Path(__file__).resolve().parents[1])
         env = os.environ.copy()
         env["PYTHONPATH"] = repo_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-        process = subprocess.Popen(
-            [sys.executable, "-c", helper, str(write_fd), str(ready_write_fd)],
-            pass_fds=(write_fd, ready_write_fd),
-            cwd=repo_root,
-            env=env,
-        )
-
-        os.close(write_fd)
-        os.close(ready_write_fd)
+        process: subprocess.Popen[bytes] | None = None
         try:
-            ready, _, _ = select.select([ready_read_fd], [], [], 1.0)
-            self.assertEqual(ready, [ready_read_fd])
-            self.assertEqual(os.read(ready_read_fd, 5), b"ready")
-            readable, _, _ = select.select([read_fd], [], [], 1.0)
-            self.assertEqual(readable, [read_fd])
-            self.assertEqual(os.read(read_fd, 1), b"")
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    helper,
+                    str(status_write_fd),
+                    str(progress_write_fd),
+                    str(control_read_fd),
+                ],
+                pass_fds=(status_write_fd, progress_write_fd, control_read_fd),
+                cwd=repo_root,
+                env=env,
+            )
+            for fd in (status_write_fd, progress_write_fd, control_read_fd):
+                os.close(fd)
+                parent_fds.remove(fd)
+            loaded, _, _ = select.select([progress_read_fd], [], [], 30.0)
+            self.assertEqual(loaded, [progress_read_fd])
+            self.assertEqual(os.read(progress_read_fd, 6), b"loaded")
+            os.write(control_write_fd, b"go")
+            ready, _, _ = select.select([progress_read_fd], [], [], 30.0)
+            self.assertEqual(ready, [progress_read_fd])
+            self.assertEqual(os.read(progress_read_fd, 5), b"ready")
+            readable, _, _ = select.select([status_read_fd], [], [], 1.0)
+            self.assertEqual(readable, [status_read_fd])
+            self.assertEqual(os.read(status_read_fd, 1), b"")
             self.assertIsNone(process.poll())
+            os.write(control_write_fd, b"release")
+            self.assertEqual(process.wait(timeout=30.0), 0)
         finally:
-            os.close(read_fd)
-            os.close(ready_read_fd)
-            if process.poll() is None:
-                process.terminate()
-            try:
-                process.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=1.0)
+            for fd in parent_fds:
+                with suppress(OSError):
+                    os.close(fd)
+            if process is not None:
+                if process.poll() is None:
+                    process.terminate()
+                try:
+                    process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=1.0)
 
     def test_chroot_launcher_falls_back_to_synced_system_dirs_when_mount_setup_fails(self) -> None:
         sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")
