@@ -29,6 +29,7 @@ on:
         default: false
 
 permissions:
+  actions: read
   contents: read
 
 env:
@@ -90,7 +91,8 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: ./.github/actions/managed-buildx
+        with: {scope: 'base-${{ matrix.kind }}'}
       - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -133,12 +135,15 @@ jobs:
       python_ci_image: ${{ steps.digest-images.outputs.python_ci_image || steps.empty-images.outputs.python_ci_image }}
       production_image: ${{ steps.digest-images.outputs.production_image || steps.empty-images.outputs.production_image }}
     steps:
+      - uses: actions/checkout@v4
+        if: ${{ needs.access.outputs.can_publish == 'true' }}
       - id: empty-images
         if: ${{ needs.access.outputs.can_publish != 'true' }}
         run: |
           printf 'frontend_image=\npython_ci_image=\nproduction_image=\n' >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
+      - uses: ./.github/actions/managed-buildx
         if: ${{ needs.access.outputs.can_publish == 'true' }}
+        with: {scope: base-resolve}
       - uses: docker/login-action@v3
         if: ${{ needs.access.outputs.can_publish == 'true' }}
         with:

@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
   pull-requests: read
 
@@ -49,6 +50,7 @@ jobs:
       caller_event: ${{ github.event_name }}
     secrets: inherit
     permissions:
+      actions: read
       contents: read
       packages: write
       id-token: write

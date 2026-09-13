@@ -16,6 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -57,7 +58,8 @@ jobs:
           set -euo pipefail; cp -n .env.example .env
           docker compose -f docker-compose.yml config >/dev/null
           docker compose -f docker/docker-compose.dev.yml config >/dev/null
-      - uses: docker/setup-buildx-action@v3
+      - uses: ./.github/actions/managed-buildx
+        with: {scope: backend-fast}
       - name: Log in to Harbor Registry
         if: inputs.use_harbor
         uses: docker/login-action@v3
@@ -81,7 +83,9 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - id: buildx
+        uses: ./.github/actions/managed-buildx
+        with: {scope: backend-analysis}
       - name: Log in to Harbor Registry
         if: inputs.use_harbor
         uses: docker/login-action@v3
@@ -93,7 +97,11 @@ jobs:
           file: ./docker/Dockerfile
           target: python-ci-base
           load: true
-          tags: ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }}
+          tags: ${{ steps.buildx.outputs.image_tag }}
+          labels: |
+            org.ragtime.ci.repository=${{ github.repository }}
+            org.ragtime.ci.run-id=${{ github.run_id }}
+            org.ragtime.ci.run-attempt=${{ github.run_attempt }}
           build-args: |
             ${{ inputs.python_ci_image != '' && format('PYTHON_CI_DEPS_IMAGE={0}', inputs.python_ci_image) || '' }}
           cache-from: |
@@ -109,20 +117,23 @@ jobs:
       - name: Mypy type check
         env:
           MYPY_SCOPE: ${{ needs.scope.outputs.mypy_scope }}
-        run: mkdir -p .mypy_cache && chmod ugo+rwx .mypy_cache && docker run --rm --user "$(id -u):$(id -g)" -e MYPY_SCOPE -v "$PWD/.mypy_cache:/ragtime/.mypy_cache" ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }} python docker/scripts/run_scoped_mypy.py
+        run: mkdir -p .mypy_cache && chmod ugo+rwx .mypy_cache && docker run --rm --user "$(id -u):$(id -g)" -e MYPY_SCOPE -v "$PWD/.mypy_cache:/ragtime/.mypy_cache" '${{ steps.buildx.outputs.image_tag }}' python docker/scripts/run_scoped_mypy.py
       - name: Pyright problem check
-        run: docker run --rm ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }} python -m pyright --pythonpath .venv/bin/python
+        run: docker run --rm '${{ steps.buildx.outputs.image_tag }}' python -m pyright --pythonpath .venv/bin/python
       - name: Duplicate code check
-        run: docker run --rm ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }} jscpd --config .jscpd.json ragtime runtime tests
+        run: docker run --rm '${{ steps.buildx.outputs.image_tag }}' jscpd --config .jscpd.json ragtime runtime tests
       - name: Pytest suite
-        run: docker run --rm ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }} sh -c 'mkdir -p "$INDEX_DATA_PATH" && python -m pytest tests'
+        run: docker run --rm '${{ steps.buildx.outputs.image_tag }}' sh -c 'mkdir -p "$INDEX_DATA_PATH" && python -m pytest tests'
       - name: Save mypy cache
         if: always() && steps.mypy-cache.outcome == 'success'
         uses: actions/cache/save@v4
         with: {path: .mypy_cache, key: '${{ steps.mypy-cache.outputs.cache-primary-key }}'}
       - name: Remove shared backend check image
         if: always()
-        run: docker image rm -f ragtime-ci:${{ github.run_id }}-${{ github.run_attempt }} || true
+        run: |
+          if ! docker image rm '${{ steps.buildx.outputs.image_tag }}'; then
+            echo '::warning::Managed backend analysis image was not removed; a later managed collection may recover it.'
+          fi
 
   backend:
     name: Backend Quality and Tests
@@ -143,7 +154,8 @@ jobs:
     outputs: {result: '${{ steps.result.outputs.value }}'}
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: ./.github/actions/managed-buildx
+        with: {scope: frontend}
       - name: Log in to Harbor Registry
         if: inputs.use_harbor
         uses: docker/login-action@v3

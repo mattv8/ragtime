@@ -1,0 +1,48 @@
+name: Managed Buildx
+description: Create a disposable, bounded BuildKit builder for this CI job.
+
+inputs:
+  min-free-gib:
+    description: Minimum free Docker filesystem space required before starting.
+    required: false
+    default: '15'
+  scope:
+    description: Stable job or matrix-specific builder scope.
+    required: false
+    default: ${{ github.job }}
+
+outputs:
+  builder_name:
+    description: Name of the managed builder.
+    value: ${{ steps.prepare.outputs.builder_name }}
+  image_tag:
+    description: Managed local image tag for this job.
+    value: ${{ steps.prepare.outputs.image_tag }}
+
+runs:
+  using: composite
+  steps:
+    - id: prepare
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        SCOPE: ${{ inputs.scope }}
+        MIN_FREE_GIB: ${{ inputs.min-free-gib }}
+      run: python3 docker/scripts/ci_docker_gc.py prepare --scope "$SCOPE" --min-free-gib "$MIN_FREE_GIB" >> "$GITHUB_OUTPUT"
+    - uses: docker/setup-buildx-action@v3
+      with:
+        name: ${{ steps.prepare.outputs.builder_name }}
+        cleanup: true
+        keep-state: false
+        driver-opts: image=moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+        buildkitd-config: docker/buildkitd.ci.toml
+    - name: Summarize managed BuildKit cache limits
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+        ### Managed BuildKit cache
+
+        - Per-builder unused cache budget: 8 GB maximum, with 2 GB reserved.
+        - Builder creation requires 15 GiB free on Docker's filesystem; 25 GiB is recommended for heavy builds.
+        EOF

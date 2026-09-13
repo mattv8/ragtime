@@ -36,6 +36,60 @@ def _run_wrapper_check(command: str, quality_result: str, aggregate_result: str)
 
 
 class CiWorkflowContractTests(unittest.TestCase):
+    def test_managed_buildx_wraps_every_ci_builder_with_safe_gc_configuration(self) -> None:
+        action = yaml.load(
+            (ROOT / ".github" / "actions" / "managed-buildx" / "action.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(action["runs"]["using"], "composite")
+        self.assertEqual(action["inputs"]["min-free-gib"]["default"], "15")
+        prepare = action["runs"]["steps"][0]
+        self.assertIn("ci_docker_gc.py prepare --scope", prepare["run"])
+        self.assertIn("--min-free-gib", prepare["run"])
+        self.assertIn("GH_TOKEN", prepare["env"])
+        self.assertEqual(prepare["env"]["SCOPE"], "${{ inputs.scope }}")
+        self.assertEqual(prepare["env"]["MIN_FREE_GIB"], "${{ inputs.min-free-gib }}")
+        self.assertNotIn("inputs.", prepare["run"])
+        summary = action["runs"]["steps"][2]
+        self.assertEqual(summary["if"], "${{ always() }}")
+        self.assertIn("8 GB", summary["run"])
+        setup = action["runs"]["steps"][1]
+        self.assertEqual(setup["uses"], "docker/setup-buildx-action@v3")
+        self.assertEqual(setup["with"]["cleanup"], "true")
+        self.assertEqual(setup["with"]["keep-state"], "false")
+        self.assertEqual(setup["with"]["buildkitd-config"], "docker/buildkitd.ci.toml")
+        self.assertIn("moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8", setup["with"]["driver-opts"])
+
+        config = (ROOT / "docker" / "buildkitd.ci.toml").read_text(encoding="utf-8")
+        for setting in ("gc = true", 'reservedSpace = "2GB"', 'maxUsedSpace = "8GB"', 'minFreeSpace = "15GB"'):
+            self.assertIn(setting, config)
+
+        builder_sites = 0
+        for workflow_name in ("base-images.yml", "quality.yml", "build-container.yml"):
+            workflow = _load_workflow(workflow_name)
+            for job in workflow["jobs"].values():
+                for step in job.get("steps", []):
+                    if step.get("uses") == "./.github/actions/managed-buildx":
+                        builder_sites += 1
+                        self.assertIn("scope", step["with"])
+        self.assertEqual(builder_sites, 10)
+
+        analysis_steps = _load_workflow("quality.yml")["jobs"]["backend-analysis"]["steps"]
+        shared_builder = next(step for step in analysis_steps if step.get("id") == "buildx")
+        self.assertEqual(shared_builder["uses"], "./.github/actions/managed-buildx")
+        shared_image = next(step for step in analysis_steps if step.get("name") == "Build shared backend check image")
+        self.assertEqual(shared_image["with"]["tags"], "${{ steps.buildx.outputs.image_tag }}")
+        for label in ("org.ragtime.ci.repository", "org.ragtime.ci.run-id", "org.ragtime.ci.run-attempt"):
+            self.assertIn(label, shared_image["with"]["labels"])
+        cleanup = next(step for step in analysis_steps if step.get("name") == "Remove shared backend check image")
+        self.assertIn("steps.buildx.outputs.image_tag", cleanup["run"])
+        self.assertNotIn("image rm -f", cleanup["run"])
+
+    def test_builder_workflows_can_read_actions_for_orphan_status_checks(self) -> None:
+        for workflow_name in ("base-images.yml", "quality.yml", "build-container.yml", "ci.yml"):
+            workflow = _load_workflow(workflow_name)
+            self.assertEqual(workflow["permissions"]["actions"], "read")
+
     def test_required_status_wrappers_link_reusable_quality_results(self) -> None:
         ci_jobs = _load_workflow("ci.yml")["jobs"]
         pipeline_workflow = _load_workflow("build-container.yml")

@@ -27,6 +27,7 @@ PYTHON_FULL_SCOPE_PATHS = (
     "Pipfile.lock",
     "docker/scripts/base_image_tags.py",
     "docker/scripts/ci_build_plan.py",
+    "docker/scripts/ci_docker_gc.py",
     "docker/scripts/extract_build_sbom.py",
 )
 FRONTEND_FULL_SCOPE_PATHS = ("ragtime/frontend/package.json", "ragtime/frontend/package-lock.json")
@@ -40,6 +41,9 @@ QUALITY_ENVIRONMENT_PATHS = (
     "docker/scripts/install_deps_from_pyproject.py",
     "docker/scripts/extract_build_sbom.py",
     "docker/scripts/ci_build_plan.py",
+    "docker/scripts/ci_docker_gc.py",
+    "docker/buildkitd.ci.toml",
+    ".github/actions/managed-buildx/action.yml",
     "docker/scripts/base_image_tags.py",
     ".github/workflows/ci.yml",
     ".github/workflows/quality.yml",
