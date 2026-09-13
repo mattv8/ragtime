@@ -162,3 +162,4 @@ jobs:
             fi
             key="$(printf '%s' "$kind" | tr '[:upper:]' '[:lower:]')"
             printf '%s_image=%s@%s\n' "$key" "$image" "$digest" >> "$GITHUB_OUTPUT"
+          done

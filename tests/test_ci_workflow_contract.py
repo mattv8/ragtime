@@ -1,5 +1,6 @@
 """Regression contracts for protected-branch CI status checks."""
 
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -88,6 +89,59 @@ class CiWorkflowContractTests(unittest.TestCase):
         frontend_build = quality["frontend"]["steps"][-2]["with"]["build-args"]
         self.assertIn("\n", frontend_build)
         self.assertNotIn("\\n", frontend_build)
+
+    def test_all_workflow_bash_scripts_are_syntactically_valid(self) -> None:
+        """Catch missing loop/conditional terminators in workflow shell scripts."""
+        workflow_dir = ROOT / ".github" / "workflows"
+        workflows = list(workflow_dir.glob("*.yml"))
+        self.assertGreater(len(workflows), 0, "No workflows found")
+
+        for workflow_file in workflows:
+            with self.subTest(workflow=workflow_file.name):
+                workflow = _load_workflow(workflow_file.name)
+                if not isinstance(workflow, dict) or "jobs" not in workflow:
+                    continue
+
+                jobs = workflow["jobs"]
+                if not isinstance(jobs, dict):
+                    continue
+
+                for job_id, job in jobs.items():
+                    if not isinstance(job, dict) or "steps" not in job:
+                        continue
+
+                    steps = job["steps"]
+                    if not isinstance(steps, list):
+                        continue
+
+                    for step_idx, step in enumerate(steps):
+                        if not isinstance(step, dict):
+                            continue
+                        shell = step.get("shell", "bash")
+                        if not isinstance(shell, str) or shell.split()[0] not in {"bash", "sh"}:
+                            continue
+
+                        run_script = step.get("run")
+                        if not isinstance(run_script, str):
+                            continue
+
+                        # Replace GitHub expressions with inert placeholders to avoid syntax issues.
+                        # Non-greedy match: ${{ ... }} becomes ${_placeholder_}.
+                        sanitized = re.sub(r"\$\{\{.*?\}\}", "${_placeholder_}", run_script, flags=re.DOTALL)
+
+                        # Run bash -n (syntax check only) on the sanitized script.
+                        result = subprocess.run(
+                            ["bash", "-n"],
+                            input=sanitized,
+                            capture_output=True,
+                            text=True,
+                        )
+
+                        self.assertEqual(
+                            result.returncode,
+                            0,
+                            f"Bash syntax error in {workflow_file.name} job '{job_id}' step {step_idx}: {result.stderr}",
+                        )
 
 
 if __name__ == "__main__":
