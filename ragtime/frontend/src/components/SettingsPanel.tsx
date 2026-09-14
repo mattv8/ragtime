@@ -38,6 +38,7 @@ import { InlineCopyButton } from './shared/InlineCopyButton';
 import { UserSpaceCodeIndexesModal } from './shared/UserSpaceCodeIndexesModal';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
+import { ObjectStorageSettings } from './shared/ObjectStorageSettings';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
 import { ModelFilterModal } from './ModelFilterModal';
 import { CheckboxDropdown } from './shared/CheckboxDropdown';
@@ -4634,6 +4635,7 @@ export function SettingsPanel({
                 Configure shared User Space runtime behavior, workspace support settings, and code
                 index maintenance.
               </p>
+              {currentUser?.role === 'admin' && <ObjectStorageSettings />}
 
               <div
                 style={{

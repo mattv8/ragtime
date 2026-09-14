@@ -76,6 +76,8 @@ services:
       - RUNTIME_BRIDGE_BASE_URL=${RUNTIME_BRIDGE_BASE_URL:-}
       # Development-only defaults. Override these when testing adversarial/networked deployments.
       - RUNTIME_AUTH_TOKEN=${RUNTIME_AUTH_TOKEN:-dev-runtime-auth-token}
+      - OBJECT_STORAGE_ENDPOINT=${OBJECT_STORAGE_ENDPOINT:-http://object-storage:9000}
+      - OBJECT_STORAGE_CONTROL_URL=${OBJECT_STORAGE_CONTROL_URL:-http://object-storage:9001}
       # Authentication settings (from .env file via env_file)
       - JWT_EXPIRE_HOURS=${JWT_EXPIRE_HOURS:-24}
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
@@ -118,6 +120,23 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # Internal persistent S3 gateway; it waits for Ragtime to create /data/.encryption_key.
+  object-storage:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.storage
+    container_name: object-storage-dev
+    restart: unless-stopped
+    environment:
+      - S3_PORT=9000
+      - STORAGE_CONTROL_PORT=9001
+      - STORAGE_ROOT=/data/_userspace/_object_storage
+      - STORAGE_KEY_FILE=/data/.encryption_key
+    volumes:
+      - ../.data:/data
+    networks:
+      - default
 
   runtime:
     build:

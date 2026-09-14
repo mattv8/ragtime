@@ -163,12 +163,6 @@ MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
 MAX_USERSPACE_SCREENSHOT_PIXELS = 1_440_000
 _SCREENSHOT_WAIT_AFTER_LOAD_FLOOR_MS = 900
 _SCREENSHOT_WAIT_AFTER_LOAD_HMR_FLOOR_MS = 1800
-_OBJECT_STORAGE_READY_TIMEOUT_SECONDS = 30.0
-_OBJECT_STORAGE_STDERR_READ_TIMEOUT_SECONDS = 2.0
-_OBJECT_STORAGE_CONFIG_DIRNAME = "s3"
-_OBJECT_STORAGE_CONFIG_NAME = "config.json"
-_OBJECT_STORAGE_ENDPOINT_ENV_KEY = "RAGTIME_OBJECT_STORAGE_ENDPOINT"
-_OBJECT_STORAGE_PORT_ENV_KEY = "RAGTIME_OBJECT_STORAGE_PORT"
 _AGENT_SHELL_ROOT = Path("/tmp/.ragtime-agent-shell")
 _AGENT_SHELL_BIN_DIR = _AGENT_SHELL_ROOT / "bin"
 _AGENT_SHELL_ENV_METADATA_NAME = "workspace-env.json"
@@ -189,7 +183,6 @@ _PLAYWRIGHT_MCP_TOOL_NAMES = frozenset(
         "playwright_debug_steps",
     }
 )
-_S3RVER_RUNNER_JS_PATH = _TEMPLATES_DIR / "s3rver_runner.js"
 _REDACTED_ENV_VIEW_TEMPLATE_PATH = _TEMPLATES_DIR / "redacted_env_view.py"
 
 
@@ -345,8 +338,6 @@ class WorkerService:
         self._devserver_processes: dict[str, asyncio.subprocess.Process] = {}
         self._devserver_log_paths: dict[str, Path] = {}
         self._devserver_log_handles: dict[str, Any] = {}
-        self._object_storage_processes: dict[str, asyncio.subprocess.Process] = {}
-        self._object_storage_env_overrides: dict[str, dict[str, str]] = {}
         self._bootstrap_retry_flags: dict[str, bool] = {}
         self._devserver_start_timeout_seconds = int(os.getenv("RUNTIME_DEVSERVER_START_TIMEOUT_SECONDS", "90"))
         self._runtime_bootstrap_timeout_seconds = int(os.getenv("RUNTIME_BOOTSTRAP_TIMEOUT_SECONDS", "180"))
@@ -642,7 +633,6 @@ class WorkerService:
         # devserver port as the launched workspace process.
         if session.devserver_port:
             environment["PORT"] = str(session.devserver_port)
-        environment.update(self._object_storage_env_overrides.get(session.id, {}))
         environment.update(self.build_agent_shell_environment(session))
         return environment
 
@@ -727,207 +717,8 @@ class WorkerService:
         return self.redact_workspace_secret_output(session, output_text), next_carry
 
     @staticmethod
-    def _workspace_object_storage_config_path(workspace_root: Path) -> Path:
-        return workspace_root / _OBJECT_STORAGE_CONFIG_DIRNAME / _OBJECT_STORAGE_CONFIG_NAME
-
-    @staticmethod
     def _workspace_screenshot_dir(workspace_root: Path) -> Path:
         return workspace_root / "runtime-artifacts" / "screenshots"
-
-    def _read_workspace_object_storage_config(
-        self,
-        workspace_root: Path,
-    ) -> dict[str, Any] | None:
-        config_path = self._workspace_object_storage_config_path(workspace_root)
-        if not config_path.exists() or not config_path.is_file():
-            return None
-        try:
-            raw = json.loads(config_path.read_text(encoding="utf-8"))
-        except Exception:
-            return None
-        return raw if isinstance(raw, dict) else None
-
-    @staticmethod
-    def _extract_object_storage_buckets(
-        payload: dict[str, Any] | None,
-    ) -> list[dict[str, Any]]:
-        if not isinstance(payload, dict):
-            return []
-        buckets = payload.get("buckets")
-        if not isinstance(buckets, list):
-            return []
-        return [bucket for bucket in buckets if isinstance(bucket, dict)]
-
-    async def _terminate_object_storage_locked(self, session_id: str) -> None:
-        process = self._object_storage_processes.pop(session_id, None)
-        self._object_storage_env_overrides.pop(session_id, None)
-        if process is None:
-            return
-        if process.returncode is not None:
-            return
-        try:
-            process.terminate()
-        except ProcessLookupError:
-            return
-        except Exception:
-            try:
-                process.kill()
-            except Exception:
-                return
-        try:
-            await asyncio.wait_for(process.wait(), timeout=5)
-        except Exception:
-            try:
-                process.kill()
-            except Exception:
-                pass
-            try:
-                await asyncio.wait_for(process.wait(), timeout=2)
-            except Exception:
-                pass
-
-    async def _start_object_storage_locked(
-        self,
-        session: WorkerSession,
-    ) -> str | None:
-        await self._terminate_object_storage_locked(session.id)
-
-        config = self._read_workspace_object_storage_config(session.workspace_root)
-        buckets = self._extract_object_storage_buckets(config)
-        if not buckets:
-            self._object_storage_env_overrides[session.id] = {}
-            return None
-
-        node_binary = shutil.which("node")
-        if not node_binary:
-            return "Workspace object storage requires Node.js in the runtime container."
-
-        data_dir = session.workspace_root / _OBJECT_STORAGE_CONFIG_DIRNAME / "buckets"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        bucket_names = [str(bucket.get("name") or "").strip() for bucket in buckets if str(bucket.get("name") or "").strip()]
-        if not bucket_names:
-            self._object_storage_env_overrides[session.id] = {}
-            return None
-
-        port = self._pick_free_port()
-        node_env = {**os.environ, "NODE_PATH": "/usr/local/lib/node_modules"}
-        process = await asyncio.create_subprocess_exec(
-            node_binary,
-            str(_S3RVER_RUNNER_JS_PATH),
-            "--directory",
-            str(data_dir),
-            "--port",
-            str(port),
-            "--buckets-json",
-            json.dumps(bucket_names),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=node_env,
-        )
-
-        stdout = process.stdout
-        stderr = process.stderr
-        if stdout is None or stderr is None:
-            await self._terminate_object_storage_locked(session.id)
-            return "Workspace object storage failed to start."
-        process_registered = False
-
-        async def _kill_startup_process() -> None:
-            try:
-                process.kill()
-            except Exception:
-                pass
-            try:
-                await asyncio.wait_for(process.wait(), timeout=2)
-            except Exception:
-                pass
-
-        try:
-            try:
-                ready_line = await asyncio.wait_for(
-                    stdout.readline(),
-                    timeout=_OBJECT_STORAGE_READY_TIMEOUT_SECONDS,
-                )
-            except Exception as exc:
-                await _kill_startup_process()
-                stderr_tail = ""
-                try:
-                    stderr_tail = (
-                        (await asyncio.wait_for(stderr.read(), timeout=_OBJECT_STORAGE_STDERR_READ_TIMEOUT_SECONDS)).decode("utf-8", errors="replace").strip()
-                    )
-                except Exception:
-                    stderr_tail = ""
-                stdout_tail = ""
-                try:
-                    stdout_tail = (
-                        (await asyncio.wait_for(stdout.read(), timeout=_OBJECT_STORAGE_STDERR_READ_TIMEOUT_SECONDS)).decode("utf-8", errors="replace").strip()
-                    )
-                except Exception:
-                    stdout_tail = ""
-                exit_code = process.returncode
-                cause = str(exc) or type(exc).__name__
-                detail = (
-                    f"Workspace object storage timed out during startup after {_OBJECT_STORAGE_READY_TIMEOUT_SECONDS:.0f}s (exit={exit_code}, cause={cause})."
-                )
-                if stderr_tail:
-                    detail = f"{detail} stderr: {stderr_tail}"
-                if stdout_tail:
-                    detail = f"{detail} stdout: {stdout_tail}"
-                return detail
-
-            if not ready_line:
-                stderr_tail = ""
-                try:
-                    stderr_tail = (await asyncio.wait_for(stderr.read(), timeout=1)).decode("utf-8", errors="replace").strip()
-                except Exception:
-                    stderr_tail = ""
-                detail = "Workspace object storage exited before becoming ready."
-                if stderr_tail:
-                    detail = f"{detail} {stderr_tail}"
-                return detail
-
-            try:
-                ready_payload = json.loads(ready_line.decode("utf-8", errors="replace"))
-            except Exception:
-                ready_payload = {}
-            if ready_payload.get("type") != "ready":
-                error = str(ready_payload.get("error") or "Invalid object storage handshake")
-                return f"Workspace object storage failed to start: {error}"
-
-            endpoint = f"http://127.0.0.1:{port}"
-            self._object_storage_processes[session.id] = process
-            self._object_storage_env_overrides[session.id] = {
-                _OBJECT_STORAGE_ENDPOINT_ENV_KEY: endpoint,
-                _OBJECT_STORAGE_PORT_ENV_KEY: str(port),
-            }
-            process_registered = True
-            return None
-        except asyncio.CancelledError:
-            if not process_registered:
-                await _kill_startup_process()
-            raise
-
-    async def _start_object_storage_for_pipeline(
-        self,
-        session_id: str,
-        operation_id: str,
-    ) -> str | None:
-        async with self._lock:
-            session = self._sessions.get(session_id)
-            if not session or session.runtime_operation_id != operation_id:
-                return None
-            return await self._start_object_storage_locked(session)
-
-    async def _cancel_object_storage_task_for_pipeline(
-        self,
-        task: asyncio.Task[str | None],
-    ) -> None:
-        if not task.done():
-            task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            return
 
     @staticmethod
     def _mount_target_paths(mounts: list[dict[str, Any]]) -> set[str]:
@@ -2084,7 +1875,6 @@ class WorkerService:
 
         self._devserver_processes.pop(session.id, None)
         session.devserver_running = False
-        await self._terminate_object_storage_locked(session.id)
         log_handle = self._devserver_log_handles.pop(session.id, None)
         if log_handle:
             try:
@@ -2119,7 +1909,6 @@ class WorkerService:
             session = self._sessions.get(session_id)
             if not session or session.runtime_operation_id != operation_id:
                 return
-            await self._terminate_object_storage_locked(session.id)
             session.state = "running"
             session.devserver_running = False
             session.last_error = error
@@ -2191,24 +1980,11 @@ class WorkerService:
                     self._set_operation_phase(session, "deps_install")
                     session.updated_at = utc_now()
 
-                object_storage_task = asyncio.create_task(self._start_object_storage_for_pipeline(session_id, operation_id))
-
                 try:
                     deps_error = await self._ensure_entrypoint_dependencies(session)
                 except asyncio.CancelledError:
-                    await self._cancel_object_storage_task_for_pipeline(object_storage_task)
-                    async with self._lock:
-                        await self._terminate_object_storage_locked(session_id)
-                    raise
-                except Exception:
-                    await self._cancel_object_storage_task_for_pipeline(object_storage_task)
-                    async with self._lock:
-                        await self._terminate_object_storage_locked(session_id)
                     raise
                 if deps_error:
-                    await self._cancel_object_storage_task_for_pipeline(object_storage_task)
-                    async with self._lock:
-                        await self._terminate_object_storage_locked(session_id)
                     await self._mark_operation_failed(
                         session_id,
                         operation_id,
@@ -2216,18 +1992,9 @@ class WorkerService:
                     )
                     return
 
-                object_storage_error = await object_storage_task
                 async with self._lock:
                     session = self._sessions.get(session_id)
                     if not session or session.runtime_operation_id != operation_id:
-                        await self._terminate_object_storage_locked(session_id)
-                        return
-                    if object_storage_error:
-                        session.state = "running"
-                        session.devserver_running = False
-                        session.last_error = object_storage_error
-                        self._set_operation_phase(session, "failed")
-                        session.updated_at = utc_now()
                         return
 
                 # --- Part 1: prepare for spawn (inside lock) ---
@@ -2248,7 +2015,6 @@ class WorkerService:
                     session.launch_framework = resolution.framework
                     session.launch_cwd = resolution.cwd
                     if not resolution.command:
-                        await self._terminate_object_storage_locked(session.id)
                         session.devserver_port = resolution.port
                         session.devserver_command = None
                         error = resolution.error or "Invalid runtime entrypoint"
@@ -2281,7 +2047,6 @@ class WorkerService:
                     _launch_cwd = self._resolve_launch_cwd(session)
                     _workspace_env = {
                         **session.workspace_env,
-                        **self._object_storage_env_overrides.get(session.id, {}),
                     }
 
                 # --- Part 2: spawn sandbox OUTSIDE the lock ---
@@ -2332,7 +2097,6 @@ class WorkerService:
                                     pass
                             return
                         if _spawn_error or _process is None:
-                            await self._terminate_object_storage_locked(session.id)
                             self._devserver_log_handles.pop(session.id, None)
                             session.state = "running"
                             session.devserver_running = False
@@ -2372,7 +2136,6 @@ class WorkerService:
                             return
                         await self._sync_devserver_state_locked(session)
                         await self._terminate_devserver_locked(session.id)
-                        await self._terminate_object_storage_locked(session.id)
                         session.state = "running"
                         session.devserver_running = False
                         if not session.last_error:
@@ -2505,7 +2268,6 @@ class WorkerService:
             if startup_task and not startup_task.done():
                 startup_task.cancel()
             await self._terminate_devserver_locked(session.id)
-            await self._terminate_object_storage_locked(session.id)
             cleanup_sandbox(session.sandbox_spec)
             session.state = "stopped"
             session.devserver_running = False
@@ -2532,7 +2294,6 @@ class WorkerService:
                     workspace_env_visibility,
                     session.workspace_env,
                 )
-            await self._terminate_object_storage_locked(session.id)
             previous_targets = self._mount_target_paths(session.workspace_mounts)
             if workspace_mounts is not None:
                 session.workspace_mounts = list(workspace_mounts)
@@ -3493,8 +3254,6 @@ class WorkerService:
                     task.cancel()
             for sid in list(self._devserver_processes.keys()):
                 await self._terminate_devserver_locked(sid)
-            for sid in list(self._object_storage_processes.keys()):
-                await self._terminate_object_storage_locked(sid)
         # Tear down warm Playwright MCP connections outside the lock so owner
         # task cancellation (and stdio subprocess teardown) cannot deadlock on it.
         await self._terminate_mcp_brokers()

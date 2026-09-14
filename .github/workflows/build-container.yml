@@ -19,6 +19,7 @@ on:
       - '.jscpd.json'
       - 'ragtime/**'
       - 'runtime/**'
+      - 'storage/**'
       - 'tests/**'
       - 'typings/**'
       - 'pyproject.toml'
@@ -36,6 +37,7 @@ env:
   REGISTRY: hub.docker.visnovsky.us
   IMAGE_NAME: library/ragtime
   IMAGE_RUNTIME_NAME: library/runtime
+  IMAGE_STORAGE_NAME: library/ragtime-storage
 
 permissions:
   actions: read
@@ -199,6 +201,31 @@ jobs:
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:buildcache-runtime-${{ needs.plan.outputs.cache_fallback }}
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:buildcache-runtime-${{ needs.plan.outputs.cache_scope }},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd
 
+  candidate-storage:
+    name: Build object-storage candidate
+    needs: [scope, bases, trust, plan]
+    if: >-
+      !cancelled() && needs.scope.result == 'success' && needs.bases.result == 'success' && needs.trust.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.build_main == 'true'
+    runs-on: self-hosted
+    permissions: {actions: read, contents: read, packages: write}
+    outputs: {digest: '${{ steps.build.outputs.digest }}', image: '${{ env.REGISTRY }}/${{ env.IMAGE_STORAGE_NAME }}'}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/managed-buildx
+        with: {scope: candidate-storage}
+      - uses: docker/login-action@v3
+        with: {registry: '${{ env.REGISTRY }}', username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
+      - id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.storage
+          push: true
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_STORAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          platforms: linux/amd64
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_STORAGE_NAME }}:buildcache-storage-${{ needs.plan.outputs.cache_scope }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_STORAGE_NAME }}:buildcache-storage-${{ needs.plan.outputs.cache_scope }},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd
+
   candidate-legacy:
     name: Build legacy candidate
     needs: [bases, trust, plan]
@@ -244,11 +271,12 @@ jobs:
 
   promote:
     name: Promote, sign, and tag candidates
-    needs: [quality, plan, candidate-main, candidate-runtime, candidate-legacy, sbom]
+    needs: [quality, plan, candidate-main, candidate-runtime, candidate-storage, candidate-legacy, sbom]
     if: >-
       !cancelled() && needs.quality.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.promote == 'true' &&
       ((needs.plan.outputs.build_main == 'true' && needs.candidate-main.result == 'success' && needs.sbom.result == 'success') || (needs.plan.outputs.build_main != 'true' && needs.candidate-main.result == 'skipped' && needs.sbom.result == 'skipped')) &&
       ((needs.plan.outputs.build_runtime == 'true' && needs.candidate-runtime.result == 'success') || (needs.plan.outputs.build_runtime != 'true' && needs.candidate-runtime.result == 'skipped')) &&
+      ((needs.plan.outputs.build_main == 'true' && needs.candidate-storage.result == 'success') || (needs.plan.outputs.build_main != 'true' && needs.candidate-storage.result == 'skipped')) &&
       ((needs.plan.outputs.build_legacy == 'true' && needs.candidate-legacy.result == 'success') || (needs.plan.outputs.build_legacy != 'true' && needs.candidate-legacy.result == 'skipped'))
     runs-on: self-hosted
     concurrency:
@@ -277,8 +305,10 @@ jobs:
         env:
           APP: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           RUNTIME: ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}
+          STORAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_STORAGE_NAME }}
           APP_DIGEST: ${{ needs.candidate-main.outputs.digest }}
           RUNTIME_DIGEST: ${{ needs.candidate-runtime.outputs.digest }}
+          STORAGE_DIGEST: ${{ needs.candidate-storage.outputs.digest }}
           LEGACY_DIGEST: ${{ needs.candidate-legacy.outputs.digest }}
           APP_TAGS: ${{ needs.plan.outputs.app_tags }}
           RUNTIME_TAGS: ${{ needs.plan.outputs.runtime_tags }}
@@ -288,6 +318,7 @@ jobs:
           promote() { local image="$1" digest="$2" tags="$3" tag args=(); IFS=, read -r -a tag_list <<< "$tags"; for tag in "${tag_list[@]}"; do args+=(--tag "$image:$tag"); done; docker buildx imagetools create "${args[@]}" "$image@$digest"; for tag in "${tag_list[@]}"; do test "$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$tag")" = "$digest"; done; }
           [ -z "$APP_DIGEST" ] || promote "$APP" "$APP_DIGEST" "$APP_TAGS"
           [ -z "$RUNTIME_DIGEST" ] || promote "$RUNTIME" "$RUNTIME_DIGEST" "$RUNTIME_TAGS"
+          [ -z "$STORAGE_DIGEST" ] || promote "$STORAGE" "$STORAGE_DIGEST" "$APP_TAGS"
           [ -z "$LEGACY_DIGEST" ] || promote "$APP" "$LEGACY_DIGEST" "$LEGACY_TAG"
       - uses: sigstore/cosign-installer@v3
         if: github.event_name != 'pull_request'
@@ -299,11 +330,14 @@ jobs:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           APP: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           RUNTIME: ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}
+          STORAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_STORAGE_NAME }}
           APP_DIGEST: ${{ needs.candidate-main.outputs.digest }}
           RUNTIME_DIGEST: ${{ needs.candidate-runtime.outputs.digest }}
+          STORAGE_DIGEST: ${{ needs.candidate-storage.outputs.digest }}
           LEGACY_DIGEST: ${{ needs.candidate-legacy.outputs.digest }}
         run: |
           set -euo pipefail
           [ -z "$APP_DIGEST" ] || cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$APP@$APP_DIGEST"
           [ -z "$RUNTIME_DIGEST" ] || cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$RUNTIME@$RUNTIME_DIGEST"
+          [ -z "$STORAGE_DIGEST" ] || cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$STORAGE@$STORAGE_DIGEST"
           [ -z "$LEGACY_DIGEST" ] || cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$APP@$LEGACY_DIGEST"

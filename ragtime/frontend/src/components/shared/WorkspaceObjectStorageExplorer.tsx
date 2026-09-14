@@ -76,6 +76,7 @@ export function WorkspaceObjectStorageExplorer({
   const [savingObjectRename, setSavingObjectRename] = useState(false);
 
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const listingRequestRef = useRef(0);
 
   const notify = useCallback(
     (message: string, tone: 'success' | 'error') => {
@@ -86,7 +87,8 @@ export function WorkspaceObjectStorageExplorer({
   );
 
   const loadObjects = useCallback(
-    async (bucketName: string, nextPrefix: string) => {
+    async (bucketName: string, nextPrefix: string, continuationToken?: string | null) => {
+      const requestId = ++listingRequestRef.current;
       setListingLoading(true);
       setError(null);
       try {
@@ -94,13 +96,21 @@ export function WorkspaceObjectStorageExplorer({
           workspaceId,
           bucketName,
           nextPrefix,
+          continuationToken,
         );
-        setListing(result);
+        if (requestId !== listingRequestRef.current) return;
+        setListing((current) =>
+          continuationToken &&
+          current?.bucket_name === result.bucket_name &&
+          current.prefix === result.prefix
+            ? { ...result, entries: [...current.entries, ...result.entries] }
+            : result,
+        );
         setPrefix(result.prefix);
       } catch (err) {
         notify(err instanceof Error ? err.message : 'Failed to load objects', 'error');
       } finally {
-        setListingLoading(false);
+        if (requestId === listingRequestRef.current) setListingLoading(false);
       }
     },
     [notify, workspaceId],
@@ -117,6 +127,7 @@ export function WorkspaceObjectStorageExplorer({
   );
 
   const closeBucket = useCallback(() => {
+    listingRequestRef.current += 1;
     setSelectedBucket(null);
     setListing(null);
     setPrefix('');
@@ -261,7 +272,7 @@ export function WorkspaceObjectStorageExplorer({
   );
 
   // Breadcrumb segments for prefix navigation
-  const prefixSegments = prefix ? prefix.split('/') : [];
+  const prefixSegments = prefix ? prefix.replace(/\/$/, '').split('/') : [];
 
   if (showBucketWizard) {
     return (
@@ -370,9 +381,13 @@ export function WorkspaceObjectStorageExplorer({
 
         <div className="userspace-object-meta">
           <span>
-            {listing?.total_objects ?? 0} object{(listing?.total_objects ?? 0) === 1 ? '' : 's'}
+            {listing?.total_objects == null
+              ? 'Total objects unknown'
+              : `${listing.total_objects} object${listing.total_objects === 1 ? '' : 's'}`}
           </span>
-          <span>{formatBytes(listing?.total_bytes ?? 0)}</span>
+          <span>
+            {listing?.total_bytes == null ? 'Total size unknown' : formatBytes(listing.total_bytes)}
+          </span>
         </div>
 
         {error && <div className="userspace-object-error">{error}</div>}
@@ -424,9 +439,7 @@ export function WorkspaceObjectStorageExplorer({
                         </td>
                         <td>—</td>
                         <td>Folder</td>
-                        <td>
-                          {entry.object_count} item{entry.object_count === 1 ? '' : 's'}
-                        </td>
+                        <td>—</td>
                         <td className="userspace-sqlite-actions-col" />
                       </tr>
                     );
@@ -508,6 +521,20 @@ export function WorkspaceObjectStorageExplorer({
             </table>
           )}
         </div>
+        {listing?.is_truncated && listing.next_continuation_token && (
+          <div className="userspace-object-pagination" data-userspace-object-pagination="true">
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() =>
+                void loadObjects(selectedBucket.name, prefix, listing.next_continuation_token)
+              }
+              disabled={listingLoading}
+            >
+              {listingLoading ? <Loader2 size={14} className="spinning" /> : null} Load more
+            </button>
+          </div>
+        )}
       </div>
     );
   }

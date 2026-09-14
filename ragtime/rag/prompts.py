@@ -597,7 +597,7 @@ def build_userspace_object_storage_prompt_fragment(
             default_suffix = " [default]" if is_default else ""
             description_suffix = f" [description: {description}]" if description else ""
             lines.append("- Bucket `" + name + "`" + default_suffix + f": public root `{public_root}`, private root `{private_root}`" + description_suffix)
-        return "\n### Workspace object storage buckets\n\n" + "\n".join(lines) + "\n"
+        return "\n### Workspace object storage buckets\n\n" + "\n".join(lines) + _USERSPACE_OBJECT_STORAGE_SDK_GUIDANCE
 
     if object_storage_enabled:
         return (
@@ -606,6 +606,16 @@ def build_userspace_object_storage_prompt_fragment(
         )
 
     return ""
+
+
+_USERSPACE_OBJECT_STORAGE_SDK_GUIDANCE = """
+
+### Workspace S3 SDK contract
+
+- Backend code may use the injected `RAGTIME_OBJECT_STORAGE_*` credentials with standard SigV4 SDKs. Use endpoint `RAGTIME_OBJECT_STORAGE_ENDPOINT`, region `us-east-1`, and path-style addressing. For Node, configure `@aws-sdk/client-s3` with `forcePathStyle: true`; Python may use `boto3.client("s3", endpoint_url=..., region_name="us-east-1")`.
+- Keep these credentials in backend-only environment variables. Browser code must call the app's authenticated routes, never an S3 endpoint with credentials or presigned secrets.
+- Bucket names are organizational logical names; their metadata is managed by Ragtime and object bytes are stored through S3. Do not replace this with source-filesystem paths, guess anonymous/public URL prefixes, or create new public-access semantics.
+"""
 
 
 def build_workspace_scm_setup_prompt(

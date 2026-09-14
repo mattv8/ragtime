@@ -3457,6 +3457,8 @@ export interface DeleteUserSpaceGlobalEnvVarResponse {
 }
 
 export interface UserSpaceObjectStorageBucket {
+  id?: string;
+  backend_id?: string;
   name: string;
   description?: string | null;
   public_prefix: string;
@@ -3514,8 +3516,48 @@ export interface UserSpaceObjectStorageListResponse {
   prefix: string;
   parent_prefix?: string | null;
   entries: UserSpaceObjectStorageEntry[];
-  total_objects: number;
-  total_bytes: number;
+  total_objects: number | null;
+  total_bytes: number | null;
+  next_continuation_token: string | null;
+  is_truncated: boolean;
+}
+
+export type ObjectStorageMigrationState =
+  | 'pending'
+  | 'copying'
+  | 'verifying'
+  | 'completed'
+  | 'failed';
+
+export interface ObjectStorageMigrationJob {
+  id: string;
+  workspace_id: string;
+  state: ObjectStorageMigrationState;
+  objects_copied: number;
+  bytes_copied: number;
+  error?: string | null;
+}
+
+export interface ObjectStorageAdminSettings {
+  mode: 'local' | 'external';
+  default_backend_id: string;
+  endpoint?: string | null;
+  region?: string | null;
+  bucket?: string | null;
+  access_key_configured: boolean;
+  secret_key_configured: boolean;
+  existing_local_workspaces: number;
+  migrations: ObjectStorageMigrationJob[];
+}
+
+export interface UpdateObjectStorageAdminSettingsRequest {
+  mode: 'local' | 'external';
+  endpoint?: string;
+  region?: string;
+  bucket?: string;
+  access_key_id?: string;
+  secret_access_key?: string;
+  create_bucket?: boolean;
 }
 
 export interface UploadUserSpaceObjectStorageObjectResponse {

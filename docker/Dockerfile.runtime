@@ -53,7 +53,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && rm -rf /var/lib/apt/lists/*
 
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
-    npm install -g npm@10 corepack playwright esbuild s3rver \
+    npm install -g npm@10 corepack playwright esbuild \
     && corepack enable \
     && corepack prepare pnpm@latest --activate \
     && corepack prepare yarn@stable --activate \

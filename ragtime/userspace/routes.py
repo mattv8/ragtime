@@ -270,6 +270,11 @@ async def _stage_upload_file_with_limit(
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space"])
 
+# The storage admin router deliberately shares the existing User Space prefix.
+from ragtime.userspace.object_storage.admin_routes import router as object_storage_admin_router
+
+router.include_router(object_storage_admin_router)
+
 _USERSPACE_SURFACE_HEADER = "X-Ragtime-Userspace-Surface"
 _USERSPACE_TREE_MOUNTS_HEADER = "X-Ragtime-Userspace-Tree-Includes-Mounts"
 
@@ -1475,6 +1480,8 @@ async def list_workspace_object_storage_objects(
     workspace_id: str,
     bucket_name: str,
     prefix: str = Query(default=""),
+    continuation_token: str | None = Query(default=None),
+    max_keys: int = Query(default=100, ge=1, le=1000),
     user: Any = Depends(get_current_user),
 ):
     return await userspace_service.list_workspace_object_storage_objects(
@@ -1482,6 +1489,8 @@ async def list_workspace_object_storage_objects(
         user.id,
         bucket_name,
         prefix=prefix,
+        continuation_token=continuation_token,
+        max_keys=max_keys,
     )
 
 
@@ -1496,39 +1505,37 @@ async def upload_workspace_object_storage_object(
     prefix: str = Form(default=""),
     user: Any = Depends(get_current_user),
 ):
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner")
     max_bytes = clamp_userspace_primitive_upload_max_bytes((await get_app_settings()).get("userspace_primitive_upload_max_bytes"))
     raw_name = Path(str(file.filename or "")).name.strip() or "upload"
     if raw_name in {".", ".."}:
         raw_name = "upload"
 
-    content_chunks: list[bytes] = []
     total_bytes = 0
-    try:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            total_bytes += len(chunk)
-            if total_bytes > max_bytes:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"Uploaded object exceeds the configured upload size limit ({max_bytes:,} bytes).",
-                )
-            content_chunks.append(chunk)
-    finally:
-        await file.close()
+    with tempfile.TemporaryFile() as staged:
+        try:
+            while chunk := await file.read(1024 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Uploaded object exceeds the configured upload size limit ({max_bytes:,} bytes).",
+                    )
+                staged.write(chunk)
+        finally:
+            await file.close()
+        normalized_prefix = userspace_service._normalize_object_storage_prefix(prefix)
+        object_key = f"{normalized_prefix}/{raw_name}" if normalized_prefix else raw_name
+        staged.seek(0)
 
-    normalized_prefix = userspace_service._normalize_object_storage_prefix(prefix)
-    object_key = f"{normalized_prefix}/{raw_name}" if normalized_prefix else raw_name
-    result = await userspace_service.upload_workspace_object_storage_object(
-        workspace_id,
-        user.id,
-        bucket_name,
-        object_key,
-        b"".join(content_chunks),
-        content_type=file.content_type or None,
-    )
-    return result
+        return await userspace_service.upload_workspace_object_storage_file(
+            workspace_id,
+            user.id,
+            bucket_name,
+            object_key,
+            staged,
+            content_type=file.content_type or None,
+        )
 
 
 @router.get(
@@ -1538,19 +1545,15 @@ async def download_workspace_object_storage_object(
     workspace_id: str,
     bucket_name: str,
     object_key: str,
+    request: Request,
     user: Any = Depends(get_current_user),
 ):
-    target, key, content_type = await userspace_service.get_workspace_object_storage_object_path(
+    return await userspace_service.download_workspace_object_storage_object(
         workspace_id,
         user.id,
         bucket_name,
         object_key,
-    )
-    filename = Path(key).name or "object"
-    return FileResponse(
-        path=str(target),
-        media_type=content_type,
-        filename=filename,
+        headers=dict(request.headers),
     )
 
 

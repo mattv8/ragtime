@@ -117,6 +117,7 @@ class CiBuildPlanTests(unittest.TestCase):
             "needs.sbom.result": "success",
             "needs.plan.outputs.build_runtime": "true",
             "needs.candidate-runtime.result": "success",
+            "needs.candidate-storage.result": "success",
             "needs.plan.outputs.build_legacy": "false",
             "needs.candidate-legacy.result": "skipped",
         }
@@ -128,6 +129,9 @@ class CiBuildPlanTests(unittest.TestCase):
             ("needs.candidate-main.result", "failure"),
             ("needs.sbom.result", "skipped"),
             ("needs.candidate-runtime.result", "cancelled"),
+            ("needs.candidate-storage.result", "failure"),
+            ("needs.candidate-storage.result", "cancelled"),
+            ("needs.candidate-storage.result", "skipped"),
             ("cancelled()", True),
         ):
             with self.subTest(field=field, value=value):

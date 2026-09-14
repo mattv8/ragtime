@@ -288,6 +288,8 @@ from ragtime.userspace.models import (
     WorkspaceSqliteImportTaskPhase,
     WorkspaceToolOptionState,
 )
+from ragtime.userspace.object_storage import client as object_storage_client
+from ragtime.userspace.object_storage import control as object_storage_control
 from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
 from ragtime.userspace.sqlite_import import SqlImportResult
 from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
@@ -3534,7 +3536,7 @@ class UserSpaceService:
                         user_id,
                     )
 
-                self._ensure_object_storage_config(workspace.id)
+                await object_storage_control.ensure_workspace(workspace.id)
                 self._seed_runtime_bootstrap_config(workspace.id)
                 self._seed_runtime_entrypoint_config(workspace.id)
                 await self._ensure_workspace_git_repo(workspace.id)
@@ -7187,6 +7189,51 @@ class UserSpaceService:
         self._write_object_storage_config(workspace_id, payload)
         return payload
 
+    def _legacy_object_storage_payload(self, workspace_id: str) -> dict[str, Any] | None:
+        """Read (never rewrite) the pre-gateway trusted workspace config."""
+        config_path = self._workspace_object_storage_config_path(workspace_id)
+        if not config_path.is_file():
+            return None
+        try:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("Ignoring invalid legacy object storage config for workspace=%s", workspace_id)
+            return None
+        if not isinstance(payload, dict):
+            return None
+        secret = str(payload.get("secret_access_key_encrypted") or "")
+        try:
+            secret_access_key = decrypt_secret(secret) if secret else ""
+        except Exception:
+            logger.warning("Unable to decrypt legacy object storage credentials for workspace=%s", workspace_id)
+            return None
+        buckets = payload.get("buckets")
+        return {
+            "access_key_id": str(payload.get("access_key_id") or ""),
+            "secret_access_key": secret_access_key,
+            "default_bucket_name": str(payload.get("default_bucket_name") or ""),
+            "buckets": [bucket for bucket in buckets if isinstance(bucket, dict)] if isinstance(buckets, list) else [],
+        }
+
+    async def _ensure_managed_object_storage(self, workspace_id: str) -> dict[str, Any]:
+        """Perform the one-time gateway transition for a workspace if needed."""
+        try:
+            config = await object_storage_control.get_workspace(workspace_id)
+            if config.get("legacy_import_state") in {"pending", "copying", "failed"}:
+                await object_storage_control.import_legacy(workspace_id)
+                return await object_storage_control.get_workspace(workspace_id)
+            return config
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+        legacy = self._legacy_object_storage_payload(workspace_id)
+        config = await object_storage_control.ensure_workspace(workspace_id, legacy)
+        if legacy is not None:
+            # The gateway records completion, so concurrent/retried transitions
+            # are safe and never turn ordinary GETs into repeated imports.
+            await object_storage_control.import_legacy(workspace_id)
+        return config
+
     @staticmethod
     def _parse_object_storage_datetime(raw_value: Any) -> datetime:
         if isinstance(raw_value, datetime):
@@ -7260,16 +7307,16 @@ class UserSpaceService:
             buckets=buckets,
         )
 
-    def _build_object_storage_runtime_env(self, workspace_id: str) -> dict[str, str]:
-        payload = self._ensure_object_storage_config(workspace_id)
+    async def _build_object_storage_runtime_env(self, workspace_id: str) -> dict[str, str]:
+        payload = await self._ensure_managed_object_storage(workspace_id)
         default_bucket_name = str(payload.get("default_bucket_name") or "").strip()
         access_key_id = str(payload.get("access_key_id") or "").strip()
-        encrypted_secret = str(payload.get("secret_access_key_encrypted") or "").strip()
-        secret_access_key = decrypt_secret(encrypted_secret) if encrypted_secret else ""
+        secret_access_key = str(payload.get("secret_access_key") or "").strip()
         config_model = self._object_storage_config_model(workspace_id, payload)
 
         env: dict[str, str] = {
             _WORKSPACE_OBJECT_STORAGE_ENABLED_ENV_KEY: "true",
+            _WORKSPACE_OBJECT_STORAGE_ENDPOINT_ENV_KEY: os.environ.get("OBJECT_STORAGE_ENDPOINT", "http://object-storage:9000"),
             _WORKSPACE_OBJECT_STORAGE_REGION_ENV_KEY: config_model.region,
             _WORKSPACE_OBJECT_STORAGE_FORCE_PATH_STYLE_ENV_KEY: "true",
             _WORKSPACE_OBJECT_STORAGE_BUCKETS_ENV_KEY: json.dumps(
@@ -7299,14 +7346,14 @@ class UserSpaceService:
             user_id,
             required_role="owner",
         )
-        payload = self._ensure_object_storage_config(workspace_id)
+        payload = await self._ensure_managed_object_storage(workspace_id)
         return self._object_storage_config_model(workspace_id, payload)
 
     async def get_workspace_object_storage_summary(
         self,
         workspace_id: str,
         user_id: str,
-    ) -> UserSpaceObjectStorageConfig:
+    ) -> UserSpaceObjectStorageConfig | None:
         """Return non-secret workspace object-storage metadata for any member.
 
         This is safe for prompt context because it only includes bucket names,
@@ -7314,8 +7361,12 @@ class UserSpaceService:
         """
 
         await self._enforce_workspace_access(workspace_id, user_id)
-        payload = self._ensure_object_storage_config(workspace_id)
-        return self._object_storage_config_model(workspace_id, payload)
+        try:
+            payload = await object_storage_control.get_workspace(workspace_id)
+            return self._object_storage_config_model(workspace_id, payload)
+        except Exception as exc:
+            logger.warning("Workspace object storage summary unavailable for workspace=%s: %s", workspace_id, str(exc))
+            return None  # type: ignore[return-value]
 
     async def create_workspace_object_storage_bucket(
         self,
@@ -7328,26 +7379,16 @@ class UserSpaceService:
             user_id,
             required_role="owner",
         )
-        payload = self._ensure_object_storage_config(workspace_id)
-        raw_buckets = payload.get("buckets")
-        buckets: list[dict[str, Any]] = [bucket for bucket in raw_buckets if isinstance(bucket, dict)] if isinstance(raw_buckets, list) else []
         bucket_name = self._normalize_object_storage_bucket_name(request.name)
-        if any(str((bucket or {}).get("name") or "") == bucket_name for bucket in buckets):
-            raise HTTPException(status_code=409, detail="Bucket already exists")
-
-        now = utc_now()
-        buckets.append(
-            self._build_object_storage_bucket_record(
-                name=bucket_name,
-                description=self._normalize_object_storage_bucket_description(request.description),
-                now=now,
-            )
+        payload = await object_storage_control.request(
+            "POST",
+            f"/v1/workspaces/{workspace_id}/buckets",
+            json={
+                "name": bucket_name,
+                "description": self._normalize_object_storage_bucket_description(request.description),
+                "make_default": request.make_default,
+            },
         )
-        payload["buckets"] = buckets
-        if request.make_default or not str(payload.get("default_bucket_name") or "").strip():
-            payload["default_bucket_name"] = bucket_name
-
-        self._write_object_storage_config(workspace_id, payload)
         db = await get_db()
         await db.workspace.update(
             where={"id": workspace_id},
@@ -7368,48 +7409,15 @@ class UserSpaceService:
             required_role="owner",
         )
         normalized_name = self._normalize_object_storage_bucket_name(bucket_name)
-        payload = self._ensure_object_storage_config(workspace_id)
-        raw_buckets = payload.get("buckets")
-        buckets: list[dict[str, Any]] = [bucket for bucket in raw_buckets if isinstance(bucket, dict)] if isinstance(raw_buckets, list) else []
-        target: dict[str, Any] | None = None
-        for bucket in buckets:
-            if str(bucket.get("name") or "") == normalized_name:
-                target = bucket
-                break
-        if target is None:
-            raise HTTPException(status_code=404, detail="Bucket not found")
-
-        final_name = normalized_name
-        if request.new_name is not None:
-            renamed = self._normalize_object_storage_bucket_name(request.new_name)
-            if renamed != normalized_name:
-                if any(str(bucket.get("name") or "") == renamed for bucket in buckets):
-                    raise HTTPException(status_code=409, detail="A bucket with that name already exists")
-                buckets_dir = self._workspace_object_storage_buckets_dir(workspace_id)
-                source_dir = buckets_dir / normalized_name
-                target_dir = buckets_dir / renamed
-                try:
-                    buckets_dir.mkdir(parents=True, exist_ok=True)
-                    if source_dir.exists():
-                        if target_dir.exists():
-                            raise HTTPException(status_code=409, detail="Bucket storage directory already exists")
-                        source_dir.rename(target_dir)
-                except HTTPException:
-                    raise
-                except OSError as exc:
-                    raise HTTPException(status_code=500, detail="Failed to rename bucket storage directory") from exc
-                target["name"] = renamed
-                if str(payload.get("default_bucket_name") or "") == normalized_name:
-                    payload["default_bucket_name"] = renamed
-                final_name = renamed
-
-        if request.description is not None:
-            target["description"] = self._normalize_object_storage_bucket_description(request.description)
-        target["updated_at"] = utc_now().isoformat()
-        if request.make_default:
-            payload["default_bucket_name"] = final_name
-
-        self._write_object_storage_config(workspace_id, payload)
+        payload = await object_storage_control.request(
+            "PUT",
+            f"/v1/workspaces/{workspace_id}/buckets/{normalized_name}",
+            json={
+                "new_name": self._normalize_object_storage_bucket_name(request.new_name) if request.new_name is not None else None,
+                "description": self._normalize_object_storage_bucket_description(request.description) if request.description is not None else None,
+                "make_default": request.make_default,
+            },
+        )
         db = await get_db()
         await db.workspace.update(
             where={"id": workspace_id},
@@ -7494,53 +7502,29 @@ class UserSpaceService:
         user_id: str,
         bucket_name: str,
         prefix: str | None = None,
+        continuation_token: str | None = None,
+        max_keys: int = 100,
     ) -> UserSpaceObjectStorageListResponse:
         await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
-        bucket, bucket_dir = self._resolve_object_storage_bucket(workspace_id, bucket_name)
+        await self._ensure_managed_object_storage(workspace_id)
+        bucket = self._normalize_object_storage_bucket_name(bucket_name)
         normalized_prefix = self._normalize_object_storage_prefix(prefix)
-
-        objects, total_bytes = await asyncio.to_thread(
-            self._list_object_storage_objects_sync,
-            bucket_dir,
-        )
-
         prefix_segment = f"{normalized_prefix}/" if normalized_prefix else ""
-        direct_objects: dict[str, UserSpaceObjectStorageEntry] = {}
-        child_prefixes: dict[str, dict[str, int]] = {}
-
-        for key, size, modified, content_type in objects:
-            if prefix_segment and not key.startswith(prefix_segment):
-                continue
-            remainder = key[len(prefix_segment) :]
-            if not remainder:
-                continue
-            if "/" in remainder:
-                child_name = remainder.split("/", 1)[0]
-                bucket_stats = child_prefixes.setdefault(child_name, {"count": 0})
-                bucket_stats["count"] += 1
-            else:
-                direct_objects[remainder] = UserSpaceObjectStorageEntry(
-                    name=remainder,
-                    key=key,
-                    entry_type="object",
-                    size_bytes=size,
-                    updated_at=modified,
-                    content_type=content_type,
-                )
-
-        entries: list[UserSpaceObjectStorageEntry] = []
-        for child_name in sorted(child_prefixes):
-            child_key = f"{prefix_segment}{child_name}"
-            entries.append(
-                UserSpaceObjectStorageEntry(
-                    name=child_name,
-                    key=child_key,
-                    entry_type="prefix",
-                    object_count=child_prefixes[child_name]["count"],
-                )
+        result = await object_storage_client.list_objects(workspace_id, bucket, prefix_segment, continuation_token, max_keys)
+        entries = [
+            UserSpaceObjectStorageEntry(name=str(item["Prefix"]).rstrip("/").rsplit("/", 1)[-1], key=str(item["Prefix"]).rstrip("/"), entry_type="prefix")
+            for item in result.get("CommonPrefixes", [])
+        ] + [
+            UserSpaceObjectStorageEntry(
+                name=str(item["Key"]).rsplit("/", 1)[-1],
+                key=str(item["Key"]),
+                entry_type="object",
+                size_bytes=int(item.get("Size", 0)),
+                updated_at=item.get("LastModified"),
+                content_type=None,
             )
-        for name in sorted(direct_objects):
-            entries.append(direct_objects[name])
+            for item in result.get("Contents", [])
+        ]
 
         parent_prefix: str | None = None
         if normalized_prefix:
@@ -7552,8 +7536,10 @@ class UserSpaceService:
             prefix=normalized_prefix,
             parent_prefix=parent_prefix,
             entries=entries,
-            total_objects=len(objects),
-            total_bytes=total_bytes,
+            total_objects=None,
+            total_bytes=None,
+            next_continuation_token=result.get("NextContinuationToken"),
+            is_truncated=bool(result.get("IsTruncated", False)),
         )
 
     async def upload_workspace_object_storage_object(
@@ -7566,23 +7552,17 @@ class UserSpaceService:
         content_type: str | None = None,
     ) -> UploadUserSpaceObjectStorageObjectResponse:
         await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
-        bucket, bucket_dir = self._resolve_object_storage_bucket(workspace_id, bucket_name)
+        await self._ensure_managed_object_storage(workspace_id)
+        bucket = self._normalize_object_storage_bucket_name(bucket_name)
         key = self._normalize_object_storage_object_key(object_key)
-        target = self._resolve_object_storage_target(bucket_dir, key)
-
-        def _write() -> None:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content)
-
-        await asyncio.to_thread(_write)
+        result = await object_storage_client.upload_file(workspace_id, bucket, key, io.BytesIO(content), content_type)
         await self._touch_workspace(workspace_id)
-        resolved_type = content_type or mimetypes.guess_type(target.name)[0]
         return UploadUserSpaceObjectStorageObjectResponse(
             workspace_id=workspace_id,
             bucket_name=bucket,
             key=key,
-            size_bytes=len(content),
-            content_type=resolved_type,
+            size_bytes=int(result["size_bytes"]),
+            content_type=result.get("content_type"),
         )
 
     async def get_workspace_object_storage_object_path(
@@ -7602,6 +7582,39 @@ class UserSpaceService:
         content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         return target, key, content_type
 
+    async def upload_workspace_object_storage_file(
+        self,
+        workspace_id: str,
+        user_id: str,
+        bucket_name: str,
+        object_key: str,
+        fileobj: Any,
+        content_type: str | None = None,
+    ) -> UploadUserSpaceObjectStorageObjectResponse:
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
+        await self._ensure_managed_object_storage(workspace_id)
+        bucket = self._normalize_object_storage_bucket_name(bucket_name)
+        key = self._normalize_object_storage_object_key(object_key)
+        result = await object_storage_client.upload_file(workspace_id, bucket, key, fileobj, content_type)
+        await self._touch_workspace(workspace_id)
+        return UploadUserSpaceObjectStorageObjectResponse(
+            workspace_id=workspace_id, bucket_name=bucket, key=key, size_bytes=int(result["size_bytes"]), content_type=result.get("content_type")
+        )
+
+    async def download_workspace_object_storage_object(
+        self,
+        workspace_id: str,
+        user_id: str,
+        bucket_name: str,
+        object_key: str,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
+        await self._ensure_managed_object_storage(workspace_id)
+        bucket = self._normalize_object_storage_bucket_name(bucket_name)
+        key = self._normalize_object_storage_object_key(object_key)
+        return await object_storage_client.download_response(workspace_id, bucket, key, headers, Path(key).name or "object")
+
     async def delete_workspace_object_storage_object(
         self,
         workspace_id: str,
@@ -7610,25 +7623,10 @@ class UserSpaceService:
         object_key: str,
     ) -> DeleteUserSpaceObjectStorageObjectResponse:
         await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
-        bucket, bucket_dir = self._resolve_object_storage_bucket(workspace_id, bucket_name)
+        await self._ensure_managed_object_storage(workspace_id)
+        bucket = self._normalize_object_storage_bucket_name(bucket_name)
         key = self._normalize_object_storage_object_key(object_key)
-        target = self._resolve_object_storage_target(bucket_dir, key)
-        if target.is_symlink() or not target.exists() or not target.is_file():
-            raise HTTPException(status_code=404, detail="Object not found")
-
-        def _delete() -> None:
-            target.unlink()
-            # Prune now-empty parent directories up to (but not including) bucket root.
-            parent = target.parent
-            while parent != bucket_dir and parent.is_dir():
-                try:
-                    next(parent.iterdir())
-                    break
-                except StopIteration:
-                    parent.rmdir()
-                    parent = parent.parent
-
-        await asyncio.to_thread(_delete)
+        await object_storage_client.delete_object(workspace_id, bucket, key)
         await self._touch_workspace(workspace_id)
         return DeleteUserSpaceObjectStorageObjectResponse(
             success=True,
@@ -7646,39 +7644,20 @@ class UserSpaceService:
         request: RenameUserSpaceObjectStorageObjectRequest,
     ) -> UploadUserSpaceObjectStorageObjectResponse:
         await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
-        bucket, bucket_dir = self._resolve_object_storage_bucket(workspace_id, bucket_name)
+        await self._ensure_managed_object_storage(workspace_id)
+        bucket = self._normalize_object_storage_bucket_name(bucket_name)
         key = self._normalize_object_storage_object_key(object_key)
         new_key = self._normalize_object_storage_object_key(request.new_key)
-        source = self._resolve_object_storage_target(bucket_dir, key)
-        target = self._resolve_object_storage_target(bucket_dir, new_key)
-        if source.is_symlink() or not source.exists() or not source.is_file():
-            raise HTTPException(status_code=404, detail="Object not found")
         if new_key == key:
             raise HTTPException(status_code=400, detail="New key must be different")
-        if target.exists():
-            raise HTTPException(status_code=409, detail="An object with that key already exists")
-
-        def _move() -> int:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            source.rename(target)
-            parent = source.parent
-            while parent != bucket_dir and parent.is_dir():
-                try:
-                    next(parent.iterdir())
-                    break
-                except StopIteration:
-                    parent.rmdir()
-                    parent = parent.parent
-            return target.stat().st_size
-
-        size = await asyncio.to_thread(_move)
+        result = await object_storage_client.rename_object(workspace_id, bucket, key, new_key)
         await self._touch_workspace(workspace_id)
         return UploadUserSpaceObjectStorageObjectResponse(
             workspace_id=workspace_id,
             bucket_name=bucket,
             key=new_key,
-            size_bytes=size,
-            content_type=mimetypes.guess_type(target.name)[0],
+            size_bytes=int(result["size_bytes"]),
+            content_type=result.get("content_type"),
         )
 
     async def delete_workspace_object_storage_bucket(
@@ -7693,35 +7672,7 @@ class UserSpaceService:
             required_role="owner",
         )
         normalized_name = self._normalize_object_storage_bucket_name(bucket_name)
-        payload = self._ensure_object_storage_config(workspace_id)
-        raw_buckets = payload.get("buckets")
-        buckets: list[dict[str, Any]] = [bucket for bucket in raw_buckets if isinstance(bucket, dict)] if isinstance(raw_buckets, list) else []
-        remaining = [bucket for bucket in buckets if str(bucket.get("name") or "") != normalized_name]
-        if len(remaining) == len(buckets):
-            raise HTTPException(status_code=404, detail="Bucket not found")
-        if not remaining:
-            raise HTTPException(
-                status_code=400,
-                detail="At least one workspace bucket must remain configured",
-            )
-
-        payload["buckets"] = remaining
-        if str(payload.get("default_bucket_name") or "") == normalized_name:
-            payload["default_bucket_name"] = str(remaining[0].get("name") or "")
-
-        bucket_dir = self._workspace_object_storage_buckets_dir(workspace_id) / normalized_name
-        try:
-            if bucket_dir.exists() and bucket_dir.is_dir():
-                shutil.rmtree(bucket_dir)
-        except Exception as exc:
-            logger.warning(
-                "Failed to remove workspace object storage bucket data for %s/%s: %s",
-                workspace_id,
-                normalized_name,
-                exc,
-            )
-
-        self._write_object_storage_config(workspace_id, payload)
+        await object_storage_control.request("DELETE", f"/v1/workspaces/{workspace_id}/buckets/{normalized_name}")
         db = await get_db()
         await db.workspace.update(
             where={"id": workspace_id},
@@ -13649,7 +13600,7 @@ class UserSpaceService:
         )
 
         self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
-        self._ensure_object_storage_config(workspace_id)
+        await object_storage_control.ensure_workspace(workspace_id)
         self._seed_runtime_bootstrap_config(workspace_id)
         self._seed_runtime_entrypoint_config(workspace_id)
         await self._ensure_workspace_git_repo(workspace_id)
@@ -14820,6 +14771,8 @@ class UserSpaceService:
 
     async def delete_workspace(self, workspace_id: str, user_id: str, is_admin: bool = False) -> None:
         await self._enforce_workspace_access(workspace_id, user_id, required_role="owner", is_admin=is_admin)
+        # The gateway tombstones credentials before any local workspace state is removed.
+        await object_storage_control.delete_workspace(workspace_id)
         db = await get_db()
         try:
             await db.workspace.delete(where={"id": workspace_id})
@@ -16344,7 +16297,7 @@ class UserSpaceService:
             **self._sanitize_workspace_env_map(list(global_rows)),
             **self._sanitize_workspace_env_map(list(workspace_rows)),
         }
-        env_map.update(self._build_object_storage_runtime_env(workspace_id))
+        env_map.update(await self._build_object_storage_runtime_env(workspace_id))
         return env_map
 
     async def get_workspace_runtime_environment_visibility(

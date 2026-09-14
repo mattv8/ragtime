@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import fcntl
 import getpass
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -12,13 +14,14 @@ import sys
 import tarfile
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Callable, Iterator, Optional
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from ragtime.config.settings import ENCRYPTION_KEY_FILE, settings
 from ragtime.core.backup_crypto import BackupCryptoError, decrypt_stream, encrypt_stream, is_encrypted_backup
@@ -994,6 +997,59 @@ def _copy_backup_data_tree(
     return item_count
 
 
+def _object_storage_root() -> Path:
+    return Path(os.environ.get("STORAGE_ROOT", str(DATA_DIR / "_userspace" / "_object_storage")))
+
+
+def _object_storage_has_state() -> bool:
+    root = _object_storage_root()
+    try:
+        return root.is_dir() and any(root.iterdir())
+    except OSError:
+        return False
+
+
+def _object_storage_control_request(path: str, payload: dict[str, object] | None = None) -> dict[str, object]:
+    key = settings.encryption_key.strip().encode("utf-8")
+    if not key:
+        raise BackupError("Object storage consistency check requires the managed encryption key")
+    token = hmac.new(key, b"ragtime-object-storage-control-v1", hashlib.sha256).hexdigest()
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    endpoint = os.environ.get("OBJECT_STORAGE_CONTROL_URL", "http://object-storage:9001").rstrip("/")
+    request = Request(
+        f"{endpoint}{path}",
+        data=body,
+        method="POST",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(request, timeout=15) as response:  # nosec B310: internal Compose control plane
+            decoded = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise BackupError("Object storage is initialized but could not be quiesced for a consistent backup") from exc
+    if not isinstance(decoded, dict):
+        raise BackupError("Object storage returned an invalid backup consistency response")
+    return decoded
+
+
+@contextmanager
+def _object_storage_backup_lease() -> Iterator[None]:
+    if not _object_storage_has_state():
+        yield
+        return
+    prepared = _object_storage_control_request("/v1/backup/prepare")
+    lease_id = prepared.get("lease_id")
+    if prepared.get("consistent") is not True or not isinstance(lease_id, str) or not lease_id:
+        raise BackupError("Object storage could not provide a consistent backup lease")
+    try:
+        yield
+    finally:
+        try:
+            _object_storage_control_request("/v1/backup/release", {"lease_id": lease_id})
+        except BackupError:
+            logger.error("Object storage backup lease %s could not be released", lease_id)
+
+
 def _resolve_data_source(extract_dir: Path) -> Optional[Path]:
     if (extract_dir / "data").exists():
         return extract_dir / "data"
@@ -1057,7 +1113,8 @@ def _install_database_only_managed_key(extract_dir: Path) -> None:
 
 def create_backup(options: BackupOptions, progress: Optional[ProgressCallback] = None) -> BackupManifest:
     password = _read_password(options.password_fd, prompt="Backup password: ") if options.encrypt else None
-    with _locked_operation(), tempfile.TemporaryDirectory(prefix="ragtime-server-backup-build-") as tmpdir:
+    storage_lease = _object_storage_backup_lease if options.scope in {BackupScope.FULL, BackupScope.FILES} else nullcontext
+    with _locked_operation(), storage_lease(), tempfile.TemporaryDirectory(prefix="ragtime-server-backup-build-") as tmpdir:
         root = Path(tmpdir)
         _emit_progress(progress, "start", progress=5, message="Preparing backup", scope=options.scope.value, encrypted=options.encrypt)
 
@@ -1252,6 +1309,16 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
         )
         restore_scope = options.scope_override or manifest.scope
         data_source = _resolve_data_source(extract_dir)
+        restored_storage = data_source / "_userspace" / "_object_storage" if data_source is not None else None
+        if (
+            restore_scope in {BackupScope.FULL, BackupScope.FILES}
+            and restored_storage is not None
+            and restored_storage.exists()
+            and os.environ.get("OBJECT_STORAGE_RESTORE_OFFLINE_CONFIRMED") != "true"
+        ):
+            raise BackupValidationError(
+                "Restoring object storage requires the gateway to be stopped; set OBJECT_STORAGE_RESTORE_OFFLINE_CONFIRMED=true only after it is offline"
+            )
         if manifest.legacy_embedded_key and not options.acknowledge_legacy_key:
             raise LegacyBackupKeyConfirmationRequiredError("Legacy plaintext backups containing an embedded key require explicit acknowledgement")
         expected_confirmation = _confirmation_phrase()

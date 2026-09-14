@@ -336,10 +336,24 @@ class UserSpaceDocumentParseTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             service = _FakeUserSpaceService(Path(temp_dir))
             upload = _make_upload_file("image.png", b"png-bytes", "image/png")
+            from starlette.responses import Response
+
+            from ragtime.userspace.object_storage import client as storage_client
+
+            stored = {}
+
+            async def store_object(workspace_id, bucket, key, fileobj, content_type=None):
+                stored[(workspace_id, bucket, key)] = fileobj.read()
+                return {"size_bytes": len(stored[(workspace_id, bucket, key)]), "content_type": content_type}
+
+            async def fetch_object(workspace_id, bucket, key, **kwargs):
+                return Response(stored[(workspace_id, bucket, key)], media_type="image/png")
 
             with (
                 mock.patch.object(runtime_routes, "_userspace_service", return_value=service),
                 mock.patch.object(runtime_routes, "_get_primitive_upload_max_bytes", mock.AsyncMock(return_value=1024 * 1024)),
+                mock.patch.object(storage_client, "upload_file", side_effect=store_object),
+                mock.patch.object(storage_client, "download_response", side_effect=fetch_object),
             ):
                 write_result = await runtime_routes._primitive_object_write(
                     "workspace-1",

@@ -1613,7 +1613,7 @@ async def preview_object_read(
 ):
     claims = await _verify_preview_session_cookie(request)
     workspace_id, user_id = _workspace_user_from_preview_claims(claims)
-    return await _primitive_object_response(workspace_id, bucket_name, object_path, user_id)
+    return await _primitive_object_response(workspace_id, bucket_name, object_path, user_id, request)
 
 
 @preview_host_app.put("/__ragtime/objects/{bucket_name}/{object_path:path}")

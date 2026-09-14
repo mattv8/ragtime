@@ -57,6 +57,7 @@ CONTAINER_PATHS = (
     ".jscpd.json",
     "ragtime",
     "runtime",
+    "storage",
     "tests",
     "typings",
     "pyproject.toml",

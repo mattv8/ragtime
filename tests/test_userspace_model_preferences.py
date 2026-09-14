@@ -131,7 +131,7 @@ class WorkspaceDuplicateTaskModelPreferenceTests(unittest.IsolatedAsyncioTestCas
             mock.patch.object(service, "_copy_workspace_chats_for_duplicate", mock.AsyncMock(return_value=0)),
             mock.patch.object(service, "_copy_workspace_mounts_for_duplicate", mock.AsyncMock()),
             mock.patch.object(service, "upsert_workspace_file", mock.AsyncMock()),
-            mock.patch.object(service, "_ensure_object_storage_config"),
+            mock.patch("ragtime.userspace.service.object_storage_control.ensure_workspace", mock.AsyncMock(return_value={})),
             mock.patch.object(service, "_seed_runtime_bootstrap_config"),
             mock.patch.object(service, "_seed_runtime_entrypoint_config"),
             mock.patch.object(service, "_ensure_workspace_git_repo", mock.AsyncMock()),

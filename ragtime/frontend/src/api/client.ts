@@ -112,6 +112,9 @@ import type {
   UploadUserSpaceObjectStorageObjectResponse,
   RenameUserSpaceObjectStorageObjectRequest,
   DeleteUserSpaceObjectStorageObjectResponse,
+  ObjectStorageAdminSettings,
+  ObjectStorageMigrationJob,
+  UpdateObjectStorageAdminSettingsRequest,
   UserspaceMountSource,
   CreateUserspaceMountSourceRequest,
   UpdateUserspaceMountSourceRequest,
@@ -4602,6 +4605,57 @@ export const api = {
     return handleResponse<UserSpaceObjectStorageConfig>(response);
   },
 
+  async getObjectStorageAdminSettings(): Promise<ObjectStorageAdminSettings> {
+    const response = await apiFetch(`${API_BASE}/userspace/admin/object-storage`, {
+      cache: 'no-store',
+    });
+    return handleResponse<ObjectStorageAdminSettings>(response);
+  },
+
+  async updateObjectStorageAdminSettings(
+    request: UpdateObjectStorageAdminSettingsRequest,
+  ): Promise<ObjectStorageAdminSettings> {
+    const response = await apiFetch(`${API_BASE}/userspace/admin/object-storage`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<ObjectStorageAdminSettings>(response);
+  },
+
+  async testObjectStorageAdminSettings(
+    request: UpdateObjectStorageAdminSettingsRequest,
+  ): Promise<{ success: true }> {
+    const response = await apiFetch(`${API_BASE}/userspace/admin/object-storage/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<{ success: true }>(response);
+  },
+
+  async listObjectStorageMigrations(): Promise<{ jobs: ObjectStorageMigrationJob[] }> {
+    const response = await apiFetch(`${API_BASE}/userspace/admin/object-storage/migrations`, {
+      cache: 'no-store',
+    });
+    return handleResponse<{ jobs: ObjectStorageMigrationJob[] }>(response);
+  },
+
+  async startObjectStorageMigration(): Promise<{ jobs: ObjectStorageMigrationJob[] }> {
+    const response = await apiFetch(`${API_BASE}/userspace/admin/object-storage/migrations`, {
+      method: 'POST',
+    });
+    return handleResponse<{ jobs: ObjectStorageMigrationJob[] }>(response);
+  },
+
+  async retryObjectStorageMigration(jobId: string): Promise<{ jobs: ObjectStorageMigrationJob[] }> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/admin/object-storage/migrations/${encodeURIComponent(jobId)}/retry`,
+      { method: 'POST' },
+    );
+    return handleResponse<{ jobs: ObjectStorageMigrationJob[] }>(response);
+  },
+
   async createUserSpaceObjectStorageBucket(
     workspaceId: string,
     request: CreateUserSpaceObjectStorageBucketRequest,
@@ -4652,9 +4706,13 @@ export const api = {
     workspaceId: string,
     bucketName: string,
     prefix = '',
+    continuationToken?: string | null,
+    maxKeys = 100,
   ): Promise<UserSpaceObjectStorageListResponse> {
     const search = new URLSearchParams();
     if (prefix) search.set('prefix', prefix);
+    if (continuationToken) search.set('continuation_token', continuationToken);
+    search.set('max_keys', String(maxKeys));
     const qs = search.toString();
     const response = await apiFetch(
       `${API_BASE}/userspace/workspaces/${workspaceId}/object-storage/buckets/${encodeURIComponent(bucketName)}/objects${qs ? `?${qs}` : ''}`,

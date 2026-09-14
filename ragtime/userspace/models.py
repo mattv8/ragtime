@@ -823,8 +823,10 @@ class UserSpaceObjectStorageListResponse(BaseModel):
         description="Parent prefix for upward navigation, or null at the bucket root",
     )
     entries: list[UserSpaceObjectStorageEntry] = Field(default_factory=list)
-    total_objects: int = Field(default=0, description="Total objects stored in the bucket")
-    total_bytes: int = Field(default=0, description="Total bytes stored in the bucket")
+    total_objects: int | None = Field(default=None, description="Total objects when known; pagination does not imply a total")
+    total_bytes: int | None = Field(default=None, description="Total bytes when known; pagination does not imply a total")
+    next_continuation_token: str | None = Field(default=None, description="Opaque token for the next page")
+    is_truncated: bool = Field(default=False, description="Whether more entries are available")
 
 
 class UploadUserSpaceObjectStorageObjectResponse(BaseModel):

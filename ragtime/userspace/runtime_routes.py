@@ -12,13 +12,14 @@ import mimetypes
 import os
 import re
 import tarfile
+import tempfile
 import time
 import uuid
 import zipfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -69,6 +70,7 @@ from ragtime.userspace.models import (
     UserSpaceRuntimeStatusResponse,
     UserSpaceWorkspaceTabStateResponse,
 )
+from ragtime.userspace.object_storage import client as object_storage_client
 from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
 from ragtime.userspace.share_auth import set_share_auth_cookie, share_auth_token_from_request
 
@@ -885,7 +887,7 @@ def _normalize_archive_member_path(member_name: str) -> str:
     return "/".join(parts)
 
 
-def _extract_archive_entries(content: bytes, *, max_entries: int, max_extracted_bytes: int) -> list[tuple[str, bytes]]:
+def _extract_archive_entries(content: bytes | BinaryIO, *, max_entries: int, max_extracted_bytes: int) -> list[tuple[str, bytes]]:
     entries: list[tuple[str, bytes]] = []
     extracted_bytes = 0
 
@@ -898,7 +900,8 @@ def _extract_archive_entries(content: bytes, *, max_entries: int, max_extracted_
             raise HTTPException(status_code=413, detail=_archive_extracted_bytes_limit_detail(max_extracted_bytes))
         entries.append((_normalize_archive_member_path(name), payload))
 
-    buffer = io.BytesIO(content)
+    buffer = io.BytesIO(content) if isinstance(content, bytes) else content
+    buffer.seek(0)
     if zipfile.is_zipfile(buffer):
         with zipfile.ZipFile(buffer) as zip_archive:
             for info in zip_archive.infolist():
@@ -949,18 +952,16 @@ async def _primitive_archive_extract(
     await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
     max_upload_bytes = await _get_primitive_upload_max_bytes()
     max_entries = await _get_primitive_archive_max_entries()
-    content_type, total_bytes, content = await _read_request_bytes(
-        request,
-        max_bytes=max_upload_bytes,
-        label="Uploaded archive",
-        limit_name="configured User Space primitive upload size limit",
-    )
-    entries = await asyncio.to_thread(
-        _extract_archive_entries,
-        content,
-        max_entries=max_entries,
-        max_extracted_bytes=max_upload_bytes,
-    )
+    content_type, total_bytes, staged = await _stage_primitive_object_request(request, max_bytes=max_upload_bytes)
+    try:
+        entries = await asyncio.to_thread(
+            _extract_archive_entries,
+            staged,
+            max_entries=max_entries,
+            max_extracted_bytes=max_upload_bytes,
+        )
+    finally:
+        staged.close()
     normalized_target = str(target or "files").strip().lower()
     written: list[dict[str, Any]] = []
     if normalized_target == "files":
@@ -1119,22 +1120,11 @@ async def _primitive_workspace_file_write_content(
     }
 
 
-def _object_storage_target(workspace_id: str, bucket_name: str, object_path: str) -> tuple[str, str, Path]:
+def _object_storage_target(workspace_id: str, bucket_name: str, object_path: str) -> tuple[str, str]:
     userspace_service = _userspace_service()
     bucket = userspace_service._normalize_object_storage_bucket_name(bucket_name)
     key = _normalize_primitive_object_key(object_path)
-    payload = userspace_service._ensure_object_storage_config(workspace_id)
-    buckets_value = payload.get("buckets") if isinstance(payload, dict) else []
-    buckets = buckets_value if isinstance(buckets_value, list) else []
-    if not any(isinstance(item, dict) and str(item.get("name") or "") == bucket for item in buckets if item):
-        raise HTTPException(status_code=404, detail="Object storage bucket not found")
-    root = Path(userspace_service._workspace_object_storage_buckets_dir(workspace_id)).resolve()
-    target = (root / bucket / key).resolve()
-    try:
-        target.relative_to(root / bucket)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Object key must stay inside the bucket") from exc
-    return bucket, key, target
+    return bucket, key
 
 
 def _primitive_object_url(bucket: str, key: str) -> str:
@@ -1149,21 +1139,84 @@ def _runtime_primitive_object_url(workspace_id: str, bucket: str, key: str) -> s
     return f"/indexes/userspace/runtime/workspaces/{quote(workspace_id, safe='')}/primitives/objects/{quote(bucket, safe='')}/{quote(key, safe='/')}"
 
 
-async def _primitive_object_response(workspace_id: str, bucket_name: str, object_path: str, user_id: str) -> Response:
+async def _ensure_primitive_object_storage(workspace_id: str) -> None:
+    """Seed a gateway workspace on first primitive access when supported."""
+    ensure = getattr(_userspace_service(), "_ensure_managed_object_storage", None)
+    if ensure is not None:
+        await ensure(workspace_id)
+
+
+async def _primitive_object_response(
+    workspace_id: str,
+    bucket_name: str,
+    object_path: str,
+    user_id: str,
+    request: Request | None = None,
+) -> Response:
     await _userspace_service().enforce_workspace_role(workspace_id, user_id, "viewer")
-    bucket, key, target = _object_storage_target(workspace_id, bucket_name, object_path)
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="Object not found")
-    content = await asyncio.to_thread(target.read_bytes)
-    media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-    return Response(
-        content=content,
-        media_type=media_type,
-        headers={
-            "X-Ragtime-Object-Bucket": bucket,
-            "X-Ragtime-Object-Key": key,
-        },
+    await _ensure_primitive_object_storage(workspace_id)
+    bucket, key = _object_storage_target(workspace_id, bucket_name, object_path)
+
+    response = await object_storage_client.download_response(
+        workspace_id,
+        bucket,
+        key,
+        headers=dict(request.headers) if request is not None else None,
     )
+    response.headers["X-Ragtime-Object-Bucket"] = bucket
+    response.headers["X-Ragtime-Object-Key"] = key
+    return response
+
+
+async def _stage_primitive_object_request(
+    request: Request,
+    *,
+    max_bytes: int,
+) -> tuple[str | None, int, Any]:
+    """Stage a bounded object upload without accumulating request chunks in RAM."""
+    content_type = request.headers.get("content-type") or None
+    source: Any
+    upload: StarletteUploadFile | None = None
+    if content_type and content_type.lower().startswith("multipart/form-data"):
+        form = await request.form()
+        candidate_upload = form.get("file")
+        if not isinstance(candidate_upload, StarletteUploadFile):
+            raise HTTPException(status_code=400, detail="Multipart request must include file field")
+        upload = candidate_upload
+        source = upload
+        content_type = upload.content_type or content_type
+    else:
+        source = request.stream()
+
+    staged = tempfile.TemporaryFile()
+    total_bytes = 0
+    try:
+        if upload is not None:
+            while chunk := await source.read(_PRIMITIVE_UPLOAD_CHUNK_BYTES):
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise HTTPException(
+                        status_code=413, detail=_limit_exceeded_detail("Uploaded object", max_bytes, "configured User Space primitive upload size limit")
+                    )
+                staged.write(chunk)
+        else:
+            async for chunk in source:
+                if not chunk:
+                    continue
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise HTTPException(
+                        status_code=413, detail=_limit_exceeded_detail("Uploaded object", max_bytes, "configured User Space primitive upload size limit")
+                    )
+                staged.write(chunk)
+    except Exception:
+        staged.close()
+        raise
+    finally:
+        if upload is not None:
+            await upload.close()
+    staged.seek(0)
+    return content_type, total_bytes, staged
 
 
 async def _primitive_object_write(
@@ -1174,21 +1227,21 @@ async def _primitive_object_write(
     user_id: str,
 ) -> dict[str, Any]:
     max_upload_bytes = await _get_primitive_upload_max_bytes()
-    _, content_type, total_bytes, content = await _read_upload_bytes(
-        file,
-        max_bytes=max_upload_bytes,
-        label="Uploaded object",
-        limit_name="configured User Space primitive upload size limit",
-    )
-    return await _primitive_object_write_content(
-        workspace_id,
-        bucket_name,
-        object_path,
-        content_type,
-        total_bytes,
-        content,
-        user_id,
-    )
+    await _userspace_service().enforce_workspace_role(workspace_id, user_id, "editor")
+    with tempfile.TemporaryFile() as staged:
+        total_bytes = 0
+        try:
+            while chunk := await file.read(_PRIMITIVE_UPLOAD_CHUNK_BYTES):
+                total_bytes += len(chunk)
+                if total_bytes > max_upload_bytes:
+                    raise HTTPException(
+                        status_code=413, detail=_limit_exceeded_detail("Uploaded object", max_upload_bytes, "configured User Space primitive upload size limit")
+                    )
+                staged.write(chunk)
+        finally:
+            await file.close()
+        staged.seek(0)
+        return await _primitive_object_upload_file(workspace_id, bucket_name, object_path, file.content_type, total_bytes, staged)
 
 
 async def _primitive_object_write_request(
@@ -1199,21 +1252,12 @@ async def _primitive_object_write_request(
     user_id: str,
 ) -> dict[str, Any]:
     max_upload_bytes = await _get_primitive_upload_max_bytes()
-    content_type, total_bytes, content = await _read_request_bytes(
-        request,
-        max_bytes=max_upload_bytes,
-        label="Uploaded object",
-        limit_name="configured User Space primitive upload size limit",
-    )
-    return await _primitive_object_write_content(
-        workspace_id,
-        bucket_name,
-        object_path,
-        content_type,
-        total_bytes,
-        content,
-        user_id,
-    )
+    await _userspace_service().enforce_workspace_role(workspace_id, user_id, "editor")
+    content_type, total_bytes, staged = await _stage_primitive_object_request(request, max_bytes=max_upload_bytes)
+    try:
+        return await _primitive_object_upload_file(workspace_id, bucket_name, object_path, content_type, total_bytes, staged)
+    finally:
+        staged.close()
 
 
 async def _primitive_object_write_content(
@@ -1226,15 +1270,30 @@ async def _primitive_object_write_content(
     user_id: str,
 ) -> dict[str, Any]:
     await _userspace_service().enforce_workspace_role(workspace_id, user_id, "editor")
-    bucket, key, target = _object_storage_target(workspace_id, bucket_name, object_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    await asyncio.to_thread(target.write_bytes, content)
+    with tempfile.TemporaryFile() as staged:
+        staged.write(content)
+        staged.seek(0)
+        return await _primitive_object_upload_file(workspace_id, bucket_name, object_path, content_type, total_bytes, staged)
+
+
+async def _primitive_object_upload_file(
+    workspace_id: str,
+    bucket_name: str,
+    object_path: str,
+    content_type: str | None,
+    total_bytes: int,
+    fileobj: Any,
+) -> dict[str, Any]:
+    bucket, key = _object_storage_target(workspace_id, bucket_name, object_path)
+    await _ensure_primitive_object_storage(workspace_id)
+
+    result = await object_storage_client.upload_file(workspace_id, bucket, key, fileobj, content_type=content_type)
     await _userspace_service().touch_workspace(workspace_id)
     return {
         "bucket": bucket,
         "key": key,
-        "size_bytes": total_bytes,
-        "content_type": content_type,
+        "size_bytes": int(result.get("size_bytes", total_bytes)),
+        "content_type": result.get("content_type", content_type),
         "url": _primitive_object_url(bucket, key),
     }
 
@@ -1358,7 +1417,8 @@ async def _primitive_upload_target(
         key = str(payload.get("key") or payload.get("object_path") or "").strip()
         if not bucket or not key:
             raise HTTPException(status_code=400, detail="bucket and key are required for object upload targets")
-        normalized_bucket, normalized_key, _ = _object_storage_target(workspace_id, bucket, key)
+        await _ensure_primitive_object_storage(workspace_id)
+        normalized_bucket, normalized_key = _object_storage_target(workspace_id, bucket, key)
         url = (
             _primitive_object_url(normalized_bucket, normalized_key)
             if preview_origin
@@ -1400,11 +1460,22 @@ async def _primitive_capabilities(
             can_write_workspace = False
         if can_read_workspace:
             with contextlib.suppress(Exception):
-                payload = _userspace_service()._ensure_object_storage_config(workspace_id)
-                bucket_items = payload.get("buckets") if isinstance(payload, dict) else []
-                if not isinstance(bucket_items, list):
-                    bucket_items = []
-                buckets = [str(item.get("name")) for item in bucket_items if isinstance(item, dict) and item.get("name")]
+                service = _userspace_service()
+                get_summary = getattr(service, "get_workspace_object_storage_summary", None)
+                get_config = get_summary or getattr(service, "get_workspace_object_storage_config", None)
+                if get_config is not None:
+                    config = await get_config(workspace_id, user_id)
+                    if config is not None:
+                        buckets = [bucket.name for bucket in config.buckets]
+                else:
+                    # Compatibility for lightweight primitive consumers that
+                    # expose only the legacy metadata fixture; object IO never
+                    # uses this filesystem-backed configuration.
+                    payload = service._ensure_object_storage_config(workspace_id)
+                    bucket_items = payload.get("buckets") if isinstance(payload, dict) else []
+                    if not isinstance(bucket_items, list):
+                        bucket_items = []
+                    buckets = [str(item.get("name")) for item in bucket_items if isinstance(item, dict) and item.get("name")]
     return {
         "workspace_id": workspace_id,
         "mode": preview_mode,
@@ -2744,9 +2815,10 @@ async def runtime_primitive_object_read(
     workspace_id: str,
     bucket_name: str,
     object_path: str,
+    request: Request,
     user: Any = Depends(get_current_user),
 ):
-    return await _primitive_object_response(workspace_id, bucket_name, object_path, user.id)
+    return await _primitive_object_response(workspace_id, bucket_name, object_path, user.id, request)
 
 
 @router.put("/runtime/workspaces/{workspace_id}/primitives/objects/{bucket_name}/{object_path:path}")

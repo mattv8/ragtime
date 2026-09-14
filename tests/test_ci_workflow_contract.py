@@ -72,7 +72,7 @@ class CiWorkflowContractTests(unittest.TestCase):
                     if step.get("uses") == "./.github/actions/managed-buildx":
                         builder_sites += 1
                         self.assertIn("scope", step["with"])
-        self.assertEqual(builder_sites, 10)
+        self.assertEqual(builder_sites, 11)
 
         analysis_steps = _load_workflow("quality.yml")["jobs"]["backend-analysis"]["steps"]
         shared_builder = next(step for step in analysis_steps if step.get("id") == "buildx")
@@ -124,11 +124,11 @@ class CiWorkflowContractTests(unittest.TestCase):
 
     def test_pipeline_graph_keeps_candidates_independent_of_quality_and_gates_promotion(self) -> None:
         jobs = _load_workflow("build-container.yml")["jobs"]
-        for candidate in ("candidate-main", "candidate-runtime", "candidate-legacy"):
+        for candidate in ("candidate-main", "candidate-runtime", "candidate-storage", "candidate-legacy"):
             self.assertNotIn("quality", jobs[candidate]["needs"])
             self.assertIn("push-by-digest=true", jobs[candidate]["steps"][-1]["with"]["outputs"])
         promotion = jobs["promote"]
-        self.assertEqual(set(promotion["needs"]), {"quality", "plan", "candidate-main", "candidate-runtime", "candidate-legacy", "sbom"})
+        self.assertEqual(set(promotion["needs"]), {"quality", "plan", "candidate-main", "candidate-runtime", "candidate-storage", "candidate-legacy", "sbom"})
         self.assertIn("!cancelled()", promotion["if"])
         self.assertIn("needs.quality.result == 'success'", promotion["if"])
         stale_guard = next(step for step in promotion["steps"] if step.get("name") == "Reject stale branch ref")

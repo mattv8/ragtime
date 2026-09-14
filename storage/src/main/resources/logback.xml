@@ -1,0 +1,9 @@
+<configuration>
+  <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.err</target>
+    <encoder><pattern>%d{ISO8601} %-5level %logger{40} - %msg%n</pattern></encoder>
+  </appender>
+  <logger name="software.amazon.awssdk" level="WARN" />
+  <logger name="org.gaul.shaded.org.eclipse.jetty" level="WARN" />
+  <root level="INFO"><appender-ref ref="STDERR" /></root>
+</configuration>

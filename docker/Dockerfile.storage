@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1.7
+
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /work
+COPY storage/pom.xml storage/pom.xml
+RUN --mount=type=cache,target=/root/.m2 mvn -f storage/pom.xml dependency:go-offline
+COPY storage/src/ storage/src/
+RUN --mount=type=cache,target=/root/.m2 mvn -f storage/pom.xml package
+
+FROM eclipse-temurin:17-jre-jammy
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=build /work/storage/target/ragtime-storage.jar /app/ragtime-storage.jar
+ENV S3_PORT=9000 \
+    STORAGE_CONTROL_PORT=9001 \
+    STORAGE_ROOT=/data/_userspace/_object_storage \
+    STORAGE_KEY_FILE=/data/.encryption_key
+EXPOSE 9000 9001
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD sh -ec 'curl -fsS http://localhost:${STORAGE_CONTROL_PORT}/health >/dev/null && test "$(curl -sS -o /dev/null -w "%{http_code}" http://localhost:${S3_PORT}/)" != 000'
+CMD ["java", "-jar", "/app/ragtime-storage.jar"]
