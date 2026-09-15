@@ -177,6 +177,7 @@ _AGENT_SHELL_INTERNAL_ENV_KEYS = ("RAGTIME_REDACTED_ENV_FILE",)
 _RAGTIME_REDACTED_ENV_FILE_VAR = "RAGTIME_REDACTED_ENV_FILE"
 _RAGTIME_REDACTED_ENV_SENTINEL_SET = "*****"
 _RAGTIME_REDACTED_ENV_SENTINEL_MISSING = "__RAGTIME_SECRET_MISSING__"
+_MAX_BRIDGE_REFRESH_REQUEST_HISTORY = 32
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _PLAYWRIGHT_BROKER_JS_PATH = _TEMPLATES_DIR / "playwright_broker.js"
@@ -331,6 +332,12 @@ class WorkerSession:
     runtime_operation_started_at: datetime | None
     runtime_operation_updated_at: datetime | None
     updated_at: datetime
+    bridge_credential_mode: str = "env"
+    bridge_session_id: str | None = None
+    bridge_credential_revision: int = 0
+    bridge_refresh_requests: dict[str, tuple[str, RuntimeBridgeCredentialMetadata]] = field(default_factory=dict)
+    bridge_recent_tokens: list[str] = field(default_factory=list)
+    bridge_token_file_initial_token: str | None = None
 
 
 class WorkerService:
@@ -349,6 +356,8 @@ class WorkerService:
         self._runtime_bootstrap_timeout_seconds = int(os.getenv("RUNTIME_BOOTSTRAP_TIMEOUT_SECONDS", "180"))
         self._runtime_config_file = ".ragtime/runtime-entrypoint.json"
         self._startup_tasks: dict[str, asyncio.Task[None]] = {}
+        self._active_execs: dict[str, dict[int, Any]] = {}
+        self._app_restart_requests: dict[tuple[str, str], WorkerSessionResponse] = {}
         self._workspace_startup_locks: dict[str, asyncio.Lock] = {}
         # Lock order: startup lock -> file lock -> mount semaphore. File APIs
         # use only the file lock and never await it while holding _lock.
@@ -658,6 +667,9 @@ class WorkerService:
             if not key or not value:
                 continue
             items.append((key, value, _RAGTIME_REDACTED_ENV_SENTINEL_SET))
+        for value in session.bridge_recent_tokens:
+            if value:
+                items.append(("RAGTIME_BRIDGE_TOKEN", value, _RAGTIME_REDACTED_ENV_SENTINEL_SET))
         return items
 
     @staticmethod
@@ -814,6 +826,11 @@ class WorkerService:
     ) -> RuntimeBridgeCredentialMetadata | None:
         bridge_url = str(session.workspace_env.get("RAGTIME_BRIDGE_URL") or "").strip()
         token = str(session.workspace_env.get("RAGTIME_BRIDGE_TOKEN") or "").strip()
+        if session.bridge_credential_mode == "worker_file":
+            try:
+                token = self._read_bridge_token_file(session) or ""
+            except HTTPException:
+                return None
         if not bridge_url or not token:
             return None
         payload = self._decode_jwt_payload_metadata(token)
@@ -833,7 +850,74 @@ class WorkerService:
             session_id=session_id,
             issued_at=issued_at,
             expires_at=expires_at,
+            mode=session.bridge_credential_mode,
+            revision=session.bridge_credential_revision,
         )
+
+    @staticmethod
+    def _bridge_token_path(session: WorkerSession) -> Path:
+        return session.sandbox_spec.rootfs_path / "run" / ".ragtime-bridge" / "token"
+
+    @staticmethod
+    def _open_bridge_token_directory(session: WorkerSession) -> int:
+        """Open the private token directory without following hostile links."""
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        try:
+            root_fd = os.open(session.sandbox_spec.rootfs_path, flags)
+        except OSError as exc:
+            raise HTTPException(status_code=409, detail="Unsafe bridge credential root") from exc
+        try:
+            try:
+                os.mkdir("run", 0o755, dir_fd=root_fd)
+            except FileExistsError:
+                pass
+            try:
+                run_fd = os.open("run", flags, dir_fd=root_fd)
+            except OSError as exc:
+                raise HTTPException(status_code=409, detail="Unsafe bridge credential path") from exc
+            try:
+                try:
+                    os.mkdir(".ragtime-bridge", 0o700, dir_fd=run_fd)
+                except FileExistsError:
+                    pass
+                try:
+                    credential_fd = os.open(".ragtime-bridge", flags, dir_fd=run_fd)
+                except OSError as exc:
+                    raise HTTPException(status_code=409, detail="Unsafe bridge credential path") from exc
+            finally:
+                os.close(run_fd)
+        finally:
+            os.close(root_fd)
+        return credential_fd
+
+    def _read_bridge_token_file(self, session: WorkerSession) -> str | None:
+        directory_fd = self._open_bridge_token_directory(session)
+        try:
+            try:
+                token_fd = os.open("token", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+            except FileNotFoundError:
+                return None
+            try:
+                return os.read(token_fd, 1024 * 1024).decode("utf-8").strip()
+            finally:
+                os.close(token_fd)
+        finally:
+            os.close(directory_fd)
+
+    def _write_bridge_token_file(self, session: WorkerSession, token: str) -> None:
+        directory_fd = self._open_bridge_token_directory(session)
+        temporary = f".token-{os.urandom(8).hex()}"
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+        try:
+            os.write(fd, token.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            os.replace(temporary, "token", src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            os.chmod("token", 0o600, dir_fd=directory_fd, follow_symlinks=False)
+        finally:
+            os.close(directory_fd)
 
     def _session_response(self, session: WorkerSession) -> WorkerSessionResponse:
         return WorkerSessionResponse(
@@ -845,7 +929,7 @@ class WorkerService:
             launch_command=(" ".join(session.devserver_command) if session.devserver_command else None),
             launch_cwd=session.launch_cwd,
             launch_port=session.devserver_port,
-            runtime_capabilities=sandbox_diagnostics(),
+            runtime_capabilities={**sandbox_diagnostics(), "bridge_credential_file": True},
             devserver_running=session.devserver_running,
             last_error=session.last_error,
             runtime_operation_id=session.runtime_operation_id,
@@ -2068,6 +2152,12 @@ class WorkerService:
                     # intentionally runs after releasing the file lock.
                     async with self._workspace_file_lock(workspace_id):
                         await asyncio.to_thread(ensure_sandbox_ready, session.sandbox_spec)
+                        if session.bridge_credential_mode == "worker_file":
+                            token = str(session.bridge_token_file_initial_token or "")
+                            if not token:
+                                raise HTTPException(status_code=400, detail="Missing worker file bridge credential")
+                            self._write_bridge_token_file(session, token)
+                            session.bridge_recent_tokens = [token]
                         await self._materialize_workspace_mounts(session)
                 except Exception as exc:
                     await self._mark_operation_failed(
@@ -2324,6 +2414,17 @@ class WorkerService:
                     )
                 session.pty_access_token = request.pty_access_token
                 session.workspace_env = self._normalize_workspace_env(request.workspace_env)
+                session.bridge_credential_mode = request.bridge_credential_mode
+                if request.bridge_credential_mode == "worker_file":
+                    token = str(request.bridge_token_file_initial_token or "").strip()
+                    if not token or "RAGTIME_BRIDGE_TOKEN" in session.workspace_env:
+                        raise HTTPException(status_code=400, detail="worker_file mode requires separate bridge token")
+                    session.workspace_env["RAGTIME_BRIDGE_TOKEN_FILE"] = "/run/.ragtime-bridge/token"
+                    session.bridge_token_file_initial_token = token
+                    session.bridge_recent_tokens = ([token] + session.bridge_recent_tokens)[:2]
+                    session.bridge_session_id = str((self._decode_jwt_payload_metadata(token) or {}).get("session_id") or "") or None
+                else:
+                    session.bridge_token_file_initial_token = None
                 session.workspace_env_visibility = self._normalize_workspace_env_visibility(
                     request.workspace_env_visibility,
                     session.workspace_env,
@@ -2338,6 +2439,11 @@ class WorkerService:
             session_id = f"wkr-{request.workspace_id[:8]}-{os.urandom(4).hex()}"
             workspace_root, workspace_files, sandbox_spec = self._resolve_workspace_root(request.workspace_id)
             workspace_env = self._normalize_workspace_env(request.workspace_env)
+            if request.bridge_credential_mode == "worker_file":
+                token = str(request.bridge_token_file_initial_token or "").strip()
+                if not token or "RAGTIME_BRIDGE_TOKEN" in workspace_env:
+                    raise HTTPException(status_code=400, detail="worker_file mode requires separate bridge token")
+                workspace_env["RAGTIME_BRIDGE_TOKEN_FILE"] = "/run/.ragtime-bridge/token"
             session = WorkerSession(
                 id=session_id,
                 workspace_id=request.workspace_id,
@@ -2365,6 +2471,9 @@ class WorkerService:
                 runtime_operation_started_at=None,
                 runtime_operation_updated_at=None,
                 updated_at=utc_now(),
+                bridge_credential_mode=request.bridge_credential_mode,
+                bridge_session_id=str((self._decode_jwt_payload_metadata(token if request.bridge_credential_mode == "worker_file" else workspace_env.get("RAGTIME_BRIDGE_TOKEN", "")) or {}).get("session_id") or "") or None,
+                bridge_token_file_initial_token=(token if request.bridge_credential_mode == "worker_file" else None),
             )
             self._sessions[session_id] = session
             self._provider_to_session[request.provider_session_id] = session_id
@@ -2394,6 +2503,9 @@ class WorkerService:
             if startup_task and not startup_task.done():
                 startup_task.cancel()
             devserver_process, log_handle = self._take_devserver_resources_locked(session.id)
+            active_execs = tuple(self._active_execs.pop(session.id, {}).values())
+            for key in [key for key in self._app_restart_requests if key[0] == session.id]:
+                del self._app_restart_requests[key]
             workspace_id = session.workspace_id
             sandbox_spec = session.sandbox_spec
             cleanup_task = asyncio.create_task(
@@ -2404,6 +2516,7 @@ class WorkerService:
                     devserver_process=devserver_process,
                     log_handle=log_handle,
                     sandbox_spec=sandbox_spec,
+                    active_execs=active_execs,
                 )
             )
             # Publish the barrier before releasing the global lock so a newly
@@ -2426,6 +2539,7 @@ class WorkerService:
         devserver_process: asyncio.subprocess.Process | None,
         log_handle: Any | None,
         sandbox_spec: SandboxSpec,
+        active_execs: tuple[Any, ...] = (),
     ) -> None:
         current_task = asyncio.current_task()
         try:
@@ -2442,6 +2556,10 @@ class WorkerService:
             workspace_lock = self._workspace_startup_lock(workspace_id)
             async with workspace_lock:
                 async with self._workspace_file_lock(workspace_id):
+                    for process in active_execs:
+                        if hasattr(process, "communicate"):
+                            with suppress(Exception):
+                                await terminate_process_group(process)
                     await self._terminate_devserver_resources(devserver_process, log_handle)
                     cleanup_thread = asyncio.create_task(asyncio.to_thread(cleanup_sandbox, sandbox_spec))
                     try:
@@ -2491,6 +2609,26 @@ class WorkerService:
             self._schedule_startup_locked(session)
             session.updated_at = utc_now()
             return self._session_response(session)
+
+    async def restart_app(self, worker_session_id: str, request_id: str) -> WorkerSessionResponse:
+        """Recycle only the devserver while retaining the worker session."""
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            key = (worker_session_id, request_id)
+            existing = self._app_restart_requests.get(key)
+            if existing is not None:
+                return existing
+            if self._active_execs.get(worker_session_id):
+                raise HTTPException(status_code=409, detail="Runtime exec is active")
+            startup = self._startup_tasks.get(worker_session_id)
+            if startup and not startup.done():
+                raise HTTPException(status_code=409, detail="Runtime startup is active")
+            self._schedule_startup_locked(session, replace_existing=False)
+            response = self._session_response(session)
+            self._app_restart_requests[key] = response
+            return response
 
     async def refresh_mounts(
         self,
@@ -2569,6 +2707,43 @@ class WorkerService:
                 current.last_error = None
                 current.updated_at = utc_now()
                 return self._session_response(current)
+
+    async def refresh_bridge_credential(
+        self,
+        worker_session_id: str,
+        *,
+        token: str,
+        expected_session_id: str,
+        expected_revision: int,
+        request_id: str,
+    ) -> RuntimeBridgeCredentialMetadata:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            previous = session.bridge_refresh_requests.get(request_id)
+            if previous:
+                if previous[0] != fingerprint:
+                    raise HTTPException(status_code=409, detail="Credential request id payload conflict")
+                return previous[1]
+            if session.bridge_credential_mode != "worker_file":
+                raise HTTPException(status_code=409, detail="Worker file credential mode is not active")
+            if session.bridge_session_id != expected_session_id or session.bridge_credential_revision != expected_revision:
+                raise HTTPException(status_code=409, detail="Bridge credential session or revision conflict")
+            self._write_bridge_token_file(session, token)
+            # Reprovision/recycle must retain the newest credential, not the
+            # original startup delivery token.
+            session.bridge_token_file_initial_token = token
+            session.bridge_recent_tokens = ([token] + session.bridge_recent_tokens)[:2]
+            session.bridge_credential_revision += 1
+            metadata = self._bridge_credential_metadata(session)
+            if metadata is None:
+                raise HTTPException(status_code=400, detail="Invalid bridge credential")
+            session.bridge_refresh_requests[request_id] = (fingerprint, metadata)
+            if len(session.bridge_refresh_requests) > _MAX_BRIDGE_REFRESH_REQUEST_HISTORY:
+                session.bridge_refresh_requests.pop(next(iter(session.bridge_refresh_requests)))
+            return metadata
 
     async def read_file(
         self,
@@ -2675,7 +2850,7 @@ class WorkerService:
         self,
         worker_session_id: str,
         command: str,
-        timeout_seconds: int = 30,
+        timeout_seconds: int = 120,
         cwd: str | None = None,
     ) -> RuntimeExecResponse:
         """Execute a shell command in the workspace sandbox."""
@@ -2701,11 +2876,14 @@ class WorkerService:
 
             sandbox_spec = session.sandbox_spec
             agent_process_env = self.build_agent_process_environment(session)
+            reservation = object()
+            self._active_execs.setdefault(worker_session_id, {})[id(reservation)] = reservation
 
-        timeout_seconds = max(1, min(timeout_seconds, 120))
+        timeout_seconds = max(1, min(timeout_seconds, 600))
         timed_out = False
         truncated = False
 
+        process: asyncio.subprocess.Process | None = None
         try:
             process = await spawn_sandboxed(
                 sandbox_spec,
@@ -2715,6 +2893,10 @@ class WorkerService:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            async with self._lock:
+                active = self._active_execs.setdefault(worker_session_id, {})
+                active.pop(id(reservation), None)
+                active[id(process)] = process
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 process.communicate(),
                 timeout=timeout_seconds,
@@ -2727,6 +2909,11 @@ class WorkerService:
                 pass
             stdout_bytes = b""
             stderr_bytes = f"Command timed out after {timeout_seconds}s".encode()
+        except asyncio.CancelledError:
+            if process is not None:
+                with suppress(Exception):
+                    await asyncio.shield(terminate_process_group(process))
+            raise
         except Exception as exc:
             return RuntimeExecResponse(
                 exit_code=-1,
@@ -2735,8 +2922,14 @@ class WorkerService:
                 timed_out=False,
                 truncated=False,
             )
+        finally:
+            async with self._lock:
+                active = self._active_execs.get(worker_session_id, {})
+                active.pop(id(reservation), None)
+                if process is not None:
+                    active.pop(id(process), None)
 
-        exit_code = process.returncode if process.returncode is not None else -1
+        exit_code = process.returncode if process is not None and process.returncode is not None else -1
 
         stdout_text = self.redact_workspace_secret_output(
             session,
@@ -3504,6 +3697,8 @@ class WorkerService:
                 active_sessions=active_sessions,
                 metadata={
                     "worker_name": self._worker_name,
+                    "runtime_capabilities": {"bridge_credential_file": True},
+                    "bridge_credential_file": True,
                     **sandbox_diagnostics(),
                 },
             )

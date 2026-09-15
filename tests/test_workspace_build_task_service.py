@@ -19,6 +19,7 @@ from ragtime.userspace.agent_briefs import (
 
 class _BriefOverrides(TypedDict, total=False):
     idempotency_key: str
+    task_type: str
     title: str
     objective: str
     requirements: list[str]
@@ -60,6 +61,14 @@ class BriefRenderingTests(unittest.TestCase):
         c = compute_brief_payload_hash(_brief(title="Other title"))
         self.assertEqual(a, b)
         self.assertNotEqual(a, c)
+
+    def test_default_build_type_preserves_legacy_hash_but_general_is_distinct(self) -> None:
+        legacy = _brief()
+        explicit_build = _brief(task_type="build")
+        general = _brief(task_type="general")
+
+        self.assertEqual(compute_brief_payload_hash(legacy), compute_brief_payload_hash(explicit_build))
+        self.assertNotEqual(compute_brief_payload_hash(legacy), compute_brief_payload_hash(general))
 
 
 class StartBuildTaskTests(unittest.IsolatedAsyncioTestCase):

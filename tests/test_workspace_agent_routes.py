@@ -38,13 +38,14 @@ def _build_http_scope(path: str) -> dict[str, object]:
     }
 
 
-def _ctx(allow_task_submission: bool = True) -> AgentAccessContext:
+def _ctx(allow_task_submission: bool = True, allow_runtime_restart: bool = False) -> AgentAccessContext:
     return AgentAccessContext(
         access_id="acc-1",
         workspace_id="ws-1",
         acting_user_id="user-1",
         acting_user_is_admin=False,
         allow_task_submission=allow_task_submission,
+        allow_runtime_restart=allow_runtime_restart,
     )
 
 
@@ -80,7 +81,29 @@ class AgentManifestTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tool inputs", text)
         self.assertIn("no tool outputs", text)
         self.assertIn("semantic|symbols|hybrid", text)
+        self.assertIn('"task_type": "build"', text)
+        self.assertIn("resolved_model", text)
+        self.assertIn("partial_result", text)
+        self.assertIn("termination_reason", text)
+        self.assertNotIn("/runtime/restart", text)
+        self.assertNotIn("/runtime/operations", text)
+        self.assertNotIn("session-preserving app restart", text)
         self.assertEqual(response.headers.get("cache-control"), "no-store")
+
+    async def test_manifest_exposes_restart_only_when_token_is_allowed(self) -> None:
+        from ragtime.userspace import agent_routes as module
+        from ragtime.userspace.service import userspace_service
+
+        with (
+            mock.patch.object(module, "resolve_agent_access_token", mock.AsyncMock(return_value=_ctx(allow_runtime_restart=True))),
+            mock.patch.object(userspace_service, "enforce_workspace_role", mock.AsyncMock(return_value=SimpleNamespace(id="ws-1", name="Sales"))),
+            mock.patch.object(module, "get_browser_matched_origin", mock.Mock(return_value="https://ragtime.example.com")),
+        ):
+            response = await module.get_agent_manifest("tok-abc", _build_request())
+        text = bytes(response.body).decode("utf-8")
+        self.assertIn("/agent/w/tok-abc/runtime/restart", text)
+        self.assertIn("/agent/w/tok-abc/runtime/operations/{operation_id}", text)
+        self.assertEqual(text.count("session-preserving app restart"), 1)
 
     async def test_unknown_token_propagates_404(self) -> None:
         from ragtime.userspace import agent_routes as module
@@ -151,6 +174,29 @@ class AgentTaskRouteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, replied)
         reply_mock.assert_awaited_once_with("ws-1", "user-1", "task-1", "Proceed", "reply-001")
+
+    async def test_runtime_restart_requires_opt_in_and_delegates_to_runtime_service(self) -> None:
+        from ragtime.userspace import agent_routes as module
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        body = module.AgentRuntimeRestartRequest(idempotency_key="restart-001", reason="reload config")
+        with mock.patch.object(module, "resolve_agent_access_token", mock.AsyncMock(return_value=_ctx())):
+            with self.assertRaises(HTTPException) as ctx:
+                await module.restart_agent_runtime("tok-abc", body, Response())
+        self.assertEqual(ctx.exception.status_code, 403)
+
+        with (
+            mock.patch.object(module, "resolve_agent_access_token", mock.AsyncMock(return_value=_ctx(allow_runtime_restart=True))),
+            mock.patch.object(module, "_enforce_agent_runtime_access", mock.AsyncMock()),
+            mock.patch.object(
+                userspace_runtime_service,
+                "request_app_restart",
+                mock.AsyncMock(return_value={"id": "op-1", "state": "accepted"}),
+            ) as restart,
+        ):
+            result = await module.restart_agent_runtime("tok-abc", body, Response())
+        self.assertEqual(result["state"], "accepted")
+        restart.assert_awaited_once_with("ws-1", "user-1", "restart-001", reason="reload config")
 
 
 class AgentReadRouteTests(unittest.IsolatedAsyncioTestCase):

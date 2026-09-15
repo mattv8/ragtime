@@ -47,6 +47,7 @@ from ragtime.userspace.models import (
     UserSpacePreviewWarning,
     UserSpaceRuntimeActionResponse,
     UserSpaceRuntimeBridgeStatus,
+    UserSpaceRuntimeOperation,
     UserSpaceRuntimeSession,
     UserSpaceRuntimeSessionResponse,
     UserSpaceRuntimeStatusResponse,
@@ -86,6 +87,7 @@ _RUNTIME_BRIDGE_TOKEN_KIND = "userspace_runtime_bridge"
 _RUNTIME_BRIDGE_TOKEN_TTL_SECONDS = 14400
 _RUNTIME_BRIDGE_REFRESH_LEAD_SECONDS = 300
 _RUNTIME_BRIDGE_REFRESH_WATCH_INTERVAL_SECONDS = 60.0
+_RUNTIME_BRIDGE_REFRESH_MAX_CONCURRENCY = 4
 # Prevent synchronized preview retries from causing restart storms after a
 # failed bridge recovery attempt.
 _RUNTIME_BRIDGE_RECOVERY_COOLDOWN_SECONDS = 120
@@ -110,6 +112,7 @@ _RUNTIME_PUBLIC_PREVIEW_UNREACHABLE_LOG_INTERVAL_SECONDS = 300.0
 _WORKSPACE_SERVICE_START_FAILURE_WINDOW_SECONDS = 300.0
 _WORKSPACE_SERVICE_START_FAILURE_LIMIT = 3
 _WORKSPACE_SERVICE_START_STATE_MAX = 512
+_RUNTIME_RESTART_RECONCILE_ACCEPTED_GRACE_SECONDS = 60
 
 
 @dataclass
@@ -699,11 +702,23 @@ class UserSpaceRuntimeService:
         workspace_id: str,
         session_id: str,
         base_env: dict[str, str],
+        *,
+        bridge_credential_mode: str = "env",
     ) -> dict[str, str]:
-        return {
-            **base_env,
-            **self._build_runtime_bridge_env(workspace_id, session_id),
-        }
+        bridge_env = self._build_runtime_bridge_env(workspace_id, session_id)
+        if bridge_credential_mode == "worker_file":
+            bridge_env.pop("RAGTIME_BRIDGE_TOKEN", None)
+        return {**base_env, **bridge_env}
+
+    async def _workspace_bridge_credential_mode(self, workspace_id: str) -> str:
+        """Read platform mode, retaining env compatibility before DB startup in unit paths."""
+        try:
+            db = await get_db()
+            workspace = await db.workspace.find_unique(where={"id": workspace_id})
+        except RuntimeError:
+            return "env"
+        mode = str(getattr(workspace, "bridgeCredentialMode", "env") or "env")
+        return mode if mode in {"env", "worker_file"} else "env"
 
     def verify_preview_token(self, token: str, *, expected_kind: str) -> dict[str, Any]:
         claims = self._decode_signed_token(token, invalid_detail="Invalid preview token")
@@ -828,6 +843,12 @@ class UserSpaceRuntimeService:
         token_session_id = str(raw_credential.get("session_id") or "").strip() or None
         issued_at = self._parse_runtime_bridge_datetime(raw_credential.get("issued_at"))
         expires_at = self._parse_runtime_bridge_datetime(raw_credential.get("expires_at"))
+        mode = str(raw_credential.get("mode") or "env")
+        revision = raw_credential.get("revision", 0)
+        if mode not in {"env", "worker_file"}:
+            mode = "env"
+        if not isinstance(revision, int) or revision < 0:
+            revision = 0
         last_success_at = await self._get_latest_runtime_bridge_success_at(session.workspace_id, session.id) if include_last_success else None
 
         base_kwargs: _RuntimeBridgeStatusBaseKwargs = {
@@ -843,21 +864,24 @@ class UserSpaceRuntimeService:
             return UserSpaceRuntimeBridgeStatus(
                 state="invalid",
                 detail="Runtime bridge credential metadata is invalid",
+                mode=cast(Any, mode), revision=revision,
                 **base_kwargs,
             )
         if expires_at is not None and expires_at <= utc_now():
             return UserSpaceRuntimeBridgeStatus(
                 state="expired",
                 detail="Runtime bridge credential has expired",
+                mode=cast(Any, mode), revision=revision,
                 **base_kwargs,
             )
         if token_session_id != session.id:
             return UserSpaceRuntimeBridgeStatus(
                 state="session_mismatch",
                 detail="Runtime bridge credential is bound to a different session",
+                mode=cast(Any, mode), revision=revision,
                 **base_kwargs,
             )
-        return UserSpaceRuntimeBridgeStatus(state="healthy", **base_kwargs)
+        return UserSpaceRuntimeBridgeStatus(state="healthy", mode=cast(Any, mode), revision=revision, **base_kwargs)
 
     async def _get_workspace_preview_bridge_readiness_lock(
         self,
@@ -1038,10 +1062,10 @@ class UserSpaceRuntimeService:
 
             self._workspace_preview_bridge_last_recovery_attempt_ts[session.workspace_id] = now_ts
 
-            await self.restart_runtime_env_vars_and_wait(
-                session.workspace_id,
-                timeout_seconds=60.0,
-            )
+            if status.mode == "worker_file":
+                await self._refresh_file_bridge_credential(session, status)
+            else:
+                await self.restart_runtime_env_vars_and_wait(session.workspace_id, timeout_seconds=60.0)
 
             active = await self._get_active_session_row(session.workspace_id)
             if active is None:
@@ -1066,6 +1090,41 @@ class UserSpaceRuntimeService:
                     detail=self._workspace_preview_bridge_not_ready_detail(refreshed_status),
                 )
 
+    async def _refresh_file_bridge_credential(self, session: UserSpaceRuntimeSession, status: UserSpaceRuntimeBridgeStatus) -> None:
+        """Rotate a worker-file credential without restarting the application."""
+        if not session.provider_session_id or status.token_session_id != session.id:
+            raise HTTPException(status_code=409, detail="Runtime bridge session changed during refresh")
+        provider_status = await self._runtime_provider_get_status(session.provider_session_id, max_age_seconds=0)
+        raw = (provider_status or {}).get("bridge_credential")
+        if not isinstance(raw, dict) or str(raw.get("mode") or "env") != "worker_file":
+            raise HTTPException(status_code=409, detail="Runtime worker does not support file bridge credentials")
+        revision = raw.get("revision", 0)
+        if not isinstance(revision, int) or revision < 0:
+            raise HTTPException(status_code=409, detail="Runtime bridge credential revision is invalid")
+        try:
+            await self._runtime_provider_refresh_bridge_credential(
+                session.provider_session_id,
+                token=self.build_runtime_bridge_token(session.workspace_id, session.id),
+                expected_session_id=session.id,
+                expected_revision=revision,
+                request_id=str(uuid4()),
+            )
+        except HTTPException as exc:
+            # Re-observe after a conflicted/ambiguous delivery; never replay it.
+            if exc.status_code not in {409, 502, 503, 504}:
+                raise
+            observed = await self._runtime_provider_get_status(session.provider_session_id, max_age_seconds=0)
+            credential = (observed or {}).get("bridge_credential")
+            refreshed = await self._get_runtime_bridge_status_for_session(session, observed, include_last_success=False)
+            if (
+                not isinstance(credential, dict)
+                or refreshed.state != "healthy"
+                or refreshed.mode != "worker_file"
+                or refreshed.revision <= revision
+                or refreshed.token_session_id != session.id
+            ):
+                raise HTTPException(status_code=409, detail="Runtime bridge credential refresh was not confirmed") from exc
+
     async def get_runtime_bridge_status(
         self,
         workspace_id: str,
@@ -1085,6 +1144,30 @@ class UserSpaceRuntimeService:
             except HTTPException:
                 provider_status = None
         return await self._get_runtime_bridge_status_for_session(session, provider_status)
+
+    async def get_bridge_credential_mode(self, workspace_id: str, user_id: str, *, is_admin: bool = False) -> dict[str, Any]:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "owner", is_admin=is_admin)
+        db = await get_db()
+        workspace = await db.workspace.find_unique(where={"id": workspace_id})
+        if workspace is None:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        mode = str(getattr(workspace, "bridgeCredentialMode", "env") or "env")
+        return {"mode": mode if mode in {"env", "worker_file"} else "env", "requires_restart": True, "supported": True}
+
+    async def set_bridge_credential_mode(self, workspace_id: str, user_id: str, mode: str, *, is_admin: bool = False) -> dict[str, Any]:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "owner", is_admin=is_admin)
+        if mode not in {"env", "worker_file"}:
+            raise HTTPException(status_code=400, detail="Unsupported bridge credential mode")
+        if mode == "worker_file":
+            active = await self._get_active_session_row(workspace_id)
+            if active is not None:
+                status = await self._runtime_provider_get_status(getattr(active, "providerSessionId", None), max_age_seconds=0)
+                capabilities = (status or {}).get("runtime_capabilities") or (status or {}).get("capabilities") or {}
+                if not isinstance(capabilities, dict) or capabilities.get("bridge_credential_file") is not True:
+                    raise HTTPException(status_code=409, detail="Active runtime worker does not support file bridge credentials")
+        db = await get_db()
+        await db.workspace.update(where={"id": workspace_id}, data={"bridgeCredentialMode": mode})
+        return {"mode": mode, "requires_restart": True, "supported": True}
 
     async def refresh_runtime_bridge_credentials(
         self,
@@ -1111,21 +1194,26 @@ class UserSpaceRuntimeService:
                 continue
             newest_sessions_by_workspace[workspace_id] = self._to_runtime_session(row)
 
-        for workspace_id, session in newest_sessions_by_workspace.items():
-            status_name: str = session.state
-            try:
-                status = await self._get_workspace_preview_bridge_status(session)
-                status_name = status.state
-                if not self._workspace_preview_bridge_status_needs_recovery(status):
-                    continue
-                await self._ensure_workspace_preview_bridge_ready(session)
-            except Exception:
-                logger.warning(
-                    "Runtime bridge refresh watch failed for workspace %s (status=%s)",
-                    workspace_id,
-                    status_name,
-                    exc_info=True,
-                )
+        semaphore = asyncio.Semaphore(_RUNTIME_BRIDGE_REFRESH_MAX_CONCURRENCY)
+
+        async def refresh_workspace(workspace_id: str, session: UserSpaceRuntimeSession) -> None:
+            async with semaphore:
+                status_name: str = session.state
+                try:
+                    status = await self._get_workspace_preview_bridge_status(session)
+                    status_name = status.state
+                    if not self._workspace_preview_bridge_status_needs_recovery(status):
+                        return
+                    await self._ensure_workspace_preview_bridge_ready(session)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "Runtime bridge refresh watch failed for workspace %s (status=%s)",
+                        workspace_id, status_name, exc_info=True,
+                    )
+
+        await asyncio.gather(*(refresh_workspace(workspace_id, session) for workspace_id, session in newest_sessions_by_workspace.items()))
 
     def schedule_runtime_bridge_refresh_watch(self) -> None:
         task = self._runtime_bridge_refresh_watch_task
@@ -1262,6 +1350,10 @@ class UserSpaceRuntimeService:
 
     def _runtime_session_model(self, db: Any) -> Any:
         return getattr(db, "userspaceruntimesession")
+
+    @staticmethod
+    def _runtime_operation_model(db: Any) -> Any:
+        return getattr(db, "workspaceruntimeoperation")
 
     @staticmethod
     def _missing_runtime_session_field(exc: Exception) -> str | None:
@@ -1854,11 +1946,17 @@ class UserSpaceRuntimeService:
         path: str,
         *,
         json_payload: dict[str, Any] | None = None,
+        timeout_override_seconds: float | None = None,
+        retry_safe: bool = True,
+        surface_error_status: bool = False,
     ) -> dict[str, Any]:
         return await runtime_manager_request(
             method,
             path,
             json_payload=json_payload,
+            timeout_override_seconds=timeout_override_seconds,
+            retry_safe=retry_safe,
+            surface_error_status=surface_error_status,
         )
 
     async def _runtime_provider_start_session(
@@ -1875,14 +1973,26 @@ class UserSpaceRuntimeService:
             userspace_service.get_workspace_runtime_environment_visibility(workspace_id),
             userspace_service.resolve_workspace_mounts_for_runtime(workspace_id),
         )
-        workspace_env = self._finalize_workspace_env(workspace_id, session_id, workspace_env)
+        credential_mode = await self._workspace_bridge_credential_mode(workspace_id)
+        if credential_mode not in {"env", "worker_file"}:
+            credential_mode = "env"
+        bridge_env = self._build_runtime_bridge_env(workspace_id, session_id)
+        bridge_token = bridge_env.pop("RAGTIME_BRIDGE_TOKEN")
+        if credential_mode == "env":
+            workspace_env = {**workspace_env, **bridge_env, "RAGTIME_BRIDGE_TOKEN": bridge_token}
+        else:
+            workspace_env = {key: value for key, value in workspace_env.items() if key != "RAGTIME_BRIDGE_TOKEN"}
+            workspace_env = {**workspace_env, **bridge_env}
         payload: dict[str, Any] = {
             "workspace_id": workspace_id,
             "leased_by_user_id": leased_by_user_id,
             "workspace_env": workspace_env,
             "workspace_env_visibility": workspace_env_visibility,
             "workspace_mounts": workspace_mounts,
+            "bridge_credential_mode": credential_mode,
         }
+        if credential_mode == "worker_file":
+            payload["bridge_token_file_initial_token"] = bridge_token
         if existing_provider_session_id:
             payload["provider_session_id"] = existing_provider_session_id
 
@@ -1955,6 +2065,7 @@ class UserSpaceRuntimeService:
         workspace_env: dict[str, str] | None = None,
         workspace_env_visibility: dict[str, bool] | None = None,
         workspace_mounts: list[dict[str, Any]] | None = None,
+        bridge_credential_mode: str | None = None,
     ) -> dict[str, Any] | None:
         if not provider_session_id:
             return None
@@ -1968,10 +2079,40 @@ class UserSpaceRuntimeService:
                 json_payload["workspace_env_visibility"] = workspace_env_visibility
             if workspace_mounts is not None:
                 json_payload["workspace_mounts"] = workspace_mounts
+            if bridge_credential_mode is not None:
+                json_payload["bridge_credential_mode"] = bridge_credential_mode
         return await self._runtime_manager_request(
             "POST",
             f"/sessions/{provider_session_id}/restart",
             json_payload=json_payload,
+            retry_safe=False,
+        )
+
+    async def _runtime_provider_restart_app(self, provider_session_id: str, request_id: str) -> dict[str, Any]:
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "POST",
+            f"/sessions/{provider_session_id}/app/restart",
+            json_payload={"request_id": request_id},
+            retry_safe=False,
+            surface_error_status=True,
+        )
+
+    async def _runtime_provider_refresh_bridge_credential(
+        self, provider_session_id: str, *, token: str, expected_session_id: str, expected_revision: int, request_id: str
+    ) -> dict[str, Any]:
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "POST",
+            f"/sessions/{provider_session_id}/bridge-credential/refresh",
+            json_payload={
+                "token": token,
+                "expected_session_id": expected_session_id,
+                "expected_revision": expected_revision,
+                "request_id": request_id,
+            },
+            retry_safe=False,
+            surface_error_status=True,
         )
 
     async def _runtime_provider_refresh_mounts(
@@ -2122,7 +2263,7 @@ class UserSpaceRuntimeService:
         self,
         provider_session_id: str | None,
         command: str,
-        timeout_seconds: int = 30,
+        timeout_seconds: int = 120,
         cwd: str | None = None,
     ) -> dict[str, Any]:
         if not provider_session_id:
@@ -2138,6 +2279,8 @@ class UserSpaceRuntimeService:
             "POST",
             f"/sessions/{provider_session_id}/exec",
             json_payload=payload,
+            timeout_override_seconds=float(timeout_seconds + 30),
+            retry_safe=False,
         )
 
     # -- Workspace-level runtime manager requests (not session-scoped) --
@@ -3017,11 +3160,15 @@ class UserSpaceRuntimeService:
             userspace_service.get_workspace_runtime_environment(workspace_id),
             userspace_service.get_workspace_runtime_environment_visibility(workspace_id),
         )
-        workspace_env = self._finalize_workspace_env(workspace_id, session.id, workspace_env)
+        mode = await self._workspace_bridge_credential_mode(workspace_id)
+        workspace_env = self._finalize_workspace_env(
+            workspace_id, session.id, workspace_env, bridge_credential_mode=mode
+        )
         await self._runtime_provider_restart_devserver(
             session.provider_session_id,
             workspace_env=workspace_env,
             workspace_env_visibility=workspace_env_visibility,
+            bridge_credential_mode=mode,
         )
 
     async def refresh_runtime_env_vars_for_all_active_workspaces(self) -> None:
@@ -4168,7 +4315,7 @@ class UserSpaceRuntimeService:
         workspace_id: str,
         user_id: str,
         command: str,
-        timeout_seconds: int = 30,
+        timeout_seconds: int = 120,
         cwd: str | None = None,
     ) -> dict[str, Any]:
         """Execute a shell command in the workspace runtime container."""
@@ -4181,6 +4328,151 @@ class UserSpaceRuntimeService:
             timeout_seconds=timeout_seconds,
             cwd=cwd,
         )
+
+    @staticmethod
+    def _restart_request_hash(reason: str) -> str:
+        return hashlib.sha256(json.dumps({"reason": reason}, sort_keys=True).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _runtime_operation_payload(row: Any, runtime_status: UserSpaceRuntimeStatusResponse | None = None) -> dict[str, Any]:
+        return UserSpaceRuntimeOperation(
+            id=str(getattr(row, "id", "")),
+            workspace_id=str(getattr(row, "workspaceId", "")),
+            state=cast(Any, str(getattr(row, "state", "accepted") or "accepted")),
+            operation_id=str(getattr(row, "operationId", "") or "") or None,
+            error=str(getattr(row, "error", "") or "") or None,
+            runtime_status=runtime_status,
+        ).model_dump()
+
+    async def request_app_restart(self, workspace_id: str, user_id: str, idempotency_key: str, reason: str = "") -> dict[str, Any]:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+        if not 8 <= len(idempotency_key) <= 128:
+            raise HTTPException(status_code=400, detail="idempotency_key must be between 8 and 128 characters")
+        request_hash = self._restart_request_hash(reason)
+        db = await get_db()
+        async with db.tx() as tx:
+            # The transaction-scoped lock serializes every idempotency and
+            # throttle decision across independent control-plane processes.
+            await tx.query_raw(
+                "SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended($1, 0))",
+                f"userspace-runtime-restart:{workspace_id}",
+            )
+            model = self._runtime_operation_model(tx)
+            existing = await model.find_first(
+                where={"workspaceId": workspace_id, "userId": user_id, "idempotencyKey": idempotency_key}
+            )
+            if existing is not None:
+                if str(getattr(existing, "requestHash", "")) != request_hash:
+                    raise HTTPException(status_code=409, detail="Idempotency key conflicts with a different restart request")
+                return self._runtime_operation_payload(existing)
+            latest = await model.find_first(where={"workspaceId": workspace_id}, order={"createdAt": "desc"})
+            if latest is not None and (utc_now() - getattr(latest, "createdAt")).total_seconds() < 60:
+                raise HTTPException(status_code=429, detail="Workspace restart is throttled")
+            active = await self._runtime_session_model(tx).find_first(
+                where={"workspaceId": workspace_id, "state": {"in": ["starting", "running"]}},
+                order={"updatedAt": "desc"},
+            )
+            provider_session_id = str(getattr(active, "providerSessionId", "") or "")
+            operation = await model.create(
+                data={
+                    "workspaceId": workspace_id,
+                    "userId": user_id,
+                    "idempotencyKey": idempotency_key,
+                    "requestHash": request_hash,
+                    "state": "accepted" if provider_session_id else "failed",
+                    "providerSessionId": provider_session_id or None,
+                    "error": None if provider_session_id else "Runtime session is not active",
+                }
+            )
+        # Commit the intent and provider-session fence before any manager I/O.
+        model = self._runtime_operation_model(db)
+        if not provider_session_id:
+            return self._runtime_operation_payload(operation)
+        try:
+            response = await self._runtime_provider_restart_app(provider_session_id, str(operation.id))
+        except HTTPException as exc:
+            # Intent remains durable; ambiguous mutations are never replayed.
+            state = "interrupted" if exc.status_code >= 500 else "failed"
+            await model.update_many(
+                where={"id": operation.id, "state": "accepted", "providerSessionId": provider_session_id},
+                data={"state": state, "error": "Runtime restart dispatch was not confirmed"},
+            )
+            operation = await model.find_unique(where={"id": operation.id})
+            if exc.status_code == 409:
+                raise
+            return self._runtime_operation_payload(operation)
+        provider_operation_id = str(response.get("runtime_operation_id") or "").strip()
+        if not provider_operation_id:
+            await model.update_many(
+                where={"id": operation.id, "state": "accepted", "providerSessionId": provider_session_id},
+                data={"state": "interrupted", "error": "Runtime restart dispatch did not return an operation identity"},
+            )
+        else:
+            await model.update_many(
+                where={"id": operation.id, "state": "accepted", "providerSessionId": provider_session_id},
+                data={"state": "running", "operationId": provider_operation_id, "error": None},
+            )
+        operation = await model.find_unique(where={"id": operation.id})
+        return self._runtime_operation_payload(operation)
+
+    async def get_app_runtime_operation(self, workspace_id: str, user_id: str, operation_id: str) -> dict[str, Any]:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+        db = await get_db()
+        model = self._runtime_operation_model(db)
+        row = await model.find_first(where={"id": operation_id, "workspaceId": workspace_id, "userId": user_id})
+        if row is None:
+            raise HTTPException(status_code=404, detail="Runtime operation not found")
+        if str(getattr(row, "state", "")) == "running":
+            provider_session_id = str(getattr(row, "providerSessionId", "") or "")
+            expected_operation_id = str(getattr(row, "operationId", "") or "")
+            active = await self._get_active_session_row(workspace_id)
+            active_provider_session_id = str(getattr(active, "providerSessionId", "") or "")
+            provider = await self._runtime_provider_get_status(provider_session_id, max_age_seconds=0) if provider_session_id else None
+            matching = bool(expected_operation_id and active_provider_session_id == provider_session_id and provider and str(provider.get("runtime_operation_id") or "") == expected_operation_id)
+            if matching and str((provider or {}).get("runtime_operation_phase") or "") == "ready":
+                row = await model.update(where={"id": row.id}, data={"state": "completed"})
+            elif matching and str((provider or {}).get("runtime_operation_phase") or "") == "failed":
+                row = await model.update(where={"id": row.id}, data={"state": "failed", "error": "Runtime app restart failed"})
+            elif not matching:
+                row = await model.update(where={"id": row.id}, data={"state": "interrupted", "error": "Runtime restart operation identity or session was not confirmed"})
+        return self._runtime_operation_payload(row)
+
+    async def reconcile_stale_runtime_operations(self) -> None:
+        """Observe in-flight work after restart; never replay an ambiguous mutation."""
+        db = await get_db()
+        model = self._runtime_operation_model(db)
+        rows = await model.find_many(where={"state": {"in": ["accepted", "running"]}})
+        for row in rows or []:
+            state = str(getattr(row, "state", "") or "")
+            created_at = getattr(row, "createdAt", None)
+            if state == "accepted" and created_at is not None and (utc_now() - created_at).total_seconds() < _RUNTIME_RESTART_RECONCILE_ACCEPTED_GRACE_SECONDS:
+                continue
+            provider_id = str(getattr(row, "providerSessionId", "") or "")
+            operation_id = str(getattr(row, "operationId", "") or "")
+            try:
+                observed = await self._runtime_provider_get_status(provider_id, max_age_seconds=0) if provider_id else None
+                active = await self._get_active_session_row(str(getattr(row, "workspaceId", "") or ""))
+            except Exception:
+                logger.warning("Unable to reconcile runtime restart operation %s", getattr(row, "id", ""), exc_info=True)
+                await model.update_many(
+                    where={"id": row.id, "state": state},
+                    data={"state": "interrupted", "error": "Runtime provider status was unavailable during recovery"},
+                )
+                continue
+            active_provider_id = str(getattr(active, "providerSessionId", "") or "")
+            matching = bool(observed and operation_id and active_provider_id == provider_id and str(observed.get("runtime_operation_id") or "") == operation_id)
+            phase = str((observed or {}).get("runtime_operation_phase") or "")
+            if matching and phase in {"running", "queued", "provisioning", "bootstrapping", "deps_install", "launching", "probing"}:
+                continue
+            if matching and phase == "ready":
+                await model.update_many(where={"id": row.id, "state": state}, data={"state": "completed"})
+            elif matching and phase == "failed":
+                await model.update_many(where={"id": row.id, "state": state}, data={"state": "failed", "error": "Runtime app restart failed"})
+            else:
+                await model.update_many(
+                    where={"id": row.id, "state": state},
+                    data={"state": "interrupted", "error": "Restart dispatch was not confirmed after control-plane recovery"},
+                )
 
     async def _store_collab_checkpoint(
         self,
