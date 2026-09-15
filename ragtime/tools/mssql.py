@@ -347,7 +347,7 @@ async def test_mssql_connection(
                     logger.debug(f"SSH tunnel established: localhost:{local_port} -> {tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}")
 
             conn = _mssql_connect(actual_host, actual_port, user, password, database, timeout)
-            cursor = conn.cursor()
+            cursor = conn.cursor(as_dict=False)
 
             # Get server version
             cursor.execute("SELECT @@VERSION")
