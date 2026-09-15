@@ -282,6 +282,10 @@ async def lifespan(app: FastAPI):
 
     # Start background task service for chat
     await background_task_service.start()
+    await userspace_runtime_service.reconcile_stale_runtime_operations()
+    from ragtime.core.openrouter_credits import start_openrouter_credit_monitor
+
+    start_openrouter_credit_monitor()
 
     # Backfill userspace Git ignore policy for existing workspaces in the background.
     await userspace_service.cleanup_interrupted_workspace_mount_syncs()
@@ -303,6 +307,9 @@ async def lifespan(app: FastAPI):
     await userspace_service.shutdown_workspace_mount_watch()
     await userspace_service.shutdown_workspace_scm_watch()
     await userspace_runtime_service.shutdown_runtime_bridge_refresh_watch()
+    from ragtime.core.openrouter_credits import stop_openrouter_credit_monitor
+
+    await stop_openrouter_credit_monitor()
     await tool_health_monitor.stop()
 
     # Cleanup - stop background services before disconnecting DB

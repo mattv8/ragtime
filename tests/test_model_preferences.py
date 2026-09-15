@@ -361,3 +361,25 @@ class ModelPreferenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_db.user.update_calls, [])
         self.assertEqual(fake_db.workspaceuserpreference.delete_many_calls, [])
         self.assertEqual(fake_db.user.update_many_calls, [])
+
+    async def test_build_task_prefers_configured_builder_model_but_general_does_not(self) -> None:
+        from ragtime.indexer import model_preferences
+
+        fake_db = SimpleNamespace(
+            user=_FakeUserTable({"user-1": "openai::personal"}),
+            workspaceuserpreference=_FakeWorkspacePreferenceTable({}),
+        )
+        settings = SimpleNamespace(userspace_build_model="anthropic::builder")
+        with (
+            mock.patch.object(model_preferences, "get_db", mock.AsyncMock(return_value=fake_db)),
+            mock.patch.object(model_preferences, "_resolve_default_conversation_model", return_value="global::fallback"),
+        ):
+            build = await model_preferences.resolve_new_conversation_model(
+                settings, user_id="user-1", task_type="build"
+            )
+            general = await model_preferences.resolve_new_conversation_model(
+                settings, user_id="user-1", task_type="general"
+            )
+
+        self.assertEqual(build, "anthropic::builder")
+        self.assertEqual(general, "openai::personal")
