@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import hashlib
 import html
 import json
@@ -11,6 +12,7 @@ import re
 import shutil
 import socket
 import sys
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -63,6 +65,10 @@ from runtime.worker.sandbox import (
     workspace_mirror_required,
 )
 
+from ..core.secure_files import SecureFileError
+from ..core.secure_files import delete_file as secure_delete_file
+from ..core.secure_files import read_text as secure_read_text
+from ..core.secure_files import write_text as secure_write_text
 from ..core.shared import (
     RUNTIME_BOOTSTRAP_CONFIG_PATH,
     RUNTIME_BOOTSTRAP_STAMP_PATH,
@@ -74,10 +80,10 @@ from ..core.shared import (
 from ..core.utils import get_positive_int_env, utc_now
 from ..core.workspace_ops import (
     PLATFORM_MANAGED_GITIGNORE_PATTERNS,
-    _is_path_contained_under,
     deduplicate_ancestor_paths,
     list_mount_source_tree_entries,
     list_workspace_tree_entries,
+    resolve_workspace_mount_rooted_target,
     resolve_workspace_mount_source_path,
     sync_scope_relative_paths,
     workspace_mount_target_repo_relative_path,
@@ -344,6 +350,11 @@ class WorkerService:
         self._runtime_config_file = ".ragtime/runtime-entrypoint.json"
         self._startup_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_startup_locks: dict[str, asyncio.Lock] = {}
+        # Lock order: startup lock -> file lock -> mount semaphore. File APIs
+        # use only the file lock and never await it while holding _lock.
+        self._workspace_file_locks: dict[str, asyncio.Lock] = {}
+        self._workspace_cleanup_tasks: dict[str, asyncio.Task[None]] = {}
+        self._background_cleanup_tasks: set[asyncio.Task[None]] = set()
         self._startup_semaphore = asyncio.Semaphore(
             get_positive_int_env(
                 "RUNTIME_STARTUP_CONCURRENCY",
@@ -370,6 +381,8 @@ class WorkerService:
         *,
         enforce_sqlite_managed: bool = False,
     ) -> str:
+        if not isinstance(file_path, str) or "\x00" in file_path:
+            raise HTTPException(status_code=400, detail="Invalid file path")
         return normalize_file_path(
             file_path,
             enforce_sqlite_managed=enforce_sqlite_managed,
@@ -737,12 +750,40 @@ class WorkerService:
         if not mounts and not clear_targets:
             return
         async with self._mount_materialization_semaphore:
-            await asyncio.to_thread(
-                materialize_mounts,
-                session.sandbox_spec,
-                mounts,
-                clear_targets=clear_targets,
+            cancel_event = threading.Event()
+            materialization = asyncio.create_task(
+                asyncio.to_thread(
+                    materialize_mounts,
+                    session.sandbox_spec,
+                    mounts,
+                    clear_targets=clear_targets,
+                    cancel_event=cancel_event,
+                    timeout_seconds=self._runtime_bootstrap_timeout_seconds,
+                )
             )
+            try:
+                # Shield the task from caller cancellation: to_thread cannot
+                # be cancelled, so the cancellation path below must retain the
+                # filesystem fence until its synchronous work is finished.
+                await asyncio.shield(materialization)
+            except asyncio.CancelledError:
+                cancel_event.set()
+                while not materialization.done():
+                    try:
+                        await asyncio.shield(materialization)
+                    except asyncio.CancelledError:
+                        # Keep the filesystem fence until the helper has
+                        # reaped its process group and the thread has exited.
+                        continue
+                    except Exception:
+                        # The thread is done; preserve the caller's original
+                        # cancellation after recording its terminal error.
+                        break
+                try:
+                    materialization.result()
+                except (asyncio.CancelledError, Exception):
+                    logger.debug("Materialization stopped after cancellation", exc_info=True)
+                raise
 
     @staticmethod
     def _decode_jwt_payload_metadata(token: str) -> dict[str, Any] | None:
@@ -821,6 +862,66 @@ class WorkerService:
             lock = asyncio.Lock()
             self._workspace_startup_locks[workspace_id] = lock
         return lock
+
+    def _workspace_file_lock(self, workspace_id: str) -> asyncio.Lock:
+        lock = self._workspace_file_locks.get(workspace_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._workspace_file_locks[workspace_id] = lock
+        return lock
+
+    @staticmethod
+    async def _drain_file_io_task(task: asyncio.Task[Any]) -> Any:
+        """Drain thread I/O before its workspace fence can be released."""
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        result = task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    def _capture_file_target_locked(
+        self,
+        worker_session_id: str,
+        rel_path: str,
+        *,
+        mutation: bool,
+    ) -> tuple[WorkerSession, Path, str, str | None]:
+        """Capture current root/policy only after the workspace file fence."""
+        session = self._sessions.get(worker_session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Worker session not found")
+        mounted_target = resolve_workspace_mount_rooted_target(session.workspace_mounts, rel_path)
+        if mutation and mounted_target and mounted_target.read_only:
+            raise HTTPException(status_code=403, detail="Mounted workspace paths are read-only")
+        workspace_tree_root = self._workspace_tree_root_for_session(session)
+        return (
+            session,
+            mounted_target.root if mounted_target else workspace_tree_root,
+            mounted_target.relative_path if mounted_target else rel_path,
+            session.runtime_operation_id,
+        )
+
+    @staticmethod
+    def _is_unsafe_file_error(exc: OSError) -> bool:
+        return exc.errno in {errno.ELOOP, errno.ENOTDIR, errno.EISDIR}
+
+    async def _wait_for_workspace_cleanup(self, workspace_id: str) -> None:
+        """Wait for a stop barrier that was registered before this startup."""
+        while True:
+            async with self._lock:
+                cleanup_task = self._workspace_cleanup_tasks.get(workspace_id)
+            if cleanup_task is None:
+                return
+            await asyncio.shield(cleanup_task)
+
+    def _track_background_cleanup(self, task: asyncio.Task[None]) -> None:
+        self._background_cleanup_tasks.add(task)
+        task.add_done_callback(self._background_cleanup_tasks.discard)
 
     def _begin_operation(self, session: WorkerSession, phase: str) -> None:
         now = utc_now()
@@ -992,7 +1093,7 @@ class WorkerService:
 
             if resolved.is_file():
                 digest.update(b"::file")
-                digest.update(resolved.read_bytes())
+                self._update_digest_from_file(digest, resolved)
                 continue
 
             if resolved.is_dir():
@@ -1000,9 +1101,15 @@ class WorkerService:
                 for child in sorted(path for path in resolved.rglob("*") if path.is_file()):
                     rel_child = str(child.relative_to(workspace_root)).replace("\\", "/")
                     digest.update(rel_child.encode("utf-8", errors="ignore"))
-                    digest.update(child.read_bytes())
+                    self._update_digest_from_file(digest, child)
 
         return digest.hexdigest()
+
+    @staticmethod
+    def _update_digest_from_file(digest: Any, path: Path) -> None:
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
 
     async def _runtime_bootstrap_config_digest(self, workspace_root: Path) -> str | None:
         return await asyncio.to_thread(
@@ -1831,8 +1938,23 @@ class WorkerService:
         return False
 
     async def _terminate_devserver_locked(self, session_id: str) -> None:
-        process = self._devserver_processes.pop(session_id, None)
-        log_handle = self._devserver_log_handles.pop(session_id, None)
+        process, log_handle = self._take_devserver_resources_locked(session_id)
+        await self._terminate_devserver_resources(process, log_handle)
+
+    def _take_devserver_resources_locked(
+        self,
+        session_id: str,
+    ) -> tuple[asyncio.subprocess.Process | None, Any | None]:
+        return (
+            self._devserver_processes.pop(session_id, None),
+            self._devserver_log_handles.pop(session_id, None),
+        )
+
+    async def _terminate_devserver_resources(
+        self,
+        process: asyncio.subprocess.Process | None,
+        log_handle: Any | None,
+    ) -> None:
         if process is None:
             if log_handle:
                 try:
@@ -1927,7 +2049,11 @@ class WorkerService:
             workspace_id = session.workspace_id
 
         workspace_lock = self._workspace_startup_lock(workspace_id)
+        await self._wait_for_workspace_cleanup(workspace_id)
         async with workspace_lock:
+            # A stop may have registered its barrier after the first check but
+            # before this startup acquired the workspace lock.
+            await self._wait_for_workspace_cleanup(workspace_id)
             async with self._startup_semaphore:
                 async with self._lock:
                     session = self._sessions.get(session_id)
@@ -1937,22 +2063,17 @@ class WorkerService:
                     session.updated_at = utc_now()
 
                 try:
-                    await asyncio.to_thread(ensure_sandbox_ready, session.sandbox_spec)
+                    # Provisioning and mount materialization can replace the
+                    # active tree, so fence only this short phase. Bootstrap
+                    # intentionally runs after releasing the file lock.
+                    async with self._workspace_file_lock(workspace_id):
+                        await asyncio.to_thread(ensure_sandbox_ready, session.sandbox_spec)
+                        await self._materialize_workspace_mounts(session)
                 except Exception as exc:
                     await self._mark_operation_failed(
                         session_id,
                         operation_id,
-                        f"Failed to prepare runtime sandbox: {exc}",
-                    )
-                    return
-
-                try:
-                    await self._materialize_workspace_mounts(session)
-                except Exception as exc:
-                    await self._mark_operation_failed(
-                        session_id,
-                        operation_id,
-                        f"Failed to materialize workspace mounts: {exc}",
+                        f"Failed to prepare runtime sandbox or materialize workspace mounts: {exc}",
                     )
                     return
 
@@ -2264,17 +2385,85 @@ class WorkerService:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
+            # Fence the operation before cancelling it. A startup pipeline can
+            # be between its off-lock spawn and its guarded commit; clearing
+            # the operation id makes that commit terminate its new process.
+            session.runtime_operation_id = None
+            session.runtime_operation_updated_at = utc_now()
             startup_task = self._startup_tasks.pop(session.id, None)
             if startup_task and not startup_task.done():
                 startup_task.cancel()
-            await self._terminate_devserver_locked(session.id)
-            cleanup_sandbox(session.sandbox_spec)
-            session.state = "stopped"
-            session.devserver_running = False
-            session.last_error = None
-            self._set_operation_phase(session, "stopped")
-            session.updated_at = utc_now()
+            devserver_process, log_handle = self._take_devserver_resources_locked(session.id)
+            workspace_id = session.workspace_id
+            sandbox_spec = session.sandbox_spec
+            cleanup_task = asyncio.create_task(
+                self._finish_stop_cleanup(
+                    worker_session_id=worker_session_id,
+                    workspace_id=workspace_id,
+                    startup_task=startup_task,
+                    devserver_process=devserver_process,
+                    log_handle=log_handle,
+                    sandbox_spec=sandbox_spec,
+                )
+            )
+            # Publish the barrier before releasing the global lock so a newly
+            # queued start observes it before it can provision this workspace.
+            self._workspace_cleanup_tasks[workspace_id] = cleanup_task
+
+        await asyncio.shield(cleanup_task)
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
             return self._session_response(session)
+
+    async def _finish_stop_cleanup(
+        self,
+        *,
+        worker_session_id: str,
+        workspace_id: str,
+        startup_task: asyncio.Task[None] | None,
+        devserver_process: asyncio.subprocess.Process | None,
+        log_handle: Any | None,
+        sandbox_spec: SandboxSpec,
+    ) -> None:
+        current_task = asyncio.current_task()
+        try:
+            if startup_task:
+                try:
+                    await startup_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.exception("Cancelled startup task failed during workspace cleanup")
+
+            # Keep the workspace fence while cleanup runs, but never the global
+            # state lock: unrelated status and preview requests remain responsive.
+            workspace_lock = self._workspace_startup_lock(workspace_id)
+            async with workspace_lock:
+                async with self._workspace_file_lock(workspace_id):
+                    await self._terminate_devserver_resources(devserver_process, log_handle)
+                    cleanup_thread = asyncio.create_task(asyncio.to_thread(cleanup_sandbox, sandbox_spec))
+                    try:
+                        await asyncio.shield(cleanup_thread)
+                    except asyncio.CancelledError:
+                        # Do not release either filesystem fence until the
+                        # cleanup thread has stopped touching the sandbox root.
+                        await asyncio.shield(cleanup_thread)
+                        raise
+
+                async with self._lock:
+                    session = self._sessions.get(worker_session_id)
+                    if session and session.runtime_operation_id is None:
+                        session.state = "stopped"
+                        session.devserver_running = False
+                        session.last_error = None
+                        self._set_operation_phase(session, "stopped")
+                        session.updated_at = utc_now()
+        finally:
+            async with self._lock:
+                if self._workspace_cleanup_tasks.get(workspace_id) is current_task:
+                    self._workspace_cleanup_tasks.pop(workspace_id, None)
 
     async def restart_session(
         self,
@@ -2334,31 +2523,35 @@ class WorkerService:
                     detail="Runtime session is not active",
                 )
             workspace_id = session.workspace_id
-            if replace:
-                previous_targets = self._mount_target_paths(session.workspace_mounts)
-                clear_target_paths = previous_targets | target_paths
-                session.workspace_mounts = mount_specs
-            else:
-                clear_target_paths = set(target_paths)
-                mounts_by_target: dict[str, dict[str, Any]] = {}
-                for existing_mount in session.workspace_mounts:
-                    existing_target = str(existing_mount.get("target_path") or "").strip()
-                    if existing_target:
-                        mounts_by_target[existing_target] = dict(existing_mount)
-                for mount in mount_specs:
-                    mounts_by_target[str(mount.get("target_path") or "").strip()] = mount
-                session.workspace_mounts = list(mounts_by_target.values())
-            session.mount_targets_to_clear |= clear_target_paths
-            session.updated_at = utc_now()
 
         workspace_lock = self._workspace_startup_lock(workspace_id)
         async with workspace_lock:
-            async with self._lock:
-                session = self._sessions.get(worker_session_id)
-                if not session:
-                    raise HTTPException(status_code=404, detail="Worker session not found")
             try:
-                await self._materialize_workspace_mounts(session)
+                async with self._workspace_file_lock(workspace_id):
+                    # Publish mount metadata under the same fence as its
+                    # materialization, so queued file operations recapture a
+                    # coherent root and read-only policy.
+                    async with self._lock:
+                        session = self._sessions.get(worker_session_id)
+                        if not session:
+                            raise HTTPException(status_code=404, detail="Worker session not found")
+                        if replace:
+                            previous_targets = self._mount_target_paths(session.workspace_mounts)
+                            clear_target_paths = previous_targets | target_paths
+                            session.workspace_mounts = mount_specs
+                        else:
+                            clear_target_paths = set(target_paths)
+                            mounts_by_target: dict[str, dict[str, Any]] = {}
+                            for existing_mount in session.workspace_mounts:
+                                existing_target = str(existing_mount.get("target_path") or "").strip()
+                                if existing_target:
+                                    mounts_by_target[existing_target] = dict(existing_mount)
+                            for mount in mount_specs:
+                                mounts_by_target[str(mount.get("target_path") or "").strip()] = mount
+                            session.workspace_mounts = list(mounts_by_target.values())
+                        session.mount_targets_to_clear |= clear_target_paths
+                        session.updated_at = utc_now()
+                    await self._materialize_workspace_mounts(session)
             except Exception as exc:
                 error_message = f"Failed to refresh workspace mounts: {exc}"
                 async with self._lock:
@@ -2390,19 +2583,25 @@ class WorkerService:
                 file_path,
                 enforce_sqlite_managed=True,
             )
-            mounted_target = self._resolve_workspace_mount_file_path(session.workspace_mounts, rel_path)
-            workspace_tree_root = self._workspace_tree_root_for_session(session)
-            if mounted_target:
-                target = mounted_target[0]
-            else:
-                target = workspace_tree_root / rel_path
-                if not _is_path_contained_under(target, workspace_tree_root):
-                    return self._runtime_file_response(session, rel_path, "", False)
-            if not target.exists() or not target.is_file():
-                return self._runtime_file_response(session, rel_path, "", False)
-            content = await asyncio.to_thread(target.read_text, encoding="utf-8")
-            session.updated_at = utc_now()
-            return self._runtime_file_response(session, rel_path, content, True)
+            workspace_id = session.workspace_id
+
+        file_lock = self._workspace_file_lock(workspace_id)
+        async with file_lock:
+            async with self._lock:
+                session, root, root_relative_path, operation_id = self._capture_file_target_locked(worker_session_id, rel_path, mutation=False)
+            io_task = asyncio.create_task(asyncio.to_thread(secure_read_text, root, root_relative_path))
+            try:
+                content = await self._drain_file_io_task(io_task)
+            except asyncio.CancelledError:
+                raise
+        async with self._lock:
+            current = self._sessions.get(worker_session_id)
+            if current is not None and current is session and current.runtime_operation_id == operation_id:
+                current.updated_at = utc_now()
+            response_session = session
+        if content is None:
+            return self._runtime_file_response(response_session, rel_path, "", False)
+        return self._runtime_file_response(response_session, rel_path, content, True)
 
     async def write_file(
         self,
@@ -2418,15 +2617,27 @@ class WorkerService:
                 file_path,
                 enforce_sqlite_managed=True,
             )
-            mounted_target = self._resolve_workspace_mount_file_path(session.workspace_mounts, rel_path)
-            if mounted_target and mounted_target[1]:
-                raise HTTPException(status_code=403, detail="Mounted workspace paths are read-only")
-            workspace_tree_root = self._workspace_tree_root_for_session(session)
-            target = mounted_target[0] if mounted_target else workspace_tree_root / rel_path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(target.write_text, content, encoding="utf-8")
-            session.updated_at = utc_now()
-            return self._runtime_file_response(session, rel_path, content, True)
+            workspace_id = session.workspace_id
+
+        file_lock = self._workspace_file_lock(workspace_id)
+        async with file_lock:
+            async with self._lock:
+                session, root, root_relative_path, operation_id = self._capture_file_target_locked(worker_session_id, rel_path, mutation=True)
+            io_task = asyncio.create_task(asyncio.to_thread(secure_write_text, root, root_relative_path, content))
+            try:
+                await self._drain_file_io_task(io_task)
+            except SecureFileError as exc:
+                raise HTTPException(status_code=403, detail="Unsafe workspace file path") from exc
+            except OSError as exc:
+                if self._is_unsafe_file_error(exc):
+                    raise HTTPException(status_code=403, detail="Unsafe workspace file path") from exc
+                raise
+        async with self._lock:
+            current = self._sessions.get(worker_session_id)
+            if current is not None and current is session and current.runtime_operation_id == operation_id:
+                current.updated_at = utc_now()
+            response_session = session
+        return self._runtime_file_response(response_session, rel_path, content, True)
 
     async def delete_file(self, worker_session_id: str, file_path: str) -> dict[str, str | bool]:
         async with self._lock:
@@ -2437,15 +2648,26 @@ class WorkerService:
                 file_path,
                 enforce_sqlite_managed=True,
             )
-            mounted_target = self._resolve_workspace_mount_file_path(session.workspace_mounts, rel_path)
-            if mounted_target and mounted_target[1]:
-                raise HTTPException(status_code=403, detail="Mounted workspace paths are read-only")
-            workspace_tree_root = self._workspace_tree_root_for_session(session)
-            target = mounted_target[0] if mounted_target else workspace_tree_root / rel_path
-            if target.exists() and target.is_file():
-                target.unlink()
-            session.updated_at = utc_now()
-            return {"success": True, "path": rel_path}
+            workspace_id = session.workspace_id
+
+        file_lock = self._workspace_file_lock(workspace_id)
+        async with file_lock:
+            async with self._lock:
+                session, root, root_relative_path, operation_id = self._capture_file_target_locked(worker_session_id, rel_path, mutation=True)
+            io_task = asyncio.create_task(asyncio.to_thread(secure_delete_file, root, root_relative_path))
+            try:
+                await self._drain_file_io_task(io_task)
+            except SecureFileError as exc:
+                raise HTTPException(status_code=403, detail="Unsafe workspace file path") from exc
+            except OSError as exc:
+                if self._is_unsafe_file_error(exc):
+                    raise HTTPException(status_code=403, detail="Unsafe workspace file path") from exc
+                raise
+        async with self._lock:
+            current = self._sessions.get(worker_session_id)
+            if current is not None and current is session and current.runtime_operation_id == operation_id:
+                current.updated_at = utc_now()
+        return {"success": True, "path": rel_path}
 
     _EXEC_MAX_OUTPUT_BYTES = 60_000
 
@@ -3248,12 +3470,25 @@ class WorkerService:
 
     async def shutdown(self) -> None:
         async with self._lock:
-            for sid in list(self._startup_tasks.keys()):
-                task = self._startup_tasks.pop(sid, None)
+            startup_tasks = list(self._startup_tasks.values())
+            self._startup_tasks.clear()
+            for task in startup_tasks:
                 if task and not task.done():
                     task.cancel()
-            for sid in list(self._devserver_processes.keys()):
-                await self._terminate_devserver_locked(sid)
+            devserver_resources = [self._take_devserver_resources_locked(sid) for sid in list(self._devserver_processes)]
+            cleanup_tasks = [
+                *self._workspace_cleanup_tasks.values(),
+                *self._background_cleanup_tasks,
+            ]
+        for task in startup_tasks:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        for process, log_handle in devserver_resources:
+            await self._terminate_devserver_resources(process, log_handle)
+        if cleanup_tasks:
+            await asyncio.gather(*(asyncio.shield(task) for task in cleanup_tasks), return_exceptions=True)
         # Tear down warm Playwright MCP connections outside the lock so owner
         # task cancellation (and stdio subprocess teardown) cannot deadlock on it.
         await self._terminate_mcp_brokers()

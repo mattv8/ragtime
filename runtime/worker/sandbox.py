@@ -29,7 +29,6 @@ import contextlib
 import ctypes
 import ctypes.util
 import errno
-import filecmp
 import json
 import logging
 import os
@@ -39,16 +38,18 @@ import signal
 import stat
 import struct
 import sys
+import tempfile
 import threading
 import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Sequence
+from typing import IO, Any, Callable, Sequence
 
 from ragtime.core.file_constants import DEFAULT_EXCLUDE_DIR_NAMES, GENERATED_BYTECODE_EXTENSIONS
 
 from ..core.shared import has_cap_sys_admin
+from .mount_sync import MountSyncError, MountSyncUnavailable, mount_sync_available, sync_copied_mount
 
 logger = logging.getLogger(__name__)
 
@@ -166,8 +167,10 @@ _CHROOT_USR_INCLUDE_PATHS = (
     "share/zoneinfo",
     "share/terminfo",
 )
-_CHROOT_USR_SYNC_VERSION = "5"
+_CHROOT_USR_SYNC_VERSION = "8"
 _CHROOT_USR_SYNC_STAMP = ".ragtime_usr_sync_version"
+_SANDBOX_SYSTEM_SYNC_MARKER_FILENAME = "_ragtime_sandbox_system_sync.json"
+_SANDBOX_SYSTEM_SYNC_MARKER_VERSION = 1
 
 # ---------------------------------------------------------------------------
 # Capability detection
@@ -913,7 +916,7 @@ def _copy_workspace_file_if_needed(src: Path, dst: Path, *, prefer_source: bool 
     if dst.exists():
         if dst.is_file():
             dst_stat = dst.stat()
-            if src_stat.st_size == dst_stat.st_size and filecmp.cmp(src, dst, shallow=False):
+            if src_stat.st_size == dst_stat.st_size and _files_have_same_content(src, dst):
                 return "same"
             if not prefer_source and src_stat.st_mtime <= dst_stat.st_mtime:
                 return "preserved_canonical"
@@ -971,12 +974,24 @@ def _workspace_tree_has_meaningful_content(
             try:
                 if path.stat().st_size != canonical_path.stat().st_size:
                     return True
-                if not filecmp.cmp(path, canonical_path, shallow=False):
+                if not _files_have_same_content(path, canonical_path):
                     return True
             except OSError:
                 return True
 
     return False
+
+
+def _files_have_same_content(left: Path, right: Path, *, chunk_size: int = 1024 * 1024) -> bool:
+    """Byte-compare files without filecmp's process-global cache."""
+    with left.open("rb") as left_file, right.open("rb") as right_file:
+        while True:
+            left_chunk = left_file.read(chunk_size)
+            right_chunk = right_file.read(chunk_size)
+            if left_chunk != right_chunk:
+                return False
+            if not left_chunk:
+                return True
 
 
 def _sync_workspace_copy_to_canonical(
@@ -1148,7 +1163,7 @@ def provision_rootfs(spec: SandboxSpec) -> None:
                 dirs_exist_ok=True,
                 symlinks=True,
                 ignore_dangling_symlinks=True,
-                copy_function=_copy_file,
+                copy_function=_copy_file_if_changed,
             )
         except Exception as exc:
             logger.warning("provision_rootfs: workspace mirror failed: %s", exc)
@@ -1178,6 +1193,8 @@ def materialize_mounts(
     mounts: list[dict[str, Any]],
     *,
     clear_targets: Sequence[str] | None = None,
+    cancel_event: threading.Event | None = None,
+    timeout_seconds: float = 180.0,
 ) -> None:
     """Copy mount sources into the sandbox rootfs under their target paths.
 
@@ -1190,128 +1207,210 @@ def materialize_mounts(
     rootfs = spec.rootfs_path
     caps = detect_capabilities()
 
-    def resolve_target_path(target: str) -> Path | None:
-        normalized = (target or "").strip().replace("\\", "/").lstrip("/")
-        if not normalized:
-            return None
-        candidate = rootfs / normalized
-        try:
-            candidate.relative_to(rootfs)
-        except ValueError:
-            logger.warning(
-                "materialize_mounts: target %s escapes rootfs, skipping",
-                target,
-            )
-            return None
-        return candidate
-
-    def resolve_workspace_bind_target(target: str) -> Path | None:
+    def target_parts(target: str) -> tuple[str, ...] | None:
         raw = (target or "").strip().replace("\\", "/")
         if not raw or "\x00" in raw:
             return None
-        normalized = posixpath.normpath(raw)
-        workspace_prefix = SANDBOX_WORKSPACE_MOUNT.rstrip("/") + "/"
-        if not normalized.startswith(workspace_prefix):
-            return None
-        relative = normalized[len(workspace_prefix) :].strip("/")
-        if not relative or relative == ".":
-            return None
-        parts = relative.split("/")
-        if any(part in ("", ".", "..") for part in parts):
-            return None
-        return spec.workspace_files_path.joinpath(*parts)
+        parts = tuple(part for part in raw.lstrip("/").split("/") if part)
+        return parts if parts and all(part not in (".", "..") for part in parts) else None
 
-    def unmount_if_mounted(path: Path) -> None:
+    def workspace_parts(target: str) -> tuple[str, ...] | None:
+        raw = posixpath.normpath((target or "").strip().replace("\\", "/"))
+        prefix = SANDBOX_WORKSPACE_MOUNT.rstrip("/") + "/"
+        if not raw.startswith(prefix):
+            return None
+        parts = tuple(part for part in raw[len(prefix) :].split("/") if part)
+        return parts if parts and all(part not in (".", "..") for part in parts) else None
+
+    def bind_mount(source: Path, root: Path, parts: tuple[str, ...], read_only: bool) -> None:
+        _unmount_pinned_directory(root, parts)
+        with _pinned_directory(root, parts, create=True) as dest:
+            _syscall_mount(str(source), dest, None, MS_BIND | MS_REC)
+        if read_only:
+            # Re-open after the bind: the original fd names the covered mount.
+            with _pinned_directory(root, parts) as mounted_dest:
+                _syscall_mount(str(source), mounted_dest, None, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC)
+
+    requested_clear_targets = clear_targets or [str(mount.get("target_path") or "") for mount in mounts]
+    copied_mounts: list[tuple[dict[str, Any], tuple[str, ...]]] = []
+    for mount in mounts:
+        parts = target_parts(str(mount.get("target_path") or ""))
+        live_parts = workspace_parts(str(mount.get("target_path") or ""))
+        is_explicit_live_bind = str(mount.get("runtime_mount_mode") or "") == "live_bind"
+        if mount.get("source_local_path") and parts is not None and not is_explicit_live_bind and not (caps.can_mount and live_parts is not None):
+            copied_mounts.append((mount, parts))
+
+    # Reject source/destination aliases before the legacy clear path can touch
+    # a source tree.  The sync launcher repeats this check against pinned FDs.
+    for mount, parts in copied_mounts:
+        source_path = Path(str(mount["source_local_path"]))
+        if not source_path.is_dir():
+            continue
+        source_resolved = source_path.resolve()
+        destination_resolved = rootfs.joinpath(*parts).resolve(strict=False)
+        if (
+            source_resolved == destination_resolved
+            or source_resolved.is_relative_to(destination_resolved)
+            or destination_resolved.is_relative_to(source_resolved)
+        ):
+            raise ValueError(f"Workspace mount source and destination overlap: {source_path} -> {rootfs.joinpath(*parts)}")
+
+    # Select this once per refresh: valid copied destinations stay intact only
+    # when the confined helper is available for the complete refresh.
+    sync_available = mount_sync_available() if copied_mounts else False
+    copied_target_parts = {parts for mount, parts in copied_mounts if Path(str(mount["source_local_path"])).is_dir()}
+
+    for target in requested_clear_targets:
+        parts = target_parts(str(target))
+        if parts is None or parts in copied_target_parts:
+            continue
         try:
-            if os.path.ismount(path):
-                _syscall_umount2(str(path), MNT_DETACH)
+            live_parts = workspace_parts(str(target))
+            if live_parts is not None:
+                _unmount_pinned_directory(spec.workspace_files_path, live_parts)
+            _clear_pinned_directory(rootfs, parts)
         except OSError as exc:
-            logger.warning("materialize_mounts: failed to unmount %s: %s", path, exc)
+            logger.warning("materialize_mounts: rejected unsafe target %s: %s", target, exc)
 
-    def copy_mount_source(source_path: Path, dest: Path) -> None:
-        dest.parent.mkdir(parents=True, exist_ok=True)
+    ordered_mounts = sorted(
+        mounts,
+        key=lambda mount: len(target_parts(str(mount.get("target_path") or "")) or ()),
+    )
+    for mount in ordered_mounts:
+        source, target = mount.get("source_local_path", ""), mount.get("target_path", "")
+        parts = target_parts(str(target))
+        if not source or parts is None:
+            continue
+        source_path = Path(source)
+        live_parts = workspace_parts(str(target))
+        if not source_path.is_dir():
+            if str(mount.get("runtime_mount_mode") or "") == "live_bind":
+                raise FileNotFoundError(f"Workspace mount source is not available in the runtime container: {source}")
+            logger.warning("materialize_mounts: Workspace mount source is not available: %s", source)
+            continue
+        if str(mount.get("runtime_mount_mode") or "") == "live_bind" and live_parts is None:
+            raise ValueError(f"Live workspace mount target must be under {SANDBOX_WORKSPACE_MOUNT}: {target}")
+        if caps.can_mount and live_parts is not None:
+            bind_mount(source_path, spec.workspace_files_path, live_parts, bool(mount.get("read_only", True)))
+            continue
+        if str(mount.get("runtime_mount_mode") or "") == "live_bind":
+            raise PermissionError("Live workspace mounts require runtime mount authority. Enable SYS_ADMIN or privileged mode for the runtime container.")
+        if sync_available:
+            _prepare_copied_mount_target(rootfs, parts, caps)
+            protected_paths = _nested_mount_protected_paths(parts, mounts, target_parts)
+            try:
+                with (
+                    _pinned_directory_fd(source_path, ()) as source_fd,
+                    _pinned_directory_fd(rootfs, parts) as destination_fd,
+                ):
+                    _validate_pinned_source_generation(source_path, source_fd)
+                    try:
+                        sync_copied_mount(
+                            source_fd,
+                            destination_fd,
+                            protected_paths=protected_paths,
+                            cancel_event=cancel_event,
+                            timeout_seconds=timeout_seconds,
+                        )
+                    except MountSyncUnavailable:
+                        logger.warning(
+                            "materialize_mounts: confined rsync unavailable for %s; using full copy fallback",
+                            target,
+                        )
+                        _validate_pinned_source_generation(source_path, source_fd)
+                        _copy_mount_fallback(Path(f"/proc/self/fd/{source_fd}"), rootfs, parts)
+                        _validate_pinned_source_generation(source_path, source_fd)
+                    else:
+                        _validate_pinned_source_generation(source_path, source_fd)
+            except OSError:
+                # Pinned-target and rsync-path failures are materialization
+                # failures, never a warning that allows startup to continue.
+                raise
+        else:
+            logger.warning(
+                "materialize_mounts: confined rsync unavailable; using full copy fallback for %s",
+                target,
+            )
+            try:
+                with _pinned_directory_fd(source_path, ()) as source_fd:
+                    _validate_pinned_source_generation(source_path, source_fd)
+                    _copy_mount_fallback(Path(f"/proc/self/fd/{source_fd}"), rootfs, parts)
+                    _validate_pinned_source_generation(source_path, source_fd)
+            except OSError as exc:
+                logger.warning("materialize_mounts: fallback copy failed %s -> %s: %s", source, target, exc)
+
+
+def _nested_mount_protected_paths(
+    parent_parts: tuple[str, ...],
+    mounts: Sequence[dict[str, Any]],
+    parse_target: Callable[[str], tuple[str, ...] | None],
+) -> tuple[str, ...]:
+    """Find minimal literal descendant targets that a parent sync must skip."""
+    candidates = sorted(
+        {
+            "/".join(parts[len(parent_parts) :])
+            for mount in mounts
+            if (parts := parse_target(str(mount.get("target_path") or ""))) and len(parts) > len(parent_parts) and parts[: len(parent_parts)] == parent_parts
+        },
+        key=lambda value: (value.count("/"), value),
+    )
+    protected: list[str] = []
+    for candidate in candidates:
+        if not any(candidate == prefix or candidate.startswith(prefix + "/") for prefix in protected):
+            protected.append(candidate)
+    return tuple(protected)
+
+
+def _prepare_copied_mount_target(
+    rootfs: Path,
+    parts: tuple[str, ...],
+    caps: SandboxCapabilities,
+) -> None:
+    """Ensure a retained copied target is a safe real directory for rsync."""
+    target = rootfs.joinpath(*parts)
+    if os.path.ismount(target):
+        if not caps.can_mount:
+            raise PermissionError(f"Refusing to sync into mounted target without mount authority: {target}")
+        _unmount_pinned_directory(rootfs, parts)
+    with _pinned_directory_fd(rootfs, parts[:-1], create=True) as parent_fd:
+        try:
+            entry = os.lstat(parts[-1], dir_fd=parent_fd)
+        except FileNotFoundError:
+            entry = None
+    if entry is not None and not stat.S_ISDIR(entry.st_mode):
+        _clear_pinned_directory(rootfs, parts)
+    with _pinned_directory_fd(rootfs, parts, create=True):
+        pass
+
+
+def _copy_mount_fallback(source: Path, rootfs: Path, parts: tuple[str, ...]) -> None:
+    """Perform the existing full-copy behavior, clearing immediately before it."""
+    _clear_pinned_directory(rootfs, parts)
+    with _pinned_directory(rootfs, parts, create=True) as destination:
         shutil.copytree(
-            str(source_path),
-            str(dest),
+            str(source),
+            destination,
+            dirs_exist_ok=True,
             symlinks=True,
             ignore_dangling_symlinks=True,
             copy_function=_copy_file,
         )
 
-    def bind_mount_source(source_path: Path, dest: Path, *, read_only: bool) -> None:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        unmount_if_mounted(dest)
-        _ensure_real_directory(dest)
-        _syscall_mount(str(source_path), str(dest), None, MS_BIND | MS_REC)
-        if read_only:
-            _syscall_mount(str(source_path), str(dest), None, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC)
 
-    for target in clear_targets or [str(mount.get("target_path") or "") for mount in mounts]:
-        live_dest = resolve_workspace_bind_target(str(target or ""))
-        if live_dest is not None:
-            unmount_if_mounted(live_dest)
-        dest = resolve_target_path(str(target or ""))
-        if dest is None:
-            continue
-        try:
-            if dest.is_symlink() or dest.is_file():
-                dest.unlink(missing_ok=True)
-            elif dest.exists():
-                shutil.rmtree(dest)
-        except Exception as exc:
-            logger.warning(
-                "materialize_mounts: failed to clear %s before sync: %s",
-                dest,
-                exc,
-            )
-
-    for mount in mounts:
-        source = mount.get("source_local_path", "")
-        target = mount.get("target_path", "")
-        if not source or not target:
-            continue
-        source_path = Path(source)
-        if not source_path.is_dir():
-            message = f"Workspace mount source is not available in the runtime container: {source}"
-            if str(mount.get("runtime_mount_mode") or "") == "live_bind":
-                raise FileNotFoundError(message)
-            logger.warning("materialize_mounts: %s", message)
-            continue
-        dest = resolve_target_path(str(target))
-        if dest is None:
-            continue
-
-        if str(mount.get("runtime_mount_mode") or "") == "live_bind":
-            live_dest = resolve_workspace_bind_target(str(target))
-            if live_dest is None:
-                raise ValueError(f"Live workspace mount target must be under {SANDBOX_WORKSPACE_MOUNT}: {target}")
-            if caps.can_mount:
-                bind_mount_source(
-                    source_path,
-                    live_dest,
-                    read_only=bool(mount.get("read_only", True)),
-                )
-                continue
-            raise PermissionError("Live workspace mounts require runtime mount authority. Enable SYS_ADMIN or privileged mode for the runtime container.")
-
-        live_dest = resolve_workspace_bind_target(str(target))
-        if caps.can_mount and live_dest is not None:
-            bind_mount_source(
-                source_path,
-                live_dest,
-                read_only=bool(mount.get("read_only", True)),
-            )
-            continue
-
-        try:
-            copy_mount_source(source_path, dest)
-        except Exception as exc:
-            logger.warning(
-                "materialize_mounts: failed to copy %s -> %s: %s",
-                source,
-                dest,
-                exc,
-            )
+def _validate_pinned_source_generation(source_path: Path, source_fd: int) -> None:
+    """Reject cache-root replacement while a copied mount is materialized."""
+    pinned = os.fstat(source_fd)
+    try:
+        current = os.lstat(source_path)
+    except OSError as exc:
+        raise MountSyncError(f"Workspace mount source generation disappeared: {source_path}") from exc
+    if (
+        not stat.S_ISDIR(pinned.st_mode)
+        or pinned.st_nlink == 0
+        or not stat.S_ISDIR(current.st_mode)
+        or (pinned.st_dev, pinned.st_ino) != (current.st_dev, current.st_ino)
+    ):
+        raise MountSyncError(f"Workspace mount source generation changed during materialization: {source_path}")
 
 
 def _provision_etc(rootfs: Path) -> None:
@@ -1437,6 +1536,68 @@ def _ensure_real_directory(path: Path) -> None:
     if path.is_symlink() or (path.exists() and not path.is_dir()):
         path.unlink(missing_ok=True)
     path.mkdir(parents=True, exist_ok=True)
+
+
+@contextlib.contextmanager
+def _pinned_directory(root: Path, parts: Sequence[str], *, create: bool = False):
+    """Pin a directory below root without following symlink components."""
+    with _pinned_directory_fd(root, parts, create=create) as fd:
+        yield f"/proc/self/fd/{fd}"
+
+
+@contextlib.contextmanager
+def _pinned_directory_fd(root: Path, parts: Sequence[str], *, create: bool = False):
+    """Yield an open, O_NOFOLLOW-pinned directory descriptor below ``root``."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(root, flags)
+    try:
+        for part in parts:
+            if part in ("", ".", ".."):
+                raise ValueError("unsafe sandbox destination component")
+            try:
+                next_fd = os.open(part, flags, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(part, dir_fd=fd)
+                next_fd = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _unmount_pinned_directory(root: Path, parts: Sequence[str]) -> None:
+    """Unmount only: canonical live workspace files must not be cleared."""
+    try:
+        with _pinned_directory(root, parts) as path:
+            _syscall_umount2(path, MNT_DETACH)
+    except OSError as exc:
+        if exc.errno not in {errno.EINVAL, errno.ENOENT}:
+            raise
+
+
+def _clear_pinned_directory(root: Path, parts: Sequence[str]) -> None:
+    """Clear a rootfs destination through a pinned parent descriptor."""
+    if not parts:
+        raise ValueError("refusing to clear sandbox root")
+    with _pinned_directory(root, parts[:-1], create=True) as parent_path:
+        # ``parent_path`` names the descriptor opened with O_NOFOLLOW above;
+        # /proc/self/fd itself is necessarily a symlink and must not be checked
+        # as though it were an untrusted destination component.
+        fd = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            try:
+                entry = os.lstat(parts[-1], dir_fd=fd)
+            except FileNotFoundError:
+                return
+            if stat.S_ISDIR(entry.st_mode):
+                shutil.rmtree(parts[-1], dir_fd=fd)
+            else:
+                os.unlink(parts[-1], dir_fd=fd)
+        finally:
+            os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -1627,6 +1788,10 @@ def _set_no_new_privs() -> None:
     if ret != 0:
         err = ctypes.get_errno()
         raise OSError(err, os.strerror(err))
+    # PR_GET_NO_NEW_PRIVS is available without procfs, unlike status parsing.
+    if _libc.prctl(39, 0, 0, 0, 0) != 1:
+        err = ctypes.get_errno()
+        raise OSError(err or errno.EPERM, "no_new_privs postcondition was not established")
 
 
 def _sanitize_cgroup_component(value: str) -> str:
@@ -1747,13 +1912,16 @@ def _drop_process_capabilities(*, no_new_privs: bool) -> None:
     ret = _libc.capset(ctypes.byref(header), ctypes.byref(data))
     if ret != 0:
         err = ctypes.get_errno()
-        logger.warning("Failed to clear sandbox process capabilities: %s", os.strerror(err))
+        raise OSError(err, f"failed to clear sandbox process capabilities: {os.strerror(err)}")
+
+    readback = (_CapData * _CAPABILITY_WORDS)()
+    ret = _libc.capget(ctypes.byref(header), ctypes.byref(readback))
+    if ret != 0 or any(word.effective or word.permitted or word.inheritable for word in readback):
+        err = ctypes.get_errno()
+        raise OSError(err or errno.EPERM, "sandbox capability drop postcondition was not established")
 
     if no_new_privs:
-        ret = _libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
-        if ret != 0:
-            err = ctypes.get_errno()
-            logger.warning("Failed to set no_new_privs for sandbox process: %s", os.strerror(err))
+        _set_no_new_privs()
 
 
 # ---------------------------------------------------------------------------
@@ -1771,11 +1939,13 @@ _UNSHARE_FLAG_NAMES: tuple[tuple[int, str], ...] = (
 
 
 def _sync_system_dirs_for_chroot(spec: SandboxSpec) -> None:
-    """When no mount namespace is available, sync essential system files.
+    """Sync system files only for the no-mount chroot fallback.
 
-    This copies a minimal set of binaries/libraries into the rootfs so
-    chroot is functional. Symlinks are preserved to avoid recursive loops
-    from entries such as ``/bin/X11``.
+    This intentionally pays an independent-inode copy cost on first launch;
+    normal starts reuse the persisted rootfs and generation marker. See
+    ``docs/userspace-runtime-performance.md`` before optimizing this path:
+    product priority is warm starts and public app loading, never writable
+    system hardlinks or weaker sandbox isolation.
     """
     rootfs = spec.rootfs_path
     usr_dst = rootfs / "usr"
@@ -1787,8 +1957,11 @@ def _sync_system_dirs_for_chroot(spec: SandboxSpec) -> None:
         except Exception:
             usr_stamp_value = ""
     usr_needs_sync = usr_stamp_value != _CHROOT_USR_SYNC_VERSION or not usr_dst.exists() or not any(usr_dst.iterdir())
+    migration_marker_valid = _system_sync_marker_matches(spec)
 
-    for d in _HOST_RO_BIND_DIRS:
+    system_dirs = _HOST_RO_BIND_DIRS + _HOST_RO_BIND_DIRS_OPTIONAL
+    sync_succeeded = True
+    for d in system_dirs:
         src = Path(d)
         if not src.is_dir():
             continue
@@ -1797,45 +1970,33 @@ def _sync_system_dirs_for_chroot(spec: SandboxSpec) -> None:
             if src == Path("/usr"):
                 if usr_needs_sync:
                     _sync_usr_for_chroot(src, dst, force=True)
-                    usr_stamp.parent.mkdir(parents=True, exist_ok=True)
-                    usr_stamp.write_text(
-                        _CHROOT_USR_SYNC_VERSION,
-                        encoding="utf-8",
-                    )
                 continue
-            if dst.exists() and any(dst.iterdir()):
+            if not usr_needs_sync and dst.exists() and any(dst.iterdir()):
                 # Already populated (from a previous session)
                 continue
             else:
-                shutil.copytree(
-                    str(src),
-                    str(dst),
-                    dirs_exist_ok=True,
-                    symlinks=True,
-                    ignore_dangling_symlinks=True,
-                    copy_function=_link_or_copy,
-                )
+                _remove_conflicting_system_symlinks(src, dst)
+                shutil.copytree(str(src), str(dst), dirs_exist_ok=True, symlinks=True, ignore_dangling_symlinks=True, copy_function=_copy_system_file_detached)
         except Exception as exc:
+            sync_succeeded = False
             logger.warning("Failed to sync %s into rootfs: %s", d, exc)
 
-    for d in _HOST_RO_BIND_DIRS_OPTIONAL:
-        src = Path(d)
-        if not src.is_dir():
-            continue
-        dst = rootfs / d.lstrip("/")
-        if dst.exists() and any(dst.iterdir()):
-            continue
-        try:
-            shutil.copytree(
-                str(src),
-                str(dst),
-                dirs_exist_ok=True,
-                symlinks=True,
-                ignore_dangling_symlinks=True,
-                copy_function=_link_or_copy,
-            )
-        except Exception:
-            pass
+    # Earlier versions used hard links for regular system files. Detach every
+    # remaining multiply-linked regular file, including stale destination-only
+    # files, once for each rootfs generation. The marker is host-owned beside
+    # rootfs, never the workload-writable in-rootfs version stamp.
+    if not migration_marker_valid and not _detach_legacy_system_hardlinks(rootfs, system_dirs):
+        sync_succeeded = False
+
+    if usr_needs_sync and sync_succeeded:
+        usr_stamp.parent.mkdir(parents=True, exist_ok=True)
+        usr_stamp.write_text(_CHROOT_USR_SYNC_VERSION, encoding="utf-8")
+
+    if not sync_succeeded:
+        raise RuntimeError("failed to safely synchronize chroot system directories")
+
+    if not migration_marker_valid:
+        _write_system_sync_marker(spec)
 
     # Workspace files are mirrored by provision_rootfs() before the launcher
     # process enters the sandbox. Repeating that copy later in the launcher
@@ -1872,9 +2033,9 @@ def _sync_usr_for_chroot(src_usr: Path, dst_usr: Path, *, force: bool = False) -
     * External relative symlinks (e.g. ``../../javascript/...``) will
       dangle inside the sandbox — acceptable since those are optional
       assets (prettify, man pages) and Node/npm do not depend on them.
-    * ``_link_or_copy`` is the copy function for regular files only
-      (not called for symlinks); it tries a hard-link first and falls
-      back to ``shutil.copy2``.
+    * Regular files are atomically copied into independent destination inodes;
+      symlink conflicts from a forced re-sync are cleared before copytree so
+      existing valid symlinks and destination-only package files are retained.
     """
     dst_usr.mkdir(parents=True, exist_ok=True)
     for rel in _CHROOT_USR_INCLUDE_PATHS:
@@ -1899,36 +2060,146 @@ def _sync_usr_for_chroot(src_usr: Path, dst_usr: Path, *, force: bool = False) -
         if src.is_dir():
             if not force and dst.exists() and any(dst.iterdir()):
                 continue
+            if force:
+                _remove_conflicting_system_symlinks(src, dst)
             shutil.copytree(
                 str(src),
                 str(dst),
                 dirs_exist_ok=True,
                 symlinks=True,
                 ignore_dangling_symlinks=True,
-                copy_function=_link_or_copy,
+                copy_function=_copy_system_file_detached,
             )
         else:
             if not force and dst.exists():
                 continue
             dst.parent.mkdir(parents=True, exist_ok=True)
-            _link_or_copy(str(src), str(dst))
+            _copy_system_file_detached(str(src), str(dst))
 
 
-def _link_or_copy(src: str, dst: str) -> None:
-    """Try hard link for a regular file, fall back to copy.
+def _remove_conflicting_system_symlinks(src_root: Path, dst_root: Path) -> None:
+    """Clear only destination entries occupied by source symlinks for copytree."""
+    for current_root, dirs, files in os.walk(src_root, followlinks=False):
+        source_current = Path(current_root)
+        relative = source_current.relative_to(src_root)
+        for name in [*dirs, *files]:
+            source = source_current / name
+            if not source.is_symlink():
+                continue
+            destination = dst_root / relative / name
+            try:
+                if destination.is_symlink() or destination.is_file():
+                    destination.unlink()
+                elif destination.exists():
+                    shutil.rmtree(destination)
+            except FileNotFoundError:
+                pass
 
-    Only called by ``shutil.copytree`` for regular files (not symlinks).
-    Hard-links share inode/pages with the host and save disk; when they
-    fail (cross-device, read-only source, etc.) we fall back to copy2.
-    """
+
+def _system_sync_marker_path(spec: SandboxSpec) -> Path:
+    return spec.rootfs_path.parent / _SANDBOX_SYSTEM_SYNC_MARKER_FILENAME
+
+
+def _system_sync_marker_matches(spec: SandboxSpec) -> bool:
     try:
-        os.link(src, dst)
-    except OSError:
-        shutil.copy2(src, dst)
+        rootfs_stat = spec.rootfs_path.stat()
+        marker = json.loads(_system_sync_marker_path(spec).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    return (
+        isinstance(marker, dict)
+        and marker.get("version") == _SANDBOX_SYSTEM_SYNC_MARKER_VERSION
+        and marker.get("system_sync_version") == _CHROOT_USR_SYNC_VERSION
+        and marker.get("rootfs_device") == rootfs_stat.st_dev
+        and marker.get("rootfs_inode") == rootfs_stat.st_ino
+    )
+
+
+def _write_system_sync_marker(spec: SandboxSpec) -> None:
+    rootfs_stat = spec.rootfs_path.stat()
+    marker_path = _system_sync_marker_path(spec)
+    payload = {
+        "version": _SANDBOX_SYSTEM_SYNC_MARKER_VERSION,
+        "system_sync_version": _CHROOT_USR_SYNC_VERSION,
+        "rootfs_device": rootfs_stat.st_dev,
+        "rootfs_inode": rootfs_stat.st_ino,
+    }
+    temporary = marker_path.with_name(f".{marker_path.name}.tmp-{os.getpid()}")
+    try:
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(temporary, marker_path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+
+
+def _copy_system_file_detached(src: str, dst: str) -> None:
+    """Atomically replace one system file, never writing through a hardlink."""
+    destination = Path(dst)
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    parent_fd = os.open(destination.parent, flags)
+    temporary_name: str | None = None
+    try:
+        temporary_fd, temporary_path = tempfile.mkstemp(
+            prefix=f".{destination.name}.syncing-",
+            dir=f"/proc/self/fd/{parent_fd}",
+        )
+        temporary_name = Path(temporary_path).name
+        os.close(temporary_fd)
+        shutil.copy2(src, f"/proc/self/fd/{parent_fd}/{temporary_name}")
+        os.replace(temporary_name, destination.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        temporary_name = None
+    finally:
+        if temporary_name is not None:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary_name, dir_fd=parent_fd)
+        os.close(parent_fd)
+
+
+def _detach_legacy_system_hardlinks(rootfs: Path, system_dirs: Sequence[str]) -> bool:
+    """Detach all multiply-linked regular files under chroot system trees."""
+    succeeded = True
+    for directory in system_dirs:
+        destination_root = rootfs / directory.lstrip("/")
+        if not destination_root.is_dir():
+            continue
+        for current_root, _dirs, files in os.walk(destination_root, followlinks=False):
+            for filename in files:
+                path = Path(current_root) / filename
+                try:
+                    if stat.S_ISREG(path.stat(follow_symlinks=False).st_mode) and path.stat(follow_symlinks=False).st_nlink > 1:
+                        _copy_system_file_detached(str(path), str(path))
+                except OSError as exc:
+                    succeeded = False
+                    logger.warning("Failed to detach legacy system hardlink %s: %s", path, exc)
+    return succeeded
 
 
 def _copy_file(src: str, dst: str) -> None:
     """Copy a file, replacing destination when present."""
+    shutil.copy2(src, dst)
+
+
+def _copy_file_if_changed(src: str, dst: str) -> None:
+    """Avoid rewriting mirrored workspace files only after exact comparison."""
+    destination = Path(dst)
+    source = Path(src)
+    source_stat = source.stat()
+    try:
+        destination_stat = destination.stat()
+    except FileNotFoundError:
+        shutil.copy2(src, dst)
+        return
+
+    if (
+        stat.S_ISREG(destination_stat.st_mode)
+        and source_stat.st_size == destination_stat.st_size
+        and stat.S_IMODE(source_stat.st_mode) == stat.S_IMODE(destination_stat.st_mode)
+        and source_stat.st_mtime_ns == destination_stat.st_mtime_ns
+        and _files_have_same_content(source, destination)
+    ):
+        return
     shutil.copy2(src, dst)
 
 

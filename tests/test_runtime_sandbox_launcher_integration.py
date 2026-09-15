@@ -137,6 +137,24 @@ class RuntimeSandboxLauncherIntegrationTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await self._cleanup_spec(spec)
 
+    async def test_chroot_and_pivot_root_preserve_workspace_write_through(self) -> None:
+        """Both supported modes must expose the same writable workspace inode."""
+        for mode in ("chroot", "pivot_root"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmpdir:
+                spec = self._build_spec(Path(tmpdir), mode=mode)
+                process = await sandbox.spawn_sandboxed(
+                    spec,
+                    ["bash", "-lc", "printf %s workspace-write-through > /workspace/mode.txt"],
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                try:
+                    _stdout, stderr = await process.communicate()
+                    self.assertEqual(process.returncode, 0, stderr.decode())
+                    self.assertEqual((spec.workspace_files_path / "mode.txt").read_text(), "workspace-write-through")
+                finally:
+                    await self._cleanup_spec(spec)
+
     async def test_spawn_sandboxed_maps_missing_executable_to_file_not_found(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             spec = self._build_spec(Path(tmpdir))

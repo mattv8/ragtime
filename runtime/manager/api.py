@@ -38,6 +38,7 @@ from runtime.manager.models import (
     StartSessionRequest,
 )
 from runtime.manager.service import SessionManager
+from runtime.worker import api as worker_api
 
 
 def create_app() -> FastAPI:
@@ -50,15 +51,7 @@ def create_app() -> FastAPI:
         await manager.shutdown()
         # Also clean up local worker devserver processes (relevant when
         # manager+worker routes are combined in the same app).
-        try:
-            from runtime.worker.service import get_worker_service
-
-            svc = get_worker_service()
-            async with svc._lock:
-                for sid in list(svc._devserver_processes.keys()):
-                    await svc._terminate_devserver_locked(sid)
-        except Exception:
-            pass
+        await worker_api.shutdown_worker_resources()
 
     application = FastAPI(
         title="Ragtime User Space Runtime Manager",

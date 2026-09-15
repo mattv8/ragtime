@@ -74,6 +74,7 @@ from ragtime.core.mfa import (
     user_has_enabled_totp,
 )
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
+from ragtime.core.runtime_manager_client import close_runtime_manager_client
 from ragtime.core.ssl import setup_ssl
 from ragtime.git_webhooks.routes import router as git_webhook_router
 from ragtime.git_webhooks.service import git_webhook_service
@@ -335,6 +336,7 @@ async def lifespan(app: FastAPI):
     # governor cancels outstanding admissions and its sampling task.
     await resource_governor.stop()
 
+    await close_runtime_manager_client()
     await disconnect_db()
     logger.info("Shutting down RAG API")
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 from dataclasses import dataclass
 from typing import Any
 
@@ -8,6 +9,7 @@ import httpx
 from fastapi import HTTPException
 
 from ragtime.config import settings
+from ragtime.core.http_client import RejectResponseCookies
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,85 @@ class RuntimeManagerRequestConfig:
     timeout_seconds: float
     retry_attempts: int
     retry_base_delay_seconds: float
+
+
+@dataclass
+class _RuntimeManagerClientState:
+    client: httpx.AsyncClient
+    lock: asyncio.Lock
+    drained: asyncio.Event
+    closed: asyncio.Event
+    active_requests: int = 0
+    closing: bool = False
+
+
+_runtime_manager_client_states: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _RuntimeManagerClientState] = weakref.WeakKeyDictionary()
+
+
+def _new_runtime_manager_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        follow_redirects=True,
+        cookies=RejectResponseCookies(),
+    )
+
+
+def _get_runtime_manager_client_state() -> _RuntimeManagerClientState:
+    loop = asyncio.get_running_loop()
+    state = _runtime_manager_client_states.get(loop)
+    if state is None:
+        state = _RuntimeManagerClientState(
+            client=_new_runtime_manager_client(),
+            lock=asyncio.Lock(),
+            drained=asyncio.Event(),
+            closed=asyncio.Event(),
+        )
+        state.drained.set()
+        _runtime_manager_client_states[loop] = state
+    return state
+
+
+async def _acquire_runtime_manager_client() -> tuple[_RuntimeManagerClientState, httpx.AsyncClient]:
+    state = _get_runtime_manager_client_state()
+    async with state.lock:
+        # A shutdown removes its state before waiting for active requests. A
+        # request that races with it must therefore use a fresh client.
+        if state.closing:
+            state = _get_runtime_manager_client_state()
+        state.active_requests += 1
+        state.drained.clear()
+        return state, state.client
+
+
+async def _release_runtime_manager_client(state: _RuntimeManagerClientState) -> None:
+    async with state.lock:
+        state.active_requests -= 1
+        if state.active_requests == 0:
+            state.drained.set()
+
+
+async def close_runtime_manager_client() -> None:
+    """Close this event loop's pooled runtime-manager HTTP client."""
+    loop = asyncio.get_running_loop()
+    state = _runtime_manager_client_states.get(loop)
+    if state is None:
+        return
+
+    close_client = False
+    async with state.lock:
+        if not state.closing:
+            state.closing = True
+            if _runtime_manager_client_states.get(loop) is state:
+                del _runtime_manager_client_states[loop]
+            close_client = True
+
+    if close_client:
+        try:
+            await state.drained.wait()
+            await state.client.aclose()
+        finally:
+            state.closed.set()
+    else:
+        await state.closed.wait()
 
 
 def get_runtime_manager_request_config() -> RuntimeManagerRequestConfig:
@@ -74,8 +155,9 @@ async def runtime_manager_request(
     config = get_runtime_manager_request_config()
     url = f"{config.base_url}/{path.lstrip('/')}"
     timeout = httpx.Timeout(timeout_override_seconds if timeout_override_seconds is not None else config.timeout_seconds)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        response: httpx.Response | None = None
+    state, client = await _acquire_runtime_manager_client()
+    response: httpx.Response | None = None
+    try:
         for attempt in range(1, config.retry_attempts + 1):
             try:
                 response = await client.request(
@@ -83,6 +165,7 @@ async def runtime_manager_request(
                     url,
                     json=json_payload,
                     headers=config.headers,
+                    timeout=timeout,
                 )
             except Exception as exc:
                 if attempt < config.retry_attempts:
@@ -96,27 +179,33 @@ async def runtime_manager_request(
                 raise HTTPException(status_code=502, detail=detail) from exc
 
             if response.status_code >= 500 and attempt < config.retry_attempts:
+                await response.aclose()
+                response = None
                 await asyncio.sleep(config.retry_base_delay_seconds * attempt)
                 continue
             break
 
-    if response is None:
-        raise HTTPException(
-            status_code=502,
-            detail=f"{unavailable_detail_prefix} (no response)",
-        )
+        if response is None:
+            raise HTTPException(
+                status_code=502,
+                detail=f"{unavailable_detail_prefix} (no response)",
+            )
 
-    if response.status_code >= 400:
-        body_preview = response.text[:256]
-        raise HTTPException(
-            status_code=502,
-            detail=(f"{request_failed_detail_prefix} ({response.status_code}): {body_preview}"),
-        )
+        if response.status_code >= 400:
+            body_preview = response.text[:256]
+            raise HTTPException(
+                status_code=502,
+                detail=(f"{request_failed_detail_prefix} ({response.status_code}): {body_preview}"),
+            )
 
-    if not response.content:
-        return {}
-    try:
-        data = response.json()
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+        if not response.content:
+            return {}
+        try:
+            data = response.json()
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    finally:
+        if response is not None:
+            await response.aclose()
+        await _release_runtime_manager_client(state)

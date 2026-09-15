@@ -159,10 +159,9 @@ def _enter_rootfs_and_exec(
         _exit_with_startup_failure(status_fd, "resolve_executable", exc)
 
     try:
-        if caps.drop_capabilities:
-            _drop_process_capabilities(no_new_privs=caps.no_new_privs)
-        elif caps.no_new_privs:
-            _set_no_new_privs()
+        if not caps.drop_capabilities or not caps.no_new_privs:
+            raise RuntimeError("sandbox capability hardening guarantees are unavailable")
+        _drop_process_capabilities(no_new_privs=True)
     except Exception as exc:
         _exit_with_startup_failure(status_fd, "capabilities", exc)
 

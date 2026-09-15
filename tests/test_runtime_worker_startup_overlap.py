@@ -92,6 +92,31 @@ class RuntimeWorkerStartupOverlapTests(unittest.IsolatedAsyncioTestCase):
 
         failed.assert_awaited_once_with("sess-1", "op-1", "npm ci failed")
 
+    async def test_stop_invalidates_operation_before_cancelled_startup_can_commit(self) -> None:
+        """Stopping a workspace fences a cancelled spawn before cleanup starts."""
+        service = self._service()
+        cancellation_observed = asyncio.Event()
+
+        async def blocked_startup(session_id: str, operation_id: str) -> None:
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                session = service._sessions[session_id]
+                self.assertIsNone(session.runtime_operation_id)
+                self.assertNotEqual(session.runtime_operation_id, operation_id)
+                cancellation_observed.set()
+                raise
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session = self._install_session(service, Path(tmpdir))
+            with mock.patch.object(service, "_run_startup_pipeline", side_effect=blocked_startup):
+                service._startup_tasks[session.id] = asyncio.create_task(service._run_startup_pipeline(session.id, "op-1"))
+                await asyncio.sleep(0)
+                response = await service.stop_session(session.id)
+
+        self.assertTrue(cancellation_observed.is_set())
+        self.assertEqual(response.state, "stopped")
+
 
 if __name__ == "__main__":
     unittest.main()

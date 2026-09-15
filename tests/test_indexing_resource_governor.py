@@ -195,4 +195,5 @@ class GovernorLifecycleTests(unittest.TestCase):
             await governor.stop()
 
         asyncio.run(lifecycle())
+        # Exercise restart with a second, independently created event loop.
         asyncio.run(lifecycle())

@@ -34,6 +34,15 @@ class WorkspaceTreeEntry:
     entry_type: Literal["file", "directory"]
 
 
+@dataclass(frozen=True, slots=True)
+class WorkspaceMountRootedTarget:
+    """The deepest lexical mount selected for a workspace-relative path."""
+
+    root: Path
+    relative_path: str
+    read_only: bool
+
+
 def normalize_relative_file_path(file_path: str) -> str:
     normalized = file_path.replace("\\", "/").strip().lstrip("/")
     path = Path(normalized)
@@ -156,6 +165,31 @@ def resolve_workspace_mount_source_path(
     if not _is_path_contained_under(source_file, source_root):
         return None
     return source_file, read_only
+
+
+def resolve_workspace_mount_rooted_target(
+    mounts: list[dict[str, Any]],
+    rel_path: str,
+) -> WorkspaceMountRootedTarget | None:
+    """Select the deepest matching mount without resolving attacker paths.
+
+    Secure callers must use this result with descriptor-relative no-follow I/O.
+    Crucially, a matching mount is selected even if its eventual child is
+    unsafe, so a read-only mount can never fall back to the workspace root.
+    """
+    normalized = rel_path.strip().replace("\\", "/").lstrip("/")
+    candidates: list[tuple[str, Path, str, bool]] = []
+    for mount in mounts:
+        repo_rel = workspace_mount_target_repo_relative_path(str(mount.get("target_path", "") or ""))
+        source_local_path = str(mount.get("source_local_path", "") or "").strip()
+        if not repo_rel or not source_local_path or not workspace_path_matches_mount_prefix(normalized, repo_rel):
+            continue
+        suffix = normalized[len(repo_rel) :].lstrip("/")
+        candidates.append((repo_rel, Path(source_local_path), suffix, bool(mount.get("read_only", True))))
+    if not candidates:
+        return None
+    _, root, relative_path, read_only = max(candidates, key=lambda item: len(item[0]))
+    return WorkspaceMountRootedTarget(root=root, relative_path=relative_path, read_only=read_only)
 
 
 def deduplicate_ancestor_paths(paths: list[str]) -> list[str]:

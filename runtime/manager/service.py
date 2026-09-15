@@ -73,6 +73,7 @@ class SessionManager:
         self._workspace_start_locks: dict[str, asyncio.Lock] = {}
         self._provider_locks: dict[str, asyncio.Lock] = {}
         self._reconcile_task: asyncio.Task[None] | None = None
+        self._reconcile_children: set[asyncio.Task[None]] = set()
         self._maintenance_lease = RuntimeManagerMaintenanceLeaseResponse.inactive()
 
     async def startup(self) -> None:
@@ -87,6 +88,11 @@ class SessionManager:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+        children = tuple(self._reconcile_children)
+        for child in children:
+            child.cancel()
+        if children:
+            await asyncio.gather(*children, return_exceptions=True)
 
     @staticmethod
     def _as_response(session: ManagerSession) -> RuntimeSessionResponse:
@@ -270,14 +276,26 @@ class SessionManager:
             )
 
             async with self._lock:
-                session = self._sessions.get(provider_session_id)
-                if not session or session.worker_session_id != worker_session_id:
+                session = self._observed_session_locked(provider_session_id, worker_session_id)
+                if session is None:
                     return None
                 self._apply_worker_state(session, worker_data)
                 now = utc_now()
                 session.updated_at = now
                 session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
                 return session
+
+    def _observed_session_locked(
+        self,
+        provider_session_id: str,
+        worker_session_id: str,
+        observed_session: ManagerSession | None = None,
+    ) -> ManagerSession | None:
+        """Return the session only when it still matches a worker observation."""
+        session = self._sessions.get(provider_session_id)
+        if session is None or session.worker_session_id != worker_session_id or (observed_session is not None and session is not observed_session):
+            return None
+        return session
 
     def _purge_terminal_sessions_locked(self, now: datetime) -> None:
         for provider_session_id, session in list(self._sessions.items()):
@@ -329,21 +347,78 @@ class SessionManager:
             await asyncio.sleep(self._reconcile_interval_seconds)
             now = utc_now()
             await self._cleanup_expired_sessions(now)
-            async with self._lock:
-                active_session_ids = [session.provider_session_id for session in self._sessions.values() if session.state in {"starting", "running"}]
+            await self._reconcile_active_sessions()
 
-            for provider_session_id in active_session_ids:
+    async def _reconcile_active_sessions(self) -> None:
+        """Run one bounded, failure-isolated heartbeat batch for active sessions."""
+        async with self._lock:
+            observations = [
+                (session.provider_session_id, session.worker_session_id, session)
+                for session in self._sessions.values()
+                if session.state in {"starting", "running"}
+            ]
+
+        if not observations:
+            return
+
+        pending = iter(observations)
+
+        async def reconcile_next() -> None:
+            while True:
                 try:
-                    await self._sync_session_from_worker_by_provider_id(provider_session_id)
-                except Exception:
-                    async with self._lock:
-                        session = self._sessions.get(provider_session_id)
-                        if not session:
-                            continue
-                        session.state = "error"
-                        session.devserver_running = False
-                        session.last_error = "Runtime worker heartbeat failed"
-                        session.updated_at = now
+                    provider_session_id, worker_session_id, observed_session = next(pending)
+                except StopIteration:
+                    return
+                await self._reconcile_observed_session(provider_session_id, worker_session_id, observed_session)
+
+        workers = [asyncio.create_task(reconcile_next()) for _ in range(min(4, self._max_sessions, len(observations)))]
+        self._reconcile_children.update(workers)
+        try:
+            await asyncio.gather(*workers)
+        except asyncio.CancelledError:
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+            raise
+        finally:
+            self._reconcile_children.difference_update(workers)
+
+    async def _reconcile_observed_session(
+        self,
+        provider_session_id: str,
+        worker_session_id: str,
+        observed_session: ManagerSession,
+    ) -> None:
+        """Heartbeat one observed session without allowing stale results to mutate replacements."""
+        async with self._provider_lock(provider_session_id):
+            async with self._lock:
+                if self._observed_session_locked(provider_session_id, worker_session_id, observed_session) is None:
+                    return
+
+            try:
+                worker_data = await asyncio.wait_for(
+                    self._worker_service.get_session(worker_session_id),
+                    timeout=self._worker_call_timeout,
+                )
+            except Exception:
+                async with self._lock:
+                    session = self._observed_session_locked(provider_session_id, worker_session_id, observed_session)
+                    if session is None:
+                        return
+                    session.state = "error"
+                    session.devserver_running = False
+                    session.last_error = "Runtime worker heartbeat failed"
+                    session.updated_at = utc_now()
+                return
+
+            async with self._lock:
+                session = self._observed_session_locked(provider_session_id, worker_session_id, observed_session)
+                if session is None:
+                    return
+                self._apply_worker_state(session, worker_data)
+                now = utc_now()
+                session.updated_at = now
+                session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
 
     async def start_session(
         self,

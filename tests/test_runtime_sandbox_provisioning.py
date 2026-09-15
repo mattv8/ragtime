@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import select
+import stat
 import subprocess
 import sys
 import tempfile
@@ -303,6 +304,254 @@ class SandboxProvisioningTests(unittest.TestCase):
                 copytree.call_args.args[:2],
                 (str(files), str(rootfs / "workspace")),
             )
+
+    def test_workspace_mirror_skips_exactly_identical_file_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source = tmp / "source.txt"
+            destination = tmp / "destination.txt"
+            source.write_bytes(b"same bytes" * 1024)
+            destination.write_bytes(b"same bytes" * 1024)
+            source_stat = source.stat()
+            os.utime(destination, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+
+            with mock.patch.object(sandbox.shutil, "copy2") as copy_file:
+                sandbox._copy_file_if_changed(str(source), str(destination))
+
+            copy_file.assert_not_called()
+
+    def test_workspace_mirror_reads_each_file_metadata_once_when_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source = tmp / "source.txt"
+            destination = tmp / "destination.txt"
+            source.write_bytes(b"same bytes")
+            destination.write_bytes(b"same bytes")
+            source_stat = source.stat()
+            os.utime(destination, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+
+            original_stat = Path.stat
+            calls: list[Path] = []
+
+            def track_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+                calls.append(path)
+                return original_stat(path, follow_symlinks=follow_symlinks)
+
+            with mock.patch.object(Path, "stat", track_stat):
+                sandbox._copy_file_if_changed(str(source), str(destination))
+
+            self.assertEqual(calls.count(source), 1)
+            self.assertEqual(calls.count(destination), 1)
+
+    def test_workspace_mirror_propagates_mode_changes_for_identical_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source = tmp / "source.sh"
+            destination = tmp / "destination.sh"
+            source.write_text("#!/bin/sh\n", encoding="utf-8")
+            destination.write_text("#!/bin/sh\n", encoding="utf-8")
+            os.chmod(source, 0o755)
+            os.chmod(destination, 0o644)
+
+            sandbox._copy_file_if_changed(str(source), str(destination))
+
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o755)
+
+    def test_copy_system_file_detached_rejects_symlink_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source = tmp / "source"
+            outside = tmp / "outside"
+            source.write_text("safe\n", encoding="utf-8")
+            outside.mkdir()
+            (tmp / "rootfs").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaises(OSError):
+                sandbox._copy_system_file_detached(str(source), str(tmp / "rootfs" / "bin" / "tool"))
+
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_copy_system_file_detached_ignores_predictable_legacy_temp_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source = tmp / "source"
+            destination = tmp / "rootfs" / "bin" / "tool"
+            outside = tmp / "outside"
+            source.write_text("safe\n", encoding="utf-8")
+            destination.parent.mkdir(parents=True)
+            outside.write_text("do not overwrite\n", encoding="utf-8")
+            legacy_temp = destination.with_name(f".{destination.name}.syncing-{os.getpid()}")
+            legacy_temp.symlink_to(outside)
+
+            sandbox._copy_system_file_detached(str(source), str(destination))
+
+            self.assertEqual(destination.read_text(encoding="utf-8"), "safe\n")
+            self.assertEqual(outside.read_text(encoding="utf-8"), "do not overwrite\n")
+
+    def test_detach_legacy_system_hardlinks_includes_destination_only_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rootfs = Path(tmpdir) / "rootfs"
+            destination = rootfs / "bin" / "legacy-tool"
+            destination.parent.mkdir(parents=True)
+            destination.write_text("legacy\n", encoding="utf-8")
+            unrelated_link = rootfs / "stale-links" / "legacy-tool"
+            unrelated_link.parent.mkdir()
+            os.link(destination, unrelated_link)
+            original_inode = destination.stat().st_ino
+
+            self.assertTrue(sandbox._detach_legacy_system_hardlinks(rootfs, ["/bin"]))
+
+            self.assertNotEqual(destination.stat().st_ino, original_inode)
+            self.assertNotEqual(destination.stat().st_ino, unrelated_link.stat().st_ino)
+            self.assertEqual(destination.read_text(encoding="utf-8"), "legacy\n")
+
+    def test_system_sync_migration_marker_scans_once_and_ignores_rootfs_stamp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            files.mkdir()
+            (rootfs / "usr").mkdir(parents=True)
+            # A workload can forge this in-rootfs stamp, but it cannot forge
+            # the host-owned marker beside rootfs.
+            (rootfs / sandbox._CHROOT_USR_SYNC_STAMP).write_text(sandbox._CHROOT_USR_SYNC_VERSION, encoding="utf-8")
+            spec = self._chroot_spec(files, rootfs)
+
+            with (
+                mock.patch.object(sandbox, "_HOST_RO_BIND_DIRS", []),
+                mock.patch.object(sandbox, "_HOST_RO_BIND_DIRS_OPTIONAL", []),
+                mock.patch.object(sandbox, "_detach_legacy_system_hardlinks", return_value=True) as detach,
+            ):
+                sandbox._sync_system_dirs_for_chroot(spec)
+                sandbox._sync_system_dirs_for_chroot(spec)
+
+            detach.assert_called_once_with(rootfs, [])
+            self.assertTrue(sandbox._system_sync_marker_path(spec).is_file())
+
+    def test_first_system_migration_detaches_destination_only_link_then_skips_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source_system_dir = tmp / "source-system"
+            source_system_dir.mkdir()
+            (source_system_dir / "source-tool").write_text("source\n", encoding="utf-8")
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            files.mkdir()
+            (rootfs / "usr").mkdir(parents=True)
+            (rootfs / sandbox._CHROOT_USR_SYNC_STAMP).write_text(sandbox._CHROOT_USR_SYNC_VERSION, encoding="utf-8")
+            destination_system_dir = rootfs / str(source_system_dir).lstrip("/")
+            destination_system_dir.mkdir(parents=True)
+            legacy_file = destination_system_dir / "destination-only"
+            legacy_file.write_text("legacy\n", encoding="utf-8")
+            anchor = rootfs / "legacy-anchor"
+            os.link(legacy_file, anchor)
+            spec = self._chroot_spec(files, rootfs)
+
+            with (
+                mock.patch.object(sandbox, "_HOST_RO_BIND_DIRS", [str(source_system_dir)]),
+                mock.patch.object(sandbox, "_HOST_RO_BIND_DIRS_OPTIONAL", []),
+            ):
+                sandbox._sync_system_dirs_for_chroot(spec)
+                with mock.patch.object(sandbox, "_detach_legacy_system_hardlinks", wraps=sandbox._detach_legacy_system_hardlinks) as detach:
+                    sandbox._sync_system_dirs_for_chroot(spec)
+
+            self.assertNotEqual(legacy_file.stat().st_ino, anchor.stat().st_ino)
+            detach.assert_not_called()
+
+    def test_system_sync_migration_marker_redoes_scan_when_rootfs_is_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            files.mkdir()
+            (rootfs / "usr").mkdir(parents=True)
+            (rootfs / sandbox._CHROOT_USR_SYNC_STAMP).write_text(sandbox._CHROOT_USR_SYNC_VERSION, encoding="utf-8")
+            spec = self._chroot_spec(files, rootfs)
+
+            with (
+                mock.patch.object(sandbox, "_HOST_RO_BIND_DIRS", []),
+                mock.patch.object(sandbox, "_HOST_RO_BIND_DIRS_OPTIONAL", []),
+                mock.patch.object(sandbox, "_detach_legacy_system_hardlinks", return_value=True) as detach,
+            ):
+                sandbox._sync_system_dirs_for_chroot(spec)
+                rootfs.rename(tmp / "old-rootfs")
+                (rootfs / "usr").mkdir(parents=True)
+                (rootfs / sandbox._CHROOT_USR_SYNC_STAMP).write_text(sandbox._CHROOT_USR_SYNC_VERSION, encoding="utf-8")
+                sandbox._sync_system_dirs_for_chroot(spec)
+
+            self.assertEqual(detach.call_count, 2)
+
+    def test_forced_usr_resync_preserves_existing_symlink_and_extra_package_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source_usr = tmp / "source-usr"
+            destination_usr = tmp / "destination-usr"
+            source_bin = source_usr / "bin"
+            source_bin.mkdir(parents=True)
+            (source_bin / "tool").write_text("new\n", encoding="utf-8")
+            (source_bin / "tool-link").symlink_to("tool")
+            destination_bin = destination_usr / "bin"
+            destination_bin.mkdir(parents=True)
+            (destination_bin / "tool").write_text("old\n", encoding="utf-8")
+            (destination_bin / "tool-link").symlink_to("tool")
+            (destination_bin / "extra-package").write_text("preserve\n", encoding="utf-8")
+
+            with mock.patch.object(sandbox, "_CHROOT_USR_INCLUDE_PATHS", ("bin",)):
+                sandbox._sync_usr_for_chroot(source_usr, destination_usr, force=True)
+
+            self.assertTrue((destination_bin / "tool-link").is_symlink())
+            self.assertEqual(os.readlink(destination_bin / "tool-link"), "tool")
+            self.assertEqual((destination_bin / "tool").read_text(encoding="utf-8"), "new\n")
+            self.assertEqual((destination_bin / "extra-package").read_text(encoding="utf-8"), "preserve\n")
+
+    def test_clear_pinned_directory_removes_existing_directory_through_dir_fd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rootfs = Path(tmpdir) / "rootfs"
+            target = rootfs / "workspace" / "mounted"
+            (target / "nested").mkdir(parents=True)
+            (target / "nested" / "stale.txt").write_text("stale\n", encoding="utf-8")
+
+            sandbox._clear_pinned_directory(rootfs, ("workspace", "mounted"))
+
+            self.assertTrue((rootfs / "workspace").is_dir())
+            self.assertFalse(target.exists())
+
+    def test_materialize_mounts_rejects_symlink_parent_without_touching_target(self) -> None:
+        for sync_available in (True, False):
+            with (
+                self.subTest(sync_available=sync_available),
+                self._mount_materialization_case(mode="chroot", source_name="source", mount_capable=False) as case,
+            ):
+                assert case.source is not None
+                outside = case.tmp / "outside"
+                outside.mkdir()
+                sentinel = outside / "sentinel.txt"
+                sentinel.write_text("do not remove", encoding="utf-8")
+                (case.rootfs / "workspace").mkdir(parents=True)
+                (case.rootfs / "workspace" / "mounted").symlink_to(outside, target_is_directory=True)
+
+                with (
+                    mock.patch.object(sandbox, "mount_sync_available", return_value=sync_available),
+                    mock.patch.object(sandbox, "sync_copied_mount") as sync_copied_mount,
+                ):
+                    if sync_available:
+                        with self.assertRaises(NotADirectoryError):
+                            sandbox.materialize_mounts(
+                                case.spec,
+                                [{"source_local_path": str(case.source), "target_path": "/workspace/mounted/data"}],
+                            )
+                    else:
+                        with self.assertLogs(sandbox.logger, level="WARNING") as logs:
+                            sandbox.materialize_mounts(
+                                case.spec,
+                                [{"source_local_path": str(case.source), "target_path": "/workspace/mounted/data"}],
+                            )
+                        self.assertTrue(any("fallback copy failed" in message for message in logs.output))
+
+                sync_copied_mount.assert_not_called()
+                self.assertEqual(list(outside.iterdir()), [sentinel])
+                self.assertFalse((outside / "data").exists())
+                self.assertEqual(sentinel.read_text(encoding="utf-8"), "do not remove")
 
     def test_cleanup_sandbox_reconciles_no_mount_chroot_workspace_copy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -860,6 +1109,7 @@ class SandboxProvisioningTests(unittest.TestCase):
             mock.patch.object(sandbox_launcher.os, "chdir"),
             mock.patch.object(sandbox_launcher, "_restore_parent_signal_mask"),
             mock.patch.object(sandbox_launcher, "_resolve_workload_executable", return_value="/bin/sh"),
+            mock.patch.object(sandbox_launcher, "_arm_status_fd_cloexec"),
             mock.patch.object(sandbox_launcher.os, "execvpe", side_effect=SystemExit(0)) as execvpe,
         ):
             with self.assertRaises(SystemExit):
@@ -969,6 +1219,7 @@ class SandboxProvisioningTests(unittest.TestCase):
             mock.patch.object(sandbox_launcher, "_drop_process_capabilities"),
             mock.patch.object(sandbox_launcher, "_restore_parent_signal_mask"),
             mock.patch.object(sandbox_launcher, "_resolve_workload_executable", return_value="/bin/sh"),
+            mock.patch.object(sandbox_launcher, "_arm_status_fd_cloexec"),
             mock.patch.object(sandbox_launcher.os, "execvpe", side_effect=SystemExit(0)),
         ):
             with self.assertRaises(SystemExit):
@@ -1000,6 +1251,7 @@ class SandboxProvisioningTests(unittest.TestCase):
             mock.patch.object(sandbox_launcher, "_restore_parent_signal_mask"),
             mock.patch.object(sandbox_launcher, "_resolve_workload_executable", return_value="/bin/sh"),
             mock.patch("socket.sethostname") as sethostname,
+            mock.patch.object(sandbox_launcher, "_arm_status_fd_cloexec"),
             mock.patch.object(sandbox_launcher.os, "execvpe", side_effect=SystemExit(0)),
         ):
             with self.assertRaises(SystemExit):
@@ -1058,6 +1310,7 @@ class SandboxProvisioningTests(unittest.TestCase):
         fake_libc = SimpleNamespace(
             prctl=mock.Mock(return_value=0),
             capset=mock.Mock(return_value=0),
+            capget=mock.Mock(return_value=0),
             syscall=mock.Mock(side_effect=AssertionError("capset should not use libc.syscall")),
         )
 
@@ -1066,9 +1319,24 @@ class SandboxProvisioningTests(unittest.TestCase):
 
         self.assertEqual(fake_libc.prctl.call_count, sandbox._MAX_CAPABILITY_INDEX + 1)
         fake_libc.capset.assert_called_once()
+        fake_libc.capget.assert_called_once()
         fake_libc.syscall.assert_not_called()
 
-    def test_launcher_sets_no_new_privs_without_dropping_capabilities_when_disabled(self) -> None:
+    def test_drop_process_capabilities_aborts_when_readback_retains_capability(self) -> None:
+        def capget(_header, data) -> int:
+            data._obj[0].effective = 1
+            return 0
+
+        fake_libc = SimpleNamespace(
+            prctl=mock.Mock(return_value=0),
+            capset=mock.Mock(return_value=0),
+            capget=mock.Mock(side_effect=capget),
+        )
+        with mock.patch.object(sandbox, "_libc", fake_libc):
+            with self.assertRaises(OSError):
+                sandbox._drop_process_capabilities(no_new_privs=False)
+
+    def test_launcher_fails_closed_when_capability_hardening_is_disabled(self) -> None:
         sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")
         launch = sandbox.SandboxLaunchSpec(
             workspace_id="workspace-1",
@@ -1095,6 +1363,7 @@ class SandboxProvisioningTests(unittest.TestCase):
             mock.patch.object(sandbox_launcher.os, "chdir"),
             mock.patch.object(sandbox_launcher, "_drop_process_capabilities") as drop_caps,
             mock.patch.object(sandbox_launcher, "_set_no_new_privs") as set_no_new_privs,
+            mock.patch.object(sandbox_launcher, "_exit_with_startup_failure", side_effect=SystemExit(126)),
             mock.patch.object(sandbox_launcher, "_restore_parent_signal_mask"),
             mock.patch.object(sandbox_launcher, "_resolve_workload_executable", return_value="/bin/sh"),
             mock.patch.object(sandbox_launcher.os, "execvpe", side_effect=SystemExit(0)),
@@ -1103,7 +1372,7 @@ class SandboxProvisioningTests(unittest.TestCase):
                 sandbox_launcher._enter_rootfs_and_exec(launch, status_fd=9, mount_proc=False, use_tini=False)
 
         drop_caps.assert_not_called()
-        set_no_new_privs.assert_called_once_with()
+        set_no_new_privs.assert_not_called()
 
     def test_degraded_launcher_execs_workload_without_tini_or_proc(self) -> None:
         sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")
@@ -1133,6 +1402,7 @@ class SandboxProvisioningTests(unittest.TestCase):
             mock.patch.object(sandbox_launcher, "_drop_process_capabilities"),
             mock.patch.object(sandbox_launcher, "_restore_parent_signal_mask"),
             mock.patch.object(sandbox_launcher, "_resolve_workload_executable", return_value="/bin/sh"),
+            mock.patch.object(sandbox_launcher, "_arm_status_fd_cloexec"),
             mock.patch.object(sandbox_launcher.os, "fork") as fork,
             mock.patch.object(sandbox_launcher.os, "execvpe", side_effect=SystemExit(0)) as execvpe,
         ):
@@ -1228,7 +1498,8 @@ class SandboxProvisioningTests(unittest.TestCase):
 
             copytree.assert_not_called()
             self.assertTrue((case.files / "reconciliations").is_dir())
-            self.assertEqual(mount_call.call_args_list[0].args[:2], (str(case.source), str(case.files / "reconciliations")))
+            self.assertEqual(mount_call.call_args_list[0].args[0], str(case.source))
+            self.assertTrue(mount_call.call_args_list[0].args[1].startswith("/proc/self/fd/"))
 
     def test_materialize_mounts_uses_canonical_files_for_mount_capable_sync_mounts(self) -> None:
         with self._mount_materialization_case(mode="pivot_root", source_name="source", mount_capable=True) as case:
@@ -1252,7 +1523,8 @@ class SandboxProvisioningTests(unittest.TestCase):
                 )
 
             copytree.assert_not_called()
-            self.assertEqual(mount_call.call_args_list[0].args[:2], (str(case.source), str(case.files / "reconciliations")))
+            self.assertEqual(mount_call.call_args_list[0].args[0], str(case.source))
+            self.assertTrue(mount_call.call_args_list[0].args[1].startswith("/proc/self/fd/"))
             self.assertFalse((case.rootfs / "workspace" / "reconciliations").exists())
 
     def test_materialize_mounts_live_bind_missing_source_fails_loudly(self) -> None:

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sys
@@ -21,6 +22,7 @@ from ragtime.userspace.service import (
     _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION,
     UserSpaceService,
 )
+from runtime.worker.service import WorkerService
 
 
 def test_sync_runtime_bootstrap_config_accepts_floatlike_template_version(tmp_path) -> None:
@@ -100,3 +102,30 @@ def test_workspace_archive_manifest_accepts_floatlike_version(tmp_path) -> None:
     )
 
     assert manifest == {"version": "1.0"}
+
+
+def test_worker_bootstrap_digest_streams_watched_file_bytes_without_changing_digest(tmp_path) -> None:
+    config = {
+        "watch_paths": ["package-lock.json"],
+        "commands": [{"name": "npm_ci", "run": "npm ci"}],
+    }
+    payload = json.dumps(config, separators=(",", ":")).encode("utf-8")
+    config_path = tmp_path / ".ragtime" / "runtime-bootstrap.json"
+    config_path.parent.mkdir()
+    config_path.write_bytes(payload)
+    watched_path = tmp_path / "package-lock.json"
+    watched_bytes = b'{"lockfileVersion":3}\n'
+    watched_path.write_bytes(watched_bytes)
+    expected = hashlib.sha256(payload + b"package-lock.json::file" + watched_bytes).hexdigest()
+
+    original_read_bytes = type(watched_path).read_bytes
+
+    def reject_watched_read_bytes(path):
+        if path == watched_path:
+            raise AssertionError("watched file must be streamed")
+        return original_read_bytes(path)
+
+    with patch.object(type(watched_path), "read_bytes", new=reject_watched_read_bytes):
+        digest = WorkerService()._runtime_bootstrap_config_digest_sync(tmp_path)
+
+    assert digest == expected

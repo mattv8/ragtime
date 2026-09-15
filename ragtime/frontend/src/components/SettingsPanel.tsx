@@ -4994,8 +4994,9 @@ export function SettingsPanel({
                   <div className="form-group" style={{ flex: 1 }}>
                     <label>HTTP Request Timeout</label>
                     <p className="field-help" style={{ marginTop: 0 }}>
-                      Cap synchronous User Space live-data and retry-tool requests before a reverse
-                      proxy returns an unhelpful 504/524.
+                      Cap User Space HTTP requests including live-data, retry-tool, and HTTP proxy
+                      requests (uploads and HTTP response streams) before a reverse proxy returns an
+                      unhelpful 504/524. WebSocket requests are excluded.
                     </p>
                     {(() => {
                       const currentVal =

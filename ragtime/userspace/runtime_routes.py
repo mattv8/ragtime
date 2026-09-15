@@ -31,6 +31,8 @@ from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import decode_access_token, get_browser_matched_origin
 from ragtime.core.auth_methods import build_auth_method_statuses, normalize_auth_method_key
+from ragtime.core.http_client import RejectResponseCookies
+from ragtime.core.http_timeouts import get_http_proxy_safe_timeout_seconds
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import RUNTIME_BRIDGE_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.security import get_current_user, get_current_user_optional, get_session_token
@@ -92,6 +94,7 @@ def _get_proxy_client() -> httpx.AsyncClient:
         _proxy_client = httpx.AsyncClient(
             follow_redirects=False,
             limits=httpx.Limits(max_connections=None),
+            cookies=RejectResponseCookies(),
         )
     return _proxy_client
 
@@ -110,8 +113,12 @@ router.add_event_handler("shutdown", close_proxy_client)
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 _COLLAB_CAPABILITY_COOKIE = "userspace_collab_capability"
 _RUNTIME_PTY_CAPABILITY_COOKIE = "userspace_runtime_pty_capability"
-_PROXY_TIMEOUT_FLOOR = 300.0  # seconds — minimum proxy read/write timeout
-_PROXY_TIMEOUT_BUFFER = 20.0  # seconds — headroom above max tool timeout
+# This wire header is intentionally duplicated in runtime/worker/api.py.  The
+# control and worker images cannot import each other.
+_INTERNAL_HTTP_BUDGET_HEADER = "x-ragtime-internal-http-budget-ms"
+_DEFAULT_HTTP_PROXY_BUDGET_MS = 90_000
+_MAX_HTTP_PROXY_BUDGET_MS = 3_600_000
+_PROXY_STREAM_CHUNK_BYTES = 64 * 1024
 _USERSPACE_SURFACE_HEADER = "X-Ragtime-Userspace-Surface"
 _USERSPACE_PREVIEW_PROXY_HEADER = "X-Ragtime-Userspace-Preview-Proxy"
 _AUTHENTICATED_IDENTITY_HEADER_MAP = {
@@ -221,6 +228,54 @@ def _is_user_app_set_cookie(raw_set_cookie: str | None) -> bool:
 class _CancellationSafeStreamingResponse(StreamingResponse):
     """Suppress shutdown/disconnect cancellation noise for long-lived streams."""
 
+    def __init__(self, *args: Any, deadline: float | None = None, on_close: Callable[[], Awaitable[None]] | None = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._deadline = deadline
+        self._on_close = on_close
+
+    async def stream_response(self, send: Any) -> None:
+        if self._deadline is None:
+            await super().stream_response(send)
+            return
+        try:
+            if _remaining_proxy_seconds(self._deadline) <= 0:
+                await asyncio.wait_for(
+                    send({"type": "http.response.start", "status": 504, "headers": [(b"content-type", b"application/json")]}),
+                    timeout=0.01,
+                )
+                await asyncio.wait_for(
+                    send({"type": "http.response.body", "body": b'{"detail":"Runtime preview request timed out"}'}),
+                    timeout=0.01,
+                )
+                return
+            await _within_proxy_deadline(
+                send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers}),
+                self._deadline,
+            )
+            async for chunk in self.body_iterator:
+                if not isinstance(chunk, bytes):
+                    chunk = bytes(chunk) if isinstance(chunk, memoryview) else chunk.encode(self.charset)
+                await _within_proxy_deadline(
+                    send({"type": "http.response.body", "body": chunk, "more_body": True}),
+                    self._deadline,
+                )
+            await _within_proxy_deadline(
+                send({"type": "http.response.body", "body": b"", "more_body": False}),
+                self._deadline,
+            )
+        except _ProxyDeadlineExceeded:
+            # Once headers are sent we can only end the request. Do not append
+            # an error payload to arbitrary application bytes.
+            return
+        finally:
+            if self._on_close is not None:
+                with contextlib.suppress(Exception):
+                    await self._on_close()
+            closer = getattr(self.body_iterator, "aclose", None)
+            if closer is not None:
+                with contextlib.suppress(Exception):
+                    await closer()
+
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         try:
             await super().__call__(scope, receive, send)
@@ -228,6 +283,41 @@ class _CancellationSafeStreamingResponse(StreamingResponse):
             if not _is_cancellation_only(exc):
                 raise
             logger.debug("Userspace streaming response cancelled during disconnect or shutdown")
+
+
+class _DeadlineResponse(Response):
+    """A buffered response whose ASGI sends share the proxy deadline."""
+
+    def __init__(self, *args: Any, deadline: float, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._deadline = deadline
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        headers_committed = False
+        try:
+            if _remaining_proxy_seconds(self._deadline) <= 0:
+                await asyncio.wait_for(
+                    send({"type": "http.response.start", "status": 504, "headers": [(b"content-type", b"application/json")]}),
+                    timeout=0.01,
+                )
+                await asyncio.wait_for(
+                    send({"type": "http.response.body", "body": b'{"detail":"Runtime preview request timed out"}'}),
+                    timeout=0.01,
+                )
+                return
+            await _within_proxy_deadline(
+                send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers}),
+                self._deadline,
+            )
+            headers_committed = True
+            await _within_proxy_deadline(send({"type": "http.response.body", "body": self.body}), self._deadline)
+        except _ProxyDeadlineExceeded:
+            # A response that already started cannot safely acquire a new JSON
+            # status/body; omitting the final body tells the server to terminate.
+            return
+        except asyncio.TimeoutError:
+            if not headers_committed:
+                return
 
 
 def _is_cancellation_only(exc: BaseException) -> bool:
@@ -525,21 +615,62 @@ async def _service_primitive_session_payload(
     }
 
 
-def _get_max_proxy_timeout() -> float:
-    """Return the proxy read/write timeout derived from max tool timeout_max_seconds."""
-    try:
-        from ragtime.core.app_settings import SettingsCache
+class _ProxyDeadlineExceeded(Exception):
+    """The request-wide preview HTTP deadline elapsed."""
 
-        cached_configs = SettingsCache.get_instance()._tool_configs
-        if cached_configs:
-            max_t = max(
-                (cfg.get("timeout_max_seconds", 300) or 300 for cfg in cached_configs),
-                default=300,
-            )
-            return max(float(max_t), _PROXY_TIMEOUT_FLOOR) + _PROXY_TIMEOUT_BUFFER
-    except Exception:
-        pass
-    return _PROXY_TIMEOUT_FLOOR + _PROXY_TIMEOUT_BUFFER
+
+class _InvalidProxyRequestBody(Exception):
+    """Inbound bytes do not match their declared HTTP framing."""
+
+
+def _remaining_proxy_seconds(deadline: float) -> float:
+    return deadline - time.monotonic()
+
+
+async def _within_proxy_deadline(awaitable: Awaitable[Any], deadline: float) -> Any:
+    remaining = _remaining_proxy_seconds(deadline)
+    if remaining <= 0:
+        # ``wait_for`` never receives an already-expired awaitable. Close a
+        # just-created coroutine so its destructor cannot emit an unawaited
+        # coroutine warning; never cancel or close shared tasks/futures.
+        closer = getattr(awaitable, "close", None)
+        if closer is not None:
+            closer()
+        raise _ProxyDeadlineExceeded
+    try:
+        return await asyncio.wait_for(awaitable, timeout=remaining)
+    except asyncio.TimeoutError as exc:
+        raise _ProxyDeadlineExceeded from exc
+
+
+def _proxy_timeout_response() -> Response:
+    return Response(
+        content=json.dumps({"detail": "Runtime preview request timed out"}),
+        status_code=504,
+        media_type="application/json",
+    )
+
+
+async def _bounded_request_stream(request: Request, deadline: float) -> AsyncIterator[bytes]:
+    """Forward body bytes only as the downstream client requests them."""
+    raw_length = request.headers.get("content-length")
+    if raw_length is not None and not raw_length.isdecimal():
+        raise _InvalidProxyRequestBody("Invalid Content-Length")
+    expected = int(raw_length) if raw_length is not None else None
+    sent = 0
+    async for incoming in request.stream():
+        if not incoming:
+            continue
+        for offset in range(0, len(incoming), _PROXY_STREAM_CHUNK_BYTES):
+            if _remaining_proxy_seconds(deadline) <= 0:
+                raise _ProxyDeadlineExceeded
+            chunk = incoming[offset : offset + _PROXY_STREAM_CHUNK_BYTES]
+            sent += len(chunk)
+            if expected is not None and sent > expected:
+                raise _InvalidProxyRequestBody("Request body exceeds Content-Length")
+            yield chunk
+    if expected is not None and sent != expected:
+        raise _InvalidProxyRequestBody("Request body does not match Content-Length")
 
 
 async def _safe_close_websocket(websocket: WebSocket, code: int) -> None:
@@ -1560,7 +1691,7 @@ def _proxy_request_headers(request: Request, *, allow_user_cookies: bool = False
         "trailers",
         "transfer-encoding",
         "upgrade",
-        "content-length",
+        _INTERNAL_HTTP_BUDGET_HEADER,
         # Credentials - must not reach the untrusted devserver
         "authorization",
         "cookie",
@@ -1961,26 +2092,42 @@ async def _proxy_http_request(
 ) -> Response:
     primitive_session: dict[str, Any] | None = None
     started_at = time.monotonic()
+    deadline = started_at + _DEFAULT_HTTP_PROXY_BUDGET_MS / 1000
 
     async def _get_primitive_session() -> dict[str, Any] | None:
         nonlocal primitive_session
         if primitive_session_factory is None:
             return None
         if primitive_session is None:
-            primitive_session = await primitive_session_factory()
+            primitive_session = await _within_proxy_deadline(primitive_session_factory(), deadline)
         return primitive_session
 
     async def _send_upstream(request_headers: dict[str, str]) -> httpx.Response:
         client = _get_proxy_client()
         try:
+            remaining = _remaining_proxy_seconds(deadline)
+            if remaining <= 0:
+                raise _ProxyDeadlineExceeded
+            connect_timeout = min(2.0, remaining)
+            pool_timeout = min(5.0, remaining)
+            timeout = httpx.Timeout(
+                connect=connect_timeout,
+                read=remaining,
+                write=remaining,
+                pool=pool_timeout,
+            )
             upstream_request = client.build_request(
                 method=request.method,
                 url=upstream_url,
-                content=body if body else None,
+                content=_bounded_request_stream(request, deadline),
                 headers=request_headers,
                 timeout=timeout,
             )
-            upstream_response = await client.send(upstream_request, stream=True)
+            upstream_response = await _within_proxy_deadline(client.send(upstream_request, stream=True), deadline)
+        except _ProxyDeadlineExceeded:
+            raise
+        except _InvalidProxyRequestBody as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except httpx.RequestError as exc:
             raise HTTPException(
                 status_code=502,
@@ -1993,7 +2140,9 @@ async def _proxy_http_request(
             return
         duration_ms = max(0, int((time.monotonic() - started_at) * 1000))
         try:
-            await on_response_complete(status_code, duration_ms)
+            await _within_proxy_deadline(on_response_complete(status_code, duration_ms), deadline)
+        except _ProxyDeadlineExceeded:
+            logger.debug("Userspace proxy response accounting exceeded request deadline")
         except Exception:
             logger.debug("Userspace proxy response accounting failed", exc_info=True)
 
@@ -2011,24 +2160,25 @@ async def _proxy_http_request(
     # can never replay untrusted app cookies on the Ragtime origin.
     effective_allow_user_cookies = allow_user_cookies and _is_preview_host_request(request)
 
-    body = await request.body()
-    headers = _proxy_request_headers(request, allow_user_cookies=effective_allow_user_cookies)
-    if primitive_session_factory is not None:
-        headers.update(_authenticated_preview_identity_headers(await _get_primitive_session()))
-    if verified_identity_headers:
-        headers.update({key: value for key, value in verified_identity_headers.items() if str(value or "").strip()})
+    try:
+        configured_seconds = await _within_proxy_deadline(get_http_proxy_safe_timeout_seconds(), deadline)
+        deadline = started_at + min(float(configured_seconds), _MAX_HTTP_PROXY_BUDGET_MS / 1000)
+        headers = _proxy_request_headers(request, allow_user_cookies=effective_allow_user_cookies)
+        if primitive_session_factory is not None:
+            headers.update(_authenticated_preview_identity_headers(await _get_primitive_session()))
+        if verified_identity_headers:
+            headers.update({key: value for key, value in verified_identity_headers.items() if str(value or "").strip()})
 
-    # Inject the shared runtime auth token for upstream worker requests
-    runtime_token = getattr(settings, "userspace_runtime_auth_token", "") or ""
-    if runtime_token:
-        headers["authorization"] = f"Bearer {runtime_token}"
-
-    # Derive proxy read/write timeout from the maximum tool timeout across
-    # all configured tools so the proxy never cuts off a legitimate query.
-    # Falls back to 320 s if no tools are configured.
-    proxy_read_timeout = _get_max_proxy_timeout()
-    timeout = httpx.Timeout(connect=2.0, read=proxy_read_timeout, write=proxy_read_timeout, pool=5.0)
-    upstream_response = await _send_upstream(headers)
+        # Inject the shared runtime auth token and remaining trusted budget for
+        # the worker.  The request-header filter above removes browser spoofs.
+        runtime_token = getattr(settings, "userspace_runtime_auth_token", "") or ""
+        if runtime_token:
+            headers["authorization"] = f"Bearer {runtime_token}"
+        remaining_ms = max(1, int(_remaining_proxy_seconds(deadline) * 1000))
+        headers[_INTERNAL_HTTP_BUDGET_HEADER] = str(min(remaining_ms, _MAX_HTTP_PROXY_BUDGET_MS))
+        upstream_response = await _send_upstream(headers)
+    except _ProxyDeadlineExceeded:
+        return _proxy_timeout_response()
 
     media_type = upstream_response.headers.get("content-type", "")
     resp_headers, set_cookie_headers = _proxy_response_headers(upstream_response.headers, allow_user_cookies=effective_allow_user_cookies)
@@ -2041,17 +2191,28 @@ async def _proxy_http_request(
 
     if _is_html_media_type(media_type):
         try:
-            content = await upstream_response.aread()
+            content = await _within_proxy_deadline(upstream_response.aread(), deadline)
+        except _ProxyDeadlineExceeded:
+            return _proxy_timeout_response()
         finally:
             await upstream_response.aclose()
 
+        # ``aread`` decodes content encodings even though worker streaming is
+        # raw. Both service and injected HTML responses therefore must discard
+        # stale upstream metadata before returning the decoded bytes.
+        resp_headers.pop("content-encoding", None)
+        resp_headers.pop("content-length", None)
+
         if service_mode:
+            if _remaining_proxy_seconds(deadline) <= 0:
+                return _proxy_timeout_response()
             response = _append_set_cookie_headers(
-                Response(
+                _DeadlineResponse(
                     content=content,
                     status_code=upstream_response.status_code,
                     headers=resp_headers,
                     media_type=media_type or None,
+                    deadline=deadline,
                 ),
                 set_cookie_headers,
             )
@@ -2060,8 +2221,10 @@ async def _proxy_http_request(
 
         sandbox_flags: list[str] | None = None
         try:
-            app_settings = await get_app_settings()
+            app_settings = await _within_proxy_deadline(get_app_settings(), deadline)
             sandbox_flags = list(app_settings.get("userspace_preview_sandbox_flags") or [])
+        except _ProxyDeadlineExceeded:
+            return _proxy_timeout_response()
         except Exception:
             sandbox_flags = None
         auth_requirement = _extract_ragtime_auth_requirement(content)
@@ -2070,14 +2233,18 @@ async def _proxy_http_request(
             auth_payload = primitive_session.get("auth") if isinstance(primitive_session, dict) else None
             is_authenticated = bool(auth_payload.get("authenticated")) if isinstance(auth_payload, dict) else False
             if not is_authenticated:
-                return RedirectResponse(
-                    url=_interactive_auth_url_from_requirement(auth_requirement, _return_to_from_request(request)),
+                if _remaining_proxy_seconds(deadline) <= 0:
+                    return _proxy_timeout_response()
+                return _DeadlineResponse(
+                    content=b"",
                     status_code=302,
                     headers={
+                        "Location": _interactive_auth_url_from_requirement(auth_requirement, _return_to_from_request(request)),
                         "Cache-Control": "no-store",
                         _USERSPACE_SURFACE_HEADER: "preview-proxy",
                         _USERSPACE_PREVIEW_PROXY_HEADER: "true",
                     },
+                    deadline=deadline,
                 )
         content = _inject_bridge_script(
             content,
@@ -2090,15 +2257,16 @@ async def _proxy_http_request(
         )
         # The response body may be decoded by httpx and is definitely mutated by
         # bridge injection, so upstream encoding and length metadata is stale.
-        resp_headers.pop("content-encoding", None)
-        resp_headers.pop("content-length", None)
+        if _remaining_proxy_seconds(deadline) <= 0:
+            return _proxy_timeout_response()
 
         response = _append_set_cookie_headers(
-            Response(
+            _DeadlineResponse(
                 content=content,
                 status_code=upstream_response.status_code,
                 headers=resp_headers,
                 media_type=media_type or None,
+                deadline=deadline,
             ),
             set_cookie_headers,
         )
@@ -2107,10 +2275,17 @@ async def _proxy_http_request(
 
     async def _iter_stream() -> AsyncIterator[bytes]:
         try:
-            async for chunk in upstream_response.aiter_raw():
+            iterator = upstream_response.aiter_raw().__aiter__()
+            while True:
+                try:
+                    chunk = await _within_proxy_deadline(iterator.__anext__(), deadline)
+                except StopAsyncIteration:
+                    break
+                except _ProxyDeadlineExceeded:
+                    # Headers are already committed. End cleanly rather than
+                    # corrupting app bytes with a synthetic JSON response.
+                    break
                 yield chunk
-        except asyncio.CancelledError:
-            return
         finally:
             await upstream_response.aclose()
             await _finalize_proxy_response(upstream_response.status_code)
@@ -2121,6 +2296,8 @@ async def _proxy_http_request(
             status_code=upstream_response.status_code,
             headers=resp_headers,
             media_type=media_type or None,
+            deadline=deadline,
+            on_close=upstream_response.aclose,
         ),
         set_cookie_headers,
     )

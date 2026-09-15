@@ -2200,7 +2200,7 @@ class UserSpaceRuntimeService:
             session = self._to_runtime_session(current)
             target_provider_name = self._runtime_provider_name()
             provider_status: dict[str, Any] | None = None
-            if session.state == "running" and session.runtime_provider == target_provider_name:
+            if session.state in {"starting", "running"} and session.runtime_provider == target_provider_name:
                 provider_status = await self._runtime_provider_get_status(
                     session.provider_session_id,
                     max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,

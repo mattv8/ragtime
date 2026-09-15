@@ -1,0 +1,6 @@
+{
+  "name": "ragtime-runtime-benchmark-node",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": { "start": "node server.js" }
+}
