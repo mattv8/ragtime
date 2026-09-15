@@ -280,13 +280,28 @@
 
 [data-theme-pack='modern'] #workbench-indexer-route,
 [data-theme-pack='modern'] [data-workbench-route-root='indexer'],
-[data-theme-pack='modern'] [data-workbench-route-root='indexer'] .card,
-[data-theme-pack='modern'] [data-workbench-route-root='indexer'] .index-card,
-[data-theme-pack='modern'] [data-workbench-route-root='indexer'] .index-item,
 [data-theme-pack='modern'] [data-workbench-route-root='indexer'] .jobs-table-wrapper,
-[data-theme-pack='modern'] [data-workbench-route-root='indexer'] .jobs-table thead th,
-[data-theme-pack='modern'] [data-workbench-route-root='indexer'] .filesystem-index-panel {
+[data-theme-pack='modern'] [data-workbench-route-root='indexer'] .jobs-table thead th {
   background: var(--color-panel);
+}
+
+[data-theme-pack='modern'] [data-workbench-route-root='indexer'] > .card,
+[data-theme-pack='modern'] [data-workbench-route-root='tools'] .tools-panel > .card {
+  background: var(--color-widget);
+}
+
+[data-theme-pack='modern'] [data-workbench-route-root='indexer'] .index-item,
+[data-theme-pack='modern'] [data-workbench-route-root='tools'] .tool-card,
+[data-theme-pack='modern'] [data-workbench-route-root='tools'] .mount-source-card {
+  background: var(--color-panel);
+  border: var(--workbench-container-border);
+  border-radius: var(--workbench-surface-radius);
+  box-shadow: none;
+}
+
+[data-theme-pack='modern'] .wizard-card.embedded {
+  background: transparent;
+  border: none;
 }
 
 [data-theme-pack='modern'] .users-header-bar,

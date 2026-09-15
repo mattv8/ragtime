@@ -200,4 +200,33 @@ describe('Workbench shell styles contract', () => {
       /\[data-theme-pack='modern'\]\s+\.userspace-share-modal-with-tabs\s+\.userspace-share-tab:hover:not\(:disabled\)\s*\{[\s\S]*background:\s*transparent;/,
     );
   });
+
+  it('renders Modern admin records as inset panel surfaces', () => {
+    const css = readSource('src/styles/workbench-admin.css');
+    const sectionRule = getRuleBody(
+      css,
+      "[data-theme-pack='modern'] [data-workbench-route-root='indexer'] > .card,\n[data-theme-pack='modern'] [data-workbench-route-root='tools'] .tools-panel > .card",
+    );
+    const recordRule = getRuleBody(
+      css,
+      "[data-theme-pack='modern'] [data-workbench-route-root='indexer'] .index-item,\n[data-theme-pack='modern'] [data-workbench-route-root='tools'] .tool-card,\n[data-theme-pack='modern'] [data-workbench-route-root='tools'] .mount-source-card",
+    );
+
+    expect(sectionRule).toContain('background: var(--color-widget);');
+    expect(recordRule).toContain('background: var(--color-panel);');
+    expect(recordRule).toContain('border: var(--workbench-container-border);');
+    expect(recordRule).toContain('border-radius: var(--workbench-surface-radius);');
+    expect(recordRule).toContain('box-shadow: none;');
+  });
+
+  it('keeps embedded ToolWizard containers flat in the Modern theme', () => {
+    const css = readSource('src/styles/workbench-admin.css');
+    const embeddedWizardRule = getRuleBody(
+      css,
+      "[data-theme-pack='modern'] .wizard-card.embedded",
+    );
+
+    expect(embeddedWizardRule).toContain('background: transparent;');
+    expect(embeddedWizardRule).toContain('border: none;');
+  });
 });
