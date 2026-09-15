@@ -166,7 +166,7 @@ class PdmServiceSqlInjectionTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("ragtime.indexer.pdm_service.get_db", return_value=fake_db):
             await service._clear_embeddings(index_name)
 
-        self.assertEqual(len(fake_db.execute_raw_calls), 2)
+        self.assertEqual(len(fake_db.execute_raw_calls), 3)
         for call in fake_db.execute_raw_calls:
             query: str = call[0]
             self.assertIn("$1", query, f"Query missing $1 placeholder: {query!r}")
@@ -243,7 +243,7 @@ class PdmServiceSqlInjectionTests(unittest.IsolatedAsyncioTestCase):
                 embeddings=object(),
             )
 
-        self.assertEqual(len(fake_db.execute_raw_calls), 2)
+        self.assertEqual(len(fake_db.execute_raw_calls), 3)
         for call in fake_db.execute_raw_calls:
             query: str = call[0]
             self.assertIn("$1", query)
@@ -252,14 +252,18 @@ class PdmServiceSqlInjectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(document.document_type, query)
             self.assertGreater(len(call), 1)
 
-        embedding_call = fake_db.execute_raw_calls[0]
+        embedding_call = next(call for call in fake_db.execute_raw_calls if "pdm_embeddings" in call[0])
         self.assertEqual(embedding_call[1], malicious_index_name)
         self.assertEqual(embedding_call[3], document.document_type)
         self.assertEqual(embedding_call[6], document.filename)
 
-        metadata_call = fake_db.execute_raw_calls[1]
+        metadata_call = next(call for call in fake_db.execute_raw_calls if "pdm_document_metadata" in call[0])
         self.assertEqual(metadata_call[1], malicious_index_name)
         self.assertEqual(metadata_call[3], document.filename)
+
+        state_call = next(call for call in fake_db.execute_raw_calls if "pdm_document_state" in call[0])
+        self.assertIn("$1", state_call[0])
+        self.assertEqual(state_call[1], malicious_index_name)
 
     async def test_extension_filter_rejects_sql_metacharacters(self) -> None:
         """Configured file extensions must be strictly validated before SQL use."""
@@ -359,7 +363,7 @@ class PdmServiceSqlInjectionTests(unittest.IsolatedAsyncioTestCase):
             error_message=None,
         )
 
-        async def _record_process_batch(_job: Any, documents: list[Any], _embeddings: Any) -> None:
+        async def _record_process_batch(_job: Any, documents: list[Any], _embeddings: Any, _role_map: Any = None, _variable_map: Any = None) -> None:
             processed_docs.append([doc.document_id for doc in documents])
 
         with (

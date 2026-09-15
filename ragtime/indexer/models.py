@@ -7,7 +7,7 @@ import json
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from pydantic import AfterValidator, BaseModel, Field, computed_field, field_serializer, field_validator, model_validator
 
@@ -4010,6 +4010,163 @@ class SolidworksPdmConnectionConfig(BaseModel):
         ge=1,
         description="Maximum number of documents to index (for testing, None = all)",
     )
+
+
+class PdmPropertyValueModel(BaseModel):
+    """A resolved PDM variable value at a checked-in revision."""
+
+    variable_id: int = Field(description="Vault-local PDM variable identifier")
+    variable_name: str = Field(description="PDM variable name")
+    value_text: str = Field(default="", description="Raw PDM text value")
+    is_blank: bool = Field(default=False, description="Whether this is an explicit blank value")
+    origin_revision: int = Field(description="Revision from which the value was resolved")
+    project_scope_id: Optional[int] = Field(default=None, description="PDM project scope identifier")
+    value_int: Optional[int] = Field(default=None, description="Raw integer value")
+    value_float: Optional[float] = Field(default=None, description="Raw floating-point value")
+    value_date: Optional[str] = Field(default=None, description="Raw ISO 8601 date value")
+
+
+class PdmConfigurationStateModel(BaseModel):
+    """Resolved PDM values for one configuration."""
+
+    configuration_id: int = Field(description="PDM configuration identifier")
+    name: str = Field(description="PDM configuration name")
+    values: Dict[str, PdmPropertyValueModel] = Field(
+        default_factory=dict,
+        description="Resolved values keyed by variable name",
+    )
+
+
+class PdmBomComponentModel(BaseModel):
+    """A PDM BOM child with unknown quantities preserved as null."""
+
+    document_id: int = Field(description="PDM child document identifier")
+    filename: str = Field(default="", description="Child document filename")
+    configuration: str = Field(default="", description="Child configuration name")
+    quantity: Optional[int] = Field(default=None, description="BOM quantity when known")
+
+
+class PdmDocumentStateModel(BaseModel):
+    """Lossless-enough checked-in PDM document snapshot."""
+
+    document_id: int = Field(description="PDM DocumentID from SQL Server")
+    filename: str = Field(description="Document filename")
+    document_type: str = Field(default="UNKNOWN", description="PDM file extension type")
+    target_revision: int = Field(default=1, description="Checked-in target revision")
+    folder_paths: List[str] = Field(default_factory=list, description="PDM folder memberships")
+    part_number: Optional[str] = Field(default=None, description="Role-mapped part number")
+    description: Optional[str] = Field(default=None, description="Role-mapped description")
+    document_values: Dict[str, PdmPropertyValueModel] = Field(
+        default_factory=dict,
+        description="Resolved document-scope values keyed by variable name",
+    )
+    configurations: List[PdmConfigurationStateModel] = Field(
+        default_factory=list,
+        description="Resolved named configuration states",
+    )
+    bom_components: List[PdmBomComponentModel] = Field(
+        default_factory=list,
+        description="BOM child components",
+    )
+    membership_fallback: bool = Field(
+        default=False,
+        description="Whether configurations were derived from eligible values",
+    )
+    has_beyond_latest_values: bool = Field(
+        default=False,
+        description="Whether values beyond the checked-in revision were found",
+    )
+    warnings: List[str] = Field(default_factory=list, description="Extraction warnings")
+
+    @staticmethod
+    def _sorted_values(values: Dict[str, PdmPropertyValueModel]) -> List[PdmPropertyValueModel]:
+        return sorted(values.values(), key=lambda value: (value.variable_id, value.variable_name))
+
+    @classmethod
+    def _normalized_values(cls, values: Dict[str, PdmPropertyValueModel]) -> Dict[str, Dict[str, Any]]:
+        return {value.variable_name: value.model_dump() for value in cls._sorted_values(values)}
+
+    def to_embedding_text(self) -> str:
+        """Convert this checked-in PDM snapshot into deterministic embedding text."""
+        doc_type_map = {
+            "SLDPRT": "PART",
+            "SLDASM": "ASSEMBLY",
+            "SLDDRW": "DRAWING",
+        }
+        display_type = doc_type_map.get(self.document_type.upper(), self.document_type)
+        lines = [f"# {display_type}: {self.filename}", "\n## Identification"]
+
+        if self.part_number:
+            lines.append(f"- Part Number: {self.part_number}")
+        lines.append(f"- Filename: {self.filename}")
+        for folder_path in sorted(self.folder_paths):
+            lines.append(f"- Folder: {folder_path}")
+        lines.append(f"- Revision: {self.target_revision}")
+
+        document_values = [value for value in self._sorted_values(self.document_values) if not value.is_blank and value.value_text != ""]
+        if document_values:
+            lines.append("\n## Properties")
+            for value in document_values:
+                lines.append(f"- {value.variable_name}: {value.value_text}")
+
+        configurations = sorted(self.configurations, key=lambda configuration: configuration.configuration_id)
+        if configurations:
+            lines.append("\n## Configurations")
+            for configuration in configurations:
+                lines.append(f"- {configuration.name}")
+                for value in self._sorted_values(configuration.values):
+                    if not value.is_blank and value.value_text != "":
+                        lines.append(f"  - {value.variable_name}: {value.value_text}")
+
+        bom_components = sorted(
+            self.bom_components,
+            key=lambda component: (component.document_id, component.configuration),
+        )
+        if bom_components:
+            lines.append("\n## BOM Components")
+            for index, component in enumerate(bom_components[:50], 1):
+                line = f"{index}. {component.filename} (Config: {component.configuration})"
+                if component.quantity is not None:
+                    line += f" - Qty: {component.quantity}"
+                lines.append(line)
+            if len(bom_components) > 50:
+                lines.append(f"... and {len(bom_components) - 50} more components")
+
+        return "\n".join(lines)
+
+    def compute_metadata_hash(self) -> str:
+        """Compute a deterministic hash for checked-in PDM snapshot changes."""
+        configurations = [
+            {
+                "configuration_id": configuration.configuration_id,
+                "name": configuration.name,
+                "values": self._normalized_values(configuration.values),
+            }
+            for configuration in sorted(
+                self.configurations,
+                key=lambda configuration: configuration.configuration_id,
+            )
+        ]
+        bom_components = [
+            component.model_dump()
+            for component in sorted(
+                self.bom_components,
+                key=lambda component: (component.document_id, component.configuration),
+            )
+        ]
+        data = {
+            "document_id": self.document_id,
+            "filename": self.filename,
+            "target_revision": self.target_revision,
+            "folder_paths": sorted(self.folder_paths),
+            "document_values": self._normalized_values(self.document_values),
+            "configurations": configurations,
+            "bom_components": bom_components,
+            "membership_fallback": self.membership_fallback,
+            "has_beyond_latest_values": self.has_beyond_latest_values,
+        }
+        content = json.dumps(data, sort_keys=True)
+        return hashlib.sha256(content.encode()).hexdigest()[:32]
 
 
 class PdmIndexStatusResponse(BaseModel):
