@@ -3160,7 +3160,12 @@ class UserSpaceRuntimeService:
             userspace_service.get_workspace_runtime_environment(workspace_id),
             userspace_service.get_workspace_runtime_environment_visibility(workspace_id),
         )
-        mode = await self._workspace_bridge_credential_mode(workspace_id)
+        # An env refresh must follow the SESSION's active delivery mode, not the
+        # workspace's configured mode: a mode change only activates when a new
+        # runtime session starts. Finalizing with a flipped-but-inactive
+        # worker_file mode would strip the env token from an env-mode session
+        # and break its bridge until a full session restart.
+        mode = await self._active_session_bridge_credential_mode(session)
         workspace_env = self._finalize_workspace_env(
             workspace_id, session.id, workspace_env, bridge_credential_mode=mode
         )
@@ -3170,6 +3175,25 @@ class UserSpaceRuntimeService:
             workspace_env_visibility=workspace_env_visibility,
             bridge_credential_mode=mode,
         )
+
+    async def _active_session_bridge_credential_mode(self, session: UserSpaceRuntimeSession) -> str:
+        """Return the delivery mode the running session actually uses.
+
+        Falls back to ``env`` when the provider does not report credential
+        metadata; the worker independently refuses a raw env token for a
+        ``worker_file`` session, so an env fallback cannot re-expose it.
+        """
+        try:
+            provider_status = await self._runtime_provider_get_status(
+                session.provider_session_id,
+                max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
+                allow_stale_on_error=True,
+            )
+        except HTTPException:
+            return "env"
+        credential = (provider_status or {}).get("bridge_credential")
+        mode = str((credential or {}).get("mode") or "env") if isinstance(credential, dict) else "env"
+        return mode if mode in {"env", "worker_file"} else "env"
 
     async def refresh_runtime_env_vars_for_all_active_workspaces(self) -> None:
         """Best-effort env-var refresh for all active runtime sessions."""

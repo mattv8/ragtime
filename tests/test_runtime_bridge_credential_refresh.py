@@ -111,3 +111,21 @@ class RuntimeBridgeCredentialRefreshTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.state, "starting")
             self.assertNotIn("RAGTIME_BRIDGE_TOKEN", session.workspace_env)
             self.assertEqual(session.bridge_token_file_initial_token, _token("db-session"))
+
+    async def test_env_refresh_restart_preserves_file_mode_env_invariants(self) -> None:
+        """Env replacement must not drop the token-file path or accept a raw token."""
+        with tempfile.TemporaryDirectory() as directory:
+            service, session = self._session(Path(directory))
+            with mock.patch.object(service, "_run_startup_pipeline", new=mock.AsyncMock()):
+                await service.restart_session(
+                    session.id,
+                    workspace_env={
+                        "MY_VAR": "x",
+                        "RAGTIME_BRIDGE_URL": "http://bridge",
+                        "RAGTIME_BRIDGE_TOKEN": _token("db-session"),
+                    },
+                )
+                await service._startup_tasks[session.id]
+            self.assertEqual(session.workspace_env.get("MY_VAR"), "x")
+            self.assertNotIn("RAGTIME_BRIDGE_TOKEN", session.workspace_env)
+            self.assertEqual(session.workspace_env.get("RAGTIME_BRIDGE_TOKEN_FILE"), "/run/.ragtime-bridge/token")

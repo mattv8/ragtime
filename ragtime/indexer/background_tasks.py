@@ -1681,7 +1681,9 @@ class BackgroundTaskService:
                         task_id,
                         ChatTaskStatus.failed,
                         error_message,
-                        termination_reason=termination_reason or "provider_error",
+                        # Only classified provider failures get a termination reason;
+                        # an unclassified platform error must not be blamed on the provider.
+                        termination_reason=termination_reason,
                         outcome_summary={"activity": activity_summary(tool_calls), "warnings": warnings},
                         response_content=full_response or None,
                     )

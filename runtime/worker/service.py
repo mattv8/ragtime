@@ -2596,6 +2596,12 @@ class WorkerService:
                 raise HTTPException(status_code=404, detail="Worker session not found")
             if workspace_env is not None:
                 session.workspace_env = self._normalize_workspace_env(workspace_env)
+                if session.bridge_credential_mode == "worker_file":
+                    # File-mode invariants survive env replacement: the raw token
+                    # never enters the process env, and the app keeps the
+                    # platform-fixed token-file path.
+                    session.workspace_env.pop("RAGTIME_BRIDGE_TOKEN", None)
+                    session.workspace_env["RAGTIME_BRIDGE_TOKEN_FILE"] = "/run/.ragtime-bridge/token"
             if workspace_env is not None or workspace_env_visibility is not None:
                 session.workspace_env_visibility = self._normalize_workspace_env_visibility(
                     workspace_env_visibility,
