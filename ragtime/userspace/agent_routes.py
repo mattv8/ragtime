@@ -78,28 +78,36 @@ token: treat it as a secret, do not echo it into logs or summaries.
 7. POST {base_url}/tasks
    Submit a structured build brief. Ragtime's internal builder agent starts
    immediately in a new workspace conversation. JSON body:
-   {{"idempotency_key": "<fresh unique string per new task>",
-     "title": "Add revenue chart",
+    {{"idempotency_key": "<fresh unique string per new task>",
+      "task_type": "build",
+      "title": "Add revenue chart",
      "objective": "...",
      "requirements": ["..."],
      "acceptance_criteria": ["..."],
      "constraints": [], "preserve_paths": [], "data_component_ids": [],
      "non_goals": [], "context_revision": "<from /context, optional>"}}
-   Response: {{"deduplicated": false, "conversation_id": "...",
-   "task_id": "...", "status": "pending"}}. Retrying with the same
+    task_type is optional: "build" is the default and "general" permits a
+    text-only task. Build tasks require real executed actions. Response:
+    {{"deduplicated": false, "conversation_id": "...",
+    "task_id": "...", "status": "pending", "task_type": "build",
+    "resolved_model": "provider::model"}}. Retrying with the same
    idempotency_key returns the original task instead of duplicating it.
 
 8. GET  {base_url}/tasks/{{task_id}}?max_result_chars=20000
    Poll task status: pending/running/completed/failed/cancelled/interrupted.
-   When completed, "result" holds the builder's final message (possibly
-   truncated). "possibly_stalled": true means no recent progress. Poll every
-   10-30 seconds; long builds are normal.
+    Response includes task_type and resolved_model (the pinned conversation
+    model), activity {{"attempted": 0, "succeeded": 0, "failed": 0}},
+    termination_reason, and coarse warnings. When completed, "result" holds
+    the builder's final message (possibly truncated); non-completed tasks may
+    return bounded sanitized "partial_result". "possibly_stalled": true means
+    no recent progress. Poll every 10-30 seconds; long builds are normal.
 
 9. POST {base_url}/tasks/{{task_id}}/reply   body: {{"idempotency_key": "<fresh unique string per new reply>", "message": "..."}}
    Continue the same conversation if the builder's result asks a question.
    Retrying with the same idempotency_key and reply payload returns the same
-   follow-up task instead of duplicating it.
+    follow-up task instead of duplicating it.
 
+{runtime_restart_section}
 ## How to work
 
 {workflow}
@@ -133,6 +141,15 @@ class EnableAgentAccessRequest(BaseModel):
         default=True,
         description="Whether the token may start builder tasks while enabled.",
     )
+    allow_runtime_restart: bool = Field(
+        default=False,
+        description="Whether the token may request a session-preserving app restart.",
+    )
+
+
+class AgentRuntimeRestartRequest(BaseModel):
+    idempotency_key: str = Field(min_length=8, max_length=128)
+    reason: str = Field(default="", max_length=1000)
 
 
 def _agent_base_url(request: Request, token: str) -> str:
@@ -192,6 +209,13 @@ async def get_agent_manifest(token: str, request: Request) -> PlainTextResponse:
         workspace_name=str(getattr(workspace, "name", "Workspace")),
         base_url=_agent_base_url(request, token),
         workflow=workflow,
+        runtime_restart_section=(
+            "10. POST {base_url}/runtime/restart   body: {{\"idempotency_key\": \"<fresh key>\", \"reason\": \"optional\"}}\n"
+            "    Request a session-preserving app restart. GET {base_url}/runtime/operations/{{operation_id}} polls\n"
+            "    the accepted/running/completed/failed/interrupted operation state.\n"
+        ).format(base_url=_agent_base_url(request, token))
+        if ctx.allow_runtime_restart
+        else "",
     )
     if not ctx.allow_task_submission:
         text += "\nNOTE: Task submission is disabled for this token; /tasks and /tasks/{task_id}/reply return 403.\n"
@@ -382,6 +406,49 @@ async def reply_agent_task(
         _reraise_no_store(exc)
 
 
+async def _enforce_agent_runtime_access(ctx: Any) -> None:
+    from ragtime.userspace.service import userspace_service
+
+    await userspace_service.enforce_workspace_role(
+        ctx.workspace_id,
+        ctx.acting_user_id,
+        "editor",
+        is_admin=ctx.acting_user_is_admin,
+    )
+
+
+@agent_router.post("/{token}/runtime/restart")
+async def restart_agent_runtime(token: str, body: AgentRuntimeRestartRequest, response: Response) -> dict[str, Any]:
+    _set_no_store(response)
+    try:
+        ctx = await resolve_agent_access_token(token)
+        if not ctx.allow_runtime_restart:
+            _raise_http_exception(403, "Runtime restart is disabled for this agent access token")
+        await _enforce_agent_runtime_access(ctx)
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        return await userspace_runtime_service.request_app_restart(
+            ctx.workspace_id, ctx.acting_user_id, body.idempotency_key, reason=body.reason
+        )
+    except HTTPException as exc:
+        _reraise_no_store(exc)
+
+
+@agent_router.get("/{token}/runtime/operations/{operation_id}")
+async def get_agent_runtime_operation(token: str, operation_id: str, response: Response) -> dict[str, Any]:
+    _set_no_store(response)
+    try:
+        ctx = await resolve_agent_access_token(token)
+        if not ctx.allow_runtime_restart:
+            _raise_http_exception(403, "Runtime restart is disabled for this agent access token")
+        await _enforce_agent_runtime_access(ctx)
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        return await userspace_runtime_service.get_app_runtime_operation(ctx.workspace_id, ctx.acting_user_id, operation_id)
+    except HTTPException as exc:
+        _reraise_no_store(exc)
+
+
 @agent_management_router.get("/workspaces/{workspace_id}/agent-access")
 async def get_workspace_agent_access(
     workspace_id: str,
@@ -407,8 +474,14 @@ async def enable_workspace_agent_access(
     _set_no_store(response)
     try:
         allow = body.allow_task_submission if body is not None else True
+        allow_restart = body.allow_runtime_restart if body is not None else False
         return _with_agent_url(
-            await enable_agent_access(workspace_id, user.id, allow_task_submission=allow),
+            await enable_agent_access(
+                workspace_id,
+                user.id,
+                allow_task_submission=allow,
+                allow_runtime_restart=allow_restart,
+            ),
             request,
         )
     except HTTPException as exc:

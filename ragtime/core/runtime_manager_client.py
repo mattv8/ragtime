@@ -149,6 +149,8 @@ async def runtime_manager_request(
     *,
     json_payload: dict[str, Any] | None = None,
     timeout_override_seconds: float | None = None,
+    retry_safe: bool = True,
+    surface_error_status: bool = False,
     unavailable_detail_prefix: str = "Runtime manager unavailable",
     request_failed_detail_prefix: str = "Runtime manager request failed",
 ) -> dict[str, Any]:
@@ -158,7 +160,8 @@ async def runtime_manager_request(
     state, client = await _acquire_runtime_manager_client()
     response: httpx.Response | None = None
     try:
-        for attempt in range(1, config.retry_attempts + 1):
+        attempts = config.retry_attempts if retry_safe else 1
+        for attempt in range(1, attempts + 1):
             try:
                 response = await client.request(
                     method,
@@ -168,7 +171,7 @@ async def runtime_manager_request(
                     timeout=timeout,
                 )
             except Exception as exc:
-                if attempt < config.retry_attempts:
+                if attempt < attempts:
                     await asyncio.sleep(config.retry_base_delay_seconds * attempt)
                     continue
                 exc_type = exc.__class__.__name__
@@ -178,7 +181,7 @@ async def runtime_manager_request(
                     detail = f"{detail}: {exc_message}"
                 raise HTTPException(status_code=502, detail=detail) from exc
 
-            if response.status_code >= 500 and attempt < config.retry_attempts:
+            if response.status_code >= 500 and attempt < attempts:
                 await response.aclose()
                 response = None
                 await asyncio.sleep(config.retry_base_delay_seconds * attempt)
@@ -193,6 +196,8 @@ async def runtime_manager_request(
 
         if response.status_code >= 400:
             body_preview = response.text[:256]
+            if surface_error_status and 400 <= response.status_code < 500:
+                raise HTTPException(status_code=response.status_code, detail=body_preview or "Runtime manager request rejected")
             raise HTTPException(
                 status_code=502,
                 detail=(f"{request_failed_detail_prefix} ({response.status_code}): {body_preview}"),

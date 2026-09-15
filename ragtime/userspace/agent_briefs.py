@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,10 @@ class BuildBriefInput(BaseModel):
         min_length=8,
         max_length=128,
         description="Client-generated unique key. Retries with the same key return the original task instead of starting a duplicate build.",
+    )
+    task_type: Literal["build", "general"] = Field(
+        default="build",
+        description="Build tasks require executed actions; general tasks may be text-only.",
     )
     title: str = Field(min_length=1, max_length=120, description="Short task title; becomes the conversation title.")
     objective: str = Field(min_length=1, max_length=4000, description="What the builder should accomplish.")
@@ -44,6 +48,10 @@ class BuildBriefInput(BaseModel):
 def compute_brief_payload_hash(brief: BuildBriefInput) -> str:
     """Stable content hash used for idempotency conflict detection."""
     payload = brief.model_dump(exclude={"idempotency_key"})
+    # Omitted legacy briefs have always meant a build.  Keep their canonical
+    # hash stable while making an explicit general task a distinct request.
+    if payload.get("task_type") == "build":
+        payload.pop("task_type", None)
     canonical = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

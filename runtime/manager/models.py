@@ -58,6 +58,8 @@ class StartSessionRequest(BaseModel):
             "source_type, mount_backend, read_only, and optional runtime_mount_mode."
         ),
     )
+    bridge_credential_mode: str = Field(default="env", pattern="^(env|worker_file)$")
+    bridge_token_file_initial_token: str | None = Field(default=None, exclude=True)
 
 
 class RuntimeBridgeCredentialMetadata(BaseModel):
@@ -67,6 +69,19 @@ class RuntimeBridgeCredentialMetadata(BaseModel):
     session_id: str = Field(description="Workspace session ID bound to the bridge token")
     issued_at: datetime = Field(description="Token issued-at timestamp")
     expires_at: datetime = Field(description="Token expiration timestamp")
+    mode: str = Field(default="env", pattern="^(env|worker_file)$")
+    revision: int = Field(default=0, ge=0)
+
+
+class BridgeCredentialRefreshRequest(BaseModel):
+    token: str = Field(min_length=1)
+    expected_session_id: str = Field(min_length=1)
+    expected_revision: int = Field(ge=0)
+    request_id: str = Field(min_length=8, max_length=128)
+
+
+class RuntimeAppRestartRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=128)
 
 
 class _BaseSessionFields(BaseModel):
@@ -140,6 +155,8 @@ class WorkerStartSessionRequest(BaseModel):
         default_factory=list,
         description="Workspace mount specs for sandbox materialization or live bind mounting",
     )
+    bridge_credential_mode: str = Field(default="env", pattern="^(env|worker_file)$")
+    bridge_token_file_initial_token: str | None = Field(default=None, exclude=True)
 
 
 class WorkerSessionResponse(_BaseSessionFields):
@@ -319,9 +336,9 @@ class RuntimeMountRefreshRequest(BaseModel):
 class RuntimeExecRequest(BaseModel):
     command: str = Field(description="Shell command to execute")
     timeout_seconds: int = Field(
-        default=30,
+        default=120,
         ge=1,
-        le=120,
+        le=600,
         description="Maximum execution time in seconds",
     )
     cwd: str | None = Field(
