@@ -92,3 +92,59 @@ Scope: runtime execution, workspace file/mount I/O, and preview proxies.
   provider/worker IDs; a replacement can reuse the same worker ID.
 - Manager heartbeats currently renew leases. The broader state-authority
   clarification is planned, not an implemented DB-owned lease protocol.
+
+## Bridge credential delivery modes
+
+- `Workspace.bridgeCredentialMode` is aspiration; the active mode is fixed when
+  a runtime **session** starts (`_runtime_provider_start_session`). Manager and
+  worker restart paths accept no mode change, and the session-preserving
+  `app/restart` keeps the current mode. `requires_restart` in the mode API
+  means a full devserver (session) restart.
+- Env refresh must finalize env for the **session's observed** mode
+  (`_active_session_bridge_credential_mode`), never the DB mode. Finalizing a
+  live env-mode session with a flipped `worker_file` value strips the env token
+  and breaks the bridge until a full session restart. The worker independently
+  re-applies file-mode invariants in `restart_session` (drop any raw
+  `RAGTIME_BRIDGE_TOKEN`, restore `RAGTIME_BRIDGE_TOKEN_FILE`); keep both
+  defenses.
+- File-mode starts carry the token in `bridge_token_file_initial_token`
+  (`exclude=True`). That is safe only because manager→worker is in-process via
+  `get_worker_service()`; a serialized remote worker transport would silently
+  drop the token.
+- The capability key `bridge_credential_file` must appear in worker **session**
+  `runtime_capabilities`, not just health metadata: the manager gates refresh
+  on session capabilities and the control plane gates mode switches on status
+  capabilities. Health-only advertisement makes file mode unreachable.
+- The token file lives at rootfs `/run/.ragtime-bridge/token` and is written
+  through a directory-FD chain with `O_DIRECTORY|O_NOFOLLOW` per component.
+  Leaf-only `O_NOFOLLOW` does not stop parent-symlink traversal into the host;
+  do not replace this with Path-based I/O.
+- Refresh CAS: an exact `(request_id, token fingerprint)` duplicate returns the
+  cached metadata (history bounded to newest 32; evicted replays 409 as
+  stale); same id with a different token is 409. The control plane never
+  re-POSTs an ambiguous refresh — it re-observes and requires healthy state,
+  same session, `worker_file` mode, and an **advanced revision**. Session-id
+  match alone is a false-success trap (the file exists from startup).
+- Refresh stores the newest token into `bridge_token_file_initial_token`, and
+  every startup-pipeline run rewrites the file from that field. That is why an
+  app recycle keeps the rotated token, and why a file-mode session whose status
+  degrades to `missing` (status `mode` defaults to `env` without credential
+  metadata) still converges through the env-style restart recovery.
+- Worker `restart_app` 409s while an exec or startup is active. Execs register
+  a reservation under `_lock` **before** the spawn releases it, closing the
+  restart-vs-spawn race; `_active_execs` and `_app_restart_requests` are pruned
+  in the stop path or they leak for the worker process lifetime.
+- Exec transport: `runtime_manager_request` retries POSTs on transport failure,
+  so exec/restart/refresh must pass `retry_safe=False`; exec adds a 30s grace
+  over the requested budget. The worker kills the process group on timeout and
+  on `CancelledError` (shielded). The chat diagnostics shell cap
+  (`CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS`) is a separate, intentionally
+  lower guardrail — do not unify it with the 600s workspace budget.
+- Durable restart ledger: idempotency and the 60s workspace throttle are
+  decided inside `db.tx()` under
+  `pg_advisory_xact_lock(hashtextextended('userspace-runtime-restart:{ws}',0))`
+  and the intent row commits **before** manager dispatch. The worker
+  `request_id` is the ledger row UUID — caller idempotency keys collide across
+  users on the same workspace. Ambiguous 5xx marks the row `interrupted`,
+  never redispatches; `completed` requires the still-active session to report
+  the matching `runtime_operation_id` with phase `ready`.
