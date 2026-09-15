@@ -24,6 +24,14 @@ import type { ChatMessageNavigationEntry } from './ChatMessageNavigator';
 
 const apiMock = vi.hoisted(() => ({
   getConversation: vi.fn().mockResolvedValue(null),
+  searchConversationBranches: vi.fn().mockResolvedValue({ matches: [] }),
+  listConversationSummaries: vi.fn().mockResolvedValue([]),
+  listConversations: vi.fn().mockResolvedValue([]),
+  countConversations: vi.fn().mockResolvedValue({ count: 0 }),
+  listUserSpaceWorkspaces: vi.fn().mockResolvedValue([]),
+  createConversation: vi.fn(),
+  deleteConversation: vi.fn().mockResolvedValue(undefined),
+  updateConversationTitle: vi.fn(),
   getConversationBranchPoints: vi.fn().mockResolvedValue([]),
   switchConversationBranch: vi.fn(),
   releaseConversationBranch: vi.fn(),
@@ -223,9 +231,29 @@ function makeConversation(
     ],
     total_tokens: 12,
     active_task_id: null,
+    user_id: currentUser.id,
     tool_output_mode: 'show',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function makeSummary(
+  id: string,
+  title: string,
+  overrides: Partial<ConversationSummary> = {},
+): ConversationSummary {
+  return {
+    id,
+    title,
+    model: 'gpt-4o',
+    message_count: 2,
+    total_tokens: 12,
+    active_task_id: null,
+    user_id: currentUser.id,
+    created_at: '2026-09-11T12:00:00.000Z',
+    updated_at: '2026-09-11T12:00:00.000Z',
     ...overrides,
   };
 }
@@ -574,6 +602,508 @@ afterEach(() => {
   window.requestAnimationFrame = originalRequestAnimationFrame;
   window.cancelAnimationFrame = originalCancelAnimationFrame;
   MockEventSource.reset();
+});
+
+describe('ChatPanel standalone first-paint loading', () => {
+  it('renders the selected detail and usable composer before the deferred sidebar page completes', async () => {
+    let releaseSidebarPage: ((rows: ConversationSummary[]) => void) | undefined;
+    const selected = makeConversation('recent-1', 'First paint response', {
+      title: 'Recent detail',
+      updated_at: '2026-09-11T12:00:00.000Z',
+    });
+    apiMock.listConversationSummaries
+      .mockResolvedValueOnce([makeSummary(selected.id, selected.title)])
+      .mockImplementationOnce(
+        () => new Promise<ConversationSummary[]>((resolve) => (releaseSidebarPage = resolve)),
+      );
+    apiMock.getConversation.mockResolvedValue(selected);
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} />);
+
+    expect(await screen.findByText('First paint response')).toBeDefined();
+    expect(screen.getByLabelText('Message').hasAttribute('disabled')).toBe(false);
+    expect(apiMock.listConversationSummaries).toHaveBeenNthCalledWith(
+      1,
+      undefined,
+      expect.objectContaining({ limit: 1 }),
+      expect.any(AbortSignal),
+    );
+    expect(apiMock.listConversations).not.toHaveBeenCalled();
+    expect(apiMock.listUserSpaceWorkspaces).not.toHaveBeenCalled();
+
+    releaseSidebarPage?.([]);
+  });
+
+  it('prioritizes an authorized shared preferred id and skips an older preferred detail', async () => {
+    const older = makeConversation('older-preferred', 'Old response', {
+      updated_at: '2000-01-01T00:00:00.000Z',
+      user_id: 'another-user',
+    });
+    const shared = makeConversation('shared-preferred', 'Shared response', {
+      updated_at: '2026-09-11T12:00:00.000Z',
+      user_id: 'another-user',
+    });
+    apiMock.getConversation.mockImplementation((id: string) => {
+      if (id === older.id) return Promise.resolve(older);
+      if (id === shared.id) return Promise.resolve(shared);
+      return Promise.resolve(null);
+    });
+    apiMock.listConversationSummaries.mockResolvedValue([]);
+
+    const { rerender } = renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={older.id} />,
+    );
+    await waitFor(() => expect(apiMock.listConversationSummaries).toHaveBeenCalled());
+
+    rerender(
+      <AvailableModelsProvider>
+        <ChatPanel currentUser={currentUser} initialConversationId={shared.id} />
+      </AvailableModelsProvider>,
+    );
+
+    expect(await screen.findByText('Shared response')).toBeDefined();
+    expect(apiMock.getConversation.mock.calls.map(([id]) => id)).toContain(shared.id);
+  });
+
+  it('does not let a late initial detail replace explicit later navigation', async () => {
+    let resolveInitial: ((conversation: Conversation) => void) | undefined;
+    const initial = makeConversation('initial-race', 'Initial late response', {
+      updated_at: '2026-09-11T12:00:00.000Z',
+    });
+    const explicit = makeConversation('explicit-race', 'Explicit response wins', {
+      updated_at: '2026-09-11T12:00:01.000Z',
+    });
+    apiMock.getConversation.mockImplementation((id: string) => {
+      if (id === initial.id) {
+        return new Promise<Conversation>((resolve) => (resolveInitial = resolve));
+      }
+      return Promise.resolve(explicit);
+    });
+    apiMock.listConversationSummaries.mockResolvedValue([]);
+
+    const { rerender } = renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={initial.id} />,
+    );
+    await waitFor(() =>
+      expect(apiMock.getConversation).toHaveBeenCalledWith(
+        initial.id,
+        undefined,
+        expect.anything(),
+      ),
+    );
+
+    rerender(
+      <AvailableModelsProvider>
+        <ChatPanel currentUser={currentUser} initialConversationId={explicit.id} />
+      </AvailableModelsProvider>,
+    );
+    expect(await screen.findByText('Explicit response wins')).toBeDefined();
+
+    resolveInitial?.(initial);
+    await waitFor(() => expect(screen.queryByText('Initial late response')).toBeNull());
+  });
+
+  it('hydrates a selected summary while preserving its sidebar row and recency', async () => {
+    const selected = makeConversation('summary-select', 'Hydrated selected response', {
+      title: 'Summary-only chat',
+      updated_at: '2026-09-11T12:00:02.000Z',
+    });
+    const initial = makeConversation('bootstrap', 'Bootstrap response', {
+      title: 'Bootstrap chat',
+      updated_at: '2026-09-11T12:00:03.000Z',
+    });
+    apiMock.listConversationSummaries
+      .mockResolvedValueOnce([makeSummary(initial.id, initial.title)])
+      .mockResolvedValueOnce([makeSummary(selected.id, selected.title)]);
+    apiMock.getConversation.mockImplementation((id: string) =>
+      Promise.resolve(id === selected.id ? selected : initial),
+    );
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} />);
+    expect(await screen.findByText('Bootstrap response')).toBeDefined();
+    const row = await waitFor(() => {
+      const matching = Array.from(document.querySelectorAll('.chat-conversation-item')).find(
+        (item) => item.textContent?.includes(selected.title),
+      );
+      expect(matching).toBeTruthy();
+      return matching as HTMLElement;
+    });
+
+    fireEvent.click(row);
+    expect(await screen.findByText('Hydrated selected response')).toBeDefined();
+    expect(
+      Array.from(document.querySelectorAll('.chat-conversation-item')).filter((item) =>
+        item.textContent?.includes(selected.title),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('keeps a deleted direct-detail row tombstoned when the pending sidebar page returns it', async () => {
+    let releaseSidebarPage: ((rows: ConversationSummary[]) => void) | undefined;
+    const detail = makeConversation('delete-tombstone', 'Delete me', {
+      title: 'Delete pending sidebar row',
+      updated_at: '2026-09-11T12:00:00.000Z',
+    });
+    apiMock.getConversation.mockResolvedValue(detail);
+    apiMock.listConversationSummaries.mockImplementation(
+      (_workspaceId: unknown, options: { limit?: number }) => {
+        if (options.limit === 1) return Promise.resolve([]);
+        return new Promise<ConversationSummary[]>((resolve) => (releaseSidebarPage = resolve));
+      },
+    );
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={detail.id} />);
+    expect(await screen.findByText('Delete me')).toBeDefined();
+    await userEvent.setup().click(screen.getByTitle('Delete'));
+    await userEvent.setup().click(screen.getByTitle('Confirm delete'));
+    await waitFor(() =>
+      expect(apiMock.deleteConversation).toHaveBeenCalledWith(detail.id, undefined),
+    );
+
+    releaseSidebarPage?.([makeSummary(detail.id, detail.title)]);
+    await waitFor(() => expect(screen.queryByText(detail.title)).toBeNull());
+  });
+
+  it('continues cursor hydration after a user creates a chat while the first sidebar page is pending', async () => {
+    let releaseFirstPage: ((rows: ConversationSummary[]) => void) | undefined;
+    const bootstrap = makeConversation('cursor-bootstrap', 'Bootstrap stays visible', {
+      title: 'Bootstrap chat',
+      updated_at: '2026-09-11T12:00:02.000Z',
+    });
+    const created = makeConversation('cursor-created', 'Created chat stays active', {
+      title: 'Created while loading',
+      updated_at: '2026-09-11T12:00:03.000Z',
+    });
+    const later = makeSummary('cursor-later', 'Later cursor row', {
+      updated_at: '2026-09-10T12:00:00.000Z',
+    });
+    const firstPage = Array.from({ length: 50 }, (_, index) =>
+      makeSummary(`cursor-page-${index}`, `Cursor page ${index}`, {
+        updated_at: `2026-09-11T11:${String(index).padStart(2, '0')}:00.000Z`,
+      }),
+    );
+    apiMock.getConversation.mockResolvedValue(bootstrap);
+    apiMock.createConversation.mockResolvedValue(created);
+    apiMock.listConversationSummaries
+      .mockImplementationOnce(
+        () => new Promise<ConversationSummary[]>((resolve) => (releaseFirstPage = resolve)),
+      )
+      .mockResolvedValueOnce([later]);
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={bootstrap.id} />);
+    expect(await screen.findByText('Bootstrap stays visible')).toBeDefined();
+    await userEvent.setup().click(screen.getByTitle('Start a new conversation'));
+    expect(await screen.findByText('Created chat stays active')).toBeDefined();
+
+    releaseFirstPage?.(firstPage);
+    await waitFor(() =>
+      expect(apiMock.listConversationSummaries).toHaveBeenNthCalledWith(
+        2,
+        undefined,
+        expect.objectContaining({
+          limit: 50,
+          cursorId: firstPage[firstPage.length - 1].id,
+          cursorUpdatedAt: firstPage[firstPage.length - 1].updated_at,
+        }),
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(await screen.findByText(later.title)).toBeDefined();
+    expect(screen.getByText('Created chat stays active')).toBeDefined();
+  });
+
+  it('keeps the active detail selected when summary backfill fails and retries only the backfill', async () => {
+    const detail = makeConversation('backfill-active', 'Active detail remains visible', {
+      title: 'Active while backfill fails',
+      updated_at: '2026-09-11T12:00:00.000Z',
+    });
+    apiMock.getConversation.mockResolvedValue(detail);
+    apiMock.listConversationSummaries
+      .mockRejectedValueOnce(new Error('Sidebar request failed'))
+      .mockResolvedValueOnce([]);
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={detail.id} />);
+
+    expect(await screen.findByText('Active detail remains visible')).toBeDefined();
+    const retry = await screen.findByRole('button', { name: /retry/i });
+    await userEvent.setup().click(retry);
+
+    await waitFor(() => expect(apiMock.listConversationSummaries).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('Active detail remains visible')).toBeDefined();
+    expect(apiMock.getConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it('resumes a failed second summary page from its cursor when retrying', async () => {
+    const detail = makeConversation('retry-cursor-active', 'Active detail remains selected', {
+      title: 'Retry cursor active',
+      updated_at: '2026-09-11T12:00:02.000Z',
+    });
+    const firstPage = Array.from({ length: 50 }, (_, index) =>
+      makeSummary(`retry-cursor-${index}`, `Retry cursor ${index}`, {
+        updated_at: `2026-09-11T11:${String(index).padStart(2, '0')}:00.000Z`,
+      }),
+    );
+    const remaining = makeSummary('retry-cursor-remaining', 'Retry loaded remaining row', {
+      updated_at: '2026-09-10T12:00:00.000Z',
+    });
+    apiMock.getConversation.mockResolvedValue(detail);
+    apiMock.listConversationSummaries
+      .mockResolvedValueOnce(firstPage)
+      .mockRejectedValueOnce(new Error('Second page failed'))
+      .mockResolvedValueOnce([remaining]);
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={detail.id} />);
+    expect(await screen.findByText('Active detail remains selected')).toBeDefined();
+    const retry = await screen.findByRole('button', { name: /retry chats/i });
+    await userEvent.setup().click(retry);
+
+    await waitFor(() =>
+      expect(apiMock.listConversationSummaries).toHaveBeenNthCalledWith(
+        3,
+        undefined,
+        expect.objectContaining({
+          limit: 50,
+          cursorId: firstPage[firstPage.length - 1].id,
+          cursorUpdatedAt: firstPage[firstPage.length - 1].updated_at,
+        }),
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(await screen.findByText(remaining.title)).toBeDefined();
+    expect(screen.getByText('Active detail remains selected')).toBeDefined();
+  });
+
+  it('renames a summary-only sidebar row without fetching its detail', async () => {
+    const bootstrap = makeConversation('rename-bootstrap', 'Bootstrap response', {
+      title: 'Bootstrap chat',
+      updated_at: '2026-09-11T12:00:02.000Z',
+    });
+    const summary = makeSummary('rename-summary', 'Before summary rename', {
+      updated_at: '2026-09-11T12:00:01.000Z',
+    });
+    apiMock.getConversation.mockResolvedValue(bootstrap);
+    apiMock.listConversationSummaries.mockResolvedValue([summary]);
+    apiMock.updateConversationTitle.mockResolvedValue({
+      id: summary.id,
+      title: 'After summary rename',
+      updated_at: '2026-09-11T12:00:03.000Z',
+    });
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={bootstrap.id} />);
+    expect(await screen.findByText('Bootstrap response')).toBeDefined();
+    const row = await waitFor(() => {
+      const matching = Array.from(document.querySelectorAll('.chat-conversation-item')).find(
+        (item) => item.textContent?.includes(summary.title),
+      );
+      expect(matching).toBeTruthy();
+      return matching as HTMLElement;
+    });
+    const rename = row.querySelector('[title="Rename"]') as HTMLButtonElement | null;
+    expect(rename).toBeTruthy();
+    await userEvent.setup().click(rename as HTMLButtonElement);
+    await userEvent.setup().clear(row.querySelector('textarea') as HTMLTextAreaElement);
+    await userEvent
+      .setup()
+      .type(row.querySelector('textarea') as HTMLTextAreaElement, 'After summary rename');
+    fireEvent.keyDown(row.querySelector('textarea') as HTMLTextAreaElement, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(apiMock.updateConversationTitle).toHaveBeenCalledWith(
+        summary.id,
+        'After summary rename',
+        undefined,
+      ),
+    );
+    expect(await screen.findByText('After summary rename')).toBeDefined();
+    expect(apiMock.getConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries an initial summaries failure and selects the recovered recent detail', async () => {
+    const recovered = makeConversation('initial-retry-recovered', 'Recovered after initial retry', {
+      title: 'Recovered recent chat',
+      updated_at: '2026-09-11T12:00:00.000Z',
+    });
+    apiMock.listConversationSummaries
+      .mockRejectedValueOnce(Object.assign(new Error('Temporary service failure'), { status: 503 }))
+      .mockResolvedValueOnce([makeSummary(recovered.id, recovered.title)]);
+    apiMock.getConversation.mockResolvedValue(recovered);
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} />);
+
+    const retry = await screen.findByRole('button', { name: /retry/i });
+    await userEvent.setup().click(retry);
+
+    expect(await screen.findByText('Recovered after initial retry')).toBeDefined();
+    expect(apiMock.listConversationSummaries).toHaveBeenNthCalledWith(
+      2,
+      undefined,
+      expect.objectContaining({ limit: 1 }),
+      expect.any(AbortSignal),
+    );
+    expect(apiMock.getConversation).toHaveBeenCalledWith(
+      recovered.id,
+      undefined,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('advances past a missing top summary to select the next recent detail', async () => {
+    const missing = makeSummary('missing-top-summary', 'Missing top summary', {
+      updated_at: '2026-09-11T12:00:01.000Z',
+    });
+    const fallback = makeSummary('fallback-summary', 'Fallback summary', {
+      updated_at: '2026-09-11T12:00:00.000Z',
+    });
+    const fallbackDetail = makeConversation(fallback.id, 'Fallback detail selected', {
+      title: fallback.title,
+      updated_at: fallback.updated_at,
+    });
+    apiMock.listConversationSummaries
+      .mockResolvedValueOnce([missing])
+      .mockResolvedValueOnce([fallback]);
+    apiMock.getConversation.mockImplementation((id: string) => {
+      if (id === missing.id) {
+        return Promise.reject(Object.assign(new Error('Not found'), { status: 404 }));
+      }
+      return Promise.resolve(fallbackDetail);
+    });
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} />);
+
+    expect(await screen.findByText('Fallback detail selected')).toBeDefined();
+    expect(apiMock.getConversation.mock.calls.map(([id]) => id)).toEqual([missing.id, fallback.id]);
+    expect(apiMock.listConversationSummaries).toHaveBeenNthCalledWith(
+      2,
+      undefined,
+      expect.objectContaining({ limit: 1, cursorId: missing.id }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('hydrates body-only search matches and aborts a later page when cleared', async () => {
+    let resolveFirstSearchPage: ((conversations: Conversation[]) => void) | undefined;
+    let resolveLateSearchPage: ((conversations: Conversation[]) => void) | undefined;
+    let lateSearchSignal: AbortSignal | undefined;
+    const initial = makeConversation('search-bootstrap', 'Bootstrap response', {
+      title: 'Bootstrap chat',
+      updated_at: '2026-09-11T12:00:02.000Z',
+    });
+    const bodyMatch = makeConversation('body-match', 'Needle only exists in this message body', {
+      title: 'Unrelated title',
+      updated_at: '2026-09-11T12:00:01.000Z',
+    });
+    const lateMatch = makeConversation(
+      'late-body-match',
+      'Late needle only exists in this message body',
+      {
+        title: 'Late unrelated title',
+        updated_at: '2026-09-11T12:00:00.000Z',
+      },
+    );
+    apiMock.listConversationSummaries
+      .mockResolvedValueOnce([makeSummary(initial.id, initial.title)])
+      .mockResolvedValueOnce([]);
+    apiMock.getConversation.mockResolvedValue(initial);
+    apiMock.listConversations.mockImplementation(
+      (
+        _workspaceId: unknown,
+        options: { until?: string | null } | undefined,
+        signal?: AbortSignal,
+      ) => {
+        if (options?.until) return Promise.resolve([]);
+        if (!resolveFirstSearchPage) {
+          return new Promise<Conversation[]>((resolve) => (resolveFirstSearchPage = resolve));
+        }
+        lateSearchSignal = signal;
+        return new Promise<Conversation[]>((resolve) => (resolveLateSearchPage = resolve));
+      },
+    );
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} />);
+    expect(await screen.findByText('Bootstrap response')).toBeDefined();
+    const search = screen.getByLabelText('Search conversations by title or content');
+    fireEvent.change(search, { target: { value: 'needle' } });
+    await waitFor(() => expect(resolveFirstSearchPage).toBeDefined());
+    resolveFirstSearchPage?.([bodyMatch]);
+    expect(await screen.findByText(bodyMatch.title)).toBeDefined();
+
+    fireEvent.change(search, { target: { value: '' } });
+    fireEvent.change(search, { target: { value: 'late needle' } });
+    await waitFor(() => expect(lateSearchSignal).toBeDefined());
+    fireEvent.change(search, { target: { value: '' } });
+    await waitFor(() => expect(lateSearchSignal?.aborted).toBe(true));
+
+    resolveLateSearchPage?.([lateMatch]);
+    await waitFor(() => expect(screen.queryByText(lateMatch.title)).toBeNull());
+  });
+
+  it('does not repeat a full-prefix branch search while body pages hydrate', async () => {
+    const initial = makeConversation('branch-bootstrap', 'Bootstrap response', {
+      title: 'Bootstrap chat',
+      updated_at: '2026-09-11T12:00:02.000Z',
+    });
+    const firstPage = makeConversation('branch-page-1', 'branch needle one', {
+      title: 'First branch page',
+      updated_at: '2026-09-11T12:00:01.000Z',
+    });
+    const secondPage = makeConversation('branch-page-2', 'branch needle two', {
+      title: 'Second branch page',
+      updated_at: '2026-09-11T12:00:00.000Z',
+    });
+    apiMock.getConversation.mockResolvedValue(initial);
+    apiMock.listConversationSummaries.mockResolvedValue([]);
+    const firstHistoryPage = [
+      firstPage,
+      ...Array.from({ length: 49 }, (_, index) =>
+        makeConversation(`branch-page-1-${index}`, `branch filler ${index}`, {
+          title: `Branch filler ${index}`,
+          updated_at: `2026-09-10T12:${String(index).padStart(2, '0')}:00.000Z`,
+        }),
+      ),
+    ];
+    let releaseSecondHistoryPage: ((conversations: Conversation[]) => void) | undefined;
+    apiMock.listConversations.mockResolvedValueOnce(firstHistoryPage).mockImplementationOnce(
+      () =>
+        new Promise<Conversation[]>((resolve) => {
+          releaseSecondHistoryPage = resolve;
+        }),
+    );
+    apiMock.searchConversationBranches.mockResolvedValue({ matches: [] });
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={initial.id} />);
+    expect(await screen.findByText('Bootstrap response')).toBeDefined();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Search chat branches' }));
+    apiMock.searchConversationBranches.mockClear();
+    fireEvent.change(screen.getByLabelText('Search conversations by title or content'), {
+      target: { value: 'branch needle' },
+    });
+
+    await waitFor(() => expect(releaseSecondHistoryPage).toBeDefined());
+    expect(
+      apiMock.searchConversationBranches.mock.calls.filter(
+        ([, query]) => query === 'branch needle',
+      ),
+    ).toHaveLength(0);
+
+    releaseSecondHistoryPage?.([secondPage]);
+    expect(await screen.findByText(secondPage.title)).toBeDefined();
+    await waitFor(() =>
+      expect(
+        apiMock.searchConversationBranches.mock.calls.filter(
+          ([, query]) => query === 'branch needle',
+        ),
+      ).toHaveLength(1),
+    );
+    const [finalIds] = apiMock.searchConversationBranches.mock.calls.find(
+      ([, query]) => query === 'branch needle',
+    ) as [string[], string];
+    expect(finalIds).toEqual(
+      expect.arrayContaining([
+        ...firstHistoryPage.map((conversation) => conversation.id),
+        secondPage.id,
+      ]),
+    );
+  });
 });
 
 describe('ToolCallDisplay screenshot rendering', () => {

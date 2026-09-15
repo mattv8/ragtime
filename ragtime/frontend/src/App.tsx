@@ -9,7 +9,6 @@ import { MemoryStatus } from './components/MemoryStatus';
 import { OAuthCallbackError } from './components/OAuthCallbackError';
 import { OAuthLoginPage } from './components/OAuthLoginPage';
 import type { OAuthParams } from './components/OAuthLoginPage';
-import { PublicSharedChatView } from './components/PublicSharedChatView';
 import { SecurityBanner } from './components/SecurityBanner';
 import { ToastContainer, useToast } from '@/components/shared/Toast';
 import { UserMenu } from './components/UserMenu';
@@ -94,6 +93,9 @@ const LazyUsersPanel = lazy(async () => ({
 }));
 const LazyIndexerAdminView = lazy(async () => ({
   default: (await import('./components/IndexerAdminView')).IndexerAdminView,
+}));
+const LazyPublicSharedChatView = lazy(async () => ({
+  default: (await import('./components/PublicSharedChatView')).PublicSharedChatView,
 }));
 
 type ObservedServerJobKind = 'backup' | 'restore';
@@ -1044,25 +1046,29 @@ export function App() {
         </div>
       );
     }
-    return userspaceSharedRoute.mode === 'token' ? (
-      <PublicSharedChatView
-        shareToken={userspaceSharedRoute.token}
-        currentUser={currentUser}
-        authStatus={authStatus}
-        serverName={serverName}
-        onLoginSuccess={handleLoginSuccess}
-        onLogout={handleLogout}
-      />
-    ) : (
-      <PublicSharedChatView
-        ownerUsername={userspaceSharedRoute.ownerUsername}
-        shareSlug={userspaceSharedRoute.shareSlug}
-        currentUser={currentUser}
-        authStatus={authStatus}
-        serverName={serverName}
-        onLoginSuccess={handleLoginSuccess}
-        onLogout={handleLogout}
-      />
+    return (
+      <Suspense fallback={<RouteViewFallback />}>
+        {userspaceSharedRoute.mode === 'token' ? (
+          <LazyPublicSharedChatView
+            shareToken={userspaceSharedRoute.token}
+            currentUser={currentUser}
+            authStatus={authStatus}
+            serverName={serverName}
+            onLoginSuccess={handleLoginSuccess}
+            onLogout={handleLogout}
+          />
+        ) : (
+          <LazyPublicSharedChatView
+            ownerUsername={userspaceSharedRoute.ownerUsername}
+            shareSlug={userspaceSharedRoute.shareSlug}
+            currentUser={currentUser}
+            authStatus={authStatus}
+            serverName={serverName}
+            onLoginSuccess={handleLoginSuccess}
+            onLogout={handleLogout}
+          />
+        )}
+      </Suspense>
     );
   }
 

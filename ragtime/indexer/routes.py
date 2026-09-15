@@ -12539,6 +12539,19 @@ def _parse_conversation_time_filter(
     return parsed
 
 
+def _validate_conversation_cursor_pair(cursor_updated_at: Optional[datetime], cursor_id: Optional[str]) -> None:
+    if cursor_updated_at is None and cursor_id:
+        raise HTTPException(
+            status_code=400,
+            detail="cursor_id requires cursor_updated_at",
+        )
+    if cursor_updated_at is not None and not cursor_id:
+        raise HTTPException(
+            status_code=400,
+            detail="cursor_updated_at requires cursor_id",
+        )
+
+
 class WorkspaceConversationStateSummaryRequest(BaseModel):
     workspace_ids: List[str] = Field(
         default_factory=list,
@@ -12963,16 +12976,7 @@ async def list_conversations(
     since_dt = _parse_conversation_time_filter(since, "since")
     until_dt = _parse_conversation_time_filter(until, "until")
     cursor_updated_at_dt = _parse_conversation_time_filter(cursor_updated_at, "cursor_updated_at")
-    if cursor_updated_at_dt is None and cursor_id:
-        raise HTTPException(
-            status_code=400,
-            detail="cursor_id requires cursor_updated_at",
-        )
-    if cursor_updated_at_dt is not None and not cursor_id:
-        raise HTTPException(
-            status_code=400,
-            detail="cursor_updated_at requires cursor_id",
-        )
+    _validate_conversation_cursor_pair(cursor_updated_at_dt, cursor_id)
 
     convs = await repository.list_conversations(
         user_id=user.id,
@@ -12992,16 +12996,24 @@ async def list_conversation_summaries(
     workspace_id: Optional[str] = None,
     since: Optional[str] = None,
     until: Optional[str] = None,
+    limit: Optional[int] = Query(default=None, ge=1, le=200),
+    cursor_updated_at: Optional[str] = None,
+    cursor_id: Optional[str] = None,
     user: User = Depends(get_current_user),
 ):
     """List lightweight conversation rows without message payloads."""
     await _assert_workspace_access(workspace_id, user, "viewer")
+    cursor_updated_at_dt = _parse_conversation_time_filter(cursor_updated_at, "cursor_updated_at")
+    _validate_conversation_cursor_pair(cursor_updated_at_dt, cursor_id)
     return await repository.list_conversation_summaries(
         user_id=user.id,
         include_all=user.role == "admin",
         workspace_id=workspace_id,
         since=_parse_conversation_time_filter(since, "since"),
         until=_parse_conversation_time_filter(until, "until"),
+        limit=limit,
+        cursor_updated_at=cursor_updated_at_dt,
+        cursor_id=cursor_id,
     )
 
 

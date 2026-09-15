@@ -108,6 +108,16 @@ import { ChatMessageNavigator, type ChatMessageNavigationEntry } from './ChatMes
 import { HtmlComponentDisplay, type HtmlComponentData } from './HtmlComponentDisplay';
 import { calculateConversationContextUsage } from '@/utils/contextUsage';
 import {
+  archiveCutoffIso,
+  cursorFromLastRow,
+  hasMorePages,
+  isEligibleStandaloneConversation,
+  mergeSummaryPages,
+  orderInitialCandidates,
+  shouldHydrateHistoryForSearch,
+  type ConversationCursor,
+} from '@/utils/conversationLoading';
+import {
   applyUserSpaceToolAvailabilityCap,
   fetchUserSpaceToolCatalog,
   getCappedUserSpaceToolIdSet,
@@ -10027,12 +10037,6 @@ function readStoredArchiveAgeDays(userId: string): number {
   }
 }
 
-function archiveCutoffIso(daysAgo: number): string | null {
-  if (!Number.isFinite(daysAgo) || daysAgo <= 0) return null;
-  const cutoff = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
-  return cutoff.toISOString();
-}
-
 function isConversationOlderThanWindow(conversation: Conversation, daysAgo: number): boolean {
   const cutoffIso = archiveCutoffIso(daysAgo);
   if (!cutoffIso) return false;
@@ -10044,10 +10048,7 @@ function isConversationOlderThanWindow(conversation: Conversation, daysAgo: numb
   return updatedAtMs < cutoffMs;
 }
 
-type ConversationArchiveCursor = {
-  updatedAt: string;
-  id: string;
-};
+type ConversationArchiveCursor = ConversationCursor;
 
 const ARCHIVE_PAGE_SIZE = 50;
 
@@ -10057,32 +10058,10 @@ function getConversationWorkspaceId(conversation: Conversation): string | null {
   return conversation.workspace_id ?? camelWorkspaceId ?? null;
 }
 
-function getConversationArchiveCursor(
-  conversations: Conversation[],
-): ConversationArchiveCursor | null {
-  const lastConversation = conversations[conversations.length - 1];
-  if (!lastConversation) return null;
-  return {
-    updatedAt: lastConversation.updated_at,
-    id: lastConversation.id,
-  };
-}
-
-function getConversationMessageCount(conversation: Conversation): number {
-  return conversation.message_count ?? conversation.messages.length;
-}
-
-function mergeConversationPages(current: Conversation[], incoming: Conversation[]): Conversation[] {
-  if (current.length === 0) return incoming;
-  if (incoming.length === 0) return current;
-  const seen = new Set(current.map((conversation) => conversation.id));
-  const merged = [...current];
-  incoming.forEach((conversation) => {
-    if (seen.has(conversation.id)) return;
-    seen.add(conversation.id);
-    merged.push(conversation);
-  });
-  return merged;
+function getConversationMessageCount(conversation: Conversation | ConversationSummary): number {
+  return (
+    conversation.message_count ?? ('messages' in conversation ? conversation.messages.length : 0)
+  );
 }
 
 // Best-effort plain-text view of a message for content searching. Mirrors
@@ -10173,35 +10152,36 @@ function useConversationBranchSearchMatches({
   query: string;
   conversationIds: string[];
 }): Record<string, ConversationBranchSearchMatch> {
-  const conversationIdsKey = useMemo(() => conversationIds.join('\u0000'), [conversationIds]);
+  const conversationIdsKey = useMemo(
+    () => Array.from(new Set(conversationIds)).sort().join('\u0000'),
+    [conversationIds],
+  );
   const [matchesByConversationId, setMatchesByConversationId] = useState<
     Record<string, ConversationBranchSearchMatch>
   >({});
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     const trimmedQuery = query.trim();
     const ids = conversationIdsKey.split('\u0000').filter(Boolean);
     if (!enabled || !trimmedQuery || ids.length === 0) {
       setMatchesByConversationId({});
-      return () => {
-        cancelled = true;
-      };
+      return () => controller.abort();
     }
 
     void api
-      .searchConversationBranches(ids, trimmedQuery)
+      .searchConversationBranches(ids, trimmedQuery, controller.signal)
       .then((response) => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setMatchesByConversationId(mapBranchSearchMatchesByConversation(response.matches));
       })
       .catch(() => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setMatchesByConversationId({});
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [enabled, query, conversationIdsKey]);
 
@@ -10376,6 +10356,10 @@ export function ChatPanel({
   const [toasts, toastActions] = useToast();
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  // Summary rows deliberately remain metadata-only; full transcripts are kept
+  // exclusively in `conversations`/`activeConversation` after detail loading.
+  const [conversationSummaries, setConversationSummaries] = useState<ConversationSummary[]>([]);
+  const [standaloneNavigationTick, setStandaloneNavigationTick] = useState(0);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [expandedSubagentParents, setExpandedSubagentParents] = useState<Record<string, boolean>>(
     {},
@@ -11352,6 +11336,13 @@ export function ChatPanel({
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
   const conversationSearchTextById = useMemo(() => {
     const searchTextById = new Map<string, string>();
+    if (
+      !shouldHydrateHistoryForSearch(deferredConversationSearchQuery) &&
+      !shouldHydrateHistoryForSearch(deferredWorkspaceConversationSearchQuery) &&
+      !shouldHydrateHistoryForSearch(deferredArchiveSearchQuery)
+    ) {
+      return searchTextById;
+    }
     for (const conversation of [
       ...conversations,
       ...archivedConversations,
@@ -11362,11 +11353,21 @@ export function ChatPanel({
       }
     }
     return searchTextById;
-  }, [conversations, archivedConversations, workspaceArchivedConversations]);
+  }, [
+    conversations,
+    archivedConversations,
+    workspaceArchivedConversations,
+    deferredConversationSearchQuery,
+    deferredWorkspaceConversationSearchQuery,
+    deferredArchiveSearchQuery,
+  ]);
   const conversationMatchesCachedQuery = useCallback(
-    (conversation: Conversation, query: string): boolean => {
+    (conversation: Conversation | ConversationSummary, query: string): boolean => {
       const needle = query.trim().toLowerCase();
       if (!needle) return true;
+      if (!('messages' in conversation)) {
+        return (conversation.title || '').toLowerCase().includes(needle);
+      }
       return (
         conversationSearchTextById.get(conversation.id) ??
         getConversationSearchText(conversation).toLowerCase()
@@ -11380,6 +11381,15 @@ export function ChatPanel({
   const [savingMembers, setSavingMembers] = useState(false);
   const [savingTools, setSavingTools] = useState(false);
   const [isConversationListLoading, setIsConversationListLoading] = useState(true);
+  const [isSidebarSummaryLoading, setIsSidebarSummaryLoading] = useState(false);
+  const [sidebarSummaryError, setSidebarSummaryError] = useState<string | null>(null);
+  const [initialConversationLoadError, setInitialConversationLoadError] = useState<string | null>(
+    null,
+  );
+  const [searchHydrationLoading, setSearchHydrationLoading] = useState(false);
+  const [searchHydrationError, setSearchHydrationError] = useState<string | null>(null);
+  const [searchHydrationComplete, setSearchHydrationComplete] = useState(true);
+  const [sidebarBranchSearchReadyQuery, setSidebarBranchSearchReadyQuery] = useState('');
   const [showPromptDebugModal, setShowPromptDebugModal] = useState(false);
   const [promptDebugRecords, setPromptDebugRecords] = useState<ProviderPromptDebugRecord[]>([]);
   const [promptDebugLoading, setPromptDebugLoading] = useState(false);
@@ -11398,9 +11408,13 @@ export function ChatPanel({
   const sidebarBranchSearchConversationIds = useMemo(() => {
     if (workspaceId) return [];
     return Array.from(
-      new Set([...conversations, ...archivedConversations].map((conversation) => conversation.id)),
+      new Set(
+        [...conversationSummaries, ...conversations, ...archivedConversations].map(
+          (conversation) => conversation.id,
+        ),
+      ),
     );
-  }, [workspaceId, conversations, archivedConversations]);
+  }, [workspaceId, conversationSummaries, conversations, archivedConversations]);
 
   const workspaceBranchSearchConversationIds = useMemo(() => {
     if (!workspaceId) return [];
@@ -11418,7 +11432,13 @@ export function ChatPanel({
     return Array.from(new Set(archivedConversations.map((conversation) => conversation.id)));
   }, [workspaceId, archivedConversations]);
   const sidebarBranchSearchMatches = useConversationBranchSearchMatches({
-    enabled: sidebarBranchSearchEnabled && !workspaceId,
+    enabled:
+      sidebarBranchSearchEnabled &&
+      !workspaceId &&
+      !isSidebarSummaryLoading &&
+      !searchHydrationLoading &&
+      !archiveLoading &&
+      sidebarBranchSearchReadyQuery === deferredConversationSearchQuery.trim(),
     query: deferredConversationSearchQuery,
     conversationIds: sidebarBranchSearchConversationIds,
   });
@@ -11435,9 +11455,13 @@ export function ChatPanel({
 
   useEffect(() => {
     if (initialConversationId && initialConversationId.trim()) {
-      initialConversationIdRef.current = initialConversationId.trim();
+      const nextInitialConversationId = initialConversationId.trim();
+      if (initialConversationIdRef.current !== nextInitialConversationId) {
+        initialConversationIdRef.current = nextInitialConversationId;
+        if (!workspaceId) setStandaloneNavigationTick((tick) => tick + 1);
+      }
     }
-  }, [initialConversationId]);
+  }, [initialConversationId, workspaceId]);
 
   const conversationBaseToolSelection = useMemo<UserSpaceToolSelection>(
     () => ({
@@ -11954,7 +11978,13 @@ export function ChatPanel({
   const userMessageWrapperRefCallbacksRef = useRef<
     Map<string, (element: HTMLDivElement | null) => void>
   >(new Map());
-  const userspaceConversationIdsRef = useRef<Set<string>>(new Set());
+  const standaloneLoadGenerationRef = useRef(0);
+  const standaloneLoadAbortRef = useRef<AbortController | null>(null);
+  const standaloneDetailAbortRef = useRef<AbortController | null>(null);
+  const standaloneSummaryRetryAbortRef = useRef<AbortController | null>(null);
+  const archiveLoadAbortRef = useRef<AbortController | null>(null);
+  const summaryCursorRef = useRef<ConversationCursor | null>(null);
+  const deletedConversationIdsRef = useRef<Set<string>>(new Set());
   const shouldAutoScrollRef = useRef(true);
   const autoScrollFrameRef = useRef<number | null>(null);
   const navigatorScrollFrameRef = useRef<number | null>(null);
@@ -12590,12 +12620,13 @@ export function ChatPanel({
   }, [activeConversation?.id, workspaceId, embedded]);
 
   const getOwnerKey = useCallback(
-    (conv: Conversation) => conv.username || conv.user_id || 'unknown',
+    (conv: Conversation | ConversationSummary) => conv.username || conv.user_id || 'unknown',
     [],
   );
 
   const getOwnerLabel = useCallback(
-    (conv: Conversation) => conv.display_name || conv.username || 'Unknown user',
+    (conv: Conversation | ConversationSummary) =>
+      conv.display_name || conv.username || 'Unknown user',
     [],
   );
 
@@ -12852,6 +12883,7 @@ export function ChatPanel({
   // Reset state and load conversations when workspace changes (or on initial mount)
   useEffect(() => {
     setConversations([]);
+    setConversationSummaries([]);
     setActiveConversation(null);
     setIsConversationSwitchLoading(false);
     setArchivedConversations([]);
@@ -12869,15 +12901,30 @@ export function ChatPanel({
     setShowArchiveModal(false);
     setArchiveSearchQuery('');
     setConversationSearchQuery('');
-    userspaceConversationIdsRef.current = new Set();
+    standaloneLoadGenerationRef.current += 1;
+    standaloneLoadAbortRef.current?.abort();
+    standaloneDetailAbortRef.current?.abort();
+    standaloneSummaryRetryAbortRef.current?.abort();
+    archiveLoadAbortRef.current?.abort();
+    summaryCursorRef.current = null;
+    selectConversationRequestIdRef.current += 1;
+    setInitialConversationLoadError(null);
+    setSidebarSummaryError(null);
+    setSearchHydrationError(null);
+    setSearchHydrationLoading(false);
+    setSearchHydrationComplete(true);
+    setSidebarBranchSearchReadyQuery('');
     if (!workspaceId) {
       loadConversations();
     } else {
       // Workspace mode: set loading until applyWorkspaceChatState clears it
       setIsConversationListLoading(true);
+      setInitialConversationLoadError(null);
+      setSidebarSummaryError(null);
+      setIsSidebarSummaryLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId]);
+  }, [workspaceId, archiveAgeDays, standaloneNavigationTick]);
 
   const scheduleScrollToBottom = useCallback(
     (behavior: ScrollBehavior) => {
@@ -13132,7 +13179,187 @@ export function ChatPanel({
     [archiveAgeDays, compactingConversationId, syncConversationActiveTaskId],
   );
 
+  const hydrateSidebarSummaries = useCallback(
+    async (controller: AbortController, isCurrent: () => boolean, cutoffIso: string | null) => {
+      let cursor = summaryCursorRef.current;
+      let more = true;
+      setSidebarSummaryError(null);
+      setIsSidebarSummaryLoading(true);
+      try {
+        while (more && isCurrent()) {
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+          if (!isCurrent()) return;
+          const page = await api.listConversationSummaries(
+            undefined,
+            {
+              since: cutoffIso,
+              limit: ARCHIVE_PAGE_SIZE,
+              cursorUpdatedAt: cursor?.cursorUpdatedAt ?? null,
+              cursorId: cursor?.cursorId ?? null,
+            },
+            controller.signal,
+          );
+          if (!isCurrent()) return;
+          const eligible = page.filter((summary) =>
+            isEligibleStandaloneConversation(summary, cutoffIso),
+          );
+          setConversationSummaries((current) =>
+            mergeSummaryPages(current, eligible, { deletedIds: deletedConversationIdsRef.current }),
+          );
+          cursor = cursorFromLastRow(page[page.length - 1]);
+          summaryCursorRef.current = cursor;
+          more = hasMorePages(page, ARCHIVE_PAGE_SIZE) && cursor !== null;
+        }
+      } catch (err) {
+        if (isCurrent()) {
+          setSidebarSummaryError(err instanceof Error ? err.message : 'Failed to load chats');
+        }
+      } finally {
+        if (isCurrent()) setIsSidebarSummaryLoading(false);
+      }
+    },
+    [],
+  );
+
   const loadConversations = async () => {
+    if (!workspaceId) {
+      const generation = ++standaloneLoadGenerationRef.current;
+      standaloneLoadAbortRef.current?.abort();
+      const controller = new AbortController();
+      standaloneLoadAbortRef.current = controller;
+      const cutoffIso = archiveCutoffIso(archiveAgeDays);
+      const isCurrent = () =>
+        standaloneLoadGenerationRef.current === generation && !controller.signal.aborted;
+      const isCurrentDetail = () =>
+        isCurrent() && selectConversationRequestIdRef.current === selectionRequestId;
+      const selectionRequestId = selectConversationRequestIdRef.current;
+      let foregroundBootstrapSettled = false;
+      const applyDetail = (detail: Conversation) => {
+        if (!isCurrentDetail() || deletedConversationIdsRef.current.has(detail.id)) return false;
+        setActiveConversation(detail);
+        setConversations((current) => {
+          const summary = current.find((item) => item.id === detail.id);
+          return summary
+            ? current.map((item) => (item.id === detail.id ? detail : item))
+            : [detail, ...current];
+        });
+        setError(null);
+        return true;
+      };
+
+      setIsConversationListLoading(true);
+      setInitialConversationLoadError(null);
+      try {
+        const currentId = activeConversationRef.current?.id ?? null;
+        let selected = false;
+        const candidates = orderInitialCandidates({
+          initialConversationId: initialConversationIdRef.current,
+          currentConversationId: currentId,
+        });
+
+        // Direct details avoid waiting for a sidebar page when navigation supplied an id.
+        for (const candidateId of candidates) {
+          try {
+            const detail = await api.getConversation(candidateId, undefined, controller.signal);
+            if (!isCurrent()) return;
+            if (!isCurrentDetail()) {
+              selected = true;
+              break;
+            }
+            if (isEligibleStandaloneConversation(detail, cutoffIso)) {
+              if (candidateId === initialConversationIdRef.current)
+                initialConversationIdRef.current = null;
+              selected = applyDetail(detail);
+              break;
+            }
+          } catch (err) {
+            if (!isCurrent()) return;
+            if (!isCurrentDetail()) {
+              selected = true;
+              break;
+            }
+            const status = (err as { status?: number })?.status;
+            if (status !== 403 && status !== 404) {
+              setInitialConversationLoadError(
+                err instanceof Error ? err.message : 'Failed to load conversation',
+              );
+              return;
+            }
+          }
+        }
+
+        if (!selected && isCurrent()) {
+          let cursor: ConversationCursor | null = null;
+          const attemptedSummaryIds = new Set<string>();
+          while (!selected && isCurrent()) {
+            const page = await api.listConversationSummaries(
+              undefined,
+              {
+                since: cutoffIso,
+                limit: 1,
+                cursorUpdatedAt: cursor?.cursorUpdatedAt ?? null,
+                cursorId: cursor?.cursorId ?? null,
+              },
+              controller.signal,
+            );
+            if (!isCurrent()) return;
+            if (!isCurrentDetail()) {
+              selected = true;
+              break;
+            }
+            const summary = page[0];
+            const nextCursor = cursorFromLastRow(summary);
+            if (!summary || !nextCursor || attemptedSummaryIds.has(summary.id)) break;
+            attemptedSummaryIds.add(summary.id);
+            try {
+              const detail = await api.getConversation(summary.id, undefined, controller.signal);
+              if (!isCurrent()) return;
+              if (!isCurrentDetail()) {
+                selected = true;
+                break;
+              }
+              if (isEligibleStandaloneConversation(detail, cutoffIso) && applyDetail(detail)) {
+                selected = true;
+                break;
+              }
+            } catch (err) {
+              if (!isCurrent()) return;
+              if (!isCurrentDetail()) {
+                selected = true;
+                break;
+              }
+              const status = (err as { status?: number })?.status;
+              if (status !== 403 && status !== 404) {
+                setInitialConversationLoadError(
+                  err instanceof Error ? err.message : 'Failed to load conversation',
+                );
+                return;
+              }
+            }
+            cursor = nextCursor;
+          }
+        }
+        if (!isCurrent()) return;
+        foregroundBootstrapSettled = true;
+        setIsConversationListLoading(false);
+        await hydrateSidebarSummaries(controller, isCurrent, cutoffIso);
+      } catch (err) {
+        if (isCurrent()) {
+          const message = err instanceof Error ? err.message : 'Failed to load chats';
+          if (foregroundBootstrapSettled) {
+            setSidebarSummaryError(message);
+          } else {
+            setInitialConversationLoadError(message);
+          }
+        }
+      } finally {
+        if (isCurrent()) {
+          setIsConversationListLoading(false);
+          setIsSidebarSummaryLoading(false);
+        }
+      }
+      return;
+    }
     setIsConversationListLoading(true);
     try {
       const workspaceState = workspaceId
@@ -13140,28 +13367,11 @@ export function ChatPanel({
           (await api.getWorkspaceChatState(workspaceId, activeConversationRef.current?.id ?? null)))
         : null;
       const sinceIso = archiveCutoffIso(archiveAgeDays);
-      const [data, workspacePage] = await Promise.all([
+      const [data] = await Promise.all([
         workspaceState?.conversations
           ? Promise.resolve(workspaceState.conversations)
           : api.listConversations(workspaceId, sinceIso ? { since: sinceIso } : undefined),
-        !workspaceId
-          ? api.listUserSpaceWorkspaces(0, 200).catch((workspaceErr) => {
-              console.warn(
-                'Failed to load userspace workspaces for conversation filtering:',
-                workspaceErr,
-              );
-              return null;
-            })
-          : Promise.resolve(null),
       ]);
-      let userspaceConversationIds = new Set<string>();
-
-      if (workspacePage) {
-        userspaceConversationIds = new Set(
-          workspacePage.items.flatMap((workspace) => workspace.conversation_ids || []),
-        );
-      }
-      userspaceConversationIdsRef.current = userspaceConversationIds;
 
       const visibleConversations = data.filter((conversation) => {
         const linkedWorkspaceId = getConversationWorkspaceId(conversation);
@@ -13171,7 +13381,7 @@ export function ChatPanel({
           if (conversation.id === activeConversationRef.current?.id) return true;
           return !isConversationOlderThanWindow(conversation, archiveAgeDays);
         }
-        return !linkedWorkspaceId && !userspaceConversationIds.has(conversation.id);
+        return !linkedWorkspaceId;
       });
 
       setConversations(visibleConversations);
@@ -13223,16 +13433,28 @@ export function ChatPanel({
       console.error('Failed to load conversations:', err);
     } finally {
       setIsConversationListLoading(false);
+      setIsSidebarSummaryLoading(false);
     }
   };
 
-  const filterStandaloneConversations = useCallback((items: Conversation[]): Conversation[] => {
-    const userspaceConversationIds = userspaceConversationIdsRef.current;
-    return items.filter((conversation) => {
-      const linkedWorkspaceId = getConversationWorkspaceId(conversation);
-      return !linkedWorkspaceId && !userspaceConversationIds.has(conversation.id);
-    });
-  }, []);
+  const filterStandaloneConversations = useCallback(
+    (items: Conversation[]): Conversation[] =>
+      items.filter((conversation) => !getConversationWorkspaceId(conversation)),
+    [],
+  );
+
+  const retrySidebarSummaries = useCallback(async () => {
+    if (workspaceId || isSidebarSummaryLoading) return;
+    standaloneSummaryRetryAbortRef.current?.abort();
+    const controller = new AbortController();
+    standaloneSummaryRetryAbortRef.current = controller;
+    const generation = standaloneLoadGenerationRef.current;
+    const cutoffIso = archiveCutoffIso(archiveAgeDays);
+    const isCurrent = () =>
+      standaloneLoadGenerationRef.current === generation && !controller.signal.aborted;
+    setSidebarSummaryError(null);
+    await hydrateSidebarSummaries(controller, isCurrent, cutoffIso);
+  }, [archiveAgeDays, hydrateSidebarSummaries, isSidebarSummaryLoading, workspaceId]);
 
   // Lazy-load global conversations older than the active cutoff.
   const loadArchivedConversationCount = useCallback(async () => {
@@ -13259,6 +13481,12 @@ export function ChatPanel({
     if (archiveLoaded && archiveFullyLoaded) return;
 
     const isResetLoad = !archiveLoaded;
+    const generation = standaloneLoadGenerationRef.current;
+    archiveLoadAbortRef.current?.abort();
+    const controller = new AbortController();
+    archiveLoadAbortRef.current = controller;
+    const isCurrent = () =>
+      standaloneLoadGenerationRef.current === generation && !controller.signal.aborted;
     setArchiveLoading(true);
     if (isResetLoad) {
       setArchiveError(null);
@@ -13266,20 +13494,29 @@ export function ChatPanel({
     try {
       const cutoff = archiveCutoffIso(archiveAgeDays);
       const data = cutoff
-        ? await api.listConversations(undefined, {
-            until: cutoff,
-            limit: ARCHIVE_PAGE_SIZE,
-            cursorUpdatedAt: isResetLoad ? null : (archiveCursor?.updatedAt ?? null),
-            cursorId: isResetLoad ? null : (archiveCursor?.id ?? null),
-          })
+        ? await api.listConversations(
+            undefined,
+            {
+              until: cutoff,
+              limit: ARCHIVE_PAGE_SIZE,
+              cursorUpdatedAt: isResetLoad ? null : (archiveCursor?.cursorUpdatedAt ?? null),
+              cursorId: isResetLoad ? null : (archiveCursor?.cursorId ?? null),
+            },
+            controller.signal,
+          )
         : [];
-      const filtered = filterStandaloneConversations(data);
+      if (!isCurrent()) return;
+      const filtered = filterStandaloneConversations(data).filter(
+        (conversation) => !deletedConversationIdsRef.current.has(conversation.id),
+      );
       const nextArchivedConversations = isResetLoad
         ? filtered
-        : mergeConversationPages(archivedConversations, filtered);
+        : mergeSummaryPages(archivedConversations, filtered, {
+            deletedIds: deletedConversationIdsRef.current,
+          });
 
       setArchivedConversations(nextArchivedConversations);
-      setArchiveCursor(getConversationArchiveCursor(data));
+      setArchiveCursor(cursorFromLastRow(data[data.length - 1]));
       setArchiveLoaded(true);
       setArchiveFullyLoaded(data.length < ARCHIVE_PAGE_SIZE);
       setArchivedConversationCount((current) => {
@@ -13289,10 +13526,11 @@ export function ChatPanel({
         return Math.max(current, nextArchivedConversations.length);
       });
     } catch (err) {
+      if (!isCurrent()) return;
       console.error('Failed to load archived conversations:', err);
       setArchiveError(err instanceof Error ? err.message : 'Failed to load older chats');
     } finally {
-      setArchiveLoading(false);
+      if (isCurrent()) setArchiveLoading(false);
     }
   }, [
     workspaceId,
@@ -13311,8 +13549,13 @@ export function ChatPanel({
     if (!workspaceId) return;
     if (workspaceArchiveLoaded || workspaceArchiveLoading) return;
     setWorkspaceArchiveLoading(true);
+    const generation = standaloneLoadGenerationRef.current;
+    archiveLoadAbortRef.current?.abort();
+    const controller = new AbortController();
+    archiveLoadAbortRef.current = controller;
     try {
-      const data = await api.listConversations(workspaceId);
+      const data = await api.listConversations(workspaceId, undefined, controller.signal);
+      if (standaloneLoadGenerationRef.current !== generation || controller.signal.aborted) return;
       const filtered = data.filter((conversation) => {
         const linkedWorkspaceId =
           conversation.workspace_id ??
@@ -13320,12 +13563,16 @@ export function ChatPanel({
           null;
         return linkedWorkspaceId === workspaceId;
       });
-      setWorkspaceArchivedConversations(filtered);
+      setWorkspaceArchivedConversations(
+        filtered.filter((conversation) => !deletedConversationIdsRef.current.has(conversation.id)),
+      );
       setWorkspaceArchiveLoaded(true);
     } catch (err) {
-      console.error('Failed to load archived workspace conversations:', err);
+      if (!controller.signal.aborted) {
+        console.error('Failed to load archived workspace conversations:', err);
+      }
     } finally {
-      setWorkspaceArchiveLoading(false);
+      if (!controller.signal.aborted) setWorkspaceArchiveLoading(false);
     }
   }, [workspaceId, workspaceArchiveLoaded, workspaceArchiveLoading]);
 
@@ -13351,6 +13598,10 @@ export function ChatPanel({
   useEffect(() => {
     if (workspaceId) return;
     if (!deferredConversationSearchQuery.trim()) return;
+    // Full recent-history hydration owns the first search pass. Defer archive
+    // pagination until it settles so branch search never sees a growing union
+    // of body and archive IDs.
+    if (sidebarBranchSearchReadyQuery !== deferredConversationSearchQuery.trim()) return;
     if (archiveLoading) return;
     if (archiveLoaded && archiveFullyLoaded) return;
     void loadArchivedConversations();
@@ -13361,7 +13612,71 @@ export function ChatPanel({
     archiveFullyLoaded,
     archiveLoading,
     loadArchivedConversations,
+    sidebarBranchSearchReadyQuery,
   ]);
+
+  // A sidebar query progressively hydrates full history in bounded pages. It is
+  // deliberately independent of cache updates so each query has one lifecycle.
+  useEffect(() => {
+    if (workspaceId || !shouldHydrateHistoryForSearch(deferredConversationSearchQuery)) {
+      setSearchHydrationLoading(false);
+      setSearchHydrationComplete(true);
+      setSearchHydrationError(null);
+      setSidebarBranchSearchReadyQuery('');
+      return;
+    }
+    const controller = new AbortController();
+    const cutoffIso = archiveCutoffIso(archiveAgeDays);
+    const query = deferredConversationSearchQuery.trim();
+    const hydrate = async () => {
+      setSearchHydrationLoading(true);
+      setSearchHydrationComplete(false);
+      setSearchHydrationError(null);
+      let cursor: ConversationCursor | null = null;
+      let more = true;
+      try {
+        while (more && !controller.signal.aborted) {
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+          if (controller.signal.aborted) return;
+          const page = await api.listConversations(
+            undefined,
+            {
+              since: cutoffIso,
+              limit: ARCHIVE_PAGE_SIZE,
+              cursorUpdatedAt: cursor?.cursorUpdatedAt ?? null,
+              cursorId: cursor?.cursorId ?? null,
+            },
+            controller.signal,
+          );
+          if (controller.signal.aborted) return;
+          const eligible = page.filter((conversation) =>
+            isEligibleStandaloneConversation(conversation, cutoffIso),
+          );
+          setConversations((current) =>
+            mergeSummaryPages(current, eligible, { deletedIds: deletedConversationIdsRef.current }),
+          );
+          cursor = cursorFromLastRow(page[page.length - 1]);
+          more = hasMorePages(page, ARCHIVE_PAGE_SIZE) && cursor !== null;
+        }
+        if (!controller.signal.aborted) {
+          setSearchHydrationComplete(true);
+          setSidebarBranchSearchReadyQuery(query);
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setSearchHydrationError(
+            err instanceof Error ? err.message : 'Failed to search all chats',
+          );
+          // An error must not suppress branch-search retries indefinitely.
+          setSidebarBranchSearchReadyQuery(query);
+        }
+      } finally {
+        if (!controller.signal.aborted) setSearchHydrationLoading(false);
+      }
+    };
+    void hydrate();
+    return () => controller.abort();
+  }, [archiveAgeDays, deferredConversationSearchQuery, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -13984,6 +14299,8 @@ export function ChatPanel({
   );
 
   const applyCreatedConversation = useCallback((conversation: Conversation) => {
+    selectConversationRequestIdRef.current += 1;
+    standaloneDetailAbortRef.current?.abort();
     setConversations((prev) => [conversation, ...prev]);
     setActiveConversation(conversation);
     setConversationToolIds([]);
@@ -14823,13 +15140,19 @@ export function ChatPanel({
     return () => {
       stopTaskStreaming();
       compactionAbortControllerRef.current?.abort();
+      standaloneLoadAbortRef.current?.abort();
     };
   }, [stopTaskStreaming]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally a per-render async handler; wrapping in useCallback is out of scope for this change
-  const selectConversation = async (conversation: Conversation): Promise<Conversation | null> => {
+  const selectConversation = async (
+    conversation: Conversation | ConversationSummary,
+  ): Promise<Conversation | null> => {
     const isSwitchingConversation = activeConversation?.id !== conversation.id;
     const requestId = ++selectConversationRequestIdRef.current;
+    standaloneDetailAbortRef.current?.abort();
+    const controller = new AbortController();
+    standaloneDetailAbortRef.current = controller;
     try {
       if (
         !embedded &&
@@ -14846,21 +15169,24 @@ export function ChatPanel({
       clearActiveStreamingUi();
 
       // Refresh the conversation to get latest messages
-      const fresh = await api.getConversation(conversation.id, workspaceId);
-      if (requestId !== selectConversationRequestIdRef.current) {
+      const fresh = await api.getConversation(conversation.id, workspaceId, controller.signal);
+      if (
+        controller.signal.aborted ||
+        requestId !== selectConversationRequestIdRef.current ||
+        deletedConversationIdsRef.current.has(fresh.id)
+      ) {
         return null;
       }
       setActiveConversation(fresh);
-      // Sync sidebar title in case it was updated while another conversation was active
-      if (fresh.title !== conversation.title) {
-        setConversations((prev) =>
-          prev.map((c) => (c.id === fresh.id ? { ...c, title: fresh.title } : c)),
-        );
-      }
+      setConversations((current) => {
+        const existing = current.find((item) => item.id === fresh.id);
+        if (!existing) return [fresh, ...current];
+        return current.map((item) => (item.id === fresh.id ? fresh : item));
+      });
       setError(null);
       return fresh;
     } catch (err) {
-      if (requestId !== selectConversationRequestIdRef.current) {
+      if (controller.signal.aborted || requestId !== selectConversationRequestIdRef.current) {
         return null;
       }
       setError(err instanceof Error ? err.message : 'Failed to load conversation');
@@ -14898,19 +15224,27 @@ export function ChatPanel({
   const confirmDeleteConversation = async (conversationId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setDeleteConfirmId(null);
+    deletedConversationIdsRef.current.add(conversationId);
 
     try {
       await api.deleteConversation(conversationId, workspaceId);
       setConversations((prev) => prev.filter((c) => c.id !== conversationId));
+      setConversationSummaries((prev) => prev.filter((c) => c.id !== conversationId));
+      setArchivedConversations((prev) => prev.filter((c) => c.id !== conversationId));
+      setWorkspaceArchivedConversations((prev) => prev.filter((c) => c.id !== conversationId));
       if (activeConversation?.id === conversationId) {
         setActiveConversation(null);
       }
     } catch (err) {
+      deletedConversationIdsRef.current.delete(conversationId);
       setError(err instanceof Error ? err.message : 'Failed to delete conversation');
     }
   };
 
-  const startEditingTitle = (conversation: Conversation, e: React.MouseEvent) => {
+  const startEditingTitle = (
+    conversation: Conversation | ConversationSummary,
+    e: React.MouseEvent,
+  ) => {
     e.stopPropagation();
     setEditingTitle(conversation.id);
     setTitleInput(conversation.title);
@@ -14934,6 +15268,13 @@ export function ChatPanel({
           c.id === conversationId
             ? { ...c, title: updated.title, updated_at: updated.updated_at }
             : c,
+        ),
+      );
+      setConversationSummaries((prev) =>
+        prev.map((summary) =>
+          summary.id === conversationId
+            ? { ...summary, title: updated.title, updated_at: updated.updated_at }
+            : summary,
         ),
       );
       if (activeConversation?.id === conversationId) {
@@ -15949,7 +16290,7 @@ export function ChatPanel({
 
   const selectConversationFromSearchResult = useCallback(
     async (
-      conversation: Conversation,
+      conversation: Conversation | ConversationSummary,
       branchSearchMatch?: ConversationBranchSearchMatch,
       keywordQuery?: string,
     ) => {
@@ -16001,7 +16342,7 @@ export function ChatPanel({
 
   const jumpToBranchSearchResult = useCallback(
     async (
-      conversation: Conversation,
+      conversation: Conversation | ConversationSummary,
       branchSearchMatch?: ConversationBranchSearchMatch,
       keywordQuery?: string,
     ) => {
@@ -16606,7 +16947,7 @@ export function ChatPanel({
   );
 
   const toggleSubagentParent = useCallback(
-    async (conv: Conversation, event: React.MouseEvent) => {
+    async (conv: Conversation | ConversationSummary, event: React.MouseEvent) => {
       event.stopPropagation();
       const childIds = conv.subagent_conversation_ids || [];
       if (childIds.length === 0) return;
@@ -16977,7 +17318,7 @@ export function ChatPanel({
   };
 
   const renderConversationItem = (
-    conv: Conversation,
+    conv: Conversation | ConversationSummary,
     options?: {
       searchQuery?: string;
       onClickOverride?: () => void | Promise<void>;
@@ -16992,7 +17333,8 @@ export function ChatPanel({
     const isActive = activeConversation?.id === conv.id;
     const branchSearchMatch = searchQuery.trim() ? options?.branchSearchMatch : undefined;
     const branchSnippet = branchSearchMatch?.snippet?.trim() || null;
-    const snippet = searchQuery.trim() ? buildConversationSnippet(conv, searchQuery) : null;
+    const snippet =
+      searchQuery.trim() && 'messages' in conv ? buildConversationSnippet(conv, searchQuery) : null;
     const branchSearchTooltip = branchSearchMatch
       ? getBranchSearchTooltip(branchSearchMatch)
       : null;
@@ -17451,19 +17793,56 @@ export function ChatPanel({
                 enabled={sidebarBranchSearchEnabled}
                 onToggle={() => setSidebarBranchSearchEnabled((enabled) => !enabled)}
               />
-              {(archiveLoading && conversationSearchQuery) ||
+              {isSidebarSummaryLoading ||
+              searchHydrationLoading ||
+              (archiveLoading && conversationSearchQuery) ||
               conversations.some((c) => c.active_task_id) ? (
                 <span
+                  data-chat-sidebar-summary-loading={isSidebarSummaryLoading || undefined}
                   className="chat-conversation-search-spinner"
                   title={
-                    archiveLoading && conversationSearchQuery
-                      ? 'Loading older chats'
-                      : 'Processing in background'
+                    searchHydrationLoading
+                      ? 'Searching remaining chat history'
+                      : isSidebarSummaryLoading
+                        ? 'Loading chats'
+                        : archiveLoading && conversationSearchQuery
+                          ? 'Loading older chats'
+                          : 'Processing in background'
                   }
                 >
                   <MiniLoadingSpinner variant="icon" size={12} />
                 </span>
               ) : null}
+              {conversationSearchQuery && (!searchHydrationComplete || searchHydrationError) && (
+                <span
+                  data-chat-search-hydration-status
+                  title={searchHydrationError || 'Searching remaining chat history'}
+                >
+                  {searchHydrationError ? 'Search incomplete' : 'Searching'}
+                </span>
+              )}
+              {sidebarSummaryError && (
+                <button
+                  type="button"
+                  data-chat-sidebar-summary-retry
+                  className="chat-conversation-search-clear"
+                  onClick={() => void retrySidebarSummaries()}
+                  title={sidebarSummaryError}
+                >
+                  Retry chats
+                </button>
+              )}
+              {initialConversationLoadError && (
+                <button
+                  type="button"
+                  data-chat-initial-load-error
+                  className="chat-conversation-search-clear"
+                  onClick={() => void loadConversations()}
+                  title={initialConversationLoadError}
+                >
+                  Retry conversation
+                </button>
+              )}
             </div>
           )}
 
@@ -17485,15 +17864,41 @@ export function ChatPanel({
                 const trimmedQuery = deferredConversationSearchQuery.trim();
                 // While searching, fold archived hits into the visible list so
                 // matches across older chats surface inline.
-                const baseConversations =
-                  trimmedQuery && !workspaceId
-                    ? [
-                        ...conversations,
-                        ...archivedConversations.filter(
-                          (archived) => !conversations.some((c) => c.id === archived.id),
-                        ),
-                      ]
-                    : conversations;
+                const baseConversations: Array<Conversation | ConversationSummary> = !workspaceId
+                  ? (() => {
+                      const hydratedById = new Map(
+                        conversations.map((conversation) => [conversation.id, conversation]),
+                      );
+                      const summaryIds = new Set(
+                        conversationSummaries.map((summary) => summary.id),
+                      );
+                      const rows = conversationSummaries.map(
+                        (summary) => hydratedById.get(summary.id) ?? summary,
+                      );
+                      for (const conversation of conversations) {
+                        if (
+                          !summaryIds.has(conversation.id) &&
+                          !isConversationOlderThanWindow(conversation, archiveAgeDays)
+                        ) {
+                          rows.unshift(conversation);
+                        }
+                      }
+                      if (trimmedQuery) {
+                        const knownIds = new Set(rows.map((row) => row.id));
+                        rows.push(
+                          ...archivedConversations.filter(
+                            (conversation) => !knownIds.has(conversation.id),
+                          ),
+                        );
+                      }
+                      return rows.sort((left, right) => {
+                        if (left.updated_at !== right.updated_at) {
+                          return left.updated_at > right.updated_at ? -1 : 1;
+                        }
+                        return left.id > right.id ? -1 : left.id < right.id ? 1 : 0;
+                      });
+                    })()
+                  : conversations;
                 const filteredConversations = trimmedQuery
                   ? baseConversations.filter(
                       (c) =>
@@ -17528,7 +17933,7 @@ export function ChatPanel({
                   );
                 }
 
-                const renderItem = (conv: Conversation) => {
+                const renderItem = (conv: Conversation | ConversationSummary) => {
                   const row = renderConversationItem(conv, {
                     searchQuery: trimmedQuery,
                     branchSearchMatch: sidebarBranchSearchMatches[conv.id],
@@ -17554,7 +17959,7 @@ export function ChatPanel({
                     {
                       key: string;
                       label: string;
-                      conversations: Conversation[];
+                      conversations: Array<Conversation | ConversationSummary>;
                       isCurrentUserGroup: boolean;
                     }
                   >();
@@ -17584,7 +17989,11 @@ export function ChatPanel({
                     // When searching, expand groups so matches are visible.
                     const isCollapsed = trimmedQuery
                       ? false
-                      : (collapsedGroups[group.key] ?? !group.isCurrentUserGroup);
+                      : (collapsedGroups[group.key] ??
+                        (!group.isCurrentUserGroup &&
+                          !group.conversations.some(
+                            (conversation) => conversation.id === activeConversation?.id,
+                          )));
                     return (
                       <div key={group.key} className="chat-conversation-group">
                         <button

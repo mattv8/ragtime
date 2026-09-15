@@ -1,15 +1,33 @@
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import TypedDict
+from typing import TypedDict, cast
 from unittest import mock
+
+from prisma import Json
+from prisma.enums import AuthProvider, UserRole
+from prisma.models import User
 
 from ragtime.indexer.models import ConversationBranchKind, WorkspaceChatStateResponse
 from ragtime.indexer.repository import repository
+from ragtime.indexer.routes import list_conversation_summaries, list_conversations
 from ragtime.userspace.models import UserSpaceRuntimeStatusResponse
 from ragtime.userspace.runtime_service import userspace_runtime_service
 
 NOW = datetime(2026, 7, 13, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _user() -> User:
+    return User(
+        id="user-1",
+        username="user",
+        authProvider=AuthProvider.local,
+        cachedGroups=cast(Json, "[]"),
+        role=UserRole.user,
+        roleManuallySet=False,
+        createdAt=NOW,
+        updatedAt=NOW,
+    )
 
 
 class _AccessKwargsRequired(TypedDict):
@@ -31,6 +49,106 @@ class _AccessCase(TypedDict):
 
 
 class ConversationAccessPerfRefactorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_summary_route_keeps_legacy_array_without_limit(self) -> None:
+        user = _user()
+        expected = [SimpleNamespace(id="shared-conversation")]
+
+        with mock.patch.object(repository, "list_conversation_summaries", mock.AsyncMock(return_value=expected)) as summaries_mock:
+            result = await list_conversation_summaries(
+                since="2026-07-13T12:00:00.123456Z",
+                limit=None,
+                user=user,
+            )
+
+        self.assertIs(result, expected)
+        summaries_mock.assert_awaited_once_with(
+            user_id="user-1",
+            include_all=False,
+            workspace_id=None,
+            since=NOW.replace(microsecond=123456),
+            until=None,
+            limit=None,
+            cursor_updated_at=None,
+            cursor_id=None,
+        )
+
+    async def test_summary_route_forwards_pagination(self) -> None:
+        user = _user()
+
+        with mock.patch.object(repository, "list_conversation_summaries", mock.AsyncMock(return_value=[])) as summaries_mock:
+            await list_conversation_summaries(
+                limit=1,
+                cursor_updated_at="2026-07-13T12:00:00.123456Z",
+                cursor_id="shared-conversation",
+                user=user,
+            )
+
+        summaries_mock.assert_awaited_once_with(
+            user_id="user-1",
+            include_all=False,
+            workspace_id=None,
+            since=None,
+            until=None,
+            limit=1,
+            cursor_updated_at=NOW.replace(microsecond=123456),
+            cursor_id="shared-conversation",
+        )
+
+    async def test_conversation_route_forwards_pagination(self) -> None:
+        user = _user()
+
+        with mock.patch.object(repository, "list_conversations", mock.AsyncMock(return_value=[])) as conversations_mock:
+            await list_conversations(
+                limit=1,
+                cursor_updated_at="2026-07-13T12:00:00.123456Z",
+                cursor_id="conversation-1",
+                user=user,
+            )
+
+        conversations_mock.assert_awaited_once_with(
+            user_id="user-1",
+            include_all=False,
+            workspace_id=None,
+            since=None,
+            until=None,
+            limit=1,
+            cursor_updated_at=NOW.replace(microsecond=123456),
+            cursor_id="conversation-1",
+        )
+
+    async def test_conversation_routes_require_complete_cursor_pair(self) -> None:
+        user = _user()
+
+        for route in (list_conversations, list_conversation_summaries):
+            with self.subTest(route=route.__name__, case="cursor ID without timestamp"):
+                with self.assertRaisesRegex(Exception, "cursor_id requires cursor_updated_at"):
+                    await route(cursor_id="conversation-1", user=user)
+
+            with self.subTest(route=route.__name__, case="timestamp without cursor ID"):
+                with self.assertRaisesRegex(Exception, "cursor_updated_at requires cursor_id"):
+                    await route(cursor_updated_at="2026-07-13T12:00:00Z", user=user)
+
+    async def test_summary_repository_uses_stable_cursor_order_and_limit(self) -> None:
+        query_raw = mock.AsyncMock(return_value=[])
+        db = SimpleNamespace(query_raw=query_raw)
+
+        with mock.patch.object(repository, "_get_db", mock.AsyncMock(return_value=db)):
+            summaries = await repository.list_conversation_summaries(
+                user_id="user-1",
+                since=NOW,
+                limit=1,
+                cursor_updated_at=NOW,
+                cursor_id="conversation-a",
+            )
+
+        self.assertEqual(summaries, [])
+        query_raw.assert_awaited_once()
+        sql = query_raw.await_args_list[0].args[0]
+        self.assertIn("c.updated_at DESC, c.id DESC", sql)
+        self.assertIn("LIMIT 1", sql)
+        self.assertIn("c.updated_at <", sql)
+        self.assertIn("c.id < 'conversation-a'", sql)
+
     async def test_check_conversation_access_semantics(self) -> None:
         cases: list[_AccessCase] = [
             {
