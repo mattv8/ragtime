@@ -5024,6 +5024,14 @@ class RAGComponents:
             )
             if catalog_tool:
                 result_tools.append(catalog_tool)
+        elif normalized_tool_type == "solidworks_pdm":
+            lookup_tool = await self._create_pdm_lookup_tool(
+                config,
+                tool_name,
+                tool_id,
+            )
+            if lookup_tool:
+                result_tools.append(lookup_tool)
 
         if tool:
             result_tools.insert(0, tool)
@@ -6852,6 +6860,7 @@ class RAGComponents:
     async def _create_pdm_search_tool(self, config: dict, tool_name: str, tool_id: str):
         """Create a SolidWorks PDM search tool from config."""
         description = config.get("description", "")
+        max_results = max(1, min(50, int(config.get("max_results") or 10)))
 
         # Use tool_name for index lookup - matches how trigger_index creates it
         index_name = f"pdm_{tool_name}"
@@ -6885,13 +6894,15 @@ class RAGComponents:
                 query=query,
                 index_name=index_name,
                 document_type=document_type,
-                max_results=10,
+                max_results=max_results,
             )
 
         tool_description = (
             f"Search SolidWorks PDM metadata from {config.get('name', 'PDM vault')}. "
             f"Find parts, assemblies, and drawings by part number, material, "
-            f"description, author, folder path, or BOM relationships."
+            f"description, author, folder path, or BOM relationships. Results come from "
+            f"an indexed snapshot of checked-in vault metadata, not live vault state, and "
+            f"may lag the vault."
         )
         if description:
             tool_description += f" Database contains: {description}"
@@ -6902,6 +6913,63 @@ class RAGComponents:
             name=f"search_{tool_name}",
             description=tool_description,
             args_schema=PdmSearchInput,
+        )
+
+    async def _create_pdm_lookup_tool(self, config: dict, tool_name: str, tool_id: str):
+        """Create a deterministic SolidWorks PDM lookup tool from config."""
+        max_results = max(1, min(50, int(config.get("max_results") or 10)))
+        index_name = f"pdm_{tool_name}"
+
+        _tool_id = tool_id  # noqa: F841
+
+        class PdmLookupInput(BaseModel):
+            document_id: Optional[int] = Field(default=None, description="Exact PDM DocumentID")
+            filename: Optional[str] = Field(default=None, description="Filename or substring, case-insensitive")
+            part_number: Optional[str] = Field(
+                default=None,
+                description=("Part number or substring, case-insensitive; matches document and configuration part numbers"),
+            )
+            configuration: Optional[str] = Field(
+                default=None,
+                description="Exact configuration name to narrow output (e.g. 'LAB0049-15' or '@')",
+            )
+
+        async def lookup_pdm(
+            document_id: Optional[int] = None,
+            filename: Optional[str] = None,
+            part_number: Optional[str] = None,
+            configuration: Optional[str] = None,
+            **_: Any,
+        ) -> str:
+            """Look up indexed PDM document metadata deterministically."""
+            if document_id is None and filename is None and part_number is None:
+                return "Error: Provide document_id, filename, or part_number."
+
+            from ragtime.indexer.pdm_service import lookup_pdm_documents
+
+            return await lookup_pdm_documents(
+                index_name=index_name,
+                document_id=document_id,
+                filename=filename,
+                part_number=part_number,
+                configuration=configuration,
+                max_results=max_results,
+            )
+
+        tool_description = (
+            f"Deterministic exact lookup of the indexed PDM snapshot from "
+            f"{config.get('name', 'PDM vault')}, using checked-in metadata rather than "
+            f"live vault state. Returns per-configuration properties with origin versions, "
+            f"works without semantic search, and supports document ID, filename, or part "
+            f"number lookup. Part number matching may over-match other stored text."
+        )
+
+        logger.info(f"Created PDM lookup tool: lookup_{tool_name}")
+        return StructuredTool.from_function(
+            coroutine=lookup_pdm,
+            name=f"lookup_{tool_name}",
+            description=tool_description,
+            args_schema=PdmLookupInput,
         )
 
     async def _get_context_from_retrievers_async(self, query: str, max_docs: int = 5) -> tuple[str, list[dict]]:

@@ -2504,6 +2504,7 @@ class IndexerRepository:
         - schema_embeddings.index_name (for postgres/mssql tools)
         - pdm_embeddings.index_name (for solidworks_pdm tools)
         - pdm_document_metadata.index_name (for solidworks_pdm tools)
+        - pdm_document_state.index_name (for solidworks_pdm tools)
         - filesystem_embeddings.index_name (for filesystem_indexer tools)
         - filesystem_file_metadata.index_name (for filesystem_indexer tools)
         - schema_index_jobs.index_name (for postgres/mssql tools)
@@ -2523,6 +2524,7 @@ class IndexerRepository:
             "schema_index_jobs": 0,
             "pdm_embeddings": 0,
             "pdm_document_metadata": 0,
+            "pdm_document_state": 0,
             "pdm_index_jobs": 0,
             "filesystem_embeddings": 0,
             "filesystem_file_metadata": 0,
@@ -2561,11 +2563,14 @@ class IndexerRepository:
                 old_index_name = f"pdm_{old_safe_name}"
                 new_index_name = f"pdm_{new_safe_name}"
 
-                result = await db.execute_raw(f"UPDATE pdm_embeddings SET index_name = '{new_index_name}' WHERE index_name = '{old_index_name}'")
+                result = await db.execute_raw("UPDATE pdm_embeddings SET index_name = $1 WHERE index_name = $2", new_index_name, old_index_name)
                 update_counts["pdm_embeddings"] = result if isinstance(result, int) else 0
 
-                result = await db.execute_raw(f"UPDATE pdm_document_metadata SET index_name = '{new_index_name}' WHERE index_name = '{old_index_name}'")
+                result = await db.execute_raw("UPDATE pdm_document_metadata SET index_name = $1 WHERE index_name = $2", new_index_name, old_index_name)
                 update_counts["pdm_document_metadata"] = result if isinstance(result, int) else 0
+
+                result = await db.execute_raw("UPDATE pdm_document_state SET index_name = $1 WHERE index_name = $2", new_index_name, old_index_name)
+                update_counts["pdm_document_state"] = result if isinstance(result, int) else 0
 
                 # Also update pdm_index_jobs.index_name
                 result = await db.execute_raw(f"UPDATE pdm_index_jobs SET index_name = '{new_index_name}' WHERE tool_config_id = '{config_id}'")
@@ -5925,6 +5930,7 @@ class IndexerRepository:
             "schema_embeddings": 0,
             "pdm_embeddings": 0,
             "pdm_document_metadata": 0,
+            "pdm_document_state": 0,
         }
 
         try:
@@ -5994,17 +6000,22 @@ class IndexerRepository:
 
             # Clean up orphaned PDM embeddings
             if valid_pdm_indexes:
-                valid_list = ", ".join(f"'{n}'" for n in valid_pdm_indexes)
-                result = await db.execute_raw(f"DELETE FROM pdm_embeddings WHERE index_name NOT IN ({valid_list})")
+                valid_indexes = sorted(valid_pdm_indexes)
+                result = await db.execute_raw("DELETE FROM pdm_embeddings WHERE NOT (index_name = ANY($1::text[]))", valid_indexes)
                 deleted["pdm_embeddings"] = result if isinstance(result, int) else 0
 
-                result = await db.execute_raw(f"DELETE FROM pdm_document_metadata WHERE index_name NOT IN ({valid_list})")
+                result = await db.execute_raw("DELETE FROM pdm_document_metadata WHERE NOT (index_name = ANY($1::text[]))", valid_indexes)
                 deleted["pdm_document_metadata"] = result if isinstance(result, int) else 0
+
+                result = await db.execute_raw("DELETE FROM pdm_document_state WHERE NOT (index_name = ANY($1::text[]))", valid_indexes)
+                deleted["pdm_document_state"] = result if isinstance(result, int) else 0
             else:
                 result = await db.execute_raw("DELETE FROM pdm_embeddings")
                 deleted["pdm_embeddings"] = result if isinstance(result, int) else 0
                 result = await db.execute_raw("DELETE FROM pdm_document_metadata")
                 deleted["pdm_document_metadata"] = result if isinstance(result, int) else 0
+                result = await db.execute_raw("DELETE FROM pdm_document_state")
+                deleted["pdm_document_state"] = result if isinstance(result, int) else 0
 
             total = sum(deleted.values())
             if total > 0:

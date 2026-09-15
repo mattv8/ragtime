@@ -20,21 +20,31 @@ PDM Database Structure:
 
 import asyncio
 import json
-import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple, cast
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 
 from ragtime.core.app_setting_defaults import DEFAULT_IVFFLAT_LISTS
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.embedding_errors import EmbeddingOperationError, build_embedding_configuration_error
 from ragtime.indexer.models import (
-    PdmDocumentInfo,
+    PdmBomComponentModel,
+    PdmConfigurationStateModel,
+    PdmDocumentStateModel,
     PdmIndexJob,
     PdmIndexJobResponse,
     PdmIndexStatus,
+    PdmPropertyValueModel,
     SolidworksPdmConnectionConfig,
+)
+from ragtime.indexer.pdm_source import (
+    PdmDocumentRecord,
+    PdmSqlSource,
+    PdmVariableDef,
+)
+from ragtime.indexer.pdm_source import (
+    build_pdm_extension_filter as _build_pdm_extension_filter,
 )
 from ragtime.indexer.repository import repository
 from ragtime.indexer.vector_utils import (
@@ -52,19 +62,8 @@ from ragtime.indexer.vector_utils import (
 logger = get_logger(__name__)
 
 
-_SAFE_PDM_EXTENSION_RE = re.compile(r"^\.?[A-Za-z0-9_-]{1,32}$")
 _ALLOWED_PDM_DOCUMENT_TYPES = frozenset({"SLDPRT", "SLDASM", "SLDDRW"})
-
-
-def _build_pdm_extension_filter(file_extensions: list[str] | None, column_name: str) -> str:
-    """Build a safe SQL LIKE filter for configured PDM filename extensions."""
-    extensions = [str(ext or "").strip() for ext in (file_extensions or [])]
-    if not extensions:
-        return "1=1"
-    unsafe = [ext for ext in extensions if not _SAFE_PDM_EXTENSION_RE.fullmatch(ext)]
-    if unsafe:
-        raise ValueError(f"Invalid PDM file extension filter: {unsafe[0]!r}")
-    return " OR ".join(f"{column_name} LIKE '%{ext}'" for ext in extensions)
+_PDM_ROLE_DEFAULT_NAMES = {"part_number": "Part Number", "description": "Description"}
 
 
 class PdmIndexerService:
@@ -75,6 +74,8 @@ class PdmIndexerService:
         self._cancellation_flags: Dict[str, bool] = {}  # job_id -> should_cancel
         self._running_tasks: Dict[str, asyncio.Task] = {}  # job_id -> task
         self._shutdown = False
+        self._variable_defs: list[PdmVariableDef] = []
+        self._record_states: dict[int, PdmDocumentStateModel] = {}
 
     # =========================================================================
     # Public API
@@ -432,6 +433,7 @@ class PdmIndexerService:
 
             deleted_embeddings = 0
             deleted_metadata = 0
+            deleted_state = 0
 
             for index_name in index_names:
                 # Delete embeddings
@@ -450,10 +452,19 @@ class PdmIndexerService:
                 if isinstance(result, int):
                     deleted_metadata += result
 
+                result = await db.execute_raw(
+                    "DELETE FROM pdm_document_state WHERE index_name = $1",
+                    index_name,
+                )
+                if isinstance(result, int):
+                    deleted_state += result
+
             # Delete jobs
             await db.pdmindexjob.delete_many(where={"toolConfigId": tool_config_id})
 
-            logger.info(f"Deleted PDM index for tool {tool_config_id}: {deleted_embeddings} embeddings, {deleted_metadata} metadata records")
+            logger.info(
+                f"Deleted PDM index for tool {tool_config_id}: {deleted_embeddings} embeddings, {deleted_metadata} metadata records, {deleted_state} state records"
+            )
             return True, f"Deleted {deleted_embeddings} PDM embeddings"
 
         except Exception as e:
@@ -511,253 +522,21 @@ class PdmIndexerService:
         max_documents: int | None = None,
         batch_size: int = 1000,
         on_batch_extracted: Callable[[int, int], None] | None = None,
-    ) -> AsyncIterator[List[PdmDocumentInfo]]:
-        """
-        Extract documents with metadata from PDM database in batches.
-
-        Uses optimized bulk queries instead of N+1 pattern:
-        1. Fetch documents in batches with OFFSET/FETCH
-        2. Bulk fetch all variables for the batch in one query
-        3. Bulk fetch all configurations for the batch in one query
-        4. Bulk fetch all BOM components for assemblies in one query
-
-        Args:
-            config: PDM connection configuration
-            variable_map: Mapping of variable ID to variable name
-            max_documents: Optional limit on total documents
-            batch_size: Number of documents per batch (default 1000)
-            on_batch_extracted: Optional callback(extracted_count, total_count)
-
-        Yields:
-            Lists of PdmDocumentInfo objects (one list per batch)
-        """
-        try:
-            import pymssql  # type: ignore[import-untyped]
-
-            pymssql = cast(Any, pymssql)
-            connect_fn = cast(Any, getattr(pymssql, "connect", None))
-            if not callable(connect_fn):
-                raise RuntimeError("pymssql.connect is not available")
-        except ImportError as exc:
-            raise RuntimeError("pymssql not installed for PDM database access") from exc
-
-        # Build file extension filter
-        ext_filter = _build_pdm_extension_filter(config.file_extensions, "d.Filename")
-
-        deleted_filter = "AND d.Deleted = 0" if config.exclude_deleted else ""
-        dip_deleted_filter = "AND (dip.Deleted IS NULL OR dip.Deleted = 0)" if config.exclude_deleted else ""
-
-        # Get total count first
-        total_count = await self._count_documents(config)
-        if max_documents:
-            total_count = min(total_count, max_documents)
-
-        var_ids = list(variable_map.keys())
-        var_ids_str = ",".join(str(v) for v in var_ids) if var_ids else "0"
-
-        def extract_batch(offset: int, limit: int) -> List[PdmDocumentInfo]:
-            """Extract a single batch of documents with all related data."""
-            conn: Any = connect_fn(
-                server=config.host,
-                port=str(config.port or 1433),
-                user=config.user,
-                password=config.password,
-                database=config.database,
-                login_timeout=30,
-                timeout=300,
-            )
-            cursor: Any = conn.cursor(as_dict=True)
-
-            # Step 1: Get batch of documents
-            cursor.execute(
-                f"""
-                SELECT
-                    d.DocumentID,
-                    d.Filename,
-                    d.LatestRevisionNo,
-                    p.Path AS FolderPath
-                FROM Documents d
-                LEFT JOIN DocumentsInProjects dip ON d.DocumentID = dip.DocumentID
-                    {dip_deleted_filter}
-                LEFT JOIN Projects p ON dip.ProjectID = p.ProjectID
-                WHERE ({ext_filter})
-                    {deleted_filter}
-                ORDER BY d.DocumentID
-                OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
-            """
-            )
-            doc_rows = cursor.fetchall()
-            if not doc_rows:
-                conn.close()
-                return []
-
-            # Build document ID list and revision map
-            doc_ids = [row["DocumentID"] for row in doc_rows]
-            doc_ids_str = ",".join(str(d) for d in doc_ids)
-            revision_map = {row["DocumentID"]: row["LatestRevisionNo"] or 1 for row in doc_rows}
-
-            # Step 2: Bulk fetch all variables for this batch
-            variables_by_doc: Dict[int, Dict[str, str]] = {doc_id: {} for doc_id in doc_ids}
-            if var_ids:
-                cursor.execute(
-                    f"""
-                    SELECT DISTINCT
-                        vv.DocumentID,
-                        vv.VariableID,
-                        vv.ValueText
-                    FROM VariableValue vv
-                    WHERE vv.DocumentID IN ({doc_ids_str})
-                        AND vv.VariableID IN ({var_ids_str})
-                        AND vv.ValueText IS NOT NULL
-                        AND vv.ValueText != ''
-                """
-                )
-                for var_row in cursor.fetchall():
-                    doc_id = var_row["DocumentID"]
-                    var_id = var_row["VariableID"]
-                    var_name = variable_map.get(var_id)
-                    if var_name and var_row["ValueText"] and doc_id in variables_by_doc:
-                        # Only use value if revision matches or we don't have one yet
-                        variables_by_doc[doc_id][var_name] = var_row["ValueText"]
-
-            # Step 3: Bulk fetch configurations if enabled
-            configs_by_doc: Dict[int, List[dict]] = {doc_id: [] for doc_id in doc_ids}
-            if config.include_configurations:
-                cursor.execute(
-                    f"""
-                    SELECT DISTINCT
-                        vv.DocumentID,
-                        dc.ConfigurationName,
-                        vv_pn.ValueText AS PartNumber,
-                        vv_desc.ValueText AS Description
-                    FROM VariableValue vv
-                    INNER JOIN DocumentConfiguration dc
-                        ON vv.ConfigurationID = dc.ConfigurationID
-                    LEFT JOIN VariableValue vv_pn
-                        ON vv.DocumentID = vv_pn.DocumentID
-                        AND vv.ConfigurationID = vv_pn.ConfigurationID
-                        AND vv.RevisionNo = vv_pn.RevisionNo
-                        AND vv_pn.VariableID = 122
-                    LEFT JOIN VariableValue vv_desc
-                        ON vv.DocumentID = vv_desc.DocumentID
-                        AND vv.ConfigurationID = vv_desc.ConfigurationID
-                        AND vv.RevisionNo = vv_desc.RevisionNo
-                        AND vv_desc.VariableID = 58
-                    WHERE vv.DocumentID IN ({doc_ids_str})
-                """
-                )
-                for cfg_row in cursor.fetchall():
-                    doc_id = cfg_row["DocumentID"]
-                    config_name = cfg_row["ConfigurationName"]
-                    if config_name and doc_id in configs_by_doc:
-                        configs_by_doc[doc_id].append(
-                            {
-                                "name": config_name,
-                                "part_number": cfg_row["PartNumber"] or "",
-                                "description": cfg_row["Description"] or "",
-                            }
-                        )
-
-            # Step 4: Bulk fetch BOM components for assemblies if enabled
-            bom_by_doc: Dict[int, List[dict]] = {doc_id: [] for doc_id in doc_ids}
-            if config.include_bom:
-                # Find assembly doc IDs
-                assembly_ids = [row["DocumentID"] for row in doc_rows if "." in row["Filename"] and row["Filename"].rsplit(".", 1)[-1].upper() == "SLDASM"]
-                if assembly_ids:
-                    assembly_ids_str = ",".join(str(d) for d in assembly_ids)
-                    cursor.execute(
-                        f"""
-                        SELECT
-                            bs.SourceDocumentID,
-                            bsr.RowDocumentID AS ChildFileID,
-                            d2.Filename AS ChildFilename,
-                            dc.ConfigurationName AS ChildConfigName
-                        FROM BomSheets bs
-                        INNER JOIN BomSheetRow bsr ON bs.BomDocumentID = bsr.BomDocumentID
-                        INNER JOIN Documents d2 ON bsr.RowDocumentID = d2.DocumentID
-                        LEFT JOIN DocumentConfiguration dc ON bsr.RowConfigurationID = dc.ConfigurationID
-                        WHERE bs.SourceDocumentID IN ({assembly_ids_str})
-                    """
-                    )
-                    for bom_row in cursor.fetchall():
-                        doc_id = bom_row["SourceDocumentID"]
-                        if doc_id in bom_by_doc:
-                            bom_by_doc[doc_id].append(
-                                {
-                                    "document_id": bom_row["ChildFileID"],
-                                    "filename": bom_row["ChildFilename"],
-                                    "configuration": bom_row["ChildConfigName"] or "",
-                                    "quantity": 1,
-                                }
-                            )
-
-            conn.close()
-
-            # Build document info objects
-            documents = []
-            for row in doc_rows:
-                doc_id = row["DocumentID"]
-                filename = row["Filename"]
-                revision = revision_map.get(doc_id, 1)
-                folder_path = row["FolderPath"]
-
-                doc_type = "UNKNOWN"
-                if "." in filename:
-                    doc_type = filename.rsplit(".", 1)[-1].upper()
-
-                variables = variables_by_doc.get(doc_id, {})
-
-                doc_info = PdmDocumentInfo(
-                    document_id=doc_id,
-                    filename=filename,
-                    document_type=doc_type,
-                    folder_path=folder_path if config.include_folder_path else None,
-                    revision_no=revision,
-                    part_number=variables.get("Part Number"),
-                    description=variables.get("Description"),
-                    material=variables.get("Material"),
-                    author=variables.get("Author"),
-                    stocked_status=variables.get("Stocked Status"),
-                    variables=variables,
-                    configurations=configs_by_doc.get(doc_id, []),
-                    bom_components=bom_by_doc.get(doc_id, []),
-                )
-                documents.append(doc_info)
-
-            return documents
-
-        # Process in batches
-        offset = 0
-        total_extracted = 0
-        effective_limit = max_documents or total_count
-
-        while offset < effective_limit:
-            current_batch_size = min(batch_size, effective_limit - offset)
-
-            # Run extraction in thread to avoid blocking
-            batch_docs = await asyncio.to_thread(extract_batch, offset, current_batch_size)
-
-            if not batch_docs:
-                break
-
-            total_extracted += len(batch_docs)
-
-            # Call progress callback if provided
-            if on_batch_extracted:
-                on_batch_extracted(total_extracted, total_count)
-
-            yield batch_docs
-
-            offset += current_batch_size
-
-            # Small delay to allow other async tasks to run
-            await asyncio.sleep(0.01)
+    ) -> AsyncIterator[List[PdmDocumentRecord]]:
+        """Delegate batched checked-in extraction to the PDM SQL source adapter."""
+        async for batch in PdmSqlSource(config).extract_documents_batched(
+            variable_map,
+            max_documents,
+            batch_size,
+            on_batch_extracted,
+        ):
+            yield batch
 
     async def extract_documents(
         self,
         config: SolidworksPdmConnectionConfig,
         max_documents: int | None = None,
-    ) -> AsyncIterator[PdmDocumentInfo]:
+    ) -> AsyncIterator[PdmDocumentRecord]:
         """Extract documents with metadata from PDM database.
 
         This is a compatibility wrapper around extract_documents_batched
@@ -775,45 +554,164 @@ class PdmIndexerService:
                 yield doc
 
     async def _get_variable_map(self, config: SolidworksPdmConnectionConfig) -> Dict[int, str]:
-        """Get a mapping of variable ID to variable name."""
-        try:
-            import pymssql  # type: ignore[import-untyped]
+        """Discover configured and role-default variables through the adapter."""
+        variable_defs = await PdmSqlSource(config).discover_variables()
+        self._variable_defs = variable_defs
+        names = {str(name).casefold() for name in (config.variable_names or [])}
+        names.update({default_name.casefold() for default_name in _PDM_ROLE_DEFAULT_NAMES.values()})
+        return {definition.variable_id: definition.name for definition in variable_defs if definition.name.casefold() in names}
 
-            pymssql = cast(Any, pymssql)
-            connect_fn = cast(Any, getattr(pymssql, "connect", None))
-            if not callable(connect_fn):
-                return {}
-            connect_fn = cast(Callable[..., Any], connect_fn)
-        except ImportError:
-            return {}
+    @staticmethod
+    def _resolve_role_variables(
+        variable_defs: list[PdmVariableDef],
+        config: SolidworksPdmConnectionConfig,
+    ) -> dict[str, Optional[int]]:
+        """Resolve role IDs by configured/default names, never vault-specific IDs.
 
-        connect_fn_callable: Callable[..., Any] = cast(Callable[..., Any], connect_fn)
+        Priority for each role:
+        1. Explicit override in config (part_number_variable/description_variable)
+        2. Default name match ("Part Number"/"Description", case-insensitive)
+        3. None if no match found
 
-        def run_query() -> Dict[int, str]:
-            conn: Any = cast(Callable[..., Any], connect_fn_callable)(
-                server=config.host,
-                port=str(config.port or 1433),
-                user=config.user,
-                password=config.password,
-                database=config.database,
-                login_timeout=30,
-                timeout=60,
+        Variable_defs are sorted by ID for deterministic resolution.
+        """
+        resolved: dict[str, Optional[int]] = {}
+        # Sort defs by variable_id for determinism when multiple defs have the same name
+        sorted_defs = sorted(variable_defs, key=lambda d: d.variable_id)
+
+        for role, default_name in _PDM_ROLE_DEFAULT_NAMES.items():
+            # Check for explicit override attribute (e.g., part_number_variable)
+            override_attr = f"{role}_variable"
+            override_value = getattr(config, override_attr, None)
+
+            if override_value:
+                # Explicit override: find matching def
+                match = next(
+                    (d for d in sorted_defs if d.name.casefold() == override_value.casefold()),
+                    None,
+                )
+                resolved[role] = match.variable_id if match else None
+            else:
+                # Default match: find def with default name
+                match = next(
+                    (d for d in sorted_defs if d.name.casefold() == default_name.casefold()),
+                    None,
+                )
+                resolved[role] = match.variable_id if match else None
+
+        return resolved
+
+    @staticmethod
+    def _state_from_record(
+        record: PdmDocumentRecord,
+        role_map: dict[str, Optional[int]],
+        variable_map: Dict[int, str],
+    ) -> PdmDocumentStateModel:
+        """Convert a resolved adapter record to its persisted checked-in state."""
+        configurations_by_id = {item.configuration_id: item for item in record.configurations}
+        document_values: dict[str, PdmPropertyValueModel] = {}
+        configuration_values: dict[int, dict[str, PdmPropertyValueModel]] = {}
+        for (configuration_id, variable_id), raw in record.resolved_values.items():
+            value = PdmPropertyValueModel(
+                variable_id=variable_id,
+                variable_name=variable_map.get(variable_id, raw.variable_name),
+                value_text=raw.value_text,
+                is_blank=raw.value_text == "",
+                origin_revision=raw.revision_no,
+                project_scope_id=raw.project_id,
+                value_int=raw.value_int,
+                value_float=raw.value_float,
+                value_date=raw.value_date,
             )
-            cursor: Any = conn.cursor(as_dict=True)
+            ref = configurations_by_id.get(configuration_id)
+            if ref and ref.name == "@":
+                document_values[value.variable_name] = value
+            elif ref:
+                configuration_values.setdefault(configuration_id, {})[value.variable_name] = value
+            else:
+                # Configuration ID has no membership reference (dropped value)
+                logger.debug(
+                    f"Dropped value for document {record.document_id}: configuration_id={configuration_id}, variable={value.variable_name} ({variable_id})"
+                )
 
-            # Get all variables and map name -> ID
-            cursor.execute("SELECT VariableID, VariableName FROM Variable")
-            var_map: Dict[int, str] = {}
-            rows = cursor.fetchall() or []
-            for row in rows:
-                var_name = row["VariableName"]
-                if var_name in (config.variable_names or []):
-                    var_map[row["VariableID"]] = var_name
+        configurations = [
+            PdmConfigurationStateModel(
+                configuration_id=ref.configuration_id,
+                name=ref.name,
+                values=configuration_values.get(ref.configuration_id, {}),
+            )
+            for ref in sorted(record.configurations, key=lambda item: item.configuration_id)
+            if ref.name != "@"
+        ]
 
-            conn.close()
-            return var_map
+        def role_value(role: str) -> Optional[str]:
+            variable_id = role_map.get(role)
+            role_name = "part number" if role == "part_number" else "description"
+            document_value = next(
+                (
+                    value
+                    for value in document_values.values()
+                    if value.variable_id == variable_id or (variable_id is None and value.variable_name.casefold() == role_name)
+                ),
+                None,
+            )
+            if document_value and not document_value.is_blank:
+                return document_value.value_text
+            for configuration in configurations:
+                value = next(
+                    (
+                        item
+                        for item in configuration.values.values()
+                        if item.variable_id == variable_id or (variable_id is None and item.variable_name.casefold() == role_name)
+                    ),
+                    None,
+                )
+                if value and not value.is_blank:
+                    return value.value_text
+            return None
 
-        return await asyncio.to_thread(run_query)
+        warnings: list[str] = []
+        if record.membership_fallback:
+            warnings.append("Configuration membership was derived from eligible property values.")
+        if record.has_beyond_latest_values:
+            warnings.append("Values beyond the checked-in target revision were excluded.")
+        document_type = record.filename.rsplit(".", 1)[-1].upper() if "." in record.filename else "UNKNOWN"
+        return PdmDocumentStateModel(
+            document_id=record.document_id,
+            filename=record.filename,
+            document_type=document_type,
+            target_revision=record.latest_revision,
+            folder_paths=record.folder_paths,
+            part_number=role_value("part_number"),
+            description=role_value("description"),
+            document_values=document_values,
+            configurations=configurations,
+            bom_components=[
+                PdmBomComponentModel(
+                    document_id=item.document_id,
+                    filename=item.filename,
+                    configuration=item.configuration,
+                    quantity=None,
+                )
+                for item in record.bom_children
+            ],
+            membership_fallback=record.membership_fallback,
+            has_beyond_latest_values=record.has_beyond_latest_values,
+            warnings=warnings,
+        )
+
+    def _metadata_hash_for(
+        self,
+        item: Any,
+        role_map: dict[str, Optional[int]],
+        variable_map: Dict[int, str],
+    ) -> str:
+        """Hash real records from normalized state while retaining fake-doc seams."""
+        if isinstance(item, PdmDocumentRecord):
+            state = self._state_from_record(item, role_map, variable_map)
+            self._record_states[id(item)] = state
+            return state.compute_metadata_hash()
+        return item.compute_metadata_hash()
 
     # =========================================================================
     # Background Processing
@@ -932,7 +830,8 @@ class PdmIndexerService:
             processed = 0
             skipped = 0
             extracted = 0
-            embedding_batch: List[PdmDocumentInfo] = []
+            embedding_batch: List[Any] = []
+            role_map = self._resolve_role_variables(self._variable_defs, config)
 
             job.current_step = f"Extracting documents from PDM (0/{doc_count})"
             await self._update_job(job)
@@ -968,7 +867,7 @@ class PdmIndexerService:
                 for doc in doc_batch:
                     # Check if document has changed (skip if unchanged and not full reindex)
                     if not full_reindex:
-                        current_hash = doc.compute_metadata_hash()
+                        current_hash = self._metadata_hash_for(doc, role_map, variable_map)
                         stored_hash = stored_hashes.get(doc.document_id)
                         if stored_hash == current_hash:
                             skipped += 1
@@ -982,7 +881,7 @@ class PdmIndexerService:
                         job.current_step = f"Generating embeddings ({processed}/{doc_count - skipped})"
                         await self._update_job(job)
 
-                        await self._process_batch(job, embedding_batch, embeddings)
+                        await self._process_batch(job, embedding_batch, embeddings, role_map, variable_map)
                         processed += len(embedding_batch)
                         job.processed_documents = processed
                         await self._update_job(job)
@@ -993,7 +892,7 @@ class PdmIndexerService:
                 job.current_step = f"Generating embeddings ({processed}/{doc_count - skipped})"
                 await self._update_job(job)
 
-                await self._process_batch(job, embedding_batch, embeddings)
+                await self._process_batch(job, embedding_batch, embeddings, role_map, variable_map)
                 processed += len(embedding_batch)
                 job.processed_documents = processed
 
@@ -1041,24 +940,37 @@ class PdmIndexerService:
     async def _process_batch(
         self,
         job: PdmIndexJob,
-        documents: List[PdmDocumentInfo],
+        documents: List[Any],
         embeddings,
+        role_map: Optional[Dict[str, Optional[int]]] = None,
+        variable_map: Optional[Dict[int, str]] = None,
     ):
         """Process a batch of documents - generate embeddings and store."""
         if not documents:
             return
 
         db: Any = await get_db()
+        role_map = role_map or {}
+        variable_map = variable_map or {}
 
-        # Generate text content for each document
-        texts = [doc.to_embedding_text() for doc in documents]
+        states = [
+            self._record_states.pop(id(doc), None) or self._state_from_record(doc, role_map, variable_map) if isinstance(doc, PdmDocumentRecord) else None
+            for doc in documents
+        ]
+        texts = [state.to_embedding_text() if state is not None else doc.to_embedding_text() for doc, state in zip(documents, states)]
 
         # Generate embeddings in sub-batches to keep event loop responsive
         doc_embeddings = await embed_documents_subbatched(embeddings, texts, logger_override=logger)
 
         # Store embeddings and metadata
-        for doc, text, embedding in zip(documents, texts, doc_embeddings):
-            metadata_hash = doc.compute_metadata_hash()
+        for doc, state, text, embedding in zip(documents, states, texts, doc_embeddings):
+            metadata_hash = state.compute_metadata_hash() if state is not None else doc.compute_metadata_hash()
+            document_type = state.document_type if state is not None else doc.document_type
+            part_number = state.part_number if state is not None else (doc.part_number or "")
+            filename = state.filename if state is not None else doc.filename
+            folder_path = (state.folder_paths[0] if state and state.folder_paths else "") if state is not None else (doc.folder_path or "")
+            variables = {name: value.value_text for name, value in state.document_values.items()} if state is not None else doc.variables
+            revision = state.target_revision if state is not None else doc.revision_no
 
             # Upsert embedding - use parameters for all user-provided values
             embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
@@ -1082,12 +994,12 @@ class PdmIndexerService:
             """,
                 job.index_name,
                 doc.document_id,
-                doc.document_type,
+                document_type,
                 text,
-                doc.part_number or "",
-                doc.filename,
-                doc.folder_path or "",
-                json.dumps(doc.variables),
+                part_number or "",
+                filename,
+                folder_path,
+                json.dumps(variables),
                 embedding_str,
             )
 
@@ -1108,8 +1020,41 @@ class PdmIndexerService:
             """,
                 job.index_name,
                 doc.document_id,
-                doc.filename,
-                doc.revision_no,
+                filename,
+                revision,
+                metadata_hash,
+            )
+
+            state_json = (
+                state.model_dump_json()
+                if state is not None
+                else json.dumps(
+                    {
+                        "document_id": doc.document_id,
+                        "filename": filename,
+                        "document_type": document_type,
+                        "target_revision": revision,
+                        "part_number": part_number or None,
+                        "document_values": variables,
+                    }
+                )
+            )
+            await db.execute_raw(
+                """
+                INSERT INTO pdm_document_state
+                    (id, index_name, document_id, filename, part_number, target_revision, state_json, metadata_hash, extracted_at)
+                VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6::jsonb, $7, NOW())
+                ON CONFLICT (index_name, document_id) DO UPDATE SET
+                    filename = EXCLUDED.filename, part_number = EXCLUDED.part_number,
+                    target_revision = EXCLUDED.target_revision, state_json = EXCLUDED.state_json,
+                    metadata_hash = EXCLUDED.metadata_hash, extracted_at = NOW()
+                """,
+                job.index_name,
+                doc.document_id,
+                filename,
+                part_number or "",
+                revision,
+                state_json,
                 metadata_hash,
             )
 
@@ -1117,48 +1062,8 @@ class PdmIndexerService:
         job.processed_chunks += len(documents)
 
     async def _count_documents(self, config: SolidworksPdmConnectionConfig) -> int:
-        """Count documents matching the filter criteria."""
-        try:
-            import pymssql  # type: ignore[import-untyped]
-
-            pymssql = cast(Any, pymssql)
-            connect_fn = cast(Any, getattr(pymssql, "connect", None))
-            if not callable(connect_fn):
-                return 0
-            connect_fn = cast(Callable[..., Any], connect_fn)
-        except ImportError:
-            return 0
-
-        connect_fn_callable: Callable[..., Any] = cast(Callable[..., Any], connect_fn)
-
-        def run_count() -> int:
-            conn: Any = cast(Callable[..., Any], connect_fn_callable)(
-                server=config.host,
-                port=str(config.port or 1433),
-                user=config.user,
-                password=config.password,
-                database=config.database,
-                login_timeout=30,
-                timeout=60,
-            )
-            cursor: Any = conn.cursor()
-
-            # Extensions may already include the dot (e.g., '.SLDPRT'), so use them as-is
-            ext_filter = _build_pdm_extension_filter(config.file_extensions, "Filename")
-
-            deleted_filter = "AND Deleted = 0" if config.exclude_deleted else ""
-
-            cursor.execute(
-                f"""
-                SELECT COUNT(*) FROM Documents
-                WHERE ({ext_filter}) {deleted_filter}
-            """
-            )
-            result = cursor.fetchone()
-            conn.close()
-            return result[0] if result else 0
-
-        return await asyncio.to_thread(run_count)
+        """Count matching documents through the adapter."""
+        return await PdmSqlSource(config).count_documents()
 
     async def _get_stored_hash(self, index_name: str, document_id: int) -> Optional[str]:
         """Get the stored metadata hash for a document."""
@@ -1197,6 +1102,7 @@ class PdmIndexerService:
         db: Any = await get_db()
         await db.execute_raw("DELETE FROM pdm_embeddings WHERE index_name = $1", index_name)
         await db.execute_raw("DELETE FROM pdm_document_metadata WHERE index_name = $1", index_name)
+        await db.execute_raw("DELETE FROM pdm_document_state WHERE index_name = $1", index_name)
         logger.info(f"Cleared PDM embeddings for index {index_name}")
 
     # =========================================================================
@@ -1415,3 +1321,96 @@ async def search_pdm_index(
     except Exception as e:
         logger.error(f"Error searching PDM index: {e}")
         return f"Error searching PDM: {str(e)}"
+
+
+def _escape_like(value: str) -> str:
+    """Escape a user string for a PostgreSQL LIKE pattern."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def lookup_pdm_documents(
+    index_name: str,
+    document_id: int | None = None,
+    filename: str | None = None,
+    part_number: str | None = None,
+    configuration: str | None = None,
+    max_results: int = 10,
+) -> str:
+    """Look up deterministic checked-in PDM document snapshots without embeddings."""
+    if document_id is None and not filename and not part_number:
+        return "Error: Provide document_id, filename, or part_number."
+    limit = max(1, min(50, int(max_results)))
+    filters = ["index_name = $1"]
+    params: list[Any] = [index_name]
+    if document_id is not None:
+        params.append(int(document_id))
+        filters.append(f"document_id = ${len(params)}")
+    if filename:
+        params.append(f"%{_escape_like(filename)}%")
+        filters.append(f"filename ILIKE ${len(params)} ESCAPE '\\'")
+    if part_number:
+        params.append(f"%{_escape_like(part_number)}%")
+        filters.append(f"(part_number ILIKE ${len(params)} ESCAPE '\\' OR state_json::text ILIKE ${len(params)} ESCAPE '\\')")
+    query = (
+        "SELECT document_id, filename, part_number, target_revision, state_json, extracted_at "
+        "FROM pdm_document_state WHERE " + " AND ".join(filters) + f" ORDER BY filename LIMIT {limit}"
+    )
+    try:
+        db: Any = await get_db()
+        rows = await db.query_raw(query, *params)
+    except Exception as exc:
+        logger.error(f"Error looking up PDM documents: {exc}")
+        return f"Error looking up PDM documents: {exc}"
+
+    output: list[str] = []
+    for row in rows or []:
+        try:
+            raw_state = row.get("state_json", {})
+            if isinstance(raw_state, str):
+                raw_state = json.loads(raw_state)
+            state = PdmDocumentStateModel.model_validate(raw_state)
+        except Exception as exc:
+            logger.warning(f"Skipping invalid PDM document state: {exc}")
+            continue
+        header = f"[{state.filename}]"
+        if state.part_number:
+            header += f" (PN: {state.part_number})"
+        lines = [
+            f"{header} [{state.document_type}] target revision {state.target_revision}",
+            "Source: indexed snapshot (checked-in view)",
+            f"Extracted at: {row.get('extracted_at', '')}",
+        ]
+        if state.folder_paths:
+            lines.append("Folders: " + ", ".join(sorted(state.folder_paths)))
+        if state.warnings:
+            lines.append("Warnings: " + "; ".join(state.warnings))
+        flags = []
+        if state.membership_fallback:
+            flags.append("membership fallback")
+        if state.has_beyond_latest_values:
+            flags.append("values beyond latest excluded")
+        if flags:
+            lines.append("Flags: " + ", ".join(flags))
+        if state.document_values:
+            lines.append("@ document values:")
+            for value in sorted(state.document_values.values(), key=lambda item: (item.variable_id, item.variable_name)):
+                if value.is_blank:
+                    lines.append(f"- {value.variable_name}: (empty, cleared at v{value.origin_revision})")
+                else:
+                    lines.append(f"- {value.variable_name}: {value.value_text} (v{value.origin_revision})")
+        configurations = state.configurations
+        if configuration is not None:
+            is_document_scope = configuration.casefold() == "@"
+            configurations = [] if is_document_scope else [item for item in configurations if item.name.casefold() == configuration.casefold()]
+            if not configurations and not is_document_scope:
+                available = ", ".join(item.name for item in state.configurations) or "none"
+                lines.append(f"No configuration named {configuration}; available: {available}")
+        for item in sorted(configurations, key=lambda entry: entry.configuration_id):
+            lines.append(f"Configuration: {item.name} (ID: {item.configuration_id})")
+            for value in sorted(item.values.values(), key=lambda entry: (entry.variable_id, entry.variable_name)):
+                if value.is_blank:
+                    lines.append(f"- {value.variable_name}: (empty, cleared at v{value.origin_revision})")
+                else:
+                    lines.append(f"- {value.variable_name}: {value.value_text} (v{value.origin_revision})")
+        output.append("\n".join(lines))
+    return "\n\n---\n\n".join(output) if output else "No matching documents found in PDM index."
