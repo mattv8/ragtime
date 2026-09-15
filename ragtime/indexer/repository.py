@@ -1320,6 +1320,7 @@ class IndexerRepository:
         openai_key = settings.openaiApiKey or ""
         anthropic_key = settings.anthropicApiKey or ""
         openrouter_key = getattr(settings, "openrouterApiKey", "") or ""
+        openrouter_management_key = getattr(settings, "openrouterManagementApiKey", "") or ""
         github_models_api_token = getattr(settings, "githubModelsApiToken", "") or ""
         github_copilot_access_token = getattr(settings, "githubCopilotAccessToken", "") or ""
         github_copilot_refresh_token = getattr(settings, "githubCopilotRefreshToken", "") or ""
@@ -1335,6 +1336,8 @@ class IndexerRepository:
             anthropic_key = decrypt_secret(anthropic_key)
         if openrouter_key:
             openrouter_key = decrypt_secret(openrouter_key)
+        if openrouter_management_key:
+            openrouter_management_key = decrypt_secret(openrouter_management_key)
         if github_models_api_token:
             github_models_api_token = decrypt_secret(github_models_api_token)
         if github_copilot_access_token:
@@ -1485,6 +1488,11 @@ class IndexerRepository:
             has_openai_codex_auth=bool(openai_codex_access_token or openai_codex_refresh_token),
             anthropic_api_key=anthropic_key,
             openrouter_api_key=openrouter_key,
+            userspace_build_model=getattr(settings, "userspaceBuildModel", None),
+            openrouter_credit_monitor_enabled=getattr(settings, "openrouterCreditMonitorEnabled", False),
+            openrouter_low_credit_threshold_usd=getattr(settings, "openrouterLowCreditThresholdUsd", 5.0),
+            openrouter_management_api_key=None,
+            has_openrouter_management_api_key=bool(openrouter_management_key),
             github_models_api_token=github_models_api_token,
             github_copilot_access_token=github_copilot_access_token,
             github_copilot_refresh_token=github_copilot_refresh_token,
@@ -1759,6 +1767,10 @@ class IndexerRepository:
             "available_models_cache_enabled": "availableModelsCacheEnabled",
             "show_tool_card_footer_actions": "showToolCardFooterActions",
             "tool_skills_enabled": "toolSkillsEnabled",
+            "userspace_build_model": "userspaceBuildModel",
+            "openrouter_credit_monitor_enabled": "openrouterCreditMonitorEnabled",
+            "openrouter_low_credit_threshold_usd": "openrouterLowCreditThresholdUsd",
+            "openrouter_management_api_key": "openrouterManagementApiKey",
             # Embedding settings
             "embedding_provider": "embeddingProvider",
             "embedding_model": "embeddingModel",
@@ -1924,6 +1936,7 @@ class IndexerRepository:
             "openai_codex_refresh_token",
             "anthropic_api_key",
             "openrouter_api_key",
+            "openrouter_management_api_key",
             "github_models_api_token",
             "github_copilot_access_token",
             "github_copilot_refresh_token",
@@ -1981,6 +1994,16 @@ class IndexerRepository:
             else:
                 normalized_default_chat_model = str(default_chat_model_value).strip()
                 update_data["defaultChatModel"] = normalized_default_chat_model or None
+
+        # The builder override is optional: an explicit null/empty update restores
+        # the normal workspace/user/global model preference chain.
+        if "userspace_build_model" in updates:
+            builder_model_value = updates["userspace_build_model"]
+            update_data["userspaceBuildModel"] = str(builder_model_value).strip() if builder_model_value else None
+
+        # Empty management credentials revoke wallet-credit access immediately.
+        if "openrouter_management_api_key" in updates and updates["openrouter_management_api_key"] == "":
+            update_data["openrouterManagementApiKey"] = None
 
         # Fields that the UI may intentionally clear with an explicit null.
         if "embedding_dimensions" in updates and updates["embedding_dimensions"] is None:
@@ -5180,7 +5203,13 @@ class IndexerRepository:
     # Background Chat Task Operations
     # -------------------------------------------------------------------------
 
-    async def create_chat_task(self, conversation_id: str, user_message: str) -> ChatTask:
+    async def create_chat_task(
+        self,
+        conversation_id: str,
+        user_message: str,
+        *,
+        execution_policy: Optional[dict[str, Any]] = None,
+    ) -> ChatTask:
         """Create a new background chat task."""
         db = await self._get_db()
 
@@ -5193,6 +5222,7 @@ class IndexerRepository:
                 "conversation": {"connect": {"id": conversation_id}},
                 "status": _to_prisma_task_status(ChatTaskStatus.pending),
                 "userMessage": user_message,
+                "executionPolicy": Json(_sanitize_json_for_postgres(execution_policy)) if execution_policy is not None else None,
             }
         )
 
@@ -5540,7 +5570,16 @@ class IndexerRepository:
 
         return live_workspace_ids, interrupted_workspace_ids
 
-    async def update_chat_task_status(self, task_id: str, status: ChatTaskStatus, error_message: Optional[str] = None) -> Optional[ChatTask]:
+    async def update_chat_task_status(
+        self,
+        task_id: str,
+        status: ChatTaskStatus,
+        error_message: Optional[str] = None,
+        *,
+        response_content: Optional[str] = None,
+        termination_reason: Optional[str] = None,
+        outcome_summary: Optional[dict[str, Any]] = None,
+    ) -> Optional[ChatTask]:
         """Update a chat task's status."""
         db = await self._get_db()
 
@@ -5555,11 +5594,18 @@ class IndexerRepository:
             ChatTaskStatus.completed,
             ChatTaskStatus.failed,
             ChatTaskStatus.cancelled,
+            ChatTaskStatus.interrupted,
         ):
             update_data["completedAt"] = utc_now()
 
         if error_message:
             update_data["errorMessage"] = _sanitize_for_postgres(error_message)
+        if response_content is not None:
+            update_data["responseContent"] = _sanitize_for_postgres(response_content)
+        if termination_reason is not None:
+            update_data["terminationReason"] = _sanitize_for_postgres(termination_reason)
+        if outcome_summary is not None:
+            update_data["outcomeSummary"] = Json(_sanitize_json_for_postgres(outcome_summary))
 
         try:
             prisma_task = await db.chattask.update(
@@ -5640,6 +5686,9 @@ class IndexerRepository:
         tool_calls: List[dict],
         hit_max_iterations: bool = False,
         current_version: int = 0,
+        *,
+        termination_reason: Optional[str] = None,
+        outcome_summary: Optional[dict[str, Any]] = None,
     ) -> Optional[ChatTask]:
         """Mark a chat task as completed with the final response."""
         db = await self._get_db()
@@ -5668,6 +5717,8 @@ class IndexerRepository:
                 data={  # type: ignore[arg-type]
                     "status": _to_prisma_task_status(ChatTaskStatus.completed),
                     "responseContent": response_content,
+                    "terminationReason": _sanitize_for_postgres(termination_reason) if termination_reason is not None else None,
+                    "outcomeSummary": Json(_sanitize_json_for_postgres(outcome_summary)) if outcome_summary is not None else None,
                     "streamingState": Json(streaming_state),
                     "completedAt": utc_now(),
                     "lastUpdateAt": utc_now(),
@@ -5866,6 +5917,9 @@ class IndexerRepository:
             user_message=prisma_task.userMessage,
             streaming_state=streaming_state,
             response_content=prisma_task.responseContent,
+            execution_policy=getattr(prisma_task, "executionPolicy", None),
+            termination_reason=getattr(prisma_task, "terminationReason", None),
+            outcome_summary=getattr(prisma_task, "outcomeSummary", None),
             error_message=prisma_task.errorMessage,
             created_at=prisma_task.createdAt,
             started_at=prisma_task.startedAt,

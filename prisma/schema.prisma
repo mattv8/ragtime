@@ -205,6 +205,10 @@ model AppSettings {
   availableModelsCacheEnabled         Boolean @default(true) @map("available_models_cache_enabled")
   showToolCardFooterActions           Boolean @default(false) @map("show_tool_card_footer_actions")
   toolSkillsEnabled                   Boolean @default(true) @map("tool_skills_enabled")
+  userspaceBuildModel                 String? @map("userspace_build_model")
+  openrouterCreditMonitorEnabled      Boolean @default(false) @map("openrouter_credit_monitor_enabled")
+  openrouterLowCreditThresholdUsd     Float   @default(5) @map("openrouter_low_credit_threshold_usd")
+  openrouterManagementApiKey          String? @map("openrouter_management_api_key")
 
   // Embedding Configuration (for FAISS indexing)
   embeddingProvider   String  @default("ollama") @map("embedding_provider") // "ollama", "openai", "llama_cpp", "lmstudio", or "omlx"
@@ -1500,6 +1504,7 @@ model Workspace {
   nameNormalized             String?                     @map("name_normalized")
   description                String?                     @default("")
   sqlitePersistenceMode      SqlitePersistenceMode       @default(include) @map("sqlite_persistence_mode")
+  bridgeCredentialMode       String                      @default("env") @map("bridge_credential_mode")
   toolSelectionMode          String                      @default("custom") @map("tool_selection_mode")
   currentSnapshotId          String?                     @map("current_snapshot_id")
   currentSnapshotBranchId    String?                     @map("current_snapshot_branch_id")
@@ -1835,12 +1840,32 @@ model WorkspaceAgentAccess {
   label               String?
   enabled             Boolean   @default(true)
   allowTaskSubmission Boolean   @default(true) @map("allow_task_submission")
+  allowRuntimeRestart Boolean   @default(false) @map("allow_runtime_restart")
   lastUsedAt          DateTime? @map("last_used_at")
   hitCount            Int       @default(0) @map("hit_count")
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at")
 
   @@map("workspace_agent_access")
+}
+
+/// Durable idempotency ledger for session-preserving runtime restarts.
+model WorkspaceRuntimeOperation {
+  id             String   @id @default(uuid())
+  workspaceId    String   @map("workspace_id")
+  userId         String   @map("user_id")
+  idempotencyKey String   @map("idempotency_key")
+  requestHash    String   @map("request_hash")
+  state          String   @default("accepted")
+  providerSessionId String? @map("provider_session_id")
+  operationId    String?  @map("operation_id")
+  error          String?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, userId, idempotencyKey])
+  @@index([workspaceId, createdAt])
+  @@map("workspace_runtime_operations")
 }
 
 /// Idempotency ledger for externally submitted build tasks.
@@ -2247,6 +2272,9 @@ model ChatTask {
 
   // Final response content (populated on completion)
   responseContent String? @map("response_content")
+  executionPolicy Json?   @map("execution_policy")
+  terminationReason String? @map("termination_reason")
+  outcomeSummary Json? @map("outcome_summary")
 
   // Error info if task failed
   errorMessage String? @map("error_message")
