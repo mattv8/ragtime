@@ -993,6 +993,8 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Prefer `rg` for search, short focused commands, and separate tool calls for multi-step workflows.
 - Prefer `validate_userspace_code` when you only need file or code diagnostics.
 - If a command times out, raise `timeout_seconds` or split the work into smaller steps. If output is truncated, narrow it with `head`, `tail`, `rg`, or `grep`.
+- Terminal commands default to 120 seconds and may run for up to 600 seconds; use the smallest timeout that safely covers the command.
+- If the app needs a recycle after a configuration or dependency change, call `restart_app_runtime`, then use `get_app_runtime_status` until it reports ready before testing the app again.
 {data_wiring_block}
 ### File tool workflow
 
@@ -1257,7 +1259,8 @@ _USERSPACE_RUNTIME_BRIDGE_BLOCK = """
 This workspace runs a real server entrypoint, so fetch live tool data from your
 SERVER code via the runtime bridge instead of wiring context.components[...] in
 browser modules:
-- Env vars available to the server process: `RAGTIME_BRIDGE_URL`, `RAGTIME_BRIDGE_TOKEN`.
+- Env vars available to the server process: `RAGTIME_BRIDGE_URL` plus either `RAGTIME_BRIDGE_TOKEN_FILE` or the legacy `RAGTIME_BRIDGE_TOKEN`.
+- Read the token for every bridge request: Node uses `fs.readFileSync(process.env.RAGTIME_BRIDGE_TOKEN_FILE, "utf8").trim()` when the file variable is set, otherwise `process.env.RAGTIME_BRIDGE_TOKEN`; Python uses `Path(os.environ["RAGTIME_BRIDGE_TOKEN_FILE"]).read_text().strip()` when set, otherwise `os.environ.get("RAGTIME_BRIDGE_TOKEN")`. Do not cache the token at app startup.
 - Contract: POST `{RAGTIME_BRIDGE_URL}/execute-component` with header
   `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN` and JSON body
   `{"component_id": "<selected component id>", "request": {"query": "SELECT ... LIMIT 100"}}`.
@@ -1275,6 +1278,8 @@ browser modules:
 - Never attempt INSERT/UPDATE/DELETE or other mutations from browser code. Route
   every mutation through your own server route, and have the server call this bridge.
 - The runtime token is the backend service identity; backend mutation routes must enforce their own authz/authn and must never expose that token to browser code.
+- Do not expose bridge env values or token-file contents in browser code, responses, logs, or errors. Do not automatically replay a mutation after a bridge failure; return a safe result and let the server decide whether it is safe to retry.
+- After changing app configuration, recycle the app once with `restart_app_runtime` and verify `get_app_runtime_status` reports ready. Later file-backed token renewals do not require a recycle; successful bridge traffic after rotation is the adoption check.
 - The browser bridge (`context.components[...]`) still works and remains correct
   for static-page reads; prefer the server bridge for backend routes and data APIs.
 """.strip()
