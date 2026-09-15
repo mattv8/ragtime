@@ -1,8 +1,9 @@
 """
-SolidWorks PDM Search Tool - Semantic search over indexed PDM metadata.
+SolidWorks PDM Search Tool - Semantic search over indexed PDM snapshot metadata.
 
 This tool provides natural language search over PDM document metadata
-that has been indexed into PostgreSQL using pgvector embeddings.
+that has been indexed into PostgreSQL using pgvector embeddings. Results reflect
+checked-in vault metadata at indexing time, not live vault state, and may lag it.
 
 Example queries:
 - "What material is used for part SW-13392-A?"
@@ -96,7 +97,8 @@ def create_pdm_search_tool(
             "Search SolidWorks PDM for parts, assemblies, and drawings. "
             "Query using natural language to find documents by part number, "
             "material, description, author, folder, or BOM relationships. "
-            "Returns matching documents with their metadata."
+            "Returns matching documents from an indexed snapshot of checked-in "
+            "vault metadata, which may lag live vault state."
         )
 
     async def search_pdm(query: str, document_type: Optional[str] = None) -> str:

@@ -904,6 +904,24 @@ model PdmDocumentMetadata {
   @@map("pdm_document_metadata")
 }
 
+/// Structured checked-in PDM document state for deterministic lookup
+model PdmDocumentState {
+  id             String   @id @default(uuid())
+  indexName      String   @map("index_name")
+  documentId     Int      @map("document_id")
+  filename       String
+  partNumber     String?  @map("part_number")
+  targetRevision Int      @map("target_revision")
+  stateJson      Json     @default("{}") @map("state_json")
+  metadataHash   String   @map("metadata_hash")
+  extractedAt    DateTime @default(now()) @map("extracted_at")
+
+  @@unique([indexName, documentId])
+  @@index([indexName])
+  @@index([partNumber])
+  @@map("pdm_document_state")
+}
+
 /// Vector embeddings for SolidWorks PDM documents stored in pgvector
 /// NOTE: Requires pgvector extension: CREATE EXTENSION IF NOT EXISTS vector;
 /// The embedding column uses raw SQL for vector type, managed via migration
