@@ -2725,7 +2725,8 @@ export function ToolsPanel({
                 mountSources.map((source) => (
                   <div
                     key={source.id}
-                    className="card"
+                    id={`tools-mount-source-${source.id}`}
+                    className="card mount-source-card"
                     style={{
                       display: 'flex',
                       flexDirection: 'column',
