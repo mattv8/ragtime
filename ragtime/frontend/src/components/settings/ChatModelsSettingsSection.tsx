@@ -1,5 +1,6 @@
-import type { Dispatch, SetStateAction } from 'react';
-import type { AvailableModel, UpdateSettingsRequest } from '@/types';
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
+import { api } from '@/api';
+import type { AvailableModel, OpenRouterCreditStatus, UpdateSettingsRequest } from '@/types';
 import { ModelSelector } from '../ModelSelector';
 import { MiniLoadingSpinner } from '../shared/MiniLoadingSpinner';
 import { SettingsAccordionSection } from './SettingsAccordionSection';
@@ -19,6 +20,115 @@ export interface ChatModelsSettingsSectionProps {
   openOpenapiModelModal: () => void;
   handleSaveLlm: () => void | Promise<void>;
   llmSaving: boolean;
+  isAdmin: boolean;
+  hasManagementApiKey: boolean;
+}
+
+function OpenRouterCreditMonitor({
+  formData,
+  setFormData,
+  hasManagementApiKey,
+}: Pick<ChatModelsSettingsSectionProps, 'formData' | 'setFormData'> & {
+  hasManagementApiKey: boolean;
+}): JSX.Element {
+  const [status, setStatus] = useState<OpenRouterCreditStatus | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getOpenRouterCreditStatus()
+      .then((nextStatus) => {
+        if (!cancelled) {
+          setStatus(nextStatus);
+          setStatusError(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setStatusError('Credit status is currently unavailable.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const stateLabel = status ? status.state.replace(/_/g, ' ') : 'checking';
+  const stateIsAlert = status?.state === 'low' || status?.state === 'exhausted' || status?.state === 'error';
+
+  return (
+    <div className="form-group" id="setting-openrouter-credit-monitor">
+      <label className="chat-toggle-control">
+        <span className="toggle-switch">
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label="Monitor OpenRouter credits"
+            checked={formData.openrouter_credit_monitor_enabled === true}
+            onChange={(event) =>
+              setFormData({ ...formData, openrouter_credit_monitor_enabled: event.target.checked })
+            }
+          />
+          <span className="toggle-slider" />
+        </span>
+        <span>Monitor OpenRouter credits</span>
+      </label>
+      <p className="field-help">
+        Alert administrators when configured OpenRouter credit sources are low. This monitor never
+        purchases credits or sends provider requests while disabled.
+      </p>
+      <div className="form-row-3">
+        <div className="form-group">
+          <label htmlFor="openrouter-low-credit-threshold">Low credit threshold (USD)</label>
+          <input
+            id="openrouter-low-credit-threshold"
+            type="number"
+            min="0"
+            step="0.01"
+            value={formData.openrouter_low_credit_threshold_usd ?? 5}
+            onChange={(event) =>
+              setFormData({
+                ...formData,
+                openrouter_low_credit_threshold_usd: Math.max(0, Number(event.target.value)),
+              })
+            }
+          />
+        </div>
+        <div className="form-group">
+          <label htmlFor="openrouter-management-api-key">Management API key (optional)</label>
+          <input
+            id="openrouter-management-api-key"
+            type="password"
+            autoComplete="new-password"
+            placeholder="Leave blank to keep the configured key"
+            value={formData.openrouter_management_api_key ?? ''}
+            onChange={(event) =>
+              setFormData({ ...formData, openrouter_management_api_key: event.target.value })
+            }
+          />
+          <p className="field-help">
+            {hasManagementApiKey
+              ? 'A management key is configured. Leave this blank to preserve it, or clear it explicitly.'
+              : 'Used only to check wallet credits; it is stored as a secret.'}
+          </p>
+          {hasManagementApiKey && formData.openrouter_management_api_key === undefined && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setFormData({ ...formData, openrouter_management_api_key: '' })}
+            >
+              Clear management API key
+            </button>
+          )}
+        </div>
+      </div>
+      <p className={stateIsAlert ? 'userspace-error' : 'field-help'} role={stateIsAlert ? 'alert' : undefined}>
+        Credit monitor status: {stateLabel}
+        {status?.stale ? ' (stale)' : ''}
+        {status?.warning ? `. ${status.warning}` : ''}
+      </p>
+      {statusError && <p className="field-help">{statusError}</p>}
+    </div>
+  );
 }
 
 export function ChatModelsSettingsSection(props: ChatModelsSettingsSectionProps): JSX.Element {
@@ -36,6 +146,8 @@ export function ChatModelsSettingsSection(props: ChatModelsSettingsSectionProps)
     openOpenapiModelModal,
     handleSaveLlm,
     llmSaving,
+    isAdmin,
+    hasManagementApiKey,
   } = props;
 
   return (
@@ -60,6 +172,27 @@ export function ChatModelsSettingsSection(props: ChatModelsSettingsSectionProps)
             <p className="field-help">
               Limit which models appear in the Chat view dropdown. Includes all configured providers
               (OpenAI, Anthropic, OpenRouter, Ollama, llama.cpp, GitHub Copilot, OpenAI Codex).
+            </p>
+          </div>
+
+          <div className="form-group" id="setting-userspace-build-model">
+            <label>Builder Model</label>
+            <ModelSelector
+              models={filteredChatModels}
+              selectedModelId={formData.userspace_build_model ?? ''}
+              onModelChange={(selectedValue) =>
+                setFormData({ ...formData, userspace_build_model: selectedValue || null })
+              }
+              getModelSelectionKey={toScopedModelIdentifier}
+              disabled={chatModelsLoading || filteredChatModels.length === 0}
+              loading={chatModelsLoading}
+              placeholder="Use normal model defaults"
+              variant="full"
+              triggerClassName="settings-control-height"
+            />
+            <p className="field-help">
+              Optional model for new User Space build tasks. It uses the live allowed model catalog
+              and changes take effect only after saving below.
             </p>
           </div>
 
@@ -187,6 +320,13 @@ export function ChatModelsSettingsSection(props: ChatModelsSettingsSectionProps)
             {llmSaving ? 'Saving...' : 'Save Chat Model Settings'}
           </button>
         </div>
+        {isAdmin && (
+          <OpenRouterCreditMonitor
+            formData={formData}
+            setFormData={setFormData}
+            hasManagementApiKey={hasManagementApiKey}
+          />
+        )}
       </fieldset>
     </SettingsAccordionSection>
   );

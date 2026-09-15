@@ -19,6 +19,7 @@ const apiMock = vi.hoisted(() => ({
   getActiveServerBackupJobs: vi.fn(),
   getServerBackupJob: vi.fn(),
   getServerRestoreJob: vi.fn(),
+  getOpenRouterCreditStatus: vi.fn(),
   logout: vi.fn(),
 }));
 
@@ -251,6 +252,16 @@ beforeEach(() => {
   apiMock.getServerBackupJob.mockResolvedValue({ id: 'backup-default', status: 'pending' });
   apiMock.getServerRestoreJob.mockResolvedValue({ id: 'restore-default', status: 'pending' });
   apiMock.logout.mockResolvedValue(undefined);
+  apiMock.getOpenRouterCreditStatus.mockResolvedValue({
+    enabled: false,
+    state: 'disabled',
+    key_remaining_usd: null,
+    wallet_remaining_usd: null,
+    threshold_usd: 5,
+    checked_at: null,
+    stale: false,
+    warning: null,
+  });
 });
 
 function mockAuthenticatedAdmin(configurationWarnings: ConfigurationWarning[] = []): void {
@@ -313,6 +324,54 @@ async function flushMicrotasks(): Promise<void> {
     await Promise.resolve();
   });
 }
+
+describe('OpenRouter credit alerts', () => {
+  it('shows a persistent admin credit alert and clears it after recovery', async () => {
+    vi.useFakeTimers();
+    mockAuthenticatedAdmin();
+    apiMock.getOpenRouterCreditStatus
+      .mockResolvedValueOnce({
+        enabled: true,
+        state: 'low',
+        key_remaining_usd: 2,
+        wallet_remaining_usd: null,
+        threshold_usd: 5,
+        checked_at: '2026-09-15T12:00:00Z',
+        stale: false,
+        warning: 'OpenRouter key credits are low.',
+      })
+      .mockResolvedValueOnce({
+        enabled: true,
+        state: 'ok',
+        key_remaining_usd: 8,
+        wallet_remaining_usd: null,
+        threshold_usd: 5,
+        checked_at: '2026-09-15T12:01:00Z',
+        stale: false,
+        warning: null,
+      });
+
+    render(<App />);
+    await flushMicrotasks();
+
+    expect(screen.getByText('OpenRouter Credit Alert')).toBeTruthy();
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await flushMicrotasks();
+
+    expect(screen.queryByText('OpenRouter Credit Alert')).toBeNull();
+  });
+
+  it('does not request OpenRouter credits for non-admin users', async () => {
+    mockAuthenticatedNonAdmin();
+    render(<App />);
+    await flushMicrotasks();
+
+    expect(apiMock.getOpenRouterCreditStatus).not.toHaveBeenCalled();
+  });
+});
 
 describe('App chat fullscreen layout', () => {
   it('renders initial OAuth loading inside the shared auth gradient surface but leaves plain app loading unchanged', async () => {
