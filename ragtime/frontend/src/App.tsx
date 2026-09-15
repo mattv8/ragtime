@@ -28,6 +28,7 @@ import type {
   UserSpacePreviewWarning,
   ServerBackupJob,
   ServerRestoreJob,
+  OpenRouterCreditStatus,
 } from '@/types';
 import { BrandName } from '@/utils/buildEnvironment';
 import { setThemePack, resolveThemePackId } from '@/theme';
@@ -76,6 +77,7 @@ function getInitialConversationId(): string | null {
 const INDEXER_ACTIVE_POLL_MS = 2000;
 const ENCRYPTION_KEY_ERROR_DISMISS_KEY = 'ragtime_encryption_key_error';
 const ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY = 'ragtime_encryption_backup_reminder';
+const OPENROUTER_CREDIT_POLL_MS = 60_000;
 
 const LazyChatPage = lazy(async () => ({
   default: (await import('./components/ChatPage')).ChatPage,
@@ -320,6 +322,8 @@ export function App() {
 
   // Configuration warnings state
   const [configurationWarnings, setConfigurationWarnings] = useState<ConfigurationWarning[]>([]);
+  const [openRouterCreditStatus, setOpenRouterCreditStatus] =
+    useState<OpenRouterCreditStatus | null>(null);
   const [encryptionBackupReminderDismissed, setEncryptionBackupReminderDismissed] = useState(() =>
     readPersistentDismissed(ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY),
   );
@@ -643,6 +647,30 @@ export function App() {
 
   // Check if user is admin
   const isAdmin = currentUser?.role === 'admin';
+
+  useEffect(() => {
+    if (!currentUser || !isAdmin) {
+      setOpenRouterCreditStatus(null);
+      return;
+    }
+
+    let cancelled = false;
+    const refreshCreditStatus = async () => {
+      try {
+        const status = await api.getOpenRouterCreditStatus();
+        if (!cancelled) setOpenRouterCreditStatus(status);
+      } catch {
+        // Keep the last known result visible; a transient status request must not hide a low-credit alert.
+      }
+    };
+
+    void refreshCreditStatus();
+    const intervalId = window.setInterval(() => void refreshCreditStatus(), OPENROUTER_CREDIT_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [currentUser, isAdmin]);
 
   useEffect(() => {
     if (!currentUser || !isAdmin) {
@@ -1142,6 +1170,14 @@ export function App() {
   const otherConfigurationWarnings = configurationWarnings.filter(
     (w) => w.category !== 'encryption' && w.category !== 'encryption_backup',
   );
+  const openRouterCreditWarning =
+    openRouterCreditStatus &&
+    (openRouterCreditStatus.state === 'low' || openRouterCreditStatus.state === 'exhausted')
+      ? `${
+          openRouterCreditStatus.warning ||
+          `OpenRouter credits are ${openRouterCreditStatus.state}.`
+        }${openRouterCreditStatus.stale ? ' Credit status is stale.' : ''}`
+      : null;
 
   return (
     <AvailableModelsProvider>
@@ -1299,6 +1335,23 @@ export function App() {
                   setActiveView('settings');
                 }
               }}
+            />
+            <WarningsBanner
+              title="OpenRouter Credit Alert"
+              warnings={openRouterCreditWarning ? [openRouterCreditWarning] : []}
+              compact
+              hidden={hideChrome || !isAdmin}
+              action={
+                isAdmin
+                  ? {
+                      label: 'Open credit settings',
+                      onClick: () => {
+                        setHighlightSetting('openrouter-credit-monitor');
+                        setActiveView('settings');
+                      },
+                    }
+                  : undefined
+              }
             />
             <WarningsBanner
               title={previewWarning?.title || 'Userspace Preview Setup'}
