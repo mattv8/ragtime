@@ -1,6 +1,6 @@
 import json
 import unittest
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 from ragtime.indexer.models import SolidworksPdmConnectionConfig
@@ -91,7 +91,7 @@ class PdmIndexLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("ragtime.indexer.pdm_service.get_db", return_value=db):
             output = await lookup_pdm_documents("pdm_test", document_id=7597, configuration="lab0049-15")
             with mock.patch("ragtime.indexer.pdm_service.embed_documents_subbatched", return_value=[[0.1]]):
-                await service._process_batch(FakeJob(), [record], object())
+                await service._process_batch(cast(Any, FakeJob()), [record], object())
         self.assertIn("Configuration: LAB0049-15 (ID: 2323)", output)
         self.assertIn("Description: Single Pendant (BP) (v5)", output)
         state_call = next(call for call in db.execute_calls if "pdm_document_state" in call[0])
