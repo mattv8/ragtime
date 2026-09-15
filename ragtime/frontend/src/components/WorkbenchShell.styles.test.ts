@@ -221,10 +221,7 @@ describe('Workbench shell styles contract', () => {
 
   it('keeps embedded ToolWizard containers flat in the Modern theme', () => {
     const css = readSource('src/styles/workbench-admin.css');
-    const embeddedWizardRule = getRuleBody(
-      css,
-      "[data-theme-pack='modern'] .wizard-card.embedded",
-    );
+    const embeddedWizardRule = getRuleBody(css, "[data-theme-pack='modern'] .wizard-card.embedded");
 
     expect(embeddedWizardRule).toContain('background: transparent;');
     expect(embeddedWizardRule).toContain('border: none;');
