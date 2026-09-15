@@ -165,7 +165,7 @@ describe('AgentAccessSection', () => {
     );
 
     expect(apiMock.updateUserSpaceBridgeCredentialMode).toHaveBeenCalledWith('ws-1', 'worker_file');
-    expect(await screen.findByText(/takes effect after the app runtime is restarted/i)).toBeTruthy();
+    expect(await screen.findByText(/takes effect the next time the workspace runtime session is restarted/i)).toBeTruthy();
   });
 
   it('keeps the mode control visible when disabled and disables unsupported file delivery', async () => {

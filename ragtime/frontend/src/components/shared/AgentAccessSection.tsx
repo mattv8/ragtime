@@ -55,7 +55,7 @@ function CredentialModeControl({
         {credentialMode?.supported === false
           ? 'Worker-managed file delivery is unavailable on this runtime worker. Environment mode remains active.'
           : credentialMode?.requires_restart
-            ? 'This change takes effect after the app runtime is restarted. Update the app to read the configured delivery mode before restarting.'
+            ? 'This change takes effect the next time the workspace runtime session is restarted (a full runtime restart, not the session-preserving app restart). Update the app to read the configured delivery mode first.'
             : 'Worker-managed file delivery keeps the bridge token out of the app process environment. Existing apps must be updated before switching.'}
       </p>
       {credentialModeError && <p className="userspace-error" role="alert">{credentialModeError}</p>}
@@ -404,7 +404,7 @@ export function AgentAccessSection({ workspaceId }: AgentAccessSectionProps) {
             className="btn btn-secondary"
             disabled={saving}
             onClick={() => {
-                void runAction(() => api.enableWorkspaceAgentAccess(workspaceId, true, false));
+              void runAction(() => api.enableWorkspaceAgentAccess(workspaceId, true, false));
             }}
           >
             {saving ? 'Enabling...' : 'Enable Agent Access'}

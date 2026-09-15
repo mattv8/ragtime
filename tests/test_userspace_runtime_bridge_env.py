@@ -407,6 +407,11 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(
                 self.service,
+                "_runtime_provider_get_status",
+                mock.AsyncMock(return_value={"bridge_credential": None}),
+            ),
+            mock.patch.object(
+                self.service,
                 "_runtime_provider_restart_devserver",
                 mock.AsyncMock(),
             ) as restart_devserver,
@@ -425,3 +430,69 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
         claims = _decode(restart_kwargs["workspace_env"]["RAGTIME_BRIDGE_TOKEN"])
         self.assertEqual(claims["workspace_id"], "ws-1")
         self.assertEqual(claims["session_id"], "sess-1")
+
+    async def _refresh_env_with_provider_credential(
+        self,
+        credential: dict[str, object] | None,
+    ) -> mock.AsyncMock:
+        active_row = mock.Mock()
+        active_row.id = "sess-1"
+        active_row.workspaceId = "ws-1"
+        active_row.leasedByUserId = "user-1"
+        active_row.state = "running"
+        active_row.runtimeProvider = "microvm_pool_v1"
+        active_row.providerSessionId = "provider-1"
+        active_row.previewInternalUrl = "http://preview"
+        active_row.launchFramework = None
+        active_row.launchCommand = None
+        active_row.launchCwd = None
+        active_row.launchPort = None
+        active_row.createdAt = datetime.now(UTC)
+        active_row.updatedAt = datetime.now(UTC)
+        active_row.lastHeartbeatAt = None
+        active_row.idleExpiresAt = None
+        active_row.ttlExpiresAt = None
+        active_row.lastError = None
+
+        with (
+            mock.patch.object(self.service, "_get_active_session_row", mock.AsyncMock(return_value=active_row)),
+            mock.patch.object(
+                self.service,
+                "_ensure_session_row",
+                mock.AsyncMock(return_value=self.service._to_runtime_session(active_row)),
+            ),
+            mock.patch(
+                "ragtime.userspace.runtime_service.userspace_service.get_workspace_runtime_environment",
+                mock.AsyncMock(return_value={"MY_VAR": "x"}),
+            ),
+            mock.patch(
+                "ragtime.userspace.runtime_service.userspace_service.get_workspace_runtime_environment_visibility",
+                mock.AsyncMock(return_value={"MY_VAR": True}),
+            ),
+            mock.patch.object(
+                self.service,
+                "_runtime_provider_get_status",
+                mock.AsyncMock(return_value={"bridge_credential": credential}),
+            ),
+            mock.patch.object(self.service, "_runtime_provider_restart_devserver", mock.AsyncMock()) as restart_devserver,
+        ):
+            await self.service.refresh_runtime_env_vars("ws-1")
+        return restart_devserver
+
+    async def test_refresh_env_keeps_env_token_when_session_still_runs_env_mode(self) -> None:
+        """A flipped workspace mode must not strip the token from an env-mode session."""
+        with mock.patch.object(
+            self.service,
+            "_workspace_bridge_credential_mode",
+            mock.AsyncMock(return_value="worker_file"),
+        ):
+            restart_devserver = await self._refresh_env_with_provider_credential({"mode": "env"})
+        restart_kwargs = restart_devserver.await_args.kwargs
+        self.assertIn("RAGTIME_BRIDGE_TOKEN", restart_kwargs["workspace_env"])
+        self.assertEqual(restart_kwargs["bridge_credential_mode"], "env")
+
+    async def test_refresh_env_strips_token_for_active_worker_file_session(self) -> None:
+        restart_devserver = await self._refresh_env_with_provider_credential({"mode": "worker_file", "revision": 3})
+        restart_kwargs = restart_devserver.await_args.kwargs
+        self.assertNotIn("RAGTIME_BRIDGE_TOKEN", restart_kwargs["workspace_env"])
+        self.assertEqual(restart_kwargs["bridge_credential_mode"], "worker_file")
