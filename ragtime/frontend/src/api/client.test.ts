@@ -155,6 +155,68 @@ describe('git webhook client normalization', () => {
   });
 });
 
+describe('conversation client request shapes', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('keeps summary timestamps verbatim, encodes all pagination options, and forwards its signal', async () => {
+    const controller = new AbortController();
+    const cursorUpdatedAt = '2026-09-15T12:34:56.123456+00:00';
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+    await api.listConversationSummaries(
+      'workspace/a b',
+      {
+        since: '2026-08-01T00:00:00+00:00',
+        until: '2026-09-01T00:00:00+00:00',
+        limit: 50,
+        cursorUpdatedAt,
+        cursorId: 'conversation/a b',
+      },
+      controller.signal,
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/conversations/summaries?workspace_id=workspace%2Fa%20b&since=2026-08-01T00%3A00%3A00%2B00%3A00&until=2026-09-01T00%3A00%3A00%2B00%3A00&limit=50&cursor_updated_at=2026-09-15T12%3A34%3A56.123456%2B00%3A00&cursor_id=conversation%2Fa%20b',
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
+  it('preserves bare summary responses and optional callers without query parameters', async () => {
+    const summaries = [{ id: 'summary-1' }];
+    fetchMock.mockResolvedValueOnce(jsonResponse(summaries));
+
+    await expect(api.listConversationSummaries()).resolves.toEqual(summaries);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/conversations/summaries',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+  });
+
+  it('forwards abort signals to existing conversation requests', async () => {
+    const controller = new AbortController();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 'conversation-1' }));
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ matched_conversation_ids: [] }));
+
+    await api.getConversation('conversation-1', undefined, controller.signal);
+    await api.listConversations(undefined, undefined, controller.signal);
+    await api.searchConversationBranches(['conversation-1'], 'needle', controller.signal);
+
+    for (const [, request] of fetchMock.mock.calls) {
+      expect(request?.signal).toBe(controller.signal);
+    }
+  });
+});
+
 describe('HTTP API OAuth client request shapes', () => {
   const fetchMock = vi.fn<typeof fetch>();
 

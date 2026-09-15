@@ -3057,6 +3057,9 @@ class IndexerRepository:
         workspace_id: Optional[str] = None,
         since: Optional[datetime] = None,
         until: Optional[datetime] = None,
+        limit: Optional[int] = None,
+        cursor_updated_at: Optional[datetime] = None,
+        cursor_id: Optional[str] = None,
     ) -> list[ConversationSummaryResponse]:
         """List conversations without materializing message payloads."""
         db = await self._get_db()
@@ -3084,8 +3087,13 @@ class IndexerRepository:
             where_parts.append(f"c.updated_at >= {_sql_quote_literal(since.isoformat())}::timestamp")
         if until is not None:
             where_parts.append(f"c.updated_at < {_sql_quote_literal(until.isoformat())}::timestamp")
+        if cursor_updated_at is not None:
+            cursor_updated_at_sql = f"{_sql_quote_literal(cursor_updated_at.isoformat())}::timestamp"
+            cursor_id_sql = _sql_quote_literal(cursor_id or "")
+            where_parts.append(f"(c.updated_at < {cursor_updated_at_sql} OR (c.updated_at = {cursor_updated_at_sql} AND c.id < {cursor_id_sql}))")
 
         where_clause = " AND ".join(where_parts)
+        limit_clause = f"LIMIT {int(limit)}" if limit is not None else ""
         rows = await db.query_raw(f"""
             SELECT
                 c.id,
@@ -3111,7 +3119,8 @@ class IndexerRepository:
             FROM conversations c
             LEFT JOIN users u ON u.id = c.user_id
             WHERE {where_clause}
-            ORDER BY c.updated_at DESC
+            ORDER BY c.updated_at DESC, c.id DESC
+            {limit_clause}
             """)
 
         summaries = [

@@ -2730,6 +2730,7 @@ export const api = {
       cursorUpdatedAt?: string | null;
       cursorId?: string | null;
     },
+    signal?: AbortSignal,
   ): Promise<Conversation[]> {
     let url = withWorkspaceQuery(`${API_BASE}/conversations`, workspaceId);
     const extra: string[] = [];
@@ -2743,22 +2744,34 @@ export const api = {
     if (extra.length) {
       url += url.includes('?') ? `&${extra.join('&')}` : `?${extra.join('&')}`;
     }
-    const response = await apiFetch(url);
+    const response = await apiFetch(url, signal ? { signal } : {});
     return handleResponse<Conversation[]>(response);
   },
 
   async listConversationSummaries(
     workspaceId?: string,
-    options?: { since?: string | null; until?: string | null },
+    options?: {
+      since?: string | null;
+      until?: string | null;
+      limit?: number | null;
+      cursorUpdatedAt?: string | null;
+      cursorId?: string | null;
+    },
+    signal?: AbortSignal,
   ): Promise<ConversationSummary[]> {
     let url = withWorkspaceQuery(`${API_BASE}/conversations/summaries`, workspaceId);
     const extra: string[] = [];
     if (options?.since) extra.push(`since=${encodeURIComponent(options.since)}`);
     if (options?.until) extra.push(`until=${encodeURIComponent(options.until)}`);
+    if (typeof options?.limit === 'number')
+      extra.push(`limit=${encodeURIComponent(String(options.limit))}`);
+    if (options?.cursorUpdatedAt)
+      extra.push(`cursor_updated_at=${encodeURIComponent(options.cursorUpdatedAt)}`);
+    if (options?.cursorId) extra.push(`cursor_id=${encodeURIComponent(options.cursorId)}`);
     if (extra.length) {
       url += url.includes('?') ? `&${extra.join('&')}` : `?${extra.join('&')}`;
     }
-    const response = await apiFetch(url);
+    const response = await apiFetch(url, signal ? { signal } : {});
     return handleResponse<ConversationSummary[]>(response);
   },
 
@@ -2832,11 +2845,13 @@ export const api = {
   async searchConversationBranches(
     conversationIds: string[],
     query: string,
+    signal?: AbortSignal,
   ): Promise<ConversationBranchSearchResponse> {
     const response = await apiFetch(`${API_BASE}/conversations/branches/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conversation_ids: conversationIds, query }),
+      ...(signal ? { signal } : {}),
     });
     return handleResponse<ConversationBranchSearchResponse>(response);
   },
@@ -2863,9 +2878,14 @@ export const api = {
   /**
    * Get a specific conversation by ID
    */
-  async getConversation(conversationId: string, workspaceId?: string): Promise<Conversation> {
+  async getConversation(
+    conversationId: string,
+    workspaceId?: string,
+    signal?: AbortSignal,
+  ): Promise<Conversation> {
     const response = await apiFetch(
       withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}`, workspaceId),
+      signal ? { signal } : {},
     );
     return handleResponse<Conversation>(response);
   },
