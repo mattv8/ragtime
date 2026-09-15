@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "legacy_applied": [
+    {
+      "name": "20260629120000_add_subagent_conversations",
+      "migration_sha256": "9292cf63d18fde4e123ea2fdd3573c66e4b872342a5aa52e0ec414cbc170458b"
+    }
+  ],
+  "baseline_aliases": [
+    {
+      "name": "20260428130000_add_conversation_shares",
+      "applied_checksum": "5eb0178ed9edc102c80b6a2d6486551c551598cbcf8dd492aca10c7145be4b72",
+      "migration_sha256": "2d402c29d68d0a54dcc8083b3c783284c49e8ffcab80ff10c0c71f991666e9c9"
+    },
+    {
+      "name": "20260428140000_add_workspace_shares",
+      "applied_checksum": "manual-applied",
+      "migration_sha256": "2269e5b37101261f246cbc074dc4df78fba50b39a6e9d57d2ed6742ace18bb89"
+    },
+    {
+      "name": "20260507000000_add_cloud_userspace_mounts",
+      "applied_checksum": "20260507000000_add_cloud_userspace_mounts_checksum_placeholder",
+      "migration_sha256": "ca6df90c0efc5b97f69d2c275d1ca15644e4cdd70328218275100e75023d1d3e"
+    },
+    {
+      "name": "20260508000000_add_model_provider_precedence",
+      "applied_checksum": "a3af08d5e96182c858623aea16167a37a792ca35a4999c77f481211a25639009",
+      "migration_sha256": "86e55554d0e310d02b7e77db8cffaab21393b79d790968c3d0171a4365e222ad"
+    },
+    {
+      "name": "20260515000000_add_refresh_conversation_branch_kind",
+      "applied_checksum": "3c9b2d1d6b859cc36a0b83795257f6a49059bbe049b55b8f81075717d178caff",
+      "migration_sha256": "2ed08180e0b6d78cc7178f32fe82afeb31379628f6465ad5b1d063bb68670496"
+    },
+    {
+      "name": "20260714160000_add_share_link_analytics",
+      "applied_checksum": "ffd9b6152d6b7aff2e3ebc6941f05d01be4388473493a09e42d96e35a9a6fdf3",
+      "migration_sha256": "e7cd1f4b75cd2efd0e27f9ecad82e08c9d3ddcbb6381dd676431904670f56760"
+    },
+    {
+      "name": "20260901170000_add_default_model_preferences",
+      "applied_checksum": "4bce8c17df0cc6da88541678e1d1bda3e635d56eb5f358067512d5b546186baa",
+      "migration_sha256": "8b6acb09a6d51a85b0378119787711dbdc373f662c58c3b56c16cfa8ab9b356f"
+    }
+  ],
+  "down_migrations": [
+    {
+      "name": "20260915120000_add_external_agent_reliability",
+      "migration_sha256": "def13c6ad0d78cc8f588007fc13c6c99501e93ba19f9a3ecf82d0abdb5b2e25b",
+      "down_sha256": "91df611d31f5b117a472714b1c9f91e89123be7f09eb00fb842d4aa80a9b64a7",
+      "down_sql": "DROP TABLE IF EXISTS \"workspace_runtime_operations\";\nALTER TABLE \"chat_tasks\" DROP COLUMN IF EXISTS \"outcome_summary\";\nALTER TABLE \"chat_tasks\" DROP COLUMN IF EXISTS \"termination_reason\";\nALTER TABLE \"chat_tasks\" DROP COLUMN IF EXISTS \"execution_policy\";\nALTER TABLE \"workspace_agent_access\" DROP COLUMN IF EXISTS \"allow_runtime_restart\";\nALTER TABLE \"workspaces\" DROP COLUMN IF EXISTS \"bridge_credential_mode\";\nALTER TABLE \"app_settings\" DROP COLUMN IF EXISTS \"openrouter_management_api_key\";\nALTER TABLE \"app_settings\" DROP COLUMN IF EXISTS \"openrouter_low_credit_threshold_usd\";\nALTER TABLE \"app_settings\" DROP COLUMN IF EXISTS \"openrouter_credit_monitor_enabled\";\nALTER TABLE \"app_settings\" DROP COLUMN IF EXISTS \"userspace_build_model\";\n"
+    }
+  ]
+}

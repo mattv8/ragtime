@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "projectActions": [
+    {
+      "id": "switch-to-worktree",
+      "name": "Switch to Worktree",
+      "icon": "branch",
+      "command": "bash scripts/switch-dev-worktree.sh",
+      "platforms": [
+        "macos",
+        "linux"
+      ],
+      "runIn": "parent"
+    }
+  ]
+}
