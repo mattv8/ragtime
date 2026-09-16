@@ -155,6 +155,73 @@ describe('git webhook client normalization', () => {
   });
 });
 
+describe('PDM webhook client', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('uses the saved-tool webhook URL and preserves nullable status fields', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        enabled: false,
+        paused: false,
+        webhook_id: null,
+        webhook_url: null,
+        created_at: null,
+        last_received_at: null,
+        pending: false,
+        active_job_id: null,
+        last_attempt_at: null,
+        last_success_at: null,
+        last_error: null,
+      }),
+    );
+
+    const result = await api.getPdmWebhook('pdm/tool');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/tools/pdm%2Ftool/pdm/webhook',
+      expect.anything(),
+    );
+    expect(result.webhook_id).toBeNull();
+    expect(result.last_error).toBeNull();
+  });
+
+  it('returns the one-time secret only from the enable endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        enabled: true,
+        paused: false,
+        webhook_id: 'pdm-webhook',
+        webhook_url: 'https://ragtime.example/webhooks/pdm/pdm-webhook',
+        created_at: '2026-09-16T12:00:00Z',
+        last_received_at: null,
+        pending: false,
+        active_job_id: null,
+        last_attempt_at: null,
+        last_success_at: null,
+        last_error: null,
+        secret: 'one-time-secret',
+      }),
+    );
+
+    const result = await api.enablePdmWebhook('pdm-tool');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/tools/pdm-tool/pdm/webhook',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(result.secret).toBe('one-time-secret');
+  });
+});
+
 describe('conversation client request shapes', () => {
   const fetchMock = vi.fn<typeof fetch>();
 
