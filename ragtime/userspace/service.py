@@ -13539,22 +13539,27 @@ class UserSpaceService:
             selected_tool_ids=requested_tool_ids,
             selected_tool_group_ids=requested_tool_group_ids,
         )
-        try:
-            await db.workspace.create(
-                data=cast(
-                    Any,
-                    {
-                        "id": workspace_id,
-                        "name": final_name,
-                        "nameNormalized": name_normalized,
-                        "description": request.description,
-                        "sqlitePersistenceMode": _normalize_sqlite_persistence_mode(request.sqlite_persistence_mode),
-                        "toolSelectionMode": tool_selection_mode,
-                        "ownerUserId": user_id,
-                        "createdAt": now,
-                        "updatedAt": now,
-                    },
-                ),
+        workspace_data = cast(
+            Any,
+            {
+                "id": workspace_id,
+                "name": final_name,
+                "nameNormalized": name_normalized,
+                "description": request.description,
+                "sqlitePersistenceMode": _normalize_sqlite_persistence_mode(request.sqlite_persistence_mode),
+                "toolSelectionMode": tool_selection_mode,
+                "ownerUserId": user_id,
+                "createdAt": now,
+                "updatedAt": now,
+            },
+        )
+
+        workspace_created = False
+
+        async def create_relational_workspace(tx: Any) -> None:
+            nonlocal workspace_created
+            await tx.workspace.create(
+                data=workspace_data,
                 include={
                     "members": True,
                     "toolSelections": True,
@@ -13562,63 +13567,103 @@ class UserSpaceService:
                     "toolOptions": True,
                 },
             )
-        except Exception as exc:
-            if _is_workspace_name_conflict_error(exc):
+            workspace_created = True
+            await tx.workspacemember.create(
+                data=cast(
+                    Any,
+                    {
+                        "workspaceId": workspace_id,
+                        "userId": user_id,
+                        "role": "owner",
+                    },
+                )
+            )
+            await self._persist_workspace_tool_selections(tx, workspace_id, requested_tool_ids)
+            await self._persist_workspace_tool_group_selections(tx, workspace_id, requested_tool_group_ids)
+            await self._persist_workspace_tool_options(tx, workspace_id, normalized_tool_options)
+
+        try:
+            async with db.tx() as tx:
+                await create_relational_workspace(tx)
+        except BaseException as exc:
+            if isinstance(exc, Exception) and _is_workspace_name_conflict_error(exc):
                 raise HTTPException(
                     status_code=409,
                     detail="A workspace with that name already exists for this owner",
                 ) from exc
+            if workspace_created:
+                # A disconnect or cancellation while committing can leave this
+                # invocation's UUID in the database. Compensate by exact ID.
+                await asyncio.shield(self._cleanup_failed_workspace_creation(db, workspace_id))
             raise
 
-        await db.workspacemember.create(
-            data=cast(
-                Any,
-                {
-                    "workspaceId": workspace_id,
-                    "userId": user_id,
-                    "role": "owner",
+        storage_provisioning_started = False
+        workspace_dir: Path | None = None
+        created_workspace_dir = False
+        try:
+            files_dir = self._workspace_files_dir(workspace_id)
+            workspace_dir = files_dir.parent
+            try:
+                workspace_dir.mkdir(parents=True, exist_ok=False)
+                created_workspace_dir = True
+            except FileExistsError:
+                pass
+            files_dir.mkdir(parents=True, exist_ok=True)
+            storage_provisioning_started = True
+            await object_storage_control.ensure_workspace(workspace_id)
+            self._seed_runtime_bootstrap_config(workspace_id)
+            self._seed_runtime_entrypoint_config(workspace_id)
+            await self._ensure_workspace_git_repo(workspace_id)
+
+            refreshed = await db.workspace.find_unique(
+                where={"id": workspace_id},
+                include={
+                    "members": True,
+                    "toolSelections": True,
+                    "toolGroupSelections": True,
+                    "toolOptions": True,
+                    "owner": True,
                 },
             )
-        )
+            if not refreshed:
+                raise HTTPException(status_code=500, detail="Failed to create workspace")
+            return self._workspace_from_record(refreshed)
+        except BaseException:
+            await asyncio.shield(
+                self._cleanup_failed_workspace_creation(
+                    db,
+                    workspace_id,
+                    storage_provisioning_started=storage_provisioning_started,
+                    workspace_dir=workspace_dir if created_workspace_dir else None,
+                )
+            )
+            raise
 
-        await self._persist_workspace_tool_selections(
-            db,
-            workspace_id,
-            requested_tool_ids,
-        )
+    async def _cleanup_failed_workspace_creation(
+        self,
+        db: Any,
+        workspace_id: str,
+        *,
+        storage_provisioning_started: bool = False,
+        workspace_dir: Path | None = None,
+    ) -> None:
+        """Best-effort compensation for resources owned by one create invocation."""
+        try:
+            await db.workspace.delete(where={"id": workspace_id})
+        except Exception:
+            logger.warning("Failed to clean up newly created workspace database row %s", workspace_id, exc_info=True)
 
-        await self._persist_workspace_tool_group_selections(
-            db,
-            workspace_id,
-            requested_tool_group_ids,
-        )
+        if storage_provisioning_started:
+            try:
+                await object_storage_control.delete_workspace(workspace_id)
+            except Exception:
+                logger.warning("Failed to clean up newly created workspace storage %s", workspace_id, exc_info=True)
 
-        await self._persist_workspace_tool_options(
-            db,
-            workspace_id,
-            normalized_tool_options,
-        )
-
-        self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
-        await object_storage_control.ensure_workspace(workspace_id)
-        self._seed_runtime_bootstrap_config(workspace_id)
-        self._seed_runtime_entrypoint_config(workspace_id)
-        await self._ensure_workspace_git_repo(workspace_id)
-
-        refreshed = await db.workspace.find_unique(
-            where={"id": workspace_id},
-            include={
-                "members": True,
-                "toolSelections": True,
-                "toolGroupSelections": True,
-                "toolOptions": True,
-                "owner": True,
-            },
-        )
-        if not refreshed:
-            raise HTTPException(status_code=500, detail="Failed to create workspace")
-
-        return self._workspace_from_record(refreshed)
+        if workspace_dir is not None and workspace_dir.exists():
+            try:
+                await asyncio.to_thread(shutil.rmtree, workspace_dir)
+            except Exception:
+                logger.warning("Failed to clean up newly created workspace files %s", workspace_id, exc_info=True)
 
     async def get_workspace(self, workspace_id: str, user_id: str) -> UserSpaceWorkspace:
         return await self._enforce_workspace_access(workspace_id, user_id)

@@ -3,7 +3,8 @@ from __future__ import annotations
 import sys
 import types
 import unittest
-from contextlib import ExitStack, contextmanager
+from collections.abc import AsyncIterator
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -227,7 +228,7 @@ class _CreateWorkspaceMemberTable(_CaptureTable):
 
 def _make_workspace_create_db() -> SimpleNamespace:
     workspace_table = _CreateWorkspaceTable()
-    return SimpleNamespace(
+    db = SimpleNamespace(
         workspace=workspace_table,
         workspacemember=_CreateWorkspaceMemberTable(workspace_table),
         workspacetoolselection=_CaptureTable(),
@@ -237,6 +238,13 @@ def _make_workspace_create_db() -> SimpleNamespace:
         toolconfig=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(id="tool-read", enabled=True))),
         toolgroup=SimpleNamespace(find_unique=mock.AsyncMock(return_value=None)),
     )
+
+    @asynccontextmanager
+    async def tx() -> AsyncIterator[SimpleNamespace]:
+        yield db
+
+    db.tx = tx
+    return db
 
 
 class _WorkspaceUpdateService(UserSpaceService):
