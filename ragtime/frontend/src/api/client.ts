@@ -58,6 +58,8 @@ import type {
   SSHKeyPairResponse,
   HeartbeatResponse,
   Conversation,
+  ConversationMessageWindow,
+  ConversationWindowEntry,
   ConversationSummary,
   ConversationCountResponse,
   CreateConversationRequest,
@@ -2756,6 +2758,7 @@ export const api = {
       limit?: number | null;
       cursorUpdatedAt?: string | null;
       cursorId?: string | null;
+      owner_scope?: 'all' | 'self' | 'others';
     },
     signal?: AbortSignal,
   ): Promise<ConversationSummary[]> {
@@ -2768,6 +2771,7 @@ export const api = {
     if (options?.cursorUpdatedAt)
       extra.push(`cursor_updated_at=${encodeURIComponent(options.cursorUpdatedAt)}`);
     if (options?.cursorId) extra.push(`cursor_id=${encodeURIComponent(options.cursorId)}`);
+    if (options?.owner_scope) extra.push(`owner_scope=${encodeURIComponent(options.owner_scope)}`);
     if (extra.length) {
       url += url.includes('?') ? `&${extra.join('&')}` : `?${extra.join('&')}`;
     }
@@ -2888,6 +2892,54 @@ export const api = {
       signal ? { signal } : {},
     );
     return handleResponse<Conversation>(response);
+  },
+
+  async getConversationLatestExchange(
+    conversationId: string,
+    workspaceId?: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<ConversationMessageWindow> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/latest-exchange`,
+        workspaceId,
+      ),
+      options?.signal ? { signal: options.signal } : {},
+    );
+    return handleResponse<ConversationMessageWindow>(response);
+  },
+
+  async getConversationMessageWindow(
+    conversationId: string,
+    params: { cursor: string; limit?: number },
+    workspaceId?: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<ConversationMessageWindow> {
+    const query = new URLSearchParams({ cursor: params.cursor });
+    if (typeof params.limit === 'number') query.set('limit', String(params.limit));
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/message-window?${query.toString()}`,
+        workspaceId,
+      ),
+      options?.signal ? { signal: options.signal } : {},
+    );
+    return handleResponse<ConversationMessageWindow>(response);
+  },
+
+  async getConversationWindowMessage(
+    conversationId: string,
+    messageIndex: number,
+    revision: string,
+    workspaceId?: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<ConversationWindowEntry> {
+    const url = `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(String(messageIndex))}?revision=${encodeURIComponent(revision)}`;
+    const response = await apiFetch(
+      withWorkspaceQuery(url, workspaceId),
+      options?.signal ? { signal: options.signal } : {},
+    );
+    return handleResponse<ConversationWindowEntry>(response);
   },
 
   /**

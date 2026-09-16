@@ -215,6 +215,55 @@ describe('conversation client request shapes', () => {
       expect(request?.signal).toBe(controller.signal);
     }
   });
+
+  it('uses the frozen window endpoints, workspace query, and abort options', async () => {
+    const controller = new AbortController();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ entries: [] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ entries: [] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ entries: [] }));
+
+    await api.getConversationLatestExchange('conversation/a b', 'workspace/a b', {
+      signal: controller.signal,
+    });
+    await api.getConversationMessageWindow(
+      'conversation/a b',
+      { cursor: 'before/20', limit: 20 },
+      'workspace/a b',
+      { signal: controller.signal },
+    );
+    await api.getConversationWindowMessage(
+      'conversation/a b',
+      12,
+      'revision/a b',
+      'workspace/a b',
+      { signal: controller.signal },
+    );
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/indexes/conversations/conversation%2Fa%20b/latest-exchange?workspace_id=workspace%2Fa%20b',
+      expect.objectContaining({ signal: controller.signal }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/indexes/conversations/conversation%2Fa%20b/message-window?cursor=before%2F20&limit=20&workspace_id=workspace%2Fa%20b',
+      expect.objectContaining({ signal: controller.signal }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/indexes/conversations/conversation%2Fa%20b/messages/12?revision=revision%2Fa%20b&workspace_id=workspace%2Fa%20b',
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
+  it('adds owner_scope only when requested without changing older summary calls', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    await api.listConversationSummaries(undefined, { owner_scope: 'self' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/conversations/summaries?owner_scope=self',
+      expect.anything(),
+    );
+  });
 });
 
 describe('HTTP API OAuth client request shapes', () => {

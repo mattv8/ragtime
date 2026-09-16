@@ -8,6 +8,8 @@ replacing the previous JSON file-based storage.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import importlib
 import json
 import os
@@ -148,7 +150,11 @@ from ragtime.indexer.models import (
     ConversationBranch,
     ConversationBranchKind,
     ConversationBranchSummary,
+    ConversationMessagePreview,
+    ConversationMessageWindow,
     ConversationSummaryResponse,
+    ConversationWindowEntry,
+    ConversationWindowMetadata,
     FaissSearchConcurrencyMode,
     IndexConfig,
     IndexJob,
@@ -184,6 +190,10 @@ class ConversationBranchMutationError(RuntimeError):
     def __init__(self, detail: str, *, status_code: int = 409) -> None:
         super().__init__(detail)
         self.status_code = status_code
+
+
+class ConversationWindowStaleError(RuntimeError):
+    """A revision-bound transcript read no longer matches persisted content."""
 
 
 def _is_unique_violation(exc: Exception) -> bool:
@@ -2971,6 +2981,281 @@ class IndexerRepository:
             await self.attach_child_conversation_ids_many([conv])
         return await self.attach_message_snapshot_links(conv)
 
+    @staticmethod
+    def _encode_conversation_window_cursor(conversation_id: str, active_branch_id: str | None, revision: str, before_index: int) -> str:
+        payload = json.dumps(
+            {"conversation_id": conversation_id, "active_branch_id": active_branch_id, "revision": revision, "before_index": before_index},
+            separators=(",", ":"),
+        ).encode()
+        return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+    @staticmethod
+    def decode_conversation_window_cursor(cursor: str) -> dict[str, Any]:
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            decoded = json.loads(base64.urlsafe_b64decode(padded.encode()))
+        except Exception as exc:
+            raise ValueError("Invalid conversation message cursor") from exc
+        if (
+            not isinstance(decoded, dict)
+            or not isinstance(decoded.get("conversation_id"), str)
+            or not isinstance(decoded.get("revision"), str)
+            or isinstance(decoded.get("before_index"), bool)
+            or not isinstance(decoded.get("before_index"), int)
+            or decoded["before_index"] < 0
+        ):
+            raise ValueError("Invalid conversation message cursor")
+        if decoded.get("active_branch_id") is not None and not isinstance(decoded["active_branch_id"], str):
+            raise ValueError("Invalid conversation message cursor")
+        return decoded
+
+    @staticmethod
+    def _window_entry_key(message: dict[str, Any], index: int) -> str:
+        message_id = message.get("message_id")
+        if isinstance(message_id, str) and message_id:
+            return message_id
+        digest = hashlib.sha256(json.dumps(message, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()[:24]
+        return f"legacy:{index}:{digest}"
+
+    @staticmethod
+    def _window_preview(message: dict[str, Any], *, max_bytes: int, has_details: bool | None = None) -> ConversationMessagePreview:
+        raw_content = message.get("content")
+        content = str(raw_content or "")
+        raw_events = message.get("events")
+        if isinstance(raw_content, str):
+            try:
+                parsed_content = json.loads(raw_content)
+            except (TypeError, ValueError):
+                parsed_content = None
+            if isinstance(parsed_content, list):
+                content = "\n".join(str(part.get("text") or "") for part in parsed_content if isinstance(part, dict) and part.get("type") == "text")
+        if content.startswith("data:"):
+            content = ""
+        if not content and isinstance(raw_events, list):
+            for event in raw_events:
+                if isinstance(event, dict) and event.get("type") == "content" and isinstance(event.get("content"), str):
+                    content = event["content"]
+                    break
+        encoded = content.encode("utf-8")
+        truncated = len(encoded) > max_bytes
+        if truncated:
+            content = encoded[:max_bytes].decode("utf-8", errors="ignore")
+        return ConversationMessagePreview(
+            role=str(message.get("role") or "user"),
+            content=content,
+            timestamp=parse_utc_iso_datetime(message["timestamp"]) if message.get("timestamp") else utc_now(),
+            message_id=message.get("message_id"),
+            content_truncated=truncated,
+            has_details=bool(message.get("events") or message.get("tool_calls")) if has_details is None else has_details,
+        )
+
+    def _conversation_window_metadata(self, row: dict[str, Any]) -> ConversationWindowMetadata:
+        return ConversationWindowMetadata(
+            id=str(row.get("id") or ""),
+            title=str(row.get("title") or "Untitled Chat"),
+            model=str(row.get("model") or ""),
+            user_id=row.get("user_id"),
+            workspace_id=row.get("workspace_id"),
+            username=row.get("username"),
+            display_name=row.get("display_name"),
+            total_tokens=int(row.get("total_tokens") or 0),
+            active_task_id=row.get("active_task_id"),
+            active_branch_id=row.get("active_branch_id"),
+            disabled_builtin_tool_ids=_normalize_string_list(row.get("disabled_builtin_tool_ids")),
+            subagents_enabled=bool(row.get("subagents_enabled", True)),
+            parent_conversation_id=row.get("parent_conversation_id"),
+            subagent_role=row.get("subagent_role"),
+            subagent_index=row.get("subagent_index"),
+            is_subagent=bool(row.get("parent_conversation_id")),
+            read_only=bool(row.get("parent_conversation_id")),
+            tool_selection_mode=str(row.get("tool_selection_mode") or "custom"),
+            tool_output_mode=ToolOutputMode(row.get("tool_output_mode") or "default"),
+            created_at=cast(datetime, row.get("created_at") or utc_now()),
+            updated_at=cast(datetime, row.get("updated_at") or utc_now()),
+        )
+
+    async def _legacy_conversation_window(self, conversation_id: str, revision: str) -> ConversationMessageWindow | None:
+        conversation = await self.get_conversation(conversation_id)
+        if conversation is None:
+            return None
+        metadata = ConversationWindowMetadata.model_validate(conversation.model_dump(exclude={"messages", "loaded_tool_skill_ids"}))
+        metadata.is_subagent = bool(conversation.parent_conversation_id)
+        metadata.read_only = bool(conversation.parent_conversation_id)
+        entries = [
+            ConversationWindowEntry(index=index, key=self._window_entry_key(message.model_dump(mode="json"), index), state="ready", message=message)
+            for index, message in enumerate(conversation.messages)
+        ]
+        return ConversationMessageWindow(
+            conversation=metadata, revision=revision, total_message_count=len(entries), entries=entries, legacy_conversation=conversation
+        )
+
+    async def _query_conversation_window(
+        self, conversation_id: str, *, before_index: int | None, latest_exchange: bool, limit: int = 50, message_index: int | None = None
+    ) -> dict[str, Any] | None:
+        """Read metadata, revision, and only the selected canonical JSON entries in one snapshot."""
+        db = await self._get_db()
+        before_predicate = "TRUE" if before_index is None else f"e.message_index < {int(before_index)}"
+        selection = (
+            f"e.message_index = {message_index}"
+            if message_index is not None
+            else "e.message_index = c.total_message_count - 1 OR e.message_index = c.latest_user_index"
+            if latest_exchange
+            else before_predicate
+        )
+        limit_clause = "" if latest_exchange or message_index is not None else f"LIMIT {limit}"
+        return_rows = await db.query_raw(f"""
+            WITH c AS (
+                SELECT c.*, u.username, u.display_name,
+                    CASE WHEN jsonb_typeof(c.messages) = 'array' THEN jsonb_array_length(c.messages) ELSE 0 END AS total_message_count,
+                    max(CASE WHEN item.value->>'role' = 'user' THEN item.ordinality - 1 END) AS latest_user_index,
+                    encode(sha256(convert_to(c.messages::text || coalesce(c.active_branch_id, ''), 'UTF8')), 'hex') AS revision,
+                    jsonb_typeof(c.messages) = 'array' AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(c.messages) = 'array' THEN c.messages ELSE '[]'::jsonb END) AS check_item(value) WHERE jsonb_typeof(check_item.value) <> 'object') AS is_canonical
+                FROM conversations c
+                LEFT JOIN users u ON u.id = c.user_id
+                LEFT JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.messages) = 'array' THEN c.messages ELSE '[]'::jsonb END) WITH ORDINALITY AS item(value, ordinality) ON TRUE
+                WHERE c.id = {_sql_quote_literal(conversation_id)}
+                GROUP BY c.id, u.username, u.display_name
+            ), e AS (
+                SELECT c.id, item.ordinality - 1 AS message_index, item.value AS message
+                FROM c CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.messages) = 'array' THEN c.messages ELSE '[]'::jsonb END) WITH ORDINALITY AS item(value, ordinality)
+            ), selected AS (
+                SELECT e.message_index,
+                    {"jsonb_set(e.message - 'events' - 'tool_calls', '{content}', to_jsonb(coalesce(nullif(e.message->>'content', ''), (SELECT event.value->>'content' FROM jsonb_array_elements(CASE WHEN jsonb_typeof(e.message->'events') = 'array' THEN e.message->'events' ELSE '[]'::jsonb END) AS event(value) WHERE event.value->>'type' = 'content' AND event.value ? 'content' LIMIT 1), '')), true)" if latest_exchange else "e.message"} AS message,
+                    (e.message ? 'events' OR e.message ? 'tool_calls') AS has_details,
+                    coalesce(e.message->>'message_id', 'legacy:' || e.message_index || ':' || encode(sha256(convert_to(e.message::text, 'UTF8')), 'hex')) AS entry_key
+                FROM e JOIN c ON c.id = e.id
+                WHERE {selection} ORDER BY e.message_index DESC {limit_clause}
+            )
+            SELECT c.id, c.title, c.model, c.user_id, c.workspace_id, c.username, c.display_name, c.total_tokens,
+                c.active_task_id, c.active_branch_id, c.disabled_builtin_tool_ids, c.subagents_enabled,
+                c.parent_conversation_id, c.subagent_role, c.subagent_index, c.tool_selection_mode,
+                c.tool_output_mode, c.created_at, c.updated_at, c.total_message_count, c.revision, c.is_canonical,
+                COALESCE((SELECT jsonb_agg(jsonb_build_object('index', selected.message_index, 'message', selected.message, 'has_details', selected.has_details, 'key', selected.entry_key) ORDER BY selected.message_index) FROM selected), '[]'::jsonb) AS entries
+            FROM c
+        """)
+        return return_rows[0] if return_rows else None
+
+    async def _build_conversation_window(
+        self,
+        conversation_id: str,
+        *,
+        before_index: int | None,
+        latest_exchange: bool,
+        expected_revision: str | None = None,
+        expected_active_branch_id: str | None = None,
+        limit: int = 50,
+        message_index: int | None = None,
+        force_ready: bool = False,
+    ) -> ConversationMessageWindow | None:
+        row = await self._query_conversation_window(
+            conversation_id, before_index=before_index, latest_exchange=latest_exchange, limit=limit, message_index=message_index
+        )
+        if row is None:
+            return None
+        revision = str(row.get("revision") or "")
+        if expected_revision is not None and (
+            revision != expected_revision or (expected_active_branch_id is not None and row.get("active_branch_id") != expected_active_branch_id)
+        ):
+            raise ConversationWindowStaleError("Conversation changed; reload messages")
+        if not bool(row.get("is_canonical", True)):
+            return await self._legacy_conversation_window(conversation_id, revision)
+        total = int(row.get("total_message_count") or 0)
+        if before_index is not None and before_index > total:
+            raise ValueError("Invalid conversation message cursor")
+        raw_entries_value = row.get("entries")
+        raw_entries = raw_entries_value if isinstance(raw_entries_value, list) else []
+        entries: list[ConversationWindowEntry] = []
+        budget = 256 * 1024
+        used = 0
+        for raw_entry in raw_entries:
+            if not isinstance(raw_entry, dict) or not isinstance(raw_entry.get("message"), dict):
+                continue
+            index = int(raw_entry.get("index") or 0)
+            message_data = cast(dict[str, Any], raw_entry["message"])
+            key = str(raw_entry.get("key") or self._window_entry_key(message_data, index))
+            if latest_exchange:
+                entries.append(
+                    ConversationWindowEntry(
+                        index=index,
+                        key=key,
+                        state="deferred",
+                        preview=self._window_preview(message_data, max_bytes=16 * 1024, has_details=bool(raw_entry.get("has_details"))),
+                    )
+                )
+                continue
+            message = self._parse_messages_json([message_data])[0]
+            ready_entry = ConversationWindowEntry(index=index, key=key, state="ready", message=message)
+            ready_size = len(json.dumps(ready_entry.model_dump(mode="json"), separators=(",", ":")).encode())
+            if not force_ready and used + ready_size > budget:
+                deferred_entry = ConversationWindowEntry(
+                    index=index,
+                    key=key,
+                    state="deferred",
+                    preview=self._window_preview(message_data, max_bytes=1024, has_details=bool(raw_entry.get("has_details"))),
+                )
+                entries.append(deferred_entry)
+                used += len(json.dumps(deferred_entry.model_dump(mode="json"), separators=(",", ":")).encode())
+                continue
+            entries.append(ready_entry)
+            used += ready_size
+        ready_messages = [entry.message for entry in entries if entry.message is not None]
+        if ready_messages:
+            try:
+                snapshot_links = await self.get_message_snapshot_links_for_conversation(conversation_id)
+                for message in ready_messages:
+                    if message.message_id and message.message_id in snapshot_links:
+                        message.snapshot_restore = snapshot_links[message.message_id]
+            except Exception:
+                pass
+        range_start = min((entry.index for entry in entries), default=total)
+        next_before_index = total if latest_exchange else range_start
+        has_more = total > 0 if latest_exchange else total > 0 and range_start > 0
+        metadata = self._conversation_window_metadata(row)
+        if not metadata.parent_conversation_id:
+            metadata.subagent_conversation_ids = (await self.get_subagent_conversation_ids_by_parent([conversation_id])).get(conversation_id, [])
+        return ConversationMessageWindow(
+            conversation=metadata,
+            revision=revision,
+            total_message_count=total,
+            entries=entries,
+            next_cursor=self._encode_conversation_window_cursor(conversation_id, row.get("active_branch_id"), revision, next_before_index)
+            if has_more
+            else None,
+            has_more=has_more,
+        )
+
+    async def get_latest_conversation_exchange(self, conversation_id: str) -> ConversationMessageWindow | None:
+        return await self._build_conversation_window(conversation_id, before_index=None, latest_exchange=True)
+
+    async def get_conversation_message_window(self, conversation_id: str, cursor: str, limit: int) -> ConversationMessageWindow | None:
+        if not 1 <= limit <= 50:
+            raise ValueError("limit must be between 1 and 50")
+        decoded = self.decode_conversation_window_cursor(cursor)
+        if decoded["conversation_id"] != conversation_id:
+            raise ValueError("Invalid conversation message cursor")
+        window = await self._build_conversation_window(
+            conversation_id,
+            before_index=decoded["before_index"],
+            latest_exchange=False,
+            expected_revision=decoded["revision"],
+            expected_active_branch_id=decoded.get("active_branch_id"),
+            limit=limit,
+        )
+        return window
+
+    async def get_conversation_window_message(self, conversation_id: str, message_index: int, revision: str) -> ConversationWindowEntry | None:
+        if message_index < 0 or not revision:
+            raise ValueError("Invalid conversation message index or revision")
+        window = await self._build_conversation_window(
+            conversation_id, before_index=None, latest_exchange=False, expected_revision=revision, message_index=message_index, force_ready=True
+        )
+        if window is None:
+            return None
+        for entry in window.entries:
+            if entry.index == message_index:
+                return entry
+        return None
+
     async def list_conversations(
         self,
         user_id: Optional[str] = None,
@@ -3088,10 +3373,13 @@ class IndexerRepository:
         limit: Optional[int] = None,
         cursor_updated_at: Optional[datetime] = None,
         cursor_id: Optional[str] = None,
+        owner_scope: str = "all",
     ) -> list[ConversationSummaryResponse]:
         """List conversations without materializing message payloads."""
         db = await self._get_db()
         where_parts: list[str] = []
+        if owner_scope not in {"all", "self", "others"}:
+            raise ValueError("owner_scope must be all, self, or others")
 
         if workspace_id is not None:
             where_parts.append(f"c.workspace_id = {_sql_quote_literal(workspace_id)}")
@@ -3110,6 +3398,15 @@ class IndexerRepository:
                 "WHERE cm.conversation_id = c.id "
                 f"AND cm.user_id = {quoted_user_id}))"
             )
+
+        if owner_scope == "self":
+            if not user_id:
+                return []
+            where_parts.append(f"c.user_id = {_sql_quote_literal(user_id)}")
+        elif owner_scope == "others":
+            if not user_id:
+                return []
+            where_parts.append(f"c.user_id IS DISTINCT FROM {_sql_quote_literal(user_id)}")
 
         if since is not None:
             where_parts.append(f"c.updated_at >= {_sql_quote_literal(since.isoformat())}::timestamp")

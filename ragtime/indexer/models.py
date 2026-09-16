@@ -3007,6 +3007,74 @@ class ConversationResponse(BaseModel):
     updated_at: datetime
 
 
+class ConversationWindowMetadata(BaseModel):
+    """Conversation fields available before its full transcript is hydrated."""
+
+    id: str
+    title: str = "Untitled Chat"
+    model: str = "gpt-4-turbo"
+    user_id: Optional[str] = None
+    workspace_id: Optional[str] = None
+    username: Optional[str] = None
+    display_name: Optional[str] = None
+    total_tokens: int = 0
+    active_task_id: Optional[str] = None
+    disabled_builtin_tool_ids: List[str] = Field(default_factory=list)
+    subagents_enabled: bool = True
+    parent_conversation_id: Optional[str] = None
+    subagent_role: Optional[str] = None
+    subagent_index: Optional[int] = None
+    subagent_conversation_ids: List[str] = Field(default_factory=list)
+    is_subagent: bool = False
+    read_only: bool = False
+    tool_selection_mode: str = "custom"
+    tool_output_mode: ToolOutputMode = ToolOutputMode.DEFAULT
+    active_branch_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationMessagePreview(BaseModel):
+    """Bounded readable preview for a deferred transcript entry."""
+
+    role: str
+    content: str
+    timestamp: datetime
+    message_id: Optional[str] = None
+    content_truncated: bool
+    has_details: bool
+
+
+class ConversationWindowEntry(BaseModel):
+    """One absolute transcript position, either hydrated or explicitly deferred."""
+
+    index: int = Field(ge=0)
+    key: str
+    state: Literal["ready", "deferred"]
+    message: Optional[ChatMessage] = None
+    preview: Optional[ConversationMessagePreview] = None
+
+    @model_validator(mode="after")
+    def _validate_state_payload(self) -> "ConversationWindowEntry":
+        if self.state == "ready" and (self.message is None or self.preview is not None):
+            raise ValueError("ready conversation window entries require only message")
+        if self.state == "deferred" and (self.preview is None or self.message is not None):
+            raise ValueError("deferred conversation window entries require only preview")
+        return self
+
+
+class ConversationMessageWindow(BaseModel):
+    """A revision-bound, progressively hydrated conversation transcript window."""
+
+    conversation: ConversationWindowMetadata
+    revision: str
+    total_message_count: int = Field(ge=0)
+    entries: List[ConversationWindowEntry] = Field(default_factory=list)
+    next_cursor: Optional[str] = None
+    has_more: bool = False
+    legacy_conversation: Optional[Conversation] = None
+
+
 class ConversationSummaryResponse(BaseModel):
     """Lightweight conversation row for admin/user list views."""
 

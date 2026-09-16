@@ -94,7 +94,12 @@ import type {
   SwitchVisualizationBranchResponse,
   VisualizationBranchSummary,
   VisualizationToolType,
+  ConversationWindowEntry,
+  ConversationWindowMetadata,
 } from '@/types';
+import { useConversationWindow } from '@/hooks/useConversationWindow';
+import { useConversationSummaryScopes } from '@/hooks/useConversationSummaryScopes';
+import { ChatLoadingState } from './ChatLoadingState';
 import {
   FileAttachment,
   attachmentsToContentParts,
@@ -1466,6 +1471,16 @@ const resolveConversationModelSelection = resolveProviderModelSelection<Availabl
 function conversationUpdatedAtMs(conversation: Conversation | null | undefined): number {
   const parsed = Date.parse(conversation?.updated_at || '');
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function windowEntryKey(message: ChatMessage, index: number): string {
+  if (message.message_id) return message.message_id;
+  const source = `${message.role}\u0000${message.timestamp}\u0000${JSON.stringify(message.content)}`;
+  let hash = 2166136261;
+  for (let position = 0; position < source.length; position += 1) {
+    hash = Math.imul(hash ^ source.charCodeAt(position), 16777619);
+  }
+  return `legacy:${(hash >>> 0).toString(16)}:${index}`;
 }
 
 export function mergeConversationFromWorkspaceSnapshot(
@@ -10361,6 +10376,17 @@ export function ChatPanel({
   const [conversationSummaries, setConversationSummaries] = useState<ConversationSummary[]>([]);
   const [standaloneNavigationTick, setStandaloneNavigationTick] = useState(0);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
+  const [standaloneSelectedId, setStandaloneSelectedId] = useState<string | null>(
+    initialConversationId?.trim() || null,
+  );
+  const [partialOptimisticEntries, setPartialOptimisticEntries] = useState<
+    Array<{ conversationId: string; entry: ConversationWindowEntry }>
+  >([]);
+  const standaloneSelectedIdRef = useRef<string | null>(standaloneSelectedId);
+  const standaloneWindow = useConversationWindow({
+    conversationId: workspaceId ? null : standaloneSelectedId,
+    enabled: !workspaceId,
+  });
   const [expandedSubagentParents, setExpandedSubagentParents] = useState<Record<string, boolean>>(
     {},
   );
@@ -10470,19 +10496,77 @@ export function ChatPanel({
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
   const autoCompactionTriggerKeyRef = useRef<string | null>(null);
-  const activeConversationId = activeConversation?.id ?? null;
+  const activeConversationId = workspaceId
+    ? (activeConversation?.id ?? null)
+    : standaloneSelectedId;
+  useEffect(() => {
+    standaloneSelectedIdRef.current = standaloneSelectedId;
+  }, [standaloneSelectedId]);
+  const ensureFullActiveConversation = useCallback(async (): Promise<Conversation> => {
+    const selectedId = workspaceId ? (activeConversation?.id ?? null) : standaloneSelectedId;
+    if (!selectedId) throw new Error('No conversation selected');
+    if (activeConversation?.id === selectedId) return activeConversation;
+    const conversation = await standaloneWindow.ensureFullConversation();
+    // The selection can change while the full-detail request is in flight.  Do
+    // not let a stale closure adopt that transcript into the newly selected chat.
+    if (conversation.id !== selectedId || standaloneSelectedIdRef.current !== selectedId) {
+      throw new Error('Conversation selection changed');
+    }
+    setActiveConversation(conversation);
+    setConversations((current) => {
+      const existing = current.some((item) => item.id === conversation.id);
+      return existing
+        ? current.map((item) => (item.id === conversation.id ? conversation : item))
+        : [conversation, ...current];
+    });
+    return conversation;
+  }, [activeConversation, standaloneSelectedId, standaloneWindow, workspaceId]);
+  const activeConversationMetadata = useMemo<ConversationWindowMetadata | null>(() => {
+    if (workspaceId) return activeConversation;
+    if (activeConversation?.id === standaloneSelectedId) return activeConversation;
+    return standaloneWindow.metadata;
+  }, [activeConversation, standaloneSelectedId, standaloneWindow.metadata, workspaceId]);
+  const visibleMessageEntries = useMemo<ConversationWindowEntry[]>(() => {
+    if (activeConversation && activeConversation.id === activeConversationMetadata?.id) {
+      return activeConversation.messages.map((message, index) => ({
+        index,
+        key: windowEntryKey(message, index),
+        state: 'ready' as const,
+        message,
+        preview: null,
+      }));
+    }
+    const optimistic = partialOptimisticEntries
+      .filter((item) => item.conversationId === activeConversationMetadata?.id)
+      .map((item) => item.entry);
+    return [...standaloneWindow.entries, ...optimistic].sort(
+      (left, right) => left.index - right.index,
+    );
+  }, [
+    activeConversation,
+    activeConversationMetadata?.id,
+    partialOptimisticEntries,
+    standaloneWindow.entries,
+  ]);
+  // Render metadata is deliberately not a partial Conversation.  Transcript
+  // rows come exclusively from visibleMessageEntries; history actions hydrate
+  // via ensureFullActiveConversation before touching positional data.
+  const renderedConversation = activeConversationMetadata;
   const persistedUserMessageEntries = useMemo<ChatMessageNavigationEntry[]>(() => {
-    if (!activeConversation) return [];
+    if (!activeConversationMetadata) return [];
     const hasPendingTailUserMessage =
-      (Boolean(activeConversation.active_task_id) ||
-        (isStreaming && streamingConversationId === activeConversation.id)) &&
-      activeConversation.messages.length > 0;
+      (Boolean(activeConversationMetadata.active_task_id) ||
+        (isStreaming && streamingConversationId === activeConversationMetadata.id)) &&
+      visibleMessageEntries.length > 0;
 
-    return activeConversation.messages.flatMap((message, messageIndex) => {
+    return visibleMessageEntries.flatMap((entry, visibleIndex) => {
+      if (entry.state !== 'ready') return [];
+      const message = entry.message;
+      const messageIndex = entry.index;
       if (message.role !== 'user') return [];
       const isPendingTailUserMessage =
         hasPendingTailUserMessage &&
-        messageIndex === activeConversation.messages.length - 1 &&
+        visibleIndex === visibleMessageEntries.length - 1 &&
         !message.message_id;
       if (isPendingTailUserMessage) return [];
       return [
@@ -10493,13 +10577,16 @@ export function ChatPanel({
         },
       ];
     });
-  }, [activeConversation, isStreaming, streamingConversationId]);
+  }, [activeConversationMetadata, isStreaming, streamingConversationId, visibleMessageEntries]);
   const persistedUserMessageEntriesRef = useRef<ChatMessageNavigationEntry[]>([]);
   const [activeUserMessageNavigationKey, setActiveUserMessageNavigationKey] = useState<
     string | null
   >(null);
   const branchGroupsByIndex = useMemo(() => {
-    const messageCount = activeConversation?.messages.length ?? 0;
+    const messageCount =
+      activeConversation && activeConversation.id === activeConversationMetadata?.id
+        ? activeConversation.messages.length
+        : standaloneWindow.totalMessageCount;
     const grouped = new Map<number, BranchRenderGroup[]>();
 
     for (const point of branchPoints) {
@@ -10545,7 +10632,12 @@ export function ChatPanel({
     }
 
     return grouped;
-  }, [branchPoints, activeConversation?.messages.length]);
+  }, [
+    activeConversation,
+    activeConversationMetadata?.id,
+    branchPoints,
+    standaloneWindow.totalMessageCount,
+  ]);
   const branchesById = useMemo(
     () =>
       new Map(
@@ -11096,7 +11188,17 @@ export function ChatPanel({
     return () => observer.disconnect();
   }, [inChatSearchOpen]);
 
-  const openInChatSearch = useCallback(() => {
+  const openInChatSearch = useCallback(async () => {
+    if (!activeConversation && activeConversationMetadata) {
+      setInChatSearchRunning(true);
+      try {
+        await ensureFullActiveConversation();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load conversation for search');
+        setInChatSearchRunning(false);
+        return;
+      }
+    }
     setInChatSearchOpen(true);
     // Focus the input after the DOM has had a chance to render it.
     requestAnimationFrame(() => {
@@ -11105,7 +11207,7 @@ export function ChatPanel({
       input.focus();
       input.select();
     });
-  }, []);
+  }, [activeConversation, activeConversationMetadata, ensureFullActiveConversation]);
 
   const closeInChatSearch = useCallback(() => {
     restoreBranchSearchPreview();
@@ -11174,7 +11276,9 @@ export function ChatPanel({
   const isAdmin = currentUser.role === 'admin';
   const isReadOnly =
     (readOnly && !(allowAdminReadOnlyBypass && isAdmin)) ||
-    Boolean(activeConversation?.is_subagent || activeConversation?.parent_conversation_id);
+    Boolean(
+      activeConversationMetadata?.is_subagent || activeConversationMetadata?.parent_conversation_id,
+    );
   const effectiveReadOnlyMessage =
     readOnlyMessage ||
     'Workspace is read-only. Viewers can review messages but cannot send prompts.';
@@ -11381,11 +11485,46 @@ export function ChatPanel({
   const [savingMembers, setSavingMembers] = useState(false);
   const [savingTools, setSavingTools] = useState(false);
   const [isConversationListLoading, setIsConversationListLoading] = useState(true);
+  const [standaloneBootstrapPending, setStandaloneBootstrapPending] = useState(
+    () => !workspaceId && !initialConversationId?.trim(),
+  );
+  const [standaloneSidebarReady, setStandaloneSidebarReady] = useState(false);
+  const isStandaloneSidebarLoading =
+    !workspaceId && Boolean(standaloneSelectedId) && !standaloneSidebarReady;
+  const standaloneSidebarScopeKey = `${currentUser.id}:${workspaceId ?? 'standalone'}:${archiveAgeDays}`;
+  const standaloneSidebarScopeKeyRef = useRef<string | null>(null);
   const [isSidebarSummaryLoading, setIsSidebarSummaryLoading] = useState(false);
-  const [sidebarSummaryError, setSidebarSummaryError] = useState<string | null>(null);
+  const [, setSidebarSummaryError] = useState<string | null>(null);
+  const standaloneSummaryScopesLoadedRef = useRef(new Set<'self' | 'others'>());
   const [initialConversationLoadError, setInitialConversationLoadError] = useState<string | null>(
     null,
   );
+  const standaloneSummaryCutoff = useMemo(() => archiveCutoffIso(archiveAgeDays), [archiveAgeDays]);
+  const onStandaloneSummaryPage = useCallback((rows: ConversationSummary[]) => {
+    setConversationSummaries((current) =>
+      mergeSummaryPages(current, rows, { deletedIds: deletedConversationIdsRef.current }),
+    );
+  }, []);
+  const standaloneSummaryScopes = useConversationSummaryScopes({
+    enabled:
+      !workspaceId &&
+      !standaloneBootstrapPending &&
+      (standaloneSidebarReady || !standaloneSelectedId),
+    cutoffIso: standaloneSummaryCutoff ?? '',
+    resetKey: standaloneSidebarScopeKey,
+    onPage: onStandaloneSummaryPage,
+  });
+  useEffect(() => {
+    if (!workspaceId && standaloneSelectedId && standaloneWindow.firstPageSettled) {
+      setStandaloneBootstrapPending(false);
+      setStandaloneSidebarReady(true);
+    }
+  }, [
+    standaloneSelectedId,
+    standaloneWindow.firstPageSettled,
+    standaloneWindow.initialError,
+    workspaceId,
+  ]);
   const [searchHydrationLoading, setSearchHydrationLoading] = useState(false);
   const [searchHydrationError, setSearchHydrationError] = useState<string | null>(null);
   const [searchHydrationComplete, setSearchHydrationComplete] = useState(true);
@@ -11961,8 +12100,8 @@ export function ChatPanel({
   }, [compactingConversationId]);
 
   useEffect(() => {
-    onActiveConversationChange?.(activeConversation?.id ?? null);
-  }, [activeConversation?.id, onActiveConversationChange]);
+    onActiveConversationChange?.(activeConversationId);
+  }, [activeConversationId, onActiveConversationChange]);
 
   useEffect(() => {
     streamingEventsRef.current = streamingEvents;
@@ -11974,6 +12113,9 @@ export function ChatPanel({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
+  const historyPrependAnchorRef = useRef<{ key: string; offset: number } | null>(null);
+  const cancelHistoryAnchorRef = useRef(false);
+  const historyAnchorRestoreInProgressRef = useRef(false);
   const userMessageWrapperElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const userMessageWrapperRefCallbacksRef = useRef<
     Map<string, (element: HTMLDivElement | null) => void>
@@ -11984,6 +12126,7 @@ export function ChatPanel({
   const standaloneSummaryRetryAbortRef = useRef<AbortController | null>(null);
   const archiveLoadAbortRef = useRef<AbortController | null>(null);
   const summaryCursorRef = useRef<ConversationCursor | null>(null);
+  const standaloneBootstrapCursorRef = useRef<ConversationCursor | null>(null);
   const deletedConversationIdsRef = useRef<Set<string>>(new Set());
   const shouldAutoScrollRef = useRef(true);
   const autoScrollFrameRef = useRef<number | null>(null);
@@ -12860,7 +13003,7 @@ export function ChatPanel({
   // streams whose owner has not been recorded yet (always the active chat).
   const isStreamingForActiveConversation =
     isStreaming &&
-    (streamingConversationId === null || streamingConversationId === activeConversation?.id);
+    (streamingConversationId === null || streamingConversationId === activeConversationId);
   const activeSubagentAnchorIndex =
     activeSubagentRuns.length > 0
       ? consolidatedSegments.findIndex(
@@ -12882,10 +13025,17 @@ export function ChatPanel({
 
   // Reset state and load conversations when workspace changes (or on initial mount)
   useEffect(() => {
+    const sidebarScopeChanged = standaloneSidebarScopeKeyRef.current !== standaloneSidebarScopeKey;
+    standaloneSidebarScopeKeyRef.current = standaloneSidebarScopeKey;
     setConversations([]);
-    setConversationSummaries([]);
+    if (sidebarScopeChanged) {
+      setConversationSummaries([]);
+      standaloneSummaryScopesLoadedRef.current.clear();
+      setStandaloneSidebarReady(false);
+    }
     setActiveConversation(null);
     setIsConversationSwitchLoading(false);
+    setStandaloneBootstrapPending(false);
     setArchivedConversations([]);
     setArchivedConversationCount(null);
     setArchiveCountLoaded(false);
@@ -12907,6 +13057,7 @@ export function ChatPanel({
     standaloneSummaryRetryAbortRef.current?.abort();
     archiveLoadAbortRef.current?.abort();
     summaryCursorRef.current = null;
+    standaloneBootstrapCursorRef.current = null;
     selectConversationRequestIdRef.current += 1;
     setInitialConversationLoadError(null);
     setSidebarSummaryError(null);
@@ -12924,7 +13075,7 @@ export function ChatPanel({
       setIsSidebarSummaryLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, archiveAgeDays, standaloneNavigationTick]);
+  }, [workspaceId, archiveAgeDays, standaloneNavigationTick, standaloneSidebarScopeKey]);
 
   const scheduleScrollToBottom = useCallback(
     (behavior: ScrollBehavior) => {
@@ -13032,19 +13183,79 @@ export function ChatPanel({
     streamingContent,
   ]);
 
+  const loadOlderWithAnchor = useCallback(() => {
+    const root = chatMessagesRef.current;
+    const rootRect = root?.getBoundingClientRect();
+    const first = root
+      ? Array.from(root.querySelectorAll<HTMLElement>('[data-chat-message-key]')).find(
+          (element) => {
+            const rect = element.getBoundingClientRect();
+            return rect.bottom > (rootRect?.top ?? 0) && rect.top < (rootRect?.bottom ?? 0);
+          },
+        )
+      : undefined;
+    if (root && first) {
+      historyPrependAnchorRef.current = {
+        key: first.dataset.chatMessageKey || '',
+        offset: first.getBoundingClientRect().top - root.getBoundingClientRect().top,
+      };
+      cancelHistoryAnchorRef.current = false;
+    }
+    void standaloneWindow.loadOlder();
+  }, [standaloneWindow]);
+
+  useLayoutEffect(() => {
+    const anchor = historyPrependAnchorRef.current;
+    const root = chatMessagesRef.current;
+    if (!anchor || !root || cancelHistoryAnchorRef.current) return;
+    const target = Array.from(root.querySelectorAll<HTMLElement>('[data-chat-message-key]')).find(
+      (element) => element.dataset.chatMessageKey === anchor.key,
+    );
+    if (!target) return;
+    programmaticScrollRef.current = true;
+    historyAnchorRestoreInProgressRef.current = true;
+    root.scrollTop +=
+      target.getBoundingClientRect().top - root.getBoundingClientRect().top - anchor.offset;
+    historyPrependAnchorRef.current = null;
+    window.requestAnimationFrame(() => {
+      historyAnchorRestoreInProgressRef.current = false;
+      programmaticScrollRef.current = false;
+    });
+  }, [visibleMessageEntries]);
+
   const handleScroll = useCallback(() => {
     if (!chatMessagesRef.current) return;
     if (programmaticScrollRef.current) {
-      shouldAutoScrollRef.current = true;
+      if (!historyAnchorRestoreInProgressRef.current) {
+        shouldAutoScrollRef.current = true;
+      }
       scheduleUserMessageNavigationActiveKeyUpdate();
       return;
     }
     const { scrollTop, scrollHeight, clientHeight } = chatMessagesRef.current;
+    if (historyPrependAnchorRef.current) {
+      cancelHistoryAnchorRef.current = true;
+      historyPrependAnchorRef.current = null;
+    }
+    if (
+      !workspaceId &&
+      scrollTop <= 1 &&
+      standaloneWindow.olderCursor &&
+      !standaloneWindow.olderLoading
+    ) {
+      loadOlderWithAnchor();
+    }
     // Use a small threshold to account for fractional pixels
     const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
     shouldAutoScrollRef.current = isAtBottom;
     scheduleUserMessageNavigationActiveKeyUpdate();
-  }, [scheduleUserMessageNavigationActiveKeyUpdate]);
+  }, [
+    loadOlderWithAnchor,
+    scheduleUserMessageNavigationActiveKeyUpdate,
+    standaloneWindow.olderCursor,
+    standaloneWindow.olderLoading,
+    workspaceId,
+  ]);
 
   // Focus input when conversation changes
   useEffect(() => {
@@ -13223,140 +13434,58 @@ export function ChatPanel({
 
   const loadConversations = async () => {
     if (!workspaceId) {
-      const generation = ++standaloneLoadGenerationRef.current;
+      const preferredId = orderInitialCandidates({
+        initialConversationId: initialConversationIdRef.current ?? standaloneSelectedIdRef.current,
+        currentConversationId: activeConversationRef.current?.id ?? null,
+      })[0];
+      if (preferredId) {
+        initialConversationIdRef.current = null;
+        setStandaloneSelectedId(preferredId);
+        setStandaloneBootstrapPending(false);
+        setIsConversationListLoading(false);
+        return;
+      }
+      const bootstrapController = new AbortController();
       standaloneLoadAbortRef.current?.abort();
-      const controller = new AbortController();
-      standaloneLoadAbortRef.current = controller;
-      const cutoffIso = archiveCutoffIso(archiveAgeDays);
-      const isCurrent = () =>
-        standaloneLoadGenerationRef.current === generation && !controller.signal.aborted;
-      const isCurrentDetail = () =>
-        isCurrent() && selectConversationRequestIdRef.current === selectionRequestId;
-      const selectionRequestId = selectConversationRequestIdRef.current;
-      let foregroundBootstrapSettled = false;
-      const applyDetail = (detail: Conversation) => {
-        if (!isCurrentDetail() || deletedConversationIdsRef.current.has(detail.id)) return false;
-        setActiveConversation(detail);
-        setConversations((current) => {
-          const summary = current.find((item) => item.id === detail.id);
-          return summary
-            ? current.map((item) => (item.id === detail.id ? detail : item))
-            : [detail, ...current];
-        });
-        setError(null);
-        return true;
-      };
-
+      standaloneLoadAbortRef.current = bootstrapController;
       setIsConversationListLoading(true);
+      setStandaloneBootstrapPending(true);
       setInitialConversationLoadError(null);
       try {
-        const currentId = activeConversationRef.current?.id ?? null;
-        let selected = false;
-        const candidates = orderInitialCandidates({
-          initialConversationId: initialConversationIdRef.current,
-          currentConversationId: currentId,
-        });
-
-        // Direct details avoid waiting for a sidebar page when navigation supplied an id.
-        for (const candidateId of candidates) {
-          try {
-            const detail = await api.getConversation(candidateId, undefined, controller.signal);
-            if (!isCurrent()) return;
-            if (!isCurrentDetail()) {
-              selected = true;
-              break;
-            }
-            if (isEligibleStandaloneConversation(detail, cutoffIso)) {
-              if (candidateId === initialConversationIdRef.current)
-                initialConversationIdRef.current = null;
-              selected = applyDetail(detail);
-              break;
-            }
-          } catch (err) {
-            if (!isCurrent()) return;
-            if (!isCurrentDetail()) {
-              selected = true;
-              break;
-            }
-            const status = (err as { status?: number })?.status;
-            if (status !== 403 && status !== 404) {
-              setInitialConversationLoadError(
-                err instanceof Error ? err.message : 'Failed to load conversation',
-              );
-              return;
-            }
-          }
+        const cursor = standaloneBootstrapCursorRef.current;
+        const page = await api.listConversationSummaries(
+          undefined,
+          {
+            since: archiveCutoffIso(archiveAgeDays),
+            limit: 1,
+            owner_scope: 'self',
+            cursorUpdatedAt: cursor?.cursorUpdatedAt ?? null,
+            cursorId: cursor?.cursorId ?? null,
+          },
+          bootstrapController.signal,
+        );
+        const summary = page[0];
+        if (!bootstrapController.signal.aborted && summary) {
+          standaloneBootstrapCursorRef.current = cursorFromLastRow(summary);
+          setConversationSummaries((current) =>
+            mergeSummaryPages(current, [summary], {
+              deletedIds: deletedConversationIdsRef.current,
+            }),
+          );
+          standaloneSelectedIdRef.current = summary.id;
+          setStandaloneSelectedId(summary.id);
+        } else if (!bootstrapController.signal.aborted) {
+          setStandaloneBootstrapPending(false);
         }
-
-        if (!selected && isCurrent()) {
-          let cursor: ConversationCursor | null = null;
-          const attemptedSummaryIds = new Set<string>();
-          while (!selected && isCurrent()) {
-            const page = await api.listConversationSummaries(
-              undefined,
-              {
-                since: cutoffIso,
-                limit: 1,
-                cursorUpdatedAt: cursor?.cursorUpdatedAt ?? null,
-                cursorId: cursor?.cursorId ?? null,
-              },
-              controller.signal,
-            );
-            if (!isCurrent()) return;
-            if (!isCurrentDetail()) {
-              selected = true;
-              break;
-            }
-            const summary = page[0];
-            const nextCursor = cursorFromLastRow(summary);
-            if (!summary || !nextCursor || attemptedSummaryIds.has(summary.id)) break;
-            attemptedSummaryIds.add(summary.id);
-            try {
-              const detail = await api.getConversation(summary.id, undefined, controller.signal);
-              if (!isCurrent()) return;
-              if (!isCurrentDetail()) {
-                selected = true;
-                break;
-              }
-              if (isEligibleStandaloneConversation(detail, cutoffIso) && applyDetail(detail)) {
-                selected = true;
-                break;
-              }
-            } catch (err) {
-              if (!isCurrent()) return;
-              if (!isCurrentDetail()) {
-                selected = true;
-                break;
-              }
-              const status = (err as { status?: number })?.status;
-              if (status !== 403 && status !== 404) {
-                setInitialConversationLoadError(
-                  err instanceof Error ? err.message : 'Failed to load conversation',
-                );
-                return;
-              }
-            }
-            cursor = nextCursor;
-          }
-        }
-        if (!isCurrent()) return;
-        foregroundBootstrapSettled = true;
-        setIsConversationListLoading(false);
-        await hydrateSidebarSummaries(controller, isCurrent, cutoffIso);
       } catch (err) {
-        if (isCurrent()) {
-          const message = err instanceof Error ? err.message : 'Failed to load chats';
-          if (foregroundBootstrapSettled) {
-            setSidebarSummaryError(message);
-          } else {
-            setInitialConversationLoadError(message);
-          }
+        if (!bootstrapController.signal.aborted) {
+          setStandaloneBootstrapPending(false);
+          setInitialConversationLoadError(
+            err instanceof Error ? err.message : 'Failed to load chats',
+          );
         }
       } finally {
-        if (isCurrent()) {
-          setIsConversationListLoading(false);
-          setIsSidebarSummaryLoading(false);
-        }
+        if (!bootstrapController.signal.aborted) setIsConversationListLoading(false);
       }
       return;
     }
@@ -13437,6 +13566,24 @@ export function ChatPanel({
     }
   };
 
+  useEffect(() => {
+    if (
+      workspaceId ||
+      !standaloneWindow.initialError ||
+      (standaloneWindow.initialError as { status?: number }).status !== 404
+    )
+      return;
+    // A stale URL/stored selection is not terminal: resume the summary bootstrap
+    // path from the cursor after the failed row, without downloading a full transcript.
+    standaloneSelectedIdRef.current = null;
+    setStandaloneSelectedId(null);
+    setActiveConversation(null);
+    initialConversationIdRef.current = null;
+    void loadConversations();
+    // The loader is intentionally read from the render that observed the 404.
+    // Including it would retrigger this recovery effect on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [standaloneWindow.initialError, workspaceId]);
   const filterStandaloneConversations = useCallback(
     (items: Conversation[]): Conversation[] =>
       items.filter((conversation) => !getConversationWorkspaceId(conversation)),
@@ -13455,6 +13602,8 @@ export function ChatPanel({
     setSidebarSummaryError(null);
     await hydrateSidebarSummaries(controller, isCurrent, cutoffIso);
   }, [archiveAgeDays, hydrateSidebarSummaries, isSidebarSummaryLoading, workspaceId]);
+  void retrySidebarSummaries;
+  void isSidebarSummaryLoading;
 
   // Lazy-load global conversations older than the active cutoff.
   const loadArchivedConversationCount = useCallback(async () => {
@@ -14298,17 +14447,24 @@ export function ChatPanel({
     [availableModels, defaultContextLimit],
   );
 
-  const applyCreatedConversation = useCallback((conversation: Conversation) => {
-    selectConversationRequestIdRef.current += 1;
-    standaloneDetailAbortRef.current?.abort();
-    setConversations((prev) => [conversation, ...prev]);
-    setActiveConversation(conversation);
-    setConversationToolIds([]);
-    setConversationToolGroupIds([]);
-    setConversationDisabledBuiltInToolIds(
-      normalizeDisabledBuiltInToolIds(conversation.disabled_builtin_tool_ids || []),
-    );
-  }, []);
+  const applyCreatedConversation = useCallback(
+    (conversation: Conversation) => {
+      selectConversationRequestIdRef.current += 1;
+      standaloneDetailAbortRef.current?.abort();
+      setConversations((prev) => [conversation, ...prev]);
+      setActiveConversation(conversation);
+      if (!workspaceId) {
+        setStandaloneSelectedId(conversation.id);
+        standaloneWindow.adoptFullConversation(conversation);
+      }
+      setConversationToolIds([]);
+      setConversationToolGroupIds([]);
+      setConversationDisabledBuiltInToolIds(
+        normalizeDisabledBuiltInToolIds(conversation.disabled_builtin_tool_ids || []),
+      );
+    },
+    [standaloneWindow, workspaceId],
+  );
 
   const createNewConversation = async () => {
     if (isReadOnly || isCreatingFreshConversation) return;
@@ -14733,17 +14889,36 @@ export function ChatPanel({
             // Refresh conversation on completion before clearing streaming state.
             // This avoids a UI gap where the in-progress output disappears before
             // the persisted assistant message is rendered.
-            const currentConversation = activeConversationRef.current;
-            if (currentConversation) {
-              syncConversationActiveTaskId(currentConversation.id, null);
+            const completedConversationId =
+              activeConversationRef.current?.id ??
+              (workspaceId ? null : standaloneSelectedIdRef.current);
+            if (completedConversationId) {
+              syncConversationActiveTaskId(completedConversationId, null);
               try {
-                const updated = await api.getConversation(currentConversation.id, workspaceId);
-                const resolved = applyFallbackAssistantIfNeeded(updated);
-                if (terminalStatus === 'completed') {
-                  markAutoCompactionCandidate(resolved);
+                if (!activeConversationRef.current && !workspaceId) {
+                  await standaloneWindow.reload();
+                  setPartialOptimisticEntries((previous) =>
+                    previous.filter((item) => item.conversationId !== completedConversationId),
+                  );
+                } else {
+                  const updated = await api.getConversation(completedConversationId, workspaceId);
+                  const resolved = applyFallbackAssistantIfNeeded(updated);
+                  const stillSelected = workspaceId
+                    ? activeConversationRef.current?.id === completedConversationId
+                    : standaloneSelectedIdRef.current === completedConversationId;
+                  if (stillSelected) {
+                    if (terminalStatus === 'completed') {
+                      markAutoCompactionCandidate(resolved);
+                    }
+                    setActiveConversation(resolved);
+                    setConversations((prev) =>
+                      prev.map((c) => (c.id === resolved.id ? resolved : c)),
+                    );
+                    setPartialOptimisticEntries((previous) =>
+                      previous.filter((item) => item.conversationId !== resolved.id),
+                    );
+                  }
                 }
-                setActiveConversation(resolved);
-                setConversations((prev) => prev.map((c) => (c.id === resolved.id ? resolved : c)));
               } catch (e) {
                 console.error(e);
               }
@@ -14771,6 +14946,7 @@ export function ChatPanel({
       applyFallbackAssistantIfNeeded,
       markAutoCompactionCandidate,
       onTaskComplete,
+      standaloneWindow,
       syncConversationActiveTaskId,
       workspaceId,
     ],
@@ -14938,6 +15114,23 @@ export function ChatPanel({
         setConversations((prev) =>
           prev.map((c) => (c.id === conversationId ? updatedWithUser : c)),
         );
+      } else if (!workspaceId && activeConversationMetadata?.id === conversationId) {
+        const index =
+          standaloneWindow.totalMessageCount +
+          partialOptimisticEntries.filter((item) => item.conversationId === conversationId).length;
+        setPartialOptimisticEntries((previous) => [
+          ...previous,
+          {
+            conversationId,
+            entry: {
+              index,
+              key: `optimistic:${conversationId}:${Date.now()}`,
+              state: 'ready',
+              message: optimisticMsg,
+              preview: null,
+            },
+          },
+        ]);
       }
 
       let startedTaskId: string | null = null;
@@ -14982,9 +15175,12 @@ export function ChatPanel({
     },
     [
       activeConversation,
+      activeConversationMetadata?.id,
       clearActiveStreamingUi,
       connectTaskStream,
       syncConversationActiveTaskId,
+      partialOptimisticEntries,
+      standaloneWindow.totalMessageCount,
       workspaceId,
     ],
   );
@@ -14998,9 +15194,9 @@ export function ChatPanel({
     // momentarily reference a previously-active conversation) from streaming
     // into the chat the user has switched to.
     if (
-      activeConversation?.id &&
+      activeConversationId &&
       activeTask.conversation_id &&
-      activeTask.conversation_id !== activeConversation.id
+      activeTask.conversation_id !== activeConversationId
     ) {
       return;
     }
@@ -15015,7 +15211,7 @@ export function ChatPanel({
     activeTask?.status,
     activeTask?.conversation_id,
     activeTask?.user_message,
-    activeConversation?.id,
+    activeConversationId,
     connectTaskStream,
     watchCompactionTask,
   ]);
@@ -15148,6 +15344,17 @@ export function ChatPanel({
   const selectConversation = async (
     conversation: Conversation | ConversationSummary,
   ): Promise<Conversation | null> => {
+    if (!workspaceId) {
+      if (deletedConversationIdsRef.current.has(conversation.id)) return null;
+      if (!embedded && window.matchMedia('(max-width: 768px)').matches) setShowSidebar(false);
+      clearActiveStreamingUi();
+      shouldAutoScrollRef.current = true;
+      setActiveConversation((current) => (current?.id === conversation.id ? current : null));
+      standaloneSelectedIdRef.current = conversation.id;
+      setStandaloneSelectedId(conversation.id);
+      setError(null);
+      return null;
+    }
     const isSwitchingConversation = activeConversation?.id !== conversation.id;
     const requestId = ++selectConversationRequestIdRef.current;
     standaloneDetailAbortRef.current?.abort();
@@ -15235,6 +15442,13 @@ export function ChatPanel({
       if (activeConversation?.id === conversationId) {
         setActiveConversation(null);
       }
+      if (!workspaceId && standaloneSelectedIdRef.current === conversationId) {
+        standaloneSelectedIdRef.current = null;
+        setStandaloneSelectedId(null);
+        setPartialOptimisticEntries((current) =>
+          current.filter((item) => item.conversationId !== conversationId),
+        );
+      }
     } catch (err) {
       deletedConversationIdsRef.current.delete(conversationId);
       setError(err instanceof Error ? err.message : 'Failed to delete conversation');
@@ -15292,7 +15506,8 @@ export function ChatPanel({
   };
 
   const changeModel = async (newModel: string) => {
-    if (!activeConversation || isStreaming) return;
+    const conversation = activeConversationMetadata;
+    if (!conversation || isStreaming) return;
 
     try {
       const selection = resolveConversationModelSelection(newModel, availableModels);
@@ -15305,7 +15520,7 @@ export function ChatPanel({
       const selected = selection.matchedModel;
 
       const updated = await api.updateConversationModel(
-        activeConversation.id,
+        conversation.id,
         selected?.id || requestedModelId,
         workspaceId,
         selected?.provider || requestedProviderForApi,
@@ -15410,7 +15625,7 @@ export function ChatPanel({
   };
 
   const continueConversation = async () => {
-    if (!activeConversation || isStreaming) return;
+    if (!activeConversationMetadata || isStreaming) return;
     setHitMaxIterations(false);
     setInterruptedTask(null);
     // Directly send the continuation message
@@ -15463,7 +15678,8 @@ export function ChatPanel({
     message: string,
     options?: { allowDuringCompaction?: boolean; conversationOverride?: Conversation | null },
   ) => {
-    const conversation = options?.conversationOverride ?? activeConversation;
+    let conversation =
+      options?.conversationOverride ?? activeConversation ?? activeConversationMetadata;
     if (
       !message.trim() ||
       !conversation ||
@@ -15473,6 +15689,20 @@ export function ChatPanel({
     )
       return;
     shouldAutoScrollRef.current = true;
+    let completeConversation =
+      options?.conversationOverride ??
+      (activeConversation?.id === conversation.id ? activeConversation : null);
+
+    // A non-empty partial window with no persisted total cannot safely estimate
+    // context from its slice. Hydrate only for that unknown-total case.
+    if (
+      !completeConversation &&
+      visibleMessageEntries.length > 0 &&
+      conversation.total_tokens <= 0
+    ) {
+      completeConversation = await ensureFullActiveConversation();
+      conversation = completeConversation;
+    }
 
     const userMessage = message.trim();
     setError(null);
@@ -15482,7 +15712,7 @@ export function ChatPanel({
 
     const contextLimit = getContextLimit(conversation.model);
     const contextUsage = calculateConversationContextUsage({
-      messages: conversation.messages,
+      messages: completeConversation?.messages ?? [],
       persistedConversationTokens: conversation.total_tokens,
       contextLimit,
       inputText: userMessage,
@@ -15511,7 +15741,7 @@ export function ChatPanel({
 
     try {
       // Use background task streaming
-      await startTaskAndStream(conversation.id, userMessage, conversation);
+      await startTaskAndStream(conversation.id, userMessage, completeConversation);
       return true;
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to send message';
@@ -15565,7 +15795,7 @@ export function ChatPanel({
     const hasComposerContent = !segmentsAreEmpty(messageSegments);
     if (
       (!hasComposerContent && attachments.length === 0) ||
-      !activeConversation ||
+      !activeConversationMetadata ||
       isStreaming ||
       isReadOnly
     )
@@ -15591,7 +15821,7 @@ export function ChatPanel({
       setShowSidebar(false);
       setQueuedCompactionMessage({
         id: `${Date.now()}-${Math.random()}`,
-        conversationId: activeConversation.id,
+        conversationId: activeConversationMetadata.id,
         compactionStatus: 'compacting',
         serializedMessage,
         displayContent,
@@ -15681,17 +15911,30 @@ export function ChatPanel({
     [],
   );
 
-  const startEditMessage = (idx: number, content: string, attachments: ContentPart[] = []) => {
+  const startEditMessage = async (
+    idx: number,
+    _content: string,
+    _attachments: ContentPart[] = [],
+  ) => {
+    let conversation: Conversation;
+    try {
+      conversation = await ensureFullActiveConversation();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load message for editing');
+      return;
+    }
+    if (conversation.id !== standaloneSelectedIdRef.current && !workspaceId) return;
+    const message = conversation.messages[idx];
+    if (!message || message.role !== 'user') return;
+    const { text: content, attachments } = parseMessageContent(message.content);
     setEditingMessageIdx(idx);
     const segments = plainTextToSegments(content);
     editMessageSegmentsRef.current = segments;
     setEditMessageSegments(segments);
     activeComposerRef.current = 'edit';
 
-    (async () => {
-      const files = await contentPartsToAttachments(attachments);
-      setEditMessageAttachments(files);
-    })();
+    const files = await contentPartsToAttachments(attachments);
+    setEditMessageAttachments(files);
   };
 
   const cancelEditMessage = () => {
@@ -15875,8 +16118,14 @@ export function ChatPanel({
   }, []);
 
   const switchBranch = useCallback(
-    async (branchId: string, conversationOverride?: Conversation) => {
-      const targetConversation = conversationOverride ?? activeConversation;
+    async (
+      branchId: string,
+      conversationOverride?: Pick<Conversation, 'id' | 'active_branch_id' | 'active_task_id'>,
+    ) => {
+      const targetConversation =
+        activeConversation?.id === conversationOverride?.id
+          ? activeConversation
+          : await ensureFullActiveConversation();
       if (
         !targetConversation ||
         branchSwitchingRef.current ||
@@ -15974,6 +16223,7 @@ export function ChatPanel({
     },
     [
       activeConversation,
+      ensureFullActiveConversation,
       workspaceId,
       branchesById,
       refreshBranchPoints,
@@ -15984,7 +16234,10 @@ export function ChatPanel({
   );
 
   const renderBranchNavStack = useCallback(
-    (groups: BranchRenderGroup[], conversation: Conversation) => {
+    (
+      groups: BranchRenderGroup[],
+      conversation: Pick<Conversation, 'id' | 'active_branch_id' | 'active_task_id'>,
+    ) => {
       if (groups.length === 0) return null;
       const activeBranchId = conversation.active_branch_id;
       const navigationDisabled =
@@ -16096,10 +16349,26 @@ export function ChatPanel({
 
   const compactActiveConversation = useCallback(
     async (replaceMarker?: CompactionReviewMarker | null) => {
-      if (!activeConversation || isActiveConversationCompacting || isStreaming || isReadOnly)
+      if (
+        (!activeConversation && !activeConversationMetadata) ||
+        isActiveConversationCompacting ||
+        isStreaming ||
+        isReadOnly
+      )
         return;
+      let conversation = activeConversation;
+      if (!conversation) {
+        try {
+          conversation = await ensureFullActiveConversation();
+        } catch (err) {
+          setError(
+            err instanceof Error ? err.message : 'Failed to load conversation for compaction',
+          );
+          return;
+        }
+      }
       setIsCompacting(true);
-      setCompactingConversationId(activeConversation.id);
+      setCompactingConversationId(conversation.id);
       setError(null);
       toastActions.info(
         replaceMarker
@@ -16108,7 +16377,7 @@ export function ChatPanel({
       );
       try {
         const task = await api.compactConversation(
-          activeConversation.id,
+          conversation.id,
           workspaceId,
           AUTO_COMPACTION_KEEP_RECENT_PAIRS,
           replaceMarker
@@ -16120,11 +16389,11 @@ export function ChatPanel({
             : undefined,
         );
         if (replaceMarker) {
-          void refreshBranchPoints(activeConversation.id);
+          void refreshBranchPoints(conversation.id);
         }
         setActiveTask(task);
-        syncConversationActiveTaskId(activeConversation.id, task.id);
-        void watchCompactionTask(task.id, activeConversation.id);
+        syncConversationActiveTaskId(conversation.id, task.id);
+        void watchCompactionTask(task.id, conversation.id);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to compact conversation';
         setError(message);
@@ -16133,7 +16402,7 @@ export function ChatPanel({
         setCompactingConversationId(null);
         if (replaceMarker) {
           setRetryingCompactionMarker((current) =>
-            current?.conversationId === activeConversation.id &&
+            current?.conversationId === conversation.id &&
             current.messageIndex === replaceMarker.messageIndex &&
             (replaceMarker.messageId ? current.messageId === replaceMarker.messageId : true)
               ? null
@@ -16144,6 +16413,8 @@ export function ChatPanel({
     },
     [
       activeConversation,
+      activeConversationMetadata,
+      ensureFullActiveConversation,
       isActiveConversationCompacting,
       isReadOnly,
       isStreaming,
@@ -16155,14 +16426,32 @@ export function ChatPanel({
     ],
   );
 
-  const openCompactionReview = useCallback((marker: CompactionReviewMarker | null) => {
-    if (!marker) return;
-    setCompactionReviewMarker(marker);
-    setCompactionReviewDraft(marker.summary);
-    setCompactionReviewOriginalSummary(marker.summary);
-    setCompactionReviewError(null);
-    setIsEditingCompactionReview(false);
-  }, []);
+  const openCompactionReview = useCallback(
+    async (marker: CompactionReviewMarker | null) => {
+      if (!marker) return;
+      let conversation = activeConversation;
+      try {
+        conversation ??= await ensureFullActiveConversation();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load compaction details');
+        return;
+      }
+      const message = conversation.messages[marker.messageIndex];
+      if (
+        message?.role !== 'compaction' ||
+        (marker.messageId && message.message_id !== marker.messageId)
+      ) {
+        setError('Compaction result is no longer available');
+        return;
+      }
+      setCompactionReviewMarker(marker);
+      setCompactionReviewDraft(marker.summary);
+      setCompactionReviewOriginalSummary(marker.summary);
+      setCompactionReviewError(null);
+      setIsEditingCompactionReview(false);
+    },
+    [activeConversation, ensureFullActiveConversation],
+  );
 
   const closeCompactionReview = useCallback(() => {
     if (isSavingCompactionReview) return;
@@ -16174,12 +16463,13 @@ export function ChatPanel({
   }, [isSavingCompactionReview]);
 
   const retryCompactionReview = useCallback(() => {
-    if (!compactionReviewMarker || !activeConversation) return;
+    const conversation = activeConversation ?? activeConversationMetadata;
+    if (!compactionReviewMarker || !conversation) return;
     const marker = compactionReviewMarker;
     closeCompactionReview();
 
     setRetryingCompactionMarker({
-      conversationId: activeConversation.id,
+      conversationId: conversation.id,
       messageId: marker.messageId,
       messageIndex: marker.messageIndex,
     });
@@ -16187,14 +16477,31 @@ export function ChatPanel({
     void compactActiveConversation(marker);
   }, [
     activeConversation,
+    activeConversationMetadata,
     closeCompactionReview,
     compactActiveConversation,
     compactionReviewMarker,
   ]);
 
   const saveCompactionReview = useCallback(async () => {
-    if (!activeConversation || !compactionReviewMarker || isSavingCompactionReview || isReadOnly)
+    if (
+      (!activeConversation && !activeConversationMetadata) ||
+      !compactionReviewMarker ||
+      isSavingCompactionReview ||
+      isReadOnly
+    )
       return;
+    let conversation = activeConversation;
+    if (!conversation) {
+      try {
+        conversation = await ensureFullActiveConversation();
+      } catch (err) {
+        setCompactionReviewError(
+          err instanceof Error ? err.message : 'Failed to load conversation for compaction review',
+        );
+        return;
+      }
+    }
     const summary = compactionReviewDraft.trim();
     if (!summary) {
       setCompactionReviewError('Compaction summary cannot be empty.');
@@ -16211,7 +16518,7 @@ export function ChatPanel({
     setCompactionReviewError(null);
     try {
       const updated = await api.updateConversationCompactionMarker(
-        activeConversation.id,
+        conversation.id,
         {
           message_id: compactionReviewMarker.messageId,
           message_index: compactionReviewMarker.messageIndex,
@@ -16239,11 +16546,13 @@ export function ChatPanel({
     }
   }, [
     activeConversation,
+    activeConversationMetadata,
     compactionReviewDraft,
     compactionReviewMarker,
     compactionReviewOriginalSummary,
     isReadOnly,
     isSavingCompactionReview,
+    ensureFullActiveConversation,
     refreshBranchPoints,
     toastActions,
     workspaceId,
@@ -16294,7 +16603,26 @@ export function ChatPanel({
       branchSearchMatch?: ConversationBranchSearchMatch,
       keywordQuery?: string,
     ) => {
-      const selectedConversation = await selectConversation(conversation);
+      let selectedConversation = await selectConversation(conversation);
+      if (!selectedConversation && !workspaceId && branchSearchMatch?.branch_id) {
+        try {
+          const fullConversation = await api.getConversation(conversation.id, undefined);
+          if (standaloneSelectedIdRef.current !== conversation.id) return;
+          standaloneWindow.adoptFullConversation(fullConversation);
+          setActiveConversation(fullConversation);
+          setConversations((current) =>
+            current.some((item) => item.id === fullConversation.id)
+              ? current.map((item) => (item.id === fullConversation.id ? fullConversation : item))
+              : [fullConversation, ...current],
+          );
+          selectedConversation = fullConversation;
+        } catch (err) {
+          setError(
+            err instanceof Error ? err.message : 'Failed to load conversation for branch preview',
+          );
+          return;
+        }
+      }
       if (!selectedConversation) {
         return;
       }
@@ -16337,7 +16665,13 @@ export function ChatPanel({
           : null,
       );
     },
-    [applyBranchSearchPreview, refreshBranchPoints, selectConversation],
+    [
+      applyBranchSearchPreview,
+      refreshBranchPoints,
+      selectConversation,
+      standaloneWindow,
+      workspaceId,
+    ],
   );
 
   const jumpToBranchSearchResult = useCallback(
@@ -16488,26 +16822,27 @@ export function ChatPanel({
 
   const replayFromMessage = useCallback(
     async (messageIdx: number) => {
-      if (!activeConversation || isStreaming || isReadOnly) return;
-      const conversationId = activeConversation.id;
-      const selectedMessage = activeConversation.messages[messageIdx];
+      if ((!activeConversationMetadata && !activeConversation) || isStreaming || isReadOnly) return;
+      const conversation = await ensureFullActiveConversation();
+      const conversationId = conversation.id;
+      const selectedMessage = conversation.messages[messageIdx];
       if (!selectedMessage) return;
 
       // Replay always anchors at the user message that drove the (possibly
       // assistant) selected row, so the branch nav surfaces on the user row
       // and a single replay creates exactly one new branch.
-      const userIdx = findUserMessageIndexAtOrBefore(activeConversation.messages, messageIdx);
+      const userIdx = findUserMessageIndexAtOrBefore(conversation.messages, messageIdx);
       if (userIdx < 0) return;
 
-      const userMsg = activeConversation.messages[userIdx];
+      const userMsg = conversation.messages[userIdx];
       const truncateAt = userIdx;
-      const previousConversation = activeConversation;
+      const previousConversation = conversation;
       let replayBranch: ConversationBranchSummary | null = null;
       try {
         replayBranch = await createBranchForMessageMutation(
           conversationId,
           truncateAt,
-          activeConversation.messages.length,
+          conversation.messages.length,
           'replay',
         );
 
@@ -16517,7 +16852,7 @@ export function ChatPanel({
           typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
 
         // Optimistic update
-        const messagesToKeep = activeConversation.messages.slice(0, truncateAt);
+        const messagesToKeep = conversation.messages.slice(0, truncateAt);
         const optimisticMsg: ChatMessage = {
           role: 'user',
           content: rawContent as ChatMessage['content'],
@@ -16528,7 +16863,7 @@ export function ChatPanel({
         // lineage walk does not still resolve to the prior branch and show
         // e.g. "5/11" when the user is actually on the new "11/11" branch.
         const optimisticConv: Conversation = {
-          ...activeConversation,
+          ...conversation,
           messages: [...messagesToKeep, optimisticMsg],
           active_branch_id: null,
         };
@@ -16598,6 +16933,8 @@ export function ChatPanel({
     },
     [
       activeConversation,
+      activeConversationMetadata,
+      ensureFullActiveConversation,
       isStreaming,
       isReadOnly,
       createBranchForMessageMutation,
@@ -16611,9 +16948,10 @@ export function ChatPanel({
 
   const deleteFromMessage = useCallback(
     async (messageIdx: number) => {
-      if (!activeConversation || isStreaming || isReadOnly) return;
-      const conversationId = activeConversation.id;
-      const selectedMessage = activeConversation.messages[messageIdx];
+      if ((!activeConversationMetadata && !activeConversation) || isStreaming || isReadOnly) return;
+      const conversation = await ensureFullActiveConversation();
+      const conversationId = conversation.id;
+      const selectedMessage = conversation.messages[messageIdx];
       if (!selectedMessage) return;
       const selectedMessageId = selectedMessage.message_id;
 
@@ -16631,7 +16969,7 @@ export function ChatPanel({
         await createBranchForMessageMutation(
           conversationId,
           branchPointIndex,
-          activeConversation.messages.length,
+          conversation.messages.length,
           'delete',
         );
 
@@ -16685,6 +17023,8 @@ export function ChatPanel({
     },
     [
       activeConversation,
+      activeConversationMetadata,
+      ensureFullActiveConversation,
       isStreaming,
       isReadOnly,
       createBranchForMessageMutation,
@@ -16700,7 +17040,7 @@ export function ChatPanel({
     const editHasContent = !segmentsAreEmpty(editMessageSegments);
     if (
       isReadOnly ||
-      !activeConversation ||
+      (!activeConversation && !activeConversationMetadata) ||
       editingMessageIdx === null ||
       (!editHasContent && editMessageAttachments.length === 0) ||
       isSubmittingEdit
@@ -16708,7 +17048,15 @@ export function ChatPanel({
       return;
     setIsSubmittingEdit(true);
     shouldAutoScrollRef.current = true;
-    const conversationId = activeConversation.id;
+    let conversation: Conversation;
+    try {
+      conversation = await ensureFullActiveConversation();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load conversation');
+      setIsSubmittingEdit(false);
+      return;
+    }
+    const conversationId = conversation.id;
 
     let messageToSend: string = serializeRichChatSegments(editMessageSegments);
     if (editMessageAttachments.length > 0) {
@@ -16735,7 +17083,7 @@ export function ChatPanel({
     const truncateAt = Math.max(0, editingMessageIdx);
 
     try {
-      const blockReason = await getBranchSendBlockReason('edit', activeConversation);
+      const blockReason = await getBranchSendBlockReason('edit', conversation);
       if (blockReason) {
         throw new Error(blockReason);
       }
@@ -16807,7 +17155,8 @@ export function ChatPanel({
 
   // Memoize context usage calculation to avoid recalculating on every render
   const contextUsage = useMemo(() => {
-    if (!activeConversation) {
+    const conversation = activeConversation ?? activeConversationMetadata;
+    if (!conversation) {
       return {
         currentTokens: 0,
         totalTokens: 0,
@@ -16818,10 +17167,15 @@ export function ChatPanel({
       };
     }
 
-    const contextLimit = getContextLimit(activeConversation.model);
+    const contextLimit = getContextLimit(conversation.model);
     return calculateConversationContextUsage({
-      messages: activeConversation.messages,
-      persistedConversationTokens: activeConversation.total_tokens,
+      messages:
+        activeConversation?.id === conversation.id
+          ? activeConversation.messages
+          : visibleMessageEntries.flatMap((entry) =>
+              entry.state === 'ready' ? [entry.message] : [],
+            ),
+      persistedConversationTokens: conversation.total_tokens,
       contextLimit,
       inputText: inputValueWithContext,
       isStreaming,
@@ -16830,9 +17184,11 @@ export function ChatPanel({
     });
   }, [
     activeConversation,
+    activeConversationMetadata,
     defaultContextLimit,
     getContextLimit,
     inputValueWithContext,
+    visibleMessageEntries,
     isStreaming,
     streamingContent,
     streamingEvents,
@@ -17768,278 +18124,302 @@ export function ChatPanel({
       {/* Conversations Sidebar */}
       {!embedded && showSidebar && (
         <div id="chat-workbench-sidebar" className="chat-sidebar open">
-          {!workspaceId && (
-            <div className="chat-conversation-search chat-search-with-branches">
-              <input
-                type="text"
-                className="chat-conversation-search-input"
-                placeholder="Search chats..."
-                value={conversationSearchQuery}
-                onChange={(e) => setConversationSearchQuery(e.target.value)}
-                aria-label="Search conversations by title or content"
-              />
-              {conversationSearchQuery && (
-                <button
-                  type="button"
-                  className="chat-conversation-search-clear"
-                  onClick={() => setConversationSearchQuery('')}
-                  title="Clear search"
-                  aria-label="Clear search"
-                >
-                  <X size={12} />
-                </button>
-              )}
-              <BranchSearchToggle
-                enabled={sidebarBranchSearchEnabled}
-                onToggle={() => setSidebarBranchSearchEnabled((enabled) => !enabled)}
-              />
-              {isSidebarSummaryLoading ||
-              searchHydrationLoading ||
-              (archiveLoading && conversationSearchQuery) ||
-              conversations.some((c) => c.active_task_id) ? (
-                <span
-                  data-chat-sidebar-summary-loading={isSidebarSummaryLoading || undefined}
-                  className="chat-conversation-search-spinner"
-                  title={
-                    searchHydrationLoading
-                      ? 'Searching remaining chat history'
-                      : isSidebarSummaryLoading
-                        ? 'Loading chats'
-                        : archiveLoading && conversationSearchQuery
-                          ? 'Loading older chats'
-                          : 'Processing in background'
-                  }
-                >
-                  <MiniLoadingSpinner variant="icon" size={12} />
-                </span>
-              ) : null}
-              {conversationSearchQuery && (!searchHydrationComplete || searchHydrationError) && (
-                <span
-                  data-chat-search-hydration-status
-                  title={searchHydrationError || 'Searching remaining chat history'}
-                >
-                  {searchHydrationError ? 'Search incomplete' : 'Searching'}
-                </span>
-              )}
-              {sidebarSummaryError && (
-                <button
-                  type="button"
-                  data-chat-sidebar-summary-retry
-                  className="chat-conversation-search-clear"
-                  onClick={() => void retrySidebarSummaries()}
-                  title={sidebarSummaryError}
-                >
-                  Retry chats
-                </button>
-              )}
-              {initialConversationLoadError && (
-                <button
-                  type="button"
-                  data-chat-initial-load-error
-                  className="chat-conversation-search-clear"
-                  onClick={() => void loadConversations()}
-                  title={initialConversationLoadError}
-                >
-                  Retry conversation
-                </button>
-              )}
-            </div>
-          )}
-
-          <div
-            className={`chat-conversation-list ${!isAdmin ? 'chat-conversation-list-non-admin' : ''}`}
-            aria-busy={isConversationListLoading}
-          >
-            {isConversationListLoading ? (
-              <div className="chat-conversation-skeleton-list" aria-hidden="true">
-                {Array.from({ length: isAdmin ? 6 : 8 }).map((_, index) => (
-                  <div key={index} className="chat-conversation-skeleton">
-                    <div className="chat-skeleton-line chat-conversation-skeleton-title"></div>
-                    <div className="chat-skeleton-line chat-conversation-skeleton-meta"></div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              (() => {
-                const trimmedQuery = deferredConversationSearchQuery.trim();
-                // While searching, fold archived hits into the visible list so
-                // matches across older chats surface inline.
-                const baseConversations: Array<Conversation | ConversationSummary> = !workspaceId
-                  ? (() => {
-                      const hydratedById = new Map(
-                        conversations.map((conversation) => [conversation.id, conversation]),
-                      );
-                      const summaryIds = new Set(
-                        conversationSummaries.map((summary) => summary.id),
-                      );
-                      const rows = conversationSummaries.map(
-                        (summary) => hydratedById.get(summary.id) ?? summary,
-                      );
-                      for (const conversation of conversations) {
-                        if (
-                          !summaryIds.has(conversation.id) &&
-                          !isConversationOlderThanWindow(conversation, archiveAgeDays)
-                        ) {
-                          rows.unshift(conversation);
-                        }
+          {isStandaloneSidebarLoading ? (
+            <ChatLoadingState id="chat-workbench-sidebar-loading" kind="sidebar" />
+          ) : (
+            <>
+              {!workspaceId && (
+                <div className="chat-conversation-search chat-search-with-branches">
+                  <input
+                    type="text"
+                    className="chat-conversation-search-input"
+                    placeholder="Search chats..."
+                    value={conversationSearchQuery}
+                    onChange={(e) => setConversationSearchQuery(e.target.value)}
+                    aria-label="Search conversations by title or content"
+                  />
+                  {conversationSearchQuery && (
+                    <button
+                      type="button"
+                      className="chat-conversation-search-clear"
+                      onClick={() => setConversationSearchQuery('')}
+                      title="Clear search"
+                      aria-label="Clear search"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                  <BranchSearchToggle
+                    enabled={sidebarBranchSearchEnabled}
+                    onToggle={() => setSidebarBranchSearchEnabled((enabled) => !enabled)}
+                  />
+                  {standaloneSummaryScopes.loading ||
+                  searchHydrationLoading ||
+                  (archiveLoading && conversationSearchQuery) ||
+                  conversations.some((c) => c.active_task_id) ? (
+                    <span
+                      data-chat-sidebar-summary-loading={
+                        standaloneSummaryScopes.loading || undefined
                       }
+                      className="chat-conversation-search-spinner"
+                      title={
+                        searchHydrationLoading
+                          ? 'Searching remaining chat history'
+                          : standaloneSummaryScopes.loading
+                            ? 'Loading chats'
+                            : archiveLoading && conversationSearchQuery
+                              ? 'Loading older chats'
+                              : 'Processing in background'
+                      }
+                    >
+                      <MiniLoadingSpinner variant="icon" size={12} />
+                    </span>
+                  ) : null}
+                  {conversationSearchQuery &&
+                    (!searchHydrationComplete || searchHydrationError) && (
+                      <span
+                        data-chat-search-hydration-status
+                        title={searchHydrationError || 'Searching remaining chat history'}
+                      >
+                        {searchHydrationError ? 'Search incomplete' : 'Searching'}
+                      </span>
+                    )}
+                  {(standaloneSummaryScopes.scopeStates.self.error ||
+                    standaloneSummaryScopes.scopeStates.others.error) && (
+                    <button
+                      type="button"
+                      data-chat-sidebar-summary-retry
+                      className="chat-conversation-search-clear"
+                      onClick={() => void standaloneSummaryScopes.retryFailed()}
+                      title={
+                        standaloneSummaryScopes.scopeStates.self.error?.message ||
+                        standaloneSummaryScopes.scopeStates.others.error?.message
+                      }
+                    >
+                      Retry chats
+                    </button>
+                  )}
+                  {initialConversationLoadError && (
+                    <button
+                      type="button"
+                      data-chat-initial-load-error
+                      className="chat-conversation-search-clear"
+                      onClick={() => void loadConversations()}
+                      title={initialConversationLoadError}
+                    >
+                      Retry conversation
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div
+                className={`chat-conversation-list ${!isAdmin ? 'chat-conversation-list-non-admin' : ''}`}
+                aria-busy={isConversationListLoading}
+              >
+                {isConversationListLoading ? (
+                  <div className="chat-conversation-skeleton-list" aria-hidden="true">
+                    {Array.from({ length: isAdmin ? 6 : 8 }).map((_, index) => (
+                      <div key={index} className="chat-conversation-skeleton">
+                        <div className="chat-skeleton-line chat-conversation-skeleton-title"></div>
+                        <div className="chat-skeleton-line chat-conversation-skeleton-meta"></div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  (() => {
+                    const trimmedQuery = deferredConversationSearchQuery.trim();
+                    // While searching, fold archived hits into the visible list so
+                    // matches across older chats surface inline.
+                    const baseConversations: Array<Conversation | ConversationSummary> =
+                      !workspaceId
+                        ? (() => {
+                            const hydratedById = new Map(
+                              conversations.map((conversation) => [conversation.id, conversation]),
+                            );
+                            const summaryIds = new Set(
+                              conversationSummaries.map((summary) => summary.id),
+                            );
+                            const rows = conversationSummaries.map(
+                              (summary) => hydratedById.get(summary.id) ?? summary,
+                            );
+                            if (
+                              activeConversationMetadata &&
+                              !deletedConversationIdsRef.current.has(
+                                activeConversationMetadata.id,
+                              ) &&
+                              !rows.some((row) => row.id === activeConversationMetadata.id)
+                            ) {
+                              rows.unshift(activeConversationMetadata as ConversationSummary);
+                              summaryIds.add(activeConversationMetadata.id);
+                            }
+                            for (const conversation of conversations) {
+                              if (
+                                !summaryIds.has(conversation.id) &&
+                                !isConversationOlderThanWindow(conversation, archiveAgeDays)
+                              ) {
+                                rows.unshift(conversation);
+                              }
+                            }
+                            if (trimmedQuery) {
+                              const knownIds = new Set(rows.map((row) => row.id));
+                              rows.push(
+                                ...archivedConversations.filter(
+                                  (conversation) => !knownIds.has(conversation.id),
+                                ),
+                              );
+                            }
+                            return rows.sort((left, right) => {
+                              if (left.updated_at !== right.updated_at) {
+                                return left.updated_at > right.updated_at ? -1 : 1;
+                              }
+                              return left.id > right.id ? -1 : left.id < right.id ? 1 : 0;
+                            });
+                          })()
+                        : conversations;
+                    const filteredConversations = trimmedQuery
+                      ? baseConversations.filter(
+                          (c) =>
+                            conversationMatchesCachedQuery(c, trimmedQuery) ||
+                            Boolean(sidebarBranchSearchMatches[c.id]),
+                        )
+                      : baseConversations;
+
+                    if (filteredConversations.length === 0) {
                       if (trimmedQuery) {
-                        const knownIds = new Set(rows.map((row) => row.id));
-                        rows.push(
-                          ...archivedConversations.filter(
-                            (conversation) => !knownIds.has(conversation.id),
-                          ),
+                        return (
+                          <div className="chat-empty-state chat-empty-state-search">
+                            <p>No chats match "{trimmedQuery}".</p>
+                            {!workspaceId && !archiveLoaded && !archiveLoading && (
+                              <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => void loadArchivedConversations()}
+                              >
+                                Search older chats
+                              </button>
+                            )}
+                          </div>
                         );
                       }
-                      return rows.sort((left, right) => {
-                        if (left.updated_at !== right.updated_at) {
-                          return left.updated_at > right.updated_at ? -1 : 1;
-                        }
-                        return left.id > right.id ? -1 : left.id < right.id ? 1 : 0;
-                      });
-                    })()
-                  : conversations;
-                const filteredConversations = trimmedQuery
-                  ? baseConversations.filter(
-                      (c) =>
-                        conversationMatchesCachedQuery(c, trimmedQuery) ||
-                        Boolean(sidebarBranchSearchMatches[c.id]),
-                    )
-                  : baseConversations;
-
-                if (filteredConversations.length === 0) {
-                  if (trimmedQuery) {
-                    return (
-                      <div className="chat-empty-state chat-empty-state-search">
-                        <p>No chats match "{trimmedQuery}".</p>
-                        {!workspaceId && !archiveLoaded && !archiveLoading && (
-                          <button
-                            className="btn btn-secondary btn-sm"
-                            onClick={() => void loadArchivedConversations()}
-                          >
-                            Search older chats
+                      return (
+                        <div className="chat-empty-state">
+                          <p>No conversations yet</p>
+                          <button className="btn" onClick={createNewConversation}>
+                            Start a conversation
                           </button>
-                        )}
-                      </div>
-                    );
-                  }
-                  return (
-                    <div className="chat-empty-state">
-                      <p>No conversations yet</p>
-                      <button className="btn" onClick={createNewConversation}>
-                        Start a conversation
-                      </button>
-                    </div>
-                  );
-                }
-
-                const renderItem = (conv: Conversation | ConversationSummary) => {
-                  const row = renderConversationItem(conv, {
-                    searchQuery: trimmedQuery,
-                    branchSearchMatch: sidebarBranchSearchMatches[conv.id],
-                  });
-                  const expanded = expandedSubagentParents[conv.id] && !trimmedQuery;
-                  const childIds = conv.subagent_conversation_ids || [];
-                  const children = subagentConversationsByParent[conv.id] || [];
-                  if (!expanded) return row;
-                  return (
-                    <div key={`parent-${conv.id}`} className="chat-subagent-parent-group">
-                      {row}
-                      <div className="chat-subagent-child-list">
-                        {renderSubagentChildState(conv.id, childIds, children, 'sidebar')}
-                      </div>
-                    </div>
-                  );
-                };
-
-                if (isAdmin) {
-                  // Re-group filtered list so admin grouping still works while searching.
-                  const groups = new Map<
-                    string,
-                    {
-                      key: string;
-                      label: string;
-                      conversations: Array<Conversation | ConversationSummary>;
-                      isCurrentUserGroup: boolean;
+                        </div>
+                      );
                     }
-                  >();
-                  for (const conv of filteredConversations) {
-                    const key = getOwnerKey(conv);
-                    const label = getOwnerLabel(conv);
-                    const existing = groups.get(key);
-                    if (existing) {
-                      existing.conversations.push(conv);
-                      existing.isCurrentUserGroup =
-                        existing.isCurrentUserGroup || conv.user_id === currentUser.id;
-                    } else {
-                      groups.set(key, {
-                        key,
-                        label,
-                        conversations: [conv],
-                        isCurrentUserGroup: conv.user_id === currentUser.id,
+
+                    const renderItem = (conv: Conversation | ConversationSummary) => {
+                      const row = renderConversationItem(conv, {
+                        searchQuery: trimmedQuery,
+                        branchSearchMatch: sidebarBranchSearchMatches[conv.id],
+                      });
+                      const expanded = expandedSubagentParents[conv.id] && !trimmedQuery;
+                      const childIds = conv.subagent_conversation_ids || [];
+                      const children = subagentConversationsByParent[conv.id] || [];
+                      if (!expanded) return row;
+                      return (
+                        <div key={`parent-${conv.id}`} className="chat-subagent-parent-group">
+                          {row}
+                          <div className="chat-subagent-child-list">
+                            {renderSubagentChildState(conv.id, childIds, children, 'sidebar')}
+                          </div>
+                        </div>
+                      );
+                    };
+
+                    if (isAdmin) {
+                      // Re-group filtered list so admin grouping still works while searching.
+                      const groups = new Map<
+                        string,
+                        {
+                          key: string;
+                          label: string;
+                          conversations: Array<Conversation | ConversationSummary>;
+                          isCurrentUserGroup: boolean;
+                        }
+                      >();
+                      for (const conv of filteredConversations) {
+                        const key = getOwnerKey(conv);
+                        const label = getOwnerLabel(conv);
+                        const existing = groups.get(key);
+                        if (existing) {
+                          existing.conversations.push(conv);
+                          existing.isCurrentUserGroup =
+                            existing.isCurrentUserGroup || conv.user_id === currentUser.id;
+                        } else {
+                          groups.set(key, {
+                            key,
+                            label,
+                            conversations: [conv],
+                            isCurrentUserGroup: conv.user_id === currentUser.id,
+                          });
+                        }
+                      }
+                      const groupList = Array.from(groups.values()).sort((a, b) => {
+                        if (a.isCurrentUserGroup !== b.isCurrentUserGroup)
+                          return a.isCurrentUserGroup ? -1 : 1;
+                        return a.label.localeCompare(b.label);
+                      });
+                      return groupList.map((group) => {
+                        // When searching, expand groups so matches are visible.
+                        const isCollapsed = trimmedQuery
+                          ? false
+                          : (collapsedGroups[group.key] ??
+                            (!group.isCurrentUserGroup &&
+                              !group.conversations.some(
+                                (conversation) => conversation.id === activeConversation?.id,
+                              )));
+                        return (
+                          <div key={group.key} className="chat-conversation-group">
+                            <button
+                              className="chat-group-header"
+                              onClick={() => toggleGroup(group.key)}
+                            >
+                              <span className="chat-group-name">{group.label}</span>
+                              <span className="chat-group-count">{group.conversations.length}</span>
+                              <span className="chat-group-toggle">{isCollapsed ? '▶' : '▼'}</span>
+                            </button>
+                            {!isCollapsed && (
+                              <div className="chat-group-list">
+                                {group.conversations.map(renderItem)}
+                              </div>
+                            )}
+                          </div>
+                        );
                       });
                     }
-                  }
-                  const groupList = Array.from(groups.values()).sort((a, b) => {
-                    if (a.isCurrentUserGroup !== b.isCurrentUserGroup)
-                      return a.isCurrentUserGroup ? -1 : 1;
-                    return a.label.localeCompare(b.label);
-                  });
-                  return groupList.map((group) => {
-                    // When searching, expand groups so matches are visible.
-                    const isCollapsed = trimmedQuery
-                      ? false
-                      : (collapsedGroups[group.key] ??
-                        (!group.isCurrentUserGroup &&
-                          !group.conversations.some(
-                            (conversation) => conversation.id === activeConversation?.id,
-                          )));
-                    return (
-                      <div key={group.key} className="chat-conversation-group">
-                        <button
-                          className="chat-group-header"
-                          onClick={() => toggleGroup(group.key)}
-                        >
-                          <span className="chat-group-name">{group.label}</span>
-                          <span className="chat-group-count">{group.conversations.length}</span>
-                          <span className="chat-group-toggle">{isCollapsed ? '▶' : '▼'}</span>
-                        </button>
-                        {!isCollapsed && (
-                          <div className="chat-group-list">
-                            {group.conversations.map(renderItem)}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  });
-                }
-                return filteredConversations.map(renderItem);
-              })()
-            )}
-          </div>
+                    return filteredConversations.map(renderItem);
+                  })()
+                )}
+              </div>
 
-          {!workspaceId && !isConversationListLoading && (
-            <div className="chat-sidebar-footer">
-              <button
-                type="button"
-                className="chat-show-older-btn"
-                onClick={() => {
-                  setShowArchiveModal(true);
-                  setArchiveSearchQuery('');
-                  if (!archiveLoaded && !archiveLoading) void loadArchivedConversations();
-                }}
-                title={`Show chats older than ${getArchiveAgeLabel(archiveAgeDays)}`}
-              >
-                <Clock size={13} aria-hidden="true" />
-                <span>Show Older</span>
-                {archivedConversationDisplayCount !== null &&
-                  archivedConversationDisplayCount > 0 && (
-                    <span className="chat-show-older-count">
-                      {archivedConversationDisplayCount}
-                    </span>
-                  )}
-              </button>
-            </div>
+              {!workspaceId && !isConversationListLoading && (
+                <div className="chat-sidebar-footer">
+                  <button
+                    type="button"
+                    className="chat-show-older-btn"
+                    onClick={() => {
+                      setShowArchiveModal(true);
+                      setArchiveSearchQuery('');
+                      if (!archiveLoaded && !archiveLoading) void loadArchivedConversations();
+                    }}
+                    title={`Show chats older than ${getArchiveAgeLabel(archiveAgeDays)}`}
+                  >
+                    <Clock size={13} aria-hidden="true" />
+                    <span>Show Older</span>
+                    {archivedConversationDisplayCount !== null &&
+                      archivedConversationDisplayCount > 0 && (
+                        <span className="chat-show-older-count">
+                          {archivedConversationDisplayCount}
+                        </span>
+                      )}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -18068,10 +18448,26 @@ export function ChatPanel({
       )}
 
       {/* Main Chat Area */}
-      <div className="chat-main" ref={chatMainRef}>
-        {isConversationListLoading ? (
+      <div id="chat-main" className="chat-main" ref={chatMainRef}>
+        {isConversationListLoading && workspaceId ? (
           renderFullChatSkeleton()
-        ) : activeConversation ? (
+        ) : !workspaceId && (standaloneWindow.initialLoading || standaloneWindow.initialError) ? (
+          <div id="chat-workbench-main" className="chat-message-region" data-chat-window-main>
+            <ChatLoadingState
+              id={
+                standaloneWindow.initialError
+                  ? 'chat-window-main-error'
+                  : 'chat-window-main-loading'
+              }
+              kind="main"
+              state={standaloneWindow.initialError ? 'error' : 'loading'}
+              label={standaloneWindow.initialError?.message}
+              onRetry={
+                standaloneWindow.initialError ? () => void standaloneWindow.reload() : undefined
+              }
+            />
+          </div>
+        ) : renderedConversation ? (
           <>
             {/* Chat Header */}
             <div
@@ -18123,9 +18519,9 @@ export function ChatPanel({
                         aria-hidden="true"
                       />
                       <span className="model-selector-text chat-workspace-conversation-trigger-label">
-                        {activeConversation.title || 'Untitled Chat'}
+                        {renderedConversation.title || 'Untitled Chat'}
                       </span>
-                      {(Boolean(activeTask) || Boolean(activeConversation.active_task_id)) && (
+                      {(Boolean(activeTask) || Boolean(renderedConversation.active_task_id)) && (
                         <MiniLoadingSpinner
                           variant="icon"
                           size={14}
@@ -18133,7 +18529,7 @@ export function ChatPanel({
                           ariaHidden
                         />
                       )}
-                      {!(Boolean(activeTask) || Boolean(activeConversation.active_task_id)) &&
+                      {!(Boolean(activeTask) || Boolean(renderedConversation.active_task_id)) &&
                         (Boolean(interruptedTask) || interruptedConversationIds.size > 0) &&
                         !interruptDismissed && (
                           <button
@@ -18302,9 +18698,9 @@ export function ChatPanel({
                   </div>
                 ) : (
                   <div
-                    className={`chat-header-title-row${editingHeaderTitle === activeConversation.id ? ' is-editing' : ''}`}
+                    className={`chat-header-title-row${editingHeaderTitle === renderedConversation.id ? ' is-editing' : ''}`}
                   >
-                    {editingHeaderTitle === activeConversation.id ? (
+                    {editingHeaderTitle === renderedConversation.id ? (
                       <textarea
                         ref={(el) => {
                           if (el) {
@@ -18318,11 +18714,11 @@ export function ChatPanel({
                           e.target.style.height = 'auto';
                           e.target.style.height = `${e.target.scrollHeight}px`;
                         }}
-                        onBlur={() => saveTitle(activeConversation.id)}
+                        onBlur={() => saveTitle(renderedConversation.id)}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' && !e.shiftKey) {
                             e.preventDefault();
-                            void saveTitle(activeConversation.id);
+                            void saveTitle(renderedConversation.id);
                           }
                           if (e.key === 'Escape') setEditingHeaderTitle(null);
                         }}
@@ -18332,12 +18728,12 @@ export function ChatPanel({
                       />
                     ) : (
                       <>
-                        <h2>{activeConversation.title}</h2>
+                        <h2>{renderedConversation.title}</h2>
                         <button
                           className="chat-header-title-edit-btn"
                           onClick={() => {
-                            setEditingHeaderTitle(activeConversation.id);
-                            setTitleInput(activeConversation.title);
+                            setEditingHeaderTitle(renderedConversation.id);
+                            setTitleInput(renderedConversation.title);
                           }}
                           title="Rename"
                           aria-label="Rename conversation"
@@ -18425,7 +18821,7 @@ export function ChatPanel({
                   models={availableModels}
                   selectedModelId={(() => {
                     const selection = resolveConversationModelSelection(
-                      activeConversation.model || '',
+                      renderedConversation.model || '',
                       availableModels,
                     );
                     return selection.matchedModel
@@ -18506,12 +18902,12 @@ export function ChatPanel({
                   onPointerDown={clearPendingUserMessageNavigationTarget}
                   onTouchStart={clearPendingUserMessageNavigationTarget}
                 >
-                  {embedded && activeConversation?.parent_conversation_id && (
+                  {embedded && renderedConversation.parent_conversation_id && (
                     <button
                       type="button"
                       className="btn btn-sm btn-secondary chat-parent-nav-btn"
                       onClick={async () => {
-                        const parentId = activeConversation.parent_conversation_id;
+                        const parentId = renderedConversation.parent_conversation_id;
                         if (!parentId) return;
                         const parentConv = conversations.find((c) => c.id === parentId);
                         if (parentConv) {
@@ -18537,7 +18933,17 @@ export function ChatPanel({
                   )}
                   {isConversationSwitchLoading || isCreatingFreshConversation ? (
                     renderMessageBubbleSkeletons()
-                  ) : activeConversation.messages.length === 0 && !isStreaming ? (
+                  ) : !workspaceId && standaloneWindow.initialError ? (
+                    <ChatLoadingState
+                      id="chat-window-main-error"
+                      kind="main"
+                      state="error"
+                      label={standaloneWindow.initialError.message}
+                      onRetry={() => void standaloneWindow.reload()}
+                    />
+                  ) : !workspaceId && standaloneWindow.initialLoading ? (
+                    <ChatLoadingState id="chat-window-main-loading" kind="main" />
+                  ) : visibleMessageEntries.length === 0 && !isStreaming ? (
                     <div className="chat-welcome">
                       <h3>Start a conversation</h3>
                       <p>
@@ -18547,7 +18953,52 @@ export function ChatPanel({
                     </div>
                   ) : (
                     <>
-                      {activeConversation.messages.map((msg, idx) => {
+                      {!workspaceId && standaloneWindow.olderCursor && (
+                        <button
+                          id="chat-window-load-earlier"
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={loadOlderWithAnchor}
+                          disabled={standaloneWindow.olderLoading}
+                        >
+                          Load earlier messages
+                        </button>
+                      )}
+                      {!workspaceId && standaloneWindow.olderError && (
+                        <ChatLoadingState
+                          id="chat-window-history-error"
+                          kind="history"
+                          state="error"
+                          label={standaloneWindow.olderError.message}
+                          onRetry={loadOlderWithAnchor}
+                        />
+                      )}
+                      {visibleMessageEntries.map((entry) => {
+                        if (entry.state === 'deferred') {
+                          return (
+                            <div
+                              key={entry.key}
+                              className={`chat-message chat-message-${entry.preview.role} chat-message-deferred`}
+                              data-chat-message-key={entry.key}
+                              data-chat-message-index={entry.index}
+                            >
+                              <div className="chat-message-content">
+                                <div className="chat-message-text markdown-content">
+                                  <MemoizedMarkdown content={entry.preview.content} />
+                                </div>
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => void standaloneWindow.loadMessage(entry.index)}
+                                >
+                                  Load details
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        }
+                        const msg = entry.message;
+                        const idx = entry.index;
                         if (msg.role === 'compaction') {
                           const summary = extractCompactionSummary(msg.content);
                           const marker: CompactionReviewMarker = {
@@ -18558,7 +19009,7 @@ export function ChatPanel({
                           };
                           const isRetryingThisCompaction = Boolean(
                             retryingCompactionMarker &&
-                            retryingCompactionMarker.conversationId === activeConversation.id &&
+                            retryingCompactionMarker.conversationId === renderedConversation.id &&
                             retryingCompactionMarker.messageIndex === idx &&
                             (!retryingCompactionMarker.messageId ||
                               retryingCompactionMarker.messageId === msg.message_id) &&
@@ -18566,7 +19017,9 @@ export function ChatPanel({
                           );
                           return (
                             <div
-                              key={`msg-${idx}`}
+                              key={entry.key}
+                              data-chat-message-key={entry.key}
+                              data-chat-message-index={idx}
                               className="chat-compaction-divider"
                               title={summary || undefined}
                             >
@@ -18589,13 +19042,14 @@ export function ChatPanel({
                         }
                         const branchGroups = branchGroupsByIndex.get(idx) ?? [];
                         const hasBranches = branchGroups.length > 0;
-                        const msgKey = `msg-${idx}`;
                         const navigatorEntryKey =
                           msg.role === 'user' ? getChatMessageNavigatorEntryKey(msg, idx) : null;
                         return (
                           <div
-                            key={msgKey}
+                            key={entry.key}
                             className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}${hasBranches ? ' chat-branch-wrapper-has-branches' : ''}`}
+                            data-chat-message-key={entry.key}
+                            data-chat-message-index={idx}
                             ref={
                               navigatorEntryKey
                                 ? getUserMessageWrapperRef(navigatorEntryKey)
@@ -18660,7 +19114,7 @@ export function ChatPanel({
                                                 durationSeconds={pendingReasoningDurationSeconds}
                                                 showToolCalls={showToolCalls}
                                                 workspaceId={workspaceId}
-                                                conversationId={activeConversation.id}
+                                                conversationId={renderedConversation.id}
                                                 onOpenWorkspaceFile={onOpenWorkspaceFile}
                                                 inChatSearchQuery={
                                                   inChatSearchOpen ? inChatSearchTrimmedQuery : ''
@@ -18754,7 +19208,7 @@ export function ChatPanel({
                                                       key={`event-${evIdx}`}
                                                       toolCall={toolCall}
                                                       defaultExpanded={false}
-                                                      conversationId={activeConversation.id}
+                                                      conversationId={renderedConversation.id}
                                                       workspaceId={workspaceId}
                                                       siblingEvents={msg.events}
                                                       messageId={msg.message_id}
@@ -18790,7 +19244,7 @@ export function ChatPanel({
                                                     <ToolCallDisplay
                                                       toolCall={toolCall}
                                                       defaultExpanded={false}
-                                                      conversationId={activeConversation.id}
+                                                      conversationId={renderedConversation.id}
                                                       workspaceId={workspaceId}
                                                       siblingEvents={msg.events}
                                                       messageId={msg.message_id}
@@ -18825,7 +19279,7 @@ export function ChatPanel({
                                                   >
                                                     <MemoizedMarkdown
                                                       content={ev.content}
-                                                      conversationId={activeConversation.id}
+                                                      conversationId={renderedConversation.id}
                                                       workspaceId={workspaceId}
                                                       enableTableExports
                                                     />
@@ -18880,7 +19334,7 @@ export function ChatPanel({
                                           <div className="chat-message-text markdown-content">
                                             <MemoizedMarkdown
                                               content={parseMessageContent(msg.content).text}
-                                              conversationId={activeConversation.id}
+                                              conversationId={renderedConversation.id}
                                               workspaceId={workspaceId}
                                               enableTableExports
                                             />
@@ -18900,9 +19354,9 @@ export function ChatPanel({
                             {/* Action bar — flat on pane background, outside the bubble */}
                             {(() => {
                               const isEditing = editingMessageIdx === idx;
-                              const activeBranchId = activeConversation.active_branch_id;
+                              const activeBranchId = renderedConversation.active_branch_id;
                               const branchNav = hasBranches
-                                ? renderBranchNavStack(branchGroups, activeConversation)
+                                ? renderBranchNavStack(branchGroups, renderedConversation)
                                 : null;
 
                               const isCopied = copiedMessageIdx === idx;
@@ -18982,7 +19436,7 @@ export function ChatPanel({
                                             <FileAttachment
                                               attachments={editMessageAttachments}
                                               onAttachmentsChange={setEditMessageAttachments}
-                                              conversationId={activeConversation?.id}
+                                              conversationId={renderedConversation.id}
                                               workspaceId={workspaceId}
                                             />
                                           </div>
@@ -19191,7 +19645,11 @@ export function ChatPanel({
                         );
                       })}
 
-                      {queuedCompactionMessage?.conversationId === activeConversation.id && (
+                      {!workspaceId && standaloneWindow.olderLoading && (
+                        <ChatLoadingState id="chat-window-history-loading" kind="history" />
+                      )}
+
+                      {queuedCompactionMessage?.conversationId === renderedConversation.id && (
                         <>
                           <div className="chat-compaction-divider chat-compaction-divider-pending">
                             {queuedCompactionMessage.compactionStatus === 'compacted' ? (
@@ -19281,7 +19739,7 @@ export function ChatPanel({
                                     segment={segment}
                                     showToolCalls={showToolCalls}
                                     workspaceId={workspaceId}
-                                    conversationId={activeConversation.id}
+                                    conversationId={renderedConversation.id}
                                     onOpenWorkspaceFile={onOpenWorkspaceFile}
                                     onOpenSubagentConversation={openSubagentConversation}
                                     inChatSearchQuery={
@@ -19348,13 +19806,16 @@ export function ChatPanel({
 
                   {/* Continue prompt - shows for max iterations, connection error, or interrupted task */}
                   {!isStreaming &&
-                    activeConversation &&
+                    renderedConversation &&
                     // Show continue when:
                     // 1. Last message is assistant AND (hitMaxIterations OR isConnectionError)
                     // 2. OR there's an interrupted task (from server restart)
-                    ((activeConversation.messages.length > 0 &&
-                      activeConversation.messages[activeConversation.messages.length - 1].role ===
-                        'assistant' &&
+                    ((visibleMessageEntries.some(
+                      (entry, index) =>
+                        index === visibleMessageEntries.length - 1 &&
+                        entry.state === 'ready' &&
+                        entry.message.role === 'assistant',
+                    ) &&
                       (hitMaxIterations || isConnectionError)) ||
                       interruptedTask) &&
                     !isReadOnly && (
@@ -19447,7 +19908,7 @@ export function ChatPanel({
                   <FileAttachment
                     attachments={attachments}
                     onAttachmentsChange={setAttachments}
-                    conversationId={activeConversation?.id}
+                    conversationId={renderedConversation.id}
                     workspaceId={workspaceId}
                     disabled={
                       isReadOnly || isStreaming || hasQueuedCompactionMessageForActiveConversation
@@ -19546,7 +20007,7 @@ export function ChatPanel({
                             className="btn chat-send-btn-inline"
                             onClick={sendMessage}
                             disabled={
-                              !activeConversation ||
+                              !renderedConversation ||
                               !contextUsage.hasHeadroom ||
                               hasQueuedCompactionMessageForActiveConversation
                             }
