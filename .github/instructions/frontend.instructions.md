@@ -12,7 +12,7 @@ There are two orthogonal axes, both set as attributes on `<html>`:
 
 | Axis | Attribute | Values | Storage key | Default |
 |------|-----------|--------|-------------|---------|
-| Theme pack | `data-theme-pack` | `default` (attribute absent), `serif` | `ragtime-theme-pack` | `default` |
+| Theme pack | `data-theme-pack` | `default` (attribute absent), `modern`, `serif` | `ragtime-theme-pack` | `default` |
 | Color mode | `data-theme` | `light`, `dark`, system (attribute absent) | `ragtime-theme` | system |
 
 They compose: for example, `data-theme-pack="serif"` + `data-theme="light"` produces the serif pack's parchment light palette. Both are applied before first paint by the inline guard in `index.html` to avoid a flash of the wrong theme, and at runtime via `src/theme` (`setThemePack`, `setColorMode`).
@@ -20,7 +20,7 @@ They compose: for example, `data-theme-pack="serif"` + `data-theme="light"` prod
 ## Persistence & Precedence
 
 - Theme pack resolution is `user saved choice -> global default -> default`; `resolveThemePackId(...)` is the source of truth.
-- The theme registry (`THEME_PACKS`) is canonical for available packs, user-menu cycling order, and Settings cards. There are currently only `default` and `serif`.
+- The theme registry (`THEME_PACKS`) is canonical for available packs, user-menu cycling order, and Settings cards. There are currently `default`, `modern`, and `serif`.
 - `localStorage` is advisory only: `getStoredThemePack()` and `getStoredColorMode()` are guarded and fall back to defaults if storage is unavailable or invalid.
 - `setThemePack()` and `setColorMode()` remove the corresponding HTML attribute and clear the storage key when switching back to `default` or `system`.
 - User-menu theme changes are applied immediately in the UI and then saved best-effort to the account; the optimistic local theme stays in place even if the network save fails.
@@ -50,6 +50,10 @@ Background `#0f172a` · Surface `#1e293b` · Primary `#6366f1` · Text `#f1f5f9`
 ### Serif palette anchors
 
 Light: Parchment `#f5f4ed` · Ivory `#faf9f5` · Terracotta `#c96442` · Near-black `#141413`. Dark: Deep dark `#141413` · `#1e1d1b` · Coral `#d97757` · Parchment text `#f5f4ed`. All neutrals are warm-toned; the only cool color is the focus blue `#3898ec`.
+
+### Modern palette anchors
+
+Dark (base): Workbench desk `#252526` · Panel `#181818` · Widget/record `#202020` · Text `#cccccc`. Light: Desk `#f3f3f3` · Panel `#f8f8f8` · Widget `#ffffff` · Text `#0c0c0c`. Modern is a compact, workbench-style palette with framed floating panels (panel sections on desk) and elevated records (widgets inside panels). Admin surfaces use the canonical Modern surface hierarchy (see **Modern pack canonical hierarchy** below). All colors are cool grays with blue accents (`#0078d4` primary).
 
 ## Typography
 
@@ -109,3 +113,17 @@ Some values stay literal on purpose; do not tokenize them:
 2. `@import './themes/<id>.css';` in `src/styles/global.css` (after `theme.css`).
 3. Register it in `src/theme/themes.ts` by adding a `ThemePack` entry (id, label, description, heading font preview, swatch colors). The Settings Appearance picker renders from this registry automatically.
 4. No component CSS changes are needed - the pack inherits the full token contract and overrides what it declares.
+
+## Modern pack canonical hierarchy (all tabs)
+
+Modern surfaces follow a strict three-layer inversion model for all admin tabs (Tools, Indexer, Users, Settings) and must not appear elsewhere:
+
+**Desk layer:** `--color-workbench` background fills the root workbench shell (`8px` horizontal inset `--workbench-padding`).
+
+**Transparent page containers:** Route roots (`#workbench-settings-route`, `#workbench-indexer-route`, `#workbench-tools-route`, `#workbench-users-route`), the panel containers `.tools-panel` and `.users-panel`, `.settings-accordion`, and the Settings root card are `background: transparent; border: none; padding: 0; box-shadow: none;` and use `gap: var(--workbench-section-gap)` (12px composite: 4px gap + 4px sash + 4px gap) for vertical stacking. Floating page-level headings/filter bars (Settings `<h2>`, SearchFilterBar, `.users-header-bar`) that are direct children of transparent containers intentionally sit on the desk at the shell's 8px inset — flush with panel edges, VS Code style.
+
+**Section panels:** Cards and panel groups immediately inside transparent containers (e.g. `#workbench-indexer-route > .card`, `#tools-connections`, `#tools-mount-sources`, `#workbench-users-route .card`, `.settings-accordion-item`, `.api-info-box`) render as `--color-panel` with `--workbench-container-border` and `--workbench-surface-radius`, no shadow, internal padding preserved.
+
+**Elevated records:** Individual items inside section panels (`.index-item`, `.tool-card`, `.mount-source-card`, jobs/users tables, `.users-detail-list-shell`) render as `--color-widget` with the same border/radius/no-shadow treatment. Exactly one widget elevation layer per section panel; modals, popovers, dropdowns, and toasts remain widget overlays (unchanged).
+
+Margin stacking with `gap` requires `margin-block: 0` resets on flex children (see `workbench-admin.css`). All rules are `[data-theme-pack='modern']`-scoped to prevent side effects on other packs.
