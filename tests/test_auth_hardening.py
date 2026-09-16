@@ -660,6 +660,9 @@ class OAuth2AuthorizationCodeBindingTests(unittest.IsolatedAsyncioTestCase):
             "client_id": "client-a",
             "redirect_uri": "https://client.example/callback",
             "code_challenge": "challenge",
+            "security_generation": 0,
+            "resource": "mcp-service",
+            "scope": "",
             "expires": time.time() + api_auth.AUTH_CODE_EXPIRY,
         }
 
@@ -668,9 +671,20 @@ class OAuth2AuthorizationCodeBindingTests(unittest.IsolatedAsyncioTestCase):
         redirect_uri: str | None = "https://client.example/callback",
         client_id: str | None = "client-a",
     ) -> JSONResponse | api_auth.OAuth2TokenResponse:
+        user = SimpleNamespace(id="user-1", securityGeneration=0)
+        db = SimpleNamespace(user=SimpleNamespace(find_unique=mock.AsyncMock(return_value=user)))
+        token_pair = {
+            "access_token": "mcp-token",
+            "token_type": "Bearer",
+            "expires_in": 60,
+            "scope": "",
+            "refresh_token": "refresh-token",
+        }
         with (
             mock.patch.object(api_auth, "_verify_pkce", return_value=True),
-            mock.patch.object(api_auth, "_issue_login_session", new=mock.AsyncMock(return_value="session-token")),
+            mock.patch.object(api_auth, "get_db", new=mock.AsyncMock(return_value=db)),
+            mock.patch.object(api_auth, "_issue_mcp_token_pair", new=mock.AsyncMock(return_value=token_pair)),
+            mock.patch.object(api_auth, "canonical_oauth_origin", return_value="https://ragtime.example"),
         ):
             return await api_auth.oauth2_token(
                 self._request(),
@@ -681,6 +695,8 @@ class OAuth2AuthorizationCodeBindingTests(unittest.IsolatedAsyncioTestCase):
                 redirect_uri=redirect_uri,
                 client_id=client_id,
                 scope=None,
+                resource=None,
+                refresh_token=None,
             )
 
     async def test_authorization_code_requires_client_id(self) -> None:
@@ -698,7 +714,7 @@ class OAuth2AuthorizationCodeBindingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(response, api_auth.OAuth2TokenResponse)
         assert isinstance(response, api_auth.OAuth2TokenResponse)
-        self.assertEqual(response.access_token, "session-token")
+        self.assertEqual(response.access_token, "mcp-token")
         self.assertNotIn("code-1", api_auth._auth_codes)
 
     async def test_authorization_code_missing_client_id_does_not_consume_code(self) -> None:
@@ -735,6 +751,15 @@ class OAuth2AuthorizationCodeBindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("code-1", api_auth._auth_codes)
 
 
+class AuthPolicyRequestContractTests(unittest.TestCase):
+    def test_web_session_hours_distinguishes_omitted_from_explicit_null(self) -> None:
+        omitted = api_auth.UpdateAuthProviderConfigRequest.model_validate({})
+        reset = api_auth.UpdateAuthProviderConfigRequest.model_validate({"web_session_hours": None})
+
+        self.assertNotIn("web_session_hours", omitted.model_fields_set)
+        self.assertIn("web_session_hours", reset.model_fields_set)
+
+
 # ---------------------------------------------------------------------------
 # 3. MCP OAuth metadata base URL — EXTERNAL_BASE_URL takes precedence
 # ---------------------------------------------------------------------------
@@ -750,13 +775,13 @@ class McpResourceBaseTests(unittest.TestCase):
                 b"x-forwarded-proto": b"https",
             }
         )
-        with mock.patch.object(oauth.settings, "external_base_url", "https://ragtime.example.com"):
+        with mock.patch.object(core_auth.settings, "external_base_url", "https://ragtime.example.com"):
             result = oauth._resource_base(scope)
         self.assertEqual(result, "https://ragtime.example.com")
 
     def test_resource_base_strips_trailing_slash_from_external_base_url(self) -> None:
         scope = _scope()
-        with mock.patch.object(oauth.settings, "external_base_url", "https://ragtime.example.com/"):
+        with mock.patch.object(core_auth.settings, "external_base_url", "https://ragtime.example.com/"):
             result = oauth._resource_base(scope)
         self.assertEqual(result, "https://ragtime.example.com")
 
@@ -768,7 +793,7 @@ class McpResourceBaseTests(unittest.TestCase):
                 b"x-forwarded-proto": b"https",
             }
         )
-        with mock.patch.object(oauth.settings, "external_base_url", ""):
+        with mock.patch.object(core_auth.settings, "external_base_url", ""):
             result = oauth._resource_base(scope)
         self.assertEqual(result, "https://ragtime.example")
 
@@ -781,7 +806,7 @@ class McpResourceBaseTests(unittest.TestCase):
                 b"x-forwarded-proto": b"https",
             }
         )
-        with mock.patch.object(oauth.settings, "external_base_url", ""):
+        with mock.patch.object(core_auth.settings, "external_base_url", ""):
             result = oauth._resource_base(scope)
         self.assertEqual(result, "https://internal.host")
 
@@ -794,7 +819,7 @@ class McpResourceBaseTests(unittest.TestCase):
                 b"x-forwarded-proto": b"https",
             }
         )
-        with mock.patch.object(oauth.settings, "external_base_url", ""):
+        with mock.patch.object(core_auth.settings, "external_base_url", ""):
             result = oauth._resource_base(scope)
         self.assertEqual(result, "https://ragtime.example:8443")
 
@@ -811,7 +836,7 @@ class McpResourceBaseTests(unittest.TestCase):
 
         async def run():
             with (
-                mock.patch.object(oauth.settings, "external_base_url", "https://ragtime.example.com"),
+                mock.patch.object(core_auth.settings, "external_base_url", "https://ragtime.example.com"),
                 mock.patch.object(
                     oauth,
                     "_get_route_client_credentials",

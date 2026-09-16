@@ -84,6 +84,7 @@ test = [
     "types-psutil>=0.1.0,<8.0.0",
     "types-psycopg2>=2.9.21.20240417,<3.0.0",
     "types-PyMySQL>=0.1.0,<2.0.0",
+    "types-python-jose>=3.5.0.20250531,<4.0.0",
     "types-xlrd>=0.1.0,<3.0.0",
 ]
 legacy = [

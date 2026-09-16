@@ -44,6 +44,7 @@ from ragtime.core.logging import get_logger
 from ragtime.core.mcp_accounting import log_mcp_request
 from ragtime.core.security import extract_bearer_token, require_admin
 from ragtime.mcp.oauth import (
+    _resource_base,
     handle_authorization_server_metadata,
     handle_protected_resource_metadata,
     handle_token_request,
@@ -58,6 +59,7 @@ from ragtime.mcp.server import (
     register_tools_changed_callback,
 )
 from ragtime.mcp.tools import mcp_tool_adapter
+from ragtime.mcp.user_oauth import is_mcp_access_token_candidate, validate_mcp_token_and_fetch_user
 
 logger = get_logger(__name__)
 
@@ -298,7 +300,20 @@ async def _validate_oauth2_token(scope: Scope, allowed_group_dn: str | None = No
         return False
 
     try:
-        token_data, user = await validate_session_and_fetch_user(token)
+        # A new MCP token must never fall through to legacy session validation:
+        # it has no Session row and, more importantly, a damaged grant token
+        # must not acquire password/legacy authorization accidentally.
+        if is_mcp_access_token_candidate(token):
+            path = str(scope.get("path", "")).rstrip("/") or "/mcp"
+            issuer = _resource_base(scope)
+            resource = f"{issuer}{path}"
+            token_data, user = await validate_mcp_token_and_fetch_user(token, resource=resource, issuer=issuer)
+            if token_data is None:
+                scope["_mcp_invalid_grant_token"] = True
+                return False
+            scope["_mcp_oauth_user"] = user
+        else:
+            token_data, user = await validate_session_and_fetch_user(token)
         if token_data is None:
             return False
 
@@ -351,6 +366,8 @@ async def _validate_oauth2_or_password_fallback(
         oauth_valid = await _validate_oauth2_token(scope, allowed_group_dn)
         if oauth_valid:
             return True, "oauth2", None
+        if scope.get("_mcp_invalid_grant_token"):
+            return False, None, "OAuth2 token is invalid, expired, or unauthorized."
 
     if has_password and encrypted_password is not None:
         password_valid = await _validate_route_password(scope, encrypted_password, allow_bearer=False)
@@ -395,8 +412,12 @@ async def _get_user_matching_filter(scope: Scope) -> str | None:
         return None
 
     try:
-        token_data, user = await validate_session_and_fetch_user(token)
-        if token_data is None:
+        user = scope.get("_mcp_oauth_user")
+        if user is not None:
+            token_data = None
+        else:
+            token_data, user = await validate_session_and_fetch_user(token)
+        if user is None:
             logger.debug("_get_user_matching_filter: Token validation failed")
             return None
         if not user:

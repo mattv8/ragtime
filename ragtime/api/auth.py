@@ -43,9 +43,12 @@ from ragtime.core.app_setting_defaults import (
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.auth import (
     _UNSET,
+    AuthenticationInvalidatedError,
     LdapIdentityResolutionError,
     authenticate,
+    canonical_oauth_origin,
     create_or_update_local_managed_user,
+    decode_jwt_payload,
     discover_ldap_structure,
     get_auth_provider_config,
     get_ldap_config,
@@ -120,6 +123,7 @@ from ragtime.core.webauthn_mfa import (
     rename_webauthn_credential,
     user_has_enabled_webauthn,
 )
+from ragtime.mcp.user_oauth import McpOAuthError
 from ragtime.oauth_redirects import (
     DEFAULT_TRUSTED_REDIRECT_URIS,
     LOOPBACK_REDIRECT_HOSTS,
@@ -448,6 +452,10 @@ class AuthProviderConfigResponse(BaseModel):
     totp_remember_device_days: int = 30
     mfa_allowed_methods: list[str] = Field(default=["totp"], description="Allowed MFA methods for the instance")
     mfa_default_method: Optional[str] = Field(None, description="Default MFA method for the instance when the user has no preference")
+    web_session_hours: Optional[int] = Field(None, description="Optional absolute web-session lifetime override in hours")
+    effective_web_session_hours: int = Field(..., description="Effective absolute web-session lifetime in hours")
+    mcp_access_token_minutes: int = Field(..., description="MCP access-token lifetime in minutes")
+    mcp_authorization_days: int = Field(..., description="Absolute MCP authorization-grant lifetime in days")
 
 
 class UpdateAuthProviderConfigRequest(BaseModel):
@@ -462,6 +470,9 @@ class UpdateAuthProviderConfigRequest(BaseModel):
     totp_remember_device_days: Optional[int] = Field(None, ge=1, le=365)
     mfa_allowed_methods: Optional[list[str]] = Field(None, description="Allowed MFA methods; must be a non-empty subset of ['totp', 'webauthn']")
     mfa_default_method: Optional[str] = Field(None, description="Default MFA method; must be null or one of the effective allowed methods")
+    web_session_hours: Optional[int] = Field(None, ge=1, le=720, description="Optional web-session lifetime override; null restores the environment fallback")
+    mcp_access_token_minutes: Optional[int] = Field(None, ge=5, le=1440, description="MCP access-token lifetime in minutes")
+    mcp_authorization_days: Optional[int] = Field(None, ge=1, le=90, description="Absolute MCP authorization-grant lifetime in days")
 
 
 class MfaEnrollStartRequest(BaseModel):
@@ -964,6 +975,10 @@ def _auth_provider_config_response(config) -> AuthProviderConfigResponse:
         totp_remember_device_days=config.totp_remember_device_days,
         mfa_allowed_methods=config.mfa_allowed_methods,
         mfa_default_method=config.mfa_default_method,
+        web_session_hours=config.web_session_hours,
+        effective_web_session_hours=config.effective_web_session_hours,
+        mcp_access_token_minutes=config.mcp_access_token_minutes,
+        mcp_authorization_days=config.mcp_authorization_days,
     )
 
 
@@ -1141,6 +1156,8 @@ async def _user_from_pending_mfa_token(token: str, *, purpose: Literal["challeng
     user = await db.user.find_unique(where={"id": claims.user_id})
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    if claims.security_generation != getattr(user, "securityGeneration", 0):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="MFA challenge is no longer valid")
     return user
 
 
@@ -1180,17 +1197,22 @@ async def _issue_login_session(
     role: str,
     mfa_verified: bool,
     auth_methods: list[str],
+    security_generation: int | None = None,
 ) -> str:
-    return await issue_authenticated_session(
-        response,
-        user_id=user_id,
-        username=username,
-        role=role,
-        user_agent=request.headers.get("User-Agent"),
-        ip_address=_request_ip(request),
-        mfa_verified=mfa_verified,
-        auth_methods=auth_methods,
-    )
+    try:
+        return await issue_authenticated_session(
+            response,
+            user_id=user_id,
+            username=username,
+            role=role,
+            user_agent=request.headers.get("User-Agent"),
+            ip_address=_request_ip(request),
+            mfa_verified=mfa_verified,
+            auth_methods=auth_methods,
+            security_generation=security_generation,
+        )
+    except AuthenticationInvalidatedError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication is no longer valid") from exc
 
 
 def _webauthn_credential_response(cred: Any) -> WebauthnCredentialResponse:
@@ -1250,6 +1272,7 @@ async def _login_response_for_authenticated_primary(
                 role=result.role,
                 mfa_verified=True,
                 auth_methods=["password", "mfa_trust"],
+                security_generation=getattr(user, "securityGeneration", 0),
             )
         elif enrolled_allowed:
             return LoginResponse(
@@ -1262,6 +1285,7 @@ async def _login_response_for_authenticated_primary(
                     username=result.username,
                     role=result.role,
                     purpose="challenge",
+                    security_generation=getattr(user, "securityGeneration", 0),
                 ),
             )
         else:
@@ -1274,6 +1298,7 @@ async def _login_response_for_authenticated_primary(
                     username=result.username,
                     role=result.role,
                     purpose="enroll",
+                    security_generation=getattr(user, "securityGeneration", 0),
                 ),
             )
     else:
@@ -1285,6 +1310,7 @@ async def _login_response_for_authenticated_primary(
             role=result.role,
             mfa_verified=False,
             auth_methods=["password"],
+            security_generation=getattr(user, "securityGeneration", 0),
         )
 
     logger.info(f"User '{result.username}' logged in successfully (role: {result.role})")
@@ -1468,6 +1494,7 @@ async def login(
             role=str(user.role),
             mfa_verified=True,
             auth_methods=["password", method or "totp"],
+            security_generation=getattr(user, "securityGeneration", 0),
         )
         return LoginResponse(
             success=True,
@@ -1549,6 +1576,40 @@ def _verify_pkce(code_verifier: str, code_challenge: str) -> bool:
     return computed == code_challenge
 
 
+async def _normalize_mcp_resource(resource: str | None, request: Request) -> str:
+    """Delegate MCP resource policy to the protocol service."""
+    from ragtime.mcp.user_oauth import normalize_mcp_resource
+
+    return await normalize_mcp_resource(resource, base_url=canonical_oauth_origin(request))
+
+
+async def _issue_mcp_token_pair(**kwargs: Any) -> dict[str, Any]:
+    from ragtime.mcp.user_oauth import issue_mcp_token_pair
+
+    return await issue_mcp_token_pair(**kwargs)
+
+
+async def _refresh_mcp_token_pair(**kwargs: Any) -> dict[str, Any]:
+    from ragtime.mcp.user_oauth import refresh_mcp_token_pair
+
+    return await refresh_mcp_token_pair(**kwargs)
+
+
+async def _revoke_mcp_token(**kwargs: Any) -> None:
+    from ragtime.mcp.user_oauth import revoke_mcp_token
+
+    await revoke_mcp_token(**kwargs)
+
+
+def _mcp_oauth_error_response(exc: Exception, error_response: Any) -> JSONResponse:
+    """Translate only the protocol service's safe OAuth errors."""
+    error = getattr(exc, "error", None)
+    if error:
+        return error_response(error, str(getattr(exc, "description", "OAuth request failed")), getattr(exc, "status_code", 400))
+    logger.exception("MCP OAuth protocol service failed")
+    return error_response("server_error", "OAuth request failed", 500)
+
+
 # =============================================================================
 # OAuth2 Token Endpoint (for MCP clients)
 # =============================================================================
@@ -1569,7 +1630,8 @@ class OAuth2TokenResponse(BaseModel):
     access_token: str
     token_type: str = "Bearer"
     expires_in: int  # Seconds until expiration
-    scope: Optional[str] = None
+    scope: str = ""
+    refresh_token: Optional[str] = None
 
 
 class OAuth2ErrorResponse(BaseModel):
@@ -1582,6 +1644,7 @@ class OAuth2ErrorResponse(BaseModel):
 @router.post(
     "/oauth2/token",
     response_model=OAuth2TokenResponse,
+    response_model_exclude_none=True,
     responses={
         400: {"model": OAuth2ErrorResponse},
         401: {"model": OAuth2ErrorResponse},
@@ -1602,6 +1665,8 @@ async def oauth2_token(
     redirect_uri: Optional[str] = Form(default=None, description="Redirect URI (for authorization_code grant)"),
     client_id: Optional[str] = Form(default=None, description="Client ID (for authorization_code grant)"),
     scope: Optional[str] = Form(default=None, description="Requested scopes (optional)"),
+    resource: Optional[str] = Form(default=None, description="MCP protected resource"),
+    refresh_token: Optional[str] = Form(default=None, description="Refresh token (for refresh_token grant)"),
 ):
     """
     OAuth2 Token Endpoint.
@@ -1629,11 +1694,18 @@ async def oauth2_token(
         return JSONResponse(
             status_code=status_code,
             content={"error": error, "error_description": description},
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
 
     # Some MCP OAuth clients validate token payloads strictly and reject
     # `scope: null`; normalize to an OAuth-compatible string value.
     response_scope = (scope or "").strip()
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+
+    def _token_response(payload: dict[str, Any]) -> OAuth2TokenResponse:
+        """Omit optional refresh_token rather than serializing it as JSON null."""
+        return OAuth2TokenResponse(**payload)
 
     # Handle authorization_code grant (PKCE flow)
     if grant_type == "authorization_code":
@@ -1670,27 +1742,63 @@ async def oauth2_token(
             del _auth_codes[code]
             return _oauth_error("invalid_grant", "redirect_uri mismatch")
 
+        stored_scope = str(auth_data.get("scope") or "")
+        if scope is not None and response_scope != stored_scope:
+            del _auth_codes[code]
+            return _oauth_error("invalid_grant", "scope mismatch")
+
+        stored_resource = str(auth_data.get("resource") or "mcp-service")
+        if resource is not None:
+            try:
+                requested_resource = await _normalize_mcp_resource(resource, request)
+            except McpOAuthError as exc:
+                return _oauth_error(exc.error, exc.description, exc.status_code)
+            except Exception:
+                logger.exception("MCP resource normalization failed")
+                return _oauth_error("invalid_target", "Invalid MCP resource")
+            if requested_resource != stored_resource:
+                del _auth_codes[code]
+                return _oauth_error("invalid_grant", "resource mismatch")
+
         # Code is valid - consume it (one-time use)
         del _auth_codes[code]
 
-        token = await _issue_login_session(
-            response,
-            request,
-            user_id=auth_data["user_id"],
-            username=auth_data["username"],
-            role=auth_data["role"],
-            mfa_verified=bool(auth_data.get("mfa_verified", False)),
-            auth_methods=list(auth_data.get("auth_methods") or ["password"]),
-        )
+        db = await get_db()
+        user = await db.user.find_unique(where={"id": auth_data["user_id"]})
+        if not user or getattr(user, "securityGeneration", 0) != auth_data.get("security_generation", 0):
+            return _oauth_error("invalid_grant", "authorization is no longer valid")
+        try:
+            token_pair = await _issue_mcp_token_pair(
+                user_id=user.id,
+                client_id=client_id,
+                audience=stored_resource,
+                scope=stored_scope,
+                security_generation=getattr(user, "securityGeneration", 0),
+                mfa_verified=bool(auth_data.get("mfa_verified", False)),
+                auth_methods=list(auth_data.get("auth_methods") or ["password"]),
+                issuer=canonical_oauth_origin(request),
+            )
+        except Exception as exc:
+            return _mcp_oauth_error_response(exc, _oauth_error)
 
         logger.info(f"OAuth2 token issued for '{auth_data['username']}' via authorization_code grant")
 
-        return OAuth2TokenResponse(
-            access_token=token,
-            token_type="Bearer",
-            expires_in=settings.jwt_expire_hours * 3600,
-            scope=response_scope,
-        )
+        return _token_response(token_pair)
+
+    elif grant_type == "refresh_token":
+        if not refresh_token or not client_id:
+            return _oauth_error("invalid_request", "refresh_token and client_id are required for refresh_token grant")
+        try:
+            token_pair = await _refresh_mcp_token_pair(
+                refresh_token=refresh_token,
+                client_id=client_id,
+                resource=resource,
+                scope=scope,
+                issuer=canonical_oauth_origin(request),
+            )
+        except Exception as exc:
+            return _mcp_oauth_error_response(exc, _oauth_error)
+        return _token_response(token_pair)
 
     # Handle password grant
     elif grant_type == "password":
@@ -1756,30 +1864,69 @@ async def oauth2_token(
                     remember_device=remember_device,
                 )
 
-        token = await _issue_login_session(
-            response,
-            request,
-            user_id=result.user_id,
-            username=result.username,
-            role=result.role,
-            mfa_verified=mfa_verified,
-            auth_methods=auth_methods,
-        )
+        try:
+            token = await _issue_login_session(
+                response,
+                request,
+                user_id=result.user_id,
+                username=result.username,
+                role=result.role,
+                mfa_verified=mfa_verified,
+                auth_methods=auth_methods,
+                security_generation=getattr(user, "securityGeneration", 0),
+            )
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+                return _oauth_error("invalid_grant", "Authentication is no longer valid", status_code=401)
+            raise
 
         logger.info(f"OAuth2 token issued for '{result.username}' via password grant")
 
-        return OAuth2TokenResponse(
-            access_token=token,
-            token_type="Bearer",
-            expires_in=settings.jwt_expire_hours * 3600,
-            scope=response_scope,
+        token_payload = decode_jwt_payload(token)
+        token_expiry = token_payload.get("exp") if token_payload else None
+        if isinstance(token_expiry, bool) or not isinstance(token_expiry, (int, float)):
+            logger.error("OAuth2 password token issuance returned an invalid session token")
+            return _oauth_error("server_error", "Authentication token issuance failed", status_code=500)
+
+        return _token_response(
+            {
+                "access_token": token,
+                "token_type": "Bearer",
+                "expires_in": max(0, int(token_expiry - time.time())),
+                "scope": response_scope,
+            }
         )
 
     else:
         return _oauth_error(
             "unsupported_grant_type",
-            "Supported grant types: 'password', 'authorization_code'",
+            "Supported grant types: 'password', 'authorization_code', 'refresh_token'",
         )
+
+
+@router.post("/oauth2/revoke", status_code=status.HTTP_200_OK, tags=["OAuth2"])
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def oauth2_revoke(
+    request: Request,
+    token: str = Form(..., description="MCP access or refresh token to revoke"),
+    client_id: Optional[str] = Form(default=None, description="Optional client identifier"),
+):
+    """Revoke an MCP token family without touching legacy web sessions."""
+    try:
+        await _revoke_mcp_token(token=token, client_id=client_id, issuer=canonical_oauth_origin(request))
+    except Exception as exc:
+        # RFC 7009 returns success for unknown tokens; protocol errors only
+        # describe malformed requests or mismatched issuer/client binding.
+        error = getattr(exc, "error", None)
+        if error:
+            return JSONResponse(
+                status_code=getattr(exc, "status_code", 400),
+                content={"error": error, "error_description": str(getattr(exc, "description", "OAuth request failed"))},
+                headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+            )
+        logger.exception("MCP token revocation failed")
+        return JSONResponse(status_code=200, content={})
+    return Response(status_code=200, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
 
 # =============================================================================
@@ -1893,8 +2040,10 @@ async def start_mfa_enrollment(
     if "totp" not in allowed_methods:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP enrollment is not allowed")
     try:
-        setup = await begin_totp_enrollment(user)
+        setup = await begin_totp_enrollment(user, security_generation=getattr(user, "securityGeneration", 0))
     except ValueError as exc:
+        if str(exc) == "Authentication is no longer valid":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     return MfaEnrollStartResponse(**setup)
 
@@ -1918,24 +2067,30 @@ async def complete_mfa_enrollment(
     if not success:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code")
 
-    await invalidate_all_sessions(user.id)
+    try:
+        replacement_generation = await invalidate_all_sessions(user.id, expected_generation=getattr(user, "securityGeneration", 0))
+    except AuthenticationInvalidatedError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication is no longer valid") from exc
+    db = await get_db()
+    refreshed = await db.user.find_unique(where={"id": user.id})
+    if not refreshed:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     await _set_trusted_device_if_requested(
         response,
         request,
-        user_id=user.id,
+        user_id=refreshed.id,
         remember_device=body.remember_device,
     )
     await _issue_login_session(
         response,
         request,
-        user_id=user.id,
-        username=user.username,
-        role=str(user.role),
+        user_id=refreshed.id,
+        username=refreshed.username,
+        role=str(refreshed.role),
         mfa_verified=True,
         auth_methods=["password", "totp"],
+        security_generation=replacement_generation,
     )
-    db = await get_db()
-    refreshed = await db.user.find_unique(where={"id": user.id})
     return MfaEnrollCompleteResponse(
         success=True,
         recovery_codes=recovery_codes,
@@ -1962,7 +2117,16 @@ async def start_totp_rotation(
     verified, _ = await verify_user_mfa_code(user, body.verification_code)
     if not verified:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Verification failed")
-    setup = await begin_totp_enrollment(user, allow_replace=True)
+    try:
+        setup = await begin_totp_enrollment(
+            user,
+            allow_replace=True,
+            security_generation=getattr(user, "securityGeneration", 0),
+        )
+    except ValueError as exc:
+        if str(exc) == "Authentication is no longer valid":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return MfaEnrollStartResponse(**setup)
 
 
@@ -2031,6 +2195,7 @@ async def verify_mfa_challenge(
         role=str(user.role),
         mfa_verified=True,
         auth_methods=["password", method or "totp"],
+        security_generation=getattr(user, "securityGeneration", 0),
     )
     return LoginResponse(
         success=True,
@@ -2060,9 +2225,10 @@ async def start_webauthn_registration(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WebAuthn enrollment is not allowed")
 
     try:
-        options, registration_token = await begin_webauthn_registration(user, request)
+        options, registration_token = await begin_webauthn_registration(user, request, security_generation=getattr(user, "securityGeneration", 0))
     except WebauthnError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        status_code = status.HTTP_401_UNAUTHORIZED if str(exc) == "Authentication is no longer valid." else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     return WebauthnRegisterStartResponse(options=options, registration_token=registration_token)
 
@@ -2097,28 +2263,37 @@ async def complete_webauthn_registration_route(
             body.name,
         )
     except WebauthnError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        status_code = status.HTTP_401_UNAUTHORIZED if str(exc) == "Authentication is no longer valid." else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     recovery_codes: list[str] | None = None
     if is_first_factor:
         recovery_codes = await _generate_and_store_recovery_codes(user.id)
 
     if body.mfa_challenge_token:
-        await invalidate_all_sessions(user.id)
+        try:
+            replacement_generation = await invalidate_all_sessions(user.id, expected_generation=getattr(user, "securityGeneration", 0))
+        except AuthenticationInvalidatedError as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication is no longer valid") from exc
+        db = await get_db()
+        refreshed = await db.user.find_unique(where={"id": user.id})
+        if not refreshed:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
         await _set_trusted_device_if_requested(
             response,
             request,
-            user_id=user.id,
+            user_id=refreshed.id,
             remember_device=body.remember_device,
         )
         await _issue_login_session(
             response,
             request,
-            user_id=user.id,
-            username=user.username,
-            role=str(user.role),
+            user_id=refreshed.id,
+            username=refreshed.username,
+            role=str(refreshed.role),
             mfa_verified=True,
             auth_methods=["password", "webauthn"],
+            security_generation=replacement_generation,
         )
 
     return WebauthnRegisterCompleteResponse(
@@ -2144,9 +2319,10 @@ async def start_webauthn_authentication(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No WebAuthn credentials found")
 
     try:
-        options, authentication_token = await begin_webauthn_authentication(user, request)
+        options, authentication_token = await begin_webauthn_authentication(user, request, security_generation=getattr(user, "securityGeneration", 0))
     except WebauthnError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        status_code = status.HTTP_401_UNAUTHORIZED if str(exc) == "Authentication is no longer valid." else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     return WebauthnAuthenticateStartResponse(options=options, authentication_token=authentication_token)
 
@@ -2173,7 +2349,8 @@ async def complete_webauthn_authentication_route(
             body.credential,
         )
     except WebauthnError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        status_code = status.HTTP_401_UNAUTHORIZED if str(exc) == "Authentication is no longer valid." else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     await _set_trusted_device_if_requested(
         response,
@@ -2189,6 +2366,7 @@ async def complete_webauthn_authentication_route(
         role=str(user.role),
         mfa_verified=True,
         auth_methods=["password", "webauthn"],
+        security_generation=getattr(user, "securityGeneration", 0),
     )
 
     return LoginResponse(
@@ -2572,6 +2750,17 @@ async def update_provider_config(
             )
         mfa_default_method = body.mfa_default_method
 
+    web_session_hours: Any = _UNSET
+    if "web_session_hours" in body.model_fields_set:
+        # Explicit null is meaningful: it restores the environment fallback.
+        web_session_hours = body.web_session_hours
+    mcp_access_token_minutes: Any = _UNSET
+    if "mcp_access_token_minutes" in body.model_fields_set:
+        mcp_access_token_minutes = body.mcp_access_token_minutes
+    mcp_authorization_days: Any = _UNSET
+    if "mcp_authorization_days" in body.model_fields_set:
+        mcp_authorization_days = body.mcp_authorization_days
+
     updated = await update_auth_provider_config(
         local_users_enabled=body.local_users_enabled,
         ldap_lazy_sync_enabled=body.ldap_lazy_sync_enabled,
@@ -2582,6 +2771,9 @@ async def update_provider_config(
         totp_remember_device_days=body.totp_remember_device_days,
         mfa_allowed_methods=mfa_methods,
         mfa_default_method=mfa_default_method,
+        web_session_hours=web_session_hours,
+        mcp_access_token_minutes=mcp_access_token_minutes,
+        mcp_authorization_days=mcp_authorization_days,
     )
     return _auth_provider_config_response(updated)
 
