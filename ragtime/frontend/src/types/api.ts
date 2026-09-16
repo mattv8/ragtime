@@ -2782,6 +2782,35 @@ export interface Conversation {
   updated_at: string;
 }
 
+export type ConversationWindowMetadata = Omit<Conversation, 'messages'>;
+
+export interface ConversationMessagePreview {
+  role: string;
+  content: string;
+  timestamp: string;
+  message_id?: string | null;
+  content_truncated: boolean;
+  has_details: boolean;
+}
+
+export type ConversationWindowEntry = {
+  index: number;
+  key: string;
+} & (
+  | { state: 'ready'; message: ChatMessage; preview: null }
+  | { state: 'deferred'; message: null; preview: ConversationMessagePreview }
+);
+
+export interface ConversationMessageWindow {
+  conversation: ConversationWindowMetadata;
+  revision: string;
+  total_message_count: number;
+  entries: ConversationWindowEntry[];
+  next_cursor: string | null;
+  has_more: boolean;
+  legacy_conversation: Conversation | null;
+}
+
 export interface ConversationSummary {
   id: string;
   title: string;
