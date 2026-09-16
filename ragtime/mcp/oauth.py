@@ -42,11 +42,11 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs
 
+from starlette.requests import Request
 from starlette.types import Receive, Scope, Send
 
-from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import decode_jwt_payload, encode_jwt_payload
 from ragtime.core.encryption import decrypt_secret
@@ -451,46 +451,10 @@ async def handle_token_request(scope: Scope, receive: Receive, send: Send, route
 
 
 def _resource_base(scope: Scope) -> str:
-    """Reconstruct the scheme://host base URL for metadata documents.
+    """Return the canonical issuer shared by every OAuth surface."""
+    from ragtime.core.auth import canonical_oauth_origin
 
-    When ``EXTERNAL_BASE_URL`` is configured it is used as the authoritative
-    base so that OAuth metadata always points at the canonical public URL
-    regardless of what ``Host`` or ``X-Forwarded-Host`` headers say.  This
-    prevents a hostile reverse-proxy or request header from steering MCP
-    clients at an attacker-controlled authorization server.
-
-    When no canonical URL is configured the function falls back to the
-    direct request Host. ``X-Forwarded-Host`` is only accepted when it names
-    the same host family as Host, so hostile forwarded headers cannot poison
-    issuer/token metadata.
-    """
-    configured = str(getattr(settings, "external_base_url", "") or "").strip().rstrip("/")
-    if configured:
-        return configured
-
-    scheme = scope.get("scheme", "http")
-    headers = dict(scope.get("headers", []))
-    # Respect reverse-proxy forwarded scheme if present.
-    forwarded_proto = headers.get(b"x-forwarded-proto", b"").decode(errors="ignore")
-    if forwarded_proto:
-        scheme = forwarded_proto.split(",")[0].strip() or scheme
-    if scheme not in {"http", "https"}:
-        scheme = "http"
-
-    direct_host = headers.get(b"host", b"").decode(errors="ignore").split(",")[0].strip()
-    forwarded_host = headers.get(b"x-forwarded-host", b"").decode(errors="ignore").split(",")[0].strip()
-    host = direct_host or "localhost"
-
-    if forwarded_host and direct_host:
-        direct_hostname = urlsplit(f"{scheme}://{direct_host}").hostname
-        forwarded_hostname = urlsplit(f"{scheme}://{forwarded_host}").hostname
-        if direct_hostname and forwarded_hostname and forwarded_hostname.lower() == direct_hostname.lower():
-            host = forwarded_host
-
-    parsed_host = urlsplit(f"{scheme}://{host}")
-    if not parsed_host.hostname or any(char in host for char in "\r\n"):
-        host = "localhost"
-    return f"{scheme}://{host}"
+    return canonical_oauth_origin(Request(scope))
 
 
 def build_authorization_server_metadata(base: str, route_path: str | None) -> dict[str, Any]:
@@ -522,9 +486,11 @@ def build_interactive_authorization_server_metadata(base: str) -> dict[str, Any]
         "token_endpoint": f"{base}/token",
         "registration_endpoint": f"{base}/register",
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code", "password"],
+        "grant_types_supported": ["authorization_code", "refresh_token", "password"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
+        "revocation_endpoint": f"{base}/revoke",
+        "revocation_endpoint_auth_methods_supported": ["none"],
         "client_id_metadata_document_supported": True,
         "scopes_supported": [],
         "response_modes_supported": ["query"],
