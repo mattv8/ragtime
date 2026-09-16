@@ -47,7 +47,9 @@ When contributing new features or modifying existing logic, follow the project's
 
 ## Pull Request Workflow
 
-All PRs target the **`beta`** branch. The `CI Gate` check runs the full validation suite:
+**Standard PRs** target the **`beta`** branch. **Promotion PRs** from `beta` to `main` follow the [release workflow](docs/ci-release.md).
+
+The `CI Gate` check runs the full validation suite:
 
 - Backend quality checks and complete pytest suite
 - Frontend format, lint, Vitest, and production build
@@ -65,15 +67,19 @@ To validate changes locally before opening a PR, run the equivalent checks:
 docker build --target python-test -f docker/Dockerfile .
 
 # Frontend format, lint, Vitest, and production build
+docker build --target frontend-format-check -f docker/Dockerfile .
+docker build --target frontend-lint -f docker/Dockerfile .
 docker build --target frontend-test -f docker/Dockerfile .
+docker build --target frontend-builder -f docker/Dockerfile .
 
-# Storage Maven tests (skipped during docker build; run explicitly with --build-arg)
-docker build --target storage-test -f docker/Dockerfile.storage \
-  --build-arg MAVEN_SKIP_TESTS=1 .
+# Run Maven tests once in storage-test, skipping the preceding package-stage test run
+docker build --target storage-test -f docker/Dockerfile.storage --build-arg MAVEN_SKIP_TESTS=1 .
 
 # Or run all checks via the combined local test suite
 bash tests/run_all_tests.sh
 ```
+
+Vitest also runs with `npm test` in `ragtime/frontend/` for local iteration.
 
 ### Pull Request Checklist
 

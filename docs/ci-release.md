@@ -119,9 +119,8 @@ against force-push.
 
 ## GitHub Configuration via Rulesets
 
-Branch protection is configured via native GitHub rulesets (Settings → Rules → Rulesets) to
-enable layered governance without hardcoded actor lists. The orchestrator applies these via `gh`
-during bootstrap; they are not tracked in the repository.
+Branch protection is configured via native GitHub rulesets (Settings → Rules → Rulesets).
+Access is role-based; one-time configuration payloads are not tracked in the repository.
 
 ### Default Branch
 
@@ -129,34 +128,45 @@ Set the default branch to `beta` so new clones and PR templates target the corre
 
 ### Layered Ruleset Architecture
 
-Three rulesets are applied:
+Four rulesets enforce branch governance:
 
-1. **Beta PR + Strict CI Gate** (includes PR requirement, up-to-date branch requirement, required
-   checks: `CI Gate`)
+1. **Beta Integration Gate**
+   - Target: `beta` branch
+   - Requires pull request before merging
+   - Requires up-to-date branches before merging
+   - Required status checks: `CI Gate`
    - Administrator role bypass: **enabled** (for CLI reconciliation after main pushes)
-   - Block non-fast-forward: **not set** (allow merges)
-   - Block deletions: **not set**
 
-2. **Main Restricted Updates** (includes PR requirement, up-to-date branch requirement, required
-   checks: `CI Gate`, `Main Promotion Guard`, and non-fast-forward protection)
-   - Administrator role bypass: **enabled** (for emergency maintainer force-push to main only)
-   - Block deletions: **not set**
+2. **Main Release Maintainers**
+   - Target: `main` branch
+   - Restricts updates (requires admin role to push)
+   - Requires pull request before merging
+   - Requires up-to-date branches before merging
+   - Required status checks: `CI Gate`, `Main Promotion Guard`
+   - Blocks non-fast-forward updates (force-push)
+   - Administrator role bypass: **enabled** (for emergency maintainer force-push)
 
-3. **Deletion + Non-Fast-Forward Protections** (applies to both branches)
-   - Block force-push: both `main` and `beta`, **no bypass** (deletion protection is absolute)
-   - Block deletions: both `main` and `beta`, **no bypass** (deletion protection is absolute)
+3. **Protect Release Channel Branches from Deletion**
+   - Target: `main` and `beta` branches
+   - Blocks deletion
+   - No bypass (deletion protection is absolute)
 
-This layering allows:
+4. **Protect Beta History**
+   - Target: `beta` branch
+   - Blocks non-fast-forward updates (force-push)
+   - No bypass (beta history protection is absolute)
 
-- Administrators to force-push `main` in emergencies (via bypass in ruleset 2).
-- Administrators to merge beta directly (via bypass in ruleset 1) for reconciliation.
-- Beta force-push is always blocked (no bypass in ruleset 3).
-- Both branches protect against deletion (no bypass).
+**Enforcement summary:**
 
-**Note**: On personal or user-owned repositories, rulesets are the native GitHub way to
-enforce branch protection without role-based "Restrict who can push" features (which are
-org-only). Rulesets use authenticated user identity and configured role bypasses in their
-definitions.
+- Ruleset 1 (Beta Integration Gate): PRs to beta must pass CI Gate; admins may merge directly for reconciliation.
+- Ruleset 2 (Main Release Maintainers): Force-push to main is blocked for ordinary users but admin-bypassed
+  for emergencies; PRs from beta must pass both CI Gate and Main Promotion Guard.
+- Rulesets 3 & 4: Deletion of either branch is never allowed; beta force-push is never allowed (even with admin
+  role). Force-push to `main` is admin-bypassed by ruleset 2 and has no protection in rulesets 3–4.
+
+On personal or user-owned repositories, rulesets provide native update restrictions and
+role-based bypasses. Administrators can edit these rules; "no bypass" means the active
+rules apply to administrators too, not that the configuration is immutable.
 
 ## Runner Isolation Follow-Up
 
