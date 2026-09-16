@@ -255,6 +255,7 @@ from ragtime.indexer.models import (
     ConversationBranchPointInfo,
     ConversationBranchSummary,
     ConversationCountResponse,
+    ConversationMessageWindow,
     ConversationResponse,
     ConversationShareAccessMode,
     ConversationShareLink,
@@ -263,6 +264,7 @@ from ragtime.indexer.models import (
     ConversationShareRole,
     ConversationShareSlugAvailabilityResponse,
     ConversationSummaryResponse,
+    ConversationWindowEntry,
     CreateConversationBranchRequest,
     CreateConversationExportRequest,
     CreateConversationExportResponse,
@@ -340,6 +342,7 @@ from ragtime.indexer.models import (
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import (
     ConversationBranchMutationError,
+    ConversationWindowStaleError,
     _estimate_conversation_tokens,
     _resolve_default_conversation_model,
     repository,
@@ -13018,6 +13021,7 @@ async def list_conversation_summaries(
     limit: Optional[int] = Query(default=None, ge=1, le=200),
     cursor_updated_at: Optional[str] = None,
     cursor_id: Optional[str] = None,
+    owner_scope: Literal["all", "self", "others"] = "all",
     user: User = Depends(get_current_user),
 ):
     """List lightweight conversation rows without message payloads."""
@@ -13033,6 +13037,7 @@ async def list_conversation_summaries(
         limit=limit,
         cursor_updated_at=cursor_updated_at_dt,
         cursor_id=cursor_id,
+        owner_scope=owner_scope,
     )
 
 
@@ -13317,6 +13322,74 @@ async def get_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     return _to_conversation_response(conv)
+
+
+async def _require_conversation_window_access(conversation_id: str, workspace_id: Optional[str], user: User) -> None:
+    """Apply the canonical conversation/window access gates without widening visibility."""
+    await _assert_workspace_access(workspace_id, user, "viewer")
+    if not await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    ):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+
+@router.get("/conversations/{conversation_id}/latest-exchange", response_model=ConversationMessageWindow)
+async def get_conversation_latest_exchange(
+    conversation_id: str,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Return the latest user/final exchange without hydrating the full transcript."""
+    await _require_conversation_window_access(conversation_id, workspace_id, user)
+    window = await repository.get_latest_conversation_exchange(conversation_id)
+    if window is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return window
+
+
+@router.get("/conversations/{conversation_id}/message-window", response_model=ConversationMessageWindow)
+async def get_conversation_message_window(
+    conversation_id: str,
+    cursor: str,
+    limit: int = Query(default=20, ge=1, le=50),
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Return one revision-bound older transcript window."""
+    await _require_conversation_window_access(conversation_id, workspace_id, user)
+    try:
+        window = await repository.get_conversation_message_window(conversation_id, cursor, limit)
+    except ConversationWindowStaleError as exc:
+        raise HTTPException(status_code=409, detail="Conversation changed; reload messages") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if window is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return window
+
+
+@router.get("/conversations/{conversation_id}/messages/{message_index}", response_model=ConversationWindowEntry)
+async def get_conversation_window_message(
+    conversation_id: str,
+    message_index: int,
+    revision: str,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Hydrate a deliberate single transcript entry at an absolute index."""
+    await _require_conversation_window_access(conversation_id, workspace_id, user)
+    try:
+        entry = await repository.get_conversation_window_message(conversation_id, message_index, revision)
+    except ConversationWindowStaleError as exc:
+        raise HTTPException(status_code=409, detail="Conversation changed; reload messages") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Conversation message not found")
+    return entry
 
 
 @router.get(
