@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactElement, ReactNode } from 'react';
 import userEvent from '@testing-library/user-event';
 // @ts-expect-error Vitest runs in Node, but the frontend tsconfig omits Node types.
@@ -9,7 +9,14 @@ import { join } from 'node:path';
 import { cwd } from 'node:process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Conversation, ConversationSummary, User, WorkspaceChatStateResponse } from '@/types';
+import type {
+  Conversation,
+  ConversationMessageWindow,
+  ConversationSummary,
+  ConversationWindowEntry,
+  User,
+  WorkspaceChatStateResponse,
+} from '@/types';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import {
   ChatPanel,
@@ -22,45 +29,87 @@ import {
 } from './ChatPanel';
 import type { ChatMessageNavigationEntry } from './ChatMessageNavigator';
 
-const apiMock = vi.hoisted(() => ({
-  getConversation: vi.fn().mockResolvedValue(null),
-  searchConversationBranches: vi.fn().mockResolvedValue({ matches: [] }),
-  listConversationSummaries: vi.fn().mockResolvedValue([]),
-  listConversations: vi.fn().mockResolvedValue([]),
-  countConversations: vi.fn().mockResolvedValue({ count: 0 }),
-  listUserSpaceWorkspaces: vi.fn().mockResolvedValue([]),
-  createConversation: vi.fn(),
-  deleteConversation: vi.fn().mockResolvedValue(undefined),
-  updateConversationTitle: vi.fn(),
-  getConversationBranchPoints: vi.fn().mockResolvedValue([]),
-  switchConversationBranch: vi.fn(),
-  releaseConversationBranch: vi.fn(),
-  getConversationMembers: vi.fn().mockResolvedValue([]),
-  getConversationTaskState: vi
-    .fn()
-    .mockResolvedValue({ active_task: null, interrupted_task: null }),
-  getConversationTools: vi.fn().mockResolvedValue({
-    tool_selection_mode: 'default_all',
-    tool_config_ids: [],
-    tool_group_ids: [],
-    disabled_builtin_tool_ids: [],
-    tool_options: {},
-  }),
-  getSubagentConversationSummaries: vi.fn().mockResolvedValue([] as ConversationSummary[]),
-  getConversationEventsUrl: vi.fn().mockReturnValue('/events'),
-  listUserSpaceAvailableTools: vi.fn().mockResolvedValue([]),
-  listUserSpaceToolGroups: vi.fn().mockResolvedValue([]),
-  subscribeToolHealthEvents: vi.fn().mockReturnValue({
-    addEventListener: vi.fn(),
-    close: vi.fn(),
-    onmessage: null,
-  }),
-  streamChatTask: vi.fn().mockReturnValue(
-    (async function* () {
-      yield* [];
-    })(),
-  ),
-}));
+const apiMock = vi.hoisted(() => {
+  const mock = {
+    getConversation: vi.fn().mockResolvedValue(null),
+    getConversationLatestExchange: vi.fn().mockResolvedValue({
+      conversation: null,
+      revision: 'test-revision',
+      total_message_count: 0,
+      entries: [],
+      next_cursor: null,
+      has_more: false,
+      legacy_conversation: null,
+    }),
+    getConversationMessageWindow: vi.fn(),
+    getConversationWindowMessage: vi.fn(),
+    searchConversationBranches: vi.fn().mockResolvedValue({ matches: [] }),
+    listConversationSummaries: vi.fn().mockResolvedValue([]),
+    listConversations: vi.fn().mockResolvedValue([]),
+    countConversations: vi.fn().mockResolvedValue({ count: 0 }),
+    listUserSpaceWorkspaces: vi.fn().mockResolvedValue([]),
+    createConversation: vi.fn(),
+    deleteConversation: vi.fn().mockResolvedValue(undefined),
+    updateConversationTitle: vi.fn(),
+    getConversationBranchPoints: vi.fn().mockResolvedValue([]),
+    switchConversationBranch: vi.fn(),
+    releaseConversationBranch: vi.fn(),
+    getConversationMembers: vi.fn().mockResolvedValue([]),
+    getConversationTaskState: vi
+      .fn()
+      .mockResolvedValue({ active_task: null, interrupted_task: null }),
+    getConversationTools: vi.fn().mockResolvedValue({
+      tool_selection_mode: 'default_all',
+      tool_config_ids: [],
+      tool_group_ids: [],
+      disabled_builtin_tool_ids: [],
+      tool_options: {},
+    }),
+    getSubagentConversationSummaries: vi.fn().mockResolvedValue([] as ConversationSummary[]),
+    getConversationEventsUrl: vi.fn().mockReturnValue('/events'),
+    listUserSpaceAvailableTools: vi.fn().mockResolvedValue([]),
+    listUserSpaceToolGroups: vi.fn().mockResolvedValue([]),
+    subscribeToolHealthEvents: vi.fn().mockReturnValue({
+      addEventListener: vi.fn(),
+      close: vi.fn(),
+      onmessage: null,
+    }),
+    streamChatTask: vi.fn().mockReturnValue(
+      (async function* () {
+        yield* [];
+      })(),
+    ),
+    sendMessageBackground: vi.fn().mockResolvedValue({
+      id: 'task-window-send',
+      status: 'running',
+    }),
+    compactConversation: vi.fn().mockResolvedValue({
+      id: 'task-window-compaction',
+      status: 'running',
+    }),
+  };
+  mock.getConversationMessageWindow.mockImplementation(async (conversationId: string) => {
+    const latestResult = [...mock.getConversationLatestExchange.mock.results]
+      .reverse()
+      .find(
+        (_result, index) =>
+          mock.getConversationLatestExchange.mock.calls[
+            mock.getConversationLatestExchange.mock.calls.length - 1 - index
+          ]?.[0] === conversationId,
+      );
+    const latest = await latestResult?.value;
+    if (!latest?.conversation)
+      throw new Error(`Missing latest window fixture for ${conversationId}`);
+    return {
+      ...latest,
+      entries: [],
+      next_cursor: null,
+      has_more: false,
+      legacy_conversation: null,
+    };
+  });
+  return mock;
+});
 
 const chatMessageNavigatorMock = vi.hoisted(() => ({
   renderSpy: vi.fn(),
@@ -237,6 +286,65 @@ function makeConversation(
     updated_at: new Date().toISOString(),
     ...overrides,
   };
+}
+
+/**
+ * Converts a complete fixture only at the test boundary.  The API mock still
+ * returns the bounded window envelope ChatPanel consumes in production.
+ */
+function makeWindow(
+  conversation: Conversation,
+  options: {
+    entries?: ConversationWindowEntry[];
+    nextCursor?: string | null;
+    hasMore?: boolean;
+  } = {},
+): ConversationMessageWindow {
+  const { messages: _messages, ...metadata } = conversation;
+  return {
+    conversation: metadata,
+    revision: `${conversation.id}-revision`,
+    total_message_count: conversation.messages.length,
+    entries:
+      options.entries ??
+      conversation.messages.map((message, index) => ({
+        index,
+        key: message.message_id ?? `${conversation.id}-${index}`,
+        state: 'ready' as const,
+        message,
+        preview: null,
+      })),
+    next_cursor: options.nextCursor ?? null,
+    has_more: options.hasMore ?? false,
+    legacy_conversation: null,
+  };
+}
+
+function makeLatestExchange(conversation: Conversation): ConversationMessageWindow {
+  const lastIndex = conversation.messages.length - 1;
+  const entries = conversation.messages.slice(Math.max(0, lastIndex - 1)).map((message, offset) => {
+    const index = Math.max(0, lastIndex - 1) + offset;
+    return {
+      index,
+      key: message.message_id ?? `${conversation.id}-${index}`,
+      state: 'deferred' as const,
+      message: null,
+      preview: {
+        role: message.role,
+        content:
+          typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
+        timestamp: message.timestamp,
+        message_id: message.message_id ?? null,
+        content_truncated: false,
+        has_details: true,
+      },
+    };
+  });
+  return makeWindow(conversation, {
+    entries,
+    nextCursor: `${conversation.id}-before`,
+    hasMore: true,
+  });
 }
 
 function makeSummary(
@@ -611,12 +719,18 @@ describe('ChatPanel standalone first-paint loading', () => {
       title: 'Recent detail',
       updated_at: '2026-09-11T12:00:00.000Z',
     });
-    apiMock.listConversationSummaries
-      .mockResolvedValueOnce([makeSummary(selected.id, selected.title)])
-      .mockImplementationOnce(
-        () => new Promise<ConversationSummary[]>((resolve) => (releaseSidebarPage = resolve)),
-      );
-    apiMock.getConversation.mockResolvedValue(selected);
+    apiMock.listConversationSummaries.mockImplementation(
+      (_workspaceId: unknown, options: { limit?: number; owner_scope?: string }) => {
+        if (options.owner_scope === 'self' && options.limit === 1) {
+          return Promise.resolve([makeSummary(selected.id, selected.title)]);
+        }
+        if (options.owner_scope === 'self') {
+          return new Promise<ConversationSummary[]>((resolve) => (releaseSidebarPage = resolve));
+        }
+        return Promise.resolve([]);
+      },
+    );
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(selected));
 
     renderChatPanel(<ChatPanel currentUser={currentUser} />);
 
@@ -625,7 +739,7 @@ describe('ChatPanel standalone first-paint loading', () => {
     expect(apiMock.listConversationSummaries).toHaveBeenNthCalledWith(
       1,
       undefined,
-      expect.objectContaining({ limit: 1 }),
+      expect.objectContaining({ limit: 1, owner_scope: 'self' }),
       expect.any(AbortSignal),
     );
     expect(apiMock.listConversations).not.toHaveBeenCalled();
@@ -643,10 +757,10 @@ describe('ChatPanel standalone first-paint loading', () => {
       updated_at: '2026-09-11T12:00:00.000Z',
       user_id: 'another-user',
     });
-    apiMock.getConversation.mockImplementation((id: string) => {
-      if (id === older.id) return Promise.resolve(older);
-      if (id === shared.id) return Promise.resolve(shared);
-      return Promise.resolve(null);
+    apiMock.getConversationLatestExchange.mockImplementation((id: string) => {
+      if (id === older.id) return Promise.resolve(makeLatestExchange(older));
+      if (id === shared.id) return Promise.resolve(makeLatestExchange(shared));
+      return Promise.resolve(makeLatestExchange(older));
     });
     apiMock.listConversationSummaries.mockResolvedValue([]);
 
@@ -662,22 +776,22 @@ describe('ChatPanel standalone first-paint loading', () => {
     );
 
     expect(await screen.findByText('Shared response')).toBeDefined();
-    expect(apiMock.getConversation.mock.calls.map(([id]) => id)).toContain(shared.id);
+    expect(apiMock.getConversationLatestExchange.mock.calls.map(([id]) => id)).toContain(shared.id);
   });
 
   it('does not let a late initial detail replace explicit later navigation', async () => {
-    let resolveInitial: ((conversation: Conversation) => void) | undefined;
+    let resolveInitial: ((window: ConversationMessageWindow) => void) | undefined;
     const initial = makeConversation('initial-race', 'Initial late response', {
       updated_at: '2026-09-11T12:00:00.000Z',
     });
     const explicit = makeConversation('explicit-race', 'Explicit response wins', {
       updated_at: '2026-09-11T12:00:01.000Z',
     });
-    apiMock.getConversation.mockImplementation((id: string) => {
+    apiMock.getConversationLatestExchange.mockImplementation((id: string) => {
       if (id === initial.id) {
-        return new Promise<Conversation>((resolve) => (resolveInitial = resolve));
+        return new Promise<ConversationMessageWindow>((resolve) => (resolveInitial = resolve));
       }
-      return Promise.resolve(explicit);
+      return Promise.resolve(makeLatestExchange(explicit));
     });
     apiMock.listConversationSummaries.mockResolvedValue([]);
 
@@ -685,7 +799,7 @@ describe('ChatPanel standalone first-paint loading', () => {
       <ChatPanel currentUser={currentUser} initialConversationId={initial.id} />,
     );
     await waitFor(() =>
-      expect(apiMock.getConversation).toHaveBeenCalledWith(
+      expect(apiMock.getConversationLatestExchange).toHaveBeenCalledWith(
         initial.id,
         undefined,
         expect.anything(),
@@ -699,7 +813,7 @@ describe('ChatPanel standalone first-paint loading', () => {
     );
     expect(await screen.findByText('Explicit response wins')).toBeDefined();
 
-    resolveInitial?.(initial);
+    resolveInitial?.(makeLatestExchange(initial));
     await waitFor(() => expect(screen.queryByText('Initial late response')).toBeNull());
   });
 
@@ -712,11 +826,18 @@ describe('ChatPanel standalone first-paint loading', () => {
       title: 'Bootstrap chat',
       updated_at: '2026-09-11T12:00:03.000Z',
     });
-    apiMock.listConversationSummaries
-      .mockResolvedValueOnce([makeSummary(initial.id, initial.title)])
-      .mockResolvedValueOnce([makeSummary(selected.id, selected.title)]);
-    apiMock.getConversation.mockImplementation((id: string) =>
-      Promise.resolve(id === selected.id ? selected : initial),
+    apiMock.listConversationSummaries.mockImplementation(
+      (_workspaceId: unknown, options: { limit?: number; owner_scope?: string }) => {
+        if (options.owner_scope === 'self' && options.limit === 1) {
+          return Promise.resolve([makeSummary(initial.id, initial.title)]);
+        }
+        if (options.owner_scope === 'self')
+          return Promise.resolve([makeSummary(selected.id, selected.title)]);
+        return Promise.resolve([]);
+      },
+    );
+    apiMock.getConversationLatestExchange.mockImplementation((id: string) =>
+      Promise.resolve(makeLatestExchange(id === selected.id ? selected : initial)),
     );
 
     renderChatPanel(<ChatPanel currentUser={currentUser} />);
@@ -744,7 +865,7 @@ describe('ChatPanel standalone first-paint loading', () => {
       title: 'Delete pending sidebar row',
       updated_at: '2026-09-11T12:00:00.000Z',
     });
-    apiMock.getConversation.mockResolvedValue(detail);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(detail));
     apiMock.listConversationSummaries.mockImplementation(
       (_workspaceId: unknown, options: { limit?: number }) => {
         if (options.limit === 1) return Promise.resolve([]);
@@ -754,6 +875,7 @@ describe('ChatPanel standalone first-paint loading', () => {
 
     renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={detail.id} />);
     expect(await screen.findByText('Delete me')).toBeDefined();
+    await waitFor(() => expect(releaseSidebarPage).toBeDefined());
     await userEvent.setup().click(screen.getByTitle('Delete'));
     await userEvent.setup().click(screen.getByTitle('Confirm delete'));
     await waitFor(() =>
@@ -761,7 +883,13 @@ describe('ChatPanel standalone first-paint loading', () => {
     );
 
     releaseSidebarPage?.([makeSummary(detail.id, detail.title)]);
-    await waitFor(() => expect(screen.queryByText(detail.title)).toBeNull());
+    await waitFor(() =>
+      expect(
+        Array.from(document.querySelectorAll('.chat-conversation-item')).filter((item) =>
+          item.textContent?.includes(detail.title),
+        ),
+      ).toHaveLength(0),
+    );
   });
 
   it('continues cursor hydration after a user creates a chat while the first sidebar page is pending', async () => {
@@ -782,7 +910,7 @@ describe('ChatPanel standalone first-paint loading', () => {
         updated_at: `2026-09-11T11:${String(index).padStart(2, '0')}:00.000Z`,
       }),
     );
-    apiMock.getConversation.mockResolvedValue(bootstrap);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(bootstrap));
     apiMock.createConversation.mockResolvedValue(created);
     apiMock.listConversationSummaries
       .mockImplementationOnce(
@@ -792,8 +920,10 @@ describe('ChatPanel standalone first-paint loading', () => {
 
     renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={bootstrap.id} />);
     expect(await screen.findByText('Bootstrap stays visible')).toBeDefined();
+    await waitFor(() => expect(releaseFirstPage).toBeDefined());
     await userEvent.setup().click(screen.getByTitle('Start a new conversation'));
     expect(await screen.findByText('Created chat stays active')).toBeDefined();
+    expect(apiMock.listConversationSummaries).toHaveBeenCalledTimes(1);
 
     releaseFirstPage?.(firstPage);
     await waitFor(() =>
@@ -812,15 +942,150 @@ describe('ChatPanel standalone first-paint loading', () => {
     expect(screen.getByText('Created chat stays active')).toBeDefined();
   });
 
+  it('preserves the first visible ready message position when earlier history prepends', async () => {
+    const conversation = makeConversation('history-anchor', 'Newest ready response', {
+      messages: [
+        {
+          role: 'user',
+          content: 'Oldest question',
+          timestamp: '2026-09-11T12:00:00.000Z',
+          message_id: 'anchor-oldest-user',
+        },
+        {
+          role: 'assistant',
+          content: 'Oldest response',
+          timestamp: '2026-09-11T12:00:01.000Z',
+          message_id: 'anchor-oldest-assistant',
+        },
+        {
+          role: 'user',
+          content: 'Visible question',
+          timestamp: '2026-09-11T12:00:02.000Z',
+          message_id: 'anchor-visible-user',
+        },
+        {
+          role: 'assistant',
+          content: 'Newest ready response',
+          timestamp: '2026-09-11T12:00:03.000Z',
+          message_id: 'anchor-visible-assistant',
+        },
+      ],
+    });
+    const firstPage = makeWindow(conversation, {
+      entries: conversation.messages.slice(2).map((message, index) => ({
+        index: index + 2,
+        key: message.message_id ?? `anchor-${index + 2}`,
+        state: 'ready' as const,
+        message,
+        preview: null,
+      })),
+      nextCursor: 'anchor-earlier',
+      hasMore: true,
+    });
+    const earlierPage = makeWindow(conversation, {
+      entries: conversation.messages.slice(0, 2).map((message, index) => ({
+        index,
+        key: message.message_id ?? `anchor-${index}`,
+        state: 'ready' as const,
+        message,
+        preview: null,
+      })),
+      nextCursor: null,
+      hasMore: false,
+    });
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow
+      .mockResolvedValueOnce(firstPage)
+      .mockResolvedValueOnce(earlierPage);
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    const loadEarlier = (await screen.findByRole('button', {
+      name: 'Load earlier messages',
+    })) as HTMLButtonElement;
+    await waitFor(() => {
+      expect(apiMock.getConversationMessageWindow).toHaveBeenCalledTimes(1);
+      expect(loadEarlier.disabled).toBe(false);
+      expect(document.querySelector('.chat-message-deferred')).toBeNull();
+    });
+    const messagesRoot = document.querySelector('.chat-messages') as HTMLElement;
+    let scrollTop = 200;
+    Object.defineProperty(messagesRoot, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+    });
+    messagesRoot.getBoundingClientRect = () =>
+      ({
+        top: 100,
+        bottom: 500,
+        left: 0,
+        right: 300,
+        width: 300,
+        height: 400,
+        x: 0,
+        y: 100,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    let prepended = false;
+    const messageWrappers = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-chat-message-key]'),
+    );
+    expect(messageWrappers.map((element) => element.dataset.chatMessageKey)).toEqual([
+      'anchor-visible-user',
+      'anchor-visible-assistant',
+    ]);
+    messageWrappers.forEach((wrapper) => {
+      const key = wrapper.dataset.chatMessageKey;
+      wrapper.getBoundingClientRect = () => {
+        const top = key === 'anchor-visible-user' ? 20 : prepended ? 260 : 160;
+        return {
+          top,
+          bottom: top + 60,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 60,
+          x: 0,
+          y: top,
+          toJSON: () => ({}),
+        } as DOMRect;
+      };
+    });
+
+    fireEvent.click(loadEarlier);
+    prepended = true;
+
+    await waitFor(() => expect(apiMock.getConversationMessageWindow).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(scrollTop).toBe(300));
+    expect(apiMock.getConversationMessageWindow).toHaveBeenLastCalledWith(
+      conversation.id,
+      { cursor: 'anchor-earlier', limit: 20 },
+      undefined,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it('keeps the active detail selected when summary backfill fails and retries only the backfill', async () => {
     const detail = makeConversation('backfill-active', 'Active detail remains visible', {
       title: 'Active while backfill fails',
       updated_at: '2026-09-11T12:00:00.000Z',
     });
-    apiMock.getConversation.mockResolvedValue(detail);
-    apiMock.listConversationSummaries
-      .mockRejectedValueOnce(new Error('Sidebar request failed'))
-      .mockResolvedValueOnce([]);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(detail));
+    let selfAttempts = 0;
+    apiMock.listConversationSummaries.mockImplementation(
+      (_workspaceId: unknown, options: { owner_scope?: string }) => {
+        if (options.owner_scope === 'self') {
+          selfAttempts += 1;
+          if (selfAttempts === 1) return Promise.reject(new Error('Sidebar request failed'));
+        }
+        return Promise.resolve([]);
+      },
+    );
 
     renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={detail.id} />);
 
@@ -828,9 +1093,9 @@ describe('ChatPanel standalone first-paint loading', () => {
     const retry = await screen.findByRole('button', { name: /retry/i });
     await userEvent.setup().click(retry);
 
-    await waitFor(() => expect(apiMock.listConversationSummaries).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(selfAttempts).toBeGreaterThanOrEqual(2));
     expect(screen.getByText('Active detail remains visible')).toBeDefined();
-    expect(apiMock.getConversation).toHaveBeenCalledTimes(1);
+    expect(apiMock.getConversationLatestExchange).toHaveBeenCalledTimes(1);
   });
 
   it('resumes a failed second summary page from its cursor when retrying', async () => {
@@ -846,11 +1111,19 @@ describe('ChatPanel standalone first-paint loading', () => {
     const remaining = makeSummary('retry-cursor-remaining', 'Retry loaded remaining row', {
       updated_at: '2026-09-10T12:00:00.000Z',
     });
-    apiMock.getConversation.mockResolvedValue(detail);
-    apiMock.listConversationSummaries
-      .mockResolvedValueOnce(firstPage)
-      .mockRejectedValueOnce(new Error('Second page failed'))
-      .mockResolvedValueOnce([remaining]);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(detail));
+    let retriedCursor = false;
+    apiMock.listConversationSummaries.mockImplementation(
+      (_workspaceId: unknown, options: { owner_scope?: string; cursorId?: string | null }) => {
+        if (options.owner_scope !== 'self') return Promise.resolve([]);
+        if (!options.cursorId) return Promise.resolve(firstPage);
+        if (!retriedCursor) {
+          retriedCursor = true;
+          return Promise.reject(new Error('Second page failed'));
+        }
+        return Promise.resolve([remaining]);
+      },
+    );
 
     renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={detail.id} />);
     expect(await screen.findByText('Active detail remains selected')).toBeDefined();
@@ -858,16 +1131,14 @@ describe('ChatPanel standalone first-paint loading', () => {
     await userEvent.setup().click(retry);
 
     await waitFor(() =>
-      expect(apiMock.listConversationSummaries).toHaveBeenNthCalledWith(
-        3,
-        undefined,
-        expect.objectContaining({
-          limit: 50,
-          cursorId: firstPage[firstPage.length - 1].id,
-          cursorUpdatedAt: firstPage[firstPage.length - 1].updated_at,
-        }),
-        expect.any(AbortSignal),
-      ),
+      expect(
+        apiMock.listConversationSummaries.mock.calls.some(
+          ([, options]) =>
+            options.owner_scope === 'self' &&
+            options.cursorId === firstPage[firstPage.length - 1].id &&
+            options.cursorUpdatedAt === firstPage[firstPage.length - 1].updated_at,
+        ),
+      ).toBe(true),
     );
     expect(await screen.findByText(remaining.title)).toBeDefined();
     expect(screen.getByText('Active detail remains selected')).toBeDefined();
@@ -881,7 +1152,7 @@ describe('ChatPanel standalone first-paint loading', () => {
     const summary = makeSummary('rename-summary', 'Before summary rename', {
       updated_at: '2026-09-11T12:00:01.000Z',
     });
-    apiMock.getConversation.mockResolvedValue(bootstrap);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(bootstrap));
     apiMock.listConversationSummaries.mockResolvedValue([summary]);
     apiMock.updateConversationTitle.mockResolvedValue({
       id: summary.id,
@@ -915,7 +1186,7 @@ describe('ChatPanel standalone first-paint loading', () => {
       ),
     );
     expect(await screen.findByText('After summary rename')).toBeDefined();
-    expect(apiMock.getConversation).toHaveBeenCalledTimes(1);
+    expect(apiMock.getConversationLatestExchange).toHaveBeenCalledTimes(1);
   });
 
   it('retries an initial summaries failure and selects the recovered recent detail', async () => {
@@ -923,10 +1194,22 @@ describe('ChatPanel standalone first-paint loading', () => {
       title: 'Recovered recent chat',
       updated_at: '2026-09-11T12:00:00.000Z',
     });
-    apiMock.listConversationSummaries
-      .mockRejectedValueOnce(Object.assign(new Error('Temporary service failure'), { status: 503 }))
-      .mockResolvedValueOnce([makeSummary(recovered.id, recovered.title)]);
-    apiMock.getConversation.mockResolvedValue(recovered);
+    let bootstrapAttempts = 0;
+    apiMock.listConversationSummaries.mockImplementation(
+      (_workspaceId: unknown, options: { limit?: number; owner_scope?: string }) => {
+        if (options.owner_scope === 'self' && options.limit === 1) {
+          bootstrapAttempts += 1;
+          if (bootstrapAttempts === 1) {
+            return Promise.reject(
+              Object.assign(new Error('Temporary service failure'), { status: 503 }),
+            );
+          }
+          return Promise.resolve([makeSummary(recovered.id, recovered.title)]);
+        }
+        return Promise.resolve([]);
+      },
+    );
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(recovered));
 
     renderChatPanel(<ChatPanel currentUser={currentUser} />);
 
@@ -934,16 +1217,15 @@ describe('ChatPanel standalone first-paint loading', () => {
     await userEvent.setup().click(retry);
 
     expect(await screen.findByText('Recovered after initial retry')).toBeDefined();
-    expect(apiMock.listConversationSummaries).toHaveBeenNthCalledWith(
-      2,
-      undefined,
-      expect.objectContaining({ limit: 1 }),
-      expect.any(AbortSignal),
-    );
-    expect(apiMock.getConversation).toHaveBeenCalledWith(
+    expect(
+      apiMock.listConversationSummaries.mock.calls.filter(
+        ([, options]) => options.limit === 1 && options.owner_scope === 'self',
+      ),
+    ).toHaveLength(2);
+    expect(apiMock.getConversationLatestExchange).toHaveBeenCalledWith(
       recovered.id,
       undefined,
-      expect.any(AbortSignal),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -958,20 +1240,29 @@ describe('ChatPanel standalone first-paint loading', () => {
       title: fallback.title,
       updated_at: fallback.updated_at,
     });
-    apiMock.listConversationSummaries
-      .mockResolvedValueOnce([missing])
-      .mockResolvedValueOnce([fallback]);
-    apiMock.getConversation.mockImplementation((id: string) => {
+    apiMock.listConversationSummaries.mockImplementation(
+      (
+        _workspaceId: unknown,
+        options: { limit?: number; owner_scope?: string; cursorId?: string | null },
+      ) => {
+        if (options.owner_scope !== 'self' || options.limit !== 1) return Promise.resolve([]);
+        return Promise.resolve(options.cursorId === missing.id ? [fallback] : [missing]);
+      },
+    );
+    apiMock.getConversationLatestExchange.mockImplementation((id: string) => {
       if (id === missing.id) {
         return Promise.reject(Object.assign(new Error('Not found'), { status: 404 }));
       }
-      return Promise.resolve(fallbackDetail);
+      return Promise.resolve(makeLatestExchange(fallbackDetail));
     });
 
     renderChatPanel(<ChatPanel currentUser={currentUser} />);
 
     expect(await screen.findByText('Fallback detail selected')).toBeDefined();
-    expect(apiMock.getConversation.mock.calls.map(([id]) => id)).toEqual([missing.id, fallback.id]);
+    expect(apiMock.getConversationLatestExchange.mock.calls.map(([id]) => id)).toEqual([
+      missing.id,
+      fallback.id,
+    ]);
     expect(apiMock.listConversationSummaries).toHaveBeenNthCalledWith(
       2,
       undefined,
@@ -1003,7 +1294,7 @@ describe('ChatPanel standalone first-paint loading', () => {
     apiMock.listConversationSummaries
       .mockResolvedValueOnce([makeSummary(initial.id, initial.title)])
       .mockResolvedValueOnce([]);
-    apiMock.getConversation.mockResolvedValue(initial);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(initial));
     apiMock.listConversations.mockImplementation(
       (
         _workspaceId: unknown,
@@ -1021,7 +1312,7 @@ describe('ChatPanel standalone first-paint loading', () => {
 
     renderChatPanel(<ChatPanel currentUser={currentUser} />);
     expect(await screen.findByText('Bootstrap response')).toBeDefined();
-    const search = screen.getByLabelText('Search conversations by title or content');
+    const search = await screen.findByLabelText('Search conversations by title or content');
     fireEvent.change(search, { target: { value: 'needle' } });
     await waitFor(() => expect(resolveFirstSearchPage).toBeDefined());
     resolveFirstSearchPage?.([bodyMatch]);
@@ -1050,7 +1341,7 @@ describe('ChatPanel standalone first-paint loading', () => {
       title: 'Second branch page',
       updated_at: '2026-09-11T12:00:00.000Z',
     });
-    apiMock.getConversation.mockResolvedValue(initial);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(initial));
     apiMock.listConversationSummaries.mockResolvedValue([]);
     const firstHistoryPage = [
       firstPage,
@@ -1072,9 +1363,11 @@ describe('ChatPanel standalone first-paint loading', () => {
 
     renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={initial.id} />);
     expect(await screen.findByText('Bootstrap response')).toBeDefined();
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Search chat branches' }));
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Search chat branches' }));
     apiMock.searchConversationBranches.mockClear();
-    fireEvent.change(screen.getByLabelText('Search conversations by title or content'), {
+    fireEvent.change(await screen.findByLabelText('Search conversations by title or content'), {
       target: { value: 'branch needle' },
     });
 
@@ -1102,6 +1395,442 @@ describe('ChatPanel standalone first-paint loading', () => {
         ...firstHistoryPage.map((conversation) => conversation.id),
         secondPage.id,
       ]),
+    );
+  });
+
+  it('shows deferred latest previews before the first page and starts no sidebar request until it settles', async () => {
+    let releaseFirstPage: ((window: ConversationMessageWindow) => void) | undefined;
+    const conversation = makeConversation(
+      'window-first-paint',
+      'Deferred latest assistant response',
+      {
+        title: 'Window first paint',
+      },
+    );
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockImplementation(
+      () => new Promise<ConversationMessageWindow>((resolve) => (releaseFirstPage = resolve)),
+    );
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    expect(await screen.findByText('Deferred latest assistant response')).toBeDefined();
+    expect(screen.getByLabelText('Message').hasAttribute('disabled')).toBe(false);
+    expect(apiMock.listConversationSummaries).not.toHaveBeenCalled();
+    expect(document.getElementById('chat-workbench-sidebar-loading')).toBeTruthy();
+    expect(screen.queryByLabelText('Search conversations by title or content')).toBeNull();
+    expect(document.querySelector('.chat-conversation-item')).toBeNull();
+
+    await waitFor(() => expect(releaseFirstPage).toBeDefined());
+    releaseFirstPage?.(makeWindow(conversation, { entries: [], nextCursor: null, hasMore: false }));
+    await waitFor(() =>
+      expect(apiMock.listConversationSummaries).toHaveBeenCalledWith(
+        undefined,
+        expect.objectContaining({ owner_scope: 'self', limit: 50 }),
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(screen.getByLabelText('Search conversations by title or content')).toBeDefined();
+    expect(document.querySelector('.chat-conversation-item')).toBeTruthy();
+  });
+
+  it('hydrates sidebar owner scopes independently, completing self before others', async () => {
+    const conversation = makeConversation('owner-scopes', 'Owner scope preview');
+    const selfPage = Array.from({ length: 50 }, (_, index) =>
+      makeSummary(`self-${index}`, `Self ${index}`),
+    );
+    const otherPage = Array.from({ length: 50 }, (_, index) =>
+      makeSummary(`other-${index}`, `Other ${index}`, { user_id: `other-${index}` }),
+    );
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, { entries: [], nextCursor: null, hasMore: false }),
+    );
+    apiMock.listConversationSummaries
+      .mockResolvedValueOnce(selfPage)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(otherPage)
+      .mockResolvedValueOnce([]);
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    await waitFor(() => expect(apiMock.listConversationSummaries).toHaveBeenCalledTimes(4));
+    expect(
+      apiMock.listConversationSummaries.mock.calls.map(([, options]) => options.owner_scope),
+    ).toEqual(['self', 'self', 'others', 'others']);
+  });
+
+  it('keeps the deferred transcript and composer usable when the first older page fails', async () => {
+    const conversation = makeConversation('older-page-error', 'Still usable after history error');
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockRejectedValue(new Error('Older page unavailable'));
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    expect(await screen.findByText('Still usable after history error')).toBeDefined();
+    expect(screen.getByLabelText('Message').hasAttribute('disabled')).toBe(false);
+    expect(await screen.findByText('Older page unavailable')).toBeDefined();
+    await waitFor(() => expect(apiMock.listConversationSummaries).toHaveBeenCalled());
+  });
+
+  it('uses absolute message indexes for deferred detail actions after an older page prepends', async () => {
+    const conversation = makeConversation('absolute-index', 'Latest preview');
+    const latest = makeLatestExchange(conversation);
+    const deferredAtNineteen: ConversationWindowEntry = {
+      ...latest.entries[1],
+      index: 19,
+      key: 'absolute-19',
+    };
+    apiMock.getConversationLatestExchange.mockResolvedValue({
+      ...latest,
+      total_message_count: 20,
+      entries: [deferredAtNineteen],
+    });
+    apiMock.getConversationMessageWindow.mockResolvedValue({
+      ...makeWindow(conversation),
+      total_message_count: 20,
+      entries: [{ ...makeWindow(conversation).entries[0], index: 0, key: 'absolute-0' }],
+      next_cursor: 'older',
+      has_more: true,
+    });
+    apiMock.getConversationWindowMessage.mockResolvedValue({
+      index: 19,
+      key: 'absolute-19',
+      state: 'ready',
+      message: conversation.messages[1],
+      preview: null,
+    });
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Load details' }));
+    await waitFor(() =>
+      expect(apiMock.getConversationWindowMessage).toHaveBeenCalledWith(
+        conversation.id,
+        19,
+        `${conversation.id}-revision`,
+        undefined,
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+  });
+
+  it('hydrates the complete transcript only when editing a ready window message', async () => {
+    const conversation = makeConversation('intent-hydration', 'Partial window reply');
+    const readyUser: ConversationWindowEntry = {
+      index: 0,
+      key: 'intent-user',
+      state: 'ready',
+      message: conversation.messages[0],
+      preview: null,
+    };
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, { entries: [readyUser], nextCursor: null, hasMore: false }),
+    );
+    apiMock.getConversation.mockResolvedValue(conversation);
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    expect(await screen.findByText('Do the work.')).toBeDefined();
+    expect(apiMock.getConversation).not.toHaveBeenCalled();
+    await userEvent.setup().click(await screen.findByTitle('Edit and resend'));
+    await waitFor(() =>
+      expect(apiMock.getConversation).toHaveBeenCalledWith(
+        conversation.id,
+        undefined,
+        expect.any(AbortSignal),
+      ),
+    );
+  });
+
+  it('sends from a partial window with known totals without a full detail request', async () => {
+    const conversation = makeConversation('partial-send', 'Prior assistant reply', {
+      total_tokens: 100,
+    });
+    let releaseStream: (() => void) | undefined;
+    const streamCompletion = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, { entries: [], nextCursor: null, hasMore: false }),
+    );
+    apiMock.streamChatTask.mockReturnValue(
+      (async function* () {
+        yield {
+          type: 'state',
+          content: 'Streaming partial-window reply',
+          version: 1,
+          tool_calls: [],
+          events: [],
+        };
+        await streamCompletion;
+      })(),
+    );
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    try {
+      const composer = await screen.findByLabelText('Message');
+      await userEvent.setup().type(composer, 'A new message from partial state');
+      await userEvent.setup().click(await screen.findByTitle('Send message'));
+      await waitFor(() =>
+        expect(apiMock.sendMessageBackground).toHaveBeenCalledWith(
+          conversation.id,
+          'A new message from partial state',
+          undefined,
+        ),
+      );
+      expect(apiMock.getConversation).not.toHaveBeenCalled();
+      expect(await screen.findByText('Streaming partial-window reply')).toBeDefined();
+    } finally {
+      await act(async () => {
+        releaseStream?.();
+      });
+    }
+  });
+
+  it('ignores a stale full hydration result after explicit navigation selects another conversation', async () => {
+    let resolveFull: ((conversation: Conversation) => void) | undefined;
+    const first = makeConversation('stale-full-first', 'First ready reply');
+    const second = makeConversation('stale-full-second', 'Second selected reply');
+    apiMock.getConversationLatestExchange.mockImplementation((id: string) =>
+      Promise.resolve(makeLatestExchange(id === first.id ? first : second)),
+    );
+    apiMock.getConversationMessageWindow.mockImplementation((id: string) => {
+      const conversation = id === first.id ? first : second;
+      return Promise.resolve(
+        makeWindow(conversation, {
+          entries: [
+            {
+              index: 0,
+              key: `${conversation.id}-user`,
+              state: 'ready',
+              message: conversation.messages[0],
+              preview: null,
+            },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        }),
+      );
+    });
+    apiMock.getConversation.mockImplementation(
+      () => new Promise<Conversation>((resolve) => (resolveFull = resolve)),
+    );
+
+    const { rerender } = renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={first.id} />,
+    );
+    await screen.findByText('First ready reply');
+    await userEvent.setup().click(await screen.findByTitle('Edit and resend'));
+    await waitFor(() =>
+      expect(apiMock.getConversation).toHaveBeenCalledWith(
+        first.id,
+        undefined,
+        expect.any(AbortSignal),
+      ),
+    );
+    rerender(
+      <AvailableModelsProvider>
+        <ChatPanel currentUser={currentUser} initialConversationId={second.id} />
+      </AvailableModelsProvider>,
+    );
+    expect(await screen.findByText('Second selected reply')).toBeDefined();
+    resolveFull?.(first);
+    await waitFor(() => expect(screen.queryByText('First ready reply')).toBeNull());
+  });
+
+  it('hydrates a partial ready compaction marker before opening and retrying it at its absolute index', async () => {
+    let resolveFull: ((conversation: Conversation) => void) | undefined;
+    const conversation = makeConversation('compaction-window', 'After compaction', {
+      messages: [
+        {
+          role: 'user',
+          content: 'Before compaction',
+          timestamp: '2026-09-11T12:00:00.000Z',
+          message_id: 'before-compaction',
+        },
+        {
+          role: 'compaction',
+          content: 'Compacted summary text',
+          timestamp: '2026-09-11T12:01:00.000Z',
+          message_id: 'compaction-marker',
+        },
+        {
+          role: 'assistant',
+          content: 'After compaction',
+          timestamp: '2026-09-11T12:02:00.000Z',
+          message_id: 'after-compaction',
+        },
+      ],
+    });
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, {
+        entries: [
+          {
+            index: 1,
+            key: 'compaction-marker',
+            state: 'ready',
+            message: conversation.messages[1],
+            preview: null,
+          },
+        ],
+        nextCursor: null,
+        hasMore: false,
+      }),
+    );
+    apiMock.getConversation.mockImplementation(
+      () => new Promise<Conversation>((resolve) => (resolveFull = resolve)),
+    );
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Review chat compaction' }));
+    expect(screen.queryByRole('dialog', { name: 'Compaction Result' })).toBeNull();
+    await waitFor(() =>
+      expect(apiMock.getConversation).toHaveBeenCalledWith(
+        conversation.id,
+        undefined,
+        expect.any(AbortSignal),
+      ),
+    );
+    resolveFull?.(conversation);
+    const modal = await screen.findByRole('dialog', { name: 'Compaction Result' });
+    expect(modal).toBeDefined();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Regenerate compaction' }));
+    await waitFor(() =>
+      expect(apiMock.compactConversation).toHaveBeenCalledWith(conversation.id, undefined, 4, {
+        replaceMessageId: 'compaction-marker',
+        replaceMessageIndex: 1,
+        createRevisionBranch: true,
+      }),
+    );
+  });
+
+  it('hydrates a partial transcript only after Find in chat and searches older loaded content', async () => {
+    const conversation = makeConversation('find-window', 'Latest answer', {
+      messages: [
+        {
+          role: 'user',
+          content: 'Older needle text',
+          timestamp: '2026-09-11T12:00:00.000Z',
+          message_id: 'older-needle',
+        },
+        {
+          role: 'assistant',
+          content: 'Latest answer',
+          timestamp: '2026-09-11T12:01:00.000Z',
+          message_id: 'latest-answer',
+        },
+      ],
+    });
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, { entries: [], nextCursor: null, hasMore: false }),
+    );
+    apiMock.getConversation.mockResolvedValue(conversation);
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    await screen.findByText('Latest answer');
+    expect(apiMock.getConversation).not.toHaveBeenCalled();
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Find in chat' }));
+    await waitFor(() =>
+      expect(apiMock.getConversation).toHaveBeenCalledWith(
+        conversation.id,
+        undefined,
+        expect.any(AbortSignal),
+      ),
+    );
+    const find = await screen.findByRole('textbox', { name: 'Find in chat' });
+    await userEvent.setup().type(find, 'needle');
+    expect(await screen.findByText('1/1')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Next match' })).toBeDefined();
+  });
+
+  it('does not open a stale compaction marker after navigation during its hydration', async () => {
+    let resolveFull: ((conversation: Conversation) => void) | undefined;
+    const first = makeConversation('stale-compaction', 'First reply', {
+      messages: [
+        {
+          role: 'compaction',
+          content: 'Stale summary',
+          timestamp: '2026-09-11T12:00:00.000Z',
+          message_id: 'stale-marker',
+        },
+        {
+          role: 'assistant',
+          content: 'First reply',
+          timestamp: '2026-09-11T12:01:00.000Z',
+          message_id: 'first-reply',
+        },
+      ],
+    });
+    const second = makeConversation('stale-compaction-next', 'Second reply');
+    apiMock.getConversationLatestExchange.mockImplementation((id: string) =>
+      Promise.resolve(makeLatestExchange(id === first.id ? first : second)),
+    );
+    apiMock.getConversationMessageWindow.mockImplementation((id: string) => {
+      const conversation = id === first.id ? first : second;
+      return Promise.resolve(
+        makeWindow(conversation, {
+          entries:
+            id === first.id
+              ? [
+                  {
+                    index: 0,
+                    key: 'stale-marker',
+                    state: 'ready',
+                    message: first.messages[0],
+                    preview: null,
+                  },
+                ]
+              : [],
+          nextCursor: null,
+          hasMore: false,
+        }),
+      );
+    });
+    apiMock.getConversation.mockImplementation(
+      () => new Promise<Conversation>((resolve) => (resolveFull = resolve)),
+    );
+
+    const { rerender } = renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={first.id} />,
+    );
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Review chat compaction' }));
+    rerender(
+      <AvailableModelsProvider>
+        <ChatPanel currentUser={currentUser} initialConversationId={second.id} />
+      </AvailableModelsProvider>,
+    );
+    expect(await screen.findByText('Second reply')).toBeDefined();
+    resolveFull?.(first);
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Compaction Result' })).toBeNull(),
     );
   });
 });
