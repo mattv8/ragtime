@@ -6,6 +6,7 @@ from typing import Any, cast
 from unittest import mock
 
 from fastapi import HTTPException
+from langchain_core.messages import AIMessage
 
 _inserted_fake_indexer_service = False
 if "ragtime.indexer.service" not in sys.modules:
@@ -137,6 +138,31 @@ class ChatRuntimeErrorClassificationTests(unittest.TestCase):
         self.assertIn("fewer or smaller file attachments", message)
         self.assertNotIn("I encountered an error processing your request", message)
 
+    def test_payment_provider_error_uses_safe_message_and_is_not_retryable(self) -> None:
+        response = SimpleNamespace(status_code=402)
+        exc = RuntimeError("provider response")
+        exc.response = response  # type: ignore[attr-defined]
+
+        rag = RAGComponents()
+        message = rag._chat_runtime_error_message(exc, RequestLLMResolution(llm=object(), provider="openrouter", model="model"))
+
+        self.assertEqual(message, "The provider requires available payment credit before this request can continue.")
+        self.assertFalse(rag._is_transient_provider_runtime_error(exc))
+
+    def test_payment_error_stream_event_is_machine_readable_and_safe(self) -> None:
+        exc = RuntimeError("raw provider payload must not escape")
+        exc.response = SimpleNamespace(status_code=402)  # type: ignore[attr-defined]
+
+        event = RAGComponents()._provider_error_stream_event(
+            exc,
+            RequestLLMResolution(llm=object(), provider="openrouter", model="model"),
+        )
+
+        self.assertEqual(event["type"], "error")
+        self.assertEqual(event["code"], "payment_required")
+        self.assertEqual(event["content"], "The provider requires available payment credit before this request can continue.")
+        self.assertNotIn("raw provider", event["content"])
+
 
 class ChatContextWindowBudgetTests(unittest.IsolatedAsyncioTestCase):
     async def test_near_limit_request_caps_output_budget(self) -> None:
@@ -227,6 +253,124 @@ class ChatContextWindowBudgetTests(unittest.IsolatedAsyncioTestCase):
         llm_kwargs = cast(dict[str, Any], llm_kwargs)
         self.assertEqual(llm_kwargs["max_tokens"], 4_096)
         self.assertEqual(llm_kwargs["extra_body"]["thinking_budget"], 4_096)
+
+
+class _TwoRoundExecutor:
+    tools: list[object] = []
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def astream_events(self, *_args: object, **_kwargs: object):
+        self.calls += 1
+
+        async def stream():
+            if self.calls == 1:
+                yield {"event": "on_tool_start", "name": "write_file", "run_id": "tool-1", "data": {"input": {"path": "app.py"}}}
+                yield {"event": "on_tool_end", "name": "write_file", "run_id": "tool-1", "data": {"output": '{"persisted": true}'}}
+            else:
+                yield {"event": "on_chat_model_stream", "run_id": "chat-2", "data": {"chunk": AIMessage(content="second-round final response")}}
+
+        return stream()
+
+
+class _EmptyExecutor:
+    tools: list[object] = []
+
+    def astream_events(self, *_args: object, **_kwargs: object):
+        async def stream():
+            if False:  # pragma: no cover - marks this as an async generator
+                yield {}
+
+        return stream()
+
+
+class _PaymentFailureLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def astream(self, _messages: object):
+        self.calls += 1
+
+        async def stream():
+            error = RuntimeError("provider payment payload")
+            error.response = SimpleNamespace(status_code=402)  # type: ignore[attr-defined]
+            raise error
+            yield None  # pragma: no cover - marks this as an async generator
+
+        return stream()
+
+
+class MultiRoundStreamTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _request_context() -> dict[str, object]:
+        return {
+            "prompt_is_ui": True,
+            "mode": "userspace",
+            "allowed_tool_config_ids": [],
+            "runtime_tools": [],
+            "request_tool_state": {},
+            "prompt_additions": "",
+            "user_identity_turn_line": "",
+            "current_time_turn_line": "",
+            "include_sqlite_persistence": False,
+            "userspace_env_var_turn_hint": "",
+            "userspace_runtime_status_turn_hint": "",
+            "userspace_diagnostics_turn_hint": "",
+            "tool_skill_mode": "disabled",
+            "tool_skill_has_loadable": False,
+            "tool_skill_binding_state": None,
+            "tool_skill_hidden_ids": set(),
+            "tool_skill_loaded_ids": [],
+        }
+
+    async def test_tool_round_continues_to_a_second_agent_round_before_final_text(self) -> None:
+        rag = RAGComponents()
+        executor = _TwoRoundExecutor()
+        rag.agent_executor_ui = executor
+        resolution = RequestLLMResolution(llm=object(), provider="openrouter", model="model")
+        request_context = self._request_context()
+
+        with (
+            mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=resolution)),
+            mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
+            mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(return_value=request_context)),
+            mock.patch.object(rag, "_build_request_system_prompt", return_value=""),
+            mock.patch.object(rag, "_prepare_chat_context_window", new=mock.AsyncMock(return_value=(resolution, [], ""))),
+            mock.patch.object(rag, "_build_runtime_executor", return_value=executor),
+            mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
+            mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()),
+            mock.patch.object(rag, "_seed_tool_skill_request_state"),
+        ):
+            events = [event async for event in rag.process_query_stream("continue", is_ui=True)]
+
+        self.assertEqual(executor.calls, 2)
+        self.assertEqual(events[0]["type"], "tool_start")
+        self.assertEqual(events[1]["type"], "tool_end")
+        self.assertIn("second-round final response", events)
+
+    async def test_payment_failure_in_tool_free_synthesis_emits_terminal_error_event(self) -> None:
+        rag = RAGComponents()
+        executor = _EmptyExecutor()
+        llm = _PaymentFailureLLM()
+        rag.agent_executor_ui = executor
+        resolution = RequestLLMResolution(llm=llm, provider="openrouter", model="model")
+
+        with (
+            mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=resolution)),
+            mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
+            mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(return_value=self._request_context())),
+            mock.patch.object(rag, "_build_request_system_prompt", return_value=""),
+            mock.patch.object(rag, "_prepare_chat_context_window", new=mock.AsyncMock(return_value=(resolution, [], ""))),
+            mock.patch.object(rag, "_build_runtime_executor", return_value=executor),
+            mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
+            mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()),
+            mock.patch.object(rag, "_seed_tool_skill_request_state"),
+        ):
+            events = [event async for event in rag.process_query_stream("continue", is_ui=True)]
+
+        self.assertEqual(llm.calls, 1)
+        self.assertEqual(events, [{"type": "error", "code": "payment_required", "content": "The provider requires available payment credit before this request can continue."}])
 
 
 class CrossWorkspaceResolutionTests(unittest.IsolatedAsyncioTestCase):

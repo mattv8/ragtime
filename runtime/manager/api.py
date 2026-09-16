@@ -7,6 +7,9 @@ from fastapi import FastAPI
 
 from runtime.auth import ManagerAuth, OptionalManagerAuth
 from runtime.manager.models import (
+    BridgeCredentialRefreshRequest,
+    RuntimeAppRestartRequest,
+    RuntimeBridgeCredentialMetadata,
     RuntimeContentProbeRequest,
     RuntimeContentProbeResponse,
     RuntimeExecRequest,
@@ -148,6 +151,25 @@ def create_app() -> FastAPI:
             workspace_env_visibility=(payload.workspace_env_visibility if payload else None),
             workspace_mounts=payload.workspace_mounts if payload else None,
         )
+
+    @application.post("/sessions/{provider_session_id}/app/restart", response_model=RuntimeSessionResponse)
+    async def restart_app(
+        provider_session_id: str,
+        payload: RuntimeAppRestartRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeSessionResponse:
+        return await manager.restart_app(provider_session_id, payload)
+
+    @application.post(
+        "/sessions/{provider_session_id}/bridge-credential/refresh",
+        response_model=RuntimeBridgeCredentialMetadata,
+    )
+    async def refresh_bridge_credential(
+        provider_session_id: str,
+        payload: BridgeCredentialRefreshRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeBridgeCredentialMetadata:
+        return await manager.refresh_bridge_credential(provider_session_id, payload)
 
     @application.post(
         "/sessions/{provider_session_id}/mounts/refresh",

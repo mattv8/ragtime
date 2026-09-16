@@ -5542,16 +5542,25 @@ export const api = {
   async enableWorkspaceAgentAccess(
     workspaceId: string,
     allowTaskSubmission = true,
+    allowRuntimeRestart = false,
   ): Promise<WorkspaceAgentAccessStatus> {
     const response = await apiFetch(
       `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/agent-access/enable`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ allow_task_submission: allowTaskSubmission }),
+        body: JSON.stringify({
+          allow_task_submission: allowTaskSubmission,
+          allow_runtime_restart: allowRuntimeRestart,
+        }),
       },
     );
     return handleResponse<WorkspaceAgentAccessStatus>(response);
+  },
+
+  async getOpenRouterCreditStatus(): Promise<import('@/types').OpenRouterCreditStatus> {
+    const response = await apiFetch(`${API_BASE}/settings/openrouter-credits`, { cache: 'no-store' });
+    return handleResponse<import('@/types').OpenRouterCreditStatus>(response);
   },
 
   async disableWorkspaceAgentAccess(workspaceId: string): Promise<WorkspaceAgentAccessStatus> {
@@ -6195,6 +6204,31 @@ export const api = {
       `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/bridge-credentials/status`,
     );
     return handleResponse<UserSpaceBridgeStatus>(response);
+  },
+
+  async getUserSpaceBridgeCredentialMode(
+    workspaceId: string,
+  ): Promise<import('@/types').UserSpaceBridgeCredentialMode> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/bridge-credential-mode`,
+      { cache: 'no-store' },
+    );
+    return handleResponse<import('@/types').UserSpaceBridgeCredentialMode>(response);
+  },
+
+  async updateUserSpaceBridgeCredentialMode(
+    workspaceId: string,
+    mode: 'env' | 'worker_file',
+  ): Promise<import('@/types').UserSpaceBridgeCredentialMode> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/bridge-credential-mode`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      },
+    );
+    return handleResponse<import('@/types').UserSpaceBridgeCredentialMode>(response);
   },
 
   async refreshUserSpaceBridgeCredentials(workspaceId: string): Promise<UserSpaceBridgeStatus> {

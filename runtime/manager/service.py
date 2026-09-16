@@ -13,7 +13,10 @@ from fastapi import HTTPException
 
 from runtime.core.utils import get_positive_int_env, utc_now
 from runtime.manager.models import (
+    BridgeCredentialRefreshRequest,
     ManagerSession,
+    RuntimeAppRestartRequest,
+    RuntimeBridgeCredentialMetadata,
     RuntimeContentProbeRequest,
     RuntimeContentProbeResponse,
     RuntimeExecResponse,
@@ -425,6 +428,11 @@ class SessionManager:
         request: StartSessionRequest,
     ) -> RuntimeSessionResponse:
         await self._cleanup_expired_sessions(utc_now())
+        if request.bridge_credential_mode == "worker_file":
+            health = await self._worker_service.health()
+            capabilities = dict((health.metadata or {}).get("runtime_capabilities") or {})
+            if not bool(capabilities.get("bridge_credential_file")):
+                raise HTTPException(status_code=409, detail="Runtime worker does not support file bridge credentials")
 
         async with self._workspace_start_lock(request.workspace_id):
             existing_provider_id: str | None = None
@@ -471,6 +479,8 @@ class SessionManager:
                                 workspace_env=request.workspace_env,
                                 workspace_env_visibility=request.workspace_env_visibility,
                                 workspace_mounts=request.workspace_mounts,
+                                bridge_credential_mode=request.bridge_credential_mode,
+                                bridge_token_file_initial_token=request.bridge_token_file_initial_token,
                             )
                         ),
                         timeout=self._worker_call_timeout,
@@ -501,6 +511,8 @@ class SessionManager:
                 workspace_env=request.workspace_env,
                 workspace_env_visibility=request.workspace_env_visibility,
                 workspace_mounts=request.workspace_mounts,
+                bridge_credential_mode=request.bridge_credential_mode,
+                bridge_token_file_initial_token=request.bridge_token_file_initial_token,
             )
             worker_session = await asyncio.wait_for(
                 self._worker_service.start_session(worker_request),
@@ -734,6 +746,33 @@ class SessionManager:
                     worker_data,
                 )
 
+    async def refresh_bridge_credential(
+        self, provider_session_id: str, payload: BridgeCredentialRefreshRequest,
+    ) -> RuntimeBridgeCredentialMetadata:
+        async with self._provider_lock(provider_session_id):
+            async with self._lock:
+                session = self._sessions.get(provider_session_id)
+                if not session:
+                    raise HTTPException(status_code=404, detail="Runtime session not found")
+                if not bool((session.runtime_capabilities or {}).get("bridge_credential_file")):
+                    raise HTTPException(status_code=409, detail="Runtime worker does not support file bridge credentials")
+                worker_session_id = session.worker_session_id
+            return await self._worker_service.refresh_bridge_credential(
+                worker_session_id, token=payload.token, expected_session_id=payload.expected_session_id,
+                expected_revision=payload.expected_revision, request_id=payload.request_id,
+            )
+
+    async def restart_app(self, provider_session_id: str, payload: RuntimeAppRestartRequest) -> RuntimeSessionResponse:
+        async with self._provider_lock(provider_session_id):
+            async with self._lock:
+                session = self._sessions.get(provider_session_id)
+                if not session:
+                    raise HTTPException(status_code=404, detail="Runtime session not found")
+                worker_session_id = session.worker_session_id
+            worker_data = await self._worker_service.restart_app(worker_session_id, payload.request_id)
+            async with self._lock:
+                return self._apply_worker_data_response(provider_session_id, worker_session_id, worker_data)
+
     def _apply_worker_data_response(
         self,
         provider_session_id: str,
@@ -831,7 +870,7 @@ class SessionManager:
         self,
         provider_session_id: str,
         command: str,
-        timeout_seconds: int = 30,
+        timeout_seconds: int = 120,
         cwd: str | None = None,
     ) -> RuntimeExecResponse:
         session = self._get_session_or_raise(provider_session_id)

@@ -26,6 +26,7 @@ def _fake_record(**overrides):
         token="tok-abc",
         enabled=True,
         allowTaskSubmission=True,
+        allowRuntimeRestart=False,
         lastUsedAt=None,
         hitCount=0,
         createdAt=None,
@@ -170,6 +171,7 @@ class AgentAccessTokenTests(unittest.IsolatedAsyncioTestCase):
         update_data = _await_kwargs(db.workspaceagentaccess.update)["data"]
         self.assertEqual(update_data["enabled"], True)
         self.assertEqual(update_data["allowTaskSubmission"], False)
+        self.assertFalse(update_data["allowRuntimeRestart"])
         self.assertNotIn("token", update_data)
         self.assertNotIn("createdByUserId", update_data)
 
@@ -194,6 +196,7 @@ class AgentAccessTokenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.acting_user_id, "user-1")
         self.assertFalse(ctx.acting_user_is_admin)
         self.assertTrue(ctx.allow_task_submission)
+        self.assertFalse(ctx.allow_runtime_restart)
         db.workspaceagentaccess.update.assert_awaited()
 
     async def test_rotate_requires_existing_record(self) -> None:

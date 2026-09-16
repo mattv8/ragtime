@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.repository import repository
+from ragtime.indexer.task_policy import make_execution_policy
 from ragtime.indexer.tool_selection import resolve_effective_tool_ids
 from ragtime.userspace.agent_access import (
     AGENT_ACCESS_SOURCE,
@@ -47,12 +48,25 @@ def _get_model_preferences_module() -> Any:
     return importlib.import_module("ragtime.indexer.model_preferences")
 
 
-async def _resolve_new_workspace_conversation_model(app_settings: Any, *, user_id: str, workspace_id: str) -> str:
+async def _resolve_new_workspace_conversation_model(
+    app_settings: Any, *, user_id: str, workspace_id: str, task_type: str
+) -> str:
     model_preferences = _get_model_preferences_module()
+    availability = None
+    if task_type == "build" and getattr(app_settings, "userspace_build_model", None):
+        # Use the same authoritative discovery snapshot as the chat routes at
+        # submission time.  A configured-but-now-unavailable builder must not
+        # silently downgrade to a personal/global default.
+        from ragtime.indexer import routes as indexer_routes
+
+        available = await indexer_routes.get_available_chat_models()
+        availability = indexer_routes._build_model_availability_snapshot(available)
     return await model_preferences.resolve_new_conversation_model(
         app_settings,
         user_id=user_id,
         workspace_id=workspace_id,
+        task_type=task_type,
+        availability=availability,
     )
 
 
@@ -249,6 +263,7 @@ class WorkspaceBuildTaskService:
                 app_settings,
                 user_id=acting_user_id,
                 workspace_id=workspace_id,
+                task_type=brief.task_type,
             )
             conversation = await repository.create_conversation(
                 title=brief.title.strip()[:120],
@@ -270,6 +285,7 @@ class WorkspaceBuildTaskService:
                 SendMessageRequest(message=rendered),
                 user,
                 workspace_id=workspace_id,
+                execution_policy=make_execution_policy(brief.task_type, source=AGENT_ACCESS_SOURCE),
             )
         except Exception:
             if conversation is not None:
@@ -304,6 +320,8 @@ class WorkspaceBuildTaskService:
             "conversation_id": conversation.id,
             "task_id": task.id,
             "status": _status_value(task.status),
+            "task_type": brief.task_type,
+            "resolved_model": resolved_model,
         }
 
     async def get_build_task(
@@ -349,6 +367,9 @@ class WorkspaceBuildTaskService:
             if last_update.tzinfo is None:
                 last_update = last_update.replace(tzinfo=timezone.utc)
             possibly_stalled = (datetime.now(timezone.utc) - last_update).total_seconds() > _STALL_SECONDS
+        outcome_summary = getattr(task, "outcome_summary", None) or {}
+        activity = outcome_summary.get("activity", {"attempted": 0, "succeeded": 0, "failed": 0}) if isinstance(outcome_summary, dict) else {"attempted": 0, "succeeded": 0, "failed": 0}
+        warnings = outcome_summary.get("warnings", []) if isinstance(outcome_summary, dict) else []
         return {
             "task_id": task.id,
             "conversation_id": task.conversation_id,
@@ -359,8 +380,14 @@ class WorkspaceBuildTaskService:
             "last_update_at": task.last_update_at,
             "possibly_stalled": possibly_stalled,
             "result": result_text if status == "completed" else None,
+            "partial_result": result_text if status != "completed" and result_text else None,
             "result_truncated": truncated,
             "error": task.error_message,
+            "task_type": (getattr(task, "execution_policy", None) or {}).get("task_type", "build"),
+            "resolved_model": getattr(conversation, "model", None),
+            "activity": activity,
+            "termination_reason": getattr(task, "termination_reason", None),
+            "warnings": [str(w) for w in warnings if isinstance(w, str)],
         }
 
     async def reply_to_build_task(
@@ -447,6 +474,9 @@ class WorkspaceBuildTaskService:
                 SendMessageRequest(message=cleaned),
                 user,
                 workspace_id=workspace_id,
+                # Legacy external conversations predate policies; keep their
+                # null semantics rather than turning a reply into a build.
+                execution_policy=getattr(task, "execution_policy", None),
             )
         except Exception:
             await delete_external_build_request(reply_ledger.id)

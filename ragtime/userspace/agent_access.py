@@ -44,6 +44,7 @@ class AgentAccessContext:
     acting_user_id: str
     acting_user_is_admin: bool
     allow_task_submission: bool
+    allow_runtime_restart: bool = False
 
 
 def _mint_token() -> str:
@@ -59,6 +60,7 @@ def _status_payload(
             "workspace_id": workspace_id,
             "enabled": False,
             "allow_task_submission": True,
+            "allow_runtime_restart": False,
             "token": None,
             "created_at": None,
             "last_used_at": None,
@@ -69,6 +71,7 @@ def _status_payload(
         "workspace_id": workspace_id,
         "enabled": enabled,
         "allow_task_submission": bool(record.allowTaskSubmission),
+        "allow_runtime_restart": bool(getattr(record, "allowRuntimeRestart", False)),
         "token": record.token if enabled else None,
         "created_at": record.createdAt,
         "last_used_at": record.lastUsedAt,
@@ -91,13 +94,14 @@ async def get_agent_access_status(workspace_id: str, user_id: str) -> dict[str, 
     return _status_payload(workspace_id, record)
 
 
-async def _update_existing_agent_access(record_id: str, *, allow_task_submission: bool) -> Any:
+async def _update_existing_agent_access(record_id: str, *, allow_task_submission: bool, allow_runtime_restart: bool) -> Any:
     db = await get_db()
     return await db.workspaceagentaccess.update(
         where={"id": record_id},
         data={
             "enabled": True,
             "allowTaskSubmission": allow_task_submission,
+            "allowRuntimeRestart": allow_runtime_restart,
             "updatedAt": datetime.now(timezone.utc),
         },
     )
@@ -108,6 +112,7 @@ async def enable_agent_access(
     user_id: str,
     *,
     allow_task_submission: bool = True,
+    allow_runtime_restart: bool = False,
 ) -> dict[str, Any]:
     await _require_owner(workspace_id, user_id)
     db = await get_db()
@@ -121,6 +126,7 @@ async def enable_agent_access(
                     "token": _mint_token(),
                     "enabled": True,
                     "allowTaskSubmission": allow_task_submission,
+                    "allowRuntimeRestart": allow_runtime_restart,
                 }
             )
         except Exception as exc:
@@ -132,11 +138,13 @@ async def enable_agent_access(
             record = await _update_existing_agent_access(
                 str(record.id),
                 allow_task_submission=allow_task_submission,
+                allow_runtime_restart=allow_runtime_restart,
             )
     else:
         record = await _update_existing_agent_access(
             str(record.id),
             allow_task_submission=allow_task_submission,
+            allow_runtime_restart=allow_runtime_restart,
         )
     logger.info("Agent access enabled for workspace %s by user %s", workspace_id, user_id)
     return _status_payload(workspace_id, record)
@@ -207,6 +215,7 @@ async def resolve_agent_access_token(token: str) -> AgentAccessContext:
         acting_user_id=str(record.createdByUserId),
         acting_user_is_admin=getattr(user, "role", "") == "admin",
         allow_task_submission=bool(record.allowTaskSubmission),
+        allow_runtime_restart=bool(getattr(record, "allowRuntimeRestart", False)),
     )
 
 

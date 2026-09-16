@@ -616,6 +616,27 @@ class AppSettings(BaseModel):
         default=DEFAULT_TOOL_SKILLS_ENABLED,
         description="If True, allow conversations to persist requested on-demand tool skills.",
     )
+    userspace_build_model: Optional[str] = Field(
+        default=None,
+        description="Provider-scoped model used for new User Space build tasks; null uses normal defaults.",
+    )
+    openrouter_credit_monitor_enabled: bool = Field(
+        default=False,
+        description="Enable OpenRouter credit monitoring without exposing balance data outside admin APIs.",
+    )
+    openrouter_low_credit_threshold_usd: float = Field(
+        default=5.0,
+        ge=0,
+        description="OpenRouter remaining-credit warning threshold in USD.",
+    )
+    openrouter_management_api_key: Optional[str] = Field(
+        default=None,
+        description="Optional OpenRouter management API key accepted on update; never returned after persistence.",
+    )
+    has_openrouter_management_api_key: bool = Field(
+        default=False,
+        description="Indicates whether an OpenRouter management API key is configured.",
+    )
 
     # Embedding Configuration (for FAISS indexing)
     embedding_provider: str = Field(
@@ -1435,6 +1456,10 @@ class UpdateSettingsRequest(BaseModel):
     available_models_cache_enabled: Optional[bool] = None
     show_tool_card_footer_actions: Optional[bool] = None
     tool_skills_enabled: Optional[bool] = None
+    userspace_build_model: Optional[str] = None
+    openrouter_credit_monitor_enabled: Optional[bool] = None
+    openrouter_low_credit_threshold_usd: Optional[float] = Field(default=None, ge=0)
+    openrouter_management_api_key: Optional[str] = None
     # Embedding settings
     embedding_provider: Optional[str] = None
     embedding_model: Optional[str] = None
@@ -3454,6 +3479,9 @@ class ChatTask(BaseModel):
     user_message: str
     streaming_state: Optional[ChatTaskStreamingState] = None
     response_content: Optional[str] = None
+    execution_policy: Optional[dict[str, Any]] = None
+    termination_reason: Optional[str] = None
+    outcome_summary: Optional[dict[str, Any]] = None
     error_message: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
     started_at: Optional[datetime] = None
@@ -3470,6 +3498,9 @@ class ChatTaskResponse(BaseModel):
     user_message: str
     streaming_state: Optional[ChatTaskStreamingState] = None
     response_content: Optional[str] = None
+    execution_policy: Optional[dict[str, Any]] = None
+    termination_reason: Optional[str] = None
+    outcome_summary: Optional[dict[str, Any]] = None
     error_message: Optional[str] = None
     created_at: datetime
     started_at: Optional[datetime] = None

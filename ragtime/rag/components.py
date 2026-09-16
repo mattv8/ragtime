@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -131,6 +132,8 @@ from ragtime.core.ollama import (
     warmup_model,
 )
 from ragtime.core.openai_codex_auth import OPENAI_CODEX_DEFAULT_BASE_URL, OPENAI_CODEX_RESPONSES_ENDPOINT, ensure_openai_codex_token_fresh
+from ragtime.core.openrouter_credits import note_openrouter_payment_required
+from ragtime.core.provider_errors import classify_provider_error, provider_error_message
 from ragtime.core.security import (
     _SSH_ENV_VAR_RE,
     sanitize_output,
@@ -292,6 +295,8 @@ _USERSPACE_EAGER_TOOL_NAMES = {
     "delete_userspace_file",
     "validate_userspace_code",
     "create_userspace_snapshot",
+    "restart_app_runtime",
+    "get_app_runtime_status",
     "submit_subagent_handoff",
 }
 _MAX_TOOL_SKILL_STAGE_TRANSITIONS = 4
@@ -10579,9 +10584,9 @@ class RAGComponents:
                 ),
             )
             timeout_seconds: int = Field(
-                default=30,
+                default=120,
                 ge=1,
-                le=120,
+                le=600,
                 description="Maximum execution time in seconds before the command is killed.",
             )
             cwd: str = Field(
@@ -10592,6 +10597,16 @@ class RAGComponents:
                 default="",
                 description="Brief description of why this command is being run",
             )
+
+        class RestartAppRuntimeInput(BaseModel):
+            workspace_id: Optional[str] = Field(default=None, description="Optional target workspace ID. Requires a read_write grant for another workspace.")
+            idempotency_key: str = Field(default="", max_length=128, description="Optional 8-128 character retry key. Reuse it only for the same restart request.")
+            reason: str = Field(default="", max_length=500, description="Brief reason for recycling the running application.")
+
+        class GetAppRuntimeStatusInput(BaseModel):
+            workspace_id: Optional[str] = Field(default=None, description="Optional target workspace ID. Requires a read_write grant for another workspace.")
+            operation_id: str | None = Field(default=None, description="Restart operation ID returned by restart_app_runtime. Omit to inspect current runtime readiness.")
+            reason: str = Field(default="", description="Brief reason for checking runtime readiness.")
 
         def _append_sqlite_hint(message: str, include_sqlite: bool) -> str:
             if not include_sqlite:
@@ -13453,7 +13468,7 @@ class RAGComponents:
 
         async def run_terminal_command(
             command: str,
-            timeout_seconds: int = 30,
+            timeout_seconds: int = 120,
             cwd: str = ".",
             reason: str = "",
             workspace_id: Optional[str] = None,
@@ -13536,6 +13551,58 @@ class RAGComponents:
                 )
 
             return json.dumps(terminal_payload, indent=2)
+
+        async def restart_app_runtime(idempotency_key: str = "", reason: str = "", workspace_id: Optional[str] = None, **_: Any) -> str:
+            """Request a session-preserving app recycle and return its durable operation."""
+            target_ws, target_uid = await _resolve_target_workspace(workspace_id, "write")
+            _assert_subagent_target_workspace(target_ws)
+            if normalized_subagent_scope:
+                raise ToolException("Subagent runtime restart rejected: use scoped file tools and report the runtime issue to the parent.")
+            request_key = idempotency_key.strip() or uuid.uuid4().hex
+            try:
+                operation = await userspace_runtime_service.request_app_restart(target_ws, target_uid, request_key, reason.strip())
+            except HTTPException as exc:
+                detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
+                return _render_userspace_tool_payload(
+                    tool_name="restart_app_runtime", status="rejected_not_persisted", rejected=True, persisted=False,
+                    retryable=exc.status_code not in {409, 429}, failure_class="runtime_restart_failed",
+                    next_best_tool="get_app_runtime_status", error=f"App restart request failed: {detail_text}",
+                    action_required="Inspect runtime status before requesting another restart; do not replay an ambiguous restart with a new key.",
+                )
+            state = str(operation.get("state") or "accepted")
+            return _render_userspace_tool_payload(
+                tool_name="restart_app_runtime", status=state,
+                message="App restart is ready." if state == "completed" else "App restart was accepted; use get_app_runtime_status with this operation ID until it is ready.",
+                persisted=False, retryable=False, failure_class="none", next_best_tool="get_app_runtime_status",
+                operation_id=operation.get("id"), runtime_operation_id=operation.get("operation_id"), state=state,
+            )
+
+        async def get_app_runtime_status(operation_id: str | None = None, workspace_id: Optional[str] = None, reason: str = "", **_: Any) -> str:
+            """Read a restart operation or current runtime readiness without restarting it."""
+            del reason
+            target_ws, target_uid = await _resolve_target_workspace(workspace_id, "write")
+            _assert_subagent_target_workspace(target_ws)
+            try:
+                if operation_id:
+                    status_payload = await userspace_runtime_service.get_app_runtime_operation(target_ws, target_uid, operation_id)
+                    state = str(status_payload.get("state") or "accepted")
+                    ready = state == "completed"
+                else:
+                    runtime_status = await userspace_runtime_service.get_devserver_status(target_ws, target_uid)
+                    status_payload = runtime_status.model_dump()
+                    state = str(status_payload.get("runtime_operation_phase") or status_payload.get("session_state") or "unknown")
+                    ready = bool(status_payload.get("devserver_running")) and state in {"ready", "running"}
+            except HTTPException as exc:
+                detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
+                return _render_userspace_tool_payload(
+                    tool_name="get_app_runtime_status", status="rejected_not_persisted", rejected=True, persisted=False,
+                    retryable=True, failure_class="runtime_status_failed", error=f"Runtime status lookup failed: {detail_text}",
+                )
+            return _render_userspace_tool_payload(
+                tool_name="get_app_runtime_status", status="ready" if ready else state,
+                message="Runtime is ready." if ready else "Runtime is still starting or the restart did not complete; check this operation again before requesting another restart.",
+                persisted=False, retryable=not ready, failure_class="none", ready=ready, operation=status_payload,
+            )
 
         async def browse_userspace_external_url(
             url: str,
@@ -13933,10 +14000,22 @@ class RAGComponents:
                     "Execute a shell command in the workspace runtime container terminal. "
                     "Use for running migrations, installing packages, checking process status, "
                     "debugging build/runtime errors, or any CLI task. "
-                    "Commands run via sh -lc in the workspace root with a configurable timeout (max 120s). "
+                    "Commands run via sh -lc in the workspace root with a configurable timeout (default 120s, max 600s). "
                     "Returns exit code, stdout, and stderr."
                 ),
                 args_schema=RunTerminalCommandInput,
+            ),
+            _create_userspace_tool(
+                coroutine=restart_app_runtime,
+                name="restart_app_runtime",
+                description="Request a session-preserving recycle of the current workspace application. The result is accepted or starting until get_app_runtime_status confirms ready.",
+                args_schema=RestartAppRuntimeInput,
+            ),
+            _create_userspace_tool(
+                coroutine=get_app_runtime_status,
+                name="get_app_runtime_status",
+                description="Check current runtime readiness or a restart operation returned by restart_app_runtime before retrying an app request.",
+                args_schema=GetAppRuntimeStatusInput,
             ),
         ]
 
@@ -16229,6 +16308,8 @@ class RAGComponents:
 
     @classmethod
     def _is_transient_provider_runtime_error(cls, exc: BaseException) -> bool:
+        if classify_provider_error(exc) == "payment_required":
+            return False
         if cls._is_context_window_provider_error(exc):
             return False
 
@@ -16312,8 +16393,30 @@ class RAGComponents:
         if self._is_context_window_provider_error(exc):
             return self._context_window_provider_error_message(exc, resolution)
 
+        provider_error = classify_provider_error(exc)
+        if provider_error:
+            if provider_error == "payment_required":
+                note_openrouter_payment_required()
+            return provider_error_message(provider_error)
+
         resolution_context = self._llm_error_context(resolution)
         return f"I encountered an error processing your request{resolution_context}: {_format_exception_message(exc)}"
+
+    def _provider_error_stream_event(
+        self,
+        exc: BaseException,
+        resolution: object,
+    ) -> dict[str, str] | None:
+        """Return the terminal, safe event consumed by background task execution."""
+        provider = resolution.provider if isinstance(resolution, RequestLLMResolution) else None
+        code = classify_provider_error(exc, provider)
+        if not code:
+            return None
+        return {
+            "type": "error",
+            "code": code,
+            "content": self._chat_runtime_error_message(exc, resolution),
+        }
 
     async def _resolve_chat_request_max_tokens(self, provider: str, model: str) -> int:
         """Resolve chat-specific max_tokens, capped to selected model limits when known."""
@@ -17533,6 +17636,10 @@ class RAGComponents:
             )
         except Exception as e:
             logger.exception("Error preparing streaming query")
+            provider_error_event = self._provider_error_stream_event(e, llm_resolution)
+            if provider_error_event:
+                yield provider_error_event
+                return
             yield self._chat_runtime_error_message(e, llm_resolution)
             return
         system_prompt = self._build_request_system_prompt(
@@ -17593,6 +17700,10 @@ class RAGComponents:
             )
         except Exception as e:
             logger.exception("Error fitting streaming query to context window")
+            provider_error_event = self._provider_error_stream_event(e, llm_resolution)
+            if provider_error_event:
+                yield provider_error_event
+                return
             yield self._chat_runtime_error_message(e, llm_resolution)
             return
         request_llm = llm_resolution.llm
@@ -17854,6 +17965,9 @@ class RAGComponents:
                                 await _close_agent_stream_iter()
                                 break
                             except Exception as stream_err:
+                                if classify_provider_error(stream_err, llm_resolution.provider) == "payment_required":
+                                    await _close_agent_stream_iter()
+                                    raise
                                 if active_tool_runs:
                                     failed_run_id = next(iter(active_tool_runs))
                                     start_payload = _tool_start_payloads.get(failed_run_id)
@@ -18482,7 +18596,14 @@ class RAGComponents:
                                 if fallback_summary:
                                     attempt_emitted_content = True
                                     yield fallback_summary
-                        except Exception:
+                        except Exception as synthesis_err:
+                            provider_error_event = self._provider_error_stream_event(
+                                synthesis_err,
+                                llm_resolution,
+                            )
+                            if provider_error_event:
+                                yield provider_error_event
+                                return
                             logger.warning(
                                 "Tool-free synthesis LLM call failed",
                                 exc_info=True,
@@ -18654,10 +18775,12 @@ class RAGComponents:
 
         except Exception as e:
             logger.exception("Error in streaming query")
-            yield self._chat_runtime_error_message(
-                e,
-                locals().get("llm_resolution"),
-            )
+            resolution = locals().get("llm_resolution")
+            provider_error_event = self._provider_error_stream_event(e, resolution)
+            if provider_error_event:
+                yield provider_error_event
+                return
+            yield self._chat_runtime_error_message(e, resolution)
 
 
 # Global RAG components instance

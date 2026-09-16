@@ -29,6 +29,9 @@ from websockets.typing import Subprotocol
 
 from runtime.auth import OptionalWorkerAuth, WorkerAuth, get_runtime_auth_token
 from runtime.manager.models import (
+    BridgeCredentialRefreshRequest,
+    RuntimeAppRestartRequest,
+    RuntimeBridgeCredentialMetadata,
     RuntimeContentProbeRequest,
     RuntimeContentProbeResponse,
     RuntimeExecRequest,
@@ -452,6 +455,33 @@ async def restart_session(
     _auth: None = WorkerAuth,
 ) -> WorkerSessionResponse:
     return await get_worker_service().restart_session(worker_session_id)
+
+
+@router.post("/worker/sessions/{worker_session_id}/app/restart", response_model=WorkerSessionResponse)
+async def restart_app(
+    worker_session_id: str,
+    payload: RuntimeAppRestartRequest,
+    _auth: None = WorkerAuth,
+) -> WorkerSessionResponse:
+    return await get_worker_service().restart_app(worker_session_id, payload.request_id)
+
+
+@router.post(
+    "/worker/sessions/{worker_session_id}/bridge-credential/refresh",
+    response_model=RuntimeBridgeCredentialMetadata,
+)
+async def refresh_bridge_credential(
+    worker_session_id: str,
+    payload: BridgeCredentialRefreshRequest,
+    _auth: None = WorkerAuth,
+) -> RuntimeBridgeCredentialMetadata:
+    return await get_worker_service().refresh_bridge_credential(
+        worker_session_id,
+        token=payload.token,
+        expected_session_id=payload.expected_session_id,
+        expected_revision=payload.expected_revision,
+        request_id=payload.request_id,
+    )
 
 
 @router.get(

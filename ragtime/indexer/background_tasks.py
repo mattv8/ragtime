@@ -52,6 +52,7 @@ from ragtime.indexer.models import (
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
+from ragtime.indexer.task_policy import activity_summary, policy_requires_action, required_action_termination
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.rag import rag
 
@@ -222,6 +223,16 @@ async def _persist_partial_assistant_message(
     except Exception as link_err:
         logger.warning(f"Failed to link agent-created snapshot to assistant message: {link_err}")
     return True
+
+
+async def _link_assistant_snapshot(persisted: Any) -> None:
+    """Best-effort snapshot linking shared by every terminal outcome."""
+    if not persisted:
+        return
+    try:
+        await repository.link_assistant_snapshot_tool_calls(persisted, getattr(persisted, "workspace_id", None))
+    except Exception as link_err:
+        logger.warning("Failed to link agent-created snapshot to assistant message: %s", link_err)
 
 
 async def _close_stream_handles(
@@ -861,6 +872,8 @@ class BackgroundTaskService:
         current_user_context: Optional[dict[str, Any]] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
         usage_attempt_id: Optional[str] = None,
+        *,
+        execution_policy: Optional[dict[str, Any]] = None,
     ) -> str:
         """
         Start a background task for processing a chat message.
@@ -878,6 +891,7 @@ class BackgroundTaskService:
 
         async def run() -> None:
             nonlocal task_id
+            effective_execution_policy = execution_policy
             full_response = ""
             events: list[dict[str, Any]] = []
             tool_calls: list[dict[str, Any]] = []
@@ -886,13 +900,18 @@ class BackgroundTaskService:
             try:
                 # Create or get the task
                 if not task_id:
-                    task = await repository.create_chat_task(conversation_id, user_message)
+                    task = await repository.create_chat_task(
+                        conversation_id, user_message, execution_policy=execution_policy
+                    )
                     task_id = task.id
                 else:
                     existing_task = await repository.get_chat_task(task_id)
                     if not existing_task:
                         logger.error(f"Task {task_id} not found")
                         return
+                    stored_policy = getattr(existing_task, "execution_policy", None)
+                    if stored_policy is not None:
+                        effective_execution_policy = stored_policy
 
                 # Update status to running
                 await repository.update_chat_task_status(task_id, ChatTaskStatus.running)
@@ -981,6 +1000,8 @@ class BackgroundTaskService:
                 # Track running tools by run_id -> index in events list
                 running_tool_indices: dict[str, int] = {}
                 hit_max_iterations = False  # Track if we hit the iteration limit
+                provider_error_code: str | None = None
+                provider_error_content = ""
                 last_update = utc_now()
                 current_version = 0  # Version counter for efficient client polling
                 pending_streaming_publish = False
@@ -1149,6 +1170,22 @@ class BackgroundTaskService:
 
                         event_type = event.get("type")
 
+                        # G emits structured provider failures so a payment stop
+                        # cannot be mistaken for a text-only/synthetic success.
+                        if event_type == "error":
+                            code = str(event.get("code") or "").strip()
+                            if code == "payment_required":
+                                provider_error_code = code
+                                provider_error_content = str(event.get("content") or "").strip()
+                                break
+                            # Unknown/advisory error codes: keep the safe text so it
+                            # is not silently dropped from the persisted response.
+                            fallback_content = str(event.get("content") or "").strip()
+                            if fallback_content:
+                                full_response += ("\n" if full_response else "") + fallback_content
+                                events.append({"type": "content", "channel": "final", "content": fallback_content})
+                            continue
+
                         if event_type == "tool_start":
                             run_id = event.get("run_id", "")
                             tool_name = event.get("tool")
@@ -1204,8 +1241,15 @@ class BackgroundTaskService:
                             # Find the matching tool_start by run_id
                             tool_idx = running_tool_indices.pop(run_id, None)
                             if tool_idx is not None:
+                                tool_output = event.get("output")
+                                synthetic_recovery = bool(event.get("synthetic") or event.get("recovery"))
+                                if isinstance(tool_output, str) and "Treat this as a failed tool result" in tool_output:
+                                    synthetic_recovery = True
+                                tool_failed = bool(event.get("failed")) or (
+                                    isinstance(tool_output, str) and tool_output.startswith("Error:")
+                                )
                                 # Update the existing tool event with output
-                                events[tool_idx]["output"] = event.get("output")
+                                events[tool_idx]["output"] = tool_output
                                 if event.get("mcp") is not None:
                                     events[tool_idx]["mcp"] = event.get("mcp")
                                 if event.get("presentation") is not None:
@@ -1218,6 +1262,9 @@ class BackgroundTaskService:
                                         "connection": events[tool_idx].get("connection"),
                                         "presentation": events[tool_idx].get("presentation"),
                                         "mcp": events[tool_idx].get("mcp"),
+                                        "success": event.get("success"),
+                                        "failed": tool_failed,
+                                        "synthetic": synthetic_recovery,
                                     }
                                 )
 
@@ -1291,6 +1338,50 @@ class BackgroundTaskService:
                     await _close_stream_handles(_stream_iter, _stream, task_id)
 
                 # Task completed successfully - save final state
+                if provider_error_code == "payment_required":
+                    if provider_error_content and not full_response.strip():
+                        full_response = provider_error_content
+                        events.append({"type": "content", "channel": "final", "content": full_response})
+                    if reasoning_block_started_at is not None:
+                        finalize_reasoning_block(events, reasoning_block_started_at)
+                        reasoning_block_started_at = None
+                    if not partial_message_persisted and await _persist_partial_assistant_message(
+                        conversation_id, full_response, events
+                    ):
+                        partial_message_persisted = True
+                    from ragtime.core.openrouter_credits import note_openrouter_payment_required
+                    from ragtime.core.provider_errors import provider_error_message
+
+                    warning = note_openrouter_payment_required()
+                    safe_message = provider_error_content or provider_error_message(provider_error_code)
+                    await repository.update_chat_task_status(
+                        task_id,
+                        ChatTaskStatus.failed,
+                        safe_message,
+                        response_content=full_response or None,
+                        termination_reason=provider_error_code,
+                        outcome_summary={
+                            "activity": activity_summary(tool_calls),
+                            "warnings": [warning] if warning else [],
+                        },
+                    )
+                    await task_event_bus.publish(
+                        task_id,
+                        {"completed": True, "status": "failed", "error": safe_message, "content": full_response},
+                    )
+                    await task_event_bus.publish(
+                        f"conversation:{conversation_id}",
+                        {"event": "task_completed", "task_id": task_id, "status": "failed", "error": safe_message},
+                    )
+                    if usage_attempt_id:
+                        await finalize_usage_attempt(
+                            usage_attempt_id,
+                            status="failed",
+                            failure_reason=provider_error_code,
+                            output_tokens=_estimate_output_tokens(full_response, events),
+                        )
+                    return
+
                 if not full_response.strip():
                     synthesized_response = _synthesize_incomplete_response(
                         events,
@@ -1414,6 +1505,34 @@ class BackgroundTaskService:
                     raise RuntimeError("Failed to persist final assistant response")
                 partial_message_persisted = True
 
+                activity = activity_summary(tool_calls)
+                termination_reason = required_action_termination(effective_execution_policy, activity, hit_max_iterations)
+                warnings: list[str] = []
+                if hit_max_iterations and not policy_requires_action(effective_execution_policy):
+                    warnings.append("The run reached its iteration limit before a verified final completion.")
+                if termination_reason is not None:
+                    await repository.update_chat_task_status(
+                        task_id,
+                        ChatTaskStatus.interrupted,
+                        termination_reason=termination_reason,
+                        outcome_summary={"activity": activity, "warnings": warnings},
+                        response_content=full_response,
+                    )
+                    await task_event_bus.publish(task_id, {"completed": True, "status": "interrupted", "content": full_response})
+                    await task_event_bus.publish(
+                        f"conversation:{conversation_id}",
+                        {"event": "task_completed", "task_id": task_id, "status": "interrupted"},
+                    )
+                    await _link_assistant_snapshot(persisted_conv)
+                    if usage_attempt_id:
+                        await finalize_usage_attempt(
+                            usage_attempt_id,
+                            status="interrupted",
+                            failure_reason=termination_reason,
+                            output_tokens=_estimate_output_tokens(full_response, events),
+                        )
+                    return
+
                 await repository.complete_chat_task(
                     task_id,
                     full_response,
@@ -1421,6 +1540,8 @@ class BackgroundTaskService:
                     tool_calls,
                     hit_max_iterations,
                     current_version,
+                    termination_reason="max_iterations" if hit_max_iterations else None,
+                    outcome_summary={"activity": activity, "warnings": warnings},
                 )
 
                 try:
@@ -1485,6 +1606,9 @@ class BackgroundTaskService:
                             task_id,
                             ChatTaskStatus.interrupted,
                             error_message=DEV_SERVER_INTERRUPT_MESSAGE,
+                            response_content=full_response or None,
+                            termination_reason="interrupted",
+                            outcome_summary={"activity": activity_summary(tool_calls), "warnings": []},
                         )
                         await task_event_bus.publish(
                             task_id,
@@ -1503,7 +1627,13 @@ class BackgroundTaskService:
                                 output_tokens=_estimate_output_tokens(full_response, events),
                             )
                     else:
-                        await repository.cancel_chat_task(task_id)
+                        await repository.update_chat_task_status(
+                            task_id,
+                            ChatTaskStatus.cancelled,
+                            response_content=full_response or None,
+                            termination_reason="cancelled",
+                            outcome_summary={"activity": activity_summary(tool_calls), "warnings": []},
+                        )
                         await task_event_bus.publish(task_id, {"completed": True, "status": "cancelled"})
                         if usage_attempt_id:
                             await finalize_usage_attempt(
@@ -1531,10 +1661,35 @@ class BackgroundTaskService:
                             task_id,
                             "failed",
                         )
-                    await repository.update_chat_task_status(task_id, ChatTaskStatus.failed, str(e))
+                    try:
+                        from ragtime.core.provider_errors import classify_provider_error
+
+                        termination_reason = classify_provider_error(e)
+                    except ImportError:
+                        termination_reason = None
+                    warnings: list[str] = []
+                    error_message = str(e)
+                    if termination_reason == "payment_required":
+                        from ragtime.core.openrouter_credits import note_openrouter_payment_required
+                        from ragtime.core.provider_errors import provider_error_message
+
+                        error_message = provider_error_message(termination_reason)
+                        warning = note_openrouter_payment_required()
+                        if warning:
+                            warnings.append(warning)
+                    await repository.update_chat_task_status(
+                        task_id,
+                        ChatTaskStatus.failed,
+                        error_message,
+                        # Only classified provider failures get a termination reason;
+                        # an unclassified platform error must not be blamed on the provider.
+                        termination_reason=termination_reason,
+                        outcome_summary={"activity": activity_summary(tool_calls), "warnings": warnings},
+                        response_content=full_response or None,
+                    )
                     await task_event_bus.publish(
                         task_id,
-                        {"completed": True, "status": "failed", "error": str(e)},
+                        {"completed": True, "status": "failed", "error": error_message},
                     )
                     await task_event_bus.publish(
                         f"conversation:{conversation_id}",
@@ -1542,14 +1697,14 @@ class BackgroundTaskService:
                             "event": "task_completed",
                             "task_id": task_id,
                             "status": "failed",
-                            "error": str(e),
+                            "error": error_message,
                         },
                     )
                     if usage_attempt_id:
                         await finalize_usage_attempt(
                             usage_attempt_id,
                             status="failed",
-                            failure_reason=str(e),
+                            failure_reason=termination_reason or "provider_error",
                             output_tokens=_estimate_output_tokens(full_response, events),
                         )
                 except Exception as db_err:
@@ -1726,6 +1881,8 @@ class BackgroundTaskService:
         current_user_context: Optional[dict[str, Any]] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
         usage_attempt_id: Optional[str] = None,
+        *,
+        execution_policy: Optional[dict[str, Any]] = None,
     ) -> str:
         """
         Start a background task asynchronously.
@@ -1741,7 +1898,9 @@ class BackgroundTaskService:
             The task ID
         """
         # Create the task record first
-        task = await repository.create_chat_task(conversation_id, user_message)
+        task = await repository.create_chat_task(
+            conversation_id, user_message, execution_policy=execution_policy
+        )
 
         # Start processing in background
         self.start_task(
@@ -1755,6 +1914,7 @@ class BackgroundTaskService:
             current_user_context=current_user_context,
             disabled_builtin_tool_ids=disabled_builtin_tool_ids,
             usage_attempt_id=usage_attempt_id,
+            execution_policy=execution_policy,
         )
 
         return task.id

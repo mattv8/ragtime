@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatModelsSettingsSectionProps } from './settings/ChatModelsSettingsSection';
+import type { User } from '@/types';
 
 const modalRenderSpy = vi.hoisted(() => vi.fn());
 const searchFilterBarSpy = vi.hoisted(() => vi.fn());
@@ -1128,6 +1129,41 @@ describe('SettingsPanel', () => {
     expect(latestPayload).not.toHaveProperty('max_iterations');
     expect(latestPayload).not.toHaveProperty('max_tool_output_chars');
     expect(latestPayload).not.toHaveProperty('scratchpad_window_size');
+  });
+
+  it('preserves, replaces, and explicitly clears the OpenRouter management secret', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+    render(<SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />);
+    await screen.findByRole('button', { name: 'Open chat models' });
+
+    const getSave = () =>
+      chatModelsSectionState.latestProps?.handleSaveLlm as (() => Promise<void>) | undefined;
+    await getSave()?.();
+    expect(apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0]).not.toHaveProperty(
+      'openrouter_management_api_key',
+    );
+
+    await act(async () => {
+      chatModelsSectionState.latestProps?.setFormData((current) => ({
+        ...current,
+        openrouter_management_api_key: 'new-management-key',
+      }));
+    });
+    await getSave()?.();
+    expect(apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0]).toMatchObject({
+      openrouter_management_api_key: 'new-management-key',
+    });
+
+    await act(async () => {
+      chatModelsSectionState.latestProps?.setFormData((current) => ({
+        ...current,
+        openrouter_management_api_key: '',
+      }));
+    });
+    await getSave()?.();
+    expect(apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0]).toMatchObject({
+      openrouter_management_api_key: '',
+    });
   });
 
   it('shows an inline error and toast when GitHub Copilot authorization start rejects', async () => {

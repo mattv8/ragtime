@@ -2337,6 +2337,10 @@ export function SettingsPanel({
         github_copilot_enterprise_url: data.github_copilot_enterprise_url,
         openai_codex_base_url: data.openai_codex_base_url,
         default_chat_model: data.default_chat_model ?? null,
+        userspace_build_model: data.userspace_build_model ?? null,
+        openrouter_credit_monitor_enabled: data.openrouter_credit_monitor_enabled ?? false,
+        openrouter_low_credit_threshold_usd: data.openrouter_low_credit_threshold_usd ?? 5,
+        openrouter_management_api_key: undefined,
         max_iterations: data.max_iterations,
         chat_compaction_threshold_percent: data.chat_compaction_threshold_percent,
         chat_auto_compaction_threshold_percent: data.chat_auto_compaction_threshold_percent,
@@ -3004,6 +3008,9 @@ export function SettingsPanel({
         github_copilot_enterprise_url: formData.github_copilot_enterprise_url,
         openai_codex_base_url: formData.openai_codex_base_url,
         default_chat_model: formData.default_chat_model,
+        userspace_build_model: formData.userspace_build_model,
+        openrouter_credit_monitor_enabled: formData.openrouter_credit_monitor_enabled,
+        openrouter_low_credit_threshold_usd: formData.openrouter_low_credit_threshold_usd,
         allowed_chat_models: formData.allowed_chat_models,
         chat_compaction_threshold_percent: formData.chat_compaction_threshold_percent,
         chat_auto_compaction_threshold_percent: formData.chat_auto_compaction_threshold_percent,
@@ -3016,6 +3023,9 @@ export function SettingsPanel({
         // API output settings
         tool_output_mode: formData.tool_output_mode,
       };
+      if (formData.openrouter_management_api_key !== undefined) {
+        dataToSave.openrouter_management_api_key = formData.openrouter_management_api_key;
+      }
 
       if (normalizedProvider === 'github_copilot') {
         if (copilotAuthMode === 'pat') {
@@ -4591,6 +4601,8 @@ export function SettingsPanel({
             openOpenapiModelModal={openOpenapiModelModal}
             handleSaveLlm={handleSaveLlm}
             llmSaving={llmSaving}
+            isAdmin={isAdmin}
+            hasManagementApiKey={settings?.has_openrouter_management_api_key === true}
           />
 
           <AgentBehaviorSettingsSection
