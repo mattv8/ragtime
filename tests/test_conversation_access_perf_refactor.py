@@ -70,6 +70,7 @@ class ConversationAccessPerfRefactorTests(unittest.IsolatedAsyncioTestCase):
             limit=None,
             cursor_updated_at=None,
             cursor_id=None,
+            owner_scope="all",
         )
 
     async def test_summary_route_forwards_pagination(self) -> None:
@@ -92,6 +93,7 @@ class ConversationAccessPerfRefactorTests(unittest.IsolatedAsyncioTestCase):
             limit=1,
             cursor_updated_at=NOW.replace(microsecond=123456),
             cursor_id="shared-conversation",
+            owner_scope="all",
         )
 
     async def test_conversation_route_forwards_pagination(self) -> None:
@@ -148,6 +150,20 @@ class ConversationAccessPerfRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("LIMIT 1", sql)
         self.assertIn("c.updated_at <", sql)
         self.assertIn("c.id < 'conversation-a'", sql)
+
+    async def test_summary_repository_owner_scope_filters_after_visibility_predicate(self) -> None:
+        query_raw = mock.AsyncMock(return_value=[])
+        db = SimpleNamespace(query_raw=query_raw)
+
+        with mock.patch.object(repository, "_get_db", mock.AsyncMock(return_value=db)):
+            await repository.list_conversation_summaries(user_id="user-1", owner_scope="others")
+
+        await_args = query_raw.await_args
+        self.assertIsNotNone(await_args)
+        assert await_args is not None
+        sql = await_args.args[0]
+        self.assertIn("conversation_members", sql)
+        self.assertIn("c.user_id IS DISTINCT FROM 'user-1'", sql)
 
     async def test_check_conversation_access_semantics(self) -> None:
         cases: list[_AccessCase] = [
