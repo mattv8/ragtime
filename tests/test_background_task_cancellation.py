@@ -445,7 +445,8 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
         output = components._format_active_tool_timeout_output("query_production_infoscan_database")
 
-        self.assertIn("Tool query_production_infoscan_database took too long and timed out", output)
+        self.assertIn("Tool query_production_infoscan_database", output)
+        self.assertIn("315 seconds", output)
         self.assertIn("Treat this as a failed tool result", output)
 
     @staticmethod
@@ -538,7 +539,8 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
         assert isinstance(tool_end, dict)
         self.assertEqual(tool_start["type"], "tool_start")
         self.assertEqual(tool_end["type"], "tool_end")
-        self.assertIn("took too long and timed out", tool_end["output"])
+        self.assertIn("Tool query_production_infoscan_database", tool_end["output"])
+        self.assertIn("within 0.05 seconds", tool_end["output"])
         self.assertIn("The query tool timed out.", outputs)
         self.assertTrue(request_tool_state["active_tool_stream_timed_out"])
 

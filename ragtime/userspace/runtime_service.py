@@ -23,6 +23,7 @@ from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
 from ragtime.config import settings
+from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
 from ragtime.core.datetimes import utc_now
 from ragtime.core.logging import get_logger
@@ -34,6 +35,7 @@ from ragtime.core.runtime_manager_client import (
     runtime_manager_enabled,
     runtime_manager_request,
 )
+from ragtime.core.userspace_limits import resolve_userspace_exec_timeout
 from ragtime.core.workspace_ops import normalize_runtime_file_path
 from ragtime.indexer.workspace_state import build_workspace_chat_state
 from ragtime.userspace.models import (
@@ -2268,7 +2270,7 @@ class UserSpaceRuntimeService:
         self,
         provider_session_id: str | None,
         command: str,
-        timeout_seconds: int = 120,
+        timeout_seconds: int,
         cwd: str | None = None,
     ) -> dict[str, Any]:
         if not provider_session_id:
@@ -4342,17 +4344,22 @@ class UserSpaceRuntimeService:
         workspace_id: str,
         user_id: str,
         command: str,
-        timeout_seconds: int = 120,
+        timeout_seconds: object = None,
         cwd: str | None = None,
     ) -> dict[str, Any]:
         """Execute a shell command in the workspace runtime container."""
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+        current_settings = await get_app_settings()
+        try:
+            resolved_timeout_seconds = resolve_userspace_exec_timeout(current_settings, timeout_seconds)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         await self._refresh_runtime_mounts_if_specs_changed(session)
         return await self._runtime_provider_exec_command(
             session.provider_session_id,
             command,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=resolved_timeout_seconds,
             cwd=cwd,
         )
 

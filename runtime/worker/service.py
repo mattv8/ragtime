@@ -73,6 +73,7 @@ from ..core.secure_files import write_text as secure_write_text
 from ..core.shared import (
     RUNTIME_BOOTSTRAP_CONFIG_PATH,
     RUNTIME_BOOTSTRAP_STAMP_PATH,
+    RUNTIME_EXEC_TIMEOUT_HARD_CAP_SECONDS,
     EntrypointStatus,
     RuntimeSessionState,
     normalize_file_path,
@@ -2895,7 +2896,7 @@ class WorkerService:
             reservation = object()
             self._active_execs.setdefault(worker_session_id, {})[id(reservation)] = reservation
 
-        timeout_seconds = max(1, min(timeout_seconds, 600))
+        timeout_seconds = max(1, min(timeout_seconds, RUNTIME_EXEC_TIMEOUT_HARD_CAP_SECONDS))
         timed_out = False
         truncated = False
 

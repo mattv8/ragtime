@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ..core.shared import RuntimeSessionState
+from ..core.shared import RUNTIME_EXEC_TIMEOUT_HARD_CAP_SECONDS, RuntimeSessionState
 
 
 @dataclass
@@ -338,7 +338,7 @@ class RuntimeExecRequest(BaseModel):
     timeout_seconds: int = Field(
         default=120,
         ge=1,
-        le=600,
+        le=RUNTIME_EXEC_TIMEOUT_HARD_CAP_SECONDS,
         description="Maximum execution time in seconds",
     )
     cwd: str | None = Field(
