@@ -11,25 +11,37 @@
  * physical hierarchy designed for dense information, sustained focus, and
  * minimal visual fatigue.
  *
- * 2. Spatial Hierarchy & Surface Planes
+ * 2. Spatial Hierarchy & Surface Planes (Canonical, All Tabs: Chat, Workspaces, Admin)
  * Depth is communicated exclusively through tonal contrast between dark planes
  * and single-pixel structural borders, never through blurry CSS drop shadows
  * (--shadow-sm and --shadow-md are explicitly none).
- * - Base Desk (--color-workbench, #252526): Foundational desk surface peaking
- *   through 4px gutters between docked panels and around viewport perimeters.
- * - Docked Chrome & Sidebars (--color-panel / --color-chrome, #181818): Darkest
- *   resting surface. Used for top application bar, file tree, chat history,
- *   terminal background, text inputs, and docked cards.
- * - Active Content & Editors (--color-editor, #1f1f1f): Subtle elevation above
- *   chrome for CodeMirror editors, chat reading areas, and diff viewers.
- * - Elevated Overlays (--color-widget, #202020): Used strictly for floating
- *   transient elements—dropdowns, popovers, modals, and compact toast
- *   notifications. Only these floating layers receive drop shadows (--shadow-lg).
+ *
+ * Canonical Surface Hierarchy (applied to Chat, Workspaces, Tools, Indexer, Users, Settings):
+ * - Base Desk (--color-workbench, #252526): Foundational desk surface; page
+ *   containers (route roots, .tools-panel, .users-panel, Settings root) are
+ *   transparent and sit flush on the desk.
+ * - Floating Section Panels (--color-panel, #181818): Docked pane surfaces
+ *   receive --color-panel background + --workbench-container-border (1px solid) +
+ *   --workbench-surface-radius (8px). No shadow. Vertical spacing between
+ *   adjacent panels uses --workbench-section-gap (12px).
+ * - Elevated Records/Content (--color-widget, #202020): Repeated items inside
+ *   section panels (index items, tool cards, user rows, records) sit on
+ *   --color-widget with workbench border + radius. No shadow.
+ * - Modals, Popovers, Toasts (--color-widget overlays, unchanged): Floating
+ *   transient elements remain --color-widget overlays with drop shadows
+ *   (--shadow-lg). Modal content may subdivide into --color-panel panes as
+ *   functional groupings.
+ *
+ * Additional Surfaces for Reference:
+ * - Docked Chrome (--color-chrome, #181818): Topnav, sidebars, file tree.
+ * - Active Content & Editors (--color-editor, #1f1f1f): CodeMirror, chat
+ *   reading areas, diff viewers.
  *
  * 3. Dimensional Rhythm & The 4px Grid
  * Strict dimensional constraints align panels and controls across split views:
  * - Gutters & Padding: Panes are spaced by a 4px gap (--workbench-gap: 4px) and
- *   inset from window edges by 8px (--workbench-padding: 8px).
+ *   inset from window edges by 8px (--workbench-padding: 8px). Vertical stacks
+ *   of floating section panels use --workbench-section-gap (12px).
  * - Titlebars (35px): Outer application bars, topnav, and pane titlebars sit at
  *   an exact 35px height (--workbench-titlebar-height).
  * - Toolbars (32px): Sub-headers, secondary tabs, and toolbar strips sit at
@@ -39,6 +51,11 @@
  * - Panels & Cards (8px Radius): All major docked panes use an 8px radius
  *   (--workbench-surface-radius: 8px) with --workbench-container-border (1px
  *   solid var(--color-border), #2b2b2b).
+ * - Transparent Page Containers: Route roots, pane containers (.tools-panel,
+ *   .users-panel, Settings root), and filter bars are transparent (no
+ *   background, border, shadow) and sit flush on the desk. Direct children
+ *   must have margin-block: 0 to prevent double-stacking with flex gap.
+ *   Page-level headings float directly on the desk at 8px inset.
  * - Modal Content Grouping: Keep introductory or explanatory copy flat on the
  *   modal's --color-widget surface. Place distinct functional sections on
  *   direct child --color-panel panes when the separation improves scanning.
@@ -120,6 +137,7 @@
   --workbench-surface-radius: 8px;
   --workbench-control-radius: 4px;
   --workbench-container-border: 1px solid var(--color-border);
+  --workbench-section-gap: 12px; /* Composite ResizeHandle spacing between floating panels: 4px gap + 4px sash + 4px gap. Applied to vertical stacks on Chat/Workspaces and canonically between admin section panels. */
 
   --color-workbench: #252526;
   --color-chrome: #181818;
