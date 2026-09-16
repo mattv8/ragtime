@@ -558,6 +558,7 @@ model ToolConfig {
   // Relation to userspace mount sources backed by this tool
   mountSources UserspaceMountSource[]
   accessPolicy ToolAccessPolicy?
+  pdmAutomationState PdmAutomationState?
 
   @@index([groupId])
   @@map("tool_configs")
@@ -891,6 +892,30 @@ model PdmIndexJob {
   completedAt DateTime? @map("completed_at")
 
   @@map("pdm_index_jobs")
+}
+
+/// Per-tool durable automation state. PDM jobs remain the execution history.
+model PdmAutomationState {
+  toolConfigId String @id @map("tool_config_id")
+  toolConfig   ToolConfig @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+  webhookId String? @unique @map("webhook_id")
+  webhookSecret String? @map("webhook_secret")
+  webhookPaused Boolean @default(false) @map("webhook_paused")
+  webhookCreatedAt DateTime? @map("webhook_created_at")
+  pendingWebhook Boolean @default(false) @map("pending_webhook")
+  pendingSchedule Boolean @default(false) @map("pending_schedule")
+  firstPendingAt DateTime? @map("first_pending_at")
+  lastReceivedAt DateTime? @map("last_received_at")
+  lastEventId String? @map("last_event_id")
+  pendingGeneration Int @default(0) @map("pending_generation")
+  claimedGeneration Int? @map("claimed_generation")
+  activeJobId String? @map("active_job_id")
+  lastAttemptAt DateTime? @map("last_attempt_at")
+  lastSuccessAt DateTime? @map("last_success_at")
+  lastError String? @map("last_error")
+
+  @@index([pendingWebhook, pendingSchedule])
+  @@map("pdm_automation_state")
 }
 
 /// PDM document metadata for incremental indexing (change detection)
