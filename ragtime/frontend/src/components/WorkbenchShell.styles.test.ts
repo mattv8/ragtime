@@ -15,7 +15,10 @@ function readSource(relativePath: string): string {
 
 function getRuleBodiesForSelector(css: string, selector: string): string[] {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const rulePattern = new RegExp(`(?:^|(?<=}))\\s*[^{}]*${escapedSelector}[^{}]*\\{([^{}]*)\\}`, 'g');
+  const rulePattern = new RegExp(
+    `(?:^|(?<=}))\\s*[^{}]*${escapedSelector}[^{}]*\\{([^{}]*)\\}`,
+    'g',
+  );
 
   return [...css.matchAll(rulePattern)].map((match) => match[1]);
 }
@@ -64,16 +67,16 @@ describe('Workbench shell styles contract', () => {
       /\[data-theme-pack='modern'\]\s+\[data-workbench-route-root='settings'\],[\s\S]*\[data-theme-pack='modern'\]\s+\[data-workbench-route-root='indexer'\],[\s\S]*\[data-theme-pack='modern'\]\s+\[data-workbench-route-root='tools'\],[\s\S]*\[data-theme-pack='modern'\]\s+\[data-workbench-route-root='users'\]/,
     );
     for (const route of ['settings', 'indexer', 'tools', 'users']) {
-      expectModernRuleProperties(css, `[data-theme-pack='modern'] [data-workbench-route-root='${route}']`, [
-        /display:\s*flex;/,
-        /flex-direction:\s*column;/,
-        /gap:\s*var\(--workbench-section-gap\);/,
-      ]);
-      expectModernRuleProperties(css, `[data-theme-pack='modern'] [data-workbench-route-root='${route}']`, [
-        /background:\s*transparent;/,
-        /border:\s*none;/,
-        /box-shadow:\s*none;/,
-      ]);
+      expectModernRuleProperties(
+        css,
+        `[data-theme-pack='modern'] [data-workbench-route-root='${route}']`,
+        [/display:\s*flex;/, /flex-direction:\s*column;/, /gap:\s*var\(--workbench-section-gap\);/],
+      );
+      expectModernRuleProperties(
+        css,
+        `[data-theme-pack='modern'] [data-workbench-route-root='${route}']`,
+        [/background:\s*transparent;/, /border:\s*none;/, /box-shadow:\s*none;/],
+      );
     }
     expect(css).toMatch(
       />\s*\*\s*\{[\s\S]*width:\s*100%;[\s\S]*max-width:\s*none;[\s\S]*margin-inline:\s*0;[\s\S]*margin-block:\s*0;/,
@@ -168,6 +171,9 @@ describe('Workbench shell styles contract', () => {
     );
     expect(adminCss).toMatch(
       /\[data-theme-pack='modern'\]\s+#workbench-warning-stack\s*\{[\s\S]*display:\s*flex;/,
+    );
+    expect(adminCss).toMatch(
+      /\[data-theme-pack='modern'\]\s+#workbench-warning-stack:empty\s*\{[\s\S]*display:\s*none;/,
     );
     expect(adminCss).not.toMatch(
       /\[data-theme-pack='modern'\]\s+#workbench-warning-stack\s*\{[\s\S]*order:\s*-1;/,
@@ -290,9 +296,16 @@ describe('Workbench shell styles contract', () => {
       expectModernRuleProperties(css, selector, [/background:\s*var\(--color-widget\);/]);
     }
 
-    for (const chartRule of getRuleBodiesForSelector(css, "[data-theme-pack='modern'] .users-chart-shell")) {
+    for (const chartRule of getRuleBodiesForSelector(
+      css,
+      "[data-theme-pack='modern'] .users-chart-shell",
+    )) {
       expect(chartRule).not.toMatch(/background\s*:/);
     }
+    expectModernRuleProperties(css, "[data-theme-pack='modern'] .users-header-bar", [
+      /padding-top:\s*var\(--space-sm\);/,
+      /padding-bottom:\s*0;/,
+    ]);
     expect(css).not.toContain("[data-theme-pack='modern'] .settings-filter-card");
   });
 

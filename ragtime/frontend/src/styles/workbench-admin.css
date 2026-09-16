@@ -27,6 +27,10 @@
   width: 100%;
 }
 
+[data-theme-pack='modern'] #workbench-warning-stack:empty {
+  display: none;
+}
+
 [data-theme-pack='modern'] #workbench-shell-stack > .topnav,
 [data-theme-pack='modern'] #workbench-shell-stack > .container {
   width: 100%;
@@ -356,6 +360,11 @@
 [data-theme-pack='modern'] .tabs {
   background: transparent;
   border-color: var(--color-border);
+}
+
+[data-theme-pack='modern'] .users-header-bar {
+  padding-top: var(--space-sm);
+  padding-bottom: 0;
 }
 
 [data-theme-pack='modern'] .card-header,
