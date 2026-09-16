@@ -21,7 +21,7 @@ class CiBuildPlanTests(unittest.TestCase):
         result = plan("--event", "push", "--ref-name", "feature/x", "--container-changed", "true", "--build-images", "false", "--build-legacy", "false")
         self.assertEqual(result["promote"], "false")
 
-    def test_same_repository_pr_keeps_pr_tags(self) -> None:
+    def test_pull_requests_are_never_publishable(self) -> None:
         result = plan(
             "--event",
             "pull_request",
@@ -38,8 +38,10 @@ class CiBuildPlanTests(unittest.TestCase):
             "--build-legacy",
             "false",
         )
-        self.assertEqual(result["app_tags"], "pr-42,pr-42-abcdef1")
-        self.assertEqual(result["promote"], "true")
+        self.assertEqual(result["trusted"], "false")
+        self.assertEqual(result["app_tags"], "")
+        self.assertEqual(result["runtime_tags"], "")
+        self.assertEqual(result["promote"], "false")
 
     def test_pr_environment_comes_from_the_base_branch(self) -> None:
         result = plan(
@@ -62,7 +64,7 @@ class CiBuildPlanTests(unittest.TestCase):
         )
         self.assertEqual(result["environment"], "beta")
 
-    def test_fork_and_unchanged_pr_do_not_publish(self) -> None:
+    def test_prs_do_not_publish_regardless_of_repository_or_scope(self) -> None:
         for repository, changed in (("fork/ragtime", "true"), ("owner/ragtime", "false")):
             with self.subTest(repository=repository, changed=changed):
                 result = plan(
@@ -81,18 +83,46 @@ class CiBuildPlanTests(unittest.TestCase):
                     "--build-legacy",
                     "false",
                 )
+                self.assertEqual(result["trusted"], "false")
+                self.assertEqual(result["app_tags"], "")
                 self.assertEqual(result["promote"], "false")
 
-    def test_manual_and_branch_tags_preserve_legacy_contract(self) -> None:
-        result = plan("--event", "workflow_dispatch", "--ref-name", "beta", "--container-changed", "true", "--build-images", "true", "--build-legacy", "false")
-        self.assertEqual(result["app_tags"], "beta,abcdef1,latest-beta")
+    def test_manual_beta_build_uses_channel_prefixed_sha_tag(self) -> None:
+        result = plan("--event", "workflow_dispatch", "--ref-name", "beta", "--build-images", "true", "--build-legacy", "false")
+        self.assertEqual(result["trusted"], "true")
+        self.assertEqual(result["app_tags"], "beta,latest-beta,beta-abcdef1")
+        self.assertEqual(result["runtime_tags"], "beta,latest-beta,beta-abcdef1")
         self.assertEqual(result["environment"], "beta")
+
+    def test_main_push_uses_channel_prefixed_sha_tag(self) -> None:
+        result = plan("--event", "push", "--ref-name", "main", "--build-images", "true", "--build-legacy", "false")
+        self.assertEqual(result["app_tags"], "main,latest,main-abcdef1")
+        self.assertEqual(result["runtime_tags"], "main,latest,main-abcdef1")
 
     def test_release_refs_only_for_non_pr_events(self) -> None:
         result = plan(
             "--event", "workflow_dispatch", "--ref-name", "feature/x", "--container-changed", "true", "--build-images", "true", "--build-legacy", "false"
         )
         self.assertEqual(result["promote"], "false")
+
+    def test_main_push_build_legacy_default_false(self) -> None:
+        result = plan("--event", "push", "--ref-name", "main", "--build-images", "true", "--build-legacy", "false")
+        self.assertEqual(result["build_main"], "true")
+        self.assertEqual(result["build_legacy"], "true")
+        self.assertEqual(result["promote"], "true")
+        self.assertEqual(result["legacy_tag"], "legacy")
+
+    def test_main_workflow_dispatch_build_legacy_true(self) -> None:
+        result = plan("--event", "workflow_dispatch", "--ref-name", "main", "--build-images", "true", "--build-legacy", "true")
+        self.assertEqual(result["build_main"], "false")
+        self.assertEqual(result["build_legacy"], "true")
+        self.assertEqual(result["promote"], "true")
+        self.assertEqual(result["legacy_tag"], "legacy")
+
+    def test_beta_push_no_legacy_tag(self) -> None:
+        result = plan("--event", "push", "--ref-name", "beta", "--build-images", "true", "--build-legacy", "false")
+        self.assertEqual(result["build_legacy"], "false")
+        self.assertEqual(result["legacy_tag"], "")
 
     def test_promotion_yaml_gate_fails_closed_for_non_success_statuses(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -109,7 +139,6 @@ class CiBuildPlanTests(unittest.TestCase):
 
         baseline: dict[str, str | bool] = {
             "cancelled()": False,
-            "needs.quality.result": "success",
             "needs.plan.result": "success",
             "needs.plan.outputs.promote": "true",
             "needs.plan.outputs.build_main": "true",
@@ -123,9 +152,6 @@ class CiBuildPlanTests(unittest.TestCase):
         }
         self.assertTrue(evaluates(**baseline))
         for field, value in (
-            ("needs.quality.result", "failure"),
-            ("needs.quality.result", "cancelled"),
-            ("needs.quality.result", "skipped"),
             ("needs.candidate-main.result", "failure"),
             ("needs.sbom.result", "skipped"),
             ("needs.candidate-runtime.result", "cancelled"),

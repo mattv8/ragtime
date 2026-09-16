@@ -4,7 +4,9 @@
 # Ragtime - Runtime Manager Dockerfile
 # =============================================================================
 
-FROM python:3.12-slim-trixie
+ARG RUNTIME_DEPS_IMAGE=runtime-deps
+
+FROM python:3.12-slim-trixie AS runtime-deps
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -71,6 +73,8 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
     python -c "import anydoc; assert callable(anydoc.to_markdown_bytes); assert anydoc.format_from_extension('csv') is not None" && \
     pip install poetry pipenv uv && \
     curl -fsSL https://bun.sh/install | bash
+
+FROM ${RUNTIME_DEPS_IMAGE} AS runtime
 
 COPY runtime/ /runtime/runtime/
 RUN mkdir -p /runtime/ragtime/core

@@ -620,7 +620,10 @@ Security, maintenance, and troubleshooting guidance for self-hosted deployments.
 
 Ragtime is designed for self-hosted deployment on trusted networks. Review these recommendations before exposing it beyond localhost:
 
-CI builds each push; main-branch images are Cosign-signed and ship with an SPDX SBOM artifact (linked from the badges above and workflow runs) so you can verify what you pull from the registry.
+Pushes to the `beta` and `main` branches trigger packaging workflows that build, sign, and
+publish images. The `main`-branch images are Cosign-signed and ship with an SPDX SBOM
+artifact (linked from the badges above and workflow runs) so you can verify what you pull
+from the registry. Pull requests run validation only and do not publish images.
 
 #### Network & Access
 - **Run behind a reverse proxy or firewall.** Avoid exposing port 8000 directly to the public internet.

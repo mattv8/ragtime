@@ -29,6 +29,11 @@ INPUTS: dict[str, tuple[str, ...]] = {
         "ragtime/frontend/package.json",
         "ragtime/frontend/package-lock.json",
     ),
+    "runtime": (
+        "docker/Dockerfile.runtime",
+        "pyproject.toml",
+        "docker/scripts/install_deps_from_pyproject.py",
+    ),
 }
 
 
@@ -54,6 +59,7 @@ def compute_tags(root: Path, registry: str) -> dict[str, str]:
         "frontend_tag": f"{registry}/{BASE_REPOSITORY}:frontend-{_content_hash(root, INPUTS['frontend'])}",
         "python_ci_tag": f"{registry}/{BASE_REPOSITORY}:ci-{_content_hash(root, INPUTS['ci'])}",
         "production_tag": f"{registry}/{BASE_REPOSITORY}:production-{_content_hash(root, INPUTS['production'])}",
+        "runtime_tag": f"{registry}/{BASE_REPOSITORY}:runtime-{_content_hash(root, INPUTS['runtime'])}",
     }
 
 

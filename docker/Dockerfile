@@ -115,10 +115,13 @@ RUN set -eu; case "$ESLINT_SCOPE" in \
     files:*) node -e "const { spawnSync } = require('node:child_process'); const prefix = 'ragtime/frontend/'; const scope = process.env.ESLINT_SCOPE || 'all'; const paths = Buffer.from(scope.slice('files:'.length), 'base64').toString('utf8').split('\\0').filter(Boolean); if (!paths.length) process.exit(0); const frontendPaths = paths.map((path) => { if (!path.startsWith(prefix)) { console.error('Unsupported ESLINT_SCOPE path: ' + path); process.exit(1); } return path.slice(prefix.length); }); const result = spawnSync('./node_modules/.bin/eslint', [...frontendPaths, '--max-warnings', '0'], { stdio: 'inherit' }); process.exit(result.status ?? 1);" ;; \
     *) echo "Unsupported ESLINT_SCOPE: $ESLINT_SCOPE" >&2; exit 1 ;; esac
 
+FROM frontend-base AS frontend-test
+RUN npm run test
+
 FROM ${PYTHON_CI_DEPS_IMAGE} AS python-ci-base
 WORKDIR /ragtime
 COPY pyproject.toml .jscpd.json /ragtime/
-COPY docker/Dockerfile /ragtime/docker/Dockerfile
+COPY docker/Dockerfile docker/Dockerfile.runtime docker/Dockerfile.storage /ragtime/docker/
 COPY docker/entrypoint.sh /ragtime/docker/entrypoint.sh
 COPY docker/scripts/ /ragtime/docker/scripts/
 COPY scripts/chat_branch_fixture.py /ragtime/scripts/chat_branch_fixture.py

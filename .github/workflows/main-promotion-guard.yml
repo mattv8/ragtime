@@ -13,22 +13,35 @@ jobs:
   guard:
     name: Main Promotion Guard
     runs-on: self-hosted
-
     steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
       - name: Require beta as source branch for main
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          set -euo pipefail
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
             echo "Manual guard run completed."
             exit 0
           fi
 
-          HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
-          HEAD_REPO="${{ github.event.pull_request.head.repo.full_name }}"
-          BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
-
-          if [ "$BASE_BRANCH" = "main" ] && { [ "$HEAD_BRANCH" != "beta" ] || [ "$HEAD_REPO" != "${{ github.repository }}" ]; }; then
+          if [ "$BASE_BRANCH" = main ] && { [ "$HEAD_BRANCH" != beta ] || [ "$HEAD_REPO" != "$REPOSITORY" ]; }; then
             echo "Pull requests into main must be promoted from the repository beta branch."
             echo "Open feature work against beta, quality-test it there, then promote beta to main."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA"; then
+            echo "The promotion branch must include the current main commit."
+            echo "Reconcile main into beta before promoting beta to main."
             exit 1
           fi
 

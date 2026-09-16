@@ -1,33 +1,8 @@
 name: Build and Push Container
 
 on:
-  workflow_call:
-    inputs:
-      build_images: {description: 'Publish candidates and promote them when allowed.', required: false, type: boolean, default: false}
-      caller_event: {description: 'Non-empty only when invoked by the top-level CI workflow.', required: false, type: string, default: ''}
-      build_legacy_image: {description: 'Build the legacy CPU image.', required: false, type: boolean, default: false}
-    outputs:
-      backend_result: {value: '${{ jobs.quality.outputs.backend_result }}'}
-      frontend_result: {value: '${{ jobs.quality.outputs.frontend_result }}'}
-      container_changed: {value: '${{ jobs.scope.outputs.container_changed }}'}
   push:
     branches: [main, beta]
-    paths:
-      - 'docker/**'
-      - 'docker-compose.yml'
-      - '.dockerignore'
-      - '.jscpd.json'
-      - 'ragtime/**'
-      - 'runtime/**'
-      - 'storage/**'
-      - 'tests/**'
-      - 'typings/**'
-      - 'pyproject.toml'
-      - '.env.example'
-      - 'README.md'
-      - 'prisma/**'
-      - '.github/workflows/**'
-      - '.github/actions/**'
   workflow_dispatch:
     inputs:
       build_images: {description: 'Build application and runtime candidates.', required: false, type: boolean, default: true}
@@ -44,40 +19,8 @@ permissions:
   contents: read
 
 jobs:
-  trust:
-    name: Determine registry access
-    runs-on: self-hosted
-    outputs:
-      use_harbor: ${{ steps.access.outputs.use_harbor }}
-    steps:
-      - id: access
-        run: |
-          if [ "$GITHUB_EVENT_NAME" != pull_request ] || [ '${{ github.event.pull_request.head.repo.full_name }}' = "$GITHUB_REPOSITORY" ]; then
-            echo use_harbor=true >> "$GITHUB_OUTPUT"
-          else
-            echo use_harbor=false >> "$GITHUB_OUTPUT"
-          fi
-
-  scope:
-    name: Determine candidate scope
-    runs-on: self-hosted
-    outputs:
-      container_changed: ${{ steps.scope.outputs.container_changed }}
-    steps:
-      - uses: actions/checkout@v4
-        with: {fetch-depth: 0}
-      - id: scope
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then result="$(python3 docker/scripts/changed_lint_files.py --all)"
-          elif [ "$GITHUB_EVENT_NAME" = pull_request ]; then result="$(python3 docker/scripts/changed_lint_files.py --merge-base --base-ref '${{ github.event.pull_request.base.sha }}' --head-ref '${{ github.event.pull_request.head.sha }}')"
-          else result="$(python3 docker/scripts/changed_lint_files.py --base-ref '${{ github.event.before }}' --head-ref '${{ github.sha }}')"; fi
-          printf '%s\n' "$result" | while IFS= read -r line; do case "$line" in container_changed=*) printf '%s\n' "$line" >> "$GITHUB_OUTPUT";; esac; done
-
   plan:
     name: Determine publication plan
-    needs: [scope, trust]
     runs-on: self-hosted
     outputs:
       trusted: ${{ steps.plan.outputs.trusted }}
@@ -99,39 +42,23 @@ jobs:
         env:
           BUILD_IMAGES: ${{ inputs.build_images || false }}
           BUILD_LEGACY: ${{ inputs.build_legacy_image || false }}
-          CALLER_EVENT: ${{ inputs.caller_event }}
         run: |
           set -euo pipefail
-          if [ -z "$CALLER_EVENT" ] && [ "$GITHUB_EVENT_NAME" = push ] && { [ "$GITHUB_REF_NAME" = main ] || [ "$GITHUB_REF_NAME" = beta ]; }; then BUILD_IMAGES=true; fi
-          python3 docker/scripts/ci_build_plan.py --event "$GITHUB_EVENT_NAME" --ref-name "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --repository "$GITHUB_REPOSITORY" --pr-repository '${{ github.event.pull_request.head.repo.full_name }}' --pr-number '${{ github.event.pull_request.number }}' --base-ref '${{ github.base_ref }}' --container-changed '${{ needs.scope.outputs.container_changed }}' --build-images "$BUILD_IMAGES" --build-legacy "$BUILD_LEGACY" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = push ] && { [ "$GITHUB_REF_NAME" = main ] || [ "$GITHUB_REF_NAME" = beta ]; }; then BUILD_IMAGES=true; fi
+          python3 docker/scripts/ci_build_plan.py --event "$GITHUB_EVENT_NAME" --ref-name "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --repository "$GITHUB_REPOSITORY" --build-images "$BUILD_IMAGES" --build-legacy "$BUILD_LEGACY" >> "$GITHUB_OUTPUT"
 
   bases:
     name: Prepare dependency images
-    needs: trust
     uses: ./.github/workflows/base-images.yml
     with:
-      use_harbor: ${{ needs.trust.outputs.use_harbor == 'true' }}
-    secrets: inherit
-
-  quality:
-    name: Quality
-    needs: [bases, trust, plan]
-    if: '!cancelled() && needs.bases.result == ''success'' && needs.trust.result == ''success'' && needs.plan.result == ''success'''
-    uses: ./.github/workflows/quality.yml
-    with:
-      frontend_image: ${{ needs.bases.outputs.frontend_image }}
-      python_ci_image: ${{ needs.bases.outputs.python_ci_image }}
-      production_image: ${{ needs.bases.outputs.production_image }}
-      use_harbor: ${{ needs.trust.outputs.use_harbor == 'true' }}
-      cache_scope: ${{ needs.plan.outputs.cache_scope }}
-      cache_fallback: ${{ needs.plan.outputs.cache_fallback }}
+      use_harbor: true
     secrets: inherit
 
   candidate-main:
     name: Build application candidate
-    needs: [scope, bases, trust, plan]
+    needs: [bases, plan]
     if: >-
-      !cancelled() && needs.scope.result == 'success' && needs.bases.result == 'success' && needs.trust.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.build_main == 'true'
+      !cancelled() && needs.bases.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.build_main == 'true'
     runs-on: self-hosted
     permissions: {actions: read, contents: read, packages: write}
     outputs:
@@ -176,9 +103,9 @@ jobs:
 
   candidate-runtime:
     name: Build runtime candidate
-    needs: [scope, bases, trust, plan]
+    needs: [bases, plan]
     if: >-
-      !cancelled() && needs.scope.result == 'success' && needs.bases.result == 'success' && needs.trust.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.build_runtime == 'true'
+      !cancelled() && needs.bases.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.build_runtime == 'true'
     runs-on: self-hosted
     permissions: {actions: read, contents: read, packages: write}
     outputs: {digest: '${{ steps.build.outputs.digest }}', image: '${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}'}
@@ -186,6 +113,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/managed-buildx
         with: {scope: candidate-runtime}
+      - name: Validate resolved runtime base reference
+        env:
+          RUNTIME_DEPS: ${{ needs.bases.outputs.runtime_image }}
+        run: |
+          set -euo pipefail
+          case "$RUNTIME_DEPS" in *@sha256:*) ;; *) exit 1;; esac
       - uses: docker/login-action@v3
         with: {registry: '${{ env.REGISTRY }}', username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
       - id: build
@@ -195,6 +128,8 @@ jobs:
           file: ./docker/Dockerfile.runtime
           push: true
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            RUNTIME_DEPS_IMAGE=${{ needs.bases.outputs.runtime_image }}
           platforms: linux/amd64
           cache-from: |
             type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:buildcache-runtime-${{ needs.plan.outputs.cache_scope }}
@@ -203,9 +138,9 @@ jobs:
 
   candidate-storage:
     name: Build object-storage candidate
-    needs: [scope, bases, trust, plan]
+    needs: [bases, plan]
     if: >-
-      !cancelled() && needs.scope.result == 'success' && needs.bases.result == 'success' && needs.trust.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.build_main == 'true'
+      !cancelled() && needs.bases.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.build_main == 'true'
     runs-on: self-hosted
     permissions: {actions: read, contents: read, packages: write}
     outputs: {digest: '${{ steps.build.outputs.digest }}', image: '${{ env.REGISTRY }}/${{ env.IMAGE_STORAGE_NAME }}'}
@@ -222,15 +157,16 @@ jobs:
           file: ./docker/Dockerfile.storage
           push: true
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_STORAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: MAVEN_SKIP_TESTS=1
           platforms: linux/amd64
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_STORAGE_NAME }}:buildcache-storage-${{ needs.plan.outputs.cache_scope }}
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_STORAGE_NAME }}:buildcache-storage-${{ needs.plan.outputs.cache_scope }},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd
 
   candidate-legacy:
     name: Build legacy candidate
-    needs: [bases, trust, plan]
+    needs: [bases, plan]
     if: >-
-      !cancelled() && needs.bases.result == 'success' && needs.trust.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.build_legacy == 'true'
+      !cancelled() && needs.bases.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.build_legacy == 'true'
     runs-on: self-hosted
     permissions: {actions: read, contents: read, packages: write}
     outputs: {digest: '${{ steps.build.outputs.digest }}'}
@@ -271,9 +207,9 @@ jobs:
 
   promote:
     name: Promote, sign, and tag candidates
-    needs: [quality, plan, candidate-main, candidate-runtime, candidate-storage, candidate-legacy, sbom]
+    needs: [plan, candidate-main, candidate-runtime, candidate-storage, candidate-legacy, sbom]
     if: >-
-      !cancelled() && needs.quality.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.promote == 'true' &&
+      !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.promote == 'true' &&
       ((needs.plan.outputs.build_main == 'true' && needs.candidate-main.result == 'success' && needs.sbom.result == 'success') || (needs.plan.outputs.build_main != 'true' && needs.candidate-main.result == 'skipped' && needs.sbom.result == 'skipped')) &&
       ((needs.plan.outputs.build_runtime == 'true' && needs.candidate-runtime.result == 'success') || (needs.plan.outputs.build_runtime != 'true' && needs.candidate-runtime.result == 'skipped')) &&
       ((needs.plan.outputs.build_main == 'true' && needs.candidate-storage.result == 'success') || (needs.plan.outputs.build_main != 'true' && needs.candidate-storage.result == 'skipped')) &&
@@ -291,16 +227,9 @@ jobs:
       - uses: docker/login-action@v3
         with: {registry: '${{ env.REGISTRY }}', username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
       - name: Reject stale branch ref
-        env:
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            test "$(git ls-remote origin "refs/heads/$PR_HEAD_REF" | cut -f1)" = "$PR_HEAD_SHA"
-          else
-            test "$(git ls-remote origin "refs/heads/$GITHUB_REF_NAME" | cut -f1)" = "$GITHUB_SHA"
-          fi
+          test "$(git ls-remote origin "refs/heads/$GITHUB_REF_NAME" | cut -f1)" = "$GITHUB_SHA"
       - name: Promote immutable candidates
         env:
           APP: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
@@ -321,10 +250,8 @@ jobs:
           [ -z "$STORAGE_DIGEST" ] || promote "$STORAGE" "$STORAGE_DIGEST" "$APP_TAGS"
           [ -z "$LEGACY_DIGEST" ] || promote "$APP" "$LEGACY_DIGEST" "$LEGACY_TAG"
       - uses: sigstore/cosign-installer@v3
-        if: github.event_name != 'pull_request'
         with: {cosign-release: v2.4.1}
       - name: Sign promoted immutable digests
-        if: github.event_name != 'pull_request'
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}

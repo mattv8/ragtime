@@ -13,6 +13,7 @@ on:
       container_changed: {value: '${{ jobs.scope.outputs.container_changed }}'}
       backend_result: {value: '${{ jobs.backend.outputs.result }}'}
       frontend_result: {value: '${{ jobs.frontend.outputs.result }}'}
+      storage_result: {value: '${{ jobs.storage.outputs.result }}'}
   workflow_dispatch:
 
 permissions:
@@ -73,8 +74,8 @@ jobs:
           build-args: |
             RUFF_SCOPE=${{ needs.scope.outputs.ruff_scope }}
           cache-from: |
-            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-fast-{0}', inputs.cache_scope) || '' }}
-            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-fast-{0}', inputs.cache_fallback) || '' }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-fast-${{ inputs.cache_scope }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-fast-${{ inputs.cache_fallback }}
           cache-to: ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-fast-{0},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd', inputs.cache_scope) || '' }}
 
   backend-analysis:
@@ -105,8 +106,8 @@ jobs:
           build-args: |
             ${{ inputs.python_ci_image != '' && format('PYTHON_CI_DEPS_IMAGE={0}', inputs.python_ci_image) || '' }}
           cache-from: |
-            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-analysis-{0}', inputs.cache_scope) || '' }}
-            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-analysis-{0}', inputs.cache_fallback) || '' }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-analysis-${{ inputs.cache_scope }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-analysis-${{ inputs.cache_fallback }}
           cache-to: ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-analysis-{0},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd', inputs.cache_scope) || '' }}
       - id: mypy-cache
         uses: actions/cache/restore@v4
@@ -175,8 +176,8 @@ jobs:
           build-args: |
             ${{ inputs.frontend_image != '' && format('FRONTEND_DEPS_IMAGE={0}', inputs.frontend_image) || '' }}
           cache-from: |
-            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0}', inputs.cache_scope) || '' }}
-            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0}', inputs.cache_fallback) || '' }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_scope }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_fallback }}
       - name: Frontend ESLint
         uses: docker/build-push-action@v5
         with:
@@ -188,8 +189,20 @@ jobs:
             ${{ inputs.frontend_image != '' && format('FRONTEND_DEPS_IMAGE={0}', inputs.frontend_image) || '' }}
             ESLINT_SCOPE=${{ needs.scope.outputs.eslint_scope }}
           cache-from: |
-            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0}', inputs.cache_scope) || '' }}
-            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0}', inputs.cache_fallback) || '' }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_scope }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_fallback }}
+      - name: Frontend Vitest
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          target: frontend-test
+          push: false
+          build-args: |
+            ${{ inputs.frontend_image != '' && format('FRONTEND_DEPS_IMAGE={0}', inputs.frontend_image) || '' }}
+          cache-from: |
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_scope }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_fallback }}
       - name: Build frontend
         uses: docker/build-push-action@v5
         with:
@@ -202,9 +215,38 @@ jobs:
             ENVIRONMENT=${{ (github.base_ref || github.ref_name) == 'beta' && 'beta' || 'main' }}
             APP_VERSION=${{ github.sha }}
           cache-from: |
-            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0}', inputs.cache_scope) || '' }}
-            ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0}', inputs.cache_fallback) || '' }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_scope }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_fallback }}
           cache-to: ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-{0},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd', inputs.cache_scope) || '' }}
+      - id: result
+        if: always()
+        run: echo "value=${{ job.status }}" >> "$GITHUB_OUTPUT"
+
+  storage:
+    name: Storage Tests
+    runs-on: self-hosted
+    outputs: {result: '${{ steps.result.outputs.value }}'}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/managed-buildx
+        with: {scope: storage}
+      - name: Log in to Harbor Registry
+        if: inputs.use_harbor
+        uses: docker/login-action@v3
+        with: {registry: hub.docker.visnovsky.us, username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
+      - name: Storage Maven tests
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.storage
+          target: storage-test
+          push: false
+          build-args: |
+            MAVEN_SKIP_TESTS=1
+          cache-from: |
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime-storage:buildcache-storage-${{ inputs.cache_scope }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime-storage:buildcache-storage-${{ inputs.cache_fallback }}
+          cache-to: ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime-storage:buildcache-storage-{0},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd', inputs.cache_scope) || '' }}
       - id: result
         if: always()
         run: echo "value=${{ job.status }}" >> "$GITHUB_OUTPUT"

@@ -45,23 +45,43 @@ When contributing new features or modifying existing logic, follow the project's
 - **FastAPI Routes:** Test routes using raw `starlette.requests.Request` objects instead of a full ASGI `TestClient` where possible.
 - **Run Tests:** Execute `pytest` or target specific files with `pytest tests/test_file.py`.
 
-## Pull Request Checklist
+## Pull Request Workflow
+
+All PRs target the **`beta`** branch. The `CI Gate` check runs the full validation suite:
+
+- Backend quality checks and complete pytest suite
+- Frontend format, lint, Vitest, and production build
+- Storage Maven tests
+- Manifest, README sync, and workflow validation
+
+Feature-branch pushes without an open PR run no CI. Once a PR is opened, `CI Gate` runs automatically on every push and must pass before merge.
+
+### Local Checks
+
+To validate changes locally before opening a PR, run the equivalent checks:
+
+```bash
+# Full backend quality gate and complete pytest suite
+docker build --target python-test -f docker/Dockerfile .
+
+# Frontend format, lint, Vitest, and production build
+docker build --target frontend-test -f docker/Dockerfile .
+
+# Storage Maven tests (skipped during docker build; run explicitly with --build-arg)
+docker build --target storage-test -f docker/Dockerfile.storage \
+  --build-arg MAVEN_SKIP_TESTS=1 .
+
+# Or run all checks via the combined local test suite
+bash tests/run_all_tests.sh
+```
+
+### Pull Request Checklist
 
 - Keep the PR focused on one bug fix, feature, or cleanup.
 - Explain the behavior change in plain language.
 - Add or update tests when behavior changes.
 - Mention any database, auth, runtime, or configuration impact.
 - For UI changes, include a screenshot or short note about what you checked.
-
-### Local Checks
-If you want to run validations locally before opening a PR:
-```bash
-# Full backend quality gate and test suite
-docker build --target python-test -f docker/Dockerfile .
-
-# Frontend typecheck and production build
-docker build --target frontend-builder -f docker/Dockerfile .
-```
 
 ## Adding Tools
 

@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "docker" / "scripts" / "base_image_tags.py"
 
@@ -42,6 +44,7 @@ class BaseImageTagTests(unittest.TestCase):
         self.assertRegex(tags["frontend_tag"], r"^registry\.example/library/ragtime-base:frontend-[0-9a-f]{64}$")
         self.assertRegex(tags["python_ci_tag"], r"^registry\.example/library/ragtime-base:ci-[0-9a-f]{64}$")
         self.assertRegex(tags["production_tag"], r"^registry\.example/library/ragtime-base:production-[0-9a-f]{64}$")
+        self.assertRegex(tags["runtime_tag"], r"^registry\.example/library/ragtime-base:runtime-[0-9a-f]{64}$")
 
     def test_application_source_change_does_not_change_any_tag(self) -> None:
         before = self._tags()
@@ -67,6 +70,7 @@ class BaseImageTagTests(unittest.TestCase):
         self.assertEqual(before["frontend_tag"], after["frontend_tag"])
         self.assertNotEqual(before["python_ci_tag"], after["python_ci_tag"])
         self.assertNotEqual(before["production_tag"], after["production_tag"])
+        self.assertNotEqual(before["runtime_tag"], after["runtime_tag"])
 
     def test_schema_changes_only_ci_tag(self) -> None:
         before = self._tags()
@@ -76,6 +80,17 @@ class BaseImageTagTests(unittest.TestCase):
         self.assertEqual(before["frontend_tag"], after["frontend_tag"])
         self.assertNotEqual(before["python_ci_tag"], after["python_ci_tag"])
         self.assertEqual(before["production_tag"], after["production_tag"])
+        self.assertEqual(before["runtime_tag"], after["runtime_tag"])
+
+    def test_runtime_dockerfile_changes_only_runtime_tag(self) -> None:
+        before = self._tags()
+        with (self.root / "docker/Dockerfile.runtime").open("a", encoding="utf-8") as file:
+            file.write("\n")
+        after = self._tags()
+        self.assertEqual(before["frontend_tag"], after["frontend_tag"])
+        self.assertEqual(before["python_ci_tag"], after["python_ci_tag"])
+        self.assertEqual(before["production_tag"], after["production_tag"])
+        self.assertNotEqual(before["runtime_tag"], after["runtime_tag"])
 
     def test_missing_required_input_fails(self) -> None:
         (self.root / "prisma/schema.prisma").unlink()
@@ -110,13 +125,37 @@ class BaseImageTagTests(unittest.TestCase):
         self.assertIn("COPY ragtime/ /ragtime/ragtime/", quality_base)
         self.assertNotIn("FROM python-ci-base", quality_base)
 
-    def test_base_workflow_keeps_fork_and_refresh_behavior_explicit(self) -> None:
-        workflow = (ROOT / ".github/workflows/base-images.yml").read_text(encoding="utf-8")
-        self.assertIn('[ "$EVENT_NAME" = push ] || { [ "$EVENT_NAME" = pull_request ] && [ "$PR_REPOSITORY" = "$REPOSITORY" ]; }', workflow)
-        self.assertIn("if: ${{ always() }}", workflow)
-        self.assertIn("no-cache: ${{ inputs.refresh }}", workflow)
-        self.assertIn("cancel-in-progress: false", workflow)
-        self.assertIn("^sha256:[0-9a-f]{64}$", workflow)
+    def test_base_workflow_keeps_publish_and_read_only_resolve_behavior_explicit(self) -> None:
+        workflow = yaml.safe_load((ROOT / ".github/workflows/base-images.yml").read_text(encoding="utf-8"))
+        access_step = next(step for step in workflow["jobs"]["access"]["steps"] if step.get("id") == "access")
+        access_script = access_step["run"]
+
+        def access(requested: str, event_name: str) -> str:
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "github-output"
+                result = subprocess.run(
+                    ["bash", "-c", access_script],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        "EVENT_NAME": event_name,
+                        "GITHUB_OUTPUT": str(output),
+                        "PATH": "/usr/bin:/bin",
+                        "REQUESTED": requested,
+                    },
+                )
+                self.assertEqual(result.stderr, "")
+                return output.read_text(encoding="utf-8").strip().split("=", 1)[1]
+
+        self.assertEqual(access("true", "push"), "true")
+        self.assertEqual(access("true", "pull_request"), "false")
+        self.assertEqual(access("false", "workflow_dispatch"), "false")
+        self.assertEqual(access("", "workflow_dispatch"), "true")
+        self.assertEqual(workflow["jobs"]["build"]["needs"], ["access", "hashes"])
+        self.assertIn("needs.access.outputs.can_publish == 'true'", workflow["jobs"]["build"]["if"])
+        self.assertIn("no-cache: ${{ inputs.refresh }}", (ROOT / ".github/workflows/base-images.yml").read_text(encoding="utf-8"))
+        self.assertIn("cancel-in-progress: false", (ROOT / ".github/workflows/base-images.yml").read_text(encoding="utf-8"))
 
     def test_manifest_absence_condition_accepts_only_known_missing_errors(self) -> None:
         image = "hub.docker.visnovsky.us/library/ragtime-base:ci-base-absence-probe-20260912"
@@ -142,30 +181,3 @@ fi
         self.assertEqual(status("ERROR: failed to authorize: authentication required"), "fail")
         self.assertEqual(status("ERROR: manifest unknown: manifest unknown"), "missing")
         self.assertEqual(status("ERROR: network timeout while checking manifest unknown"), "fail")
-
-    def test_base_access_condition_rejects_unknown_and_fork_events(self) -> None:
-        condition = """\
-requested="$1"; event_name="$2"; repository="$3"; pr_repository="$4"; can_publish=false
-if [ "$event_name" = workflow_dispatch ]; then
-  can_publish=true
-elif [ "$requested" = true ] && { [ "$event_name" = push ] || { [ "$event_name" = pull_request ] && [ "$pr_repository" = "$repository" ]; }; }; then
-  can_publish=true
-fi
-printf '%s' "$can_publish"
-"""
-
-        def access(requested: str, event_name: str, pr_repository: str = "owner/ragtime") -> str:
-            result = subprocess.run(
-                ["bash", "-c", condition, "bash", requested, event_name, "owner/ragtime", pr_repository],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            return result.stdout
-
-        self.assertEqual(access("true", "workflow_dispatch"), "true")
-        self.assertEqual(access("true", "push"), "true")
-        self.assertEqual(access("true", "pull_request"), "true")
-        self.assertEqual(access("true", "pull_request", "fork/ragtime"), "false")
-        self.assertEqual(access("true", "pull_request_target"), "false")
-        self.assertEqual(access("false", "push"), "false")

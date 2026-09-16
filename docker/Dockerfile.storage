@@ -1,11 +1,15 @@
 # syntax=docker/dockerfile:1.7
 
 FROM maven:3.9-eclipse-temurin-17 AS build
+ARG MAVEN_SKIP_TESTS=
 WORKDIR /work
 COPY storage/pom.xml storage/pom.xml
 RUN --mount=type=cache,target=/root/.m2 mvn -f storage/pom.xml dependency:go-offline
 COPY storage/src/ storage/src/
-RUN --mount=type=cache,target=/root/.m2 mvn -f storage/pom.xml package
+RUN --mount=type=cache,target=/root/.m2 mvn -f storage/pom.xml package ${MAVEN_SKIP_TESTS:+-DskipTests}
+
+FROM build AS storage-test
+RUN --mount=type=cache,target=/root/.m2 mvn -f storage/pom.xml test
 
 FROM eclipse-temurin:17-jre-jammy
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*

@@ -1,84 +1,55 @@
 name: CI
 
 on:
-  push:
-    branches-ignore: [main, beta]
   pull_request:
-    branches: [main, beta]
+    branches: [beta, main]
   workflow_dispatch:
 
 permissions:
   actions: read
   contents: read
-  pull-requests: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  deduplicate:
-    name: Determine CI coverage
+  bases:
+    name: Resolve dependency images
+    uses: ./.github/workflows/base-images.yml
+    with:
+      use_harbor: false
+
+  quality:
+    name: Quality
+    needs: bases
+    uses: ./.github/workflows/quality.yml
+    with:
+      frontend_image: ${{ needs.bases.outputs.frontend_image }}
+      python_ci_image: ${{ needs.bases.outputs.python_ci_image }}
+      production_image: ${{ needs.bases.outputs.production_image }}
+      use_harbor: false
+      cache_scope: ${{ github.base_ref || github.ref_name }}
+      cache_fallback: main
+
+  gate:
+    name: CI Gate
+    needs: [bases, quality]
+    if: always()
     runs-on: self-hosted
-    outputs:
-      run_quality: ${{ steps.coverage.outputs.run_quality }}
     steps:
-      - id: coverage
+      - name: Verify CI results
+        shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          BASES_RESULT: ${{ needs.bases.result }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          BACKEND_RESULT: ${{ needs.quality.outputs.backend_result }}
+          FRONTEND_RESULT: ${{ needs.quality.outputs.frontend_result }}
+          STORAGE_RESULT: ${{ needs.quality.outputs.storage_result }}
         run: |
           set -euo pipefail
-          echo 'run_quality=true' >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_EVENT_NAME" != push ]; then exit 0; fi
-          for base in main beta; do
-            if response="$(curl --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' --get --data-urlencode state=open --data-urlencode "base=${base}" --data-urlencode "head=${GITHUB_REPOSITORY_OWNER}:${GITHUB_REF_NAME}" "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/pulls")"; then
-              if printf '%s' "$response" | jq -e --arg base "$base" --arg sha "$GITHUB_SHA" 'type == "array" and any(.[]; .base.ref == $base and .head.sha == $sha)' >/dev/null; then
-                echo 'run_quality=false' >> "$GITHUB_OUTPUT"; exit 0
-              fi
-            else
-              echo "Unable to check open ${base} pull requests; running quality." >&2; exit 0
-            fi
-          done
-
-  pipeline:
-    name: Container pipeline
-    needs: deduplicate
-    if: needs.deduplicate.outputs.run_quality == 'true'
-    uses: ./.github/workflows/build-container.yml
-    with:
-      build_images: ${{ github.event_name == 'pull_request' }}
-      caller_event: ${{ github.event_name }}
-    secrets: inherit
-    permissions:
-      actions: read
-      contents: read
-      packages: write
-      id-token: write
-
-  backend-status:
-    name: Backend Quality and Tests
-    needs: [deduplicate, pipeline]
-    if: >-
-      always() &&
-      (github.event_name != 'push' || needs.deduplicate.result != 'success' || needs.deduplicate.outputs.run_quality != 'false')
-    runs-on: self-hosted
-    steps:
-      - name: Verify backend quality result
-        shell: bash
-        run: |
-          test "${{ needs.pipeline.result }}" = success
-          test "${{ needs.pipeline.outputs.backend_result }}" = success
-
-  frontend-status:
-    name: Frontend Build
-    needs: [deduplicate, pipeline]
-    if: >-
-      always() &&
-      (github.event_name != 'push' || needs.deduplicate.result != 'success' || needs.deduplicate.outputs.run_quality != 'false')
-    runs-on: self-hosted
-    steps:
-      - name: Verify frontend quality result
-        shell: bash
-        run: |
-          test "${{ needs.pipeline.result }}" = success
-          test "${{ needs.pipeline.outputs.frontend_result }}" = success
+          test "$BASES_RESULT" = success
+          test "$QUALITY_RESULT" = success
+          test "$BACKEND_RESULT" = success
+          test "$FRONTEND_RESULT" = success
+          test "$STORAGE_RESULT" = success
