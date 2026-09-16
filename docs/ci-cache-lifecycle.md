@@ -40,16 +40,21 @@ automation.
 
 BuildKit cache is organized by branch scope with a main-branch fallback for PR jobs:
 
-- **Branch-scoped caches**: `beta` and `main` maintain separate build caches (registry cache
-  refs `library/ragtime:buildcache-beta`, `library/ragtime:buildcache-main`, etc.). Changes
-  to dependencies only invalidate the corresponding branch cache, not the other.
+- **Branch-scoped caches**: `beta` and `main` maintain separate build caches. Registry cache
+  refs are `buildcache-app-beta`, `buildcache-app-main`, `buildcache-runtime-beta`,
+  `buildcache-runtime-main`, `buildcache-storage-beta`, `buildcache-storage-main` in the
+  `ragtime`, `runtime`, and `ragtime-storage` repositories respectively.
 - **PR cache policy**: PRs read from both the base-branch cache and the main-branch fallback
   but never write to the registry (anonymous read-only). This prevents PR cache pollution
   while allowing fast builds from stable branch history.
-- **Dependency base images**: Prebuilt dependency bases (app base, runtime-deps, storage)
-  have content hashes in their registry tags. When dependencies change, a new hash tag is
-  published; candidates pin the digest at resolve time, guaranteeing reproducible builds.
-  Harbor retention keeps the latest 30 per repository, so old bases can be garbage-collected.
+- **Dependency base images**: Four hashed base images in `library/ragtime-base` contain
+  frontend-deps, python-ci-deps, production-deps, and runtime-deps. Recipe changes produce
+  new hash tags; a manual refresh may replace an existing tag. Consumers resolve tags to
+  digests, fixing base-image bytes for that run. This does not lock every dependency or
+  guarantee a reproducible full build. Harbor retention can remove older bases.
+- **Quality caches**: Retained `buildcache-fast-<branch>`, `buildcache-analysis-<branch>`,
+  and `buildcache-frontend-<branch>` caches are read-only inputs to PR workflows. The new
+  PR workflow does not refresh these registry caches.
 
 ## Operator use
 
@@ -92,17 +97,17 @@ indefinitely. If a needed base tag has expired, CI builds it again from its depe
 
 ### Base Image Kinds in Retention
 
-Dependency bases published to Harbor now include:
+Hashed base images published to `library/ragtime-base` include:
 
-- **App base** (`library/ragtime-base:buildcache-<scope>` and tagged versions): Application
-  dependencies (Python, Node, system packages).
-- **Runtime-deps** (`library/ragtime-base:buildcache-runtime-deps`): Runtime process
-  dependencies (Python 3.12, pip/npm/bun packages for the runtime service).
-- **Storage base** (cached as `library/ragtime-storage:buildcache-storage-<scope>`): Maven
-  build cache for the storage indexer.
+- **frontend-deps**: Frontend dependencies (Node.js, npm packages).
+- **python-ci-deps**: Python CI/backend dependencies for test execution.
+- **production-deps**: Production application dependencies.
+- **runtime-deps**: Runtime service dependencies (Python 3.12, npm/bun packages).
 
-All follow the same 30-artifact retention policy. When these bases change, new hash-tagged
-versions are published; older versions expire after 30 total artifacts per repository.
+Build caches are published to their respective target repositories (app cache to `ragtime`,
+runtime cache to `runtime`, storage cache to `ragtime-storage`). All follow the same 30-artifact
+retention policy. Base tags identify dependency recipes; build-cache tags are mutable
+branch-scoped references. Retention may expire old artifacts in either category.
 
 This CI change does not modify the shared Harbor policy. Recheck it when changing registry
 capacity or retention requirements; runner-local cleanup cannot reclaim remote registry bytes.
