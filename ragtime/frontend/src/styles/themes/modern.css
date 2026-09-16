@@ -55,7 +55,7 @@
  *   .users-panel, Settings root), and filter bars are transparent (no
  *   background, border, shadow) and sit flush on the desk. Direct children
  *   must have margin-block: 0 to prevent double-stacking with flex gap.
- *   Page-level headings float directly on the desk at 8px inset.
+ *   Page-level controls float directly on the desk at 8px inset.
  * - Modal Content Grouping: Keep introductory or explanatory copy flat on the
  *   modal's --color-widget surface. Place distinct functional sections on
  *   direct child --color-panel panes when the separation improves scanning.
