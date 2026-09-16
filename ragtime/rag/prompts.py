@@ -993,7 +993,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Prefer `rg` for search, short focused commands, and separate tool calls for multi-step workflows.
 - Prefer `validate_userspace_code` when you only need file or code diagnostics.
 - If a command times out, raise `timeout_seconds` or split the work into smaller steps. If output is truncated, narrow it with `head`, `tail`, `rg`, or `grep`.
-- Terminal commands default to 120 seconds and may run for up to 600 seconds; use the smallest timeout that safely covers the command.
+- The terminal tool schema shows the current default and maximum command timeout; use the smallest timeout that safely covers the command.
 - If the app needs a recycle after a configuration or dependency change, call `restart_app_runtime`, then use `get_app_runtime_status` until it reports ready before testing the app again.
 {data_wiring_block}
 ### File tool workflow

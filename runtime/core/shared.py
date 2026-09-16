@@ -25,6 +25,10 @@ RUNTIME_ENTRYPOINT_CONFIG_PATH = ".ragtime/runtime-entrypoint.json"
 SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
 SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
 
+# This is intentionally duplicated from the Ragtime app package because the
+# runtime worker image cannot import from it.
+RUNTIME_EXEC_TIMEOUT_HARD_CAP_SECONDS = 3600
+
 # ---------------------------------------------------------------------------
 # Canonical entrypoint status – single source of truth for both prompt
 # composition (ragtime app) and runtime launch (runtime worker).
