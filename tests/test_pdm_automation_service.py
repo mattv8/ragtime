@@ -1,0 +1,77 @@
+import unittest
+from datetime import timedelta
+from types import SimpleNamespace
+from unittest import mock
+
+from ragtime.indexer.models import ToolType
+from ragtime.pdm_automation.service import PdmAutomationService
+
+
+class PdmAutomationServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_disabled_schedule_does_not_enqueue(self):
+        repo = SimpleNamespace(
+            mark_schedule_pending=mock.AsyncMock(), clear_schedule_pending=mock.AsyncMock(), pending_tool_ids=mock.AsyncMock(return_value=[])
+        )
+        tools = SimpleNamespace(
+            list_tool_configs=mock.AsyncMock(
+                return_value=[SimpleNamespace(id="pdm-1", tool_type=ToolType.SOLIDWORKS_PDM, connection_config={"host": "h", "user": "u", "database": "d"})]
+            )
+        )
+        indexer = SimpleNamespace(get_latest_job=mock.AsyncMock())
+        await PdmAutomationService(repo=repo, tools=tools, indexer=indexer).dispatch_once()
+        repo.mark_schedule_pending.assert_not_awaited()
+
+    async def test_preflight_failure_consumes_observed_generation_without_hot_loop(self):
+        repo = SimpleNamespace(
+            clear_schedule_pending=mock.AsyncMock(),
+            ready_generation=mock.AsyncMock(return_value=4),
+            consume_preflight_failure=mock.AsyncMock(),
+        )
+        tools = SimpleNamespace(
+            get_tool_config=mock.AsyncMock(
+                return_value=SimpleNamespace(
+                    id="pdm-1",
+                    name="PDM",
+                    tool_type=ToolType.SOLIDWORKS_PDM,
+                    enabled=True,
+                    connection_config={"host": "h", "user": "u", "database": "d"},
+                )
+            )
+        )
+        indexer = SimpleNamespace(trigger_index=mock.AsyncMock())
+        with (
+            mock.patch("ragtime.pdm_automation.service.ensure_pgvector_extension", mock.AsyncMock(return_value=False)),
+            mock.patch("ragtime.pdm_automation.service.validate_embedding_provider", mock.AsyncMock()) as validate,
+        ):
+            await PdmAutomationService(repo=repo, tools=tools, indexer=indexer)._dispatch_tool("pdm-1")
+        repo.consume_preflight_failure.assert_awaited_once_with("pdm-1", 4, "pgvector extension is not available.")
+        indexer.trigger_index.assert_not_awaited()
+        validate.assert_not_awaited()
+
+    async def test_schedule_uses_durable_preflight_attempt_to_avoid_hot_loop(self):
+        from ragtime.core.datetimes import utc_now
+
+        repo = SimpleNamespace(
+            clear_schedule_pending=mock.AsyncMock(),
+            mark_schedule_pending=mock.AsyncMock(),
+            last_attempt_at=mock.AsyncMock(return_value=utc_now() - timedelta(seconds=1)),
+            pending_tool_ids=mock.AsyncMock(return_value=[]),
+        )
+        tools = SimpleNamespace(
+            list_tool_configs=mock.AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        id="pdm-1",
+                        tool_type=ToolType.SOLIDWORKS_PDM,
+                        connection_config={"host": "h", "user": "u", "database": "d", "reindex_interval_hours": 1},
+                    )
+                ]
+            )
+        )
+        indexer = SimpleNamespace(
+            get_active_job=mock.AsyncMock(return_value=None),
+            get_latest_job=mock.AsyncMock(return_value=None),
+        )
+        with mock.patch("ragtime.pdm_automation.service.is_anchored_schedule_due", return_value=None):
+            await PdmAutomationService(repo=repo, tools=tools, indexer=indexer).dispatch_once()
+        repo.mark_schedule_pending.assert_not_awaited()

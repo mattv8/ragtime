@@ -4109,6 +4109,11 @@ class SolidworksPdmConnectionConfig(BaseModel):
         ge=1,
         description="Maximum number of documents to index (for testing, None = all)",
     )
+    # Automatic indexing is opt-in.  Legacy configs without these keys remain
+    # manual-only.
+    reindex_interval_hours: int = Field(default=0, ge=0, le=8760, description="Automatic incremental re-index interval; 0 disables scheduling")
+    reindex_start_minute: Optional[int] = Field(default=None, ge=0, le=1439, description="Optional local minutes after midnight schedule anchor")
+    reindex_timezone: Optional[str] = Field(default=None, description="IANA timezone for the optional schedule anchor")
 
 
 class PdmPropertyValueModel(BaseModel):
