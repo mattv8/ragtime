@@ -13,6 +13,22 @@ function readSource(relativePath: string): string {
   return readFileSync(join(cwd(), relativePath), 'utf8');
 }
 
+function getRuleBodiesForSelector(css: string, selector: string): string[] {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rulePattern = new RegExp(
+    `(?:^|(?<=}))\\s*[^{}]*${escapedSelector}[^{}]*\\{([^{}]*)\\}`,
+    'g',
+  );
+
+  return [...css.matchAll(rulePattern)].map((match) => match[1]);
+}
+
+function expectModernRuleProperties(css: string, selector: string, properties: RegExp[]): void {
+  const ruleBodies = getRuleBodiesForSelector(css, selector);
+
+  expect(ruleBodies.some((body) => properties.every((property) => property.test(body)))).toBe(true);
+}
+
 describe('Workbench shell styles contract', () => {
   it('defines the compact full-width admin/auth shell and shared accessibility coverage', () => {
     const css = readSource('src/styles/workbench-admin.css');
@@ -50,16 +66,22 @@ describe('Workbench shell styles contract', () => {
     expect(css).toMatch(
       /\[data-theme-pack='modern'\]\s+\[data-workbench-route-root='settings'\],[\s\S]*\[data-theme-pack='modern'\]\s+\[data-workbench-route-root='indexer'\],[\s\S]*\[data-theme-pack='modern'\]\s+\[data-workbench-route-root='tools'\],[\s\S]*\[data-theme-pack='modern'\]\s+\[data-workbench-route-root='users'\]/,
     );
-    expect(css).toMatch(
-      /\[data-theme-pack='modern'\]\s+\[data-workbench-route-root='settings'\][\s\S]*display:\s*flex;[\s\S]*flex-direction:\s*column;[\s\S]*gap:\s*var\(--workbench-gap\);/,
-    );
+    for (const route of ['settings', 'indexer', 'tools', 'users']) {
+      expectModernRuleProperties(
+        css,
+        `[data-theme-pack='modern'] [data-workbench-route-root='${route}']`,
+        [/display:\s*flex;/, /flex-direction:\s*column;/, /gap:\s*var\(--workbench-section-gap\);/],
+      );
+      expectModernRuleProperties(
+        css,
+        `[data-theme-pack='modern'] [data-workbench-route-root='${route}']`,
+        [/background:\s*transparent;/, /border:\s*none;/, /box-shadow:\s*none;/],
+      );
+    }
     expect(css).toMatch(
       />\s*\*\s*\{[\s\S]*width:\s*100%;[\s\S]*max-width:\s*none;[\s\S]*margin-inline:\s*0;[\s\S]*margin-block:\s*0;/,
     );
     expect(css).not.toContain('margin: 0 auto;');
-    expect(css).toMatch(
-      /\[data-theme-pack='modern'\]\s+#workbench-indexer-route,[\s\S]*\[data-theme-pack='modern'\]\s+\[data-workbench-route-root='indexer'\][\s\S]*background:\s*var\(--color-panel\);/,
-    );
     expect(css).toMatch(
       /\[data-theme-pack='modern'\]\s+\.appearance-theme-card\s*\{[\s\S]*align-items:\s*stretch;/,
     );
@@ -150,6 +172,9 @@ describe('Workbench shell styles contract', () => {
     expect(adminCss).toMatch(
       /\[data-theme-pack='modern'\]\s+#workbench-warning-stack\s*\{[\s\S]*display:\s*flex;/,
     );
+    expect(adminCss).toMatch(
+      /\[data-theme-pack='modern'\]\s+#workbench-warning-stack:empty\s*\{[\s\S]*display:\s*none;/,
+    );
     expect(adminCss).not.toMatch(
       /\[data-theme-pack='modern'\]\s+#workbench-warning-stack\s*\{[\s\S]*order:\s*-1;/,
     );
@@ -201,22 +226,87 @@ describe('Workbench shell styles contract', () => {
     );
   });
 
-  it('renders Modern admin records as inset panel surfaces', () => {
+  it('uses the Modern desk, section-panel, and record surface hierarchy', () => {
     const css = readSource('src/styles/workbench-admin.css');
-    const sectionRule = getRuleBody(
-      css,
-      "[data-theme-pack='modern'] [data-workbench-route-root='indexer'] > .card,\n[data-theme-pack='modern'] [data-workbench-route-root='tools'] .tools-panel > .card",
-    );
-    const recordRule = getRuleBody(
-      css,
-      "[data-theme-pack='modern'] [data-workbench-route-root='indexer'] .index-item,\n[data-theme-pack='modern'] [data-workbench-route-root='tools'] .tool-card,\n[data-theme-pack='modern'] [data-workbench-route-root='tools'] .mount-source-card",
-    );
+    const modernThemeCss = readSource('src/styles/themes/modern.css');
+    const transparentContainerProperties = [
+      /background:\s*transparent;/,
+      /border:\s*none;/,
+      /padding:\s*0;/,
+      /box-shadow:\s*none;/,
+    ];
+    const panelProperties = [
+      /background:\s*var\(--color-panel\);/,
+      /border:\s*var\(--workbench-container-border\);/,
+      /border-radius:\s*var\(--workbench-surface-radius\);/,
+      /box-shadow:\s*none;/,
+    ];
+    const recordProperties = [
+      /background:\s*var\(--color-widget\);/,
+      /border:\s*var\(--workbench-container-border\);/,
+      /border-radius:\s*var\(--workbench-surface-radius\);/,
+      /box-shadow:\s*none;/,
+    ];
 
-    expect(sectionRule).toContain('background: var(--color-widget);');
-    expect(recordRule).toContain('background: var(--color-panel);');
-    expect(recordRule).toContain('border: var(--workbench-container-border);');
-    expect(recordRule).toContain('border-radius: var(--workbench-surface-radius);');
-    expect(recordRule).toContain('box-shadow: none;');
+    expect(modernThemeCss).toMatch(/--workbench-section-gap:\s*12px;/);
+
+    for (const selector of [
+      "[data-theme-pack='modern'] .tools-panel",
+      "[data-theme-pack='modern'] .users-panel",
+      "[data-theme-pack='modern'] #workbench-settings-route > .card",
+      "[data-theme-pack='modern'] .settings-accordion",
+    ]) {
+      expectModernRuleProperties(css, selector, transparentContainerProperties);
+      expectModernRuleProperties(css, selector, [/gap:\s*var\(--workbench-section-gap\);/]);
+    }
+
+    for (const selector of [
+      "[data-theme-pack='modern'] .tools-panel > *",
+      "[data-theme-pack='modern'] .users-panel > *",
+      "[data-theme-pack='modern'] #workbench-settings-route > .card > *",
+    ]) {
+      expectModernRuleProperties(css, selector, [/margin-block:\s*0;/]);
+    }
+
+    for (const selector of [
+      "[data-theme-pack='modern'] #workbench-indexer-route > .card",
+      "[data-theme-pack='modern'] #tools-connections",
+      "[data-theme-pack='modern'] #tools-mount-sources",
+      "[data-theme-pack='modern'] #workbench-users-route .card",
+      "[data-theme-pack='modern'] .users-summary-card",
+      "[data-theme-pack='modern'] .settings-accordion-item",
+      "[data-theme-pack='modern'] .api-info-box[data-settings-filter-card='true']",
+    ]) {
+      expectModernRuleProperties(css, selector, panelProperties);
+    }
+
+    for (const selector of [
+      "[data-theme-pack='modern'] .index-item",
+      "[data-theme-pack='modern'] .tool-card",
+      "[data-theme-pack='modern'] .mount-source-card",
+    ]) {
+      expectModernRuleProperties(css, selector, recordProperties);
+    }
+
+    for (const selector of [
+      "[data-theme-pack='modern'] .jobs-table-wrapper",
+      "[data-theme-pack='modern'] .users-table-wrap",
+      "[data-theme-pack='modern'] .users-detail-list-shell",
+    ]) {
+      expectModernRuleProperties(css, selector, [/background:\s*var\(--color-widget\);/]);
+    }
+
+    for (const chartRule of getRuleBodiesForSelector(
+      css,
+      "[data-theme-pack='modern'] .users-chart-shell",
+    )) {
+      expect(chartRule).not.toMatch(/background\s*:/);
+    }
+    expectModernRuleProperties(css, "[data-theme-pack='modern'] .users-header-bar", [
+      /padding-top:\s*var\(--space-sm\);/,
+      /padding-bottom:\s*0;/,
+    ]);
+    expect(css).not.toContain("[data-theme-pack='modern'] .settings-filter-card");
   });
 
   it('keeps embedded ToolWizard containers flat in the Modern theme', () => {

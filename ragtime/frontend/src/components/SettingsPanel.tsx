@@ -3878,7 +3878,6 @@ export function SettingsPanel({
   if (loading) {
     return (
       <div className="card">
-        <h2>Settings</h2>
         <p className="muted">Loading settings...</p>
       </div>
     );
@@ -4382,8 +4381,6 @@ export function SettingsPanel({
 
   return (
     <div ref={settingsPanelRef} className="card">
-      <h2>Settings</h2>
-
       <SearchFilterBar
         state={settingsFilter}
         inputRef={settingsFilterInputRef}
