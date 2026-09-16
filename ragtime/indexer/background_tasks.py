@@ -900,9 +900,7 @@ class BackgroundTaskService:
             try:
                 # Create or get the task
                 if not task_id:
-                    task = await repository.create_chat_task(
-                        conversation_id, user_message, execution_policy=execution_policy
-                    )
+                    task = await repository.create_chat_task(conversation_id, user_message, execution_policy=execution_policy)
                     task_id = task.id
                 else:
                     existing_task = await repository.get_chat_task(task_id)
@@ -1245,9 +1243,7 @@ class BackgroundTaskService:
                                 synthetic_recovery = bool(event.get("synthetic") or event.get("recovery"))
                                 if isinstance(tool_output, str) and "Treat this as a failed tool result" in tool_output:
                                     synthetic_recovery = True
-                                tool_failed = bool(event.get("failed")) or (
-                                    isinstance(tool_output, str) and tool_output.startswith("Error:")
-                                )
+                                tool_failed = bool(event.get("failed")) or (isinstance(tool_output, str) and tool_output.startswith("Error:"))
                                 # Update the existing tool event with output
                                 events[tool_idx]["output"] = tool_output
                                 if event.get("mcp") is not None:
@@ -1345,9 +1341,7 @@ class BackgroundTaskService:
                     if reasoning_block_started_at is not None:
                         finalize_reasoning_block(events, reasoning_block_started_at)
                         reasoning_block_started_at = None
-                    if not partial_message_persisted and await _persist_partial_assistant_message(
-                        conversation_id, full_response, events
-                    ):
+                    if not partial_message_persisted and await _persist_partial_assistant_message(conversation_id, full_response, events):
                         partial_message_persisted = True
                     from ragtime.core.openrouter_credits import note_openrouter_payment_required
                     from ragtime.core.provider_errors import provider_error_message
@@ -1667,7 +1661,7 @@ class BackgroundTaskService:
                         termination_reason = classify_provider_error(e)
                     except ImportError:
                         termination_reason = None
-                    warnings: list[str] = []
+                    warnings = []
                     error_message = str(e)
                     if termination_reason == "payment_required":
                         from ragtime.core.openrouter_credits import note_openrouter_payment_required
@@ -1898,9 +1892,7 @@ class BackgroundTaskService:
             The task ID
         """
         # Create the task record first
-        task = await repository.create_chat_task(
-            conversation_id, user_message, execution_policy=execution_policy
-        )
+        task = await repository.create_chat_task(conversation_id, user_message, execution_policy=execution_policy)
 
         # Start processing in background
         self.start_task(

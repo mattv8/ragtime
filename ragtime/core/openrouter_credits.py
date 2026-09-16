@@ -42,7 +42,7 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _number(value: object) -> float | None:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return None
     try:
         return float(value)
@@ -137,9 +137,7 @@ async def _refresh(settings: object, threshold: float, inference_key: str, manag
                     status["state"] = "unknown"
                     status["warning"] = "OpenRouter key credit information is unavailable."
                 else:
-                    status["state"] = "exhausted" if status["key_remaining_usd"] <= 0 else (
-                        "low" if status["key_remaining_usd"] <= threshold else "ok"
-                    )
+                    status["state"] = "exhausted" if status["key_remaining_usd"] <= 0 else ("low" if status["key_remaining_usd"] <= threshold else "ok")
 
             if management_key:
                 wallet_status, wallet_payload = await _get_json(client, OPENROUTER_CREDITS_URL, management_key)

@@ -53,7 +53,8 @@ function OpenRouterCreditMonitor({
   }, []);
 
   const stateLabel = status ? status.state.replace(/_/g, ' ') : 'checking';
-  const stateIsAlert = status?.state === 'low' || status?.state === 'exhausted' || status?.state === 'error';
+  const stateIsAlert =
+    status?.state === 'low' || status?.state === 'exhausted' || status?.state === 'error';
 
   return (
     <div className="form-group" id="setting-openrouter-credit-monitor">
@@ -121,7 +122,10 @@ function OpenRouterCreditMonitor({
           )}
         </div>
       </div>
-      <p className={stateIsAlert ? 'userspace-error' : 'field-help'} role={stateIsAlert ? 'alert' : undefined}>
+      <p
+        className={stateIsAlert ? 'userspace-error' : 'field-help'}
+        role={stateIsAlert ? 'alert' : undefined}
+      >
         Credit monitor status: {stateLabel}
         {status?.stale ? ' (stale)' : ''}
         {status?.warning ? `. ${status.warning}` : ''}

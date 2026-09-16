@@ -26,12 +26,32 @@ class RuntimeBridgeCredentialRefreshTests(unittest.IsolatedAsyncioTestCase):
         files = root / "files"
         files.mkdir()
         session = WorkerSession(
-            id="worker", workspace_id="ws", provider_session_id="provider", workspace_root=root,
-            workspace_files_path=files, sandbox_spec=SandboxSpec(workspace_id="ws", workspace_files_path=files, rootfs_path=root / "rootfs"),
-            pty_access_token="pty", workspace_env={"RAGTIME_BRIDGE_URL": "http://bridge"}, workspace_env_visibility={}, workspace_mounts=[], mount_targets_to_clear=set(),
-            state="running", devserver_running=True, devserver_port=None, devserver_command=None, launch_framework=None, launch_cwd=None, last_error=None,
-            runtime_operation_id=None, runtime_operation_phase=None, runtime_operation_started_at=None, runtime_operation_updated_at=None, updated_at=datetime.now(timezone.utc),
-            bridge_credential_mode="worker_file", bridge_session_id="db-session", bridge_token_file_initial_token=_token("db-session"),
+            id="worker",
+            workspace_id="ws",
+            provider_session_id="provider",
+            workspace_root=root,
+            workspace_files_path=files,
+            sandbox_spec=SandboxSpec(workspace_id="ws", workspace_files_path=files, rootfs_path=root / "rootfs"),
+            pty_access_token="pty",
+            workspace_env={"RAGTIME_BRIDGE_URL": "http://bridge"},
+            workspace_env_visibility={},
+            workspace_mounts=[],
+            mount_targets_to_clear=set(),
+            state="running",
+            devserver_running=True,
+            devserver_port=None,
+            devserver_command=None,
+            launch_framework=None,
+            launch_cwd=None,
+            last_error=None,
+            runtime_operation_id=None,
+            runtime_operation_phase=None,
+            runtime_operation_started_at=None,
+            runtime_operation_updated_at=None,
+            updated_at=datetime.now(timezone.utc),
+            bridge_credential_mode="worker_file",
+            bridge_session_id="db-session",
+            bridge_token_file_initial_token=_token("db-session"),
         )
         service = WorkerService()
         service._sessions[session.id] = session
@@ -42,15 +62,23 @@ class RuntimeBridgeCredentialRefreshTests(unittest.IsolatedAsyncioTestCase):
             service, session = self._session(Path(directory))
             session.sandbox_spec.rootfs_path.mkdir()
             service._write_bridge_token_file(session, session.bridge_token_file_initial_token or "")
-            first = await service.refresh_bridge_credential(session.id, token=_token("db-session", 1735693300), expected_session_id="db-session", expected_revision=0, request_id="request-1")
-            duplicate = await service.refresh_bridge_credential(session.id, token=_token("db-session", 1735693300), expected_session_id="db-session", expected_revision=0, request_id="request-1")
+            first = await service.refresh_bridge_credential(
+                session.id, token=_token("db-session", 1735693300), expected_session_id="db-session", expected_revision=0, request_id="request-1"
+            )
+            duplicate = await service.refresh_bridge_credential(
+                session.id, token=_token("db-session", 1735693300), expected_session_id="db-session", expected_revision=0, request_id="request-1"
+            )
             self.assertEqual(first.revision, 1)
             self.assertEqual(duplicate.revision, 1)
             with self.assertRaises(HTTPException) as stale:
-                await service.refresh_bridge_credential(session.id, token=_token("db-session", 1735693400), expected_session_id="db-session", expected_revision=0, request_id="request-2")
+                await service.refresh_bridge_credential(
+                    session.id, token=_token("db-session", 1735693400), expected_session_id="db-session", expected_revision=0, request_id="request-2"
+                )
             self.assertEqual(stale.exception.status_code, 409)
             with self.assertRaises(HTTPException) as conflict:
-                await service.refresh_bridge_credential(session.id, token=_token("db-session", 1735693500), expected_session_id="db-session", expected_revision=1, request_id="request-1")
+                await service.refresh_bridge_credential(
+                    session.id, token=_token("db-session", 1735693500), expected_session_id="db-session", expected_revision=1, request_id="request-1"
+                )
             self.assertEqual(conflict.exception.status_code, 409)
 
     async def test_refresh_history_evicts_stale_requests_without_reapplying(self) -> None:

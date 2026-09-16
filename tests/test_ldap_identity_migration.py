@@ -8,11 +8,12 @@ import os
 import unittest
 import uuid
 from pathlib import Path
+from typing import Any, cast
 
 try:
     import psycopg2  # type: ignore[import-untyped]
 except ImportError:  # pragma: no cover - depends on the optional app dependency set
-    psycopg2 = None
+    psycopg2 = cast(Any, None)
 
 
 ROOT = Path(__file__).resolve().parents[1]

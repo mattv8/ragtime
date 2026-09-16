@@ -1,7 +1,10 @@
 import unittest
+from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 from fastapi import HTTPException
+from prisma import models as prisma_models
 
 from ragtime.indexer import routes as indexer_routes
 from ragtime.indexer.models import AppSettings, UpdateSettingsRequest
@@ -48,13 +51,17 @@ class AgentReliabilitySettingsTests(unittest.TestCase):
                 self.assertIsNone(stored.openrouter_management_api_key)
                 self.assertTrue(stored.has_openrouter_management_api_key)
 
-                encrypted = fake_db.appsettings.last_update_data["openrouterManagementApiKey"]
+                update_data = fake_db.appsettings.last_update_data
+                assert update_data is not None
+                encrypted = update_data["openrouterManagementApiKey"]
                 self.assertTrue(encrypted.startswith(ENCRYPTED_PREFIX))
                 self.assertNotEqual(encrypted, "management-secret")
                 self.assertEqual(decrypt_secret(encrypted), "management-secret")
 
                 cleared = await repository.update_settings({"openrouter_management_api_key": ""})
-                self.assertIsNone(fake_db.appsettings.last_update_data["openrouterManagementApiKey"])
+                cleared_key = fake_db.appsettings.last_update_data
+                assert cleared_key is not None
+                self.assertIsNone(cleared_key["openrouterManagementApiKey"])
                 self.assertIsNone(cleared.openrouter_management_api_key)
                 self.assertFalse(cleared.has_openrouter_management_api_key)
 
@@ -82,10 +89,16 @@ class BuilderModelSettingsRouteTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(indexer_routes, "invalidate_settings_cache"),
             mock.patch.object(indexer_routes, "notify_tools_changed"),
         ):
-            response = await indexer_routes.update_settings(UpdateSettingsRequest(userspace_build_model="claude-builder"), object())
+            response = await indexer_routes.update_settings(
+                UpdateSettingsRequest(userspace_build_model="claude-builder"),
+                cast(prisma_models.User, SimpleNamespace(id="user-1", role="user")),
+            )
 
         update_settings.assert_awaited_once()
-        self.assertEqual(update_settings.await_args.args[0]["userspace_build_model"], "anthropic::claude-builder")
+        await_args = update_settings.await_args
+        self.assertIsNotNone(await_args)
+        assert await_args is not None
+        self.assertEqual(await_args.args[0]["userspace_build_model"], "anthropic::claude-builder")
         self.assertEqual(response.settings.userspace_build_model, "anthropic::claude-builder")
 
     async def test_builder_model_update_rejects_an_unavailable_model_without_writing_settings(self) -> None:
@@ -99,7 +112,10 @@ class BuilderModelSettingsRouteTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(indexer_routes.repository, "update_settings", mock.AsyncMock()) as update_settings,
         ):
             with self.assertRaises(HTTPException) as raised:
-                await indexer_routes.update_settings(UpdateSettingsRequest(userspace_build_model="anthropic::missing"), object())
+                await indexer_routes.update_settings(
+                    UpdateSettingsRequest(userspace_build_model="anthropic::missing"),
+                    cast(prisma_models.User, SimpleNamespace(id="user-1", role="user")),
+                )
 
         self.assertEqual(raised.exception.status_code, 400)
         update_settings.assert_not_awaited()

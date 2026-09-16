@@ -828,7 +828,9 @@ describe('workspace bridge credential client requests', () => {
 
   it('reads and updates the bridge credential delivery mode with an encoded workspace id', async () => {
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ mode: 'env', requires_restart: false, supported: true }))
+      .mockResolvedValueOnce(
+        jsonResponse({ mode: 'env', requires_restart: false, supported: true }),
+      )
       .mockResolvedValueOnce(
         jsonResponse({ mode: 'worker_file', requires_restart: true, supported: true }),
       );

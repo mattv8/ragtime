@@ -864,21 +864,24 @@ class UserSpaceRuntimeService:
             return UserSpaceRuntimeBridgeStatus(
                 state="invalid",
                 detail="Runtime bridge credential metadata is invalid",
-                mode=cast(Any, mode), revision=revision,
+                mode=cast(Any, mode),
+                revision=revision,
                 **base_kwargs,
             )
         if expires_at is not None and expires_at <= utc_now():
             return UserSpaceRuntimeBridgeStatus(
                 state="expired",
                 detail="Runtime bridge credential has expired",
-                mode=cast(Any, mode), revision=revision,
+                mode=cast(Any, mode),
+                revision=revision,
                 **base_kwargs,
             )
         if token_session_id != session.id:
             return UserSpaceRuntimeBridgeStatus(
                 state="session_mismatch",
                 detail="Runtime bridge credential is bound to a different session",
-                mode=cast(Any, mode), revision=revision,
+                mode=cast(Any, mode),
+                revision=revision,
                 **base_kwargs,
             )
         return UserSpaceRuntimeBridgeStatus(state="healthy", mode=cast(Any, mode), revision=revision, **base_kwargs)
@@ -1210,7 +1213,9 @@ class UserSpaceRuntimeService:
                 except Exception:
                     logger.warning(
                         "Runtime bridge refresh watch failed for workspace %s (status=%s)",
-                        workspace_id, status_name, exc_info=True,
+                        workspace_id,
+                        status_name,
+                        exc_info=True,
                     )
 
         await asyncio.gather(*(refresh_workspace(workspace_id, session) for workspace_id, session in newest_sessions_by_workspace.items()))
@@ -3166,9 +3171,7 @@ class UserSpaceRuntimeService:
         # worker_file mode would strip the env token from an env-mode session
         # and break its bridge until a full session restart.
         mode = await self._active_session_bridge_credential_mode(session)
-        workspace_env = self._finalize_workspace_env(
-            workspace_id, session.id, workspace_env, bridge_credential_mode=mode
-        )
+        workspace_env = self._finalize_workspace_env(workspace_id, session.id, workspace_env, bridge_credential_mode=mode)
         await self._runtime_provider_restart_devserver(
             session.provider_session_id,
             workspace_env=workspace_env,
@@ -4382,9 +4385,7 @@ class UserSpaceRuntimeService:
                 f"userspace-runtime-restart:{workspace_id}",
             )
             model = self._runtime_operation_model(tx)
-            existing = await model.find_first(
-                where={"workspaceId": workspace_id, "userId": user_id, "idempotencyKey": idempotency_key}
-            )
+            existing = await model.find_first(where={"workspaceId": workspace_id, "userId": user_id, "idempotencyKey": idempotency_key})
             if existing is not None:
                 if str(getattr(existing, "requestHash", "")) != request_hash:
                     raise HTTPException(status_code=409, detail="Idempotency key conflicts with a different restart request")
@@ -4452,13 +4453,20 @@ class UserSpaceRuntimeService:
             active = await self._get_active_session_row(workspace_id)
             active_provider_session_id = str(getattr(active, "providerSessionId", "") or "")
             provider = await self._runtime_provider_get_status(provider_session_id, max_age_seconds=0) if provider_session_id else None
-            matching = bool(expected_operation_id and active_provider_session_id == provider_session_id and provider and str(provider.get("runtime_operation_id") or "") == expected_operation_id)
+            matching = bool(
+                expected_operation_id
+                and active_provider_session_id == provider_session_id
+                and provider
+                and str(provider.get("runtime_operation_id") or "") == expected_operation_id
+            )
             if matching and str((provider or {}).get("runtime_operation_phase") or "") == "ready":
                 row = await model.update(where={"id": row.id}, data={"state": "completed"})
             elif matching and str((provider or {}).get("runtime_operation_phase") or "") == "failed":
                 row = await model.update(where={"id": row.id}, data={"state": "failed", "error": "Runtime app restart failed"})
             elif not matching:
-                row = await model.update(where={"id": row.id}, data={"state": "interrupted", "error": "Runtime restart operation identity or session was not confirmed"})
+                row = await model.update(
+                    where={"id": row.id}, data={"state": "interrupted", "error": "Runtime restart operation identity or session was not confirmed"}
+                )
         return self._runtime_operation_payload(row)
 
     async def reconcile_stale_runtime_operations(self) -> None:

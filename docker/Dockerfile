@@ -124,12 +124,14 @@ COPY pyproject.toml .jscpd.json /ragtime/
 COPY docker/Dockerfile docker/Dockerfile.runtime docker/Dockerfile.storage /ragtime/docker/
 COPY docker/entrypoint.sh /ragtime/docker/entrypoint.sh
 COPY docker/scripts/ /ragtime/docker/scripts/
-COPY scripts/chat_branch_fixture.py /ragtime/scripts/chat_branch_fixture.py
+COPY docker/buildkitd.ci.toml /ragtime/docker/buildkitd.ci.toml
+COPY scripts/ /ragtime/scripts/
 COPY prisma/ /ragtime/prisma/
 COPY typings/ /ragtime/typings/
 COPY ragtime/ /ragtime/ragtime/
 COPY runtime/ /ragtime/runtime/
 COPY tests/ /ragtime/tests/
+COPY .github/actions/ /ragtime/.github/actions/
 COPY .github/workflows/ /ragtime/.github/workflows/
 
 FROM python-ci-base AS python-compile-check

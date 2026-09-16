@@ -4,10 +4,11 @@ import unittest
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import TypedDict, Unpack
+from typing import Literal, TypedDict, Unpack, cast
 from unittest import mock
 
 from fastapi import HTTPException
+from prisma import models as prisma_models
 
 from ragtime.indexer.tool_selection import resolve_effective_tool_ids
 from ragtime.userspace.agent_briefs import (
@@ -19,7 +20,7 @@ from ragtime.userspace.agent_briefs import (
 
 class _BriefOverrides(TypedDict, total=False):
     idempotency_key: str
-    task_type: str
+    task_type: Literal["build", "general"]
     title: str
     objective: str
     requirements: list[str]
@@ -90,7 +91,7 @@ class StartBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 type(self.service),
                 "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
+                mock.AsyncMock(return_value=cast(prisma_models.User, SimpleNamespace(id="user-1", role="user"))),
             ),
             mock.patch.object(
                 type(self.service),
@@ -272,7 +273,11 @@ class StartBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             with self.assertRaises(HTTPException) as ctx:
-                await self.service._validate_brief(workspace, _brief(data_component_ids=["tool-2"]), SimpleNamespace(id="user-1", role="user"))
+                await self.service._validate_brief(
+                    workspace,
+                    _brief(data_component_ids=["tool-2"]),
+                    cast(prisma_models.User, SimpleNamespace(id="user-1", role="user")),
+                )
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("tool-2", str(ctx.exception.detail))
@@ -298,7 +303,11 @@ class StartBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(self.module.repository, "get_tool_ids_for_groups", mock.AsyncMock(return_value=[])),
             mock.patch.object(userspace_service, "filter_tool_ids_for_workspace_owner", mock.AsyncMock(return_value=["tool-3"])),
         ):
-            await self.service._validate_brief(workspace, _brief(data_component_ids=["tool-3"]), SimpleNamespace(id="user-1", role="user"))
+            await self.service._validate_brief(
+                workspace,
+                _brief(data_component_ids=["tool-3"]),
+                cast(prisma_models.User, SimpleNamespace(id="user-1", role="user")),
+            )
 
     async def test_builder_start_failure_releases_idempotency_claim(self) -> None:
         from ragtime.indexer import routes as indexer_routes
@@ -394,7 +403,7 @@ class GetBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 type(self.service),
                 "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
+                mock.AsyncMock(return_value=cast(prisma_models.User, SimpleNamespace(id="user-1", role="user"))),
             ),
             mock.patch.object(
                 self.module.repository,
@@ -438,7 +447,7 @@ class GetBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 type(self.service),
                 "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
+                mock.AsyncMock(return_value=cast(prisma_models.User, SimpleNamespace(id="user-1", role="user"))),
             ),
             mock.patch.object(self.module.repository, "get_chat_task", mock.AsyncMock(return_value=task)),
             mock.patch.object(
@@ -473,7 +482,7 @@ class GetBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 type(self.service),
                 "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
+                mock.AsyncMock(return_value=cast(prisma_models.User, SimpleNamespace(id="user-1", role="user"))),
             ),
             mock.patch.object(
                 self.module.repository,
@@ -506,7 +515,7 @@ class GetBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 type(self.service),
                 "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
+                mock.AsyncMock(return_value=cast(prisma_models.User, SimpleNamespace(id="user-1", role="user"))),
             ),
             mock.patch.object(
                 self.module.repository,
@@ -559,7 +568,7 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 type(service),
                 "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
+                mock.AsyncMock(return_value=cast(prisma_models.User, SimpleNamespace(id="user-1", role="user"))),
             ),
             mock.patch.object(type(service), "_enforce_editor", mock.AsyncMock()),
             mock.patch.object(module.repository, "get_chat_task", get_task),
@@ -609,7 +618,7 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 type(service),
                 "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
+                mock.AsyncMock(return_value=cast(prisma_models.User, SimpleNamespace(id="user-1", role="user"))),
             ),
             mock.patch.object(type(service), "_enforce_editor", mock.AsyncMock()),
             mock.patch.object(module, "find_external_build_request_by_conversation", mock.AsyncMock(return_value=ledger)),
@@ -792,7 +801,7 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 type(service),
                 "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
+                mock.AsyncMock(return_value=cast(prisma_models.User, SimpleNamespace(id="user-1", role="user"))),
             ),
             mock.patch.object(type(service), "_enforce_editor", mock.AsyncMock()),
             mock.patch.object(module.repository, "get_chat_task", mock.AsyncMock(return_value=task)),
@@ -823,7 +832,7 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 type(service),
                 "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
+                mock.AsyncMock(return_value=cast(prisma_models.User, SimpleNamespace(id="user-1", role="user"))),
             ),
             mock.patch.object(type(service), "_enforce_editor", mock.AsyncMock()),
             mock.patch.object(module.repository, "get_chat_task", mock.AsyncMock(return_value=task)),
@@ -854,7 +863,7 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 type(service),
                 "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
+                mock.AsyncMock(return_value=cast(prisma_models.User, SimpleNamespace(id="user-1", role="user"))),
             ),
             mock.patch.object(type(service), "_enforce_editor", mock.AsyncMock()),
             mock.patch.object(module.repository, "get_chat_task", mock.AsyncMock(return_value=task)),
@@ -893,7 +902,7 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 type(service),
                 "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
+                mock.AsyncMock(return_value=cast(prisma_models.User, SimpleNamespace(id="user-1", role="user"))),
             ),
             mock.patch.object(
                 type(service),

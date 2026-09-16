@@ -30,6 +30,7 @@ from ragtime.userspace.agent_read_service import agent_read_service
 from ragtime.userspace.build_task_service import build_task_service
 from ragtime.userspace.planning_contract import build_recommended_workflow
 from ragtime.userspace.planning_service import planning_service
+from ragtime.userspace.service import userspace_service
 
 agent_router = APIRouter(prefix="/agent/w", tags=["Workspace Agent Access"])
 agent_management_router = APIRouter(prefix="/indexes/userspace", tags=["User Space"])
@@ -210,7 +211,7 @@ async def get_agent_manifest(token: str, request: Request) -> PlainTextResponse:
         base_url=_agent_base_url(request, token),
         workflow=workflow,
         runtime_restart_section=(
-            "10. POST {base_url}/runtime/restart   body: {{\"idempotency_key\": \"<fresh key>\", \"reason\": \"optional\"}}\n"
+            '10. POST {base_url}/runtime/restart   body: {{"idempotency_key": "<fresh key>", "reason": "optional"}}\n'
             "    Request a session-preserving app restart. GET {base_url}/runtime/operations/{{operation_id}} polls\n"
             "    the accepted/running/completed/failed/interrupted operation state.\n"
         ).format(base_url=_agent_base_url(request, token))
@@ -407,8 +408,6 @@ async def reply_agent_task(
 
 
 async def _enforce_agent_runtime_access(ctx: Any) -> None:
-    from ragtime.userspace.service import userspace_service
-
     await userspace_service.enforce_workspace_role(
         ctx.workspace_id,
         ctx.acting_user_id,
@@ -427,9 +426,7 @@ async def restart_agent_runtime(token: str, body: AgentRuntimeRestartRequest, re
         await _enforce_agent_runtime_access(ctx)
         from ragtime.userspace.runtime_service import userspace_runtime_service
 
-        return await userspace_runtime_service.request_app_restart(
-            ctx.workspace_id, ctx.acting_user_id, body.idempotency_key, reason=body.reason
-        )
+        return await userspace_runtime_service.request_app_restart(ctx.workspace_id, ctx.acting_user_id, body.idempotency_key, reason=body.reason)
     except HTTPException as exc:
         _reraise_no_store(exc)
 
