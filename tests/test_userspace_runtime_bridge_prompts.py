@@ -62,6 +62,16 @@ class RuntimeBridgePromptTests(unittest.TestCase):
         )
         self.assertNotIn("window.__ragtime_context", text)
 
+    def test_server_bridge_guidance_reads_rotating_token_per_request(self) -> None:
+        text = build_userspace_entrypoint_nudge(self._status(), is_default_static=False)
+
+        self.assertIn("`RAGTIME_BRIDGE_TOKEN_FILE`", text)
+        self.assertIn("fs.readFileSync", text)
+        self.assertIn("Path(os.environ", text)
+        self.assertIn("Do not cache the token at app startup", text)
+        self.assertIn("Do not automatically replay a mutation", text)
+        self.assertIn("successful bridge traffic after rotation", text)
+
     def test_static_framework_keeps_browser_bridge_guidance_only(self) -> None:
         text = build_userspace_entrypoint_nudge(
             self._status(framework="static", command="python3 -m http.server"),

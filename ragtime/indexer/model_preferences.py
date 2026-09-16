@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from ragtime.core.database import get_db
 from ragtime.core.model_providers import normalize_provider_name
@@ -128,9 +128,21 @@ async def resolve_new_conversation_model(
     workspace_id: str | None = None,
     explicit_model: str | None = None,
     availability: ModelAvailabilitySnapshot | None = None,
+    task_type: Literal["build", "general"] | None = None,
 ) -> str:
     if explicit_model is not None:
         return explicit_model
+
+    # A configured builder profile is authoritative for build work.  Settings
+    # validation owns allowlist checks; availability here protects callers that
+    # resolve after a provider catalog has changed and must not silently fall
+    # back to a personal/global choice.
+    effective_task_type = task_type or ("build" if workspace_id is not None else "general")
+    builder_model = normalize_default_model(getattr(app_settings, "userspace_build_model", None))
+    if effective_task_type == "build" and builder_model is not None:
+        if _is_stale_candidate(builder_model, availability):
+            raise ValueError("Configured User Space builder model is unavailable")
+        return builder_model
 
     workspace_model = None
     if workspace_id is not None:

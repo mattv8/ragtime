@@ -2199,6 +2199,14 @@ async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(
             normalized_default_chat_model = str(default_chat_model).strip()
             updates["default_chat_model"] = normalized_default_chat_model or None
 
+    if "userspace_build_model" in updates:
+        builder_model = str(updates["userspace_build_model"] or "").strip()
+        updates["userspace_build_model"] = (
+            await _validate_and_canonicalize_model_preference_identifier(builder_model)
+            if builder_model
+            else None
+        )
+
     # Enforce mutually-exclusive GitHub auth modes (PAT vs Copilot OAuth).
     current_settings = await repository.get_settings()
     pat_candidate = str(
@@ -2274,6 +2282,14 @@ async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(
     notify_tools_changed()
 
     return UpdateSettingsResponse(settings=result, embedding_warning=embedding_warning)
+
+
+@router.get("/settings/openrouter-credits", tags=["Settings"])
+async def get_openrouter_credits(_user: User = Depends(require_admin)) -> dict[str, Any]:
+    """Return the admin-only, redacted OpenRouter credit-monitor snapshot."""
+    from ragtime.core.openrouter_credits import get_openrouter_credit_status
+
+    return await get_openrouter_credit_status()
 
 
 @router.get("/settings/embedding-status", response_model=EmbeddingStatus, tags=["Settings"])
@@ -9040,6 +9056,7 @@ async def _create_background_chat_task_after_user_message(
     ui_theme_context: Optional[dict[str, Any]] = None,
     disabled_builtin_tool_ids: Optional[set[str]] = None,
     existing_task_id: Optional[str] = None,
+    execution_policy: Optional[dict[str, Any]] = None,
 ) -> Any:
     """Create a background chat task, persisting failed-generation state on errors."""
     try:
@@ -9066,6 +9083,7 @@ async def _create_background_chat_task_after_user_message(
                 current_user_context=current_user_context,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 usage_attempt_id=attempt_id,
+                execution_policy=execution_policy,
             )
         else:
             task_id = await background_task_service.start_task_async(
@@ -9078,6 +9096,7 @@ async def _create_background_chat_task_after_user_message(
                 current_user_context=current_user_context,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 usage_attempt_id=attempt_id,
+                execution_policy=execution_policy,
             )
         task = await repository.get_chat_task(task_id)
         if not task:
@@ -12415,6 +12434,7 @@ async def _send_background_message_to_loaded_conversation(
     workspace_id: Optional[str],
     blocked_tool_names: Optional[set[str]] = None,
     workspace_context: Optional[dict[str, Any]] = None,
+    execution_policy: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     conversation_id = conv.id
     if blocked_tool_names is None:
@@ -12471,6 +12491,7 @@ async def _send_background_message_to_loaded_conversation(
         current_time_context=current_time_context,
         ui_theme_context=ui_theme_context,
         disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
+        execution_policy=execution_policy,
     )
 
     return {
@@ -12735,6 +12756,9 @@ def _to_chat_task_response(task: Any) -> ChatTaskResponse:
         user_message=task.user_message,
         streaming_state=task.streaming_state,
         response_content=task.response_content,
+        execution_policy=getattr(task, "execution_policy", None),
+        termination_reason=getattr(task, "termination_reason", None),
+        outcome_summary=getattr(task, "outcome_summary", None),
         error_message=task.error_message,
         created_at=task.created_at,
         started_at=task.started_at,

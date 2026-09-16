@@ -38,6 +38,8 @@ RuntimeSessionState = Literal[
     "stopped",
     "error",
 ]
+BridgeCredentialMode = Literal["env", "worker_file"]
+RuntimeOperationState = Literal["accepted", "running", "completed", "failed", "interrupted"]
 RuntimeOperationPhase = Literal[
     "queued",
     "provisioning",
@@ -1208,6 +1210,32 @@ class UserSpaceRuntimeBridgeStatus(BaseModel):
     expires_at: datetime | None = None
     last_success_at: datetime | None = None
     detail: str | None = None
+    mode: BridgeCredentialMode = "env"
+    revision: int = Field(default=0, ge=0)
+
+
+class UpdateBridgeCredentialModeRequest(BaseModel):
+    mode: BridgeCredentialMode
+
+
+class BridgeCredentialModeResponse(BaseModel):
+    mode: BridgeCredentialMode
+    requires_restart: bool
+    supported: bool
+
+
+class RequestAppRestart(BaseModel):
+    idempotency_key: str = Field(min_length=8, max_length=128)
+    reason: str = Field(default="", max_length=1000)
+
+
+class UserSpaceRuntimeOperation(BaseModel):
+    id: str
+    workspace_id: str
+    state: RuntimeOperationState
+    operation_id: str | None = None
+    error: str | None = None
+    runtime_status: UserSpaceRuntimeStatusResponse | None = None
 
 
 class UserSpaceRuntimeStatusResponse(BaseModel):

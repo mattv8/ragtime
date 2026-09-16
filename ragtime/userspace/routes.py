@@ -2219,7 +2219,12 @@ async def exec_workspace_command(
     command = (body.get("command") or "").strip()
     if not command:
         raise HTTPException(status_code=400, detail="command is required")
-    timeout_seconds = min(int(body.get("timeout_seconds", 30)), 120)
+    try:
+        timeout_seconds = int(body.get("timeout_seconds", 120))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="timeout_seconds must be an integer") from exc
+    if not 1 <= timeout_seconds <= 600:
+        raise HTTPException(status_code=400, detail="timeout_seconds must be between 1 and 600")
     cwd = (body.get("cwd") or "").strip() or None
     result = await userspace_runtime_service.exec_workspace_command(
         workspace_id=workspace_id,

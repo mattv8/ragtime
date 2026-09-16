@@ -1027,6 +1027,11 @@ export interface AppSettings {
   has_claude_code_auth?: boolean;
   allowed_chat_models: string[];
   default_chat_model?: string | null;
+  userspace_build_model?: string | null;
+  openrouter_credit_monitor_enabled?: boolean;
+  openrouter_low_credit_threshold_usd?: number;
+  openrouter_management_api_key?: string;
+  has_openrouter_management_api_key?: boolean;
   // OpenAPI-compatible endpoint model configuration
   allowed_openapi_models: string[];
   openapi_sync_chat_models: boolean;
@@ -1190,6 +1195,10 @@ export interface UpdateSettingsRequest {
   openai_codex_base_url?: string;
   allowed_chat_models?: string[];
   default_chat_model?: string | null;
+  userspace_build_model?: string | null;
+  openrouter_credit_monitor_enabled?: boolean;
+  openrouter_low_credit_threshold_usd?: number;
+  openrouter_management_api_key?: string;
   allowed_openapi_models?: string[];
   openapi_sync_chat_models?: boolean;
   available_models_cache_enabled?: boolean;
@@ -4065,11 +4074,29 @@ export interface WorkspaceAgentAccessStatus {
   workspace_id: string;
   enabled: boolean;
   allow_task_submission: boolean;
+  allow_runtime_restart: boolean;
   token: string | null;
   agent_url: string | null;
   created_at: string | null;
   last_used_at: string | null;
   hit_count: number;
+}
+
+export interface OpenRouterCreditStatus {
+  enabled: boolean;
+  state: 'disabled' | 'unconfigured' | 'ok' | 'low' | 'exhausted' | 'unknown' | 'error';
+  key_remaining_usd: number | null;
+  wallet_remaining_usd: number | null;
+  threshold_usd: number;
+  checked_at: string | null;
+  stale: boolean;
+  warning: string | null;
+}
+
+export interface UserSpaceBridgeCredentialMode {
+  mode: 'env' | 'worker_file';
+  requires_restart: boolean;
+  supported: boolean;
 }
 
 export type WorkspaceExternalApiMethod = 'GET' | 'HEAD';
