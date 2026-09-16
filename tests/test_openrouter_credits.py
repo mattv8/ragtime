@@ -1,24 +1,26 @@
 import asyncio
 import unittest
+from collections.abc import Mapping, Sequence
 from unittest import mock
 
 import httpx
 
 from ragtime.core import openrouter_credits
+from ragtime.indexer.models import AppSettings
 
 
 class _FakeClient:
-    def __init__(self, responses, calls):
+    def __init__(self, responses: Sequence[httpx.Response | Exception], calls: list[tuple[str, Mapping[str, str]]]) -> None:
         self._responses = iter(responses)
         self._calls = calls
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "_FakeClient":
         return self
 
-    async def __aexit__(self, *args):
+    async def __aexit__(self, *args: object) -> None:
         return None
 
-    async def get(self, url, *, headers):
+    async def get(self, url: str, *, headers: Mapping[str, str]) -> httpx.Response:
         self._calls.append((url, headers))
         result = next(self._responses)
         if isinstance(result, Exception):
@@ -37,17 +39,17 @@ class OpenRouterCreditTests(unittest.IsolatedAsyncioTestCase):
         openrouter_credits._payment_required_note = None
 
     async def test_reports_distinct_key_cap_and_wallet_balances(self) -> None:
-        calls = []
+        calls: list[tuple[str, Mapping[str, str]]] = []
         responses = [
             httpx.Response(200, json={"data": {"limit_remaining": 2.5}}),
             httpx.Response(200, json={"data": {"total_credits": 12, "total_usage": 3}}),
         ]
-        settings = {
-            "openrouter_credit_monitor_enabled": True,
-            "openrouter_low_credit_threshold_usd": 5,
-            "openrouter_api_key": "inference-secret",
-            "openrouter_management_api_key": "management-secret",
-        }
+        settings = AppSettings(
+            openrouter_credit_monitor_enabled=True,
+            openrouter_low_credit_threshold_usd=5,
+            openrouter_api_key="inference-secret",
+            openrouter_management_api_key="management-secret",
+        )
         with (
             mock.patch.object(openrouter_credits, "get_app_settings", new=mock.AsyncMock(return_value=settings)),
             mock.patch.object(openrouter_credits.httpx, "AsyncClient", return_value=_FakeClient(responses, calls)),
@@ -63,9 +65,7 @@ class OpenRouterCreditTests(unittest.IsolatedAsyncioTestCase):
     async def test_disabled_or_unconfigured_never_calls_provider(self) -> None:
         client = mock.Mock()
         with (
-            mock.patch.object(
-                openrouter_credits, "get_app_settings", new=mock.AsyncMock(return_value={"openrouter_credit_monitor_enabled": False})
-            ),
+            mock.patch.object(openrouter_credits, "get_app_settings", new=mock.AsyncMock(return_value=AppSettings())),
             mock.patch.object(openrouter_credits.httpx, "AsyncClient", client),
         ):
             disabled = await openrouter_credits.get_openrouter_credit_status()
@@ -75,13 +75,13 @@ class OpenRouterCreditTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(
             openrouter_credits,
             "get_app_settings",
-            new=mock.AsyncMock(return_value={"openrouter_credit_monitor_enabled": True}),
+            new=mock.AsyncMock(return_value=AppSettings(openrouter_credit_monitor_enabled=True)),
         ):
             unconfigured = await openrouter_credits.get_openrouter_credit_status()
         self.assertEqual(unconfigured["state"], "unconfigured")
 
     async def test_cache_coalesces_concurrent_refreshes_and_marks_failed_data_stale(self) -> None:
-        calls = []
+        calls: list[tuple[str, Mapping[str, str]]] = []
         gate = asyncio.Event()
 
         class DelayedClient(_FakeClient):
@@ -89,10 +89,10 @@ class OpenRouterCreditTests(unittest.IsolatedAsyncioTestCase):
                 await gate.wait()
                 return await super().get(url, headers=headers)
 
-        settings = {
-            "openrouter_credit_monitor_enabled": True,
-            "openrouter_api_key": "inference-secret",
-        }
+        settings = AppSettings(
+            openrouter_credit_monitor_enabled=True,
+            openrouter_api_key="inference-secret",
+        )
         with (
             mock.patch.object(openrouter_credits, "get_app_settings", new=mock.AsyncMock(return_value=settings)),
             mock.patch.object(
@@ -125,12 +125,12 @@ class OpenRouterCreditTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_payment_note_persists_until_positive_wallet_recovery(self) -> None:
         openrouter_credits.note_openrouter_payment_required()
-        settings = {
-            "openrouter_credit_monitor_enabled": True,
-            "openrouter_api_key": "inference-secret",
-            "openrouter_management_api_key": "management-secret",
-        }
-        calls = []
+        settings = AppSettings(
+            openrouter_credit_monitor_enabled=True,
+            openrouter_api_key="inference-secret",
+            openrouter_management_api_key="management-secret",
+        )
+        calls: list[tuple[str, Mapping[str, str]]] = []
         with (
             mock.patch.object(openrouter_credits, "get_app_settings", new=mock.AsyncMock(return_value=settings)),
             mock.patch.object(

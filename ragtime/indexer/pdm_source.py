@@ -129,10 +129,10 @@ def resolve_latest_values(
         if revision > latest:
             has_beyond_latest = True
             continue
-        key = (int(row["ProjectID"]), int(row["ConfigurationID"]), int(row["VariableID"]))
-        current = eligible.get(key)
+        eligible_key = (int(row["ProjectID"]), int(row["ConfigurationID"]), int(row["VariableID"]))
+        current = eligible.get(eligible_key)
         if current is None or revision >= int(current["RevisionNo"]):
-            eligible[key] = row
+            eligible[eligible_key] = row
 
     resolved: dict[tuple[int, int], PdmRawValue] = {}
     for key in sorted({(config_id, variable_id) for _, config_id, variable_id in eligible}):

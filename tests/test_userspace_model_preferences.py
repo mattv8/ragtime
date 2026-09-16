@@ -44,8 +44,8 @@ def _fake_model_preferences_module(
 ) -> Iterator[_ModelPreferencesModule]:
     module = cast(_ModelPreferencesModule, types.ModuleType("ragtime.indexer.model_preferences"))
 
-    async def _resolve_new_conversation_model(app_settings, *, user_id, workspace_id=None):
-        _ = app_settings, user_id
+    async def _resolve_new_conversation_model(app_settings, *, user_id, workspace_id=None, availability=None, task_type=None):
+        _ = app_settings, user_id, availability, task_type
         return workspace_model if workspace_id else general_model
 
     module.resolve_new_conversation_model = mock.AsyncMock(side_effect=_resolve_new_conversation_model)
@@ -221,6 +221,8 @@ class BuildTaskModelPreferenceTests(unittest.IsolatedAsyncioTestCase):
             app_settings,
             user_id="user-1",
             workspace_id="ws-1",
+            task_type="build",
+            availability=None,
         )
         create_conversation.assert_awaited_once_with(
             title="Build it",

@@ -75,12 +75,8 @@ class BridgeReadinessFastPathTests(unittest.IsolatedAsyncioTestCase):
         get_status = mock.AsyncMock(side_effect=[unhealthy, unhealthy, _healthy_provider_status()])
         get_bridge_status = mock.AsyncMock(
             side_effect=[
-                SimpleNamespace(
-                    state="missing", expires_at=None, detail=None, mode="env", revision=0
-                ),
-                SimpleNamespace(
-                    state="missing", expires_at=None, detail=None, mode="env", revision=0
-                ),
+                SimpleNamespace(state="missing", expires_at=None, detail=None, mode="env", revision=0),
+                SimpleNamespace(state="missing", expires_at=None, detail=None, mode="env", revision=0),
                 SimpleNamespace(
                     state="healthy",
                     expires_at=utc_now() + timedelta(hours=2),

@@ -39,7 +39,10 @@ class UserSpaceBuilderToolTests(unittest.IsolatedAsyncioTestCase):
         self.global_tools.stop()
 
     async def test_terminal_schema_uses_workspace_execution_budget(self) -> None:
-        schema = self.tools["run_terminal_command"].args_schema.model_json_schema()
+        args_schema = self.tools["run_terminal_command"].args_schema
+        assert args_schema is not None
+        assert not isinstance(args_schema, dict)
+        schema = args_schema.model_json_schema()
         timeout = schema["properties"]["timeout_seconds"]
 
         self.assertEqual(timeout["default"], 120)
@@ -72,7 +75,9 @@ class UserSpaceBuilderToolTests(unittest.IsolatedAsyncioTestCase):
             result = json.loads(await self.tools["restart_app_runtime"].ainvoke({"workspace_id": "target", "idempotency_key": "restart-02"}))
 
         self.assertEqual(result["status"], "accepted")
-        self.assertEqual(resolve_target.await_args.kwargs["action"], "write")
+        resolve_target_args = resolve_target.await_args
+        assert resolve_target_args is not None
+        self.assertEqual(resolve_target_args.kwargs["action"], "write")
         request_restart.assert_awaited_once_with("target", "target-user", "restart-02", "")
 
     async def test_cross_workspace_restart_rejects_read_only_grant_before_dispatch(self) -> None:
@@ -87,9 +92,7 @@ class UserSpaceBuilderToolTests(unittest.IsolatedAsyncioTestCase):
         request_restart = mock.AsyncMock()
         with mock.patch.object(userspace_runtime_service, "request_app_restart", request_restart):
             with self.assertRaisesRegex(ValueError, "read-only access"):
-                await tools["restart_app_runtime"].ainvoke(
-                    {"workspace_id": "target", "idempotency_key": "restart-03"}
-                )
+                await tools["restart_app_runtime"].ainvoke({"workspace_id": "target", "idempotency_key": "restart-03"})
 
         request_restart.assert_not_awaited()
 
@@ -110,11 +113,11 @@ class UserSpaceBuilderToolTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("ragtime.rag.components.userspace_service._record_runtime_audit_event", audit),
             mock.patch.object(userspace_runtime_service, "request_app_restart", request_restart),
         ):
-            await tools["restart_app_runtime"].ainvoke(
-                {"workspace_id": "target", "idempotency_key": "restart-04"}
-            )
+            await tools["restart_app_runtime"].ainvoke({"workspace_id": "target", "idempotency_key": "restart-04"})
 
-        self.assertEqual(enforce_access.await_args.kwargs["required_role"], "editor")
+        enforce_access_args = enforce_access.await_args
+        assert enforce_access_args is not None
+        self.assertEqual(enforce_access_args.kwargs["required_role"], "editor")
         request_restart.assert_awaited_once_with("target", "user", "restart-04", "")
 
     async def test_subagent_cannot_restart_parent_runtime(self) -> None:

@@ -158,6 +158,7 @@ class ChatRuntimeErrorClassificationTests(unittest.TestCase):
             RequestLLMResolution(llm=object(), provider="openrouter", model="model"),
         )
 
+        assert event is not None
         self.assertEqual(event["type"], "error")
         self.assertEqual(event["code"], "payment_required")
         self.assertEqual(event["content"], "The provider requires available payment credit before this request can continue.")
@@ -308,7 +309,7 @@ class MultiRoundStreamTests(unittest.IsolatedAsyncioTestCase):
             "prompt_is_ui": True,
             "mode": "userspace",
             "allowed_tool_config_ids": [],
-            "runtime_tools": [],
+            "runtime_tools": [SimpleNamespace(name="write_file", description="")],
             "request_tool_state": {},
             "prompt_additions": "",
             "user_identity_turn_line": "",
@@ -327,7 +328,6 @@ class MultiRoundStreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_round_continues_to_a_second_agent_round_before_final_text(self) -> None:
         rag = RAGComponents()
         executor = _TwoRoundExecutor()
-        rag.agent_executor_ui = executor
         resolution = RequestLLMResolution(llm=object(), provider="openrouter", model="model")
         request_context = self._request_context()
 
@@ -345,6 +345,8 @@ class MultiRoundStreamTests(unittest.IsolatedAsyncioTestCase):
             events = [event async for event in rag.process_query_stream("continue", is_ui=True)]
 
         self.assertEqual(executor.calls, 2)
+        assert isinstance(events[0], dict)
+        assert isinstance(events[1], dict)
         self.assertEqual(events[0]["type"], "tool_start")
         self.assertEqual(events[1]["type"], "tool_end")
         self.assertIn("second-round final response", events)
@@ -353,7 +355,6 @@ class MultiRoundStreamTests(unittest.IsolatedAsyncioTestCase):
         rag = RAGComponents()
         executor = _EmptyExecutor()
         llm = _PaymentFailureLLM()
-        rag.agent_executor_ui = executor
         resolution = RequestLLMResolution(llm=llm, provider="openrouter", model="model")
 
         with (
@@ -370,7 +371,10 @@ class MultiRoundStreamTests(unittest.IsolatedAsyncioTestCase):
             events = [event async for event in rag.process_query_stream("continue", is_ui=True)]
 
         self.assertEqual(llm.calls, 1)
-        self.assertEqual(events, [{"type": "error", "code": "payment_required", "content": "The provider requires available payment credit before this request can continue."}])
+        self.assertEqual(
+            events,
+            [{"type": "error", "code": "payment_required", "content": "The provider requires available payment credit before this request can continue."}],
+        )
 
 
 class CrossWorkspaceResolutionTests(unittest.IsolatedAsyncioTestCase):

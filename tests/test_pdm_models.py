@@ -1,4 +1,5 @@
 import unittest
+from typing import NotRequired, TypedDict, Unpack
 
 from ragtime.indexer.models import (
     PdmBomComponentModel,
@@ -6,6 +7,38 @@ from ragtime.indexer.models import (
     PdmDocumentStateModel,
     PdmPropertyValueModel,
 )
+
+
+class _DocumentFixture(TypedDict):
+    document_id: int
+    filename: str
+    target_revision: int
+    document_values: dict[str, PdmPropertyValueModel]
+    document_type: NotRequired[str]
+    folder_paths: NotRequired[list[str]]
+    part_number: NotRequired[str | None]
+    description: NotRequired[str | None]
+    configurations: NotRequired[list[PdmConfigurationStateModel]]
+    bom_components: NotRequired[list[PdmBomComponentModel]]
+    membership_fallback: NotRequired[bool]
+    has_beyond_latest_values: NotRequired[bool]
+    warnings: NotRequired[list[str]]
+
+
+class _DocumentFixtureChanges(TypedDict, total=False):
+    document_id: int
+    filename: str
+    target_revision: int
+    document_values: dict[str, PdmPropertyValueModel]
+    document_type: str
+    folder_paths: list[str]
+    part_number: str | None
+    description: str | None
+    configurations: list[PdmConfigurationStateModel]
+    bom_components: list[PdmBomComponentModel]
+    membership_fallback: bool
+    has_beyond_latest_values: bool
+    warnings: list[str]
 
 
 def _value(
@@ -25,8 +58,8 @@ def _value(
 
 
 class PdmDocumentStateModelTests(unittest.TestCase):
-    def _document(self, **changes: object) -> PdmDocumentStateModel:
-        data = {
+    def _document(self, **changes: Unpack[_DocumentFixtureChanges]) -> PdmDocumentStateModel:
+        data: _DocumentFixture = {
             "document_id": 10,
             "filename": "sample.SLDPRT",
             "target_revision": 2,

@@ -10600,12 +10600,16 @@ class RAGComponents:
 
         class RestartAppRuntimeInput(BaseModel):
             workspace_id: Optional[str] = Field(default=None, description="Optional target workspace ID. Requires a read_write grant for another workspace.")
-            idempotency_key: str = Field(default="", max_length=128, description="Optional 8-128 character retry key. Reuse it only for the same restart request.")
+            idempotency_key: str = Field(
+                default="", max_length=128, description="Optional 8-128 character retry key. Reuse it only for the same restart request."
+            )
             reason: str = Field(default="", max_length=500, description="Brief reason for recycling the running application.")
 
         class GetAppRuntimeStatusInput(BaseModel):
             workspace_id: Optional[str] = Field(default=None, description="Optional target workspace ID. Requires a read_write grant for another workspace.")
-            operation_id: str | None = Field(default=None, description="Restart operation ID returned by restart_app_runtime. Omit to inspect current runtime readiness.")
+            operation_id: str | None = Field(
+                default=None, description="Restart operation ID returned by restart_app_runtime. Omit to inspect current runtime readiness."
+            )
             reason: str = Field(default="", description="Brief reason for checking runtime readiness.")
 
         def _append_sqlite_hint(message: str, include_sqlite: bool) -> str:
@@ -13564,17 +13568,30 @@ class RAGComponents:
             except HTTPException as exc:
                 detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
                 return _render_userspace_tool_payload(
-                    tool_name="restart_app_runtime", status="rejected_not_persisted", rejected=True, persisted=False,
-                    retryable=exc.status_code not in {409, 429}, failure_class="runtime_restart_failed",
-                    next_best_tool="get_app_runtime_status", error=f"App restart request failed: {detail_text}",
+                    tool_name="restart_app_runtime",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=exc.status_code not in {409, 429},
+                    failure_class="runtime_restart_failed",
+                    next_best_tool="get_app_runtime_status",
+                    error=f"App restart request failed: {detail_text}",
                     action_required="Inspect runtime status before requesting another restart; do not replay an ambiguous restart with a new key.",
                 )
             state = str(operation.get("state") or "accepted")
             return _render_userspace_tool_payload(
-                tool_name="restart_app_runtime", status=state,
-                message="App restart is ready." if state == "completed" else "App restart was accepted; use get_app_runtime_status with this operation ID until it is ready.",
-                persisted=False, retryable=False, failure_class="none", next_best_tool="get_app_runtime_status",
-                operation_id=operation.get("id"), runtime_operation_id=operation.get("operation_id"), state=state,
+                tool_name="restart_app_runtime",
+                status=state,
+                message="App restart is ready."
+                if state == "completed"
+                else "App restart was accepted; use get_app_runtime_status with this operation ID until it is ready.",
+                persisted=False,
+                retryable=False,
+                failure_class="none",
+                next_best_tool="get_app_runtime_status",
+                operation_id=operation.get("id"),
+                runtime_operation_id=operation.get("operation_id"),
+                state=state,
             )
 
         async def get_app_runtime_status(operation_id: str | None = None, workspace_id: Optional[str] = None, reason: str = "", **_: Any) -> str:
@@ -13595,13 +13612,25 @@ class RAGComponents:
             except HTTPException as exc:
                 detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
                 return _render_userspace_tool_payload(
-                    tool_name="get_app_runtime_status", status="rejected_not_persisted", rejected=True, persisted=False,
-                    retryable=True, failure_class="runtime_status_failed", error=f"Runtime status lookup failed: {detail_text}",
+                    tool_name="get_app_runtime_status",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=True,
+                    failure_class="runtime_status_failed",
+                    error=f"Runtime status lookup failed: {detail_text}",
                 )
             return _render_userspace_tool_payload(
-                tool_name="get_app_runtime_status", status="ready" if ready else state,
-                message="Runtime is ready." if ready else "Runtime is still starting or the restart did not complete; check this operation again before requesting another restart.",
-                persisted=False, retryable=not ready, failure_class="none", ready=ready, operation=status_payload,
+                tool_name="get_app_runtime_status",
+                status="ready" if ready else state,
+                message="Runtime is ready."
+                if ready
+                else "Runtime is still starting or the restart did not complete; check this operation again before requesting another restart.",
+                persisted=False,
+                retryable=not ready,
+                failure_class="none",
+                ready=ready,
+                operation=status_payload,
             )
 
         async def browse_userspace_external_url(

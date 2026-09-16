@@ -5559,7 +5559,9 @@ export const api = {
   },
 
   async getOpenRouterCreditStatus(): Promise<import('@/types').OpenRouterCreditStatus> {
-    const response = await apiFetch(`${API_BASE}/settings/openrouter-credits`, { cache: 'no-store' });
+    const response = await apiFetch(`${API_BASE}/settings/openrouter-credits`, {
+      cache: 'no-store',
+    });
     return handleResponse<import('@/types').OpenRouterCreditStatus>(response);
   },
 

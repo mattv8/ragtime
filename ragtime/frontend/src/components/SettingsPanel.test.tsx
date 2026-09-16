@@ -1133,15 +1133,17 @@ describe('SettingsPanel', () => {
 
   it('preserves, replaces, and explicitly clears the OpenRouter management secret', async () => {
     const { SettingsPanel } = await import('./SettingsPanel');
-    render(<SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />);
+    render(
+      <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
+    );
     await screen.findByRole('button', { name: 'Open chat models' });
 
     const getSave = () =>
       chatModelsSectionState.latestProps?.handleSaveLlm as (() => Promise<void>) | undefined;
     await getSave()?.();
-    expect(apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0]).not.toHaveProperty(
-      'openrouter_management_api_key',
-    );
+    expect(
+      apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0],
+    ).not.toHaveProperty('openrouter_management_api_key');
 
     await act(async () => {
       chatModelsSectionState.latestProps?.setFormData((current) => ({
@@ -1150,7 +1152,9 @@ describe('SettingsPanel', () => {
       }));
     });
     await getSave()?.();
-    expect(apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0]).toMatchObject({
+    expect(
+      apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0],
+    ).toMatchObject({
       openrouter_management_api_key: 'new-management-key',
     });
 
@@ -1161,7 +1165,9 @@ describe('SettingsPanel', () => {
       }));
     });
     await getSave()?.();
-    expect(apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0]).toMatchObject({
+    expect(
+      apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0],
+    ).toMatchObject({
       openrouter_management_api_key: '',
     });
   });

@@ -503,12 +503,16 @@ class WorktreeMigrationPostgresTests(unittest.TestCase):
         with psycopg2.connect(self.env["DATABASE_URL"]) as connection:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT count(*) FROM information_schema.columns WHERE table_name = %s AND column_name = %s", ("Keep", "branch_value"))
-                self.assertEqual(cursor.fetchone()[0], 1)
+                row = cursor.fetchone()
+                assert row is not None
+                self.assertEqual(row[0], 1)
                 cursor.execute(
                     'SELECT count(*) FROM "_prisma_migrations" WHERE migration_name = %s AND finished_at IS NOT NULL AND rolled_back_at IS NULL',
                     ("20260102000000_branch",),
                 )
-                self.assertEqual(cursor.fetchone()[0], 1)
+                row = cursor.fetchone()
+                assert row is not None
+                self.assertEqual(row[0], 1)
 
     def test_forward_failure_leaves_prisma_failed_record(self):
         primary = self._package("primary", False)
@@ -537,4 +541,6 @@ class WorktreeMigrationPostgresTests(unittest.TestCase):
                     'SELECT count(*) FROM "_prisma_migrations" WHERE migration_name = %s AND finished_at IS NULL AND rolled_back_at IS NULL',
                     ("20260102000000_branch",),
                 )
-                self.assertEqual(cursor.fetchone()[0], 1)
+                row = cursor.fetchone()
+                assert row is not None
+                self.assertEqual(row[0], 1)

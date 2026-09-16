@@ -30,8 +30,13 @@ class RuntimeRestartLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_provider_operation_identity_is_interrupted(self) -> None:
         service = UserSpaceRuntimeService()
         operation = SimpleNamespace(
-            id="operation-id", workspaceId="workspace", userId="user", state="accepted",
-            providerSessionId="session", operationId=None, error=None,
+            id="operation-id",
+            workspaceId="workspace",
+            userId="user",
+            state="accepted",
+            providerSessionId="session",
+            operationId=None,
+            error=None,
         )
         model = mock.AsyncMock()
         model.create.return_value = operation
@@ -71,7 +76,9 @@ class RuntimeRestartLifecycleTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("ragtime.userspace.runtime_service.get_db", new=mock.AsyncMock(return_value=db)),
             mock.patch("ragtime.userspace.runtime_service.userspace_service.enforce_workspace_role", new=mock.AsyncMock()),
             mock.patch.object(service, "_get_active_session_row", new=mock.AsyncMock(return_value=SimpleNamespace(providerSessionId="session"))),
-            mock.patch.object(service, "_runtime_provider_get_status", new=mock.AsyncMock(return_value={"runtime_operation_id": "other", "runtime_operation_phase": "failed"})),
+            mock.patch.object(
+                service, "_runtime_provider_get_status", new=mock.AsyncMock(return_value={"runtime_operation_id": "other", "runtime_operation_phase": "failed"})
+            ),
         ):
             result = await service.get_app_runtime_operation("workspace", "user", "op")
 
@@ -86,7 +93,11 @@ class RuntimeRestartLifecycleTests(unittest.IsolatedAsyncioTestCase):
         db = SimpleNamespace(workspaceruntimeoperation=model)
         with (
             mock.patch("ragtime.userspace.runtime_service.get_db", new=mock.AsyncMock(return_value=db)),
-            mock.patch.object(service, "_runtime_provider_get_status", side_effect=[RuntimeError("offline"), {"runtime_operation_id": "provider-op-2", "runtime_operation_phase": "ready"}]),
+            mock.patch.object(
+                service,
+                "_runtime_provider_get_status",
+                side_effect=[RuntimeError("offline"), {"runtime_operation_id": "provider-op-2", "runtime_operation_phase": "ready"}],
+            ),
             mock.patch.object(service, "_get_active_session_row", new=mock.AsyncMock(return_value=SimpleNamespace(providerSessionId="session"))),
         ):
             await service.reconcile_stale_runtime_operations()

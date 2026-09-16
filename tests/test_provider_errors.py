@@ -5,9 +5,7 @@ from ragtime.core.provider_errors import classify_provider_error, provider_error
 
 def test_classifies_http_402_without_exposing_response_text() -> None:
     request = httpx.Request("POST", "https://provider.example/chat")
-    error = httpx.HTTPStatusError(
-        "sensitive provider detail", request=request, response=httpx.Response(402, request=request)
-    )
+    error = httpx.HTTPStatusError("sensitive provider detail", request=request, response=httpx.Response(402, request=request))
 
     assert classify_provider_error(error, "openrouter") == "payment_required"
     assert "sensitive" not in provider_error_message("payment_required")

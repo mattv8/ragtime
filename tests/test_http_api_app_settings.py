@@ -122,7 +122,7 @@ class HttpApiAppSettingsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(forbidden.status_code, 403)
 
             app.dependency_overrides[indexer_routes.require_admin] = lambda: SimpleNamespace(id="admin-1", role="admin")
-            with mock.patch("ragtime.core.openrouter_credits.get_openrouter_credit_status", credits):
+            with mock.patch("ragtime.indexer.routes.get_openrouter_credit_status", credits):
                 async with httpx.AsyncClient(transport=transport, base_url="https://ragtime.example") as client:
                     allowed = await client.get("/indexes/settings/openrouter-credits")
 

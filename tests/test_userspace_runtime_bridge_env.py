@@ -487,12 +487,16 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
             mock.AsyncMock(return_value="worker_file"),
         ):
             restart_devserver = await self._refresh_env_with_provider_credential({"mode": "env"})
-        restart_kwargs = restart_devserver.await_args.kwargs
+        restart_args = restart_devserver.await_args
+        assert restart_args is not None
+        restart_kwargs = restart_args.kwargs
         self.assertIn("RAGTIME_BRIDGE_TOKEN", restart_kwargs["workspace_env"])
         self.assertEqual(restart_kwargs["bridge_credential_mode"], "env")
 
     async def test_refresh_env_strips_token_for_active_worker_file_session(self) -> None:
         restart_devserver = await self._refresh_env_with_provider_credential({"mode": "worker_file", "revision": 3})
-        restart_kwargs = restart_devserver.await_args.kwargs
+        restart_args = restart_devserver.await_args
+        assert restart_args is not None
+        restart_kwargs = restart_args.kwargs
         self.assertNotIn("RAGTIME_BRIDGE_TOKEN", restart_kwargs["workspace_env"])
         self.assertEqual(restart_kwargs["bridge_credential_mode"], "worker_file")

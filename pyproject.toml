@@ -82,6 +82,7 @@ test = [
     "types-paramiko>=0.1.0,<1.0.0",
     "types-PyYAML>=6.0.12.20250809,<7.0.0",
     "types-psutil>=0.1.0,<8.0.0",
+    "types-psycopg2>=2.9.21.20240417,<3.0.0",
     "types-PyMySQL>=0.1.0,<2.0.0",
     "types-xlrd>=0.1.0,<3.0.0",
 ]

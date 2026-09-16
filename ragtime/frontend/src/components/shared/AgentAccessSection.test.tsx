@@ -165,7 +165,11 @@ describe('AgentAccessSection', () => {
     );
 
     expect(apiMock.updateUserSpaceBridgeCredentialMode).toHaveBeenCalledWith('ws-1', 'worker_file');
-    expect(await screen.findByText(/takes effect the next time the workspace runtime session is restarted/i)).toBeTruthy();
+    expect(
+      await screen.findByText(
+        /takes effect the next time the workspace runtime session is restarted/i,
+      ),
+    ).toBeTruthy();
   });
 
   it('keeps the mode control visible when disabled and disables unsupported file delivery', async () => {
@@ -180,13 +184,17 @@ describe('AgentAccessSection', () => {
 
     const modeControl = await screen.findByLabelText('Bridge credential delivery');
     expect(modeControl).toBeTruthy();
-    expect((screen.getByRole('option', { name: 'Worker-managed file' }) as HTMLOptionElement).disabled).toBe(true);
+    expect(
+      (screen.getByRole('option', { name: 'Worker-managed file' }) as HTMLOptionElement).disabled,
+    ).toBe(true);
     expect(screen.getByText(/unavailable on this runtime worker/i)).toBeTruthy();
   });
 
   it('preserves branch-specific credential control hooks and reports mode loading errors', async () => {
     apiMock.getWorkspaceAgentAccess.mockResolvedValue(DISABLED_STATUS);
-    apiMock.getUserSpaceBridgeCredentialMode.mockRejectedValue(new Error('Mode service unavailable'));
+    apiMock.getUserSpaceBridgeCredentialMode.mockRejectedValue(
+      new Error('Mode service unavailable'),
+    );
 
     const { rerender } = render(<AgentAccessSection workspaceId="ws-1" />);
 

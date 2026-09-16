@@ -747,7 +747,9 @@ class SessionManager:
                 )
 
     async def refresh_bridge_credential(
-        self, provider_session_id: str, payload: BridgeCredentialRefreshRequest,
+        self,
+        provider_session_id: str,
+        payload: BridgeCredentialRefreshRequest,
     ) -> RuntimeBridgeCredentialMetadata:
         async with self._provider_lock(provider_session_id):
             async with self._lock:
@@ -758,8 +760,11 @@ class SessionManager:
                     raise HTTPException(status_code=409, detail="Runtime worker does not support file bridge credentials")
                 worker_session_id = session.worker_session_id
             return await self._worker_service.refresh_bridge_credential(
-                worker_session_id, token=payload.token, expected_session_id=payload.expected_session_id,
-                expected_revision=payload.expected_revision, request_id=payload.request_id,
+                worker_session_id,
+                token=payload.token,
+                expected_session_id=payload.expected_session_id,
+                expected_revision=payload.expected_revision,
+                request_id=payload.request_id,
             )
 
     async def restart_app(self, provider_session_id: str, payload: RuntimeAppRestartRequest) -> RuntimeSessionResponse:

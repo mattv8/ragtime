@@ -2,10 +2,12 @@ import json
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
 
 from scripts.switch_dev_worktree import (
+    Runner,
     Switcher,
     SwitchRefusal,
     Worktree,
@@ -17,7 +19,7 @@ from scripts.switch_dev_worktree import (
 )
 
 
-class FakeRunner:
+class FakeRunner(Runner):
     def __init__(self, primary: Path, target: Path, *, storage: bool = True):
         self.calls: list[list[str]] = []
         self.primary, self.target, self.storage = primary, target, storage
@@ -62,20 +64,23 @@ class FakeRunner:
             return {"State": {"Running": True}, "Mounts": mounts, "Image": self.actual_container_image_ids["object-storage"]}
         return {"State": {"Running": True}, "Mounts": [{"Name": "docker_ragtime-db-data", "Destination": "/var/lib/postgresql", "RW": True}]}
 
-    def run(self, args, *, capture=False, check=True):
-        args = list(args)
-        self.calls.append(args)
-        joined = " ".join(args)
+    def run(self, args: Sequence[str], *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+        args_list = list(args)
+        self.calls.append(args_list)
+        joined = " ".join(args_list)
         text = ""
-        if args[:3] == ["docker", "context", "show"]:
+        if args_list[:3] == ["docker", "context", "show"]:
             text = "default"
-        elif args[:2] == ["git", "-C"]:
-            if "--git-common-dir" in args:
+        elif args_list[:2] == ["git", "-C"]:
+            if "--git-common-dir" in args_list:
                 text = str(self.primary / ".git")
             elif "worktree list" in joined:
                 text = ""
         elif " config --format json" in joined:
-            services = {"ragtime": {"environment": ["DATABASE_URL=postgresql://ragtime:ragtime_dev@ragtime-db:5432/ragtime"]}, "runtime": {}}
+            services: dict[str, dict[str, object]] = {
+                "ragtime": {"environment": ["DATABASE_URL=postgresql://ragtime:ragtime_dev@ragtime-db:5432/ragtime"]},
+                "runtime": {},
+            }
             if self.storage:
                 services["object-storage"] = {}
             for service, reference in self.explicit_images.items():
@@ -84,21 +89,21 @@ class FakeRunner:
         elif " config --services" in joined:
             text = "ragtime\nruntime" + ("\nobject-storage" if self.storage else "")
         elif " config --images " in f" {joined} ":
-            text = self.image_refs[args[-1]]
-            if args[-1] == "ragtime":
+            text = self.image_refs[args_list[-1]]
+            if args_list[-1] == "ragtime":
                 text += "\n" + self.image_refs["runtime"] + "\npgvector/pgvector:pg18\nghcr.io/searxng/searxng:latest"
-        elif args[:3] == ["docker", "image", "inspect"]:
-            ref = args[-1]
+        elif args_list[:3] == ["docker", "image", "inspect"]:
+            ref = args_list[-1]
             service = next(service for service, image_ref in self.image_refs.items() if image_ref == ref)
             text = self.image_ids[service]
         elif " images -q " in f" {joined} ":
             # Compose reads the outgoing containers, not the newly built refs,
             # and emits the ID without Docker inspect's sha256 prefix.
-            text = self.old_container_image_ids[args[-1]].removeprefix("sha256:")
-        elif args[:2] == ["docker", "inspect"] and len(args) == 3:
-            text = json.dumps([self.inspect_payload(args[-1])])
+            text = self.old_container_image_ids[args_list[-1]].removeprefix("sha256:")
+        elif args_list[:2] == ["docker", "inspect"] and len(args_list) == 3:
+            text = json.dumps([self.inspect_payload(args_list[-1])])
         elif " inspect " in f" {joined} ":
-            container = args[-1]
+            container = args_list[-1]
             if "com.docker.compose.project" in joined:
                 text = "docker"
             elif ".Config.Env" in joined:
@@ -124,7 +129,7 @@ class FakeRunner:
             text = "{}"
         elif "urllib.request" in joined:
             text = json.dumps({"status": "healthy"})
-        return mock.Mock(stdout=text)
+        return subprocess.CompletedProcess(args_list, returncode=0, stdout=text, stderr="")
 
 
 class SwitchTests(unittest.TestCase):

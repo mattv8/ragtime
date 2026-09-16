@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import errno
 import hashlib
 import html
@@ -2472,7 +2473,16 @@ class WorkerService:
                 runtime_operation_updated_at=None,
                 updated_at=utc_now(),
                 bridge_credential_mode=request.bridge_credential_mode,
-                bridge_session_id=str((self._decode_jwt_payload_metadata(token if request.bridge_credential_mode == "worker_file" else workspace_env.get("RAGTIME_BRIDGE_TOKEN", "")) or {}).get("session_id") or "") or None,
+                bridge_session_id=str(
+                    (
+                        self._decode_jwt_payload_metadata(
+                            token if request.bridge_credential_mode == "worker_file" else workspace_env.get("RAGTIME_BRIDGE_TOKEN", "")
+                        )
+                        or {}
+                    ).get("session_id")
+                    or ""
+                )
+                or None,
                 bridge_token_file_initial_token=(token if request.bridge_credential_mode == "worker_file" else None),
             )
             self._sessions[session_id] = session
@@ -2558,7 +2568,7 @@ class WorkerService:
                 async with self._workspace_file_lock(workspace_id):
                     for process in active_execs:
                         if hasattr(process, "communicate"):
-                            with suppress(Exception):
+                            with contextlib.suppress(Exception):
                                 await terminate_process_group(process)
                     await self._terminate_devserver_resources(devserver_process, log_handle)
                     cleanup_thread = asyncio.create_task(asyncio.to_thread(cleanup_sandbox, sandbox_spec))
@@ -2917,7 +2927,7 @@ class WorkerService:
             stderr_bytes = f"Command timed out after {timeout_seconds}s".encode()
         except asyncio.CancelledError:
             if process is not None:
-                with suppress(Exception):
+                with contextlib.suppress(Exception):
                     await asyncio.shield(terminate_process_group(process))
             raise
         except Exception as exc:

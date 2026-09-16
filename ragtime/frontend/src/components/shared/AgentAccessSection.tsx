@@ -58,7 +58,11 @@ function CredentialModeControl({
             ? 'This change takes effect the next time the workspace runtime session is restarted (a full runtime restart, not the session-preserving app restart). Update the app to read the configured delivery mode first.'
             : 'Worker-managed file delivery keeps the bridge token out of the app process environment. Existing apps must be updated before switching.'}
       </p>
-      {credentialModeError && <p className="userspace-error" role="alert">{credentialModeError}</p>}
+      {credentialModeError && (
+        <p className="userspace-error" role="alert">
+          {credentialModeError}
+        </p>
+      )}
     </div>
   );
 }
@@ -121,7 +125,9 @@ export function AgentAccessSection({ workspaceId }: AgentAccessSectionProps) {
             setCredentialModeError(null);
           } else {
             setCredentialMode(null);
-            setCredentialModeError('Bridge credential mode is unavailable. Refresh after the runtime worker is updated.');
+            setCredentialModeError(
+              'Bridge credential mode is unavailable. Refresh after the runtime worker is updated.',
+            );
           }
         }
       })
@@ -225,7 +231,9 @@ export function AgentAccessSection({ workspaceId }: AgentAccessSectionProps) {
         credentialModeGenerationRef.current === modeGeneration
       ) {
         setCredentialModeError(
-          modeError instanceof Error ? modeError.message : 'Failed to update bridge credential mode',
+          modeError instanceof Error
+            ? modeError.message
+            : 'Failed to update bridge credential mode',
         );
       }
     } finally {

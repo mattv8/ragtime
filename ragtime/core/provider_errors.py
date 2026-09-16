@@ -67,10 +67,15 @@ def _error_status(error: object) -> int | None:
     status_code = getattr(response, "status_code", None)
     if status_code is None:
         status_code = getattr(error, "status_code", None)
-    try:
-        return int(status_code)
-    except (TypeError, ValueError):
-        return None
+    if isinstance(status_code, int):
+        return status_code
+    # Narrow to int-convertible types before attempting conversion
+    if isinstance(status_code, (str, bytes, bytearray, float)):
+        try:
+            return int(status_code)
+        except (ValueError, TypeError):
+            pass
+    return None
 
 
 def _error_payload(error: object) -> object | None:

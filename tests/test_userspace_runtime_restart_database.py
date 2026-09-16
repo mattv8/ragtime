@@ -1,16 +1,23 @@
+"""Database integration tests for user space runtime restart behavior.
+
+This test suite requires a live Postgres/Prisma database and is opt-in via
+RAGTIME_RUNTIME_RESTART_DATABASE_INTEGRATION=1 environment variable.
+"""
+
 import asyncio
 import contextvars
+import os
 import unittest
+from datetime import timedelta
 from unittest import mock
 from uuid import uuid4
-from datetime import timedelta
 
 from fastapi import HTTPException
 from prisma import Prisma
+from prisma.enums import AuthProvider, RuntimeSessionState
 
-from ragtime.userspace.runtime_service import UserSpaceRuntimeService
 from ragtime.core.datetimes import utc_now
-
+from ragtime.userspace.runtime_service import UserSpaceRuntimeService
 
 _task_db: contextvars.ContextVar[Prisma] = contextvars.ContextVar("runtime_restart_test_db")
 
@@ -19,6 +26,7 @@ async def _get_task_db() -> Prisma:
     return _task_db.get()
 
 
+@unittest.skipUnless(os.environ.get("RAGTIME_RUNTIME_RESTART_DATABASE_INTEGRATION") == "1", "local Prisma/Postgres opt-in")
 class RuntimeRestartDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.first = Prisma()
@@ -28,12 +36,20 @@ class RuntimeRestartDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.user_ids = [str(uuid4()), str(uuid4())]
         self.workspace_id = str(uuid4())
         for index, user_id in enumerate(self.user_ids):
-            await self.first.user.create(data={"id": user_id, "username": f"restart-db-{user_id}", "authProvider": "local"})
+            await self.first.user.create(data={"id": user_id, "username": f"restart-db-{user_id}", "authProvider": AuthProvider.local})
         await self.first.workspace.create(data={"id": self.workspace_id, "name": f"restart-db-{self.workspace_id}", "ownerUserId": self.user_ids[0]})
-        await self.first.userspaceruntimesession.create(data={"id": str(uuid4()), "workspaceId": self.workspace_id, "leasedByUserId": self.user_ids[0], "state": "running", "providerSessionId": "provider-session"})
+        await self.first.userspaceruntimesession.create(
+            data={
+                "id": str(uuid4()),
+                "workspaceId": self.workspace_id,
+                "leasedByUserId": self.user_ids[0],
+                "state": RuntimeSessionState.running,
+                "providerSessionId": "provider-session",
+            }
+        )
 
     async def asyncTearDown(self) -> None:
-        await self.first.workspaceruntimeoperation.delete_many(where={"workspaceId": self.workspace_id})
+        await getattr(self.first, "workspaceruntimeoperation").delete_many(where={"workspaceId": self.workspace_id})
         await self.first.userspaceruntimesession.delete_many(where={"workspaceId": self.workspace_id})
         await self.first.workspace.delete(where={"id": self.workspace_id})
         await self.first.user.delete_many(where={"id": {"in": self.user_ids}})
@@ -65,23 +81,23 @@ class RuntimeRestartDatabaseTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(same_key[0]["id"], same_key[1]["id"])
             self.assertEqual(first_dispatch.await_count + second_dispatch.await_count, 1)
-            dispatched_request_id = (first_dispatch.await_args or second_dispatch.await_args).args[1]
+            dispatched_args = first_dispatch.await_args or second_dispatch.await_args
+            assert dispatched_args is not None
+            dispatched_request_id = dispatched_args.args[1]
             self.assertEqual(dispatched_request_id, same_key[0]["id"])
 
             with self.assertRaises(HTTPException) as throttled:
                 await request(second_service, self.second, self.user_ids[1], "other-key-123")
             self.assertEqual(throttled.exception.status_code, 429)
 
-            await self.first.workspaceruntimeoperation.update(
-                where={"id": same_key[0]["id"]}, data={"createdAt": utc_now() - timedelta(seconds=61)}
+            await getattr(self.first, "workspaceruntimeoperation").update(
+                where={"id": same_key[0]["id"]},
+                data={"createdAt": utc_now() - timedelta(seconds=61)},
             )
             other_user_same_key = await request(second_service, self.second, self.user_ids[1], "same-key-123")
             self.assertNotEqual(other_user_same_key["id"], same_key[0]["id"])
             self.assertEqual(first_dispatch.await_count + second_dispatch.await_count, 2)
-            request_ids = {
-                args.args[1]
-                for args in (first_dispatch.await_args_list + second_dispatch.await_args_list)
-            }
+            request_ids = {args.args[1] for args in (first_dispatch.await_args_list + second_dispatch.await_args_list)}
             self.assertEqual(request_ids, {same_key[0]["id"], other_user_same_key["id"]})
 
             with self.assertRaises(HTTPException) as conflict:

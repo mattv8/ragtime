@@ -155,6 +155,7 @@ from ragtime.core.openai_codex_auth import (
     ensure_openai_codex_token_fresh,
     extract_openai_codex_account_id,
 )
+from ragtime.core.openrouter_credits import get_openrouter_credit_status
 from ragtime.core.security import (
     get_current_user,
     get_current_user_optional,
@@ -2201,11 +2202,7 @@ async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(
 
     if "userspace_build_model" in updates:
         builder_model = str(updates["userspace_build_model"] or "").strip()
-        updates["userspace_build_model"] = (
-            await _validate_and_canonicalize_model_preference_identifier(builder_model)
-            if builder_model
-            else None
-        )
+        updates["userspace_build_model"] = await _validate_and_canonicalize_model_preference_identifier(builder_model) if builder_model else None
 
     # Enforce mutually-exclusive GitHub auth modes (PAT vs Copilot OAuth).
     current_settings = await repository.get_settings()
@@ -2287,8 +2284,6 @@ async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(
 @router.get("/settings/openrouter-credits", tags=["Settings"])
 async def get_openrouter_credits(_user: User = Depends(require_admin)) -> dict[str, Any]:
     """Return the admin-only, redacted OpenRouter credit-monitor snapshot."""
-    from ragtime.core.openrouter_credits import get_openrouter_credit_status
-
     return await get_openrouter_credit_status()
 
 

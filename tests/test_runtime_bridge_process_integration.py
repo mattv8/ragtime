@@ -11,6 +11,7 @@ import unittest
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import IO, Any
 from unittest import mock
 
 from runtime.worker.sandbox import SandboxSpec
@@ -116,8 +117,8 @@ class RuntimeBridgeProcessIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 *,
                 cwd: Path,
                 env: dict[str, str],
-                stdout: object,
-                stderr: object,
+                stdout: int | IO[Any] | None,
+                stderr: int | IO[Any] | None,
                 ensure_ready: bool,
             ) -> asyncio.subprocess.Process:
                 self.assertNotIn("RAGTIME_BRIDGE_TOKEN", env)
@@ -125,9 +126,7 @@ class RuntimeBridgeProcessIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 local_env = {**os.environ, **env}
                 # This is the only sandbox boundary replacement: the local process
                 # maps the sandbox-internal path to its isolated temporary rootfs.
-                local_env["RAGTIME_BRIDGE_TOKEN_FILE"] = str(
-                    spec.rootfs_path / "run" / ".ragtime-bridge" / "token"
-                )
+                local_env["RAGTIME_BRIDGE_TOKEN_FILE"] = str(spec.rootfs_path / "run" / ".ragtime-bridge" / "token")
                 local_env["PORT"] = str(service._sessions[session.id].devserver_port)
                 return await asyncio.create_subprocess_exec(
                     *command,

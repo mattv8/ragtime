@@ -667,7 +667,10 @@ export function App() {
     };
 
     void refreshCreditStatus();
-    const intervalId = window.setInterval(() => void refreshCreditStatus(), OPENROUTER_CREDIT_POLL_MS);
+    const intervalId = window.setInterval(
+      () => void refreshCreditStatus(),
+      OPENROUTER_CREDIT_POLL_MS,
+    );
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);

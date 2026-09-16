@@ -48,9 +48,7 @@ def _get_model_preferences_module() -> Any:
     return importlib.import_module("ragtime.indexer.model_preferences")
 
 
-async def _resolve_new_workspace_conversation_model(
-    app_settings: Any, *, user_id: str, workspace_id: str, task_type: str
-) -> str:
+async def _resolve_new_workspace_conversation_model(app_settings: Any, *, user_id: str, workspace_id: str, task_type: str) -> str:
     model_preferences = _get_model_preferences_module()
     availability = None
     if task_type == "build" and getattr(app_settings, "userspace_build_model", None):
@@ -368,7 +366,11 @@ class WorkspaceBuildTaskService:
                 last_update = last_update.replace(tzinfo=timezone.utc)
             possibly_stalled = (datetime.now(timezone.utc) - last_update).total_seconds() > _STALL_SECONDS
         outcome_summary = getattr(task, "outcome_summary", None) or {}
-        activity = outcome_summary.get("activity", {"attempted": 0, "succeeded": 0, "failed": 0}) if isinstance(outcome_summary, dict) else {"attempted": 0, "succeeded": 0, "failed": 0}
+        activity = (
+            outcome_summary.get("activity", {"attempted": 0, "succeeded": 0, "failed": 0})
+            if isinstance(outcome_summary, dict)
+            else {"attempted": 0, "succeeded": 0, "failed": 0}
+        )
         warnings = outcome_summary.get("warnings", []) if isinstance(outcome_summary, dict) else []
         return {
             "task_id": task.id,
