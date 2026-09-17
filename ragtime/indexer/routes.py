@@ -2210,6 +2210,20 @@ async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(
 
     # Enforce mutually-exclusive GitHub auth modes (PAT vs Copilot OAuth).
     current_settings = await repository.get_settings()
+    timeout_setting_fields = {
+        "userspace_exec_timeout_default_seconds",
+        "userspace_exec_timeout_max_seconds",
+    }
+    if timeout_setting_fields.intersection(updates):
+        timeout_default = updates.get("userspace_exec_timeout_default_seconds")
+        timeout_maximum = updates.get("userspace_exec_timeout_max_seconds")
+        merged_default = current_settings.userspace_exec_timeout_default_seconds if timeout_default is None else timeout_default
+        merged_maximum = current_settings.userspace_exec_timeout_max_seconds if timeout_maximum is None else timeout_maximum
+        if merged_default > merged_maximum:
+            raise HTTPException(
+                status_code=400,
+                detail="Default command timeout must not exceed maximum command timeout",
+            )
     pat_candidate = str(
         updates.get(
             "github_models_api_token",

@@ -88,6 +88,10 @@ from ragtime.core.userspace_limits import (
     ARCHIVE_MAX_TOTAL_SIZE_DEFAULT_BYTES,
     ARCHIVE_MAX_TOTAL_SIZE_MAX_BYTES,
     ARCHIVE_MAX_TOTAL_SIZE_MIN_BYTES,
+    USERSPACE_EXEC_TIMEOUT_DEFAULT_SECONDS,
+    USERSPACE_EXEC_TIMEOUT_HARD_CAP_SECONDS,
+    USERSPACE_EXEC_TIMEOUT_MAX_FLOOR_SECONDS,
+    USERSPACE_EXEC_TIMEOUT_MAX_SECONDS,
     USERSPACE_PRIMITIVE_ARCHIVE_DEFAULT_MAX_ENTRIES,
     USERSPACE_PRIMITIVE_ARCHIVE_MAX_ENTRIES,
     USERSPACE_PRIMITIVE_ARCHIVE_MIN_ENTRIES,
@@ -1213,6 +1217,18 @@ class AppSettings(BaseModel):
         le=MAX_USERSPACE_CODE_INDEX_MAX_CONCURRENCY,
         description="Maximum number of User Space workspace code index jobs that may run concurrently.",
     )
+    userspace_exec_timeout_default_seconds: int = Field(
+        default=USERSPACE_EXEC_TIMEOUT_DEFAULT_SECONDS,
+        ge=1,
+        le=USERSPACE_EXEC_TIMEOUT_HARD_CAP_SECONDS,
+        description="Default timeout in seconds for User Space terminal commands.",
+    )
+    userspace_exec_timeout_max_seconds: int = Field(
+        default=USERSPACE_EXEC_TIMEOUT_MAX_SECONDS,
+        ge=USERSPACE_EXEC_TIMEOUT_MAX_FLOOR_SECONDS,
+        le=USERSPACE_EXEC_TIMEOUT_HARD_CAP_SECONDS,
+        description="Maximum timeout in seconds for User Space terminal commands.",
+    )
 
     # Index Archive Extraction Limits
     archive_max_total_size_bytes: int = Field(
@@ -1234,6 +1250,12 @@ class AppSettings(BaseModel):
     @classmethod
     def _normalize_userspace_preview_sandbox_flags(cls, value: list[str] | tuple[str, ...] | None) -> list[str]:
         return normalize_userspace_preview_sandbox_flags(value)
+
+    @model_validator(mode="after")
+    def _validate_userspace_exec_timeout_pair(self) -> "AppSettings":
+        if self.userspace_exec_timeout_default_seconds > self.userspace_exec_timeout_max_seconds:
+            raise ValueError("userspace_exec_timeout_default_seconds must not exceed userspace_exec_timeout_max_seconds")
+        return self
 
     def get_embedding_config_hash(self) -> str:
         """Generate a hash for current embedding provider+model+dimensions configuration."""
@@ -1736,6 +1758,20 @@ class UpdateSettingsRequest(BaseModel):
         ge=USERSPACE_PRIMITIVE_ARCHIVE_MIN_ENTRIES,
         le=USERSPACE_PRIMITIVE_ARCHIVE_MAX_ENTRIES,
         description="Maximum number of files extracted from one User Space archive primitive request.",
+    )
+    userspace_exec_timeout_default_seconds: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=USERSPACE_EXEC_TIMEOUT_HARD_CAP_SECONDS,
+        strict=True,
+        description="Default timeout in seconds for User Space terminal commands.",
+    )
+    userspace_exec_timeout_max_seconds: Optional[int] = Field(
+        default=None,
+        ge=USERSPACE_EXEC_TIMEOUT_MAX_FLOOR_SECONDS,
+        le=USERSPACE_EXEC_TIMEOUT_HARD_CAP_SECONDS,
+        strict=True,
+        description="Maximum timeout in seconds for User Space terminal commands.",
     )
     # Index Archive Extraction Limits
     archive_max_total_size_bytes: Optional[int] = Field(

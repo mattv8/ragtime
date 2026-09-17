@@ -340,6 +340,21 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+const USERSPACE_EXEC_TIMEOUT_DEFAULT_SECONDS = 120;
+const USERSPACE_EXEC_TIMEOUT_MAX_SECONDS = 600;
+
+function toUserspaceExecTimeoutDraft(value: unknown, fallback: number): string {
+  return typeof value === 'number' ? String(value) : String(fallback);
+}
+
+function parseUserspaceExecTimeoutDraft(value: string): number | null {
+  if (!/^\d+$/.test(value)) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
 function logSliderToValue(sliderValue: number, minValue: number, maxValue: number): number {
   const slider = clampNumber(sliderValue, 0, 100);
   const scale = Math.log(maxValue / minValue);
@@ -913,7 +928,28 @@ export function SettingsPanel({
 
   // Form state
   const [formData, setFormData] = useState<UpdateSettingsRequest>({});
+  const [userspaceExecTimeoutDefaultDraft, setUserspaceExecTimeoutDefaultDraft] = useState(
+    String(USERSPACE_EXEC_TIMEOUT_DEFAULT_SECONDS),
+  );
+  const [userspaceExecTimeoutMaxDraft, setUserspaceExecTimeoutMaxDraft] = useState(
+    String(USERSPACE_EXEC_TIMEOUT_MAX_SECONDS),
+  );
   const settingsFormRef = useRef<HTMLFormElement | null>(null);
+
+  const userspaceExecTimeoutError = useMemo(() => {
+    const defaultSeconds = parseUserspaceExecTimeoutDraft(userspaceExecTimeoutDefaultDraft);
+    const maxSeconds = parseUserspaceExecTimeoutDraft(userspaceExecTimeoutMaxDraft);
+    if (defaultSeconds === null || maxSeconds === null) {
+      return 'Enter whole-number timeout values.';
+    }
+    if (maxSeconds < 30 || maxSeconds > 3600) {
+      return 'Maximum command timeout must be between 30 and 3600 seconds.';
+    }
+    if (defaultSeconds < 1 || defaultSeconds > maxSeconds) {
+      return 'Default command timeout must be at least 1 second and no greater than the maximum.';
+    }
+    return null;
+  }, [userspaceExecTimeoutDefaultDraft, userspaceExecTimeoutMaxDraft]);
 
   // Track if we've already auto-tested Ollama
   const hasAutoTestedOllama = useRef(false);
@@ -2294,6 +2330,18 @@ export function SettingsPanel({
         tool_skills_enabled: rawSettings.tool_skills_enabled !== false,
       };
       setSettings(data);
+      setUserspaceExecTimeoutDefaultDraft(
+        toUserspaceExecTimeoutDraft(
+          data.userspace_exec_timeout_default_seconds,
+          USERSPACE_EXEC_TIMEOUT_DEFAULT_SECONDS,
+        ),
+      );
+      setUserspaceExecTimeoutMaxDraft(
+        toUserspaceExecTimeoutDraft(
+          data.userspace_exec_timeout_max_seconds,
+          USERSPACE_EXEC_TIMEOUT_MAX_SECONDS,
+        ),
+      );
       setDefaultThemePack(resolveThemePackId(data.default_theme_pack, null));
       setUserspacePreviewSettings(previewSettings);
       setAuthProviderConfig(providerConfig);
@@ -2350,6 +2398,8 @@ export function SettingsPanel({
         tool_skills_enabled: data.tool_skills_enabled !== false,
         max_tool_output_chars: data.max_tool_output_chars,
         scratchpad_window_size: data.scratchpad_window_size,
+        userspace_exec_timeout_default_seconds: data.userspace_exec_timeout_default_seconds,
+        userspace_exec_timeout_max_seconds: data.userspace_exec_timeout_max_seconds,
         // Search settings
         search_results_k: data.search_results_k,
         aggregate_search: data.aggregate_search,
@@ -3108,15 +3158,26 @@ export function SettingsPanel({
   };
 
   const handleSaveAgentBehavior = async () => {
+    if (isAdmin && userspaceExecTimeoutError) {
+      return;
+    }
     setAgentBehaviorSaving(true);
 
     try {
-      const dataToSave = {
+      const dataToSave: UpdateSettingsRequest = {
         tool_skills_enabled: formData.tool_skills_enabled !== false,
         max_iterations: formData.max_iterations,
         max_tool_output_chars: formData.max_tool_output_chars,
         scratchpad_window_size: formData.scratchpad_window_size,
       };
+      if (isAdmin) {
+        dataToSave.userspace_exec_timeout_default_seconds = parseUserspaceExecTimeoutDraft(
+          userspaceExecTimeoutDefaultDraft,
+        ) as number;
+        dataToSave.userspace_exec_timeout_max_seconds = parseUserspaceExecTimeoutDraft(
+          userspaceExecTimeoutMaxDraft,
+        ) as number;
+      }
       const updated = await api.updateSettings(dataToSave);
       const normalizedUpdated = {
         ...updated,
@@ -3129,7 +3190,21 @@ export function SettingsPanel({
         max_iterations: updated.max_iterations,
         max_tool_output_chars: updated.max_tool_output_chars,
         scratchpad_window_size: updated.scratchpad_window_size,
+        userspace_exec_timeout_default_seconds: updated.userspace_exec_timeout_default_seconds,
+        userspace_exec_timeout_max_seconds: updated.userspace_exec_timeout_max_seconds,
       }));
+      setUserspaceExecTimeoutDefaultDraft(
+        toUserspaceExecTimeoutDraft(
+          updated.userspace_exec_timeout_default_seconds,
+          USERSPACE_EXEC_TIMEOUT_DEFAULT_SECONDS,
+        ),
+      );
+      setUserspaceExecTimeoutMaxDraft(
+        toUserspaceExecTimeoutDraft(
+          updated.userspace_exec_timeout_max_seconds,
+          USERSPACE_EXEC_TIMEOUT_MAX_SECONDS,
+        ),
+      );
       await onSettingsSaved?.();
       toast.success('Agent behavior settings saved');
     } catch (err) {
@@ -4619,6 +4694,12 @@ export function SettingsPanel({
             setFormData={setFormData}
             handleSaveAgentBehavior={handleSaveAgentBehavior}
             agentBehaviorSaving={agentBehaviorSaving}
+            isAdmin={isAdmin}
+            userspaceExecTimeoutDefaultDraft={userspaceExecTimeoutDefaultDraft}
+            userspaceExecTimeoutMaxDraft={userspaceExecTimeoutMaxDraft}
+            onUserspaceExecTimeoutDefaultDraftChange={setUserspaceExecTimeoutDefaultDraft}
+            onUserspaceExecTimeoutMaxDraftChange={setUserspaceExecTimeoutMaxDraft}
+            userspaceExecTimeoutError={isAdmin ? userspaceExecTimeoutError : null}
           />
 
           <McpSettingsSection

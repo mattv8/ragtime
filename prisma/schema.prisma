@@ -380,6 +380,8 @@ model AppSettings {
   userspaceCodeIndexReconcileIntervalSeconds Int      @default(300) @map("userspace_code_index_reconcile_interval_seconds")
   userspaceCodeIndexMaxAttempts              Int      @default(3) @map("userspace_code_index_max_attempts")
   userspaceCodeIndexMaxConcurrency           Int      @default(1) @map("userspace_code_index_max_concurrency")
+  userspaceExecTimeoutDefaultSeconds         Int      @default(120) @map("userspace_exec_timeout_default_seconds")
+  userspaceExecTimeoutMaxSeconds             Int      @default(600) @map("userspace_exec_timeout_max_seconds")
 
   // Index Archive Extraction Limits
   archiveMaxTotalSizeBytes BigInt @default(5368709120) @map("archive_max_total_size_bytes") // 5 GB max extracted archive size

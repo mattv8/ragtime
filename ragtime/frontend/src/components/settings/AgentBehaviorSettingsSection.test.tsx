@@ -14,10 +14,18 @@ function renderSection({
   formData = {},
   agentBehaviorSaving = false,
   handleSaveAgentBehavior = vi.fn(),
+  isAdmin = false,
+  userspaceExecTimeoutDefaultDraft = '120',
+  userspaceExecTimeoutMaxDraft = '600',
+  userspaceExecTimeoutError = null,
 }: {
   formData?: UpdateSettingsRequest;
   agentBehaviorSaving?: boolean;
   handleSaveAgentBehavior?: () => void | Promise<void>;
+  isAdmin?: boolean;
+  userspaceExecTimeoutDefaultDraft?: string;
+  userspaceExecTimeoutMaxDraft?: string;
+  userspaceExecTimeoutError?: string | null;
 } = {}) {
   function Wrapper(): JSX.Element {
     const [currentFormData, setCurrentFormData] = useState<UpdateSettingsRequest>(formData);
@@ -30,6 +38,12 @@ function renderSection({
         setFormData={setCurrentFormData}
         handleSaveAgentBehavior={handleSaveAgentBehavior}
         agentBehaviorSaving={agentBehaviorSaving}
+        isAdmin={isAdmin}
+        userspaceExecTimeoutDefaultDraft={userspaceExecTimeoutDefaultDraft}
+        userspaceExecTimeoutMaxDraft={userspaceExecTimeoutMaxDraft}
+        onUserspaceExecTimeoutDefaultDraftChange={() => {}}
+        onUserspaceExecTimeoutMaxDraftChange={() => {}}
+        userspaceExecTimeoutError={userspaceExecTimeoutError}
       />
     );
   }
@@ -95,11 +109,60 @@ describe('AgentBehaviorSettingsSection', () => {
         setFormData={vi.fn()}
         handleSaveAgentBehavior={handleSaveAgentBehavior}
         agentBehaviorSaving
+        isAdmin={false}
+        userspaceExecTimeoutDefaultDraft="120"
+        userspaceExecTimeoutMaxDraft="600"
+        onUserspaceExecTimeoutDefaultDraftChange={() => {}}
+        onUserspaceExecTimeoutMaxDraftChange={() => {}}
+        userspaceExecTimeoutError={null}
       />,
     );
 
     expect((screen.getByRole('button', { name: 'Saving...' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
+  });
+
+  it('shows editable workspace command timeout controls only to admins', () => {
+    const { rerender } = renderSection({ isAdmin: true });
+
+    expect(screen.getByLabelText('Default command timeout (seconds)')).toBeTruthy();
+    expect(screen.getByLabelText('Maximum command timeout (seconds)')).toBeTruthy();
+    expect(screen.getByText(/workspace terminal commands/i)).toBeTruthy();
+
+    rerender(
+      <AgentBehaviorSettingsSection
+        open
+        onToggle={() => {}}
+        formData={{}}
+        setFormData={vi.fn()}
+        handleSaveAgentBehavior={vi.fn()}
+        agentBehaviorSaving={false}
+        isAdmin={false}
+        userspaceExecTimeoutDefaultDraft="120"
+        userspaceExecTimeoutMaxDraft="600"
+        onUserspaceExecTimeoutDefaultDraftChange={() => {}}
+        onUserspaceExecTimeoutMaxDraftChange={() => {}}
+        userspaceExecTimeoutError={null}
+      />,
+    );
+
+    expect(screen.queryByLabelText('Default command timeout (seconds)')).toBeNull();
+  });
+
+  it('blocks saving an invalid timeout pair and exposes its constraint error', () => {
+    const handleSaveAgentBehavior = vi.fn();
+    renderSection({
+      isAdmin: true,
+      userspaceExecTimeoutDefaultDraft: '',
+      userspaceExecTimeoutMaxDraft: '30',
+      userspaceExecTimeoutError: 'Enter whole-number timeout values.',
+      handleSaveAgentBehavior,
+    });
+
+    expect(screen.getByRole('alert').textContent).toContain('Enter whole-number timeout values.');
+    expect(
+      (screen.getByRole('button', { name: 'Save Agent Behavior' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 });

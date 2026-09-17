@@ -163,6 +163,11 @@ from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
 from ragtime.core.tool_access import ToolAccessLevel, resolve_tool_access
 from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata, coerce_nonnegative_int_metadata
+from ragtime.core.userspace_limits import (
+    USERSPACE_EXEC_TIMEOUT_HARD_CAP_SECONDS,
+    resolve_userspace_exec_timeout,
+    resolve_userspace_exec_timeout_bounds,
+)
 from ragtime.core.visualization_tools import HTML_COMPONENT_TOOL_NAME, VISUALIZATION_TOOL_NAMES
 from ragtime.http_api.guidance import build_http_api_headers_description, build_http_api_request_guidance
 from ragtime.http_api.models import (
@@ -534,9 +539,13 @@ def resolve_effective_timeout(requested_timeout: int | None, timeout_max_seconds
     return resolve_effective_tool_timeout(requested_timeout, timeout_max_seconds)
 
 
-def _format_active_tool_timeout_output(tool_name: str) -> str:
+def _format_active_tool_timeout_output(
+    tool_name: str,
+    timeout_seconds: float = AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS,
+) -> str:
+    rendered_timeout = f"{timeout_seconds:.2f}".rstrip("0").rstrip(".")
     return (
-        f"Error: Tool {tool_name} took too long and timed out before returning a final result. "
+        f"Error: Tool {tool_name} produced no completion event within {rendered_timeout} seconds. "
         "Treat this as a failed tool result and continue using the available context."
     )
 
@@ -9800,6 +9809,8 @@ class RAGComponents:
     ) -> list[StructuredTool]:
         """Create request-scoped User Space file tools for agentic artifact editing."""
 
+        userspace_settings = await get_app_settings()
+        userspace_timeout_default, userspace_timeout_max = resolve_userspace_exec_timeout_bounds(userspace_settings)
         accessible_modes_local: dict[str, str] = dict(accessible_workspace_modes or {})
         primary_workspace_id = workspace_id
         normalized_subagent_scope = {str(path or "").strip().replace("\\", "/").strip("/") for path in (subagent_file_scope or []) if str(path or "").strip()}
@@ -10583,12 +10594,23 @@ class RAGComponents:
                     "Chain commands with && or use pipes as needed."
                 ),
             )
-            timeout_seconds: int = Field(
-                default=120,
-                ge=1,
-                le=600,
-                description="Maximum execution time in seconds before the command is killed.",
+            timeout_seconds: int | None = Field(
+                default=None,
+                description=(
+                    "Maximum execution time in seconds before the command is killed. "
+                    f"Omit to use the current workspace command default ({userspace_timeout_default}s); "
+                    f"the current maximum is {userspace_timeout_max}s."
+                ),
+                json_schema_extra={"minimum": 1, "maximum": userspace_timeout_max},
             )
+
+            @field_validator("timeout_seconds", mode="before")
+            @classmethod
+            def reject_boolean_timeout(cls, value: Any) -> Any:
+                if isinstance(value, bool):
+                    raise ValueError("timeout_seconds must be an integer")
+                return value
+
             cwd: str = Field(
                 default=".",
                 description=("Workspace-relative working directory. Defaults to workspace root. Must stay within the workspace boundary."),
@@ -13472,7 +13494,7 @@ class RAGComponents:
 
         async def run_terminal_command(
             command: str,
-            timeout_seconds: int = 120,
+            timeout_seconds: Any = None,
             cwd: str = ".",
             reason: str = "",
             workspace_id: Optional[str] = None,
@@ -14029,7 +14051,8 @@ class RAGComponents:
                     "Execute a shell command in the workspace runtime container terminal. "
                     "Use for running migrations, installing packages, checking process status, "
                     "debugging build/runtime errors, or any CLI task. "
-                    "Commands run via sh -lc in the workspace root with a configurable timeout (default 120s, max 600s). "
+                    f"Commands run via sh -lc in the workspace root with a configurable timeout "
+                    f"(default {userspace_timeout_default}s, max {userspace_timeout_max}s). "
                     "Returns exit code, stdout, and stderr."
                 ),
                 args_schema=RunTerminalCommandInput,
@@ -17865,6 +17888,7 @@ class RAGComponents:
                     while True:
                         attempt_retry_with_ocr = False
                         active_tool_runs: set[str] = set()
+                        active_terminal_stream_guards: dict[str, float] = {}
                         streamed_content_by_chat_run: dict[str, str] = {}
                         streamed_reasoning_by_chat_run: dict[str, str] = {}
                         channel_header_buffers_by_chat_run: dict[str, str] = {}
@@ -17881,6 +17905,7 @@ class RAGComponents:
 
                         def _record_synthetic_tool_failure(failed_run_id: str, failure_output: str) -> dict[str, Any]:
                             active_tool_runs.discard(failed_run_id)
+                            active_terminal_stream_guards.pop(failed_run_id, None)
                             start_payload = _tool_start_payloads.pop(failed_run_id, None)
                             start_info = _tool_start_times.pop(failed_run_id, None)
                             tool_name = str((start_payload or {}).get("tool") or (start_info[1] if start_info else "unknown"))
@@ -17932,6 +17957,53 @@ class RAGComponents:
                                     close_err,
                                 )
 
+                        async def _terminal_stream_guard_seconds(tool_input: Any) -> float:
+                            """Snapshot a bounded inactivity guard for one terminal invocation."""
+                            requested_timeout = tool_input.get("timeout_seconds") if isinstance(tool_input, dict) else None
+                            # Tool-start events can arrive after the command has begun. An
+                            # omitted timeout carries no policy snapshot, so a later admin
+                            # reduction cannot safely narrow its watchdog budget.
+                            if requested_timeout is None:
+                                return float(USERSPACE_EXEC_TIMEOUT_HARD_CAP_SECONDS + 45)
+                            try:
+                                current_settings = await get_app_settings()
+                                _, current_maximum = resolve_userspace_exec_timeout_bounds(current_settings)
+                                try:
+                                    # The command already started. Its explicit timeout may be
+                                    # valid under the policy snapshot that launched it even if an
+                                    # administrator has since lowered the current ceiling. The
+                                    # watchdog is bounded independently at the deployment cap;
+                                    # service execution remains the configured-ceiling authority.
+                                    explicit_timeout = resolve_userspace_exec_timeout(
+                                        {
+                                            "userspace_exec_timeout_default_seconds": 1,
+                                            "userspace_exec_timeout_max_seconds": USERSPACE_EXEC_TIMEOUT_HARD_CAP_SECONDS,
+                                        },
+                                        requested_timeout,
+                                    )
+                                except ValueError:
+                                    # Invalid input must not widen an active stream guard.
+                                    explicit_timeout = 0
+                                command_budget = max(current_maximum, explicit_timeout)
+                            except Exception:
+                                logger.debug("Unable to load User Space command timeout settings for stream guard", exc_info=True)
+                                # Settings are unavailable after a terminal call has started;
+                                # prefer a safe, bounded guard over falsely declaring a valid
+                                # long-running command stalled at the normal 315-second limit.
+                                command_budget = USERSPACE_EXEC_TIMEOUT_HARD_CAP_SECONDS
+                            return min(
+                                float(USERSPACE_EXEC_TIMEOUT_HARD_CAP_SECONDS + 45),
+                                max(AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS, float(command_budget + 45)),
+                            )
+
+                        def _current_stream_inactivity_timeout() -> float:
+                            if active_terminal_stream_guards:
+                                return max(
+                                    AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS,
+                                    *active_terminal_stream_guards.values(),
+                                )
+                            return AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS
+
                         agent_stream = executor.astream_events(
                             {
                                 "input": attempt_input,
@@ -17951,9 +18023,10 @@ class RAGComponents:
                             apply_inactivity_timeout = attempt_had_tool_activity
                             try:
                                 if apply_inactivity_timeout:
+                                    inactivity_timeout_seconds = _current_stream_inactivity_timeout()
                                     event = await asyncio.wait_for(
                                         agent_stream_iter.__anext__(),
-                                        timeout=AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS,
+                                        timeout=inactivity_timeout_seconds,
                                     )
                                 else:
                                     event = await agent_stream_iter.__anext__()
@@ -17966,17 +18039,17 @@ class RAGComponents:
                                     start_info = _tool_start_times.get(stalled_run_id)
                                     tool_name = str((start_payload or {}).get("tool") or (start_info[1] if start_info else "unknown"))
                                     logger.warning(
-                                        "Tool %s produced no completion event within %.0fs (run_id=%s); "
+                                        "Tool %s produced no completion event within %ss (run_id=%s); "
                                         "closing the stalled stream and continuing with a synthetic tool failure",
                                         tool_name,
-                                        AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS,
+                                        f"{_current_stream_inactivity_timeout():.2f}".rstrip("0").rstrip("."),
                                         stalled_run_id[:8],
                                     )
                                     request_tool_state["active_tool_stream_timed_out"] = True
                                     await _close_agent_stream_iter()
                                     yield _record_synthetic_tool_failure(
                                         stalled_run_id,
-                                        _format_active_tool_timeout_output(tool_name),
+                                        _format_active_tool_timeout_output(tool_name, _current_stream_inactivity_timeout()),
                                     )
                                     break
 
@@ -18072,6 +18145,8 @@ class RAGComponents:
 
                                 tool_name = event.get("name", "unknown")
                                 tool_input: Any = event.get("data", {}).get("input", {})
+                                if tool_name == "run_terminal_command":
+                                    active_terminal_stream_guards[run_id] = await _terminal_stream_guard_seconds(tool_input)
                                 connection_meta = self._get_tool_connection_metadata(tool_name)
                                 presentation_meta = normalize_tool_presentation(tool_name, connection_meta)
                                 _tool_start_payloads[run_id] = {
@@ -18098,6 +18173,7 @@ class RAGComponents:
                                 if run_id not in active_tool_runs:
                                     continue
                                 active_tool_runs.discard(run_id)
+                                active_terminal_stream_guards.pop(run_id, None)
 
                                 tool_name = event.get("name", "unknown")
                                 tool_output = event.get("data", {}).get("output", "")
@@ -18212,6 +18288,7 @@ class RAGComponents:
                                 if run_id not in active_tool_runs:
                                     continue
                                 active_tool_runs.discard(run_id)
+                                active_terminal_stream_guards.pop(run_id, None)
                                 attempt_had_tool_activity = True
                                 any_tool_activity = True
 

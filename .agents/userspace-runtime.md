@@ -139,7 +139,20 @@ Scope: runtime execution, workspace file/mount I/O, and preview proxies.
   over the requested budget. The worker kills the process group on timeout and
   on `CancelledError` (shielded). The chat diagnostics shell cap
   (`CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS`) is a separate, intentionally
-  lower guardrail — do not unify it with the 600s workspace budget.
+  lower guardrail — do not unify it with workspace exec policy. Workspace
+  defaults/ceilings come from admin settings through
+  `ragtime.core.userspace_limits`; execution-time service validation is
+  authoritative even when the caller holds an older tool schema. Omitted tool
+  timeouts must reach the service as `None`, not a captured default.
+- The runtime package cannot read app settings. Its independent 3600s exec
+  ceiling in `runtime.core.shared` mirrors the control-plane hard-cap constant;
+  keep the parity test green when changing either. The agent event stream has
+  its own 315s inactivity guard: an active workspace terminal call needs its
+  snapshotted extended budget, but the post-tool provider guard stays short.
+  Raising only the worker timeout still aborts long chat-initiated commands.
+  Omitted-timeout events can arrive after an admin policy change without the
+  already-accepted duration; their stream watchdog uses the hard-cap budget
+  conservatively, without extending the worker's actual command timeout.
 - Durable restart ledger: idempotency and the 60s workspace throttle are
   decided inside `db.tx()` under
   `pg_advisory_xact_lock(hashtextextended('userspace-runtime-restart:{ws}',0))`

@@ -216,8 +216,46 @@ vi.mock('./settings/AgentBehaviorSettingsSection', () => ({
               }
             />
           </div>
+          {props.isAdmin === true && (
+            <>
+              <label htmlFor="agent-behavior-userspace-exec-timeout-default">
+                Default command timeout (seconds)
+              </label>
+              <input
+                id="agent-behavior-userspace-exec-timeout-default"
+                type="number"
+                value={String(props.userspaceExecTimeoutDefaultDraft ?? '')}
+                onChange={(event) =>
+                  (
+                    props.onUserspaceExecTimeoutDefaultDraftChange as
+                      | ((value: string) => void)
+                      | undefined
+                  )?.(event.target.value)
+                }
+              />
+              <label htmlFor="agent-behavior-userspace-exec-timeout-max">
+                Maximum command timeout (seconds)
+              </label>
+              <input
+                id="agent-behavior-userspace-exec-timeout-max"
+                type="number"
+                value={String(props.userspaceExecTimeoutMaxDraft ?? '')}
+                onChange={(event) =>
+                  (
+                    props.onUserspaceExecTimeoutMaxDraftChange as
+                      | ((value: string) => void)
+                      | undefined
+                  )?.(event.target.value)
+                }
+              />
+              {props.userspaceExecTimeoutError && (
+                <span role="alert">{String(props.userspaceExecTimeoutError)}</span>
+              )}
+            </>
+          )}
           <button
             type="button"
+            disabled={Boolean(props.agentBehaviorSaving || props.userspaceExecTimeoutError)}
             onClick={() =>
               void (props.handleSaveAgentBehavior as (() => void | Promise<void>) | undefined)?.()
             }
@@ -498,6 +536,14 @@ beforeEach(() => {
         typeof payload.scratchpad_window_size === 'number'
           ? payload.scratchpad_window_size
           : current.scratchpad_window_size,
+      userspace_exec_timeout_default_seconds:
+        typeof payload.userspace_exec_timeout_default_seconds === 'number'
+          ? payload.userspace_exec_timeout_default_seconds
+          : current.userspace_exec_timeout_default_seconds,
+      userspace_exec_timeout_max_seconds:
+        typeof payload.userspace_exec_timeout_max_seconds === 'number'
+          ? payload.userspace_exec_timeout_max_seconds
+          : current.userspace_exec_timeout_max_seconds,
       mcp_default_route_password:
         typeof payload.mcp_default_route_password === 'string'
           ? payload.mcp_default_route_password
@@ -1206,6 +1252,88 @@ describe('SettingsPanel', () => {
       scratchpad_window_size: 9,
     });
     expect(toastSuccessSpy).toHaveBeenCalledWith('Agent behavior settings saved');
+  });
+
+  it('loads workspace timeout defaults, saves an admin pair, and syncs normalized values', async () => {
+    apiMock.getSettings.mockResolvedValue(buildSettingsResponse());
+    apiMock.updateSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        userspace_exec_timeout_default_seconds: 180,
+        userspace_exec_timeout_max_seconds: 900,
+      }).settings,
+    );
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(
+      <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
+    );
+
+    const defaultInput = (await screen.findByLabelText(
+      'Default command timeout (seconds)',
+    )) as HTMLInputElement;
+    const maxInput = screen.getByLabelText('Maximum command timeout (seconds)') as HTMLInputElement;
+    expect(defaultInput.value).toBe('120');
+    expect(maxInput.value).toBe('600');
+
+    fireEvent.change(defaultInput, { target: { value: '150' } });
+    fireEvent.change(maxInput, { target: { value: '1200' } });
+    await (
+      agentBehaviorSectionState.latestProps?.handleSaveAgentBehavior as
+        | (() => Promise<void>)
+        | undefined
+    )?.();
+
+    expect(apiMock.updateSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        userspace_exec_timeout_default_seconds: 150,
+        userspace_exec_timeout_max_seconds: 1200,
+      }),
+    );
+    await waitFor(() => {
+      expect(defaultInput.value).toBe('180');
+      expect(maxInput.value).toBe('900');
+    });
+  });
+
+  it('blocks blank and inverted admin timeout drafts without issuing a save', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+    render(
+      <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
+    );
+
+    const defaultInput = (await screen.findByLabelText(
+      'Default command timeout (seconds)',
+    )) as HTMLInputElement;
+    const maxInput = screen.getByLabelText('Maximum command timeout (seconds)') as HTMLInputElement;
+    apiMock.updateSettings.mockClear();
+
+    fireEvent.change(defaultInput, { target: { value: '' } });
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Save Agent Behavior' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    fireEvent.change(defaultInput, { target: { value: '120' } });
+    fireEvent.change(maxInput, { target: { value: '100' } });
+    expect(screen.getByRole('alert')).toBeTruthy();
+
+    fireEvent.change(defaultInput, { target: { value: '601' } });
+    fireEvent.change(maxInput, { target: { value: '600' } });
+    expect(screen.getByRole('alert')).toBeTruthy();
+    await (
+      agentBehaviorSectionState.latestProps?.handleSaveAgentBehavior as
+        | (() => Promise<void>)
+        | undefined
+    )?.();
+    expect(apiMock.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('does not expose workspace timeout controls to non-admin users', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+    render(<SettingsPanel currentUser={{ id: 'user', username: 'user', role: 'user' } as User} />);
+
+    await screen.findByRole('button', { name: 'Agent Behavior' });
+    expect(screen.queryByLabelText('Default command timeout (seconds)')).toBeNull();
   });
 
   it('does not include agent behavior fields in the LLM save payload', async () => {

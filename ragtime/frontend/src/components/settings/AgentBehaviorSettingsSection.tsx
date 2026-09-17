@@ -12,13 +12,31 @@ export interface AgentBehaviorSettingsSectionProps {
   setFormData: Dispatch<SetStateAction<UpdateSettingsRequest>>;
   handleSaveAgentBehavior: () => void | Promise<void>;
   agentBehaviorSaving: boolean;
+  isAdmin: boolean;
+  userspaceExecTimeoutDefaultDraft: string;
+  userspaceExecTimeoutMaxDraft: string;
+  onUserspaceExecTimeoutDefaultDraftChange: (value: string) => void;
+  onUserspaceExecTimeoutMaxDraftChange: (value: string) => void;
+  userspaceExecTimeoutError: string | null;
 }
 
 export function AgentBehaviorSettingsSection(
   props: AgentBehaviorSettingsSectionProps,
 ): JSX.Element {
-  const { open, onToggle, formData, setFormData, handleSaveAgentBehavior, agentBehaviorSaving } =
-    props;
+  const {
+    open,
+    onToggle,
+    formData,
+    setFormData,
+    handleSaveAgentBehavior,
+    agentBehaviorSaving,
+    isAdmin,
+    userspaceExecTimeoutDefaultDraft,
+    userspaceExecTimeoutMaxDraft,
+    onUserspaceExecTimeoutDefaultDraftChange,
+    onUserspaceExecTimeoutMaxDraftChange,
+    userspaceExecTimeoutError,
+  } = props;
 
   const toolSkillsEnabled = formData.tool_skills_enabled !== false;
   const maxIterations = formData.max_iterations ?? 30;
@@ -167,12 +185,70 @@ export function AgentBehaviorSettingsSection(
           </div>
         </div>
 
+        {isAdmin && (
+          <div
+            className="agent-behavior-settings-grid"
+            id="setting-userspace-exec-timeouts"
+            aria-describedby={
+              userspaceExecTimeoutError ? 'agent-behavior-userspace-exec-timeout-error' : undefined
+            }
+          >
+            <div className="form-group">
+              <label htmlFor="agent-behavior-userspace-exec-timeout-default">
+                Default command timeout (seconds)
+              </label>
+              <input
+                id="agent-behavior-userspace-exec-timeout-default"
+                type="number"
+                min="1"
+                max={userspaceExecTimeoutMaxDraft || undefined}
+                step="1"
+                inputMode="numeric"
+                value={userspaceExecTimeoutDefaultDraft}
+                onChange={(event) => onUserspaceExecTimeoutDefaultDraftChange(event.target.value)}
+              />
+              <p className="field-help">Used when a workspace terminal command has no timeout.</p>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="agent-behavior-userspace-exec-timeout-max">
+                Maximum command timeout (seconds)
+              </label>
+              <input
+                id="agent-behavior-userspace-exec-timeout-max"
+                type="number"
+                min="30"
+                max="3600"
+                step="1"
+                inputMode="numeric"
+                value={userspaceExecTimeoutMaxDraft}
+                onChange={(event) => onUserspaceExecTimeoutMaxDraftChange(event.target.value)}
+              />
+              <p className="field-help">Hard platform ceiling: 3600 seconds.</p>
+            </div>
+
+            <p className="field-help" id="agent-behavior-userspace-exec-timeout-help">
+              These instance-wide limits apply only to workspace terminal commands. Long active
+              commands can keep a sanctioned app restart busy until they finish.
+            </p>
+            {userspaceExecTimeoutError && (
+              <p
+                className="field-error"
+                id="agent-behavior-userspace-exec-timeout-error"
+                role="alert"
+              >
+                {userspaceExecTimeoutError}
+              </p>
+            )}
+          </div>
+        )}
+
         <div className="form-actions">
           <button
             type="button"
             className="btn"
             onClick={handleSaveAgentBehavior}
-            disabled={agentBehaviorSaving}
+            disabled={agentBehaviorSaving || (isAdmin && userspaceExecTimeoutError !== null)}
           >
             {agentBehaviorSaving ? 'Saving...' : 'Save Agent Behavior'}
           </button>

@@ -92,6 +92,9 @@ from ragtime.core.theme import canonicalize_theme_pack_id
 from ragtime.core.userspace_limits import (
     ARCHIVE_MAX_FILE_COUNT_DEFAULT,
     ARCHIVE_MAX_TOTAL_SIZE_DEFAULT_BYTES,
+    USERSPACE_EXEC_TIMEOUT_DEFAULT_SECONDS,
+    USERSPACE_EXEC_TIMEOUT_MAX_SECONDS,
+    resolve_userspace_exec_timeout_bounds,
 )
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
@@ -345,6 +348,7 @@ class SettingsCache:
                     exc,
                 )
                 userspace_preview_sandbox_flags = list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS)
+            userspace_exec_timeout_default_seconds, userspace_exec_timeout_max_seconds = resolve_userspace_exec_timeout_bounds(prisma_settings)
 
             self._settings = {
                 "server_name": prisma_settings.serverName,
@@ -640,6 +644,8 @@ class SettingsCache:
                     "userspaceCodeIndexMaxAttempts",
                     DEFAULT_USERSPACE_CODE_INDEX_MAX_ATTEMPTS,
                 ),
+                "userspace_exec_timeout_default_seconds": userspace_exec_timeout_default_seconds,
+                "userspace_exec_timeout_max_seconds": userspace_exec_timeout_max_seconds,
             }
             return self._settings
         except Exception as e:
@@ -758,6 +764,8 @@ class SettingsCache:
                 "userspace_code_index_debounce_seconds": DEFAULT_USERSPACE_CODE_INDEX_DEBOUNCE_SECONDS,
                 "userspace_code_index_reconcile_interval_seconds": DEFAULT_USERSPACE_CODE_INDEX_RECONCILE_INTERVAL_SECONDS,
                 "userspace_code_index_max_attempts": DEFAULT_USERSPACE_CODE_INDEX_MAX_ATTEMPTS,
+                "userspace_exec_timeout_default_seconds": USERSPACE_EXEC_TIMEOUT_DEFAULT_SECONDS,
+                "userspace_exec_timeout_max_seconds": USERSPACE_EXEC_TIMEOUT_MAX_SECONDS,
             }
 
     async def get_tool_configs(self) -> List[dict]:

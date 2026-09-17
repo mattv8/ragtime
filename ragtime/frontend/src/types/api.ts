@@ -1117,6 +1117,8 @@ export interface AppSettings {
   userspace_code_index_reconcile_interval_seconds: number;
   userspace_code_index_max_attempts: number;
   userspace_code_index_max_concurrency: number;
+  userspace_exec_timeout_default_seconds?: number;
+  userspace_exec_timeout_max_seconds?: number;
   // Index Archive Extraction Limits
   archive_max_total_size_bytes: number;
   archive_max_file_count: number;
@@ -1278,6 +1280,8 @@ export interface UpdateSettingsRequest {
   userspace_code_index_reconcile_interval_seconds?: number;
   userspace_code_index_max_attempts?: number;
   userspace_code_index_max_concurrency?: number;
+  userspace_exec_timeout_default_seconds?: number;
+  userspace_exec_timeout_max_seconds?: number;
   // Index Archive Extraction Limits
   archive_max_total_size_bytes?: number;
   archive_max_file_count?: number;

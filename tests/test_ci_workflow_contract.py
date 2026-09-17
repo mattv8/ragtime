@@ -177,6 +177,73 @@ class CiWorkflowContractTests(unittest.TestCase):
         login = next(step for step in analysis_steps if step.get("uses") == "docker/login-action@v3")
         self.assertEqual(login["if"], "inputs.use_harbor")
 
+    def test_backend_analysis_removes_named_check_container_before_image(self) -> None:
+        quality = _load_workflow("quality.yml")
+        steps = quality["jobs"]["backend-analysis"]["steps"]
+        check_steps = [step for step in steps if step.get("name") in {"Mypy type check", "Pyright problem check", "Duplicate code check", "Pytest suite"}]
+        self.assertEqual(len(check_steps), 4)
+        for step in check_steps:
+            with self.subTest(check=step["name"]):
+                self.assertEqual(
+                    step["env"]["CHECK_CONTAINER"],
+                    "${{ steps.buildx.outputs.builder_name }}-check",
+                )
+                self.assertIn('docker run --rm --name "$CHECK_CONTAINER"', step["run"])
+
+        cleanup_index = next(index for index, step in enumerate(steps) if step.get("name") == "Remove backend analysis check container")
+        image_cleanup_index = next(index for index, step in enumerate(steps) if step.get("name") == "Remove shared backend check image")
+        cleanup = steps[cleanup_index]
+        self.assertEqual(cleanup["if"], "always()")
+        self.assertEqual(cleanup["env"]["BUILDER_NAME"], "${{ steps.buildx.outputs.builder_name }}")
+        self.assertIn('[ -z "$BUILDER_NAME" ]', cleanup["run"])
+        self.assertIn('CHECK_CONTAINER="${BUILDER_NAME}-check"', cleanup["run"])
+        self.assertIn('docker container inspect "$CHECK_CONTAINER"', cleanup["run"])
+        self.assertIn('docker rm -f "$CHECK_CONTAINER"', cleanup["run"])
+        self.assertLess(cleanup_index, image_cleanup_index)
+
+        image_cleanup = steps[image_cleanup_index]
+        self.assertEqual(image_cleanup["env"]["IMAGE_TAG"], "${{ steps.buildx.outputs.image_tag }}")
+        self.assertIn('[ -z "$IMAGE_TAG" ]', image_cleanup["run"])
+        self.assertIn('docker image rm "$IMAGE_TAG"', image_cleanup["run"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            docker_log = Path(directory) / "docker.log"
+            fake_docker = Path(directory) / "docker"
+            fake_docker.write_text(
+                "#!/usr/bin/env bash\n"
+                'printf \'%s\\n\' "$*" >> "$DOCKER_LOG"\n'
+                'if [ "$1 $2" = "container inspect" ]; then exit "$DOCKER_INSPECT_STATUS"; fi\n'
+                'if [ "$1 $2" = "rm -f" ]; then exit 0; fi\n'
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            environment = {
+                "PATH": f"{directory}:{os.environ['PATH']}",
+                "DOCKER_LOG": str(docker_log),
+            }
+            for builder_name, inspect_status, expected_commands in (
+                ("managed", "0", ["container inspect managed-check", "rm -f managed-check"]),
+                ("managed", "1", ["container inspect managed-check"]),
+                ("", "0", []),
+            ):
+                with self.subTest(builder_name=builder_name, inspect_status=inspect_status):
+                    docker_log.write_text("", encoding="utf-8")
+                    result = subprocess.run(
+                        ["bash", "-e", "-c", cleanup["run"]],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env={
+                            **os.environ,
+                            **environment,
+                            "BUILDER_NAME": builder_name,
+                            "DOCKER_INSPECT_STATUS": inspect_status,
+                        },
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(docker_log.read_text(encoding="utf-8").splitlines(), expected_commands)
+
     def test_managed_buildx_sites_have_scopes_and_builder_permissions_are_read_only(self) -> None:
         builder_sites = 0
         for workflow_name in ("base-images.yml", "quality.yml", "build-container.yml"):
