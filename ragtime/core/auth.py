@@ -57,6 +57,7 @@ from ragtime.core.auth_policy import (
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
+from ragtime.core.oauth_grants import OAuthGrantError, lock_user_security_generation, revoke_user_auth
 
 logger = get_logger(__name__)
 
@@ -2384,8 +2385,6 @@ async def issue_authenticated_session(
     security_generation: int | None = None,
 ) -> str:
     """Create a JWT, persist its session row, and set the app session cookie."""
-    from ragtime.core.oauth_grants import lock_user_security_generation
-
     config = await get_auth_provider_config()
     db = await get_db()
     now = datetime.now(timezone.utc)
@@ -2451,8 +2450,6 @@ async def invalidate_session(token: str):
 
 async def invalidate_all_sessions(user_id: str, *, expected_generation: int | None = None) -> int:
     """Atomically invalidate a user's web sessions and OAuth grants."""
-    from ragtime.core.oauth_grants import OAuthGrantError, revoke_user_auth
-
     try:
         return await revoke_user_auth(user_id, expected_generation=expected_generation)
     except OAuthGrantError as exc:

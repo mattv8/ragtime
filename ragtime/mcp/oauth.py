@@ -48,7 +48,7 @@ from starlette.requests import Request
 from starlette.types import Receive, Scope, Send
 
 from ragtime.core.app_settings import get_app_settings
-from ragtime.core.auth import decode_jwt_payload, encode_jwt_payload
+from ragtime.core.auth import canonical_oauth_origin, decode_jwt_payload, encode_jwt_payload
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
 
@@ -452,8 +452,6 @@ async def handle_token_request(scope: Scope, receive: Receive, send: Send, route
 
 def _resource_base(scope: Scope) -> str:
     """Return the canonical issuer shared by every OAuth surface."""
-    from ragtime.core.auth import canonical_oauth_origin
-
     return canonical_oauth_origin(Request(scope))
 
 

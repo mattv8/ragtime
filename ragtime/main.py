@@ -78,6 +78,7 @@ from ragtime.core.mfa import (
     user_allowed_enrolled_methods,
     user_has_enabled_totp,
 )
+from ragtime.core.oauth_grants import cleanup_expired_grants
 from ragtime.core.openrouter_credits import start_openrouter_credit_monitor, stop_openrouter_credit_monitor
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.runtime_manager_client import close_runtime_manager_client
@@ -153,8 +154,6 @@ _AUTH_CLEANUP_INTERVAL_SECONDS = 60 * 60
 
 async def _cleanup_expired_auth_records() -> None:
     """Remove expired web sessions and grant families without logging credentials."""
-    from ragtime.core.oauth_grants import cleanup_expired_grants
-
     db = await get_db()
     sessions = await db.session.delete_many(where={"expiresAt": {"lt": datetime.now(timezone.utc)}})
     grants = await cleanup_expired_grants()
