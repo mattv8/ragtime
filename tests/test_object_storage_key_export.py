@@ -1,6 +1,5 @@
 import os
 import stat
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,8 +48,6 @@ class ObjectStorageKeyExportTests(unittest.TestCase):
             self.assertNotIn("secret-test-key", str(raised.exception))
 
     def test_existing_primary_key_is_republished_when_export_is_configured(self) -> None:
-        settings_mod = sys.modules["ragtime.config.settings"]
-        original_key_file = settings_mod.ENCRYPTION_KEY_FILE
         with tempfile.TemporaryDirectory() as tmpdir:
             primary = Path(tmpdir) / "data" / ".encryption_key"
             primary.parent.mkdir()
@@ -58,29 +55,21 @@ class ObjectStorageKeyExportTests(unittest.TestCase):
             export = Path(tmpdir) / "projection" / ".encryption_key"
             export.parent.mkdir()
             export.write_text("stale-key")
-            settings_mod.ENCRYPTION_KEY_FILE = primary
-            try:
+            with mock.patch("ragtime.config.settings.ENCRYPTION_KEY_FILE", primary):
                 with mock.patch.dict(os.environ, {"OBJECT_STORAGE_KEY_EXPORT_PATH": str(export)}, clear=False):
                     resolved = Settings.generate_encryption_key_if_empty("")
-            finally:
-                settings_mod.ENCRYPTION_KEY_FILE = original_key_file
 
             self.assertEqual(resolved, "authoritative-key")
             self.assertEqual(export.read_text(), "authoritative-key")
 
     def test_fresh_primary_key_is_persisted_before_projection_is_published(self) -> None:
-        settings_mod = sys.modules["ragtime.config.settings"]
-        original_key_file = settings_mod.ENCRYPTION_KEY_FILE
         with tempfile.TemporaryDirectory() as tmpdir:
             primary = Path(tmpdir) / "data" / ".encryption_key"
             export = Path(tmpdir) / "projection" / ".encryption_key"
             export.parent.mkdir()
-            settings_mod.ENCRYPTION_KEY_FILE = primary
-            try:
+            with mock.patch("ragtime.config.settings.ENCRYPTION_KEY_FILE", primary):
                 with mock.patch.dict(os.environ, {"OBJECT_STORAGE_KEY_EXPORT_PATH": str(export)}, clear=False):
                     resolved = Settings.generate_encryption_key_if_empty("fresh-key")
-            finally:
-                settings_mod.ENCRYPTION_KEY_FILE = original_key_file
 
             self.assertEqual(primary.read_text(), "fresh-key")
             self.assertEqual(export.read_text(), "fresh-key")
@@ -97,75 +86,55 @@ class ObjectStorageKeyExportTests(unittest.TestCase):
             self.assertNotIn("secret-test-key", str(raised.exception))
 
     def test_configured_export_failure_aborts_key_resolution_without_key_value_in_error(self) -> None:
-        settings_mod = sys.modules["ragtime.config.settings"]
-        original_key_file = settings_mod.ENCRYPTION_KEY_FILE
         with tempfile.TemporaryDirectory() as tmpdir:
             primary = Path(tmpdir) / "data" / ".encryption_key"
             primary.parent.mkdir()
             primary.write_text("secret-test-key")
             destination = Path(tmpdir) / "missing" / ".encryption_key"
-            settings_mod.ENCRYPTION_KEY_FILE = primary
-            try:
+            with mock.patch("ragtime.config.settings.ENCRYPTION_KEY_FILE", primary):
                 with mock.patch.dict(os.environ, {"OBJECT_STORAGE_KEY_EXPORT_PATH": str(destination)}, clear=False):
                     with self.assertRaises(RuntimeError) as raised:
                         Settings.generate_encryption_key_if_empty("")
-            finally:
-                settings_mod.ENCRYPTION_KEY_FILE = original_key_file
 
             self.assertIn(str(destination), str(raised.exception))
             self.assertNotIn("secret-test-key", str(raised.exception))
 
     def test_primary_persistence_failure_with_configured_export_does_not_create_projection(self) -> None:
-        settings_mod = sys.modules["ragtime.config.settings"]
-        original_key_file = settings_mod.ENCRYPTION_KEY_FILE
         with tempfile.TemporaryDirectory() as tmpdir:
             primary_parent = Path(tmpdir) / "not-a-directory"
             primary_parent.write_text("not a directory")
             primary = primary_parent / ".encryption_key"
             projection = Path(tmpdir) / "projection" / ".encryption_key"
             projection.parent.mkdir()
-            settings_mod.ENCRYPTION_KEY_FILE = primary
-            try:
+            with mock.patch("ragtime.config.settings.ENCRYPTION_KEY_FILE", primary):
                 with mock.patch.dict(os.environ, {"OBJECT_STORAGE_KEY_EXPORT_PATH": str(projection)}, clear=False):
                     with self.assertRaises(RuntimeError) as raised:
                         Settings.generate_encryption_key_if_empty("secret-test-key")
-            finally:
-                settings_mod.ENCRYPTION_KEY_FILE = original_key_file
 
             self.assertFalse(projection.exists())
             self.assertNotIn("secret-test-key", str(raised.exception))
             self.assertNotIn("secret-test-key", str(raised.exception.__cause__))
 
     def test_missing_primary_refuses_to_replace_existing_projection(self) -> None:
-        settings_mod = sys.modules["ragtime.config.settings"]
-        original_key_file = settings_mod.ENCRYPTION_KEY_FILE
         with tempfile.TemporaryDirectory() as tmpdir:
             primary = Path(tmpdir) / "data" / ".encryption_key"
             projection = Path(tmpdir) / "projection" / ".encryption_key"
             projection.parent.mkdir()
             projection.write_text("stale-key")
-            settings_mod.ENCRYPTION_KEY_FILE = primary
-            try:
+            with mock.patch("ragtime.config.settings.ENCRYPTION_KEY_FILE", primary):
                 with mock.patch.dict(os.environ, {"OBJECT_STORAGE_KEY_EXPORT_PATH": str(projection)}, clear=False):
                     with self.assertRaises(RuntimeError):
                         Settings.generate_encryption_key_if_empty("")
-            finally:
-                settings_mod.ENCRYPTION_KEY_FILE = original_key_file
 
             self.assertEqual(projection.read_text(), "stale-key")
 
     def test_missing_export_setting_does_not_create_projection(self) -> None:
-        settings_mod = sys.modules["ragtime.config.settings"]
-        original_key_file = settings_mod.ENCRYPTION_KEY_FILE
         with tempfile.TemporaryDirectory() as tmpdir:
             primary = Path(tmpdir) / "data" / ".encryption_key"
             primary.parent.mkdir()
             primary.write_text("authoritative-key")
-            settings_mod.ENCRYPTION_KEY_FILE = primary
-            try:
+            with mock.patch("ragtime.config.settings.ENCRYPTION_KEY_FILE", primary):
                 with mock.patch.dict(os.environ, {}, clear=True):
                     self.assertEqual(Settings.generate_encryption_key_if_empty(""), "authoritative-key")
-            finally:
-                settings_mod.ENCRYPTION_KEY_FILE = original_key_file
 
             self.assertFalse((Path(tmpdir) / "projection" / ".encryption_key").exists())
