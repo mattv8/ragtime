@@ -94,6 +94,14 @@ function formatMountSourceInterval(seconds: number): string {
   return h > 0 ? `${d}d ${h}h` : `${d}d`;
 }
 
+function formatPdmSchedule(tool: ToolConfig): string | null {
+  if (tool.tool_type !== 'solidworks_pdm') return null;
+  const hours = (tool.connection_config as { reindex_interval_hours?: number })
+    .reindex_interval_hours;
+  if (!hours) return 'Manual only';
+  return hours === 1 ? 'Every hour' : `Every ${hours} hours`;
+}
+
 function isAutoSyncMountSource(source: UserspaceMountSource): boolean {
   return (
     source.source_type === 'ssh' ||
@@ -299,6 +307,7 @@ function ToolCard({
     activeSchemaJob && ['pending', 'processing', 'indexing'].includes(activeSchemaJob.status),
   );
   const toolSupportsWorkingDir = tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell';
+  const pdmSchedule = formatPdmSchedule(tool);
 
   // Inline editing state
   const [editingField, setEditingField] = useState<EditingField>(null);
@@ -609,6 +618,18 @@ function ToolCard({
         <div className="tool-card-schema-stats">
           <span className="schema-stats-label">PDM Index:</span>
           <span className="schema-stats-value">{pdmStats.document_count} documents</span>
+        </div>
+      )}
+
+      {tool.tool_type === 'solidworks_pdm' && (
+        <div className="tool-card-schema-stats" data-testid={`pdm-tool-summary-${tool.id}`}>
+          <span className="schema-stats-label">PDM schedule:</span>
+          <span className="schema-stats-value">{pdmSchedule}</span>
+          {pdmStats?.last_indexed_at && (
+            <span className="schema-stats-memory">
+              Last success: {new Date(pdmStats.last_indexed_at).toLocaleString()}
+            </span>
+          )}
         </div>
       )}
 
