@@ -1015,7 +1015,7 @@ def _object_storage_control_request(path: str, payload: dict[str, object] | None
         raise BackupError("Object storage consistency check requires the managed encryption key")
     token = hmac.new(key, b"ragtime-object-storage-control-v1", hashlib.sha256).hexdigest()
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
-    endpoint = os.environ.get("OBJECT_STORAGE_CONTROL_URL", "http://object-storage:9001").rstrip("/")
+    endpoint = os.environ.get("OBJECT_STORAGE_CONTROL_URL", "http://runtime-s3:9001").rstrip("/")
     request = Request(
         f"{endpoint}{path}",
         data=body,

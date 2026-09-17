@@ -12,7 +12,7 @@ from fastapi import HTTPException
 
 from ragtime.config.settings import settings
 
-_BASE_URL = os.environ.get("OBJECT_STORAGE_CONTROL_URL", "http://object-storage:9001").rstrip("/")
+_BASE_URL = os.environ.get("OBJECT_STORAGE_CONTROL_URL", "http://runtime-s3:9001").rstrip("/")
 _client: httpx.AsyncClient | None = None
 
 

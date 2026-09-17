@@ -21,8 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-CODE_SERVICES = ("ragtime", "runtime", "object-storage")
-CONTAINERS = {"ragtime": "ragtime-dev", "runtime": "runtime-dev", "object-storage": "object-storage-dev"}
+CODE_SERVICES = ("ragtime", "runtime", "runtime-s3")
+CONTAINERS = {"ragtime": "ragtime-dev", "runtime": "runtime-dev", "runtime-s3": "runtime-s3-dev"}
 
 
 class SwitchRefusal(RuntimeError):
@@ -129,7 +129,7 @@ def write_override(path: Path, primary: Path, target: Path, *, storage: bool) ->
         f"      - {yaml_quote(str(data) + ':/data')}\n"
     )
     if storage:
-        content += f"  object-storage:\n    volumes: !override\n      - {yaml_quote(str(data) + ':/data')}\n"
+        content += f"  runtime-s3:\n    volumes: !override\n      - {yaml_quote(str(data) + ':/data')}\n"
     path.write_text(content, encoding="utf-8")
 
 
@@ -230,7 +230,7 @@ class Switcher:
             base_services = set(self.output([*self.compose(override=False), "config", "--services"]).splitlines())
         except subprocess.CalledProcessError as error:
             raise SwitchRefusal("target Compose file is invalid") from error
-        write_override(self.override, self.primary, self.target.path, storage="object-storage" in base_services)
+        write_override(self.override, self.primary, self.target.path, storage="runtime-s3" in base_services)
         config = json.loads(self.output([*self.compose(), "config", "--format", "json"]))
         available = config.get("services", {})
         if not {"ragtime", "runtime"}.issubset(available):
@@ -247,10 +247,10 @@ class Switcher:
         # Storage is optional in older target Compose files, but an outgoing
         # writer must still be stopped before migration reconciliation.
         self.stop_services = list(self.services)
-        if "object-storage" not in self.stop_services:
+        if "runtime-s3" not in self.stop_services:
             try:
-                if self.output(["docker", "inspect", "--format", "{{.State.Running}}", "object-storage-dev"]) == "true":
-                    self.stop_services.append("object-storage")
+                if self.output(["docker", "inspect", "--format", "{{.State.Running}}", "runtime-s3-dev"]) == "true":
+                    self.stop_services.append("runtime-s3")
             except subprocess.CalledProcessError:
                 pass
         self.sources = [item.path for item in worktrees(self.runner, self.primary) if item.path not in {self.primary, self.target.path}]
@@ -414,7 +414,7 @@ class Switcher:
             else:
                 image = inspected.get("Image")
                 if image != self.image_ids.get(service):
-                    raise RuntimeError("object-storage image differs from resolved target image")
+                    raise RuntimeError("runtime-s3 image differs from resolved target image")
         db = self.inspect("ragtime-db-dev")
         if not any(item.get("Name") == self.db_volume and item.get("Destination") == "/var/lib/postgresql" for item in db.get("Mounts", [])):
             raise RuntimeError("development DB volume changed during activation")

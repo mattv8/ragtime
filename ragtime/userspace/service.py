@@ -7316,7 +7316,7 @@ class UserSpaceService:
 
         env: dict[str, str] = {
             _WORKSPACE_OBJECT_STORAGE_ENABLED_ENV_KEY: "true",
-            _WORKSPACE_OBJECT_STORAGE_ENDPOINT_ENV_KEY: os.environ.get("OBJECT_STORAGE_ENDPOINT", "http://object-storage:9000"),
+            _WORKSPACE_OBJECT_STORAGE_ENDPOINT_ENV_KEY: os.environ.get("OBJECT_STORAGE_ENDPOINT", "http://runtime-s3:9000"),
             _WORKSPACE_OBJECT_STORAGE_REGION_ENV_KEY: config_model.region,
             _WORKSPACE_OBJECT_STORAGE_FORCE_PATH_STYLE_ENV_KEY: "true",
             _WORKSPACE_OBJECT_STORAGE_BUCKETS_ENV_KEY: json.dumps(
