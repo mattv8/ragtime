@@ -79,6 +79,10 @@ export interface AuthProviderConfig {
   totp_remember_device_days: number;
   mfa_allowed_methods: MfaMethod[];
   mfa_default_method?: MfaMethod | null;
+  web_session_hours: number | null;
+  effective_web_session_hours: number;
+  mcp_access_token_minutes: number;
+  mcp_authorization_days: number;
 }
 
 export interface UpdateAuthProviderConfigRequest {
@@ -91,6 +95,9 @@ export interface UpdateAuthProviderConfigRequest {
   totp_remember_device_days?: number;
   mfa_allowed_methods?: MfaMethod[];
   mfa_default_method?: MfaMethod | null;
+  web_session_hours?: number | null;
+  mcp_access_token_minutes?: number;
+  mcp_authorization_days?: number;
 }
 
 export interface LocalUserCreateRequest {

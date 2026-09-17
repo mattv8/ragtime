@@ -13,6 +13,8 @@ export interface OAuthParams {
   code_challenge: string;
   code_challenge_method: string;
   state: string;
+  resource?: string;
+  scope?: string;
 }
 
 interface OAuthLoginPageProps {
@@ -47,6 +49,8 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
     formData.append('code_challenge', params.code_challenge);
     formData.append('code_challenge_method', params.code_challenge_method);
     formData.append('state', params.state);
+    if (params.resource) formData.append('resource', params.resource);
+    if (params.scope) formData.append('scope', params.scope);
 
     const response = await fetch('/authorize/session', {
       method: 'POST',
@@ -76,6 +80,8 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
       formData.append('code_challenge', params.code_challenge);
       formData.append('code_challenge_method', params.code_challenge_method);
       formData.append('state', params.state);
+      if (params.resource) formData.append('resource', params.resource);
+      if (params.scope) formData.append('scope', params.scope);
       formData.append('username', username);
       formData.append('password', password);
 
