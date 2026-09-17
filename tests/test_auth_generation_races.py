@@ -2,9 +2,11 @@ import os
 import unittest
 import uuid
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 from fastapi import HTTPException
+from prisma.models import User
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -34,12 +36,15 @@ class AuthGenerationRaceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.db.execute_raw('DELETE FROM "users" WHERE "id" = $1', self.user_id)
         await disconnect_db()
 
-    def _user_snapshot(self, generation: int = 0) -> SimpleNamespace:
-        return SimpleNamespace(
-            id=self.user_id,
-            username=self.username,
-            role="user",
-            securityGeneration=generation,
+    def _user_snapshot(self, generation: int = 0) -> User:
+        return cast(
+            User,
+            SimpleNamespace(
+                id=self.user_id,
+                username=self.username,
+                role="user",
+                securityGeneration=generation,
+            ),
         )
 
     def _request(self) -> Request:
