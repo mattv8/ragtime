@@ -334,9 +334,11 @@ flowchart LR
          RUNTIME_AUTH_TOKEN: ${RUNTIME_AUTH_TOKEN:-}
          OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-http://object-storage:9000}
          OBJECT_STORAGE_CONTROL_URL: ${OBJECT_STORAGE_CONTROL_URL:-http://object-storage:9001}
+         OBJECT_STORAGE_KEY_EXPORT_PATH: /run/ragtime-storage-key/.encryption_key
        volumes:
          # Data persistence (indexes, SSL certs, etc.)
          - ./data:/data
+         - object-storage-key:/run/ragtime-storage-key
          # Optional: mount docker.sock only if you need Docker tool execution.
          # The Docker API can control the host even when the socket is mounted read-only.
          # - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -372,11 +374,17 @@ flowchart LR
          S3_PORT: "9000"
          STORAGE_CONTROL_PORT: "9001"
          STORAGE_ROOT: /data/_userspace/_object_storage
-         STORAGE_KEY_FILE: /data/.encryption_key
+         STORAGE_KEY_FILE: /run/ragtime-storage-key/.encryption_key
        volumes:
-         - ./data:/data
+         - ./data/_userspace/_object_storage:/data/_userspace/_object_storage
+         # Required for legacy S3 import; the gateway reads old workspace buckets only.
+         - ./data/_userspace/workspaces:/data/_userspace/workspaces:ro
+         - object-storage-key:/run/ragtime-storage-key:ro
        networks:
          - ragtime-network
+       depends_on:
+         ragtime:
+           condition: service_healthy
 
      runtime:
        image: hub.docker.visnovsky.us/library/runtime:main
@@ -429,6 +437,7 @@ flowchart LR
    volumes:
      ragtime-db-data:
      searxng-cache:
+     object-storage-key:
    ```
 
     > **Note:** Ragtime configuration variables are loaded from the `.env` file via `env_file`. The `ragtime.environment` section only overrides values that should use the internal container network.
