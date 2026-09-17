@@ -328,6 +328,45 @@ class ResolveRpTests(WebauthnTestCase):
 
 
 class ChallengeTokenTests(WebauthnTestCase):
+    async def test_challenge_token_round_trips_nonzero_generation(self) -> None:
+        token = webauthn_mfa._create_challenge_token(
+            user_id="user-1",
+            purpose=webauthn_mfa.WEBAUTHN_REGISTER_PURPOSE,
+            challenge=b"challenge",
+            security_generation=7,
+        )
+
+        claims = webauthn_mfa._decode_challenge_token(token, expected_purpose=webauthn_mfa.WEBAUTHN_REGISTER_PURPOSE)
+
+        assert claims is not None
+        self.assertEqual(claims.security_generation, 7)
+
+    async def test_complete_registration_rejects_stale_generation_before_consuming_challenge(self) -> None:
+        class ChallengeDelegate:
+            async def delete_many(self, where):
+                raise AssertionError("stale continuation must not consume a challenge")
+
+        db = SimpleNamespace(
+            userwebauthnchallenge=ChallengeDelegate(),
+            userwebauthncredential=self._credential_delegate([]),
+        )
+        token = webauthn_mfa._create_challenge_token(
+            user_id="user-1",
+            purpose=webauthn_mfa.WEBAUTHN_REGISTER_PURPOSE,
+            challenge=b"challenge",
+            security_generation=1,
+        )
+
+        with mock.patch("ragtime.core.webauthn_mfa.get_db", new=self._make_get_db(db)):
+            with self.assertRaises(webauthn_mfa.WebauthnError):
+                await webauthn_mfa.complete_webauthn_registration(
+                    SimpleNamespace(id="user-1", username="alice", securityGeneration=2),
+                    self._request(origin="https://ragtime.dev"),
+                    token,
+                    {},
+                    None,
+                )
+
     async def test_begin_registration_returns_json_options_and_signed_token(self) -> None:
         db = SimpleNamespace(
             authproviderconfig=self._config_delegate(methods=["totp", "webauthn"]),

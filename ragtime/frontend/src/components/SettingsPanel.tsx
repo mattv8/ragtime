@@ -106,6 +106,7 @@ import {
   type SettingsAccordionState,
 } from './settings/settingsAccordionState';
 import { getUnconfiguredCloudOAuthProviders } from './settings/cloudOAuthSetupHelp';
+import { AuthenticationTimeouts } from './settings/AuthenticationTimeouts';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -896,6 +897,7 @@ export function SettingsPanel({
   const [ldapDiscoveredGroups, setLdapDiscoveredGroups] = useState<LdapGroup[]>([]);
   const [authProviderConfig, setAuthProviderConfig] = useState<AuthProviderConfig | null>(null);
   const [authProviderConfigSaving, setAuthProviderConfigSaving] = useState(false);
+  const [authTimeoutsValid, setAuthTimeoutsValid] = useState(true);
   const [authGroups, setAuthGroups] = useState<AuthGroup[]>([]);
   const [showCreateLocalUserModal, setShowCreateLocalUserModal] = useState(false);
   const [showManageAuthGroupsModal, setShowManageAuthGroupsModal] = useState(false);
@@ -2725,12 +2727,20 @@ export function SettingsPanel({
   }, []);
 
   const handleSaveAuthProviderConfig = async () => {
+    if (!authTimeoutsValid) {
+      toast.error('Correct the authentication lifetime values before saving.');
+      return;
+    }
     setAuthProviderConfigSaving(true);
     try {
       await saveLdapConfig();
 
       if (authProviderConfig) {
-        const updated = await api.updateAuthProviderConfig(authProviderConfig);
+        const {
+          effective_web_session_hours: _effectiveWebSessionHours,
+          ...authProviderConfigUpdate
+        } = authProviderConfig;
+        const updated = await api.updateAuthProviderConfig(authProviderConfigUpdate);
         setAuthProviderConfig(updated);
       }
 
@@ -8423,6 +8433,14 @@ export function SettingsPanel({
                   </p>
                 )}
               </div>
+
+              {authProviderConfig && (
+                <AuthenticationTimeouts
+                  config={authProviderConfig}
+                  onChange={setAuthProviderConfig}
+                  onValidityChange={setAuthTimeoutsValid}
+                />
+              )}
 
               {authProviderConfig && (
                 <div className="form-group">

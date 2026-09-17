@@ -177,6 +177,8 @@ function getOAuthParams(): OAuthParams | null {
       code_challenge,
       code_challenge_method: params.get('code_challenge_method') || 'S256',
       state: params.get('state') || '',
+      resource: params.get('resource') || undefined,
+      scope: params.get('scope') || undefined,
     };
   }
   return null;
@@ -608,6 +610,8 @@ export function App() {
         formData.append('code_challenge', oauthParams.code_challenge);
         formData.append('code_challenge_method', oauthParams.code_challenge_method);
         formData.append('state', oauthParams.state);
+        if (oauthParams.resource) formData.append('resource', oauthParams.resource);
+        if (oauthParams.scope) formData.append('scope', oauthParams.scope);
 
         const response = await fetch('/authorize/session', {
           method: 'POST',
