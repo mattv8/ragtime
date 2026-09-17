@@ -22,6 +22,7 @@ import type {
   HttpApiConnectionConfig,
   HttpApiFixedSecretField,
   HttpApiSecretField,
+  PdmWebhookEnableResponse,
 } from '@/types';
 import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO, HTTP_API_SECRET_FIELDS } from '@/types';
 import { DisabledPopover } from './Popover';
@@ -2703,6 +2704,9 @@ export function ToolWizard({
           last_indexed_at: null,
         },
   );
+  const [configurePdmWebhookAfterCreate, setConfigurePdmWebhookAfterCreate] = useState(false);
+  const [pdmWebhookActivationResult, setPdmWebhookActivationResult] =
+    useState<PdmWebhookEnableResponse | null>(null);
 
   // PDM discovery state
   const [pdmDiscoveringDatabases, setPdmDiscoveringDatabases] = useState(false);
@@ -3870,6 +3874,14 @@ export function ToolWizard({
           // Don't fail the save if PDM indexing fails to start
           console.error('Failed to start PDM indexing:', pdmErr);
         }
+      }
+
+      if (!existingTool && toolType === 'solidworks_pdm' && configurePdmWebhookAfterCreate) {
+        const activationResult = await api.enablePdmWebhook(savedToolId);
+        setPdmWebhookActivationResult(activationResult);
+        setConfigurePdmWebhookAfterCreate(false);
+        setSaving(false);
+        return;
       }
 
       onSave();
@@ -5358,31 +5370,25 @@ export function ToolWizard({
           Connect to a SolidWorks PDM database to index engineering documents.
         </p>
 
-        <ReindexIntervalSelect
-          value={pdmConfig.reindex_interval_hours ?? 0}
-          onChange={(value) =>
-            setPdmConfig((current) => ({
-              ...current,
-              reindex_interval_hours: value,
-              reindex_start_minute:
-                value > 0 ? (current.reindex_start_minute ?? defaultScheduleStartMinute()) : null,
-              reindex_timezone:
-                value > 0 ? (current.reindex_timezone ?? defaultScheduleTimezone()) : null,
-            }))
-          }
+        <PdmWebhookSettings
+          toolId={existingTool?.id ?? createdToolId}
+          disabled={saving}
+          intervalHours={pdmConfig.reindex_interval_hours ?? 0}
           startMinute={pdmConfig.reindex_start_minute ?? null}
           timezone={pdmConfig.reindex_timezone ?? null}
+          onIntervalChange={(value) =>
+            setPdmConfig((current) => ({ ...current, reindex_interval_hours: value }))
+          }
           onStartMinuteChange={(value) =>
             setPdmConfig((current) => ({ ...current, reindex_start_minute: value }))
           }
           onTimezoneChange={(value) =>
             setPdmConfig((current) => ({ ...current, reindex_timezone: value }))
           }
-          label="Automatic incremental indexing"
-          style={{ marginBottom: 'var(--space-lg)' }}
+          webhookDeliveryRequested={configurePdmWebhookAfterCreate}
+          onWebhookDeliveryRequestedChange={setConfigurePdmWebhookAfterCreate}
+          activationResult={pdmWebhookActivationResult}
         />
-
-        <PdmWebhookSettings toolId={existingTool?.id ?? createdToolId} disabled={saving} />
 
         <div className="connection-panel">
           <h4 style={{ marginTop: '0', marginBottom: '0.75rem' }}>Database Connection</h4>
@@ -7333,6 +7339,44 @@ export function ToolWizard({
         return renderReview();
     }
   };
+
+  if (pdmWebhookActivationResult) {
+    return (
+      <section
+        id="pdm-webhook-activation-complete"
+        className="card wizard-card"
+        data-testid="pdm-webhook-activation-complete"
+      >
+        <div className="wizard-content">
+          <h2>Webhook delivery is ready</h2>
+          <p className="wizard-help">Copy the webhook URL and one-time secret before finishing.</p>
+          <PdmWebhookSettings
+            toolId={createdToolId}
+            intervalHours={pdmConfig.reindex_interval_hours ?? 0}
+            startMinute={pdmConfig.reindex_start_minute ?? null}
+            timezone={pdmConfig.reindex_timezone ?? null}
+            onIntervalChange={(value) =>
+              setPdmConfig((current) => ({ ...current, reindex_interval_hours: value }))
+            }
+            onStartMinuteChange={(value) =>
+              setPdmConfig((current) => ({ ...current, reindex_start_minute: value }))
+            }
+            onTimezoneChange={(value) =>
+              setPdmConfig((current) => ({ ...current, reindex_timezone: value }))
+            }
+            webhookDeliveryRequested={false}
+            onWebhookDeliveryRequestedChange={setConfigurePdmWebhookAfterCreate}
+            activationResult={pdmWebhookActivationResult}
+          />
+        </div>
+        <div className="wizard-footer">
+          <button type="button" className="btn" onClick={onSave}>
+            Done
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <div className={`card wizard-card ${embedded ? 'embedded' : ''}`}>
