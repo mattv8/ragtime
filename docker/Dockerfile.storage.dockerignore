@@ -1,0 +1,14 @@
+# This file completely replaces the root .dockerignore for Dockerfile.storage.
+# Start with no build context, then admit only this image's build inputs.
+*
+
+!storage
+storage/*
+!storage/pom.xml
+!storage/src
+!storage/src/**
+
+!docker
+docker/*
+!docker/Dockerfile.storage
+!docker/Dockerfile.storage.dockerignore

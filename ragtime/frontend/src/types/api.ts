@@ -79,6 +79,10 @@ export interface AuthProviderConfig {
   totp_remember_device_days: number;
   mfa_allowed_methods: MfaMethod[];
   mfa_default_method?: MfaMethod | null;
+  web_session_hours: number | null;
+  effective_web_session_hours: number;
+  mcp_access_token_minutes: number;
+  mcp_authorization_days: number;
 }
 
 export interface UpdateAuthProviderConfigRequest {
@@ -91,6 +95,9 @@ export interface UpdateAuthProviderConfigRequest {
   totp_remember_device_days?: number;
   mfa_allowed_methods?: MfaMethod[];
   mfa_default_method?: MfaMethod | null;
+  web_session_hours?: number | null;
+  mcp_access_token_minutes?: number;
+  mcp_authorization_days?: number;
 }
 
 export interface LocalUserCreateRequest {
@@ -1988,9 +1995,30 @@ export interface SolidworksPdmConnectionConfig extends SSHTunnelConfig {
 
   // Indexing options
   max_documents?: number | null;
+  reindex_interval_hours?: number;
+  reindex_start_minute?: number | null;
+  reindex_timezone?: string | null;
 
   // Last indexed info
   last_indexed_at?: string | null;
+}
+
+export interface PdmWebhookConfig {
+  enabled: boolean;
+  paused: boolean;
+  webhook_id: string | null;
+  webhook_url: string | null;
+  created_at: string | null;
+  last_received_at: string | null;
+  pending: boolean;
+  active_job_id: string | null;
+  last_attempt_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+}
+
+export interface PdmWebhookEnableResponse extends PdmWebhookConfig {
+  secret: string | null;
 }
 
 export interface CloudMountConnectionConfig {

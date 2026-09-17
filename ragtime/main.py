@@ -42,18 +42,23 @@ from ragtime import __version__
 from ragtime.api import router
 from ragtime.api.auth import (
     AUTH_CODE_EXPIRY,
+    OAuth2TokenResponse,
     RedirectUriValidationResult,
     _auth_codes,
     _cleanup_expired_auth_codes,
+    _normalize_mcp_resource,
     authenticate,
     build_oauth_redirect_url,
     validate_redirect_uri,
 )
+from ragtime.api.auth import oauth2_revoke as _oauth2_revoke_handler
 from ragtime.api.auth import oauth2_token as _oauth2_token_handler
 from ragtime.api.auth import router as auth_router
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.auth import (
+    AuthenticationInvalidatedError,
+    canonical_oauth_origin,
     get_browser_matched_origin,
     get_external_origin,
     issue_authenticated_session,
@@ -73,6 +78,7 @@ from ragtime.core.mfa import (
     user_allowed_enrolled_methods,
     user_has_enabled_totp,
 )
+from ragtime.core.oauth_grants import cleanup_expired_grants
 from ragtime.core.openrouter_credits import start_openrouter_credit_monitor, stop_openrouter_credit_monitor
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.runtime_manager_client import close_runtime_manager_client
@@ -98,12 +104,17 @@ from ragtime.mcp.config_routes import default_filter_router as mcp_default_filte
 from ragtime.mcp.config_routes import router as mcp_config_router
 from ragtime.mcp.oauth import (
     build_authorization_server_metadata,
+    build_interactive_authorization_server_metadata,
+    build_interactive_protected_resource_metadata,
     build_protected_resource_metadata,
 )
 from ragtime.mcp.routes import get_mcp_routes, mcp_lifespan_manager
 from ragtime.mcp.routes import router as mcp_router
 from ragtime.mcp.server import notify_tools_changed
+from ragtime.mcp.user_oauth import McpOAuthError
 from ragtime.oauth_redirects import DEFAULT_ALLOWED_ORIGINS, build_allowed_origins
+from ragtime.pdm_automation.routes import router as pdm_automation_router
+from ragtime.pdm_automation.service import pdm_automation_service
 from ragtime.rag import rag
 from ragtime.userspace.agent_routes import (
     agent_management_router,
@@ -140,6 +151,28 @@ logger = get_logger(__name__)
 
 
 _SHARE_PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+_AUTH_CLEANUP_INTERVAL_SECONDS = 60 * 60
+
+
+async def _cleanup_expired_auth_records() -> None:
+    """Remove expired web sessions and grant families without logging credentials."""
+    db = await get_db()
+    sessions = await db.session.delete_many(where={"expiresAt": {"lt": datetime.now(timezone.utc)}})
+    grants = await cleanup_expired_grants()
+    if sessions or grants:
+        logger.info("Removed expired auth records: sessions=%d grants=%d", sessions, grants)
+
+
+async def _auth_cleanup_loop() -> None:
+    """Bounded periodic cleanup that exits promptly during application shutdown."""
+    while True:
+        try:
+            await _cleanup_expired_auth_records()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Expired auth record cleanup failed")
+        await asyncio.sleep(_AUTH_CLEANUP_INTERVAL_SECONDS)
 
 
 def _schedule_pid1_sigterm(callback: Any, *args: object) -> None:
@@ -295,11 +328,23 @@ async def lifespan(app: FastAPI):
     userspace_runtime_service.schedule_runtime_bridge_refresh_watch()
     await workspace_code_index_service.start()
     await git_webhook_service.start()
+    await pdm_automation_service.start()
+    # Start cleanup after readiness-critical initialization. It is deliberately
+    # independent of startup success and always cancelled before DB teardown.
+    auth_cleanup_task = asyncio.create_task(_auth_cleanup_loop(), name="auth-expiry-cleanup")
     # Start MCP session manager (enable/disable checked at request time)
-    async with mcp_lifespan_manager():
-        yield
+    try:
+        async with mcp_lifespan_manager():
+            yield
+    finally:
+        auth_cleanup_task.cancel()
+        try:
+            await auth_cleanup_task
+        except asyncio.CancelledError:
+            pass
 
     # Cleanup - cancel the startup Git policy reconciliation task
+    await pdm_automation_service.stop()
     await git_webhook_service.stop()
     await workspace_code_index_service.stop()
     await userspace_service.shutdown_git_drift_reconciliation()
@@ -489,6 +534,7 @@ app.include_router(auth_router)
 
 # Include public git webhook routes
 app.include_router(git_webhook_router)
+app.include_router(pdm_automation_router)
 
 # Include indexer routes
 app.include_router(indexer_router)
@@ -585,7 +631,7 @@ async def oauth_discovery(request: Request):
     """
     # Use the browser-visible origin so OAuth metadata stays HTTPS-correct
     # when Ragtime runs behind a TLS-terminating reverse proxy.
-    base_url = get_browser_matched_origin(request)
+    base_url = canonical_oauth_origin(request)
 
     # Security warning: OAuth should use HTTPS in production
     if base_url.startswith("http://") and not settings.debug_mode:
@@ -597,24 +643,7 @@ async def oauth_discovery(request: Request):
     if app_settings.get("mcp_default_route_auth") and app_settings.get("mcp_default_route_auth_method") == "client_credentials":
         return build_authorization_server_metadata(base_url, None)
 
-    return {
-        "issuer": base_url,
-        "authorization_endpoint": f"{base_url}/authorize",
-        "token_endpoint": f"{base_url}/token",
-        # Dynamic Client Registration (RFC 7591) - fallback for clients without pre-registration
-        "registration_endpoint": f"{base_url}/register",
-        "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code", "password"],
-        "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": ["none"],
-        # Client ID Metadata Documents support (draft-ietf-oauth-client-id-metadata-document-00)
-        # This tells MCP clients they can use HTTPS URLs as client_ids without pre-registration
-        "client_id_metadata_document_supported": True,
-        # Additional standard fields for broader client compatibility
-        "scopes_supported": [],
-        "response_modes_supported": ["query"],
-        "service_documentation": f"{base_url}/docs",
-    }
+    return build_interactive_authorization_server_metadata(base_url)
 
 
 @app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
@@ -633,7 +662,7 @@ async def oauth_protected_resource(request: Request, path: str = ""):
     """
     # Use the browser-visible origin so protected-resource metadata points
     # clients at the same public HTTPS origin they are already using.
-    base_url = get_browser_matched_origin(request)
+    base_url = canonical_oauth_origin(request)
 
     normalized_path = (path or "").strip("/")
     route_path: str | None = None
@@ -665,12 +694,7 @@ async def oauth_protected_resource(request: Request, path: str = ""):
     else:
         resource_path = f"/mcp/{path}"
 
-    return {
-        "resource": f"{base_url}{resource_path}",
-        "authorization_servers": [base_url],
-        "scopes_supported": [],
-        "bearer_methods_supported": ["header"],
-    }
+    return build_interactive_protected_resource_metadata(base_url, route_path)
 
 
 @app.get("/authorize", include_in_schema=False)
@@ -682,6 +706,8 @@ async def authorize_get(
     code_challenge: str = Query(..., description="PKCE code challenge"),
     code_challenge_method: str = Query("S256", description="PKCE method (must be S256)"),
     state: Optional[str] = Query(None, description="CSRF state parameter"),
+    scope: Optional[str] = Query(None, description="Requested OAuth scopes"),
+    resource: Optional[str] = Query(None, description="MCP protected resource"),
 ):
     """
     OAuth2 Authorization Endpoint (RFC 6749) - GET request.
@@ -735,6 +761,10 @@ async def authorize_get(
     }
     if state:
         params["state"] = state
+    if scope is not None:
+        params["scope"] = scope
+    if resource is not None:
+        params["resource"] = resource
 
     return RedirectResponse(url=f"/?{urlencode(params)}", status_code=302)
 
@@ -749,6 +779,8 @@ async def authorize_post(
     code_challenge: str = Form(...),
     code_challenge_method: str = Form("S256"),
     state: str = Form(""),
+    scope: Optional[str] = Form(None),
+    resource: Optional[str] = Form(None),
     username: str = Form(...),
     password: str = Form(...),
 ):
@@ -766,6 +798,14 @@ async def authorize_post(
             status_code=400,
             content=_oauth_redirect_error_payload(redirect_validation),
         )
+
+    try:
+        audience = await _normalize_mcp_resource(resource, request)
+    except McpOAuthError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"error": exc.error, "error_description": exc.description})
+    except Exception:
+        logger.exception("MCP resource normalization failed")
+        return JSONResponse(status_code=400, content={"error": "invalid_target", "error_description": "Invalid MCP resource"})
 
     # Authenticate user
     result = await authenticate(username, password)
@@ -798,6 +838,7 @@ async def authorize_post(
                         username=result.username or result.user_id,
                         role=result.role,
                         purpose="challenge",
+                        security_generation=getattr(user, "securityGeneration", 0),
                     ),
                 }
             )
@@ -811,6 +852,7 @@ async def authorize_post(
                         username=result.username or result.user_id,
                         role=result.role,
                         purpose="enroll",
+                        security_generation=getattr(user, "securityGeneration", 0),
                     ),
                 }
             )
@@ -831,6 +873,9 @@ async def authorize_post(
         "role": result.role,
         "mfa_verified": mfa_verified,
         "auth_methods": auth_methods,
+        "security_generation": getattr(user, "securityGeneration", 0),
+        "resource": audience,
+        "scope": (scope or "").strip(),
         "expires": time.time() + AUTH_CODE_EXPIRY,
     }
 
@@ -846,16 +891,20 @@ async def authorize_post(
     response = JSONResponse(content={"redirect_url": redirect_url})
 
     # Create session for the user (so they stay logged in to Ragtime)
-    await issue_authenticated_session(
-        response,
-        user_id=result.user_id,
-        username=username,
-        role=result.role,
-        user_agent=request.headers.get("User-Agent"),
-        ip_address=request.client.host if request.client else None,
-        mfa_verified=mfa_verified,
-        auth_methods=auth_methods,
-    )
+    try:
+        await issue_authenticated_session(
+            response,
+            user_id=result.user_id,
+            username=username,
+            role=result.role,
+            user_agent=request.headers.get("User-Agent"),
+            ip_address=request.client.host if request.client else None,
+            mfa_verified=mfa_verified,
+            auth_methods=auth_methods,
+            security_generation=getattr(user, "securityGeneration", 0),
+        )
+    except AuthenticationInvalidatedError:
+        return JSONResponse(status_code=401, content={"error": "Authentication is no longer valid"})
 
     return response
 
@@ -869,6 +918,8 @@ async def authorize_with_session(
     code_challenge: str = Form(...),
     code_challenge_method: str = Form("S256"),
     state: str = Form(""),
+    scope: Optional[str] = Form(None),
+    resource: Optional[str] = Form(None),
 ):
     """
     OAuth2 Authorization using existing session.
@@ -883,6 +934,14 @@ async def authorize_with_session(
             status_code=400,
             content=_oauth_redirect_error_payload(redirect_validation),
         )
+
+    try:
+        audience = await _normalize_mcp_resource(resource, request)
+    except McpOAuthError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"error": exc.error, "error_description": exc.description})
+    except Exception:
+        logger.exception("MCP resource normalization failed")
+        return JSONResponse(status_code=400, content={"error": "invalid_target", "error_description": "Invalid MCP resource"})
 
     # Extract session token from cookie
     session_cookie = request.cookies.get("ragtime_session")
@@ -916,6 +975,9 @@ async def authorize_with_session(
         "role": user.role,
         "mfa_verified": token_data.mfa_verified,
         "auth_methods": token_data.auth_methods,
+        "security_generation": token_data.security_generation,
+        "resource": audience,
+        "scope": (scope or "").strip(),
         "expires": time.time() + AUTH_CODE_EXPIRY,
     }
 
@@ -956,7 +1018,7 @@ async def token_endpoint_get(request: Request):
     return response
 
 
-@app.post("/token", include_in_schema=False)
+@app.post("/token", include_in_schema=False, response_model=OAuth2TokenResponse, response_model_exclude_none=True)
 async def token_endpoint(
     request: Request,
     response: Response,
@@ -970,6 +1032,8 @@ async def token_endpoint(
     redirect_uri: Optional[str] = Form(default=None),
     client_id: Optional[str] = Form(default=None),
     scope: Optional[str] = Form(default=None),
+    resource: Optional[str] = Form(default=None),
+    refresh_token: Optional[str] = Form(default=None),
 ):
     """
     OAuth2 Token Endpoint (RFC 6749 Section 3.2).
@@ -998,7 +1062,20 @@ async def token_endpoint(
         redirect_uri=redirect_uri,
         client_id=client_id,
         scope=scope,
+        resource=resource,
+        refresh_token=refresh_token,
     )
+
+
+@app.post("/revoke", include_in_schema=False)
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def revoke_endpoint(
+    request: Request,
+    token: str = Form(...),
+    client_id: Optional[str] = Form(default=None),
+):
+    """Compatibility alias for the interactive OAuth revocation endpoint."""
+    return await _oauth2_revoke_handler(request=request, token=token, client_id=client_id)
 
 
 def _share_reserved_roots() -> set[str]:

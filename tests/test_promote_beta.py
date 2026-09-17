@@ -170,14 +170,14 @@ class PromoteBetaTests(unittest.TestCase):
 
     def test_rejects_missing_or_failed_evidence(self) -> None:
         main_before = self._origin_ref("main")
-        payloads: tuple[dict[str, Any], ...] = (
+        payload: dict[str, Any]
+        for payload in (
             {"workflow_runs": []},
             {
                 "total_count": 1,
                 "workflow_runs": [self._workflow_run(self._origin_ref("beta"), conclusion="failure")],
             },
-        )
-        for payload in payloads:
+        ):
             with (
                 self.subTest(payload=payload),
                 mock.patch.object(promote_beta, "repo_slug_from_remote", return_value="example/repository"),

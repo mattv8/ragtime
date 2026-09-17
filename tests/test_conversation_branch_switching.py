@@ -229,6 +229,7 @@ class ConversationBranchRouteConflictTests(unittest.IsolatedAsyncioTestCase):
             roleManuallySet=False,
             createdAt=now,
             updatedAt=now,
+            securityGeneration=0,
         )
 
     async def test_switch_surfaces_active_task_conflict(self):

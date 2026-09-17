@@ -22,6 +22,8 @@ const oauthParams: OAuthParams = {
   code_challenge: 'challenge',
   code_challenge_method: 'S256',
   state: 'state-1',
+  resource: 'https://ragtime.example/mcp/engineering',
+  scope: 'tools.read tools.search',
 };
 
 describe('OAuthLoginPage gradient shell', () => {
@@ -71,5 +73,28 @@ describe('OAuthLoginPage gradient shell', () => {
     const surface = document.querySelector('[data-auth-surface="gradient"]');
     expect(surface).toBeTruthy();
     expect(screen.getByTestId('webgl-gradient')).toBeTruthy();
+  });
+
+  it('forwards resource and scope through password authorization', async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      redirected: false,
+      json: async () => ({
+        mfa_required: true,
+        mfa_challenge_token: 'challenge-token',
+        mfa_methods: ['totp'],
+      }),
+    } as Response);
+
+    render(<OAuthLoginPage params={oauthParams} />);
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'local:admin' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    const request = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit;
+    const body = new URLSearchParams(request.body as string);
+    expect(body.get('resource')).toBe(oauthParams.resource);
+    expect(body.get('scope')).toBe(oauthParams.scope);
   });
 });

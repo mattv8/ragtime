@@ -136,6 +136,24 @@ class TotpEnrollmentSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("otpauth_uri", setup)
         self.assertIn("enrollment_token", setup)
 
+    async def test_begin_enrollment_captures_current_nonzero_generation(self) -> None:
+        class FactorDelegate:
+            async def find_unique(self, where):
+                return None
+
+        db = SimpleNamespace(usermfafactor=FactorDelegate())
+        user = SimpleNamespace(id="user-1", username="alice", securityGeneration=7)
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            setup = await mfa.begin_totp_enrollment(user)
+
+        claims = mfa.decode_totp_enrollment_token(setup["enrollment_token"])
+        assert claims is not None
+        self.assertEqual(claims.security_generation, 7)
+
     async def test_begin_enrollment_rejects_existing_enabled_factor(self) -> None:
         class FactorDelegate:
             async def find_unique(self, where):
@@ -228,6 +246,23 @@ class TotpEnrollmentSafetyTests(unittest.IsolatedAsyncioTestCase):
                 "123456",
                 "not-a-valid-token",
             )
+
+        self.assertFalse(success)
+        self.assertEqual(recovery_codes, [])
+
+    async def test_complete_enrollment_rejects_stale_generation_before_factor_lookup(self) -> None:
+        class FactorDelegate:
+            async def find_unique(self, where):
+                raise AssertionError("stale continuation must not inspect or mutate factors")
+
+        db = SimpleNamespace(usermfafactor=FactorDelegate())
+        token = mfa.create_totp_enrollment_token(user_id="user-1", username="alice", role="user", secret=mfa.generate_totp_secret(), security_generation=1)
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            success, recovery_codes = await mfa.confirm_totp_enrollment(SimpleNamespace(id="user-1", username="alice", securityGeneration=2), "123456", token)
 
         self.assertFalse(success)
         self.assertEqual(recovery_codes, [])

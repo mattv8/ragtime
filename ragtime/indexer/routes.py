@@ -156,6 +156,7 @@ from ragtime.core.openai_codex_auth import (
     extract_openai_codex_account_id,
 )
 from ragtime.core.openrouter_credits import get_openrouter_credit_status
+from ragtime.core.scheduling import normalize_timezone_name
 from ragtime.core.security import (
     get_current_user,
     get_current_user_optional,
@@ -2517,6 +2518,32 @@ async def _merge_http_api_oauth_session(
     return connection_config, str(session_id)
 
 
+def _validate_pdm_schedule(connection_config: dict[str, Any]) -> dict[str, Any]:
+    """Validate only PDM automation keys; leave arbitrary connection fields intact."""
+    result = dict(connection_config)
+    try:
+        interval = int(result.get("reindex_interval_hours", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="PDM reindex interval must be an integer") from exc
+    if not 0 <= interval <= 8760:
+        raise HTTPException(status_code=422, detail="PDM reindex interval must be between 0 and 8760 hours")
+    result["reindex_interval_hours"] = interval
+    if interval == 0:
+        result["reindex_start_minute"] = None
+        result["reindex_timezone"] = None
+        return result
+    minute = result.get("reindex_start_minute")
+    if minute is not None and (isinstance(minute, bool) or not str(minute).strip().isdigit() or not 0 <= int(minute) <= 1439):
+        raise HTTPException(status_code=422, detail="PDM schedule start minute must be between 0 and 1439")
+    result["reindex_start_minute"] = int(minute) if minute is not None else None
+    timezone_name = result.get("reindex_timezone")
+    normalized_timezone = normalize_timezone_name(timezone_name)
+    if timezone_name not in (None, "") and normalized_timezone is None:
+        raise HTTPException(status_code=422, detail="PDM schedule timezone must be a valid IANA timezone")
+    result["reindex_timezone"] = normalized_timezone
+    return result
+
+
 @router.post("/tools/http-api/oauth/discover", tags=["Tools"])
 async def discover_http_api_oauth(request: HttpApiOAuthDiscoverRequest, _user: User = Depends(require_admin)) -> dict[str, Any]:
     try:
@@ -2598,6 +2625,8 @@ async def create_tool_config(request: CreateToolConfigRequest, _user: User = Dep
             owner_id=str(getattr(_user, "id", "")),
         )
         connection_config = _parse_http_api_connection_config(connection_config)
+    elif request.tool_type == ToolType.SOLIDWORKS_PDM:
+        connection_config = _validate_pdm_schedule(connection_config)
 
     # For filesystem indexers, ensure index_name is sanitized for safe filesystem/DB usage
     if request.tool_type == ToolType.FILESYSTEM_INDEXER:
@@ -2824,6 +2853,8 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _us
                 except Exception as exc:
                     raise HTTPException(status_code=400, detail="OAuth session is invalid or expired") from exc
                 updates["connection_config"].update(_oauth_credentials_payload(credentials))
+    elif original_config.tool_type == ToolType.SOLIDWORKS_PDM and isinstance(updates.get("connection_config"), dict):
+        updates["connection_config"] = _validate_pdm_schedule({**(original_config.connection_config or {}), **updates["connection_config"]})
 
     # Check if name is being changed - if so, use rename_tool_config for consistency
     if "name" in updates and updates["name"] is not None:
