@@ -49,6 +49,7 @@ ENV PYTHONPATH=/ragtime \
     PATH="/opt/venv/bin:$PATH"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    jq \
     nodejs \
     npm \
     && rm -rf /var/lib/apt/lists/*
@@ -58,7 +59,7 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     npm install --global jscpd@4.0.5
 RUN command -v ruff >/dev/null && python -m ruff --version && \
-    python -m mypy --version && python -m pyright --version && jscpd --version
+    python -m mypy --version && python -m pyright --version && jq --version && jscpd --version
 WORKDIR /ragtime
 RUN ln -s /opt/venv /ragtime/.venv
 COPY prisma/schema.prisma /ragtime/prisma/schema.prisma
