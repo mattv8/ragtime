@@ -41,7 +41,11 @@ Workspace deletion revokes access and retains a tombstone; retained namespaces a
 
 Local full/files backups ask the gateway to quiesce and checkpoint before copying its metadata and bytes. If initialized storage cannot provide that consistency lease, the backup fails rather than producing a backup advertised as complete. External backing backups contain Ragtime's configuration, bindings, and manifests; remote provider bytes are not copied. Workspace source snapshots remain code-only.
 
-Restore object-storage data only while the gateway is offline. Stop the `object-storage` service before restoring, then run the restore command with `OBJECT_STORAGE_RESTORE_OFFLINE_CONFIRMED=true`; start it again only after the replacement completes. This prevents a running gateway from continuing with stale SQLite registry or object-index state.
+The Compose gateway receives three mounts: read-write `/data/_userspace/_object_storage`, read-only `/data/_userspace/workspaces` for legacy S3 bucket imports, and the read-only `object-storage-key` volume. Ragtime publishes its persisted managed key into that volume at startup. The key volume is a disposable projection: it is not authoritative and is not a backup source. Encrypted backups made with `--include-secret` retain the existing authoritative managed-key behavior.
+
+The gateway reads its key once at startup. For a full/files restore, stop the gateway before restoring when the archive contains object storage or the destination object-storage directory already exists. A database-only restore that includes a managed key also requires the gateway to be stopped when that destination exists. Set `OBJECT_STORAGE_RESTORE_OFFLINE_CONFIRMED=true` only after the gateway is offline.
+
+After either restore, restart Ragtime so it republishes the restored authoritative key, wait for Ragtime health, then recreate the gateway with `docker compose up -d --force-recreate object-storage`. Do not use `docker compose start` or `docker compose restart` for this step: recreation renews the gateway's narrowed storage bind after a subtree replacement. A backup of initialized local storage still requires the running gateway for its consistency lease; stopping it is only part of restore ordering.
 
 ## Disposable SDK conformance harness
 

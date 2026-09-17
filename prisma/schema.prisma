@@ -560,6 +560,7 @@ model ToolConfig {
   // Relation to userspace mount sources backed by this tool
   mountSources UserspaceMountSource[]
   accessPolicy ToolAccessPolicy?
+  pdmAutomationState PdmAutomationState?
 
   @@index([groupId])
   @@map("tool_configs")
@@ -895,6 +896,30 @@ model PdmIndexJob {
   @@map("pdm_index_jobs")
 }
 
+/// Per-tool durable automation state. PDM jobs remain the execution history.
+model PdmAutomationState {
+  toolConfigId String @id @map("tool_config_id")
+  toolConfig   ToolConfig @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+  webhookId String? @unique @map("webhook_id")
+  webhookSecret String? @map("webhook_secret")
+  webhookPaused Boolean @default(false) @map("webhook_paused")
+  webhookCreatedAt DateTime? @map("webhook_created_at")
+  pendingWebhook Boolean @default(false) @map("pending_webhook")
+  pendingSchedule Boolean @default(false) @map("pending_schedule")
+  firstPendingAt DateTime? @map("first_pending_at")
+  lastReceivedAt DateTime? @map("last_received_at")
+  lastEventId String? @map("last_event_id")
+  pendingGeneration Int @default(0) @map("pending_generation")
+  claimedGeneration Int? @map("claimed_generation")
+  activeJobId String? @map("active_job_id")
+  lastAttemptAt DateTime? @map("last_attempt_at")
+  lastSuccessAt DateTime? @map("last_success_at")
+  lastError String? @map("last_error")
+
+  @@index([pendingWebhook, pendingSchedule])
+  @@map("pdm_automation_state")
+}
+
 /// PDM document metadata for incremental indexing (change detection)
 model PdmDocumentMetadata {
   id           String   @id @default(uuid())
@@ -1039,6 +1064,7 @@ model User {
   defaultChatModel   String?       @map("default_chat_model")
   mfaPreferredMethod String?       @map("mfa_preferred_method") // Preferred 2FA method presented first at login; null means inherit the global default
   lastLoginAt        DateTime?     @map("last_login_at")
+  securityGeneration Int           @default(0) @map("security_generation")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
@@ -1072,6 +1098,7 @@ model User {
   workspacePreferences                 WorkspaceUserPreference[]
   approvedWorkspacePublishedEndpoints  WorkspacePublishedEndpoint[]          @relation("PublishedEndpointApprover")
   createdWorkspaceServiceCredentials   WorkspaceServiceCredential[]          @relation("WorkspaceServiceCredentialCreator")
+  oauthGrants                          OAuthGrant[]
 
   @@index([authProvider])
   @@index([sourceProvider, sourceId])
@@ -1107,6 +1134,9 @@ model AuthProviderConfig {
   totpRememberDeviceDays Int        @default(30) @map("totp_remember_device_days")
   mfaAllowedMethods      String[]   @default(["totp"]) @map("mfa_allowed_methods")
   mfaDefaultMethod       String?    @map("mfa_default_method") // Global default 2FA method presented first at login; null means no forced default
+  webSessionHours        Int?       @map("web_session_hours")
+  mcpAccessTokenMinutes  Int        @default(60) @map("mcp_access_token_minutes")
+  mcpAuthorizationDays   Int        @default(30) @map("mcp_authorization_days")
   updatedAt              DateTime   @default(now()) @updatedAt @map("updated_at")
 
   @@map("auth_provider_config")
@@ -1273,6 +1303,42 @@ model Session {
   @@index([userId, expiresAt])
   @@index([expiresAt])
   @@map("sessions")
+}
+
+/// Persistent authorization family for refreshable interactive MCP OAuth credentials.
+model OAuthGrant {
+  id                 String    @id @default(uuid())
+  userId             String    @map("user_id")
+  clientId           String    @map("client_id")
+  audience           String
+  scope              String    @default("")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  expiresAt          DateTime  @map("expires_at")
+  revokedAt          DateTime? @map("revoked_at")
+  securityGeneration Int       @map("security_generation")
+  mfaVerifiedAt      DateTime? @map("mfa_verified_at")
+  authMethods        Json      @default("[]") @map("auth_methods")
+
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens OAuthRefreshToken[]
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+  @@map("oauth_grants")
+}
+
+/// Hash-only, single-use refresh-token history retained for replay detection.
+model OAuthRefreshToken {
+  id         String    @id @default(uuid())
+  grantId    String    @map("grant_id")
+  tokenHash  String    @unique @map("token_hash")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  consumedAt DateTime? @map("consumed_at")
+
+  grant OAuthGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+
+  @@index([grantId])
+  @@map("oauth_refresh_tokens")
 }
 
 /// LDAP configuration (stored in database for UI management)

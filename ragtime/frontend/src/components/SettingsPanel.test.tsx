@@ -67,6 +67,8 @@ const apiMock = vi.hoisted(() => ({
   listMcpRoutes: vi.fn(),
   listCloudOAuthProviders: vi.fn(),
   getLdapConfig: vi.fn(),
+  updateLdapConfig: vi.fn(),
+  updateAuthProviderConfig: vi.fn(),
   updateSettings: vi.fn(),
 }));
 
@@ -420,7 +422,21 @@ beforeEach(() => {
 
   apiMock.getSettings.mockResolvedValue(buildSettingsResponse());
   apiMock.getUserSpacePreviewSettings.mockResolvedValue({});
-  apiMock.getAuthProviderConfig.mockResolvedValue({ provider: 'local_managed' });
+  apiMock.getAuthProviderConfig.mockResolvedValue({
+    provider: 'local_managed',
+    local_users_enabled: true,
+    ldap_lazy_sync_enabled: false,
+    manual_role_override_wins: false,
+    cache_ttl_minutes: 60,
+    totp_policy: 'optional',
+    totp_required_group_ids: [],
+    totp_remember_device_days: 30,
+    mfa_allowed_methods: ['totp'],
+    web_session_hours: null,
+    effective_web_session_hours: 24,
+    mcp_access_token_minutes: 60,
+    mcp_authorization_days: 30,
+  });
   apiMock.listAuthGroups.mockResolvedValue([]);
   apiMock.getCopilotAuthStatus.mockResolvedValue({
     connected: false,
@@ -493,6 +509,12 @@ beforeEach(() => {
   apiMock.listMcpRoutes.mockResolvedValue({ routes: [] });
   apiMock.listCloudOAuthProviders.mockResolvedValue([]);
   apiMock.getLdapConfig.mockResolvedValue({ server_url: '', allow_self_signed: false });
+  apiMock.updateLdapConfig.mockResolvedValue({ server_url: '', allow_self_signed: false });
+  apiMock.updateAuthProviderConfig.mockImplementation(async (payload: Record<string, unknown>) => ({
+    ...apiMock.getAuthProviderConfig.mock.results[0]?.value,
+    ...payload,
+    effective_web_session_hours: 24,
+  }));
   apiMock.updateSettings.mockImplementation(async (payload: Record<string, unknown>) => {
     const current = buildSettingsResponse().settings;
     return {
@@ -564,6 +586,92 @@ async function renderAuthProvider(provider: 'github_copilot' | 'openai_codex' | 
 }
 
 describe('SettingsPanel', () => {
+  it('edits authentication lifetimes, restores inherited web policy, and omits the effective value', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+    render(
+      <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Authentication Providers/ }));
+    const webHours = (await screen.findByLabelText(
+      'Web session override (hours)',
+    )) as HTMLInputElement;
+    expect(webHours.value).toBe('');
+    expect(screen.getByText('Effective web session lifetime: 24 hours.')).toBeTruthy();
+
+    fireEvent.change(webHours, { target: { value: '48' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset to inherited value' }));
+    fireEvent.change(screen.getByLabelText('MCP access token lifetime (minutes)'), {
+      target: { value: '90' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Authentication Policy' }));
+
+    await waitFor(() => expect(apiMock.updateAuthProviderConfig).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateAuthProviderConfig.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        web_session_hours: null,
+        mcp_access_token_minutes: 90,
+        mcp_authorization_days: 30,
+      }),
+    );
+    expect(apiMock.updateAuthProviderConfig.mock.calls[0]?.[0]).not.toHaveProperty(
+      'effective_web_session_hours',
+    );
+  });
+
+  it('rejects invalid authentication lifetime input before saving', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+    render(
+      <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Authentication Providers/ }));
+    fireEvent.change(await screen.findByLabelText('MCP authorization lifetime (days)'), {
+      target: { value: '0' },
+    });
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'Enter a whole number from 1 to 90.',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Authentication Policy' }));
+    expect(apiMock.updateAuthProviderConfig).not.toHaveBeenCalled();
+    expect(toastErrorSpy).toHaveBeenCalledWith(
+      'Correct the authentication lifetime values before saving.',
+    );
+  });
+
+  it('keeps an invalid web override and disabled save state through independent auth edits', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+    render(
+      <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Authentication Providers/ }));
+    const webHours = (await screen.findByLabelText(
+      'Web session override (hours)',
+    )) as HTMLInputElement;
+    fireEvent.change(webHours, { target: { value: '0' } });
+    expect(webHours.value).toBe('0');
+    expect(await screen.findByRole('alert')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('MCP access token lifetime (minutes)'), {
+      target: { value: '90' },
+    });
+    const totpPolicy = screen.getByText('TOTP Policy').parentElement?.querySelector('select');
+    if (!(totpPolicy instanceof HTMLSelectElement)) {
+      throw new Error('Expected TOTP policy select');
+    }
+    fireEvent.change(totpPolicy, { target: { value: 'required_all' } });
+
+    expect(webHours.value).toBe('0');
+    expect(screen.getByRole('alert').textContent).toContain('Enter a whole number from 1 to 720.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save Authentication Policy' }));
+    expect(apiMock.updateAuthProviderConfig).not.toHaveBeenCalled();
+    expect(toastErrorSpy).toHaveBeenCalledWith(
+      'Correct the authentication lifetime values before saving.',
+    );
+  });
+
   it('renders and updates the chat attachment token budget slider', async () => {
     const { SettingsPanel } = await import('./SettingsPanel');
 

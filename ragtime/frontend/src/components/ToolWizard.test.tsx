@@ -21,6 +21,7 @@ const apiMock = vi.hoisted(() => ({
   getFilesystemAnalysisJob: vi.fn(),
   triggerSchemaIndex: vi.fn(),
   triggerPdmIndex: vi.fn(),
+  getPdmWebhook: vi.fn(),
   discoverMounts: vi.fn(),
   browseFilesystem: vi.fn(),
   browseSSHFilesystem: vi.fn(),
@@ -286,6 +287,105 @@ afterEach(() => {
 });
 
 describe('ToolWizard', () => {
+  it('defaults new PDM tools to manual scheduling and indexes only the save create branch', async () => {
+    apiMock.createToolConfig.mockResolvedValueOnce({
+      ...postgresContainerTool,
+      id: 'pdm-created',
+      tool_type: 'solidworks_pdm',
+    });
+
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        defaultToolType="solidworks_pdm"
+      />,
+    );
+
+    expect(
+      (screen.getByLabelText('Automatic incremental indexing') as HTMLSelectElement).value,
+    ).toBe('0');
+    fireEvent.change(screen.getByLabelText('Automatic incremental indexing'), {
+      target: { value: '6' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('server.database.windows.net'), {
+      target: { value: 'pdm.example' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('sa or domain\\\\user'), {
+      target: { value: 'pdm-user' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('********'), {
+      target: { value: 'pdm-password' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('PDM_Vault'), { target: { value: 'PDM_Vault' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText(/Configure which documents and metadata to index/);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByPlaceholderText('e.g., Production Database, Staging Odoo');
+    fireEvent.change(screen.getByPlaceholderText('e.g., Production Database, Staging Odoo'), {
+      target: { value: 'Engineering PDM' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText('Configure limits and security options for this tool.');
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByRole('button', { name: 'Create Tool' });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Tool' }));
+
+    await waitFor(() => expect(apiMock.createToolConfig).toHaveBeenCalledTimes(1));
+    expect(apiMock.createToolConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connection_config: expect.objectContaining({ reindex_interval_hours: 6 }),
+      }),
+    );
+    expect(apiMock.triggerPdmIndex).toHaveBeenCalledWith('pdm-created');
+  });
+
+  it('does not index PDM again when saving an existing tool', async () => {
+    const existingPdmTool: ToolConfig = {
+      ...postgresContainerTool,
+      id: 'pdm-existing',
+      name: 'Engineering PDM',
+      tool_type: 'solidworks_pdm',
+      connection_config: {
+        host: 'pdm.example',
+        user: 'pdm-user',
+        password: 'saved',
+        database: 'PDM_Vault',
+        file_extensions: ['.SLDPRT'],
+        reindex_interval_hours: 0,
+      },
+    };
+    apiMock.updateToolConfig.mockResolvedValue(existingPdmTool);
+    apiMock.getPdmWebhook.mockResolvedValue({ enabled: false });
+
+    render(
+      <ToolWizard
+        existingTool={existingPdmTool}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        defaultToolType="solidworks_pdm"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText(/Configure which documents and metadata to index/);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText('Configure limits and security options for this tool.');
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByRole('button', { name: 'Save Changes' });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() =>
+      expect(apiMock.updateToolConfig).toHaveBeenCalledWith('pdm-existing', expect.anything()),
+    );
+    expect(apiMock.triggerPdmIndex).not.toHaveBeenCalled();
+  });
+
   it('adds an Access step before review for every wizard variant', async () => {
     const cases: Array<{
       label: string;

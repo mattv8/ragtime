@@ -2677,6 +2677,51 @@ export const api = {
     return handleResponse<import('@/types').PdmIndexStats>(response);
   },
 
+  async getPdmWebhook(toolId: string): Promise<import('@/types').PdmWebhookConfig> {
+    const response = await apiFetch(`${API_BASE}/tools/${encodeURIComponent(toolId)}/pdm/webhook`);
+    return handleResponse<import('@/types').PdmWebhookConfig>(response);
+  },
+
+  async enablePdmWebhook(toolId: string): Promise<import('@/types').PdmWebhookEnableResponse> {
+    const response = await apiFetch(`${API_BASE}/tools/${encodeURIComponent(toolId)}/pdm/webhook`, {
+      method: 'POST',
+    });
+    return handleResponse<import('@/types').PdmWebhookEnableResponse>(response);
+  },
+
+  async rotatePdmWebhookSecret(
+    toolId: string,
+  ): Promise<import('@/types').PdmWebhookEnableResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/tools/${encodeURIComponent(toolId)}/pdm/webhook/rotate`,
+      { method: 'POST' },
+    );
+    return handleResponse<import('@/types').PdmWebhookEnableResponse>(response);
+  },
+
+  async pausePdmWebhook(toolId: string): Promise<import('@/types').PdmWebhookConfig> {
+    const response = await apiFetch(
+      `${API_BASE}/tools/${encodeURIComponent(toolId)}/pdm/webhook/pause`,
+      { method: 'POST' },
+    );
+    return handleResponse<import('@/types').PdmWebhookConfig>(response);
+  },
+
+  async resumePdmWebhook(toolId: string): Promise<import('@/types').PdmWebhookConfig> {
+    const response = await apiFetch(
+      `${API_BASE}/tools/${encodeURIComponent(toolId)}/pdm/webhook/resume`,
+      { method: 'POST' },
+    );
+    return handleResponse<import('@/types').PdmWebhookConfig>(response);
+  },
+
+  async disablePdmWebhook(toolId: string): Promise<import('@/types').PdmWebhookConfig> {
+    const response = await apiFetch(`${API_BASE}/tools/${encodeURIComponent(toolId)}/pdm/webhook`, {
+      method: 'DELETE',
+    });
+    return handleResponse<import('@/types').PdmWebhookConfig>(response);
+  },
+
   /**
    * List all PDM indexing jobs across all tools
    */
