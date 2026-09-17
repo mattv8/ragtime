@@ -1,0 +1,137 @@
+# Keeps one auto-merge-enabled beta PR moving at a time.  This intentionally
+# uses only GitHub metadata APIs: it never checks out or executes PR code.
+name: Merge serializer
+
+on:
+  push:
+    branches: [beta]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: merge-serializer
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  advance-queue:
+    if: github.ref == 'refs/heads/beta'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Advance the oldest queued PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.MERGE_SERIALIZER_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::MERGE_SERIALIZER_TOKEN is required (fine-grained PAT)." >&2
+            exit 1
+          fi
+
+          fail_json() {
+            echo "::error::$1" >&2
+            exit 1
+          }
+          valid_detail() {
+            # shellcheck disable=SC2016 # jq variables intentionally use $repo.
+            jq -e '
+              (.number | type == "number") and (.node_id | type == "string" and length > 0) and
+              ((.auto_merge == null) or (.auto_merge | type == "object")) and (.draft | type == "boolean") and (.base.ref | type == "string") and
+              (.head.sha | type == "string" and length > 0) and (.head.ref | type == "string") and
+              ((.head.repo == null) or (.head.repo.full_name | type == "string")) and
+              (.mergeable_state | type == "string" and length > 0)
+            ' >/dev/null
+          }
+          eligible_pr() {
+            jq -e --arg repo "$REPO" '.auto_merge != null and .draft == false and .base.ref == "beta" and .head.repo.full_name == $repo and .head.ref != "main" and .head.ref != "beta"' >/dev/null
+          }
+
+          pages=$(gh api --paginate --slurp "/repos/${REPO}/pulls?base=beta&state=open&sort=created&direction=asc&per_page=100") || fail_json "PR list API call failed."
+          prs=$(jq -ce 'if type == "array" and all(.[]; type == "array") then flatten else error("malformed page response") end | if all(.[]; type == "object" and (.number | type == "number") and (.draft | type == "boolean") and ((.auto_merge == null) or (.auto_merge | type == "object")) and (.base.ref | type == "string") and (.head.ref | type == "string") and ((.head.repo == null) or (.head.repo.full_name | type == "string"))) then . else error("malformed PR") end' <<<"$pages") || fail_json "PR list API returned malformed data."
+          queued=$(jq -r --arg repo "$REPO" '.[] | select(.auto_merge != null and .draft == false and .base.ref == "beta" and .head.repo.full_name == $repo and .head.ref != "main" and .head.ref != "beta") | .number' <<<"$prs")
+          if [ -z "$queued" ]; then
+            echo "Queue empty: no open auto-merge-enabled eligible PRs."
+            exit 0
+          fi
+
+          candidate=""
+          candidate_node=""
+          candidate_sha=""
+          hold=""
+          for number in $queued; do
+            pr=$(gh api "/repos/${REPO}/pulls/${number}") || fail_json "PR #${number} API call failed."
+            valid_detail <<<"$pr" || fail_json "PR #${number} API returned malformed data."
+            if ! eligible_pr <<<"$pr"; then
+              echo "PR #${number}: changed eligibility — skipping."
+              continue
+            fi
+            state=$(jq -r '.mergeable_state' <<<"$pr")
+            sha=$(jq -r '.head.sha' <<<"$pr")
+            case "$state" in
+              dirty)
+                echo "PR #${number}: merge conflicts — skipping."
+                ;;
+              behind)
+                if [ -z "$candidate" ]; then
+                  candidate="$number"
+                  candidate_node=$(jq -r '.node_id' <<<"$pr")
+                  candidate_sha="$sha"
+                fi
+                ;;
+              unknown)
+                hold="PR #${number}: merge state unknown — holding queue."
+                ;;
+              clean)
+                hold="PR #${number}: up to date and ready for auto-merge — holding queue."
+                ;;
+              *)
+                run_pages=$(gh api --paginate --slurp "/repos/${REPO}/actions/runs?head_sha=${sha}&per_page=100") || fail_json "workflow-runs API call failed for PR #${number}."
+                runs=$(jq -ce 'if type == "array" and all(.[]; type == "object" and (.workflow_runs | type == "array")) then [.[].workflow_runs[]] else error("malformed workflow runs") end' <<<"$run_pages") || fail_json "workflow-runs API returned malformed data for PR #${number}."
+                active=$(jq '[.[] | select((.status | type != "string") or .status != "completed")] | length' <<<"$runs")
+                if [ "$active" -gt 0 ]; then
+                  hold="PR #${number}: up to date with ${active} active workflow run(s) — holding queue."
+                else
+                  echo "PR #${number}: up to date but blocked (state=${state}) — skipping."
+                fi
+                ;;
+            esac
+          done
+
+          if [ -n "$hold" ]; then
+            echo "$hold"
+            exit 0
+          fi
+          if [ -z "$candidate" ]; then
+            echo "No behind PR ready to advance."
+            exit 0
+          fi
+
+          current=$(gh api "/repos/${REPO}/pulls/${candidate}") || fail_json "PR #${candidate} revalidation API call failed."
+          if ! valid_detail <<<"$current"; then
+            fail_json "PR #${candidate} revalidation API returned malformed data."
+          fi
+          if ! eligible_pr <<<"$current"; then
+            echo "PR #${candidate} changed eligibility before update — no-op this tick."
+            exit 0
+          fi
+          current_sha=$(jq -r '.head.sha' <<<"$current")
+          current_state=$(jq -r '.mergeable_state' <<<"$current")
+          if [ "$current_sha" != "$candidate_sha" ] || [ "$current_state" != "behind" ]; then
+            echo "PR #${candidate} changed before update — no-op this tick."
+            exit 0
+          fi
+
+          # shellcheck disable=SC2016 # GraphQL variables intentionally use $id.
+          query='mutation($id: ID!, $expectedHeadOid: GitObjectID!) { updatePullRequestBranch(input: {pullRequestId: $id, updateMethod: REBASE, expectedHeadOid: $expectedHeadOid}) { pullRequest { number } } }'
+          response=$(gh api graphql -f query="$query" -F id="$candidate_node" -F expectedHeadOid="$candidate_sha") || fail_json "rebase update API call failed for PR #${candidate}."
+          if ! jq -e '.data.updatePullRequestBranch.pullRequest.number' >/dev/null <<<"$response"; then
+            fail_json "rebase update failed for PR #${candidate}."
+          fi
+          echo "Rebase update requested for PR #${candidate}."
