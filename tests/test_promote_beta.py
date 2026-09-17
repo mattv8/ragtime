@@ -3,7 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from unittest import mock
 
 SCRIPT_PATH = Path(__file__).parents[1] / "docker/scripts/promote_beta.py"
@@ -108,7 +108,7 @@ class PromoteBetaTests(unittest.TestCase):
     def test_non_force_push_rejects_concurrent_main_update(self) -> None:
         racer = self.root / "racer"
 
-        def advance_main(*_args: object) -> dict:
+        def advance_main(repo_slug: str, sha: str) -> dict:
             self._git(self.root, "clone", str(self.origin), str(racer))
             self._configure(racer)
             self._git(racer, "checkout", "main")
@@ -116,7 +116,7 @@ class PromoteBetaTests(unittest.TestCase):
             self._git(racer, "add", "race.txt")
             self._git(racer, "commit", "-m", "race")
             self._git(racer, "push", "origin", "main")
-            return self._success_evidence(*_args)
+            return self._success_evidence(repo_slug, sha)
 
         with (
             mock.patch.object(promote_beta, "repo_slug_from_remote", return_value="example/repository"),
@@ -170,6 +170,7 @@ class PromoteBetaTests(unittest.TestCase):
 
     def test_rejects_missing_or_failed_evidence(self) -> None:
         main_before = self._origin_ref("main")
+        payload: dict[str, Any]
         for payload in (
             {"workflow_runs": []},
             {
