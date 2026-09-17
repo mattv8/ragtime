@@ -636,7 +636,8 @@ def _read_tty_line(prompt: str) -> str:
 
 
 @contextmanager
-def _locked_operation() -> Iterator[None]:
+def locked_operation() -> Iterator[None]:
+    """Serialize backup/restore with userspace storage filesystem transitions."""
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     with LOCK_PATH.open("a+b") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
@@ -644,6 +645,10 @@ def _locked_operation() -> Iterator[None]:
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+# Compatibility for internal callers; new filesystem users import the public helper.
+_locked_operation = locked_operation
 
 
 def _safe_member_path(name: str) -> Path:
@@ -694,6 +699,12 @@ def _should_skip_data_path(relative: Path) -> bool:
     if path.startswith("_userspace/workspaces/") and "/rootfs" in path:
         return True
     if path.startswith("_userspace/workspaces/") and path.endswith("/.runtime-bootstrap.done"):
+        return True
+    # Bulk legacy staging is intentionally outside user-visible storage and can
+    # be incomplete. Published generations and durable receipts remain backed
+    # up so a restart can resume them.
+    parts = relative.parts
+    if len(parts) >= 5 and parts[:3] == ("_userspace", "_object_storage", "_legacy_imports") and parts[4].startswith("tmp-"):
         return True
     return False
 

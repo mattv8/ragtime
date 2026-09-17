@@ -47,7 +47,7 @@ When contributing new features or modifying existing logic, follow the project's
 
 ## Pull Request Workflow
 
-**Standard PRs** target the **`beta`** branch. **Promotion PRs** from `beta` to `main` follow the [release workflow](docs/ci-release.md).
+**Standard PRs** target the **`beta`** branch. Promotion PRs into `main` must originate from the repository's `beta` branch and include the current `main` commit.
 
 The `CI Gate` check runs the full validation suite:
 

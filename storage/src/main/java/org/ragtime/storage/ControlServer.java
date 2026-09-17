@@ -9,6 +9,8 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.Instant;
@@ -39,7 +41,7 @@ public final class ControlServer implements AutoCloseable {
     private ExecutorService executor;
     private final ExecutorService migrationExecutor = Executors.newSingleThreadExecutor(r -> new Thread(r, "object-storage-migration"));
     private final MigrationService migrationService;
-    private final LegacyImporter legacyImporter;
+    private final LegacyImportService legacyImports;
     private final ObjectRenameService renameService;
     private final AtomicReference<BackupLease> backup = new AtomicReference<>();
 
@@ -61,12 +63,16 @@ public final class ControlServer implements AutoCloseable {
         this.registry = registry; this.engine = engine; this.address = address;
         this.token = token == null ? new byte[0] : token.strip().getBytes(StandardCharsets.UTF_8);
         this.migrationService = new MigrationService(registry, engine);
-        this.legacyImporter = new LegacyImporter(registry, engine);
+        this.legacyImports = new LegacyImportService(registry, engine);
         this.renameService = new ObjectRenameService(registry, engine);
         registry.snapshot().path("migrations").elements().forEachRemaining(job -> {
             String state = job.path("state").asText();
             if (state.equals("pending") || state.equals("copying") || state.equals("verifying"))
                 migrationExecutor.submit(() -> migrationService.run(job.path("id").asText()));
+        });
+        registry.snapshot().path("legacy_import_jobs").fieldNames().forEachRemaining(workspaceId -> {
+            ObjectNode job = LegacyImportService.job(registry.snapshot(), workspaceId);
+            if (job != null && LegacyImportService.active(job)) migrationExecutor.submit(() -> legacyImports.run(workspaceId));
         });
     }
     public void start() throws IOException {
@@ -117,7 +123,12 @@ public final class ControlServer implements AutoCloseable {
             if ("DELETE".equals(method)) return deleteWorkspace(workspaceId);
         }
         if (parts.length == 5 && "ensure".equals(parts[4]) && "POST".equals(method)) return ensure(workspaceId, body);
-        if (parts.length == 5 && "import-legacy".equals(parts[4]) && "POST".equals(method)) return importLegacy(workspaceId);
+        if (parts.length == 5 && "legacy-import".equals(parts[4])) {
+            if ("POST".equals(method)) return importLegacy(workspaceId, body);
+            if ("GET".equals(method)) return legacyImportStatus(workspaceId);
+        }
+        if (parts.length == 6 && "legacy-import".equals(parts[4]) && "gc".equals(parts[5]) && "POST".equals(method)) return acknowledgeLegacyGc(workspaceId, body);
+        if (parts.length == 5 && "import-legacy".equals(parts[4]) && "POST".equals(method)) return retiredLegacyImport(workspaceId);
         if (parts.length == 5 && "buckets".equals(parts[4]) && "POST".equals(method)) return createBucket(workspaceId, body);
         if (parts.length == 6 && "buckets".equals(parts[4])) {
             if ("PUT".equals(method)) return updateBucket(workspaceId, parts[5], body);
@@ -189,14 +200,38 @@ public final class ControlServer implements AutoCloseable {
         registry.mutate(state -> { ObjectNode workspace=requiredWorkspace(state,id); workspace.put("state","revoked"); workspace.put("deletion_state","retained_tombstone"); workspace.put("deleted_at",Instant.now().toString()); });
         return JSON.createObjectNode().put("success",true).put("workspace_id",id).put("cleanup_state","retained_tombstone");
     }
-    private ObjectNode importLegacy(String id) {
-        ensure(id, JSON.createObjectNode());
-        ObjectNode workspace = requireWorkspace(id);
-        if ("completed".equals(workspace.path("legacy_import_state").asText())) return JSON.createObjectNode().put("workspace_id", id).put("completed", true);
-        try { legacyImporter.importWorkspace(id); }
-        catch (Exception error) { registry.mutate(state -> requiredWorkspace(state,id).put("legacy_import_state","failed")); throw new BadRequest(409,"legacy import failed; original files were retained"); }
-        registry.mutate(state -> requiredWorkspace(state, id).put("legacy_import_state", "completed"));
-        return JSON.createObjectNode().put("workspace_id", id).put("completed", true);
+    private ObjectNode importLegacy(String id, ObjectNode body) {
+        String generation = body.path("generation").asText(), manifestSha = body.path("manifest_sha256").asText();
+        if (!generation.matches("[0-9a-f]{32}") || !manifestSha.matches("[0-9a-f]{64}")) throw new BadRequest(400, "invalid staged import identity");
+        final boolean[] enqueue={false};
+        registry.maintenanceLock().readLock().lock(); registry.workspaceLock(id).writeLock().lock();
+        try { registry.mutate(state -> {
+            ObjectNode workspace=requiredWorkspace(state,id); if("revoked".equals(workspace.path("state").asText())) throw new BadRequest(404,"workspace not found");
+            ObjectNode existing=LegacyImportService.job(state,id);
+            if(existing!=null) { if(!generation.equals(existing.path("generation").asText()) || !manifestSha.equals(existing.path("manifest_sha256").asText())) throw new BadRequest(409,"legacy import identity conflict"); if("failed".equals(existing.path("state").asText())) { existing.put("state","pending").remove("error"); enqueue[0]=true; } return; }
+            if("completed".equals(workspace.path("legacy_import_state").asText()) || !"pending".equals(workspace.path("legacy_import_state").asText()) || !"ready".equals(workspace.path("state").asText())) throw new BadRequest(409,"workspace is not eligible for staged legacy import");
+            ObjectNode job=state.withObject("legacy_import_jobs").putObject(id); job.put("workspace_id",id).put("generation",generation).put("manifest_sha256",manifestSha).put("state","pending").put("gc_completed",false); workspace.put("state","importing"); enqueue[0]=true;
+        }); } finally { registry.workspaceLock(id).writeLock().unlock(); registry.maintenanceLock().readLock().unlock(); }
+        if(enqueue[0]) migrationExecutor.submit(() -> legacyImports.run(id)); return legacyImportStatus(id);
+    }
+    private ObjectNode retiredLegacyImport(String id) {
+        ObjectNode job = LegacyImportService.job(registry.snapshot(), id);
+        if (job != null && "completed".equals(job.path("state").asText())) return legacyImportStatus(id);
+        throw new BadRequest(409, "legacy import requires a staged manifest");
+    }
+    private ObjectNode legacyImportStatus(String id) {
+        ObjectNode job = LegacyImportService.job(registry.snapshot(), id); if (job == null) throw new BadRequest(404, "legacy import not found");
+        ObjectNode result=JSON.createObjectNode(); for(String field:new String[]{"workspace_id","generation","manifest_sha256","state"}) result.put(field,job.path(field).asText()); result.put("gc_completed",job.path("gc_completed").asBoolean(false));
+        if ("completed".equals(job.path("state").asText()) && !job.path("gc_completed").asBoolean(false)) {
+            try { Path evidence=registry.root().resolve("_legacy_imports").resolve(id).resolve(job.path("generation").asText()).resolve("verification.json"); byte[] bytes=Files.readAllBytes(evidence); if(!LegacyImporter.sha256(bytes).equals(job.path("verification_sha256").asText())) throw new IOException("verification evidence mismatch"); JsonNode node=JSON.readTree(bytes); if(!id.equals(node.path("workspace_id").asText()) || !job.path("generation").asText().equals(node.path("generation").asText()) || !job.path("manifest_sha256").asText().equals(node.path("manifest_sha256").asText()) || !node.path("verified_files").isArray()) throw new IOException("invalid verification evidence"); result.set("verified_files",node.path("verified_files")); }
+            catch(Exception error) { result.put("verification_evidence_available",false); }
+        }
+        return result;
+    }
+    private ObjectNode acknowledgeLegacyGc(String id, ObjectNode body) {
+        String generation=body.path("generation").asText(), manifestSha=body.path("manifest_sha256").asText(); ObjectNode job=LegacyImportService.job(registry.snapshot(),id);
+        if(job==null || !"completed".equals(job.path("state").asText()) || !generation.equals(job.path("generation").asText()) || !manifestSha.equals(job.path("manifest_sha256").asText())) throw new BadRequest(409,"legacy import identity conflict");
+        registry.mutate(state -> LegacyImportService.job(state,id).put("gc_completed",true)); return legacyImportStatus(id);
     }
     private ObjectNode createMigrations(ObjectNode body) {
         ArrayNode jobs = JSON.createArrayNode(); List<String> ids = new ArrayList<>(); ObjectNode snapshot=registry.snapshot();

@@ -164,8 +164,22 @@ class _FakeUserSpaceService:
     def _normalize_object_storage_bucket_name(name: str) -> str:
         return name
 
-    def _ensure_object_storage_config(self, workspace_id: str) -> dict[str, object]:
-        return {"buckets": [{"name": "default-bucket"}]}
+    async def get_workspace_object_storage_summary(self, workspace_id: str, user_id: str):
+        from ragtime.userspace.models import UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig
+
+        now = datetime.now(timezone.utc)
+        return UserSpaceObjectStorageConfig(
+            workspace_id=workspace_id,
+            default_bucket_name="default-bucket",
+            buckets=[
+                UserSpaceObjectStorageBucket(
+                    name="default-bucket",
+                    is_default=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+            ],
+        )
 
     def _workspace_object_storage_buckets_dir(self, workspace_id: str) -> Path:
         return self.root / "s3" / "buckets"

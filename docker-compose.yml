@@ -121,8 +121,6 @@ services:
       STORAGE_KEY_FILE: /run/ragtime-storage-key/.encryption_key
     volumes:
       - ./data/_userspace/_object_storage:/data/_userspace/_object_storage
-      # Required for legacy S3 import; the gateway reads old workspace buckets only.
-      - ./data/_userspace/workspaces:/data/_userspace/workspaces:ro
       - object-storage-key:/run/ragtime-storage-key:ro
     networks:
       - ragtime-network

@@ -1942,10 +1942,9 @@ def _sync_system_dirs_for_chroot(spec: SandboxSpec) -> None:
     """Sync system files only for the no-mount chroot fallback.
 
     This intentionally pays an independent-inode copy cost on first launch;
-    normal starts reuse the persisted rootfs and generation marker. See
-    ``docs/userspace-runtime-performance.md`` before optimizing this path:
-    product priority is warm starts and public app loading, never writable
-    system hardlinks or weaker sandbox isolation.
+    normal starts reuse the persisted rootfs and generation marker. Product
+    priority is warm starts and public app loading, never writable system
+    hardlinks or weaker sandbox isolation.
     """
     rootfs = spec.rootfs_path
     usr_dst = rootfs / "usr"
