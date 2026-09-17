@@ -10,6 +10,7 @@ import os
 import secrets
 import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -39,6 +40,21 @@ _RUNTIME_AUTH_TOKEN_GENERIC_DEFAULTS = {
     "dev-runtime-manager-token",
     "dev-runtime-worker-token",
 }
+
+
+def _write_private_key_atomically(key: str, destination: Path) -> None:
+    if not key:
+        raise ValueError("Encryption key must not be empty")
+    file_descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+            handle.write(key)
+        temporary_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        os.replace(temporary_path, destination)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
 
 
 class Settings(BaseSettings):
@@ -230,9 +246,15 @@ class Settings(BaseSettings):
         seeds a missing file once for compatibility. When no key exists, a new
         key is generated and persisted with mode 0600.
         """
+        export_path = os.environ.get("OBJECT_STORAGE_KEY_EXPORT_PATH", "").strip()
         saved_key = cls._read_managed_encryption_key()
         if saved_key:
+            if export_path:
+                cls._publish_object_storage_key_export(saved_key, Path(export_path))
             return saved_key
+
+        if export_path and Path(export_path).exists():
+            raise RuntimeError("Managed encryption key is missing while object-storage key projection exists; refusing to replace it")
 
         key = v.strip() if v else ""
         if not key:
@@ -241,6 +263,8 @@ class Settings(BaseSettings):
         try:
             cls._persist_managed_encryption_key(key)
         except OSError as e:
+            if export_path:
+                raise RuntimeError(f"Could not persist managed encryption key to {ENCRYPTION_KEY_FILE} ({type(e).__name__})") from e
             print(
                 f"[WARNING] Could not persist encryption key to {ENCRYPTION_KEY_FILE}: {e}",
                 file=sys.stderr,
@@ -250,6 +274,8 @@ class Settings(BaseSettings):
                 file=sys.stderr,
             )
 
+        if export_path:
+            cls._publish_object_storage_key_export(key, Path(export_path))
         return key
 
     @staticmethod
@@ -265,8 +291,18 @@ class Settings(BaseSettings):
     @staticmethod
     def _persist_managed_encryption_key(key: str) -> None:
         ENCRYPTION_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        ENCRYPTION_KEY_FILE.write_text(key)
-        ENCRYPTION_KEY_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        _write_private_key_atomically(key, ENCRYPTION_KEY_FILE)
+
+    @staticmethod
+    def publish_encryption_key_export(key: str, destination: Path) -> None:
+        _write_private_key_atomically(key, destination)
+
+    @classmethod
+    def _publish_object_storage_key_export(cls, key: str, destination: Path) -> None:
+        try:
+            cls.publish_encryption_key_export(key, destination)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"Could not publish managed encryption key to {destination} ({type(exc).__name__})") from exc
 
     # Session cookie settings
     session_cookie_name: str = Field(default="ragtime_session", alias="SESSION_COOKIE_NAME")
