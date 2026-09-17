@@ -123,7 +123,7 @@ from ragtime.core.webauthn_mfa import (
     rename_webauthn_credential,
     user_has_enabled_webauthn,
 )
-from ragtime.mcp.user_oauth import McpOAuthError
+from ragtime.mcp.user_oauth import McpOAuthError, issue_mcp_token_pair, normalize_mcp_resource, refresh_mcp_token_pair, revoke_mcp_token
 from ragtime.oauth_redirects import (
     DEFAULT_TRUSTED_REDIRECT_URIS,
     LOOPBACK_REDIRECT_HOSTS,
@@ -1578,26 +1578,18 @@ def _verify_pkce(code_verifier: str, code_challenge: str) -> bool:
 
 async def _normalize_mcp_resource(resource: str | None, request: Request) -> str:
     """Delegate MCP resource policy to the protocol service."""
-    from ragtime.mcp.user_oauth import normalize_mcp_resource
-
     return await normalize_mcp_resource(resource, base_url=canonical_oauth_origin(request))
 
 
 async def _issue_mcp_token_pair(**kwargs: Any) -> dict[str, Any]:
-    from ragtime.mcp.user_oauth import issue_mcp_token_pair
-
     return await issue_mcp_token_pair(**kwargs)
 
 
 async def _refresh_mcp_token_pair(**kwargs: Any) -> dict[str, Any]:
-    from ragtime.mcp.user_oauth import refresh_mcp_token_pair
-
     return await refresh_mcp_token_pair(**kwargs)
 
 
 async def _revoke_mcp_token(**kwargs: Any) -> None:
-    from ragtime.mcp.user_oauth import revoke_mcp_token
-
     await revoke_mcp_token(**kwargs)
 
 

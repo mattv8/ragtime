@@ -27,6 +27,7 @@ def _user() -> User:
         roleManuallySet=False,
         createdAt=NOW,
         updatedAt=NOW,
+        securityGeneration=0,
     )
 
 
