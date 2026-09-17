@@ -76,8 +76,8 @@ services:
       # Shared Ragtime <-> runtime token. If unset, User Space runtime features
       # stay disabled and admins see a security warning in the UI.
       RUNTIME_AUTH_TOKEN: ${RUNTIME_AUTH_TOKEN:-}
-      OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-http://object-storage:9000}
-      OBJECT_STORAGE_CONTROL_URL: ${OBJECT_STORAGE_CONTROL_URL:-http://object-storage:9001}
+      OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-http://runtime-s3:9000}
+      OBJECT_STORAGE_CONTROL_URL: ${OBJECT_STORAGE_CONTROL_URL:-http://runtime-s3:9001}
       OBJECT_STORAGE_KEY_EXPORT_PATH: /run/ragtime-storage-key/.encryption_key
     volumes:
       # Data persistence (indexes, SSL certs, etc.)
@@ -110,9 +110,9 @@ services:
 
   # Internal, persistent workspace S3 gateway. It waits for Ragtime's managed
   # encryption key and intentionally has no host-published ports.
-  object-storage:
+  runtime-s3:
     image: hub.docker.visnovsky.us/library/ragtime-storage:main
-    container_name: object-storage
+    container_name: runtime-s3
     restart: unless-stopped
     environment:
       S3_PORT: "9000"

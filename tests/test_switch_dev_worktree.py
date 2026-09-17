@@ -23,19 +23,19 @@ class FakeRunner(Runner):
     def __init__(self, primary: Path, target: Path, *, storage: bool = True):
         self.calls: list[list[str]] = []
         self.primary, self.target, self.storage = primary, target, storage
-        self.image_refs = {"ragtime": "docker-ragtime", "runtime": "docker-runtime", "object-storage": "docker-object-storage"}
+        self.image_refs = {"ragtime": "docker-ragtime", "runtime": "docker-runtime", "runtime-s3": "docker-runtime-s3"}
         self.explicit_images: dict[str, str] = {}
         self.image_ids = {
             "ragtime": "sha256:" + "a" * 64,
             "runtime": "sha256:" + "b" * 64,
-            "object-storage": "sha256:" + "c" * 64,
+            "runtime-s3": "sha256:" + "c" * 64,
         }
         self.old_container_image_ids = {
             "ragtime": "sha256:" + "d" * 64,
             "runtime": "sha256:" + "e" * 64,
-            "object-storage": "sha256:" + "f" * 64,
+            "runtime-s3": "sha256:" + "f" * 64,
         }
-        self.actual_container_image_ids = {"object-storage": self.image_ids["object-storage"]}
+        self.actual_container_image_ids = {"runtime-s3": self.image_ids["runtime-s3"]}
 
     def inspect_payload(self, container: str) -> dict[str, object]:
         mounts = [{"Source": str(self.primary / ".data"), "Destination": "/data", "RW": True}]
@@ -60,8 +60,8 @@ class FakeRunner(Runner):
                 "Mounts": mounts,
                 "Image": self.old_container_image_ids["runtime"],
             }
-        if container == "object-storage-dev":
-            return {"State": {"Running": True}, "Mounts": mounts, "Image": self.actual_container_image_ids["object-storage"]}
+        if container == "runtime-s3-dev":
+            return {"State": {"Running": True}, "Mounts": mounts, "Image": self.actual_container_image_ids["runtime-s3"]}
         return {"State": {"Running": True}, "Mounts": [{"Name": "docker_ragtime-db-data", "Destination": "/var/lib/postgresql", "RW": True}]}
 
     def run(self, args: Sequence[str], *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -82,12 +82,12 @@ class FakeRunner(Runner):
                 "runtime": {},
             }
             if self.storage:
-                services["object-storage"] = {}
+                services["runtime-s3"] = {}
             for service, reference in self.explicit_images.items():
                 services[service]["image"] = reference
             text = json.dumps({"services": services})
         elif " config --services" in joined:
-            text = "ragtime\nruntime" + ("\nobject-storage" if self.storage else "")
+            text = "ragtime\nruntime" + ("\nruntime-s3" if self.storage else "")
         elif " config --images " in f" {joined} ":
             text = self.image_refs[args_list[-1]]
             if args_list[-1] == "ragtime":
@@ -139,7 +139,7 @@ class SwitchTests(unittest.TestCase):
         for item in (primary, target):
             (item / "docker").mkdir(parents=True)
             (item / "prisma/migrations/one").mkdir(parents=True)
-            (item / "docker/docker-compose.dev.yml").write_text("services:\n  ragtime:\n  runtime:\n" + ("  object-storage:\n" if storage else ""))
+            (item / "docker/docker-compose.dev.yml").write_text("services:\n  ragtime:\n  runtime:\n" + ("  runtime-s3:\n" if storage else ""))
             (item / "prisma/schema.prisma").write_text("generator client {}")
             (item / "prisma/migrations/one/migration.sql").write_text("SELECT 1;")
             (item / "ragtime").mkdir()
@@ -187,29 +187,29 @@ class SwitchTests(unittest.TestCase):
         runner, switch, patcher = self.switch(primary, target)
         with patcher:
             switch.run()
-        self.assertEqual(switch.image_ids["object-storage"], runner.image_ids["object-storage"])
-        self.assertNotEqual(switch.image_ids["object-storage"], runner.old_container_image_ids["object-storage"])
+        self.assertEqual(switch.image_ids["runtime-s3"], runner.image_ids["runtime-s3"])
+        self.assertNotEqual(switch.image_ids["runtime-s3"], runner.old_container_image_ids["runtime-s3"])
         calls = [" ".join(call) for call in runner.calls]
-        self.assertTrue(any(" config --images object-storage" in call for call in calls))
+        self.assertTrue(any(" config --images runtime-s3" in call for call in calls))
         self.assertFalse(any(" images -q " in f" {call} " for call in calls))
 
     def test_verify_rejects_actual_recreated_image_mismatch(self):
         temp, primary, target = self.make_tree()
         self.addCleanup(temp.cleanup)
         runner, switch, patcher = self.switch(primary, target)
-        runner.actual_container_image_ids["object-storage"] = "sha256:" + "f" * 64
-        with patcher, self.assertRaisesRegex(RuntimeError, "object-storage image differs"):
+        runner.actual_container_image_ids["runtime-s3"] = "sha256:" + "f" * 64
+        with patcher, self.assertRaisesRegex(RuntimeError, "runtime-s3 image differs"):
             switch.run()
 
     def test_build_accepts_explicit_image_reference(self):
         temp, primary, target = self.make_tree()
         self.addCleanup(temp.cleanup)
         runner, switch, patcher = self.switch(primary, target)
-        runner.image_refs["object-storage"] = "registry.example/object-storage:stable@sha256:" + "a" * 64
-        runner.explicit_images["object-storage"] = runner.image_refs["object-storage"]
+        runner.image_refs["runtime-s3"] = "registry.example/runtime-s3:stable@sha256:" + "a" * 64
+        runner.explicit_images["runtime-s3"] = runner.image_refs["runtime-s3"]
         with patcher:
             switch.run()
-        self.assertEqual(switch.image_ids["object-storage"], runner.image_ids["object-storage"])
+        self.assertEqual(switch.image_ids["runtime-s3"], runner.image_ids["runtime-s3"])
 
     def test_build_resolves_requested_service_among_dependency_images(self):
         temp, primary, target = self.make_tree()
@@ -229,13 +229,13 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(switch.image_ids, runner.image_ids)
 
     def test_unresolved_target_image_refuses_before_migrations_or_stop(self):
-        for reference, image_id in (("", "sha256:" + "a" * 64), ("first\nsecond", "sha256:" + "a" * 64), ("docker-object-storage", "abc123")):
+        for reference, image_id in (("", "sha256:" + "a" * 64), ("first\nsecond", "sha256:" + "a" * 64), ("docker-runtime-s3", "abc123")):
             with self.subTest(reference=reference, image_id=image_id):
                 temp, primary, target = self.make_tree()
                 self.addCleanup(temp.cleanup)
                 runner, switch, patcher = self.switch(primary, target)
-                runner.image_refs["object-storage"] = reference
-                runner.image_ids["object-storage"] = image_id
+                runner.image_refs["runtime-s3"] = reference
+                runner.image_ids["runtime-s3"] = image_id
                 with patcher, self.assertRaises(SwitchRefusal):
                     switch.run()
                 calls = [" ".join(call) for call in runner.calls]
@@ -247,8 +247,8 @@ class SwitchTests(unittest.TestCase):
         runner, switch, patcher = self.switch(primary, target, dry_run=True, storage=False)
         with patcher:
             switch.run()
-        self.assertNotIn("object-storage:", switch.override.read_text())
-        self.assertNotIn("object-storage", switch.services)
+        self.assertNotIn("runtime-s3:", switch.override.read_text())
+        self.assertNotIn("runtime-s3", switch.services)
 
     def test_dry_run_never_builds_stops_or_applies(self):
         temp, primary, target = self.make_tree()
@@ -270,7 +270,7 @@ class SwitchTests(unittest.TestCase):
             switch.run()
         calls = [" ".join(call) for call in runner.calls]
         self.assertTrue(any("docker rm -f worktree-switch-" in call for call in calls))
-        self.assertTrue(any("docker stop ragtime-dev runtime-dev object-storage-dev" in call for call in calls))
+        self.assertTrue(any("docker stop ragtime-dev runtime-dev runtime-s3-dev" in call for call in calls))
 
     def test_stale_down_file_refuses_before_stop(self):
         temp, primary, target = self.make_tree()

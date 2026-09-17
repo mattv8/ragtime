@@ -1,6 +1,8 @@
 # User Space object storage
 
-Ragtime starts an internal `object-storage` service by default. It persists local bytes and gateway metadata below `/data/_userspace/_object_storage` and is reachable only on the Compose network at `http://object-storage:9000`. The control plane listens internally on port 9001. Neither port is published to the host.
+Ragtime starts an internal `runtime-s3` service by default. It persists local bytes and gateway metadata below `/data/_userspace/_object_storage` and is reachable only on the Compose network at `http://runtime-s3:9000`. The control plane listens internally on port 9001. Neither port is published to the host.
+
+Compose does not rename containers. After upgrading, the old `object-storage` (prod) or `object-storage-dev` (dev) container keeps running under `restart: unless-stopped`, still holds the storage bind and key volume, and its DNS name still resolves. Run `docker compose up -d --remove-orphans` once, or remove it with `docker rm -f object-storage` or `docker rm -f object-storage-dev`.
 
 Workspace applications receive `RAGTIME_OBJECT_STORAGE_*` credentials only in their backend runtime environment. Use standard SigV4 clients with region `us-east-1` and path-style addressing. For Node AWS SDK v3, use `S3Client({ endpoint: process.env.RAGTIME_OBJECT_STORAGE_ENDPOINT, region: "us-east-1", forcePathStyle: true, credentials: { accessKeyId: process.env.RAGTIME_OBJECT_STORAGE_ACCESS_KEY_ID, secretAccessKey: process.env.RAGTIME_OBJECT_STORAGE_SECRET_ACCESS_KEY } })`.
 
@@ -45,7 +47,7 @@ The Compose gateway receives three mounts: read-write `/data/_userspace/_object_
 
 The gateway reads its key once at startup. For a full/files restore, stop the gateway before restoring when the archive contains object storage or the destination object-storage directory already exists. A database-only restore that includes a managed key also requires the gateway to be stopped when that destination exists. Set `OBJECT_STORAGE_RESTORE_OFFLINE_CONFIRMED=true` only after the gateway is offline.
 
-After either restore, restart Ragtime so it republishes the restored authoritative key, wait for Ragtime health, then recreate the gateway with `docker compose up -d --force-recreate object-storage`. Do not use `docker compose start` or `docker compose restart` for this step: recreation renews the gateway's narrowed storage bind after a subtree replacement. A backup of initialized local storage still requires the running gateway for its consistency lease; stopping it is only part of restore ordering.
+After either restore, restart Ragtime so it republishes the restored authoritative key, wait for Ragtime health, then recreate the gateway with `docker compose up -d --force-recreate runtime-s3`. Do not use `docker compose start` or `docker compose restart` for this step: recreation renews the gateway's narrowed storage bind after a subtree replacement. A backup of initialized local storage still requires the running gateway for its consistency lease; stopping it is only part of restore ordering.
 
 ## Disposable SDK conformance harness
 

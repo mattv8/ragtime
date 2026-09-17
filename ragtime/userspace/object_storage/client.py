@@ -19,7 +19,7 @@ from starlette.responses import Response, StreamingResponse
 
 from ragtime.userspace.object_storage import control
 
-_ENDPOINT = "http://object-storage:9000"
+_ENDPOINT = "http://runtime-s3:9000"
 _CHUNK_SIZE = 1024 * 1024
 _TRANSFER_LIMIT = asyncio.Semaphore(8)
 
