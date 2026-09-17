@@ -61,6 +61,18 @@ class WebauthnChallengeClaims:
     challenge: bytes
     jti: str
     exp: datetime
+    security_generation: int = 0
+
+
+async def _current_security_generation(db: Any, user: Any) -> int | None:
+    """Read the current user generation immediately before continuation use."""
+    users = getattr(db, "user", None)
+    if users is None:  # Compatibility for narrow unit-test DB doubles.
+        return int(getattr(user, "securityGeneration", getattr(user, "security_generation", 0)) or 0)
+    current_user = await users.find_unique(where={"id": user.id})
+    if current_user is None:
+        return None
+    return int(getattr(current_user, "securityGeneration", getattr(current_user, "security_generation", 0)) or 0)
 
 
 def _prune_consumed_jtis(now: float | None = None) -> None:
@@ -103,6 +115,7 @@ def _create_challenge_token(
     user_id: str,
     purpose: str,
     challenge: bytes,
+    security_generation: int = 0,
 ) -> str:
     expire = datetime.now(timezone.utc) + timedelta(seconds=WEBAUTHN_CHALLENGE_TTL_SECONDS)
     jti = str(uuid4())
@@ -112,6 +125,7 @@ def _create_challenge_token(
         "challenge": bytes_to_base64url(challenge),
         "jti": jti,
         "exp": expire,
+        "security_generation": int(security_generation),
     }
     return jwt.encode(payload, settings.encryption_key, algorithm=settings.jwt_algorithm)
 
@@ -123,7 +137,7 @@ def _decode_challenge_token(token: str, *, expected_purpose: str) -> WebauthnCha
         logger.debug("WebAuthn challenge token decode failed: %s", exc)
         return None
 
-    if payload.get("purpose") != expected_purpose:
+    if not isinstance(payload, dict) or payload.get("purpose") != expected_purpose:
         return None
     try:
         return WebauthnChallengeClaims(
@@ -132,6 +146,7 @@ def _decode_challenge_token(token: str, *, expected_purpose: str) -> WebauthnCha
             challenge=base64url_to_bytes(str(payload["challenge"])),
             jti=str(payload["jti"]),
             exp=datetime.fromtimestamp(int(payload["exp"]), tz=timezone.utc),
+            security_generation=int(payload.get("security_generation", 0)),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -228,8 +243,14 @@ def _build_allow_credentials(credentials: list[Any]) -> list[PublicKeyCredential
     return descriptors
 
 
-async def begin_webauthn_registration(user: Any, request: Request) -> tuple[dict, str]:
+async def begin_webauthn_registration(user: Any, request: Request, *, security_generation: int | None = None) -> tuple[dict, str]:
     db = await get_db()
+    current_generation = await _current_security_generation(db, user)
+    captured_generation = (
+        int(security_generation) if security_generation is not None else int(getattr(user, "securityGeneration", getattr(user, "security_generation", 0)) or 0)
+    )
+    if current_generation is None or captured_generation != current_generation:
+        raise WebauthnError("Authentication is no longer valid.")
     existing = await db.userwebauthncredential.find_many(where={"userId": user.id})
     exclude_credentials = _build_exclude_credentials(existing)
 
@@ -255,6 +276,7 @@ async def begin_webauthn_registration(user: Any, request: Request) -> tuple[dict
         user_id=user.id,
         purpose=WEBAUTHN_REGISTER_PURPOSE,
         challenge=challenge,
+        security_generation=captured_generation,
     )
     return options_dict, registration_token
 
@@ -268,6 +290,11 @@ async def complete_webauthn_registration(
 ) -> Any:
     claims = _decode_challenge_token(registration_token, expected_purpose=WEBAUTHN_REGISTER_PURPOSE)
     if not claims or claims.user_id != user.id:
+        raise WebauthnError("Invalid or expired WebAuthn registration token.")
+
+    db = await get_db()
+    current_generation = await _current_security_generation(db, user)
+    if current_generation is None or claims.security_generation != current_generation:
         raise WebauthnError("Invalid or expired WebAuthn registration token.")
 
     await _consume_jti(claims.jti, claims.exp.timestamp())
@@ -297,7 +324,6 @@ async def complete_webauthn_registration(
         if isinstance(raw_transports, list):
             transports = [str(t) for t in raw_transports]
 
-    db = await get_db()
     try:
         row = await db.userwebauthncredential.create(
             data={
@@ -317,8 +343,14 @@ async def complete_webauthn_registration(
     return row
 
 
-async def begin_webauthn_authentication(user: Any, request: Request) -> tuple[dict, str]:
+async def begin_webauthn_authentication(user: Any, request: Request, *, security_generation: int | None = None) -> tuple[dict, str]:
     db = await get_db()
+    current_generation = await _current_security_generation(db, user)
+    captured_generation = (
+        int(security_generation) if security_generation is not None else int(getattr(user, "securityGeneration", getattr(user, "security_generation", 0)) or 0)
+    )
+    if current_generation is None or captured_generation != current_generation:
+        raise WebauthnError("Authentication is no longer valid.")
     credentials = await db.userwebauthncredential.find_many(where={"userId": user.id})
     if not credentials:
         raise WebauthnError("No WebAuthn credentials found for this user.")
@@ -339,6 +371,7 @@ async def begin_webauthn_authentication(user: Any, request: Request) -> tuple[di
         user_id=user.id,
         purpose=WEBAUTHN_AUTHN_PURPOSE,
         challenge=challenge,
+        security_generation=captured_generation,
     )
     return options_dict, authentication_token
 
@@ -353,13 +386,17 @@ async def complete_webauthn_authentication(
     if not claims or claims.user_id != user.id:
         raise WebauthnError("Invalid or expired WebAuthn authentication token.")
 
+    db = await get_db()
+    current_generation = await _current_security_generation(db, user)
+    if current_generation is None or claims.security_generation != current_generation:
+        raise WebauthnError("Invalid or expired WebAuthn authentication token.")
+
     await _consume_jti(claims.jti, claims.exp.timestamp())
 
     credential_id_b64 = credential.get("id") if isinstance(credential, dict) else None
     if not credential_id_b64:
         raise WebauthnError("Missing credential ID in WebAuthn response.")
 
-    db = await get_db()
     row = await db.userwebauthncredential.find_first(where={"userId": user.id, "credentialId": str(credential_id_b64)})
     if not row:
         raise WebauthnError("Unknown WebAuthn credential.")

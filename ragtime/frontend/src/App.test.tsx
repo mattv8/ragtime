@@ -42,6 +42,7 @@ const toastApiMock = vi.hoisted(() => ({
   clear: vi.fn(),
 }));
 const toastContainerSpy = vi.hoisted(() => vi.fn());
+const oauthLoginPageSpy = vi.hoisted(() => vi.fn());
 const authExpiredListenerMock = vi.hoisted(() => ({
   callback: null as null | (() => void),
 }));
@@ -106,7 +107,10 @@ vi.mock('./components/OAuthCallbackError', () => ({
 }));
 
 vi.mock('./components/OAuthLoginPage', () => ({
-  OAuthLoginPage: () => <div data-testid="oauth-login-page">OAuth login page</div>,
+  OAuthLoginPage: (props: unknown) => {
+    oauthLoginPageSpy(props);
+    return <div data-testid="oauth-login-page">OAuth login page</div>;
+  },
 }));
 
 vi.mock('./components/PublicSharedChatView', () => ({
@@ -374,6 +378,32 @@ describe('OpenRouter credit alerts', () => {
 });
 
 describe('App chat fullscreen layout', () => {
+  it('preserves resource and scope from the authorization URL for the login continuation', async () => {
+    apiMock.getAuthStatus.mockResolvedValue({
+      authenticated: false,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+    });
+    apiMock.getCurrentUser.mockRejectedValue(new Error('Not authenticated'));
+    apiMock.getSettings.mockResolvedValue({ settings: {}, configuration_warnings: [] });
+    window.history.replaceState(
+      {},
+      '',
+      '/?client_id=Claude&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback&response_type=code&code_challenge=test&resource=https%3A%2F%2Fragtime.example%2Fmcp%2Fengineering&scope=tools.read%20tools.search',
+    );
+
+    render(<App />);
+
+    await waitFor(() => expect(oauthLoginPageSpy).toHaveBeenCalled());
+    const props = oauthLoginPageSpy.mock.calls[0]?.[0] as { params: Record<string, string> };
+    expect(props.params.resource).toBe('https://ragtime.example/mcp/engineering');
+    expect(props.params.scope).toBe('tools.read tools.search');
+  });
+
   it('renders initial OAuth loading inside the shared auth gradient surface but leaves plain app loading unchanged', async () => {
     apiMock.getAuthStatus.mockImplementation(
       () =>
@@ -434,7 +464,7 @@ describe('App chat fullscreen layout', () => {
     window.history.replaceState(
       {},
       '',
-      '/?client_id=Claude&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback&response_type=code&code_challenge=test',
+      '/?client_id=Claude&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback&response_type=code&code_challenge=test&resource=https%3A%2F%2Fragtime.example%2Fmcp&scope=tools.read',
     );
 
     render(<App />);
@@ -447,6 +477,10 @@ describe('App chat fullscreen layout', () => {
     expect(surface).toBeTruthy();
     expect(surface?.classList.contains('auth-loading')).toBe(true);
     expect(surface?.textContent).toContain('Authorizing...');
+    const request = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit;
+    const body = new URLSearchParams(request.body as string);
+    expect(body.get('resource')).toBe('https://ragtime.example/mcp');
+    expect(body.get('scope')).toBe('tools.read');
   });
 
   it('shows a loading fallback before rendering a lazy admin view', async () => {

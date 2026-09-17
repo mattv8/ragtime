@@ -43,13 +43,30 @@ from prisma.errors import UniqueViolationError
 from pydantic import BaseModel
 
 from ragtime.config.settings import settings
+from ragtime.core.auth_policy import (
+    MCP_ACCESS_TOKEN_MINUTES_DEFAULT,
+    MCP_ACCESS_TOKEN_MINUTES_MAX,
+    MCP_ACCESS_TOKEN_MINUTES_MIN,
+    MCP_AUTHORIZATION_DAYS_DEFAULT,
+    MCP_AUTHORIZATION_DAYS_MAX,
+    MCP_AUTHORIZATION_DAYS_MIN,
+    WEB_SESSION_HOURS_MAX,
+    WEB_SESSION_HOURS_MIN,
+    resolve_web_session_hours,
+)
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
+from ragtime.core.oauth_grants import OAuthGrantError, lock_user_security_generation, revoke_user_auth
 
 logger = get_logger(__name__)
 
 _BROWSER_ORIGIN_HINT_HEADER = "x-ragtime-browser-origin"
+
+
+class AuthenticationInvalidatedError(Exception):
+    """An authentication continuation no longer matches the user's generation."""
+
 
 # =============================================================================
 # Models
@@ -65,6 +82,7 @@ class TokenData(BaseModel):
     exp: datetime
     mfa_verified: bool = False
     auth_methods: list[str] = []
+    security_generation: int = 0
 
 
 class AuthResult(BaseModel):
@@ -101,6 +119,10 @@ class AuthProviderConfigData(BaseModel):
     totp_remember_device_days: int = 30
     mfa_allowed_methods: list[str] = ["totp"]
     mfa_default_method: str | None = None
+    web_session_hours: int | None = None
+    effective_web_session_hours: int = 24
+    mcp_access_token_minutes: int = MCP_ACCESS_TOKEN_MINUTES_DEFAULT
+    mcp_authorization_days: int = MCP_AUTHORIZATION_DAYS_DEFAULT
 
 
 _UNSET = object()
@@ -195,6 +217,33 @@ def get_external_origin(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
+def canonical_oauth_origin(request: Request) -> str:
+    """Return the stable server OAuth issuer origin without browser hints."""
+    configured = str(getattr(settings, "external_base_url", "") or "").strip()
+    if configured:
+        candidate = configured
+    else:
+        scheme = str(request.url.scheme or "http").lower()
+        if scheme not in {"http", "https"}:
+            scheme = "http"
+        host_header = request.headers.get("host", "").strip()
+        direct_host = urlsplit(f"{scheme}://{host_header}").hostname
+        forwarded_host = request.headers.get("x-forwarded-host", "").strip()
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").strip().lower()
+        forwarded_name = urlsplit(f"{scheme}://{forwarded_host}").hostname if forwarded_host else None
+        if forwarded_name and direct_host and forwarded_name.lower() == direct_host.lower():
+            candidate = f"{forwarded_proto if forwarded_proto in {'http', 'https'} else scheme}://{forwarded_host}"
+        else:
+            candidate = f"{scheme}://{host_header}" if host_header else str(request.base_url)
+
+    parsed = urlsplit(candidate)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+    if scheme not in {"http", "https"} or not hostname:
+        raise ValueError("Unable to determine a valid OAuth origin")
+    return f"{scheme}://{_format_origin_host(hostname, parsed.port, scheme)}"
+
+
 def _normalize_origin_candidate(origin: str | None) -> str | None:
     raw = str(origin or "").strip()
     if not raw:
@@ -270,9 +319,11 @@ def create_access_token(
     *,
     mfa_verified: bool = False,
     auth_methods: list[str] | None = None,
+    security_generation: int = 0,
+    expires_at: datetime | None = None,
 ) -> str:
     """Create a JWT access token."""
-    expire = datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expire_hours)
+    expire = expires_at or (datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expire_hours))
     payload = {
         "sub": user_id,
         "username": username,
@@ -280,6 +331,7 @@ def create_access_token(
         "exp": expire,
         "mfa": bool(mfa_verified),
         "amr": auth_methods or ["password"],
+        "security_generation": int(security_generation),
     }
     return encode_jwt_payload(payload)
 
@@ -309,14 +361,20 @@ def decode_access_token(token: str) -> Optional[TokenData]:
     payload = decode_jwt_payload(token)
     if payload is None:
         return None
-    return TokenData(
-        user_id=payload["sub"],
-        username=payload["username"],
-        role=payload["role"],
-        exp=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
-        mfa_verified=bool(payload.get("mfa", False)),
-        auth_methods=[str(method) for method in payload.get("amr", []) if str(method)],
-    )
+    if payload.get("token_use") == "mcp_access" or "grant_id" in payload or "aud" in payload:
+        return None
+    try:
+        return TokenData(
+            user_id=str(payload["sub"]),
+            username=str(payload["username"]),
+            role=str(payload["role"]),
+            exp=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
+            mfa_verified=bool(payload.get("mfa", False)),
+            auth_methods=[str(method) for method in payload.get("amr", []) if str(method)],
+            security_generation=int(payload.get("security_generation", 0)),
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
 
 
 def hash_token(token: str) -> str:
@@ -389,6 +447,19 @@ async def get_auth_provider_config() -> AuthProviderConfigData:
         totp_remember_device_days=max(int(getattr(config, "totpRememberDeviceDays", 30) or 30), 1),
         mfa_allowed_methods=mfa_allowed_methods,
         mfa_default_method=mfa_default_method,
+        web_session_hours=getattr(config, "webSessionHours", getattr(config, "web_session_hours", None)),
+        effective_web_session_hours=resolve_web_session_hours(config, settings.jwt_expire_hours),
+        mcp_access_token_minutes=max(
+            MCP_ACCESS_TOKEN_MINUTES_MIN,
+            min(
+                int(getattr(config, "mcpAccessTokenMinutes", MCP_ACCESS_TOKEN_MINUTES_DEFAULT) or MCP_ACCESS_TOKEN_MINUTES_DEFAULT),
+                MCP_ACCESS_TOKEN_MINUTES_MAX,
+            ),
+        ),
+        mcp_authorization_days=max(
+            MCP_AUTHORIZATION_DAYS_MIN,
+            min(int(getattr(config, "mcpAuthorizationDays", MCP_AUTHORIZATION_DAYS_DEFAULT) or MCP_AUTHORIZATION_DAYS_DEFAULT), MCP_AUTHORIZATION_DAYS_MAX),
+        ),
     )
 
 
@@ -403,6 +474,9 @@ async def update_auth_provider_config(
     totp_remember_device_days: int | None = None,
     mfa_allowed_methods: list[str] | None = None,
     mfa_default_method: Any = _UNSET,
+    web_session_hours: Any = _UNSET,
+    mcp_access_token_minutes: Any = _UNSET,
+    mcp_authorization_days: Any = _UNSET,
 ) -> AuthProviderConfigData:
     """Update provider-neutral authentication policy flags."""
     data: types.AuthProviderConfigUpdateInput = {}
@@ -425,6 +499,18 @@ async def update_auth_provider_config(
         data["mfaAllowedMethods"] = mfa_allowed_methods
     if mfa_default_method is not _UNSET:
         data["mfaDefaultMethod"] = mfa_default_method
+    if web_session_hours is not _UNSET:
+        if web_session_hours is not None and not WEB_SESSION_HOURS_MIN <= int(web_session_hours) <= WEB_SESSION_HOURS_MAX:
+            raise ValueError("web_session_hours must be between 1 and 720")
+        data["webSessionHours"] = web_session_hours  # type: ignore[typeddict-unknown-key]
+    if mcp_access_token_minutes is not _UNSET:
+        if mcp_access_token_minutes is None or not MCP_ACCESS_TOKEN_MINUTES_MIN <= int(mcp_access_token_minutes) <= MCP_ACCESS_TOKEN_MINUTES_MAX:
+            raise ValueError("mcp_access_token_minutes must be between 5 and 1440")
+        data["mcpAccessTokenMinutes"] = int(mcp_access_token_minutes)  # type: ignore[typeddict-unknown-key]
+    if mcp_authorization_days is not _UNSET:
+        if mcp_authorization_days is None or not MCP_AUTHORIZATION_DAYS_MIN <= int(mcp_authorization_days) <= MCP_AUTHORIZATION_DAYS_MAX:
+            raise ValueError("mcp_authorization_days must be between 1 and 90")
+        data["mcpAuthorizationDays"] = int(mcp_authorization_days)  # type: ignore[typeddict-unknown-key]
 
     db = await get_db()
     create_data: types.AuthProviderConfigCreateInput = {"id": "default"}
@@ -446,6 +532,12 @@ async def update_auth_provider_config(
         create_data["mfaAllowedMethods"] = mfa_allowed_methods
     if mfa_default_method is not _UNSET:
         create_data["mfaDefaultMethod"] = mfa_default_method
+    if web_session_hours is not _UNSET:
+        create_data["webSessionHours"] = web_session_hours  # type: ignore[typeddict-unknown-key]
+    if mcp_access_token_minutes is not _UNSET:
+        create_data["mcpAccessTokenMinutes"] = int(mcp_access_token_minutes)  # type: ignore[typeddict-unknown-key]
+    if mcp_authorization_days is not _UNSET:
+        create_data["mcpAuthorizationDays"] = int(mcp_authorization_days)  # type: ignore[typeddict-unknown-key]
     await db.authproviderconfig.upsert(
         where={"id": "default"},
         data={"create": create_data, "update": data},
@@ -2248,10 +2340,11 @@ async def create_session(
     *,
     mfa_verified_at: datetime | None = None,
     auth_methods: list[str] | None = None,
+    expires_at: datetime | None = None,
 ):
     """Create a session record in the database."""
     db = await get_db()
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expire_hours)
+    expires_at = expires_at or (datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expire_hours))
 
     await db.session.create(
         data={
@@ -2266,7 +2359,7 @@ async def create_session(
     )
 
 
-def set_session_cookie(response: Response, token: str) -> None:
+def set_session_cookie(response: Response, token: str, *, max_age: int | None = None) -> None:
     """Set the app session cookie using the central auth cookie policy."""
     response.set_cookie(
         key=settings.session_cookie_name,
@@ -2274,7 +2367,7 @@ def set_session_cookie(response: Response, token: str) -> None:
         httponly=settings.session_cookie_httponly,
         secure=settings.session_cookie_secure,
         samesite=settings.session_cookie_samesite,
-        max_age=settings.jwt_expire_hours * 3600,
+        max_age=max_age if max_age is not None else settings.jwt_expire_hours * 3600,
         path="/",
     )
 
@@ -2289,26 +2382,42 @@ async def issue_authenticated_session(
     ip_address: str | None = None,
     mfa_verified: bool = False,
     auth_methods: list[str] | None = None,
+    security_generation: int | None = None,
 ) -> str:
     """Create a JWT, persist its session row, and set the app session cookie."""
+    config = await get_auth_provider_config()
+    db = await get_db()
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=resolve_web_session_hours(config, settings.jwt_expire_hours))
+    max_age = max(0, int((expires_at - now).total_seconds()))
     resolved_methods = auth_methods or ["password"]
-    mfa_verified_at = datetime.now(timezone.utc) if mfa_verified else None
-    token = create_access_token(
-        user_id,
-        username,
-        role,
-        mfa_verified=mfa_verified,
-        auth_methods=resolved_methods,
-    )
-    await create_session(
-        user_id=user_id,
-        token=token,
-        user_agent=user_agent,
-        ip_address=ip_address,
-        mfa_verified_at=mfa_verified_at,
-        auth_methods=resolved_methods,
-    )
-    set_session_cookie(response, token)
+    mfa_verified_at = now if mfa_verified else None
+    async with db.tx() as tx:
+        current_generation = await lock_user_security_generation(tx, user_id)
+        if security_generation is not None and int(security_generation) != current_generation:
+            raise AuthenticationInvalidatedError("Authentication has been invalidated")
+        issued_generation = current_generation if security_generation is None else int(security_generation)
+        token = create_access_token(
+            user_id,
+            username,
+            role,
+            mfa_verified=mfa_verified,
+            auth_methods=resolved_methods,
+            security_generation=issued_generation,
+            expires_at=expires_at,
+        )
+        await tx.session.create(
+            data={
+                "userId": user_id,
+                "tokenHash": hash_token(token),
+                "expiresAt": expires_at,
+                "mfaVerifiedAt": mfa_verified_at,
+                "authMethods": Json(resolved_methods),
+                "userAgent": user_agent,
+                "ipAddress": ip_address,
+            }
+        )
+    set_session_cookie(response, token, max_age=max_age)
     return token
 
 
@@ -2339,10 +2448,14 @@ async def invalidate_session(token: str):
     await db.session.delete_many(where={"tokenHash": hash_token(token)})
 
 
-async def invalidate_all_sessions(user_id: str):
-    """Invalidate all sessions for a user."""
-    db = await get_db()
-    await db.session.delete_many(where={"userId": user_id})
+async def invalidate_all_sessions(user_id: str, *, expected_generation: int | None = None) -> int:
+    """Atomically invalidate a user's web sessions and OAuth grants."""
+    try:
+        return await revoke_user_auth(user_id, expected_generation=expected_generation)
+    except OAuthGrantError as exc:
+        if exc.reason == "security_generation_mismatch":
+            raise AuthenticationInvalidatedError("Authentication has been invalidated") from exc
+        raise
 
 
 async def cleanup_expired_sessions():
