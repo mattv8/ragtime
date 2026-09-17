@@ -18,7 +18,7 @@ from uuid import uuid4
 from prisma import Prisma
 from prisma.enums import AuthProvider, McpAuthMethod
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from ragtime.api import auth as api_auth
 from ragtime.core.auth import AuthResult, decode_jwt_payload, encode_jwt_payload, hash_token, validate_session
@@ -287,6 +287,7 @@ class McpOAuthRefreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
             remember_device=False,
             refresh_token=None,
         )
+        assert isinstance(result, api_auth.OAuth2TokenResponse)
         self.assertIsNotNone(result.refresh_token)
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertEqual(response.headers["pragma"], "no-cache")
@@ -501,5 +502,6 @@ class McpOAuthRefreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
             remember_device=False,
             refresh_token=None,
         )
+        assert isinstance(response, JSONResponse)
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.body, b'{"error":"invalid_grant","error_description":"authorization is no longer valid"}')
