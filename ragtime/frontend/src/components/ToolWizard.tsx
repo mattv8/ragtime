@@ -33,6 +33,7 @@ import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
 import { ReindexIntervalSelect } from './ReindexIntervalSelect';
 import { defaultScheduleStartMinute, defaultScheduleTimezone } from './ScheduleStartTimeInput';
+import { PdmWebhookSettings } from './PdmWebhookSettings';
 import { DirectoryBrowser } from './DirectoryBrowser';
 import { HttpApiConnectionPanel } from './HttpApiConnectionPanel';
 import {
@@ -2696,6 +2697,9 @@ export function ToolWizard({
           include_folder_path: true,
           include_configurations: true,
           max_documents: null,
+          reindex_interval_hours: 0,
+          reindex_start_minute: null,
+          reindex_timezone: null,
           last_indexed_at: null,
         },
   );
@@ -2966,6 +2970,20 @@ export function ToolWizard({
           ? (config.reindex_timezone ?? defaultScheduleTimezone())
           : null,
     });
+    const withPdmSchedule = (
+      config: SolidworksPdmConnectionConfig,
+    ): SolidworksPdmConnectionConfig => ({
+      ...config,
+      reindex_interval_hours: config.reindex_interval_hours ?? 0,
+      reindex_start_minute:
+        (config.reindex_interval_hours ?? 0) > 0
+          ? (config.reindex_start_minute ?? defaultScheduleStartMinute())
+          : null,
+      reindex_timezone:
+        (config.reindex_interval_hours ?? 0) > 0
+          ? (config.reindex_timezone ?? defaultScheduleTimezone())
+          : null,
+    });
 
     switch (toolType) {
       case 'postgres':
@@ -3003,7 +3021,7 @@ export function ToolWizard({
           index_name: name || filesystemConfig.index_name,
         });
       case 'solidworks_pdm':
-        return pdmConfig;
+        return withPdmSchedule(pdmConfig);
     }
   };
 
@@ -3784,6 +3802,7 @@ export function ToolWizard({
 
     try {
       let savedToolId = existingTool?.id || createdToolId;
+      let createdInThisSave = false;
       const connectionConfig = getConnectionConfig();
 
       if (savedToolId) {
@@ -3810,6 +3829,7 @@ export function ToolWizard({
         const created = await api.createToolConfig(request);
         savedToolId = created.id;
         setCreatedToolId(created.id);
+        createdInThisSave = true;
       }
 
       if (!savedToolId) {
@@ -3843,7 +3863,7 @@ export function ToolWizard({
       }
 
       // Trigger PDM document indexing for SolidWorks PDM tools
-      if (toolType === 'solidworks_pdm' && savedToolId) {
+      if (toolType === 'solidworks_pdm' && savedToolId && createdInThisSave) {
         try {
           await api.triggerPdmIndex(savedToolId);
         } catch (pdmErr) {
@@ -5337,6 +5357,32 @@ export function ToolWizard({
         <p className="wizard-help">
           Connect to a SolidWorks PDM database to index engineering documents.
         </p>
+
+        <ReindexIntervalSelect
+          value={pdmConfig.reindex_interval_hours ?? 0}
+          onChange={(value) =>
+            setPdmConfig((current) => ({
+              ...current,
+              reindex_interval_hours: value,
+              reindex_start_minute:
+                value > 0 ? (current.reindex_start_minute ?? defaultScheduleStartMinute()) : null,
+              reindex_timezone:
+                value > 0 ? (current.reindex_timezone ?? defaultScheduleTimezone()) : null,
+            }))
+          }
+          startMinute={pdmConfig.reindex_start_minute ?? null}
+          timezone={pdmConfig.reindex_timezone ?? null}
+          onStartMinuteChange={(value) =>
+            setPdmConfig((current) => ({ ...current, reindex_start_minute: value }))
+          }
+          onTimezoneChange={(value) =>
+            setPdmConfig((current) => ({ ...current, reindex_timezone: value }))
+          }
+          label="Automatic incremental indexing"
+          style={{ marginBottom: 'var(--space-lg)' }}
+        />
+
+        <PdmWebhookSettings toolId={existingTool?.id ?? createdToolId} disabled={saving} />
 
         <div className="connection-panel">
           <h4 style={{ marginTop: '0', marginBottom: '0.75rem' }}>Database Connection</h4>

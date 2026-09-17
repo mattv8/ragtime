@@ -22,11 +22,12 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from ragtime.core.app_setting_defaults import DEFAULT_IVFFLAT_LISTS
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
+from ragtime.core.sql import sql_quote_literal
 from ragtime.indexer.embedding_errors import EmbeddingOperationError, build_embedding_configuration_error
 from ragtime.indexer.models import (
     PdmBomComponentModel,
@@ -87,6 +88,7 @@ class PdmIndexerService:
         connection_config: dict,
         full_reindex: bool = False,
         tool_name: str | None = None,
+        admission_hook: Callable[[Any, PdmIndexJob], Awaitable[bool]] | None = None,
     ) -> PdmIndexJob:
         """
         Trigger PDM metadata indexing for a tool config.
@@ -100,30 +102,49 @@ class PdmIndexerService:
         Returns:
             The created PdmIndexJob
         """
-        # Check for existing active job
-        existing_job = await self.get_active_job(tool_config_id)
-        if existing_job and existing_job.status in (
-            PdmIndexStatus.PENDING,
-            PdmIndexStatus.INDEXING,
-        ):
-            logger.info(f"PDM index job already running for tool {tool_config_id}")
-            return existing_job
-
-        # Create job
-        job_id = str(uuid.uuid4())
-        safe_name = tool_name or tool_config_id
-        index_name = f"pdm_{safe_name}"
-
-        job = PdmIndexJob(
-            id=job_id,
-            tool_config_id=tool_config_id,
-            status=PdmIndexStatus.PENDING,
-            index_name=index_name,
-            created_at=datetime.now(timezone.utc),
-        )
-
-        # Store job in database
-        await self._create_job(job)
+        # The transaction-scoped advisory lock covers lookup and insert for every
+        # manual/retry/automatic caller.  This is deliberately per tool rather
+        # than an in-process lock; deployments still run one dispatcher.
+        db: Any = await get_db()
+        async with db.tx() as tx:
+            await tx.execute_raw(f"SELECT pg_advisory_xact_lock(hashtext({sql_quote_literal('pdm-index:' + tool_config_id)}))")
+            active_rows = await tx.query_raw(
+                f"SELECT * FROM pdm_index_jobs WHERE tool_config_id={sql_quote_literal(tool_config_id)} AND status IN ('pending','indexing') ORDER BY created_at DESC LIMIT 1"
+            )
+            if active_rows:
+                if admission_hook is not None:
+                    return None  # type: ignore[return-value]
+                row = active_rows[0]
+                return PdmIndexJob(
+                    id=str(row["id"]),
+                    tool_config_id=tool_config_id,
+                    status=PdmIndexStatus(str(row["status"])),
+                    index_name=str(row["index_name"]),
+                    created_at=row.get("created_at") or datetime.now(timezone.utc),
+                    started_at=row.get("started_at"),
+                    completed_at=row.get("completed_at"),
+                )
+            job_id = str(uuid.uuid4())
+            safe_name = tool_name or tool_config_id
+            job = PdmIndexJob(
+                id=job_id, tool_config_id=tool_config_id, status=PdmIndexStatus.PENDING, index_name=f"pdm_{safe_name}", created_at=datetime.now(timezone.utc)
+            )
+            if admission_hook is not None and not await admission_hook(tx, job):
+                return None  # type: ignore[return-value]
+            await tx.pdmindexjob.create(
+                data={
+                    "id": job.id,
+                    "toolConfigId": job.tool_config_id,
+                    "status": job.status.value,
+                    "indexName": job.index_name,
+                    "totalDocuments": 0,
+                    "processedDocuments": 0,
+                    "skippedDocuments": 0,
+                    "totalChunks": 0,
+                    "processedChunks": 0,
+                    "createdAt": job.created_at,
+                }
+            )
         self._active_jobs[job_id] = job
         self._cancellation_flags[job_id] = False
 
@@ -459,6 +480,16 @@ class PdmIndexerService:
                 if isinstance(result, int):
                     deleted_state += result
 
+            # Reset automation queue/history references but intentionally keep
+            # webhook credentials and schedule configuration on the tool.
+            from ragtime.pdm_automation.repository import pdm_automation_repository
+
+            try:
+                await pdm_automation_repository.reset_index_state(tool_config_id)
+            except Exception as automation_error:
+                # Embedding cleanup must retain its existing best-effort API
+                # behavior; an unavailable automation row is reconciled later.
+                logger.warning("Unable to reset PDM automation state for %s: %s", tool_config_id, type(automation_error).__name__)
             # Delete jobs
             await db.pdmindexjob.delete_many(where={"toolConfigId": tool_config_id})
 

@@ -1991,9 +1991,30 @@ export interface SolidworksPdmConnectionConfig extends SSHTunnelConfig {
 
   // Indexing options
   max_documents?: number | null;
+  reindex_interval_hours?: number;
+  reindex_start_minute?: number | null;
+  reindex_timezone?: string | null;
 
   // Last indexed info
   last_indexed_at?: string | null;
+}
+
+export interface PdmWebhookConfig {
+  enabled: boolean;
+  paused: boolean;
+  webhook_id: string | null;
+  webhook_url: string | null;
+  created_at: string | null;
+  last_received_at: string | null;
+  pending: boolean;
+  active_job_id: string | null;
+  last_attempt_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+}
+
+export interface PdmWebhookEnableResponse extends PdmWebhookConfig {
+  secret: string | null;
 }
 
 export interface CloudMountConnectionConfig {

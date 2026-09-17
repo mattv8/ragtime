@@ -113,6 +113,8 @@ from ragtime.mcp.routes import router as mcp_router
 from ragtime.mcp.server import notify_tools_changed
 from ragtime.mcp.user_oauth import McpOAuthError
 from ragtime.oauth_redirects import DEFAULT_ALLOWED_ORIGINS, build_allowed_origins
+from ragtime.pdm_automation.routes import router as pdm_automation_router
+from ragtime.pdm_automation.service import pdm_automation_service
 from ragtime.rag import rag
 from ragtime.userspace.agent_routes import (
     agent_management_router,
@@ -326,6 +328,7 @@ async def lifespan(app: FastAPI):
     userspace_runtime_service.schedule_runtime_bridge_refresh_watch()
     await workspace_code_index_service.start()
     await git_webhook_service.start()
+    await pdm_automation_service.start()
     # Start cleanup after readiness-critical initialization. It is deliberately
     # independent of startup success and always cancelled before DB teardown.
     auth_cleanup_task = asyncio.create_task(_auth_cleanup_loop(), name="auth-expiry-cleanup")
@@ -341,6 +344,7 @@ async def lifespan(app: FastAPI):
             pass
 
     # Cleanup - cancel the startup Git policy reconciliation task
+    await pdm_automation_service.stop()
     await git_webhook_service.stop()
     await workspace_code_index_service.stop()
     await userspace_service.shutdown_git_drift_reconciliation()
@@ -530,6 +534,7 @@ app.include_router(auth_router)
 
 # Include public git webhook routes
 app.include_router(git_webhook_router)
+app.include_router(pdm_automation_router)
 
 # Include indexer routes
 app.include_router(indexer_router)
