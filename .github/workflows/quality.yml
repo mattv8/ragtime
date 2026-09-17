@@ -118,14 +118,21 @@ jobs:
       - name: Mypy type check
         env:
           MYPY_SCOPE: ${{ needs.scope.outputs.mypy_scope }}
-        run: mkdir -p .mypy_cache && chmod ugo+rwx .mypy_cache && docker run --rm --user "$(id -u):$(id -g)" -e MYPY_SCOPE -v "$PWD/.mypy_cache:/ragtime/.mypy_cache" '${{ steps.buildx.outputs.image_tag }}' python docker/scripts/run_scoped_mypy.py
+          CHECK_CONTAINER: ${{ steps.buildx.outputs.builder_name }}-check
+        run: mkdir -p .mypy_cache && chmod ugo+rwx .mypy_cache && docker run --rm --name "$CHECK_CONTAINER" --user "$(id -u):$(id -g)" -e MYPY_SCOPE -v "$PWD/.mypy_cache:/ragtime/.mypy_cache" '${{ steps.buildx.outputs.image_tag }}' python docker/scripts/run_scoped_mypy.py
       - name: Pyright problem check
-        run: docker run --rm '${{ steps.buildx.outputs.image_tag }}' python -m pyright --pythonpath .venv/bin/python
+        env:
+          CHECK_CONTAINER: ${{ steps.buildx.outputs.builder_name }}-check
+        run: docker run --rm --name "$CHECK_CONTAINER" '${{ steps.buildx.outputs.image_tag }}' python -m pyright --pythonpath .venv/bin/python
       - name: Duplicate code check
-        run: docker run --rm '${{ steps.buildx.outputs.image_tag }}' jscpd --config .jscpd.json ragtime runtime tests
+        env:
+          CHECK_CONTAINER: ${{ steps.buildx.outputs.builder_name }}-check
+        run: docker run --rm --name "$CHECK_CONTAINER" '${{ steps.buildx.outputs.image_tag }}' jscpd --config .jscpd.json ragtime runtime tests
       - name: Pytest suite
+        env:
+          CHECK_CONTAINER: ${{ steps.buildx.outputs.builder_name }}-check
         run: |
-          docker run --rm \
+          docker run --rm --name "$CHECK_CONTAINER" \
             -v "$PWD/docker/buildkitd.ci.toml:/ragtime/docker/buildkitd.ci.toml:ro" \
             -v "$PWD/.github/actions:/ragtime/.github/actions:ro" \
             '${{ steps.buildx.outputs.image_tag }}' \
@@ -134,10 +141,29 @@ jobs:
         if: always() && steps.mypy-cache.outcome == 'success'
         uses: actions/cache/save@v4
         with: {path: .mypy_cache, key: '${{ steps.mypy-cache.outputs.cache-primary-key }}'}
+      - name: Remove backend analysis check container
+        if: always()
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.builder_name }}
+        run: |
+          if [ -z "$BUILDER_NAME" ]; then
+            echo '::warning::Managed backend analysis builder name was unavailable; skipping check-container cleanup.'
+            exit 0
+          fi
+          CHECK_CONTAINER="${BUILDER_NAME}-check"
+          if docker container inspect "$CHECK_CONTAINER" >/dev/null 2>&1; then
+            if ! docker rm -f "$CHECK_CONTAINER"; then
+              echo '::warning::Managed backend analysis check container was not removed.'
+            fi
+          fi
       - name: Remove shared backend check image
         if: always()
+        env:
+          IMAGE_TAG: ${{ steps.buildx.outputs.image_tag }}
         run: |
-          if ! docker image rm '${{ steps.buildx.outputs.image_tag }}'; then
+          if [ -z "$IMAGE_TAG" ]; then
+            echo '::warning::Managed backend analysis image tag was unavailable; skipping cleanup.'
+          elif ! docker image rm "$IMAGE_TAG"; then
             echo '::warning::Managed backend analysis image was not removed; a later managed collection may recover it.'
           fi
 
