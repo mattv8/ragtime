@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from ragtime.config import settings
+from ragtime.core.encryption import decrypt_secret
 from ragtime.core.rate_limit import limiter
 from ragtime.core.security import require_admin
 from ragtime.core.webhooks import bearer_token, constant_time_token_matches
@@ -50,8 +51,6 @@ async def receive_pdm_webhook(webhook_id: str, request: Request) -> JSONResponse
         raise HTTPException(status_code=404, detail="Webhook not found")
     # Authenticate before body handling, then revalidate identity/state in the
     # acceptance transaction so pause/rotation/delete cannot race acceptance.
-    from ragtime.core.encryption import decrypt_secret
-
     if not constant_time_token_matches(decrypt_secret(str(target.get("webhook_secret") or "")), bearer_token(request.headers)):
         raise HTTPException(status_code=401, detail="Invalid webhook credentials")
     body = await _read_body(request)
