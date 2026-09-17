@@ -34,7 +34,7 @@ class MergeSerializerTests(unittest.TestCase):
         workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
         return workflow["jobs"]["advance-queue"]["steps"][0]["run"]
 
-    def _run(self, fixture: dict[str, Any], token: bool = True) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
+    def _run(self, fixture: dict[str, Any], token: bool = True) -> tuple[subprocess.CompletedProcess[str], list[list[str]], list[str]]:
         fake_gh = textwrap.dedent(
             """\
             #!/usr/bin/env python3
@@ -73,10 +73,20 @@ class MergeSerializerTests(unittest.TestCase):
             print(json.dumps(value))
             """
         )
+        fake_sleep = textwrap.dedent(
+            """\
+            #!/usr/bin/env python3
+            import os, sys
+            with open(os.environ['SLEEP_CALLS'], 'a') as calls:
+                calls.write(' '.join(sys.argv[1:]) + '\\n')
+            """
+        )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             (path / "gh").write_text(fake_gh, encoding="utf-8")
             (path / "gh").chmod(0o755)
+            (path / "sleep").write_text(fake_sleep, encoding="utf-8")
+            (path / "sleep").chmod(0o755)
             (path / "fixture.json").write_text(json.dumps(fixture), encoding="utf-8")
             calls = path / "calls.jsonl"
             environment = {
@@ -85,6 +95,7 @@ class MergeSerializerTests(unittest.TestCase):
                 "GH_FIXTURE": str(path / "fixture.json"),
                 "GH_STATE": str(path / "state.json"),
                 "GH_CALLS": str(calls),
+                "SLEEP_CALLS": str(path / "sleep.jsonl"),
                 "REPO": "org/repo",
             }
             environment.pop("GH_TOKEN", None)
@@ -92,7 +103,9 @@ class MergeSerializerTests(unittest.TestCase):
                 environment["GH_TOKEN"] = "not-a-real-secret"
             result = subprocess.run(["bash", "-c", self._script()], text=True, capture_output=True, env=environment, check=False)
             recorded = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()] if calls.exists() else []
-            return result, recorded
+            sleep_path = path / "sleep.jsonl"
+            sleep_calls = sleep_path.read_text(encoding="utf-8").splitlines() if sleep_path.exists() else []
+            return result, recorded, sleep_calls
 
     def _assert_no_mutation(self, calls: list[list[str]]) -> None:
         self.assertFalse(any(call[:2] == ["api", "graphql"] for call in calls))
@@ -100,15 +113,25 @@ class MergeSerializerTests(unittest.TestCase):
     def test_workflow_contract_and_missing_token_empty_queue(self) -> None:
         workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
         self.assertEqual(workflow["on"]["push"]["branches"], ["beta"])
-        self.assertEqual(workflow["on"]["schedule"][0]["cron"], "*/15 * * * *")
+        self.assertNotIn("schedule", workflow["on"])
+        self.assertEqual(workflow["on"]["workflow_run"]["workflows"], ["CI"])
+        self.assertEqual(workflow["on"]["workflow_run"]["types"], ["completed"])
+        self.assertNotIn("branches", workflow["on"]["workflow_run"])
+        self.assertEqual(workflow["on"]["pull_request_target"]["branches"], ["beta"])
+        self.assertEqual(workflow["on"]["pull_request_target"]["types"], ["auto_merge_enabled"])
         self.assertEqual(workflow["permissions"], {"contents": "read"})
-        self.assertIn("github.ref == 'refs/heads/beta'", workflow["jobs"]["advance-queue"]["if"])
-        self.assertNotIn("checkout", WORKFLOW.read_text(encoding="utf-8").lower())
-        missing, calls = self._run({}, token=False)
+        workflow_text = WORKFLOW.read_text(encoding="utf-8").lower()
+        job_guard = workflow["jobs"]["advance-queue"]["if"]
+        self.assertIn("github.ref == 'refs/heads/beta'", job_guard)
+        self.assertIn("github.event.workflow_run.event == 'pull_request'", job_guard)
+        self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", job_guard)
+        for prohibited in ("checkout", "download-artifact", "actions/cache", "npm install", "pip install"):
+            self.assertNotIn(prohibited, workflow_text)
+        missing, calls, _ = self._run({}, token=False)
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn("MERGE_SERIALIZER_TOKEN", missing.stderr)
         self.assertEqual(calls, [])
-        empty, calls = self._run({"list_pages": [[]]})
+        empty, calls, _ = self._run({"list_pages": [[]]})
         self.assertEqual(empty.returncode, 0, empty.stderr)
         self._assert_no_mutation(calls)
 
@@ -119,7 +142,7 @@ class MergeSerializerTests(unittest.TestCase):
         ignored[1]["draft"] = True
         ignored[2]["head"]["repo"]["full_name"] = "fork/repo"
         ignored[3]["head"]["ref"] = "main"
-        result, calls = self._run({"list_pages": [ignored + [eligible, _pr(9)]], "pulls": {"8": [eligible, eligible], "9": [_pr(9), _pr(9)]}})
+        result, calls, _ = self._run({"list_pages": [ignored + [eligible, _pr(9)]], "pulls": {"8": [eligible, eligible], "9": [_pr(9), _pr(9)]}})
         self.assertEqual(result.returncode, 0, result.stderr)
         mutation = next(call for call in calls if call[:2] == ["api", "graphql"])
         self.assertIn("expectedHeadOid", " ".join(mutation))
@@ -131,14 +154,14 @@ class MergeSerializerTests(unittest.TestCase):
     def test_deleted_fork_is_ignored_before_eligible_behind_pr(self) -> None:
         deleted_fork, eligible = _pr(1), _pr(2)
         deleted_fork["head"]["repo"] = None
-        result, calls = self._run({"list_pages": [[deleted_fork, eligible]], "pulls": {"2": [eligible, eligible]}})
+        result, calls, _ = self._run({"list_pages": [[deleted_fork, eligible]], "pulls": {"2": [eligible, eligible]}})
         self.assertEqual(result.returncode, 0, result.stderr)
         mutation = next(call for call in calls if call[:2] == ["api", "graphql"])
         self.assertIn("id=NODE2", mutation)
 
     def test_later_in_flight_pr_holds_older_behind_candidate(self) -> None:
         older, newer = _pr(1), _pr(2, "clean", "newsha")
-        result, calls = self._run(
+        result, calls, _ = self._run(
             {"list_pages": [[older, newer]], "pulls": {"1": [older], "2": [newer]}, "runs": {"newsha": [{"workflow_runs": [{"status": "in_progress"}]}]}}
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -147,7 +170,7 @@ class MergeSerializerTests(unittest.TestCase):
 
     def test_conflicts_and_completed_red_are_skipped(self) -> None:
         dirty, red, behind = _pr(1, "dirty"), _pr(2, "blocked", "redsha"), _pr(3)
-        result, calls = self._run(
+        result, calls, _ = self._run(
             {
                 "list_pages": [[dirty, red, behind]],
                 "pulls": {"1": [dirty], "2": [red], "3": [behind, behind]},
@@ -162,23 +185,23 @@ class MergeSerializerTests(unittest.TestCase):
             with self.subTest(state=state, run=run):
                 pr = _pr(1, state)
                 runs = [{"workflow_runs": [] if run is None else [run]}]
-                result, calls = self._run({"list_pages": [[pr]], "pulls": {"1": [pr]}, "runs": {"sha": runs}})
+                result, calls, _ = self._run({"list_pages": [[pr]], "pulls": {"1": [pr]}, "runs": {"sha": runs}})
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self._assert_no_mutation(calls)
 
     def test_pagination_api_errors_and_stale_candidate_do_not_advance(self) -> None:
         first, second = _pr(1), _pr(2)
-        result, calls = self._run({"list_pages": [[first], [second]], "pulls": {"1": [first, first], "2": [second]}})
+        result, calls, _ = self._run({"list_pages": [[first], [second]], "pulls": {"1": [first, first], "2": [second]}})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("NODE1", " ".join(next(call for call in calls if call[:2] == ["api", "graphql"])))
-        failed, _ = self._run({"list_pages": {"message": "denied"}})
+        failed, _, _ = self._run({"list_pages": {"message": "denied"}})
         self.assertNotEqual(failed.returncode, 0)
-        http_failed, calls = self._run({"fail": {"/repos/org/repo/pulls": True}})
+        http_failed, calls, _ = self._run({"fail": {"/repos/org/repo/pulls": True}})
         self.assertNotEqual(http_failed.returncode, 0)
         self._assert_no_mutation(calls)
         changed = _pr(1)
         changed_head = _pr(1, sha="new-sha")
-        stale, calls = self._run({"list_pages": [[changed]], "pulls": {"1": [changed, changed_head]}})
+        stale, calls, _ = self._run({"list_pages": [[changed]], "pulls": {"1": [changed, changed_head]}})
         self.assertEqual(stale.returncode, 0, stale.stderr)
         self._assert_no_mutation(calls)
 
@@ -186,10 +209,10 @@ class MergeSerializerTests(unittest.TestCase):
         candidate, next_candidate = _pr(1), _pr(2)
         disabled = _pr(1)
         disabled["auto_merge"] = None
-        stale, calls = self._run({"list_pages": [[candidate, next_candidate]], "pulls": {"1": [candidate, disabled], "2": [next_candidate]}})
+        stale, calls, _ = self._run({"list_pages": [[candidate, next_candidate]], "pulls": {"1": [candidate, disabled], "2": [next_candidate]}})
         self.assertEqual(stale.returncode, 0, stale.stderr)
         self._assert_no_mutation(calls)
-        failed, calls = self._run(
+        failed, calls, _ = self._run(
             {
                 "list_pages": [[candidate, next_candidate]],
                 "pulls": {"1": [candidate, candidate], "2": [next_candidate]},
@@ -198,6 +221,49 @@ class MergeSerializerTests(unittest.TestCase):
         )
         self.assertNotEqual(failed.returncode, 0)
         self.assertEqual(sum(call[:2] == ["api", "graphql"] for call in calls), 1)
+
+    def test_unknown_mergeability_retries_are_bounded_and_safe(self) -> None:
+        unknown, behind, clean = _pr(1, "unknown"), _pr(1), _pr(1, "clean")
+        recovered, calls, sleeps = self._run({"list_pages": [[unknown]], "pulls": {"1": [unknown, behind, behind]}})
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        self.assertEqual(sleeps, ["2"])
+        self.assertIn("retrying", recovered.stderr)
+        self.assertNotIn("retrying", recovered.stdout)
+        self.assertEqual(sum(call[:2] == ["api", "graphql"] for call in calls), 1)
+
+        held, calls, sleeps = self._run({"list_pages": [[unknown]], "pulls": {"1": [unknown, clean]}})
+        self.assertEqual(held.returncode, 0, held.stderr)
+        self.assertEqual(sleeps, ["2"])
+        self._assert_no_mutation(calls)
+
+        persistent, calls, sleeps = self._run({"list_pages": [[unknown]], "pulls": {"1": [unknown, unknown, unknown]}})
+        self.assertEqual(persistent.returncode, 0, persistent.stderr)
+        self.assertEqual(sleeps, ["2", "2"])
+        self.assertEqual(sum(any("/pulls/1" in arg for arg in call) for call in calls), 3)
+        self.assertIn("Manual dispatch", persistent.stdout)
+        self._assert_no_mutation(calls)
+
+        failed, calls, sleeps = self._run({"list_pages": [[behind]], "pulls": {"1": [behind]}, "fail": {"/repos/org/repo/pulls/1": True}})
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(sleeps, [])
+        self._assert_no_mutation(calls)
+
+        malformed, calls, sleeps = self._run({"list_pages": [[behind]], "pulls": {"1": []}})
+        self.assertNotEqual(malformed.returncode, 0)
+        self.assertEqual(sleeps, [])
+        self._assert_no_mutation(calls)
+
+    def test_revalidation_unknown_is_retried_then_resolves_or_stales(self) -> None:
+        behind, unknown, clean = _pr(1), _pr(1, "unknown"), _pr(1, "clean")
+        resolved, calls, sleeps = self._run({"list_pages": [[behind]], "pulls": {"1": [behind, unknown, behind]}})
+        self.assertEqual(resolved.returncode, 0, resolved.stderr)
+        self.assertEqual(sleeps, ["2"])
+        self.assertEqual(sum(call[:2] == ["api", "graphql"] for call in calls), 1)
+
+        stale, calls, sleeps = self._run({"list_pages": [[behind]], "pulls": {"1": [behind, unknown, clean]}})
+        self.assertEqual(stale.returncode, 0, stale.stderr)
+        self.assertEqual(sleeps, ["2"])
+        self._assert_no_mutation(calls)
 
 
 if __name__ == "__main__":

@@ -5,8 +5,12 @@ name: Merge serializer
 on:
   push:
     branches: [beta]
-  schedule:
-    - cron: "*/15 * * * *"
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  pull_request_target:
+    branches: [beta]
+    types: [auto_merge_enabled]
   workflow_dispatch:
 
 concurrency:
@@ -18,7 +22,11 @@ permissions:
 
 jobs:
   advance-queue:
-    if: github.ref == 'refs/heads/beta'
+    if: >-
+      github.ref == 'refs/heads/beta' &&
+      (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -52,6 +60,30 @@ jobs:
           eligible_pr() {
             jq -e --arg repo "$REPO" '.auto_merge != null and .draft == false and .base.ref == "beta" and .head.repo.full_name == $repo and .head.ref != "main" and .head.ref != "beta"' >/dev/null
           }
+          fetch_pr() {
+            local number="$1"
+            local attempt=1
+            local pr
+            local state
+
+            while [ "$attempt" -le 3 ]; do
+              pr=$(gh api "/repos/${REPO}/pulls/${number}") || return 1
+              valid_detail <<<"$pr" || return 1
+              state=$(jq -r '.mergeable_state' <<<"$pr")
+              if [ "$state" != "unknown" ]; then
+                printf '%s\n' "$pr"
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "PR #${number}: merge state unknown; retrying (${attempt}/3)." >&2
+                sleep 2
+              fi
+              attempt=$((attempt + 1))
+            done
+
+            echo "PR #${number}: merge state remains unknown after 3 requests; holding queue. Manual dispatch or the next event can retry." >&2
+            printf '%s\n' "$pr"
+          }
 
           pages=$(gh api --paginate --slurp "/repos/${REPO}/pulls?base=beta&state=open&sort=created&direction=asc&per_page=100") || fail_json "PR list API call failed."
           prs=$(jq -ce 'if type == "array" and all(.[]; type == "array") then flatten else error("malformed page response") end | if all(.[]; type == "object" and (.number | type == "number") and (.draft | type == "boolean") and ((.auto_merge == null) or (.auto_merge | type == "object")) and (.base.ref | type == "string") and (.head.ref | type == "string") and ((.head.repo == null) or (.head.repo.full_name | type == "string"))) then . else error("malformed PR") end' <<<"$pages") || fail_json "PR list API returned malformed data."
@@ -66,8 +98,7 @@ jobs:
           candidate_sha=""
           hold=""
           for number in $queued; do
-            pr=$(gh api "/repos/${REPO}/pulls/${number}") || fail_json "PR #${number} API call failed."
-            valid_detail <<<"$pr" || fail_json "PR #${number} API returned malformed data."
+            pr=$(fetch_pr "$number") || fail_json "PR #${number} API call failed or returned malformed data."
             if ! eligible_pr <<<"$pr"; then
               echo "PR #${number}: changed eligibility — skipping."
               continue
@@ -86,7 +117,7 @@ jobs:
                 fi
                 ;;
               unknown)
-                hold="PR #${number}: merge state unknown — holding queue."
+                hold="PR #${number}: merge state unknown after bounded retries — holding queue. Manual dispatch or the next event can retry."
                 ;;
               clean)
                 hold="PR #${number}: up to date and ready for auto-merge — holding queue."
@@ -113,10 +144,7 @@ jobs:
             exit 0
           fi
 
-          current=$(gh api "/repos/${REPO}/pulls/${candidate}") || fail_json "PR #${candidate} revalidation API call failed."
-          if ! valid_detail <<<"$current"; then
-            fail_json "PR #${candidate} revalidation API returned malformed data."
-          fi
+          current=$(fetch_pr "$candidate") || fail_json "PR #${candidate} revalidation API call failed or returned malformed data."
           if ! eligible_pr <<<"$current"; then
             echo "PR #${candidate} changed eligibility before update — no-op this tick."
             exit 0
