@@ -306,7 +306,8 @@ class ConversationToolEndpointAclTests(unittest.IsolatedAsyncioTestCase):
             return [tool_id for tool_id in kwargs["tool_config_ids"] if tool_id in allowed_ids]
 
         with (
-            mock.patch("ragtime.indexer.routes.Prisma", return_value=fake_db),
+            mock.patch("ragtime.indexer.routes.get_conversation_read_metadata", mock.AsyncMock(return_value=conversation)),
+            mock.patch("ragtime.indexer.routes.get_db", mock.AsyncMock(return_value=fake_db)),
             mock.patch(
                 "ragtime.indexer.routes.repository.list_healthy_enabled_tool_ids",
                 mock.AsyncMock(return_value=["tool-direct", "tool-group", "tool-hidden"]),
@@ -354,7 +355,8 @@ class ConversationToolEndpointAclTests(unittest.IsolatedAsyncioTestCase):
             return [tool_id for tool_id in kwargs["tool_config_ids"] if tool_id in allowed_ids]
 
         with (
-            mock.patch("ragtime.indexer.routes.Prisma", return_value=fake_db),
+            mock.patch("ragtime.indexer.routes.get_conversation_read_metadata", mock.AsyncMock(return_value=conversation)),
+            mock.patch("ragtime.indexer.routes.get_db", mock.AsyncMock(return_value=fake_db)),
             mock.patch(
                 "ragtime.indexer.routes.repository.list_healthy_enabled_tool_ids",
                 mock.AsyncMock(return_value=["tool-direct", "tool-group", "tool-hidden"]),

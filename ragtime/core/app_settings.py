@@ -768,6 +768,31 @@ class SettingsCache:
                 "userspace_exec_timeout_max_seconds": USERSPACE_EXEC_TIMEOUT_MAX_SECONDS,
             }
 
+    async def get_health_llm_settings(self) -> dict[str, str]:
+        """Get only the LLM settings needed by authenticated health checks."""
+        if self._settings is not None:
+            return {
+                "llm_model": self._settings.get("llm_model", DEFAULT_LLM_MODEL),
+                "llm_provider": self._settings.get("llm_provider", DEFAULT_LLM_PROVIDER),
+            }
+
+        db = await get_db()
+        rows = await db.query_raw(
+            "SELECT llm_model, llm_provider FROM app_settings WHERE id = $1 LIMIT 1",
+            "default",
+        )
+        if not rows:
+            return {
+                "llm_model": DEFAULT_LLM_MODEL,
+                "llm_provider": DEFAULT_LLM_PROVIDER,
+            }
+
+        row = rows[0]
+        return {
+            "llm_model": row.get("llm_model", DEFAULT_LLM_MODEL),
+            "llm_provider": row.get("llm_provider", DEFAULT_LLM_PROVIDER),
+        }
+
     async def get_tool_configs(self) -> List[dict]:
         """Get enabled tool configurations from database."""
         if self._tool_configs is not None:
@@ -799,6 +824,11 @@ async def get_app_settings() -> dict:
     if was_empty:
         _apply_runtime_setting_hooks(settings)
     return settings
+
+
+async def get_health_llm_settings() -> dict[str, str]:
+    """Get the LLM model and provider for authenticated health checks."""
+    return await SettingsCache.get_instance().get_health_llm_settings()
 
 
 def _apply_runtime_setting_hooks(settings: dict) -> None:

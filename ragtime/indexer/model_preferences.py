@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast
+from typing import Awaitable, Callable, Literal, Protocol, cast
 
 from ragtime.core.database import get_db
 from ragtime.core.model_providers import normalize_provider_name
@@ -128,6 +128,7 @@ async def resolve_new_conversation_model(
     workspace_id: str | None = None,
     explicit_model: str | None = None,
     availability: ModelAvailabilitySnapshot | None = None,
+    availability_loader: Callable[[], Awaitable[ModelAvailabilitySnapshot]] | None = None,
     task_type: Literal["build", "general"] | None = None,
 ) -> str:
     if explicit_model is not None:
@@ -137,23 +138,32 @@ async def resolve_new_conversation_model(
     # validation owns allowlist checks; availability here protects callers that
     # resolve after a provider catalog has changed and must not silently fall
     # back to a personal/global choice.
+    loaded_availability = availability
+
+    async def validate_candidate(candidate: str | None) -> bool:
+        nonlocal loaded_availability
+        provider, _ = _split_scoped_model_identifier(candidate)
+        if provider is not None and loaded_availability is None and availability_loader is not None:
+            loaded_availability = await availability_loader()
+        return _is_stale_candidate(candidate, loaded_availability)
+
     effective_task_type = task_type or ("build" if workspace_id is not None else "general")
     builder_model = normalize_default_model(getattr(app_settings, "userspace_build_model", None))
     if effective_task_type == "build" and builder_model is not None:
-        if _is_stale_candidate(builder_model, availability):
+        if await validate_candidate(builder_model):
             raise ValueError("Configured User Space builder model is unavailable")
         return builder_model
 
     workspace_model = None
     if workspace_id is not None:
         workspace_model = await get_workspace_user_default_model(user_id, workspace_id)
-        if workspace_model is not None and _is_stale_candidate(workspace_model, availability):
+        if workspace_model is not None and await validate_candidate(workspace_model):
             await clear_matching_personal_defaults(user_id, workspace_id, workspace_model)
         elif workspace_model is not None:
             return workspace_model
 
     user_model = await get_user_default_model(user_id)
-    if user_model is not None and _is_stale_candidate(user_model, availability):
+    if user_model is not None and await validate_candidate(user_model):
         await clear_matching_personal_defaults(user_id, None, user_model)
     elif user_model is not None:
         return user_model

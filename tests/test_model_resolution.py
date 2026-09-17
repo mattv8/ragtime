@@ -32,6 +32,7 @@ from ragtime.core.model_providers import (
     normalize_provider_name,
     resolve_model_family_from_metadata,
 )
+from ragtime.indexer import model_preferences
 from ragtime.indexer.models import AppSettings, Conversation
 from ragtime.indexer.routes import (
     AvailableModel,
@@ -1396,6 +1397,65 @@ class ConversationCreationPreferenceTests(unittest.IsolatedAsyncioTestCase):
         preferences_mock.assert_not_called()
         self.assertEqual(result, {"id": "conv-1"})
 
+    async def test_create_conversation_with_explicit_model_skips_settings_and_catalog(self) -> None:
+        user = cast(User, SimpleNamespace(id="user-1", role="user"))
+        created = SimpleNamespace(id="conv-1", model="anthropic::claude-4")
+
+        with (
+            mock.patch.object(indexer_routes, "_assert_workspace_access", mock.AsyncMock()),
+            mock.patch.object(indexer_routes.repository, "get_settings", mock.AsyncMock()) as get_settings,
+            mock.patch.object(indexer_routes, "get_available_chat_models", mock.AsyncMock()) as available_models,
+            mock.patch.object(indexer_routes.repository, "create_conversation", mock.AsyncMock(return_value=created)),
+            mock.patch.object(indexer_routes, "_to_conversation_response", return_value={"id": "conv-1"}),
+        ):
+            await indexer_routes.create_conversation(indexer_routes.CreateConversationRequest(model="anthropic::claude-4"), user)
+
+        get_settings.assert_not_awaited()
+        available_models.assert_not_awaited()
+
+    async def test_implicit_global_default_skips_catalog_availability(self) -> None:
+        settings = AppSettings()
+        loader = mock.AsyncMock()
+        with (
+            mock.patch.object(model_preferences, "get_user_default_model", mock.AsyncMock(return_value=None)),
+            mock.patch.object(model_preferences, "_resolve_default_conversation_model", return_value="openai::gpt-5"),
+        ):
+            resolved = await model_preferences.resolve_new_conversation_model(
+                settings,
+                user_id="user-1",
+                availability_loader=loader,
+            )
+
+        self.assertEqual(resolved, "openai::gpt-5")
+        loader.assert_not_awaited()
+
+    async def test_personal_default_loads_availability_once_and_clears_stale_value(self) -> None:
+        availability = model_preferences.ModelAvailabilitySnapshot(
+            available_model_ids=frozenset({"openai::gpt-5"}),
+            authoritative_providers=frozenset({"openai"}),
+        )
+        loader = mock.AsyncMock(return_value=availability)
+        with (
+            mock.patch.object(model_preferences, "get_user_default_model", mock.AsyncMock(return_value="openai::gone")),
+            mock.patch.object(model_preferences, "clear_matching_personal_defaults", mock.AsyncMock()) as clear_defaults,
+            mock.patch.object(model_preferences, "_resolve_default_conversation_model", return_value="openai::gpt-5"),
+        ):
+            resolved = await model_preferences.resolve_new_conversation_model(AppSettings(), user_id="user-1", availability_loader=loader)
+
+        self.assertEqual(resolved, "openai::gpt-5")
+        loader.assert_awaited_once()
+        clear_defaults.assert_awaited_once_with("user-1", None, "openai::gone")
+
+    async def test_builder_availability_loader_failure_propagates(self) -> None:
+        loader = mock.AsyncMock(side_effect=RuntimeError("catalog unavailable"))
+        with self.assertRaisesRegex(RuntimeError, "catalog unavailable"):
+            await model_preferences.resolve_new_conversation_model(
+                AppSettings(userspace_build_model="openai::gpt-5"),
+                user_id="user-1",
+                workspace_id="ws-1",
+                availability_loader=loader,
+            )
+
     async def test_create_conversation_uses_cached_availability_and_authoritative_providers(self) -> None:
         user = cast(User, SimpleNamespace(id="user-1", role="user"))
         created = SimpleNamespace(id="conv-1", model="openai::gpt-5")
@@ -1412,7 +1472,7 @@ class ConversationCreationPreferenceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async def resolve_new_conversation_model(app_settings, **kwargs):
-            snapshot = kwargs["availability"]
+            snapshot = await kwargs["availability_loader"]()
             self.assertEqual(snapshot.available_model_ids, frozenset({"openai::gpt-5", "anthropic::claude-4"}))
             self.assertEqual(snapshot.authoritative_providers, frozenset({"openai"}))
             self.assertEqual(kwargs["user_id"], "user-1")

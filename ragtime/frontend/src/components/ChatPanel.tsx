@@ -10387,6 +10387,8 @@ export function ChatPanel({
     conversationId: workspaceId ? null : standaloneSelectedId,
     enabled: !workspaceId,
   });
+  const standaloneWindowRevision = standaloneWindow.revision;
+  const loadStandaloneWindowMessage = standaloneWindow.loadMessage;
   const [expandedSubagentParents, setExpandedSubagentParents] = useState<Record<string, boolean>>(
     {},
   );
@@ -12114,7 +12116,6 @@ export function ChatPanel({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const historyPrependAnchorRef = useRef<{ key: string; offset: number } | null>(null);
-  const cancelHistoryAnchorRef = useRef(false);
   const historyAnchorRestoreInProgressRef = useRef(false);
   const userMessageWrapperElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const userMessageWrapperRefCallbacksRef = useRef<
@@ -12129,6 +12130,9 @@ export function ChatPanel({
   const standaloneBootstrapCursorRef = useRef<ConversationCursor | null>(null);
   const deletedConversationIdsRef = useRef<Set<string>>(new Set());
   const shouldAutoScrollRef = useRef(true);
+  const autoHydratedDeferredEntriesRef = useRef(new Map<string, Set<number>>());
+  const [autoHydratingDeferredIndex, setAutoHydratingDeferredIndex] = useState<number | null>(null);
+  const autoHydratingDeferredRequestRef = useRef(0);
   const autoScrollFrameRef = useRef<number | null>(null);
   const navigatorScrollFrameRef = useRef<number | null>(null);
   const pendingUserMessageNavigationTargetRef = useRef<{
@@ -13077,8 +13081,64 @@ export function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, archiveAgeDays, standaloneNavigationTick, standaloneSidebarScopeKey]);
 
+  useEffect(() => {
+    shouldAutoScrollRef.current = true;
+    historyPrependAnchorRef.current = null;
+    autoHydratedDeferredEntriesRef.current.clear();
+    autoHydratingDeferredRequestRef.current += 1;
+    setAutoHydratingDeferredIndex(null);
+  }, [standaloneSelectedId]);
+
+  const hydrateDeferredEntry = useCallback(
+    (index: number) => {
+      if (!standaloneSelectedId || !standaloneWindowRevision) return;
+      const hydrationKey = `${standaloneSelectedId}:${standaloneWindowRevision}`;
+      const attempted =
+        autoHydratedDeferredEntriesRef.current.get(hydrationKey) ?? new Set<number>();
+      autoHydratedDeferredEntriesRef.current.set(hydrationKey, attempted);
+      attempted.add(index);
+      const requestId = autoHydratingDeferredRequestRef.current + 1;
+      autoHydratingDeferredRequestRef.current = requestId;
+      setAutoHydratingDeferredIndex(index);
+      void loadStandaloneWindowMessage(index).finally(() => {
+        if (autoHydratingDeferredRequestRef.current === requestId) {
+          setAutoHydratingDeferredIndex(null);
+        }
+      });
+    },
+    [loadStandaloneWindowMessage, standaloneSelectedId, standaloneWindowRevision],
+  );
+
+  useEffect(() => {
+    if (
+      workspaceId ||
+      !standaloneSelectedId ||
+      !standaloneWindow.revision ||
+      autoHydratingDeferredIndex !== null
+    ) {
+      return;
+    }
+    const hydrationKey = `${standaloneSelectedId}:${standaloneWindow.revision}`;
+    const attempted = autoHydratedDeferredEntriesRef.current.get(hydrationKey) ?? new Set<number>();
+    autoHydratedDeferredEntriesRef.current.set(hydrationKey, attempted);
+    const entry = [...visibleMessageEntries]
+      .reverse()
+      .find((candidate) => candidate.state === 'deferred' && !attempted.has(candidate.index));
+    if (!entry) return;
+
+    hydrateDeferredEntry(entry.index);
+  }, [
+    autoHydratingDeferredIndex,
+    hydrateDeferredEntry,
+    standaloneSelectedId,
+    standaloneWindow.revision,
+    visibleMessageEntries,
+    workspaceId,
+  ]);
+
   const scheduleScrollToBottom = useCallback(
     (behavior: ScrollBehavior) => {
+      if (historyPrependAnchorRef.current) return;
       if (autoScrollFrameRef.current !== null) {
         window.cancelAnimationFrame(autoScrollFrameRef.current);
       }
@@ -13086,7 +13146,8 @@ export function ChatPanel({
       autoScrollFrameRef.current = window.requestAnimationFrame(() => {
         autoScrollFrameRef.current = null;
         const messagesRoot = chatMessagesRef.current;
-        if (!messagesRoot || !shouldAutoScrollRef.current) return;
+        if (!messagesRoot || !shouldAutoScrollRef.current || historyPrependAnchorRef.current)
+          return;
 
         programmaticScrollRef.current = true;
         if (behavior === 'auto') {
@@ -13170,21 +13231,23 @@ export function ChatPanel({
     scheduleUserMessageNavigationActiveKeyUpdate,
   ]);
 
-  // Auto-scroll to bottom when messages change. Streaming uses an immediate
-  // scroll so rapid token updates cannot queue competing smooth animations.
+  // Auto-scroll to bottom when messages change. Use an instant pin so initial
+  // and deferred-entry DOM growth cannot outpace a smooth scroll animation.
   useEffect(() => {
     if (!shouldAutoScrollRef.current || !chatMessagesRef.current) return;
-    scheduleScrollToBottom(isStreaming ? 'auto' : 'smooth');
+    scheduleScrollToBottom(isStreaming || !workspaceId ? 'auto' : 'smooth');
   }, [
     activeConversation?.messages,
     consolidatedSegments,
     isStreaming,
     scheduleScrollToBottom,
+    standaloneSelectedId,
     streamingContent,
+    visibleMessageEntries,
+    workspaceId,
   ]);
 
-  const loadOlderWithAnchor = useCallback(() => {
-    const root = chatMessagesRef.current;
+  const captureHistoryPrependAnchor = useCallback((root = chatMessagesRef.current): boolean => {
     const rootRect = root?.getBoundingClientRect();
     const first = root
       ? Array.from(root.querySelectorAll<HTMLElement>('[data-chat-message-key]')).find(
@@ -13199,15 +13262,20 @@ export function ChatPanel({
         key: first.dataset.chatMessageKey || '',
         offset: first.getBoundingClientRect().top - root.getBoundingClientRect().top,
       };
-      cancelHistoryAnchorRef.current = false;
+      return true;
     }
+    return false;
+  }, []);
+
+  const loadOlderWithAnchor = useCallback(() => {
+    captureHistoryPrependAnchor();
     void standaloneWindow.loadOlder();
-  }, [standaloneWindow]);
+  }, [captureHistoryPrependAnchor, standaloneWindow]);
 
   useLayoutEffect(() => {
     const anchor = historyPrependAnchorRef.current;
     const root = chatMessagesRef.current;
-    if (!anchor || !root || cancelHistoryAnchorRef.current) return;
+    if (!anchor || !root) return;
     const target = Array.from(root.querySelectorAll<HTMLElement>('[data-chat-message-key]')).find(
       (element) => element.dataset.chatMessageKey === anchor.key,
     );
@@ -13234,8 +13302,7 @@ export function ChatPanel({
     }
     const { scrollTop, scrollHeight, clientHeight } = chatMessagesRef.current;
     if (historyPrependAnchorRef.current) {
-      cancelHistoryAnchorRef.current = true;
-      historyPrependAnchorRef.current = null;
+      captureHistoryPrependAnchor();
     }
     if (
       !workspaceId &&
@@ -13250,6 +13317,7 @@ export function ChatPanel({
     shouldAutoScrollRef.current = isAtBottom;
     scheduleUserMessageNavigationActiveKeyUpdate();
   }, [
+    captureHistoryPrependAnchor,
     loadOlderWithAnchor,
     scheduleUserMessageNavigationActiveKeyUpdate,
     standaloneWindow.olderCursor,
@@ -14455,7 +14523,7 @@ export function ChatPanel({
       setActiveConversation(conversation);
       if (!workspaceId) {
         setStandaloneSelectedId(conversation.id);
-        standaloneWindow.adoptFullConversation(conversation);
+        standaloneWindow.adoptFullConversation(conversation, { pendingSelection: true });
       }
       setConversationToolIds([]);
       setConversationToolGroupIds([]);
@@ -14466,12 +14534,19 @@ export function ChatPanel({
     [standaloneWindow, workspaceId],
   );
 
+  const getNewConversationRequest = (): { model: string } | undefined => {
+    if (workspaceId) return undefined;
+    const activeModel = (activeConversation ?? activeConversationMetadata)?.model;
+    const selection = resolveConversationModelSelection(activeModel, availableModels);
+    return activeModel && selection.matchedModel ? { model: activeModel } : undefined;
+  };
+
   const createNewConversation = async () => {
     if (isReadOnly || isCreatingFreshConversation) return;
     try {
       setIsCreatingFreshConversation(true);
       shouldAutoScrollRef.current = true;
-      const conversation = await api.createConversation(undefined, workspaceId);
+      const conversation = await api.createConversation(getNewConversationRequest(), workspaceId);
       applyCreatedConversation(conversation);
       setError(null);
     } catch (err) {
@@ -15548,7 +15623,7 @@ export function ChatPanel({
       setIsCreatingFreshConversation(true);
       setIsConversationSwitchLoading(true);
       clearActiveStreamingUi();
-      const conversation = await api.createConversation(undefined, workspaceId);
+      const conversation = await api.createConversation(getNewConversationRequest(), workspaceId);
       applyCreatedConversation(conversation);
       setInterruptedTask(null);
       setHitMaxIterations(false);
@@ -18451,7 +18526,12 @@ export function ChatPanel({
       <div id="chat-main" className="chat-main" ref={chatMainRef}>
         {isConversationListLoading && workspaceId ? (
           renderFullChatSkeleton()
-        ) : !workspaceId && (standaloneWindow.initialLoading || standaloneWindow.initialError) ? (
+        ) : !workspaceId &&
+          (standaloneWindow.initialLoading ||
+            standaloneWindow.initialError ||
+            (!standaloneSelectedId &&
+              (isConversationListLoading || standaloneBootstrapPending) &&
+              !initialConversationLoadError)) ? (
           <div id="chat-workbench-main" className="chat-message-region" data-chat-window-main>
             <ChatLoadingState
               id={
@@ -18975,24 +19055,42 @@ export function ChatPanel({
                       )}
                       {visibleMessageEntries.map((entry) => {
                         if (entry.state === 'deferred') {
+                          const hydrationKey =
+                            standaloneSelectedId && standaloneWindow.revision
+                              ? `${standaloneSelectedId}:${standaloneWindow.revision}`
+                              : null;
+                          const hasBeenAttempted = hydrationKey
+                            ? (autoHydratedDeferredEntriesRef.current
+                                .get(hydrationKey)
+                                ?.has(entry.index) ?? false)
+                            : false;
+                          const isHydrating =
+                            !hasBeenAttempted || autoHydratingDeferredIndex === entry.index;
                           return (
                             <div
                               key={entry.key}
                               className={`chat-message chat-message-${entry.preview.role} chat-message-deferred`}
                               data-chat-message-key={entry.key}
                               data-chat-message-index={entry.index}
+                              aria-busy={isHydrating}
                             >
                               <div className="chat-message-content">
                                 <div className="chat-message-text markdown-content">
                                   <MemoizedMarkdown content={entry.preview.content} />
                                 </div>
-                                <button
-                                  type="button"
-                                  className="btn btn-secondary btn-sm"
-                                  onClick={() => void standaloneWindow.loadMessage(entry.index)}
-                                >
-                                  Load details
-                                </button>
+                                {isHydrating ? (
+                                  <span className="chat-message-deferred-status">
+                                    Loading details
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={() => hydrateDeferredEntry(entry.index)}
+                                  >
+                                    Retry details
+                                  </button>
+                                )}
                               </div>
                             </div>
                           );

@@ -76,6 +76,7 @@ from ragtime.core.copilot_auth import (
     exchange_github_token_for_copilot_token,
     is_copilot_token_refresh_in_progress,
 )
+from ragtime.core.database import get_db
 from ragtime.core.datetimes import utc_now
 from ragtime.core.docker_ssh import docker_ssh_config_from_dict, execute_docker_command_on_remote_host
 from ragtime.core.embedding_models import (
@@ -216,6 +217,7 @@ from ragtime.indexer.background_tasks import (
 )
 from ragtime.indexer.chat_attachments import store_chat_attachment_upload
 from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
+from ragtime.indexer.conversation_reads import get_conversation_read_metadata
 from ragtime.indexer.conversation_tool_options import (
     load_conversation_tool_options as _load_conversation_tool_options,
 )
@@ -13296,20 +13298,22 @@ async def create_conversation(
     workspace_id = request.workspace_id if request else None
     await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
 
-    app_settings = await repository.get_settings()
-
     title = request.title if request and request.title else "Untitled Chat"
     explicit_model = request.model if request else None
     if explicit_model:
         model = explicit_model
     else:
-        available = await get_available_chat_models()
+        app_settings = await repository.get_settings()
         model_preferences = _get_model_preferences_module()
+
+        async def load_availability():
+            return _build_model_availability_snapshot(await get_available_chat_models())
+
         model = await model_preferences.resolve_new_conversation_model(
             app_settings,
             user_id=user.id,
             workspace_id=workspace_id,
-            availability=_build_model_availability_snapshot(available),
+            availability_loader=load_availability,
         )
 
     conv = await repository.create_conversation(
@@ -16447,29 +16451,22 @@ async def get_conversation_members(
     user: User = Depends(get_current_user),
 ):
     """Get conversation members"""
-    db = Prisma()
-    await db.connect()
-    try:
-        # Check if user has access to this conversation
-        conversation = await db.conversation.find_unique(where={"id": conversation_id}, include={"members": True})
-        if not conversation:
-            raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation = await get_conversation_read_metadata(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
-        is_admin = user.role == "admin"
-        workspace_id = getattr(conversation, "workspaceId", None)
+    is_admin = user.role == "admin"
+    workspace_id = getattr(conversation, "workspaceId", None)
 
-        if workspace_id:
-            await _assert_workspace_access(workspace_id, user, "viewer")
-        else:
-            members = conversation.members or []
-            user_member = next((m for m in members if m.userId == user.id), None)
-            if not is_admin and not user_member and conversation.userId != user.id:
-                raise HTTPException(status_code=403, detail="Access denied")
+    if workspace_id:
+        await _assert_workspace_access(workspace_id, user, "viewer")
+    else:
+        members = conversation.members or []
+        user_member = next((m for m in members if m.userId == user.id), None)
+        if not is_admin and not user_member and conversation.userId != user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
 
-        # Return members
-        return [{"user_id": m.userId, "role": m.role} for m in (conversation.members or [])]
-    finally:
-        await db.disconnect()
+    return [{"user_id": m.userId, "role": m.role} for m in (conversation.members or [])]
 
 
 @router.put("/conversations/{conversation_id}/members")
@@ -16522,74 +16519,69 @@ async def get_conversation_tools(
     user: User = Depends(get_current_user),
 ):
     """Get conversation tool selections"""
-    db = Prisma()
-    await db.connect()
-    try:
-        # Check if user has access
-        conversation = await db.conversation.find_unique(where={"id": conversation_id}, include={"members": True})
-        if not conversation:
-            raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation = await get_conversation_read_metadata(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
-        is_admin = user.role == "admin"
-        workspace_id = getattr(conversation, "workspaceId", None)
+    is_admin = user.role == "admin"
+    workspace_id = getattr(conversation, "workspaceId", None)
 
-        if workspace_id:
-            await _assert_workspace_access(workspace_id, user, "viewer")
-        else:
-            members = conversation.members or []
-            user_member = next((m for m in members if m.userId == user.id), None)
-            if not is_admin and not user_member and conversation.userId != user.id:
-                raise HTTPException(status_code=403, detail="Access denied")
+    if workspace_id:
+        await _assert_workspace_access(workspace_id, user, "viewer")
+    else:
+        members = conversation.members or []
+        user_member = next((m for m in members if m.userId == user.id), None)
+        if not is_admin and not user_member and conversation.userId != user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
 
-        # Get tool selections
-        selections = await db.conversationtoolselection.find_many(where={"conversationId": conversation_id})
+    db = await get_db()
+    # Get tool selections
+    selections = await db.conversationtoolselection.find_many(where={"conversationId": conversation_id})
 
-        # Get tool group selections
-        group_selections = await db.conversationtoolgroupselection.find_many(where={"conversationId": conversation_id})
+    # Get tool group selections
+    group_selections = await db.conversationtoolgroupselection.find_many(where={"conversationId": conversation_id})
 
-        # Get per-tool options
-        option_rows = await db.conversationtooloption.find_many(where={"conversationId": conversation_id})
-        tool_options: dict[str, dict[str, bool]] = {}
-        for row in option_rows:
-            raw_options = row.options.data if isinstance(row.options, Json) else row.options
-            options = _load_conversation_tool_options(cast(dict[str, Any] | None, raw_options))
-            if options:
-                tool_options[row.toolConfigId] = options
+    # Get per-tool options
+    option_rows = await db.conversationtooloption.find_many(where={"conversationId": conversation_id})
+    tool_options: dict[str, dict[str, bool]] = {}
+    for row in option_rows:
+        raw_options = row.options.data if isinstance(row.options, Json) else row.options
+        options = _load_conversation_tool_options(cast(dict[str, Any] | None, raw_options))
+        if options:
+            tool_options[row.toolConfigId] = options
 
-        tool_config_ids = [s.toolConfigId for s in selections]
-        tool_group_ids = [s.toolGroupId for s in group_selections]
-        tool_selection_mode = require_valid_tool_selection_mode(getattr(conversation, "toolSelectionMode", "") or "")
-        workspace = None
-        if workspace_id:
-            workspace = await userspace_service.enforce_workspace_role(
-                workspace_id,
-                user.id,
-                "viewer",
-                is_admin=is_admin,
-            )
-        tool_config_ids, tool_group_ids, effective_visible_tool_ids = await _resolve_acl_visible_tool_selection(
-            tool_selection_mode=tool_selection_mode,
-            selected_tool_ids=tool_config_ids,
-            selected_tool_group_ids=tool_group_ids,
-            user=user,
-            workspace=workspace,
+    tool_config_ids = [s.toolConfigId for s in selections]
+    tool_group_ids = [s.toolGroupId for s in group_selections]
+    tool_selection_mode = require_valid_tool_selection_mode(getattr(conversation, "toolSelectionMode", "") or "")
+    workspace = None
+    if workspace_id:
+        workspace = await userspace_service.enforce_workspace_role(
+            workspace_id,
+            user.id,
+            "viewer",
+            is_admin=is_admin,
         )
-        if tool_selection_mode == "default_all":
-            tool_config_ids = list(effective_visible_tool_ids)
-            tool_group_ids = []
-        visible_tool_id_set = set(effective_visible_tool_ids)
-        tool_options = {tool_id: options for tool_id, options in tool_options.items() if tool_id in visible_tool_id_set}
+    tool_config_ids, tool_group_ids, effective_visible_tool_ids = await _resolve_acl_visible_tool_selection(
+        tool_selection_mode=tool_selection_mode,
+        selected_tool_ids=tool_config_ids,
+        selected_tool_group_ids=tool_group_ids,
+        user=user,
+        workspace=workspace,
+    )
+    if tool_selection_mode == "default_all":
+        tool_config_ids = list(effective_visible_tool_ids)
+        tool_group_ids = []
+    visible_tool_id_set = set(effective_visible_tool_ids)
+    tool_options = {tool_id: options for tool_id, options in tool_options.items() if tool_id in visible_tool_id_set}
 
-        return {
-            "tool_config_ids": tool_config_ids,
-            "tool_group_ids": tool_group_ids,
-            "tool_selection_mode": tool_selection_mode,
-            "disabled_builtin_tool_ids": _normalize_disabled_builtin_tool_ids(getattr(conversation, "disabledBuiltinToolIds", [])),
-            "subagents_enabled": bool(getattr(conversation, "subagentsEnabled", True)),
-            "tool_options": tool_options,
-        }
-    finally:
-        await db.disconnect()
+    return {
+        "tool_config_ids": tool_config_ids,
+        "tool_group_ids": tool_group_ids,
+        "tool_selection_mode": tool_selection_mode,
+        "disabled_builtin_tool_ids": _normalize_disabled_builtin_tool_ids(getattr(conversation, "disabledBuiltinToolIds", [])),
+        "subagents_enabled": bool(getattr(conversation, "subagentsEnabled", True)),
+        "tool_options": tool_options,
+    }
 
 
 @router.put("/conversations/{conversation_id}/tools")
