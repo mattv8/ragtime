@@ -3,7 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from unittest import mock
 
 SCRIPT_PATH = Path(__file__).parents[1] / "docker/scripts/promote_beta.py"
@@ -170,6 +170,7 @@ class PromoteBetaTests(unittest.TestCase):
 
     def test_rejects_missing_or_failed_evidence(self) -> None:
         main_before = self._origin_ref("main")
+        payload: dict[str, Any]
         for payload in (
             {"workflow_runs": []},
             {
