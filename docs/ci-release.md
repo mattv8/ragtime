@@ -97,6 +97,37 @@ git merge origin/main  # or git merge --ff-only origin/main for strict fast-forw
 git push origin beta
 ```
 
+## Beta PR Merge Serializer
+
+`.github/workflows/merge-serializer.yml` adapts the InfoScan merge serializer for `beta`. It
+runs on pushes to `beta`, manual dispatch, and GitHub's best-effort `*/15`-minute schedule; the
+scheduled job does not run on `main`.
+
+The serializer scans same-repository, non-draft PRs targeting `beta` that have auto-merge
+enabled. It considers the full eligible queue, holds when current CI or an already-ready
+auto-merge PR is in progress, and rebases only the oldest behind PR—at most one per run. It does
+not merge PRs: GitHub auto-merge and the strict `CI Gate` remain responsible for landing them.
+
+Conflicted PRs, fork PRs, and `main` reconciliation PRs require manual updates. A serializer
+rebase rewrites feature-branch history, so fetch and reconcile local work rather than blindly
+pulling afterward. The workflow reads Actions metadata through the REST API and uses GraphQL
+`updatePullRequestBranch` with `REBASE` and `expectedHeadOid` to avoid advancing a stale head.
+
+### Serializer token setup
+
+The workflow requires the repository secret `MERGE_SERIALIZER_TOKEN`; it has no fallback to
+`GITHUB_TOKEN`, because that token cannot retrigger workflows. Create a repository-specific
+fine-grained token with Contents read/write, Pull requests read/write, and Actions read; add
+Workflows write when a PR changes workflow files. Set it securely from the repository with:
+
+```bash
+gh secret set MERGE_SERIALIZER_TOKEN
+```
+
+The command prompts for the token. Never place it in chat or tracked setup artifacts. The
+workflow must land on the default `beta` branch and the secret must be configured before its
+schedule can operate.
+
 ## Emergency Bypass: Force-Push
 
 In rare emergencies, a maintainer may force-push to `main` or `beta` to bypass the normal
