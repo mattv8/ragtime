@@ -39,6 +39,13 @@ class McpOAuthMetadataTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["resource"], "https://ragtime.example/mcp/workspace")
         self.assertEqual(metadata["authorization_servers"], ["https://ragtime.example"])
 
+    def test_interactive_metadata_advertises_refresh_and_public_revocation(self) -> None:
+        metadata = oauth.build_interactive_authorization_server_metadata("https://ragtime.example")
+
+        self.assertIn("refresh_token", metadata["grant_types_supported"])
+        self.assertEqual(metadata["revocation_endpoint"], "https://ragtime.example/revoke")
+        self.assertEqual(metadata["revocation_endpoint_auth_methods_supported"], ["none"])
+
     async def test_metadata_handler_selects_route_scoped_client_credentials(self) -> None:
         with mock.patch.object(
             oauth,

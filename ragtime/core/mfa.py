@@ -50,6 +50,7 @@ class PendingMfaClaims:
     role: str
     purpose: PendingMfaPurpose
     exp: datetime
+    security_generation: int = 0
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,18 @@ class TotpEnrollmentClaims:
     secret: str
     exp: datetime
     rotation: bool = False
+    security_generation: int = 0
+
+
+async def _current_security_generation(db: Any, user: Any) -> int | None:
+    """Read the current user generation immediately before continuation use."""
+    users = getattr(db, "user", None)
+    if users is None:  # Compatibility for narrow unit-test DB doubles.
+        return int(getattr(user, "securityGeneration", getattr(user, "security_generation", 0)) or 0)
+    current_user = await users.find_unique(where={"id": user.id})
+    if current_user is None:
+        return None
+    return int(getattr(current_user, "securityGeneration", getattr(current_user, "security_generation", 0)) or 0)
 
 
 def _b64decode_padded(value: str) -> bytes:
@@ -160,6 +173,7 @@ def create_pending_mfa_token(
     username: str,
     role: str,
     purpose: PendingMfaPurpose,
+    security_generation: int = 0,
 ) -> str:
     expire = datetime.now(timezone.utc) + timedelta(seconds=PENDING_MFA_EXPIRY_SECONDS)
     payload = {
@@ -168,6 +182,7 @@ def create_pending_mfa_token(
         "role": role,
         "purpose": f"mfa:{purpose}",
         "exp": expire,
+        "security_generation": int(security_generation),
     }
     return jwt.encode(payload, settings.encryption_key, algorithm=settings.jwt_algorithm)
 
@@ -183,7 +198,7 @@ def decode_pending_mfa_token(
         logger.debug("Pending MFA token decode failed: %s", exc)
         return None
 
-    if payload.get("purpose") != f"mfa:{expected_purpose}":
+    if not isinstance(payload, dict) or payload.get("purpose") != f"mfa:{expected_purpose}":
         return None
     try:
         return PendingMfaClaims(
@@ -192,6 +207,7 @@ def decode_pending_mfa_token(
             role=str(payload["role"]),
             purpose=expected_purpose,
             exp=datetime.fromtimestamp(int(payload["exp"]), tz=timezone.utc),
+            security_generation=int(payload.get("security_generation", 0)),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -204,6 +220,7 @@ def create_totp_enrollment_token(
     role: str,
     secret: str,
     rotation: bool = False,
+    security_generation: int = 0,
 ) -> str:
     expire = datetime.now(timezone.utc) + timedelta(seconds=PENDING_MFA_EXPIRY_SECONDS)
     payload = {
@@ -214,6 +231,7 @@ def create_totp_enrollment_token(
         "purpose": "mfa:totp_enrollment",
         "rotation": bool(rotation),
         "exp": expire,
+        "security_generation": int(security_generation),
     }
     return jwt.encode(payload, settings.encryption_key, algorithm=settings.jwt_algorithm)
 
@@ -225,7 +243,7 @@ def decode_totp_enrollment_token(token: str) -> TotpEnrollmentClaims | None:
         logger.debug("TOTP enrollment token decode failed: %s", exc)
         return None
 
-    if payload.get("purpose") != "mfa:totp_enrollment":
+    if not isinstance(payload, dict) or payload.get("purpose") != "mfa:totp_enrollment":
         return None
     try:
         return TotpEnrollmentClaims(
@@ -235,6 +253,7 @@ def decode_totp_enrollment_token(token: str) -> TotpEnrollmentClaims | None:
             secret=str(payload["secret"]),
             exp=datetime.fromtimestamp(int(payload["exp"]), tz=timezone.utc),
             rotation=bool(payload.get("rotation", False)),
+            security_generation=int(payload.get("security_generation", 0)),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -354,12 +373,18 @@ async def regenerate_recovery_codes(user_id: str) -> list[str]:
     return recovery_codes
 
 
-async def begin_totp_enrollment(user: Any, *, allow_replace: bool = False) -> dict[str, str]:
+async def begin_totp_enrollment(user: Any, *, allow_replace: bool = False, security_generation: int | None = None) -> dict[str, str]:
     secret = generate_totp_secret()
     db = await get_db()
     existing = await db.usermfafactor.find_unique(where={"userId_factorType": {"userId": user.id, "factorType": "totp"}})
     if existing and getattr(existing, "enabled", False) and not allow_replace:
         raise ValueError("TOTP is already enabled. Ask an administrator to reset MFA before re-enrolling.")
+    captured_generation = (
+        int(security_generation) if security_generation is not None else int(getattr(user, "securityGeneration", getattr(user, "security_generation", 0)) or 0)
+    )
+    current_generation = await _current_security_generation(db, user)
+    if current_generation is None or captured_generation != current_generation:
+        raise ValueError("Authentication is no longer valid")
     issuer = str(getattr(settings, "server_name", "") or "Ragtime").strip() or "Ragtime"
     return {
         "secret": secret,
@@ -370,6 +395,7 @@ async def begin_totp_enrollment(user: Any, *, allow_replace: bool = False) -> di
             role=str(getattr(user, "role", "user") or "user"),
             secret=secret,
             rotation=allow_replace,
+            security_generation=captured_generation,
         ),
     }
 
@@ -378,6 +404,9 @@ async def confirm_totp_enrollment(user: Any, code: str, enrollment_token: str) -
     db = await get_db()
     claims = decode_totp_enrollment_token(enrollment_token)
     if not claims or claims.user_id != user.id:
+        return False, []
+    current_generation = await _current_security_generation(db, user)
+    if current_generation is None or claims.security_generation != current_generation:
         return False, []
 
     factor = await db.usermfafactor.find_unique(where={"userId_factorType": {"userId": user.id, "factorType": "totp"}})
