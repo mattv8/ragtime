@@ -1310,12 +1310,13 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
         restore_scope = options.scope_override or manifest.scope
         data_source = _resolve_data_source(extract_dir)
         restored_storage = data_source / "_userspace" / "_object_storage" if data_source is not None else None
+        destination_storage = _object_storage_root()
+        archive_includes_storage = restored_storage is not None and restored_storage.exists()
+        destination_has_storage = destination_storage.exists()
         if (
-            restore_scope in {BackupScope.FULL, BackupScope.FILES}
-            and restored_storage is not None
-            and restored_storage.exists()
-            and os.environ.get("OBJECT_STORAGE_RESTORE_OFFLINE_CONFIRMED") != "true"
-        ):
+            (restore_scope in {BackupScope.FULL, BackupScope.FILES} and (archive_includes_storage or destination_has_storage))
+            or (restore_scope == BackupScope.DATABASE and manifest.includes_managed_key and destination_has_storage)
+        ) and os.environ.get("OBJECT_STORAGE_RESTORE_OFFLINE_CONFIRMED") != "true":
             raise BackupValidationError(
                 "Restoring object storage requires the gateway to be stopped; set OBJECT_STORAGE_RESTORE_OFFLINE_CONFIRMED=true only after it is offline"
             )

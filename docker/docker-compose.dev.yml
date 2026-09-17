@@ -78,6 +78,7 @@ services:
       - RUNTIME_AUTH_TOKEN=${RUNTIME_AUTH_TOKEN:-dev-runtime-auth-token}
       - OBJECT_STORAGE_ENDPOINT=${OBJECT_STORAGE_ENDPOINT:-http://object-storage:9000}
       - OBJECT_STORAGE_CONTROL_URL=${OBJECT_STORAGE_CONTROL_URL:-http://object-storage:9001}
+      - OBJECT_STORAGE_KEY_EXPORT_PATH=/run/ragtime-storage-key/.encryption_key
       # Authentication settings (from .env file via env_file)
       - JWT_EXPIRE_HOURS=${JWT_EXPIRE_HOURS:-24}
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
@@ -94,6 +95,7 @@ services:
       - ../prisma:/ragtime/prisma:ro
       # Mount data directory (indexes, SSL certs, etc.)
       - ../.data:/data
+      - object-storage-key:/run/ragtime-storage-key
       # Development-only Docker socket mount for container exec.
       # Linux/WSL default: /var/run/docker.sock
       # Colima/macOS: set DOCKER_SOCKET_PATH=$HOME/.colima/default/docker.sock
@@ -132,11 +134,17 @@ services:
       - S3_PORT=9000
       - STORAGE_CONTROL_PORT=9001
       - STORAGE_ROOT=/data/_userspace/_object_storage
-      - STORAGE_KEY_FILE=/data/.encryption_key
+      - STORAGE_KEY_FILE=/run/ragtime-storage-key/.encryption_key
     volumes:
-      - ../.data:/data
+      - ../.data/_userspace/_object_storage:/data/_userspace/_object_storage
+      # Required for legacy S3 import; the gateway reads old workspace buckets only.
+      - ../.data/_userspace/workspaces:/data/_userspace/workspaces:ro
+      - object-storage-key:/run/ragtime-storage-key:ro
     networks:
       - default
+    depends_on:
+      ragtime:
+        condition: service_healthy
 
   runtime:
     build:
@@ -189,3 +197,4 @@ volumes:
   ragtime-db-data:
   ragtime-node-modules:  # Persist frontend node_modules across rebuilds
   searxng-cache:
+  object-storage-key:
