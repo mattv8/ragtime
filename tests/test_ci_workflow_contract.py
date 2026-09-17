@@ -160,6 +160,23 @@ class CiWorkflowContractTests(unittest.TestCase):
                     if cache_to:
                         self.assertIn("inputs.use_harbor", cache_to)
 
+    def test_backend_analysis_reads_the_published_python_ci_dependency_cache(self) -> None:
+        base = _load_workflow("base-images.yml")
+        publisher = next(entry for entry in base["jobs"]["build"]["strategy"]["matrix"]["include"] if entry["kind"] == "python-ci-deps")
+        publisher_build = next(step for step in base["jobs"]["build"]["steps"] if step.get("uses") == "docker/build-push-action@v5")
+        self.assertIn("buildcache-${{ matrix.kind }}", publisher_build["with"]["cache-to"])
+
+        quality = _load_workflow("quality.yml")
+        analysis_steps = quality["jobs"]["backend-analysis"]["steps"]
+        analysis_build = next(step for step in analysis_steps if step.get("name") == "Build shared backend check image")
+        cache_from = analysis_build["with"]["cache-from"]
+        dependency_cache = f"type=registry,ref=hub.docker.visnovsky.us/library/ragtime-base:buildcache-{publisher['kind']}"
+        self.assertIn(dependency_cache, cache_from)
+        self.assertNotIn("inputs.use_harbor", cache_from)
+        self.assertIn("inputs.use_harbor", analysis_build["with"]["cache-to"])
+        login = next(step for step in analysis_steps if step.get("uses") == "docker/login-action@v3")
+        self.assertEqual(login["if"], "inputs.use_harbor")
+
     def test_managed_buildx_sites_have_scopes_and_builder_permissions_are_read_only(self) -> None:
         builder_sites = 0
         for workflow_name in ("base-images.yml", "quality.yml", "build-container.yml"):

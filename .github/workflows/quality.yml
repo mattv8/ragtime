@@ -108,6 +108,7 @@ jobs:
           cache-from: |
             type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-analysis-${{ inputs.cache_scope }}
             type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-analysis-${{ inputs.cache_fallback }}
+            type=registry,ref=hub.docker.visnovsky.us/library/ragtime-base:buildcache-python-ci-deps
           cache-to: ${{ inputs.use_harbor && format('type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-analysis-{0},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd', inputs.cache_scope) || '' }}
       - id: mypy-cache
         uses: actions/cache/restore@v4

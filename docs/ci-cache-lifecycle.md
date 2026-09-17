@@ -52,6 +52,15 @@ BuildKit cache is organized by branch scope with a main-branch fallback for PR j
   new hash tags; a manual refresh may replace an existing tag. Consumers resolve tags to
   digests, fixing base-image bytes for that run. This does not lock every dependency or
   guarantee a reproducible full build. Harbor retention can remove older bases.
+- **Backend analysis dependency fallback**: A prebuilt `python-ci-deps` image exists, but its
+  exact tag varies with both the Prisma schema and dependency recipe. When the PR-specific tag
+  is absent, backend analysis builds that stage inline. It also reads the shared published
+  registry cache `hub.docker.visnovsky.us/library/ragtime-base:buildcache-python-ci-deps`, so
+  matching dependency-install layers can be reused while the correct Prisma client and source
+  layers are regenerated. This cache is published with `mode=max` by the trusted base pipeline;
+  PRs read it anonymously and read-only, with no credentials or registry writes. Docker image
+  loading is still required by the current architecture; this fallback does not eliminate cache
+  export or load work.
 - **Quality caches**: Retained `buildcache-fast-<branch>`, `buildcache-analysis-<branch>`,
   and `buildcache-frontend-<branch>` caches are read-only inputs to PR workflows. The new
   PR workflow does not refresh these registry caches.
