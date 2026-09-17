@@ -99,9 +99,15 @@ git push origin beta
 
 ## Beta PR Merge Serializer
 
-`.github/workflows/merge-serializer.yml` adapts the InfoScan merge serializer for `beta`. It
-runs on pushes to `beta`, manual dispatch, and GitHub's best-effort `*/15`-minute schedule; the
-scheduled job does not run on `main`.
+`.github/workflows/merge-serializer.yml` adapts the InfoScan merge serializer for `beta`. It is
+event-driven: a push to `beta`, completion of a `CI` workflow run, a
+`pull_request_target` `auto_merge_enabled` event for a PR into `beta`, or manual dispatch starts
+a queue scan. There is no scheduled polling. A `beta` push advances the queue after a merge, and
+CI completions include failed CI so a bad PR does not stall later eligible PRs. The auto-merge
+opt-in event also catches a PR whose CI had already finished before auto-merge was enabled.
+
+The privileged `pull_request_target` path is metadata-only: it does not check out, install, or
+execute PR code. It considers only same-repository PRs; fork PRs are not eligible.
 
 The serializer scans same-repository, non-draft PRs targeting `beta` that have auto-merge
 enabled. It considers the full eligible queue, holds when current CI or an already-ready
@@ -112,6 +118,9 @@ Conflicted PRs, fork PRs, and `main` reconciliation PRs require manual updates. 
 rebase rewrites feature-branch history, so fetch and reconcile local work rather than blindly
 pulling afterward. The workflow reads Actions metadata through the REST API and uses GraphQL
 `updatePullRequestBranch` with `REBASE` and `expectedHeadOid` to avoid advancing a stale head.
+When GitHub reports an otherwise valid PR's mergeability as unknown, the workflow makes at most
+three requests, waiting two seconds between requests. If it remains unknown, it holds without a
+mutation; a later event or manual dispatch can retry it. It does not poll indefinitely.
 
 ### Serializer token setup
 
@@ -126,7 +135,7 @@ gh secret set MERGE_SERIALIZER_TOKEN
 
 The command prompts for the token. Never place it in chat or tracked setup artifacts. The
 workflow must land on the default `beta` branch and the secret must be configured before its
-schedule can operate.
+automation can operate.
 
 ## Emergency Bypass: Force-Push
 
