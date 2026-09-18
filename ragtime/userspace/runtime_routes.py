@@ -80,6 +80,7 @@ from ragtime.userspace.object_storage import client as object_storage_client
 from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
 from ragtime.userspace.share_auth import set_share_auth_cookie, share_auth_token_from_request
 
+
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])

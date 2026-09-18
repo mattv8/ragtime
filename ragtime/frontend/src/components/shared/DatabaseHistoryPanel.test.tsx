@@ -1,0 +1,397 @@
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const apiMock = vi.hoisted(() => ({
+  listUserSpaceSqliteHistory: vi.fn(),
+  captureUserSpaceSqliteHistory: vi.fn(),
+  downloadUserSpaceSqliteHistory: vi.fn(),
+  deleteUserSpaceSqliteHistory: vi.fn(),
+  previewUserSpaceSqliteHistory: vi.fn(),
+  restoreUserSpaceSqliteHistory: vi.fn(),
+  recoverUserSpaceSqliteHistoryMaintenance: vi.fn(),
+}));
+
+vi.mock('@/api/client', () => ({
+  api: apiMock,
+  ApiError: class ApiError extends Error {
+    constructor(
+      message: string,
+      public status: number,
+    ) {
+      super(message);
+    }
+  },
+}));
+
+import { ApiError } from '@/api/client';
+import { DatabaseHistoryPanel } from './DatabaseHistoryPanel';
+
+const backup = {
+  id: 'backup-1', workspace_id: 'ws-1', database_name: 'app.sqlite3', created_at: '2026-09-17T10:00:00Z',
+  trigger: 'snapshot' as const, snapshot_id: 'snap-1', snapshot_git_commit_hash: 'abc', status: 'ready' as const,
+  size_bytes: 1024, sha256: 'hash', error: null, can_restore: true, can_delete: true,
+};
+
+const secondBackup = {
+  ...backup,
+  id: 'backup-2',
+  database_name: 'orders.sqlite3',
+};
+
+describe('DatabaseHistoryPanel', () => {
+  beforeEach(() => {
+    Object.values(apiMock).forEach((mock) => mock.mockReset());
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({ workspace_id: 'ws-1', backups: [backup], can_manage: true });
+    apiMock.previewUserSpaceSqliteHistory.mockResolvedValue({ preview_id: 'preview-1', backup_id: backup.id, database_name: backup.database_name, mode: 'merge', conflict_policy: 'keep_current', migrations_applied: ['001.sql'], warnings: [], blockers: [], can_apply: true, expires_at: '2026-09-17T10:15:00Z', tables: [{ name: 'items', inserted: 1, updated: 0, deleted: 0, unchanged: 2, conflicts: 1, conflict_samples: [{ key: { id: 1 }, current: { name: 'current' }, backup: { name: 'backup' } }] }] });
+    apiMock.restoreUserSpaceSqliteHistory.mockResolvedValue({ operation_id: 'operation-1', restored_backup_id: backup.id, safety_backup_id: 'safety-1', runtime_stopped: true, status: 'completed' });
+  });
+  afterEach(cleanup);
+
+  it('uses exact workspace and snapshot context and completes a merge restore receipt', async () => {
+    const user = userEvent.setup();
+    render(<DatabaseHistoryPanel workspaceId="ws-1" snapshotId="snap-1" ownerOrAdmin triggerLabel="Snapshot database history" hostId="snapshot-snap-1" />);
+    await user.click(screen.getByRole('button', { name: 'Snapshot database history' }));
+    await waitFor(() => expect(apiMock.listUserSpaceSqliteHistory).toHaveBeenCalledWith('ws-1', { databaseName: undefined, snapshotId: 'snap-1' }));
+    expect(screen.getByText('Exact snapshot snap-1')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
+    expect(screen.getByText(/Merge can resurrect/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Prepare preview' }));
+    await screen.findByText(/items: 1 inserted/);
+    await user.selectOptions(screen.getByLabelText(/Table conflict policy \(items\)/), 'use_backup');
+    expect(screen.queryByText('Actual restore preview')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Prepare preview' }));
+    await user.click(await screen.findByRole('button', { name: 'Confirm restore' }));
+    await screen.findByText('Database restored');
+    expect(screen.getByText(/Safety backup: safety-1/)).toBeTruthy();
+    expect(screen.getByText(/runtime is stopped/i)).toBeTruthy();
+  });
+
+  it('does not expose history to a non-owner host', () => {
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin={false} hostId="workspace" />);
+    expect(screen.queryByRole('button', { name: 'Database history' })).toBeNull();
+  });
+
+  it('starts a fresh restore workflow when another backup is selected after a receipt', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1',
+      backups: [backup, secondBackup],
+      can_manage: true,
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
+    await user.click(screen.getByRole('button', { name: 'Prepare preview' }));
+    await user.click(await screen.findByRole('button', { name: 'Confirm restore' }));
+    await screen.findByText('Database restored');
+
+    await user.click(screen.getByRole('button', { name: /Restore orders\.sqlite3 backup/ }));
+
+    expect(screen.queryByText('Database restored')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Restore orders.sqlite3' })).toBeTruthy();
+  });
+
+  it('uses its host identity to keep history hooks unique and hides merge policies for overwrite', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />
+        <DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="snapshot-snap-1" />
+      </>,
+    );
+
+    const triggers = screen.getAllByRole('button', { name: 'Database history' });
+    expect(triggers[0].getAttribute('data-history-host')).toBe('workspace');
+    expect(triggers[1].getAttribute('data-history-host')).toBe('snapshot-snap-1');
+    expect(triggers[0].getAttribute('data-history-panel')).not.toBe(triggers[1].getAttribute('data-history-panel'));
+
+    await user.click(triggers[0]);
+    await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
+    await user.selectOptions(screen.getByLabelText('Mode'), 'overwrite');
+
+    expect(screen.queryByLabelText('Default conflict policy')).toBeNull();
+  });
+
+  it('explains that snapshot history was not captured when its exact filter is empty', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({ workspace_id: 'ws-1', backups: [], can_manage: true });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" snapshotId="snap-old" ownerOrAdmin hostId="snapshot-snap-old" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+
+    expect(await screen.findByText(/not captured for this snapshot/i)).toBeTruthy();
+  });
+
+  it('prioritizes event backups, orders each group deterministically, and preserves backup actions', async () => {
+    const user = userEvent.setup();
+    const mixedBackups = [
+      { ...backup, id: 'hourly-new', database_name: 'hourly-new.sqlite3', created_at: '2026-09-17T12:00:00Z', trigger: 'scheduled' as const, snapshot_id: null },
+      { ...backup, id: 'snapshot-old', database_name: 'snapshot-old.sqlite3', created_at: '2026-09-17T08:00:00Z' },
+      { ...backup, id: 'manual-new', database_name: 'manual-new.sqlite3', created_at: '2026-09-17T11:00:00Z', trigger: 'manual' as const, snapshot_id: null },
+      { ...backup, id: 'restore-safety', database_name: 'restore.sqlite3', created_at: '2026-09-17T10:30:00Z', trigger: 'pre_restore' as const, snapshot_id: null },
+      { ...backup, id: 'snapshot-tie-a', database_name: 'snapshot-tie-a.sqlite3', created_at: '2026-09-17T10:00:00+02:00' },
+      { ...backup, id: 'snapshot-tie-y', database_name: 'snapshot-tie-y.sqlite3', created_at: '2026-09-17T09:00:00Z' },
+      { ...backup, id: 'snapshot-tie-z', database_name: 'snapshot-tie-z.sqlite3', created_at: '2026-09-17T11:00:00+02:00' },
+    ];
+    const originalOrder = mixedBackups.map((item) => item.id);
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({ workspace_id: 'ws-1', backups: mixedBackups, can_manage: true });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await screen.findByText('snapshot-old.sqlite3');
+
+    const groups = Array.from(document.querySelectorAll<HTMLElement>('[data-history-group]'));
+    expect(groups.map((group) => group.dataset.historyGroup)).toEqual(['checkpoint', 'safety', 'hourly']);
+    expect(groups[0]?.getAttribute('aria-labelledby')).toMatch(/^db-hist-group-checkpoint-/);
+    expect(Array.from(document.querySelectorAll<HTMLElement>('[data-history-backup]')).map((item) => item.dataset.historyBackup)).toEqual([
+      'manual-new', 'snapshot-tie-z', 'snapshot-tie-y', 'snapshot-tie-a', 'snapshot-old', 'restore-safety', 'hourly-new',
+    ]);
+    expect(document.querySelectorAll('[data-history-backup="snapshot-old"]').length).toBe(1);
+    expect(document.querySelector<HTMLElement>('[data-history-backup="snapshot-old"]')?.dataset.historyTrigger).toBe('snapshot');
+    expect(screen.getAllByText(/Code snapshot/)).toHaveLength(4);
+    expect(screen.getByText(/Manual backup/)).toBeTruthy();
+    expect(screen.getByText(/Before restore/)).toBeTruthy();
+    expect(screen.getAllByText(/Hourly/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Snapshot snap-1')).toHaveLength(4);
+    expect(mixedBackups.map((item) => item.id)).toEqual(originalOrder);
+
+    await user.click(screen.getByRole('button', { name: 'Delete snapshot-old.sqlite3 backup' }));
+    expect(apiMock.deleteUserSpaceSqliteHistory).toHaveBeenCalledWith('ws-1', 'snapshot-old');
+  });
+
+  it('omits empty backup groups', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1',
+      backups: [{ ...backup, id: 'hourly-only', trigger: 'scheduled' as const, snapshot_id: null }],
+      can_manage: true,
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await screen.findByText('app.sqlite3');
+
+    expect(document.querySelectorAll('[data-history-group]')).toHaveLength(1);
+    expect(document.querySelector('[data-history-group="hourly"]')).toBeTruthy();
+  });
+
+  it('renders null safety_backup_id truthfully when restore omits it', async () => {
+    const user = userEvent.setup();
+    apiMock.restoreUserSpaceSqliteHistory.mockResolvedValue({ operation_id: 'operation-1', restored_backup_id: backup.id, safety_backup_id: null, runtime_stopped: true, status: 'completed' });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
+    await user.click(screen.getByRole('button', { name: 'Prepare preview' }));
+    await user.click(await screen.findByRole('button', { name: 'Confirm restore' }));
+    await screen.findByText('Database restored');
+    
+    // Should show a truthful message when safety_backup_id is null, not a bare "null"
+    // Either shows "No safety backup created" or similar message, not the bare string "null"
+    const receiptText = screen.getByRole('status').textContent || '';
+    expect(receiptText).toContain('Database restored');
+    expect(receiptText).not.toContain('null');
+  });
+
+  it('discards a stale restore preview after a 409 response', async () => {
+    const user = userEvent.setup();
+    apiMock.restoreUserSpaceSqliteHistory.mockRejectedValue(new ApiError('stale', 409));
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
+    await user.click(screen.getByRole('button', { name: 'Prepare preview' }));
+    await user.click(await screen.findByRole('button', { name: 'Confirm restore' }));
+
+    expect(await screen.findByText(/preview is stale/i)).toBeTruthy();
+    expect(screen.queryByText('Actual restore preview')).toBeNull();
+  });
+
+  it('dismisses dialog with Escape key', async () => {
+    const user = userEvent.setup();
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('prevents duplicate capture-now requests with local busy state', async () => {
+    const user = userEvent.setup();
+    let resolveCapture: (() => void) | undefined;
+    const capturePromise = new Promise<void>((resolve) => {
+      resolveCapture = resolve;
+    });
+    apiMock.captureUserSpaceSqliteHistory.mockImplementation(() => capturePromise);
+
+    render(<DatabaseHistoryPanel workspaceId="ws-1" databaseName="app.sqlite3" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const captureButton = screen.getByRole('button', { name: /Capture now/ }) as HTMLButtonElement;
+
+    // First click should be allowed and disable the button
+    expect(captureButton.disabled).toBe(false);
+    await user.click(captureButton);
+    
+    // Button should be disabled after click
+    await waitFor(() => {
+      expect(captureButton.disabled).toBe(true);
+    });
+
+    // Second click should not increment call count while button is disabled
+    await user.click(captureButton);
+    
+    expect(apiMock.captureUserSpaceSqliteHistory).toHaveBeenCalledTimes(1);
+    
+    // Resolve the promise and button should be enabled again
+    resolveCapture?.();
+  });
+
+  it('prevents duplicate delete requests with local busy state', async () => {
+    const user = userEvent.setup();
+    let resolveDelete: (() => void) | undefined;
+    const deletePromise = new Promise<void>((resolve) => {
+      resolveDelete = resolve;
+    });
+    apiMock.deleteUserSpaceSqliteHistory.mockImplementation(() => deletePromise);
+
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const deleteButton = screen.getByRole('button', { name: /Delete app\.sqlite3 backup/ }) as HTMLButtonElement;
+
+    // First click should be allowed
+    expect(deleteButton.disabled).toBe(false);
+    await user.click(deleteButton);
+    
+    // Button should be disabled after click
+    await waitFor(() => {
+      expect(deleteButton.disabled).toBe(true);
+    });
+
+    // Second click should not increment call count while button is disabled
+    await user.click(deleteButton);
+
+    expect(apiMock.deleteUserSpaceSqliteHistory).toHaveBeenCalledTimes(1);
+    
+    // Resolve the promise and button should be enabled again
+    resolveDelete?.();
+  });
+
+  it('includes table name in merge table conflict policy label', async () => {
+    const user = userEvent.setup();
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
+    await user.selectOptions(screen.getByLabelText('Mode'), 'merge');
+    await user.click(screen.getByRole('button', { name: 'Prepare preview' }));
+    
+    await screen.findByText(/items: 1 inserted/);
+    
+    // Label should include table name when selecting conflict policy
+    const label = screen.getByText(/Table conflict policy \(items\)/);
+    expect(label).toBeTruthy();
+  });
+
+  it('invalidates a delayed preview when its mode, default policy, table policy, backup, or workspace changes', async () => {
+    const user = userEvent.setup();
+    const backupPreview = {
+      preview_id: 'late-preview', backup_id: backup.id, database_name: backup.database_name,
+      mode: 'merge' as const, conflict_policy: 'keep_current' as const, migrations_applied: [], warnings: [], blockers: [], can_apply: true, expires_at: null,
+      tables: [{ name: 'items', inserted: 0, updated: 0, deleted: 0, unchanged: 0, conflicts: 1, conflict_samples: [] }],
+    };
+    const delayed = (() => {
+      let resolve!: (value: typeof backupPreview) => void;
+      const promise = new Promise<typeof backupPreview>((done) => { resolve = done; });
+      return { promise, resolve };
+    })();
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({ workspace_id: 'ws-1', backups: [backup, secondBackup], can_manage: true });
+    apiMock.previewUserSpaceSqliteHistory.mockReturnValueOnce(delayed.promise);
+    const { rerender } = render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
+    await user.click(screen.getByRole('button', { name: 'Prepare preview' }));
+    await user.selectOptions(screen.getByLabelText('Mode'), 'overwrite');
+    delayed.resolve(backupPreview);
+    await Promise.resolve();
+    expect(screen.queryByText('Actual restore preview')).toBeNull();
+
+    await user.selectOptions(screen.getByLabelText('Mode'), 'merge');
+    await user.selectOptions(screen.getByLabelText('Default conflict policy'), 'use_backup');
+    await user.click(screen.getByRole('button', { name: /Restore orders\.sqlite3 backup/ }));
+    rerender(<DatabaseHistoryPanel workspaceId="ws-2" ownerOrAdmin hostId="workspace" />);
+    expect(screen.queryByLabelText('Mode')).toBeNull();
+  });
+
+  it('keeps delete state per backup, clears a deleted source, and reports download failures', async () => {
+    const user = userEvent.setup();
+    let resolveFirstDelete!: () => void;
+    let resolveSecondDelete!: () => void;
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({ workspace_id: 'ws-1', backups: [backup, secondBackup], can_manage: true });
+    apiMock.deleteUserSpaceSqliteHistory
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirstDelete = resolve; }))
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveSecondDelete = resolve; }));
+    apiMock.downloadUserSpaceSqliteHistory.mockRejectedValue(new Error('download unavailable'));
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
+    const firstDelete = screen.getByRole('button', { name: /Delete app\.sqlite3 backup/ }) as HTMLButtonElement;
+    const secondDelete = screen.getByRole('button', { name: /Delete orders\.sqlite3 backup/ }) as HTMLButtonElement;
+    await user.click(firstDelete);
+    await waitFor(() => expect(firstDelete.disabled).toBe(true));
+    expect(secondDelete.disabled).toBe(false);
+    await user.click(secondDelete);
+    await user.click(screen.getByRole('button', { name: /Download app\.sqlite3 backup/ }));
+    expect(await screen.findByText('download unavailable')).toBeTruthy();
+    resolveFirstDelete();
+    resolveSecondDelete();
+    await waitFor(() => expect(screen.queryByLabelText('Mode')).toBeNull());
+  });
+
+  it('traps focus, restores its trigger, and blocks unsafe actions during active recovery', async () => {
+    const user = userEvent.setup();
+    let resolveRecovery!: () => void;
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1', backups: [backup], can_manage: true,
+      interrupted_maintenance: { state: 'interrupted', operation_id: 'op-1', detail: 'Interrupted', can_complete: true, can_abort: true },
+    });
+    apiMock.recoverUserSpaceSqliteHistoryMaintenance.mockImplementation(() => new Promise<void>((resolve) => { resolveRecovery = resolve; }));
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+    const trigger = screen.getByRole('button', { name: 'Database history' });
+    await user.click(trigger);
+    const close = screen.getByRole('button', { name: 'Close database history' });
+    await waitFor(() => expect(document.activeElement).toBe(close));
+    close.focus();
+    await user.keyboard('{Shift>}{Tab}{/Shift}');
+    expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Complete' }));
+    expect(screen.getByText(/maintenance is active/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Delete app\.sqlite3 backup/ }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Close database history' }).hasAttribute('disabled')).toBe(true);
+    resolveRecovery();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close database history' }).hasAttribute('disabled')).toBe(false));
+    await user.click(screen.getByRole('button', { name: 'Close database history' }));
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('renders active maintenance without recovery actions and blocks destructive controls', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1', backups: [backup], can_manage: true,
+      interrupted_maintenance: { state: 'active', operation_id: null, detail: 'A restore is still running', can_complete: false, can_abort: false },
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin databaseName="app.sqlite3" hostId="workspace" />);
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+
+    expect(await screen.findByText(/Active database maintenance is in progress/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Complete' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Abort' })).toBeNull();
+    expect(screen.getByRole('button', { name: /Capture now/ }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: /Delete app\.sqlite3 backup/ }).hasAttribute('disabled')).toBe(true);
+  });
+});

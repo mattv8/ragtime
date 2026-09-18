@@ -37,6 +37,8 @@ from runtime.manager.models import (
     RuntimeSessionResponse,
     RuntimeWorkspaceFileListResponse,
     RuntimeWorkspaceGitCommandResponse,
+    RuntimeWorkspaceMaintenanceRequest,
+    RuntimeWorkspaceMaintenanceResponse,
     RuntimeWorkspaceScmStatusResponse,
     StartSessionRequest,
     WorkerSessionResponse,
@@ -78,6 +80,7 @@ class SessionManager:
         self._reconcile_task: asyncio.Task[None] | None = None
         self._reconcile_children: set[asyncio.Task[None]] = set()
         self._maintenance_lease = RuntimeManagerMaintenanceLeaseResponse.inactive()
+        self._workspace_sqlite_maintenance: dict[str, dict[str, bool]] = {}
 
     async def startup(self) -> None:
         if self._reconcile_task is None:
@@ -441,6 +444,8 @@ class SessionManager:
 
             async with self._lock:
                 self._ensure_launches_allowed_locked(utc_now())
+                if request.workspace_id in self._workspace_sqlite_maintenance:
+                    raise HTTPException(status_code=423, detail="Workspace SQLite maintenance is active")
                 provider_session_id = request.provider_session_id
                 if provider_session_id and provider_session_id in self._sessions:
                     existing_provider_id = provider_session_id
@@ -666,6 +671,8 @@ class SessionManager:
                 session = self._sessions.get(provider_session_id)
                 if not session:
                     raise HTTPException(status_code=404, detail="Runtime session not found")
+                if self._workspace_sqlite_maintenance.get(session.workspace_id):
+                    raise HTTPException(status_code=423, detail="Workspace SQLite maintenance is active")
                 worker_session_id = session.worker_session_id
                 response_session = replace(session)
             try:
@@ -805,6 +812,9 @@ class SessionManager:
         provider_session_id: str,
     ) -> RuntimePtyUrlResponse:
         session = self._get_session_or_raise(provider_session_id)
+        async with self._lock:
+            if any(self._workspace_sqlite_maintenance.get(session.workspace_id, {}).values()):
+                raise HTTPException(status_code=423, detail="Workspace SQLite maintenance is active")
         parsed = urlparse(session.preview_internal_url)
         if parsed.scheme == "https":
             ws_scheme = "wss"
@@ -879,12 +889,61 @@ class SessionManager:
         cwd: str | None = None,
     ) -> RuntimeExecResponse:
         session = self._get_session_or_raise(provider_session_id)
+        async with self._lock:
+            if any(self._workspace_sqlite_maintenance.get(session.workspace_id, {}).values()):
+                raise HTTPException(status_code=423, detail="Workspace SQLite maintenance is active")
         return await self._worker_service.exec_command(
             session.worker_session_id,
             command,
             timeout_seconds=timeout_seconds,
             cwd=cwd,
         )
+
+    async def acquire_sqlite_workspace_maintenance(
+        self, workspace_id: str, request: RuntimeWorkspaceMaintenanceRequest
+    ) -> RuntimeWorkspaceMaintenanceResponse:
+        """Delegate the per-workspace fence; POST is deliberately non-retryable upstream."""
+        health = await self._worker_service.health()
+        capabilities = dict((health.metadata or {}).get("runtime_capabilities") or {})
+        if not bool(capabilities.get("sqlite_workspace_maintenance")):
+            raise HTTPException(status_code=409, detail="Runtime worker upgrade required for SQLite maintenance")
+        async with self._lock:
+            leases = self._workspace_sqlite_maintenance.setdefault(workspace_id, {})
+            current = leases.get(request.lease_id)
+            if current is not None and current != request.maintenance:
+                raise HTTPException(status_code=409, detail="Workspace SQLite maintenance lease mode conflicts")
+            if current is None:
+                if request.maintenance and leases or (not request.maintenance and any(leases.values())):
+                    raise HTTPException(status_code=409, detail="Workspace SQLite maintenance is already held")
+                leases[request.lease_id] = request.maintenance
+            newly_registered = current is None
+        try:
+            result = await self._worker_service.acquire_sqlite_workspace_access(
+                workspace_id, request.lease_id, maintenance=request.maintenance
+            )
+            return RuntimeWorkspaceMaintenanceResponse.model_validate(result)
+        except Exception:
+            if newly_registered:
+                async with self._lock:
+                    leases = self._workspace_sqlite_maintenance.get(workspace_id, {})
+                    if leases.get(request.lease_id) == request.maintenance:
+                        leases.pop(request.lease_id, None)
+                        if not leases:
+                            self._workspace_sqlite_maintenance.pop(workspace_id, None)
+            raise
+
+    async def release_sqlite_workspace_maintenance(self, workspace_id: str, lease_id: str) -> None:
+        async with self._lock:
+            leases = self._workspace_sqlite_maintenance.get(workspace_id, {})
+            if leases and lease_id not in leases:
+                raise HTTPException(status_code=409, detail="Workspace SQLite maintenance lease owner mismatch")
+        await self._worker_service.release_sqlite_workspace_access(workspace_id, lease_id)
+        async with self._lock:
+            leases = self._workspace_sqlite_maintenance.get(workspace_id, {})
+            if lease_id in leases:
+                leases.pop(lease_id)
+                if not leases:
+                    self._workspace_sqlite_maintenance.pop(workspace_id, None)
 
     async def external_browse(
         self,

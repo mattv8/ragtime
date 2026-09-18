@@ -4,7 +4,7 @@ import hashlib
 import tempfile
 import unittest
 from collections.abc import Sequence
-from contextlib import ExitStack
+from contextlib import ExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -401,6 +401,13 @@ class RuntimeBridgeCrossWorkspaceSqliteServiceTests(unittest.IsolatedAsyncioTest
             )
             return True
 
+        @asynccontextmanager
+        async def _fake_sqlite_workspace_access(workspace_id: str, *, maintenance: bool = False):
+            """Mock sqlite_workspace_access to return a pinned root in the test workspace."""
+            pinned_root = self.workspace_root / workspace_id / "files"
+            pinned_root.mkdir(parents=True, exist_ok=True)
+            yield pinned_root
+
         return (
             mock.patch("ragtime.userspace.service.get_db", new=_fake_get_db),
             mock.patch.object(self.service, "_record_runtime_audit_event", new=_record_runtime_audit_event),
@@ -410,6 +417,7 @@ class RuntimeBridgeCrossWorkspaceSqliteServiceTests(unittest.IsolatedAsyncioTest
                 "_runtime_bridge_cross_workspace_sqlite_broker",
                 new=mock.Mock(return_value=self.broker),
             ),
+            mock.patch("ragtime.userspace.service.sqlite_workspace_access", new=_fake_sqlite_workspace_access),
         )
 
     @staticmethod

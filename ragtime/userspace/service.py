@@ -294,12 +294,15 @@ from ragtime.userspace.object_storage.legacy_coordinator import LegacyObjectStor
 from ragtime.userspace.object_storage.legacy_migration import LegacyObjectStorageMigrator
 from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
 from ragtime.userspace.sqlite_import import SqlImportResult
+from ragtime.userspace.sqlite_runtime import sqlite_workspace_access
 from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
 from ragtime.userspace.workspace_tool_options import (
     load_workspace_tool_options,
     normalize_workspace_tool_options,
     resolve_workspace_tool_write_access,
 )
+from runtime.core.sqlite_recovery import capture_database
+from runtime.core.workspace_ops import is_managed_sqlite_artifact, iter_managed_sqlite_database_paths
 
 logger = get_logger(__name__)
 
@@ -5854,20 +5857,23 @@ class UserSpaceService:
     ) -> None:
         del user_id
         remove_dump = True
-        sqlite_path = self._workspace_files_dir(workspace_id) / ".ragtime" / "db" / "app.sqlite3"
-        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         self._set_workspace_sqlite_import_task_phase(task_id, "waiting_for_slot", progress=_SQLITE_IMPORT_WAITING_PROGRESS)
         try:
             async with self._workspace_sqlite_import_semaphore:
-                self._set_workspace_sqlite_import_task_phase(task_id, "staging_upload", progress=_SQLITE_IMPORT_STAGING_PROGRESS)
-                stdout_path.parent.mkdir(parents=True, exist_ok=True)
-                stdout_path.write_text("", encoding="utf-8")
-                stderr_path.write_text("", encoding="utf-8")
-                with (
-                    stdout_path.open("wb") as stdout_handle,
-                    stderr_path.open("wb") as stderr_handle,
-                ):
-                    process = await asyncio.create_subprocess_exec(
+                # Keep the authoritative runtime root pinned until the child
+                # has exited, including cancellation cleanup.
+                async with sqlite_workspace_access(workspace_id) as files_dir:
+                    sqlite_path = files_dir / ".ragtime" / "db" / "app.sqlite3"
+                    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._set_workspace_sqlite_import_task_phase(task_id, "staging_upload", progress=_SQLITE_IMPORT_STAGING_PROGRESS)
+                    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+                    stdout_path.write_text("", encoding="utf-8")
+                    stderr_path.write_text("", encoding="utf-8")
+                    with (
+                        stdout_path.open("wb") as stdout_handle,
+                        stderr_path.open("wb") as stderr_handle,
+                    ):
+                        process = await asyncio.create_subprocess_exec(
                         sys.executable,
                         "-m",
                         "ragtime.userspace.sqlite_import",
@@ -5881,34 +5887,37 @@ class UserSpaceService:
                         str(progress_path),
                         stdout=stdout_handle,
                         stderr=stderr_handle,
-                    )
-                record = self._workspace_sqlite_import_task_statuses.get(task_id)
-                if record is not None:
-                    record.process_id = process.pid
-                    record.stdout_path = stdout_path
-                    record.stderr_path = stderr_path
-                    self._write_workspace_sqlite_import_task_sidecar(task_id)
-                wait_task = asyncio.create_task(process.wait())
-                try:
-                    started_monotonic = _time.monotonic()
-                    while not wait_task.done():
-                        if _time.monotonic() - started_monotonic > _SQLITE_IMPORT_SUBPROCESS_TIMEOUT_SECONDS:
+                        )
+                    record = self._workspace_sqlite_import_task_statuses.get(task_id)
+                    if record is not None:
+                        record.process_id = process.pid
+                        record.stdout_path = stdout_path
+                        record.stderr_path = stderr_path
+                        self._write_workspace_sqlite_import_task_sidecar(task_id)
+                    wait_task = asyncio.create_task(process.wait())
+                    try:
+                        started_monotonic = _time.monotonic()
+                        while not wait_task.done():
+                            if _time.monotonic() - started_monotonic > _SQLITE_IMPORT_SUBPROCESS_TIMEOUT_SECONDS:
+                                process.kill()
+                                await wait_task
+                                raise RuntimeError("SQL import timed out before it could complete")
+                            self._apply_workspace_sqlite_import_progress(task_id, progress_path)
+                            await asyncio.sleep(_SQLITE_IMPORT_SUBPROCESS_PROGRESS_INTERVAL_SECONDS)
+                        await wait_task
+                    except asyncio.CancelledError:
+                        if process.returncode is None:
                             process.kill()
-                            await wait_task
-                            raise RuntimeError("SQL import timed out before it could complete")
-                        self._apply_workspace_sqlite_import_progress(task_id, progress_path)
-                        await asyncio.sleep(_SQLITE_IMPORT_SUBPROCESS_PROGRESS_INTERVAL_SECONDS)
-                    await wait_task
-                except asyncio.CancelledError:
-                    remove_dump = False
-                    raise
+                            await asyncio.shield(wait_task)
+                        remove_dump = False
+                        raise
 
-                self._apply_workspace_sqlite_import_progress(task_id, progress_path)
-                if process.returncode != 0:
-                    detail = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
-                    raise RuntimeError(detail or f"SQL import subprocess failed with exit code {process.returncode}")
+                    self._apply_workspace_sqlite_import_progress(task_id, progress_path)
+                    if process.returncode != 0:
+                        detail = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
+                        raise RuntimeError(detail or f"SQL import subprocess failed with exit code {process.returncode}")
 
-                self._finish_workspace_sqlite_import_from_stdout(task_id, stdout_path)
+                    self._finish_workspace_sqlite_import_from_stdout(task_id, stdout_path)
         except Exception as exc:
             logger.exception("Workspace SQLite import task failed")
             detail = str(exc) or "SQLite import failed"
@@ -11131,9 +11140,85 @@ class UserSpaceService:
         check: bool = True,
     ) -> _GitCommandResult:
         args = ["clean", "-fd"]
+        # Managed DB bytes are live application data, not untracked source.
+        # Keep them through every platform restore clean in either persistence
+        # mode; migration SQL remains eligible for normal checkout/clean.
+        db_root = self._workspace_files_dir(workspace_id) / ".ragtime" / "db"
+        if db_root.is_dir():
+            for entry in db_root.iterdir():
+                if is_managed_sqlite_artifact(entry.relative_to(self._workspace_files_dir(workspace_id))):
+                    # Do not exclude the whole directory: migrations and other
+                    # ordinary source under it must follow the target snapshot.
+                    args.append(f"--exclude=/.ragtime/db/{entry.name}")
         for mount_path in await self._list_workspace_mount_target_repo_paths(workspace_id):
             args.append(f"--exclude=/{mount_path.rstrip('/')}/")
         return await self._run_git(workspace_id, args, check=check)
+
+    @asynccontextmanager
+    async def _guarded_code_restore(self, workspace_id: str):
+        """Fence code checkout and preserve managed SQLite data across Git.
+
+        Git is allowed to restore migration source, but never the direct child
+        managed database artifacts.  Consistent online copies replace any
+        historical tracked blobs materialized by checkout/reset.
+        """
+        from ragtime.userspace.sqlite_history import SqliteHistoryService, get_sqlite_history_service
+        from ragtime.userspace.sqlite_runtime import run_sqlite_blocking
+        from runtime.core.secure_files import SecureFileError, delete_file, publish_regular_file
+
+        body_error: BaseException | None = None
+        async with sqlite_workspace_access(workspace_id, maintenance=True) as files_dir:
+            history = get_sqlite_history_service()
+            await history.capture_workspace_databases(
+                workspace_id, trigger="pre_restore", mandatory=True, files_dir=files_dir
+            )
+            with tempfile.TemporaryDirectory(prefix="ragtime-code-restore-") as temp_name:
+                temp_dir = Path(temp_name)
+                preserved: dict[str, Path] = {}
+                temp_blobs = temp_dir / "blobs"
+                temp_blobs.mkdir()
+                # Do not enumerate or open `.ragtime/db` through path helpers:
+                # history pins its directory and delegates SQLite I/O to the
+                # Landlock child even while preserving data across Git.
+                for name in SqliteHistoryService._database_names(files_dir):
+                    destination = temp_blobs / name
+                    await run_sqlite_blocking(SqliteHistoryService._capture_confined, files_dir, name, temp_blobs, name)
+                    preserved[name] = destination
+                try:
+                    yield files_dir
+                except BaseException as exc:
+                    # A Git failure must not escape the runtime fence: publish
+                    # the preserved DB copies, then allow maintenance to exit
+                    # normally before reporting the original failure.
+                    body_error = exc
+                try:
+                    for name in preserved:
+                        await run_sqlite_blocking(
+                            publish_regular_file, temp_dir, f"blobs/{name}", files_dir, f".ragtime/db/{name}"
+                        )
+                        for suffix in ("-wal", "-shm", "-journal"):
+                            await run_sqlite_blocking(delete_file, files_dir, f".ragtime/db/{name}{suffix}")
+                except SecureFileError as exc:
+                    raise HTTPException(status_code=409, detail="SQLite restore target is unsafe") from exc
+                except BaseException:
+                    # Publication failure is fail-closed: let it cross the
+                    # maintenance boundary so its durable marker remains.
+                    raise
+        if body_error is not None:
+            raise body_error
+
+    @staticmethod
+    def _fsync_file(path: Path) -> None:
+        with path.open("rb") as handle:
+            os.fsync(handle.fileno())
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     async def _is_workspace_mount_owned_path(self, workspace_id: str, relative_path: str) -> bool:
         normalized_path = self._normalize_workspace_relative_path(relative_path)
@@ -11193,15 +11278,18 @@ class UserSpaceService:
                 mount_paths,
             )
 
-        # SQLite exclusion policy.
-        db = await get_db()
-        workspace = await db.workspace.find_unique(where={"id": workspace_id})
-        sqlite_mode = _normalize_sqlite_persistence_mode(str(getattr(workspace, "sqlitePersistenceMode", "include") or "include") if workspace else "include")
-        if sqlite_mode == "exclude":
-            reset_patterns.extend(_SQLITE_EXCLUDE_GLOBS)
-
         # Stage everything first.
         await self._run_git(workspace_id, ["add", "-A"])
+
+        # Snapshots never commit managed SQLite binaries or their sidecars,
+        # irrespective of prompt persistence mode.  Do this after add so old
+        # tracked database blobs are removed from the index while their live
+        # files stay in place.  Migration source under db/migrations is not a
+        # managed artifact and therefore remains versioned.
+        tracked = await self._run_git(workspace_id, ["ls-files", "-z", "--", ".ragtime/db"], check=False)
+        managed_paths = [path for path in tracked.stdout.split("\0") if path and is_managed_sqlite_artifact(path)]
+        if managed_paths:
+            await self._run_git(workspace_id, ["rm", "--cached", "--ignore-unmatch", "--", *managed_paths], check=False)
 
         # Purge excluded paths from the index.
         if rm_cached_paths:
@@ -21349,25 +21437,23 @@ class UserSpaceService:
         }
 
         async with self._snapshot_operation_semaphore:
-            # Reset the worktree first so restore is resilient to platform-managed
-            # files being rewritten outside Git between snapshots.
-            await self._run_git(workspace_id, ["reset", "--hard"], check=False)
-            await self._clean_workspace_untracked_files(workspace_id, check=False)
-            if branch_ref_name and is_branch_tip:
-                checkout_result = await self._run_git(
-                    workspace_id,
-                    ["checkout", "-f", branch_ref_name],
-                    check=False,
-                )
-                if checkout_result.returncode != 0:
-                    await self._run_git(
+            async with self._guarded_code_restore(workspace_id):
+                # Reset/checkout are intentionally inside the runtime fence;
+                # the guard restores consistent live DB copies afterwards.
+                await self._run_git(workspace_id, ["reset", "--hard"], check=False)
+                await self._clean_workspace_untracked_files(workspace_id, check=False)
+                if branch_ref_name and is_branch_tip:
+                    checkout_result = await self._run_git(
                         workspace_id,
-                        ["checkout", "--detach", commit_hash],
+                        ["checkout", "-f", branch_ref_name],
+                        check=False,
                     )
-            else:
-                await self._run_git(workspace_id, ["checkout", "--detach", commit_hash])
-            await self._run_git(workspace_id, ["reset", "--hard", commit_hash])
-            await self._clean_workspace_untracked_files(workspace_id, check=False)
+                    if checkout_result.returncode != 0:
+                        await self._run_git(workspace_id, ["checkout", "--detach", commit_hash])
+                else:
+                    await self._run_git(workspace_id, ["checkout", "--detach", commit_hash])
+                await self._run_git(workspace_id, ["reset", "--hard", commit_hash])
+                await self._clean_workspace_untracked_files(workspace_id, check=False)
             await self._activate_branch(workspace_id, branch_id)
             await self._set_current_snapshot_cursor(workspace_id, snapshot_id, branch_id)
 
@@ -21576,6 +21662,20 @@ class UserSpaceService:
             # Auto-sync runs in the SCM background watcher so snapshot creation
             # stays low-latency and bounded under load.
             self._nudge_workspace_scm_watch_due(workspace_id, "export")
+        # Database history is independent from Git's changed-file result.  A
+        # capture failure is recorded by the protected catalog but must not
+        # misreport a successful code snapshot as failed.
+        try:
+            from ragtime.userspace.sqlite_history import get_sqlite_history_service
+
+            await get_sqlite_history_service().capture_workspace_databases(
+                workspace_id,
+                trigger="snapshot",
+                snapshot_id=snapshot_id,
+                snapshot_git_commit_hash=commit_hash,
+            )
+        except Exception as exc:
+            logger.warning("SQLite history capture failed after snapshot %s: %s", snapshot_id, type(exc).__name__)
         return created
 
     async def update_snapshot(
@@ -21746,11 +21846,17 @@ class UserSpaceService:
             """)
         target_snapshot_id = str(head_rows[0].get("id")) if head_rows else None
 
-        async with self._snapshot_operation_semaphore:
-            if branch_ref_name:
-                await self._run_git(workspace_id, ["checkout", branch_ref_name], check=False)
-            await self._activate_branch(workspace_id, branch_id)
-            await self._set_current_snapshot_cursor(workspace_id, target_snapshot_id, branch_id)
+        if target_snapshot_id:
+            # Branch switching is a code restore, not a raw checkout: route it
+            # through the same database-preserving guarded helper.
+            await self._restore_snapshot_by_id(workspace_id, target_snapshot_id, user_id)
+        else:
+            async with self._snapshot_operation_semaphore:
+                async with self._guarded_code_restore(workspace_id):
+                    if branch_ref_name:
+                        await self._run_git(workspace_id, ["checkout", branch_ref_name], check=False)
+                await self._activate_branch(workspace_id, branch_id)
+                await self._set_current_snapshot_cursor(workspace_id, target_snapshot_id, branch_id)
 
         await self._touch_workspace(workspace_id)
         await self._mark_workspace_code_index_dirty(workspace_id, operation="reindex")
@@ -22383,103 +22489,103 @@ class UserSpaceService:
             raise
 
         broker = self._runtime_bridge_cross_workspace_sqlite_broker()
-        files_dir = self._workspace_files_dir(target_workspace_id)
         started_at = _time.monotonic()
-        try:
-            result = await broker.query(
-                files_dir,
-                request.sql,
-                parameters=request.parameters,
-                max_rows=request.max_rows,
-            )
-        except CrossWorkspaceSqliteError as exc:
-            payload = self._build_runtime_bridge_sqlite_audit_payload(
-                source_workspace_id=workspace_id,
-                target_workspace_id=target_workspace_id,
-                session_id=session_id,
-                leased_by_user_id=leased_by_user_id,
-                operation="query",
-                grant_id=authorization.get("grant_id"),
-                sqlite_access_mode=authorization.get("sqlite_access_mode"),
-            )
-            payload.update(
-                {
-                    "phase": "outcome",
-                    "status": "failed",
-                    "sql_digest": sql_digest,
-                    "row_count": 0,
-                    "duration_ms": int((_time.monotonic() - started_at) * 1000),
-                    "error_code": exc.code,
-                }
-            )
-            await self._record_runtime_bridge_sqlite_event_best_effort(
-                workspace_id=target_workspace_id,
-                user_id=leased_by_user_id,
-                session_id=session_id,
-                payload=payload,
-            )
-            raise
-        except Exception:
-            payload = self._build_runtime_bridge_sqlite_audit_payload(
-                source_workspace_id=workspace_id,
-                target_workspace_id=target_workspace_id,
-                session_id=session_id,
-                leased_by_user_id=leased_by_user_id,
-                operation="query",
-                grant_id=authorization.get("grant_id"),
-                sqlite_access_mode=authorization.get("sqlite_access_mode"),
-            )
-            payload.update(
-                {
-                    "phase": "outcome",
-                    "status": "failed",
-                    "sql_digest": sql_digest,
-                    "row_count": 0,
-                    "duration_ms": int((_time.monotonic() - started_at) * 1000),
-                    "error_code": "query_failed",
-                }
-            )
-            await self._record_runtime_bridge_sqlite_event_best_effort(
-                workspace_id=target_workspace_id,
-                user_id=leased_by_user_id,
-                session_id=session_id,
-                payload=payload,
-            )
-            raise
+        async with sqlite_workspace_access(target_workspace_id) as files_dir:
+            try:
+                result = await broker.query(
+                    files_dir,
+                    request.sql,
+                    parameters=request.parameters,
+                    max_rows=request.max_rows,
+                )
+            except CrossWorkspaceSqliteError as exc:
+                payload = self._build_runtime_bridge_sqlite_audit_payload(
+                    source_workspace_id=workspace_id,
+                    target_workspace_id=target_workspace_id,
+                    session_id=session_id,
+                    leased_by_user_id=leased_by_user_id,
+                    operation="query",
+                    grant_id=authorization.get("grant_id"),
+                    sqlite_access_mode=authorization.get("sqlite_access_mode"),
+                )
+                payload.update(
+                    {
+                        "phase": "outcome",
+                        "status": "failed",
+                        "sql_digest": sql_digest,
+                        "row_count": 0,
+                        "duration_ms": int((_time.monotonic() - started_at) * 1000),
+                        "error_code": exc.code,
+                    }
+                )
+                await self._record_runtime_bridge_sqlite_event_best_effort(
+                    workspace_id=target_workspace_id,
+                    user_id=leased_by_user_id,
+                    session_id=session_id,
+                    payload=payload,
+                )
+                raise
+            except Exception:
+                payload = self._build_runtime_bridge_sqlite_audit_payload(
+                    source_workspace_id=workspace_id,
+                    target_workspace_id=target_workspace_id,
+                    session_id=session_id,
+                    leased_by_user_id=leased_by_user_id,
+                    operation="query",
+                    grant_id=authorization.get("grant_id"),
+                    sqlite_access_mode=authorization.get("sqlite_access_mode"),
+                )
+                payload.update(
+                    {
+                        "phase": "outcome",
+                        "status": "failed",
+                        "sql_digest": sql_digest,
+                        "row_count": 0,
+                        "duration_ms": int((_time.monotonic() - started_at) * 1000),
+                        "error_code": "query_failed",
+                    }
+                )
+                await self._record_runtime_bridge_sqlite_event_best_effort(
+                    workspace_id=target_workspace_id,
+                    user_id=leased_by_user_id,
+                    session_id=session_id,
+                    payload=payload,
+                )
+                raise
 
-        payload = self._build_runtime_bridge_sqlite_audit_payload(
-            source_workspace_id=workspace_id,
-            target_workspace_id=target_workspace_id,
-            session_id=session_id,
-            leased_by_user_id=leased_by_user_id,
-            operation="query",
-            grant_id=authorization.get("grant_id"),
-            sqlite_access_mode=authorization.get("sqlite_access_mode"),
-        )
-        payload.update(
-            {
-                "phase": "outcome",
-                "status": "succeeded",
-                "sql_digest": sql_digest,
-                "row_count": result.row_count,
-                "duration_ms": int((_time.monotonic() - started_at) * 1000),
-                "error_code": None,
-            }
-        )
-        await self._record_runtime_bridge_sqlite_event_best_effort(
-            workspace_id=target_workspace_id,
-            user_id=leased_by_user_id,
-            session_id=session_id,
-            payload=payload,
-        )
-        return RuntimeBridgeSqliteQueryResponse(
-            target_workspace_id=target_workspace_id,
-            database_name=request.database_name,
-            columns=result.columns,
-            rows=result.rows,
-            row_count=result.row_count,
-            truncated=result.truncated,
-        )
+            payload = self._build_runtime_bridge_sqlite_audit_payload(
+                source_workspace_id=workspace_id,
+                target_workspace_id=target_workspace_id,
+                session_id=session_id,
+                leased_by_user_id=leased_by_user_id,
+                operation="query",
+                grant_id=authorization.get("grant_id"),
+                sqlite_access_mode=authorization.get("sqlite_access_mode"),
+            )
+            payload.update(
+                {
+                    "phase": "outcome",
+                    "status": "succeeded",
+                    "sql_digest": sql_digest,
+                    "row_count": result.row_count,
+                    "duration_ms": int((_time.monotonic() - started_at) * 1000),
+                    "error_code": None,
+                }
+            )
+            await self._record_runtime_bridge_sqlite_event_best_effort(
+                workspace_id=target_workspace_id,
+                user_id=leased_by_user_id,
+                session_id=session_id,
+                payload=payload,
+            )
+            return RuntimeBridgeSqliteQueryResponse(
+                target_workspace_id=target_workspace_id,
+                database_name=request.database_name,
+                columns=result.columns,
+                rows=result.rows,
+                row_count=result.row_count,
+                truncated=result.truncated,
+            )
 
     async def mutate_runtime_bridge_sqlite(
         self,
@@ -22533,7 +22639,6 @@ class UserSpaceService:
                 )
             raise
 
-        files_dir = self._workspace_files_dir(target_workspace_id)
         started_at = _time.monotonic()
         base_payload = self._build_runtime_bridge_sqlite_audit_payload(
             source_workspace_id=workspace_id,
@@ -22581,51 +22686,23 @@ class UserSpaceService:
                 payload=payload,
             )
 
-        result = await broker.mutate(
-            files_dir,
-            operations,
-            audit_context=CrossWorkspaceSqliteAuditIdentityContext(
-                actor_id=leased_by_user_id,
-                request_id=session_id,
-            ),
-            audit_intent_callback=_audit_intent,
-            audit_outcome_callback=_audit_outcome,
-        )
+        async with sqlite_workspace_access(target_workspace_id) as files_dir:
+            result = await broker.mutate(
+                files_dir,
+                operations,
+                audit_context=CrossWorkspaceSqliteAuditIdentityContext(
+                    actor_id=leased_by_user_id,
+                    request_id=session_id,
+                ),
+                audit_intent_callback=_audit_intent,
+                audit_outcome_callback=_audit_outcome,
+            )
 
-        try:
-            await broker.checkpoint(files_dir)
-        except Exception as exc:  # noqa: BLE001 - committed mutation must still succeed
-            logger.exception(
-                "Runtime bridge SQLite checkpoint failed for workspace %s",
-                target_workspace_id,
-            )
-            payload = dict(base_payload)
-            payload.update(
-                {
-                    "phase": "post_commit_failure",
-                    "fingerprint": result.fingerprint,
-                    "operation_count": len(result.operations),
-                    "status": "committed",
-                    "error_code": "checkpoint_failed",
-                }
-            )
-            await self._record_runtime_bridge_sqlite_event_best_effort(
-                workspace_id=target_workspace_id,
-                user_id=leased_by_user_id,
-                session_id=session_id,
-                payload=payload,
-            )
-        else:
             try:
-                await self.create_snapshot(
-                    target_workspace_id,
-                    leased_by_user_id,
-                    "Runtime bridge SQLite mutation",
-                    auto_sync_to_scm=False,
-                )
-            except Exception:  # noqa: BLE001 - committed mutation must still succeed
+                await broker.checkpoint(files_dir)
+            except Exception as exc:  # noqa: BLE001 - committed mutation must still succeed
                 logger.exception(
-                    "Runtime bridge SQLite snapshot failed for workspace %s",
+                    "Runtime bridge SQLite checkpoint failed for workspace %s",
                     target_workspace_id,
                 )
                 payload = dict(base_payload)
@@ -22635,7 +22712,7 @@ class UserSpaceService:
                         "fingerprint": result.fingerprint,
                         "operation_count": len(result.operations),
                         "status": "committed",
-                        "error_code": "snapshot_failed",
+                        "error_code": "checkpoint_failed",
                     }
                 )
                 await self._record_runtime_bridge_sqlite_event_best_effort(
@@ -22644,6 +22721,35 @@ class UserSpaceService:
                     session_id=session_id,
                     payload=payload,
                 )
+            else:
+                try:
+                    await self.create_snapshot(
+                        target_workspace_id,
+                        leased_by_user_id,
+                        "Runtime bridge SQLite mutation",
+                        auto_sync_to_scm=False,
+                    )
+                except Exception:  # noqa: BLE001 - committed mutation must still succeed
+                    logger.exception(
+                        "Runtime bridge SQLite snapshot failed for workspace %s",
+                        target_workspace_id,
+                    )
+                    payload = dict(base_payload)
+                    payload.update(
+                        {
+                            "phase": "post_commit_failure",
+                            "fingerprint": result.fingerprint,
+                            "operation_count": len(result.operations),
+                            "status": "committed",
+                            "error_code": "snapshot_failed",
+                        }
+                    )
+                    await self._record_runtime_bridge_sqlite_event_best_effort(
+                        workspace_id=target_workspace_id,
+                        user_id=leased_by_user_id,
+                        session_id=session_id,
+                        payload=payload,
+                    )
 
         return RuntimeBridgeSqliteMutationResponse(
             target_workspace_id=target_workspace_id,
@@ -24199,11 +24305,12 @@ SELECT json_build_object(
             promote_mode=True,
             ensure_files_dir=True,
         )
-        database_summary = await asyncio.to_thread(
-            sqlite_inspector_helpers.initialize_database,
-            files_dir,
-            resolved_database_name,
-        )
+        async with sqlite_workspace_access(database_context.owner_workspace_id) as files_dir:
+            database_summary = await asyncio.to_thread(
+                sqlite_inspector_helpers.initialize_database,
+                files_dir,
+                resolved_database_name,
+            )
         summary = self._build_sqlite_inspector_database_summary(
             database_name=database_summary.name,
             owner_workspace_id=database_context.owner_workspace_id,
@@ -24241,7 +24348,8 @@ SELECT json_build_object(
         )
         if not summary.initialized:
             raise HTTPException(status_code=404, detail="Database not found")
-        await asyncio.to_thread(sqlite_inspector_helpers.delete_database, files_dir, database_name)
+        async with sqlite_workspace_access(summary.owner_workspace_id) as files_dir:
+            await asyncio.to_thread(sqlite_inspector_helpers.delete_database, files_dir, database_name)
         await self._record_linked_sqlite_mutation_best_effort(
             source_workspace_id=workspace_id,
             target_workspace_id=summary.owner_workspace_id,
@@ -24290,12 +24398,55 @@ SELECT json_build_object(
             is_admin=is_admin,
             promote_mode=True,
         )
-        database_summary = await asyncio.to_thread(
-            sqlite_inspector_helpers.import_database_file,
-            files_dir,
-            database_name,
-            source_path,
-        )
+        from ragtime.userspace.sqlite_history import get_sqlite_history_service
+        from runtime.core.secure_files import SecureFileError, delete_file, ensure_directory, publish_regular_file, stat_regular_file
+
+        async with sqlite_workspace_access(database_context.owner_workspace_id, maintenance=True) as files_dir:
+            # Capture performs its own no-follow enumeration; requesting a
+            # missing database is harmless, while a symlinked target must
+            # never be probed through Path.exists().
+            await get_sqlite_history_service().capture_workspace_databases(
+                database_context.owner_workspace_id,
+                trigger="pre_restore",
+                mandatory=True,
+                database_names={database_name},
+                files_dir=files_dir,
+            )
+            with tempfile.TemporaryDirectory(prefix="ragtime-sqlite-import-") as staging_name:
+                staging = Path(staging_name)
+                # Validate uploaded bytes in a private tree first.  The final
+                # workspace publication uses descriptor-relative no-follow I/O
+                # rather than sqlite_inspector's path-based replace helper.
+                await asyncio.to_thread(
+                    sqlite_inspector_helpers.import_database_file,
+                    staging,
+                    database_name,
+                    source_path,
+                )
+                try:
+                    await asyncio.to_thread(ensure_directory, files_dir, ".ragtime/db")
+                    await asyncio.to_thread(
+                        publish_regular_file,
+                        staging,
+                        f".ragtime/db/{database_name}",
+                        files_dir,
+                        f".ragtime/db/{database_name}",
+                    )
+                    for suffix in ("-wal", "-shm", "-journal"):
+                        await asyncio.to_thread(delete_file, files_dir, f".ragtime/db/{database_name}{suffix}")
+                except SecureFileError as exc:
+                    raise HTTPException(status_code=409, detail="SQLite import target is unsafe") from exc
+            try:
+                details = await asyncio.to_thread(stat_regular_file, files_dir, f".ragtime/db/{database_name}")
+            except SecureFileError as exc:
+                raise HTTPException(status_code=409, detail="SQLite import target is unsafe") from exc
+            database_summary = sqlite_inspector_helpers.DatabaseSummary(
+                name=database_name,
+                relative_path=f"{sqlite_inspector_helpers.MANAGED_DB_DIRNAME}/{database_name}",
+                size_bytes=details.st_size,
+                table_count=0,
+                last_modified_ms=int(details.st_mtime * 1000),
+            )
         summary = self._build_sqlite_inspector_database_summary(
             database_name=database_summary.name,
             owner_workspace_id=database_context.owner_workspace_id,
@@ -24361,14 +24512,15 @@ SELECT json_build_object(
             promote_mode=True,
             ensure_files_dir=True,
         )
-        summary = await asyncio.to_thread(
-            sqlite_inspector_helpers.create_table,
-            files_dir,
-            database_name,
-            table_name,
-            columns,
-            without_rowid=without_rowid,
-        )
+        async with sqlite_workspace_access(database_context.owner_workspace_id) as files_dir:
+            summary = await asyncio.to_thread(
+                sqlite_inspector_helpers.create_table,
+                files_dir,
+                database_name,
+                table_name,
+                columns,
+                without_rowid=without_rowid,
+            )
         await self._record_linked_sqlite_mutation_best_effort(
             source_workspace_id=workspace_id,
             target_workspace_id=database_context.owner_workspace_id,
@@ -24425,13 +24577,14 @@ SELECT json_build_object(
             is_admin=is_admin,
             promote_mode=True,
         )
-        schema = await asyncio.to_thread(
-            sqlite_inspector_helpers.apply_table_alterations,
-            files_dir,
-            database_name,
-            table_name,
-            alterations,
-        )
+        async with sqlite_workspace_access(database_context.owner_workspace_id) as files_dir:
+            schema = await asyncio.to_thread(
+                sqlite_inspector_helpers.apply_table_alterations,
+                files_dir,
+                database_name,
+                table_name,
+                alterations,
+            )
         await self._record_linked_sqlite_mutation_best_effort(
             source_workspace_id=workspace_id,
             target_workspace_id=database_context.owner_workspace_id,
@@ -24460,12 +24613,13 @@ SELECT json_build_object(
             is_admin=is_admin,
             promote_mode=True,
         )
-        await asyncio.to_thread(
-            sqlite_inspector_helpers.drop_table,
-            files_dir,
-            database_name,
-            table_name,
-        )
+        async with sqlite_workspace_access(database_context.owner_workspace_id) as files_dir:
+            await asyncio.to_thread(
+                sqlite_inspector_helpers.drop_table,
+                files_dir,
+                database_name,
+                table_name,
+            )
         await self._record_linked_sqlite_mutation_best_effort(
             source_workspace_id=workspace_id,
             target_workspace_id=database_context.owner_workspace_id,
@@ -24523,14 +24677,15 @@ SELECT json_build_object(
             is_admin=is_admin,
             promote_mode=True,
         )
-        summary = await asyncio.to_thread(
-            sqlite_inspector_helpers.import_table_csv,
-            files_dir,
-            database_name,
-            table_name,
-            csv_text,
-            replace=replace,
-        )
+        async with sqlite_workspace_access(database_context.owner_workspace_id) as files_dir:
+            summary = await asyncio.to_thread(
+                sqlite_inspector_helpers.import_table_csv,
+                files_dir,
+                database_name,
+                table_name,
+                csv_text,
+                replace=replace,
+            )
         await self._record_linked_sqlite_mutation_best_effort(
             source_workspace_id=workspace_id,
             target_workspace_id=database_context.owner_workspace_id,
@@ -24595,13 +24750,14 @@ SELECT json_build_object(
             is_admin=is_admin,
             promote_mode=True,
         )
-        row = await asyncio.to_thread(
-            sqlite_inspector_helpers.insert_row,
-            files_dir,
-            database_name,
-            table_name,
-            values,
-        )
+        async with sqlite_workspace_access(summary.owner_workspace_id) as files_dir:
+            row = await asyncio.to_thread(
+                sqlite_inspector_helpers.insert_row,
+                files_dir,
+                database_name,
+                table_name,
+                values,
+            )
         await self._record_linked_sqlite_mutation_best_effort(
             source_workspace_id=workspace_id,
             target_workspace_id=summary.owner_workspace_id,
@@ -24632,14 +24788,15 @@ SELECT json_build_object(
             is_admin=is_admin,
             promote_mode=True,
         )
-        row = await asyncio.to_thread(
-            sqlite_inspector_helpers.update_row,
-            files_dir,
-            database_name,
-            table_name,
-            row_key,
-            values,
-        )
+        async with sqlite_workspace_access(summary.owner_workspace_id) as files_dir:
+            row = await asyncio.to_thread(
+                sqlite_inspector_helpers.update_row,
+                files_dir,
+                database_name,
+                table_name,
+                row_key,
+                values,
+            )
         await self._record_linked_sqlite_mutation_best_effort(
             source_workspace_id=workspace_id,
             target_workspace_id=summary.owner_workspace_id,
@@ -24669,13 +24826,14 @@ SELECT json_build_object(
             is_admin=is_admin,
             promote_mode=True,
         )
-        await asyncio.to_thread(
-            sqlite_inspector_helpers.delete_row,
-            files_dir,
-            database_name,
-            table_name,
-            row_key,
-        )
+        async with sqlite_workspace_access(summary.owner_workspace_id) as files_dir:
+            await asyncio.to_thread(
+                sqlite_inspector_helpers.delete_row,
+                files_dir,
+                database_name,
+                table_name,
+                row_key,
+            )
         await self._record_linked_sqlite_mutation_best_effort(
             source_workspace_id=workspace_id,
             target_workspace_id=summary.owner_workspace_id,

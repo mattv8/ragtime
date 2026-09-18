@@ -155,6 +155,53 @@ describe('git webhook client normalization', () => {
   });
 });
 
+describe('SQLite history API client', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => vi.stubGlobal('fetch', fetchMock));
+  afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
+
+  it('uses the exact list and preview request contracts', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ workspace_id: 'ws/1', backups: [], can_manage: true }))
+      .mockResolvedValueOnce(jsonResponse({ preview_id: null, backup_id: 'backup/1', database_name: 'app.sqlite3', mode: 'merge', conflict_policy: 'keep_current', tables: [], migrations_applied: [], warnings: [], blockers: ['blocked'], can_apply: false, expires_at: null }));
+
+    await api.listUserSpaceSqliteHistory('ws/1', { databaseName: 'app.sqlite3', snapshotId: 'snap/1' });
+    await api.previewUserSpaceSqliteHistory('ws/1', 'backup/1', { mode: 'merge', conflict_policy: 'keep_current' });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/indexes/userspace/workspaces/ws%2F1/sqlite-history?database_name=app.sqlite3&snapshot_id=snap%2F1', expect.any(Object));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/indexes/userspace/workspaces/ws%2F1/sqlite-history/backup%2F1/preview', expect.objectContaining({ method: 'POST', body: JSON.stringify({ mode: 'merge', conflict_policy: 'keep_current' }) }));
+  });
+
+  it('uses the capture, download, delete, restore, and recovery request contracts', async () => {
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:sqlite-history'),
+      revokeObjectURL: vi.fn(),
+    } as Partial<typeof URL>);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ backup: { id: 'backup/1' } }))
+      .mockResolvedValueOnce(new Response('sqlite bytes', { status: 200, headers: { 'content-disposition': 'attachment; filename="app.sqlite3"' } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true }))
+      .mockResolvedValueOnce(jsonResponse({ operation_id: 'operation/1', restored_backup_id: 'backup/1', safety_backup_id: 'safety/1', runtime_stopped: true, status: 'completed' }))
+      .mockResolvedValueOnce(jsonResponse({ operation_id: 'operation/1', status: 'aborted' }));
+
+    await api.captureUserSpaceSqliteHistory('ws/1', 'app.sqlite3');
+    await api.downloadUserSpaceSqliteHistory('ws/1', 'backup/1');
+    await api.deleteUserSpaceSqliteHistory('ws/1', 'backup/1');
+    await api.restoreUserSpaceSqliteHistory('ws/1', 'preview/1');
+    await api.recoverUserSpaceSqliteHistoryMaintenance('ws/1', 'operation/1', 'abort');
+
+    const base = '/indexes/userspace/workspaces/ws%2F1/sqlite-history';
+    expect(fetchMock).toHaveBeenNthCalledWith(1, base, expect.objectContaining({ method: 'POST', body: JSON.stringify({ database_name: 'app.sqlite3' }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, `${base}/backup%2F1/download`, expect.any(Object));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, `${base}/backup%2F1`, expect.objectContaining({ method: 'DELETE' }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, `${base}/restore`, expect.objectContaining({ method: 'POST', body: JSON.stringify({ preview_id: 'preview/1' }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(5, `${base}/maintenance/operation%2F1/recover`, expect.objectContaining({ method: 'POST', body: JSON.stringify({ action: 'abort' }) }));
+    clickSpy.mockRestore();
+  });
+});
+
 describe('PDM webhook client', () => {
   const fetchMock = vi.fn<typeof fetch>();
 

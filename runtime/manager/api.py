@@ -37,6 +37,8 @@ from runtime.manager.models import (
     RuntimeWorkspaceFileListResponse,
     RuntimeWorkspaceGitCommandRequest,
     RuntimeWorkspaceGitCommandResponse,
+    RuntimeWorkspaceMaintenanceRequest,
+    RuntimeWorkspaceMaintenanceResponse,
     RuntimeWorkspaceScmStatusResponse,
     StartSessionRequest,
 )
@@ -124,6 +126,20 @@ def create_app() -> FastAPI:
         _auth: None = ManagerAuth,
     ) -> RuntimeManagerMaintenanceLeaseResponse:
         return await manager.renew_maintenance_lease(lease_id, request)
+
+    @application.post("/workspaces/{workspace_id}/sqlite-maintenance", response_model=RuntimeWorkspaceMaintenanceResponse)
+    async def acquire_sqlite_workspace_maintenance(
+        workspace_id: str,
+        request: RuntimeWorkspaceMaintenanceRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeWorkspaceMaintenanceResponse:
+        return await manager.acquire_sqlite_workspace_maintenance(workspace_id, request)
+
+    @application.delete("/workspaces/{workspace_id}/sqlite-maintenance/{lease_id}", status_code=204)
+    async def release_sqlite_workspace_maintenance(
+        workspace_id: str, lease_id: str, _auth: None = ManagerAuth
+    ) -> None:
+        await manager.release_sqlite_workspace_maintenance(workspace_id, lease_id)
 
     @application.get("/sessions/{provider_session_id}", response_model=RuntimeSessionResponse)
     async def get_session(

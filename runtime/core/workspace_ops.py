@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import posixpath
+import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,52 @@ PLATFORM_MANAGED_GITIGNORE_PATTERNS = (
     ".ragtime/runtime-bootstrap.json",
     ".ragtime/.runtime-bootstrap.done",
 )
+
+
+def is_managed_sqlite_artifact(relative_path: str | Path) -> bool:
+    """Whether a workspace-relative path is a managed SQLite main file/sidecar.
+
+    Managed databases intentionally have no subdirectories: migration source is
+    ordinary workspace code and database-looking files elsewhere are not ours.
+    """
+    path = Path(str(relative_path).replace("\\", "/"))
+    if path.is_absolute() or path.parts[:2] != (".ragtime", "db") or len(path.parts) != 3:
+        return False
+    filename = path.name.lower()
+    if Path(filename).suffix in SQLITE_FILE_EXTENSIONS:
+        return True
+    for extension in SQLITE_FILE_EXTENSIONS:
+        if filename.endswith(extension + "-wal") or filename.endswith(extension + "-shm") or filename.endswith(extension + "-journal"):
+            return True
+    return False
+
+
+def iter_managed_sqlite_database_paths(workspace_files_dir: Path) -> list[Path]:
+    """Return sorted direct managed database main files, never sidecars.
+
+    Enumeration deliberately opens the `.ragtime/db` chain through no-follow
+    descriptors.  A directory symlink must not turn a harmless catalogue scan
+    into host filesystem disclosure.
+    """
+    from runtime.core.secure_files import SecureFileError, open_directory
+
+    try:
+        with open_directory(workspace_files_dir, ".ragtime/db") as database_fd:
+            names: list[str] = []
+            for name in os.listdir(database_fd):
+                try:
+                    details = os.stat(name, dir_fd=database_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if (
+                    stat.S_ISREG(details.st_mode)
+                    and is_managed_sqlite_artifact(f".ragtime/db/{name}")
+                    and Path(name).suffix.lower() in SQLITE_FILE_EXTENSIONS
+                ):
+                    names.append(name)
+    except (FileNotFoundError, SecureFileError, OSError):
+        return []
+    return [workspace_files_dir / ".ragtime" / "db" / name for name in sorted(names)]
 
 
 @dataclass(frozen=True, slots=True)

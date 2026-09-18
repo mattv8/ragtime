@@ -32,6 +32,7 @@ import type {
 } from '@/types';
 
 import { DeleteConfirmButton } from '../DeleteConfirmButton';
+import { DatabaseHistoryPanel } from './DatabaseHistoryPanel';
 import { ToastContainer, useToast } from './Toast';
 
 const COLUMN_TYPES: SqliteInspectorColumnType[] = ['TEXT', 'INTEGER', 'REAL', 'NUMERIC', 'BLOB'];
@@ -45,6 +46,7 @@ interface WorkspaceSqliteInspectorModalProps {
   workspaceId: string | null;
   workspaceName?: string;
   canEdit: boolean;
+  canManageHistory?: boolean;
   onClose: () => void;
   onPersistencePromoted?: (workspaceId: string) => void;
 }
@@ -285,6 +287,7 @@ export function WorkspaceSqliteInspectorModal({
   workspaceId,
   workspaceName,
   canEdit,
+  canManageHistory = false,
   onClose,
   onPersistencePromoted,
 }: WorkspaceSqliteInspectorModalProps) {
@@ -1375,6 +1378,15 @@ export function WorkspaceSqliteInspectorModal({
             >
               <ArrowLeft size={14} />
             </button>
+          )}
+          {workspaceId && (
+            <DatabaseHistoryPanel
+              workspaceId={workspaceId}
+              ownerOrAdmin={canManageHistory && selectedDatabase?.ownership !== 'linked'}
+              databaseName={selectedDatabase?.name}
+              triggerLabel="History"
+              hostId="inspector"
+            />
           )}
         </div>
 

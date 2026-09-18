@@ -1102,6 +1102,21 @@ def _reconcile_workspace_copy(spec: SandboxSpec, *, label: str, prefer_source: b
     )
 
 
+def reconcile_stopped_workspace_mirror(spec: SandboxSpec) -> None:
+    """Reconcile a stopped chroot mirror before SQLite maintenance publishes."""
+    _reconcile_workspace_copy(spec, label="sqlite-maintenance", prefer_source=True)
+
+
+def archive_workspace_mirror(spec: SandboxSpec) -> None:
+    """Archive a stale chroot mirror so a later provision cannot source-win it."""
+    mirror = spec.rootfs_path / spec.sandbox_workspace.lstrip("/")
+    if not mirror.exists():
+        return
+    archive = _safe_legacy_archive_path(spec.rootfs_path.parent, "sqlite-maintenance")
+    mirror.rename(archive)
+    _ensure_real_directory(mirror)
+
+
 def provision_rootfs(spec: SandboxSpec) -> None:
     """Create the rootfs directory tree for a workspace sandbox.
 

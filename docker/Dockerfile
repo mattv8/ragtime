@@ -189,6 +189,7 @@ WORKDIR /ragtime
 COPY --chown=ragtime:ragtime prisma/ /ragtime/prisma/
 RUN python -m prisma generate && chown -R ragtime:ragtime /ragtime/prisma
 COPY --chown=ragtime:ragtime ragtime/ /ragtime/ragtime/
+COPY --chown=ragtime:ragtime runtime/ /ragtime/runtime/
 COPY --chown=ragtime:ragtime scripts/chat_branch_fixture.py /ragtime/scripts/chat_branch_fixture.py
 COPY --from=frontend-builder --chown=ragtime:ragtime /frontend/dist /ragtime/ragtime/frontend/dist/
 COPY docker/entrypoint.sh /entrypoint.sh
