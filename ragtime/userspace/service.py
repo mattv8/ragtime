@@ -290,7 +290,8 @@ from ragtime.userspace.models import (
 )
 from ragtime.userspace.object_storage import client as object_storage_client
 from ragtime.userspace.object_storage import control as object_storage_control
-from ragtime.userspace.object_storage.legacy_migration import LegacyMigrationError, LegacyObjectStorageMigrator
+from ragtime.userspace.object_storage.legacy_coordinator import LegacyObjectStorageCoordinator
+from ragtime.userspace.object_storage.legacy_migration import LegacyObjectStorageMigrator
 from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
 from ragtime.userspace.sqlite_import import SqlImportResult
 from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
@@ -1509,16 +1510,17 @@ class UserSpaceService:
             self._base_dir / "_object_storage",
             self._workspace_dir,
         )
-        self._legacy_object_storage_reconciliation_task: asyncio.Task[None] | None = None
-        self._legacy_object_storage_reconciliation_lock = asyncio.Lock()
-        self._legacy_object_storage_pipeline = asyncio.Semaphore(1)
-        self._legacy_object_storage_workspace_locks: dict[str, asyncio.Lock] = {}
-        self._legacy_object_storage_workspace_tasks: dict[str, asyncio.Task[None]] = {}
-        self._legacy_object_storage_terminal_workspaces: set[str] = set()
-        self._legacy_object_storage_active_workspace: str | None = None
-        self._legacy_object_storage_admission_changed = asyncio.Event()
-        self._legacy_object_storage_admission_changed.set()
-        self._legacy_object_storage_reported_orphans: set[str] = set()
+        self._legacy_object_storage_coordinator = LegacyObjectStorageCoordinator(
+            self._legacy_object_storage_migrator,
+            workspace_ids=lambda: self._legacy_object_storage_workspace_ids(),
+            runtime_active=lambda workspace_id: self._legacy_object_storage_runtime_active(workspace_id),
+            legacy_payload=lambda workspace_id: self._legacy_object_storage_payload(workspace_id),
+            config_path=self._workspace_object_storage_config_path,
+            workspaces_dir=self._workspaces_dir,
+            logger=logger,
+        )
+        # Compatibility for callers/tests which observe outstanding lazy work.
+        self._legacy_object_storage_workspace_tasks = self._legacy_object_storage_coordinator.workspace_tasks
         self._execution_proofs: dict[str, dict[str, _ExecutionProofRecord]] = {}
         self._live_data_execution_warnings: dict[str, _LiveDataExecutionWarningRecord] = {}
         self._runtime_bridge_sqlite_rate_limits: dict[tuple[str, str], _RuntimeBridgeSqliteRateLimitBucket] = {}
@@ -7236,197 +7238,36 @@ class UserSpaceService:
 
         return await userspace_runtime_service.has_active_or_stopping_workspace_session(workspace_id)
 
+    async def _legacy_object_storage_workspace_ids(self) -> list[str]:
+        db = await get_db()
+        workspaces = await db.workspace.find_many(order={"id": "asc"})
+        return [workspace_id for workspace in workspaces if (workspace_id := str(getattr(workspace, "id", "") or ""))]
+
+    # Thin adapters preserve internal compatibility while scheduling lives in
+    # the focused coordinator.
     def _legacy_object_storage_needs_reconciliation(self, workspace_id: str) -> bool:
-        receipts = self._legacy_object_storage_migrator._load_receipts(workspace_id)
-        if any(receipt.get("cleanup_state") == "consumed" for receipt in receipts):
-            return False
-        if any(receipt.get("cleanup_state") != "consumed" for receipt in receipts):
-            return True
-        if workspace_id in self._legacy_object_storage_terminal_workspaces:
-            return False
-        if self._legacy_object_storage_migrator.source_buckets(workspace_id).exists():
-            return True
-        # Legacy config is checked once against the gateway after startup.  The
-        # completed/ready report-only cases become terminal in the processor.
-        return self._workspace_object_storage_config_path(workspace_id).is_file()
+        return self._legacy_object_storage_coordinator.needs_reconciliation(workspace_id)
 
     async def _reconcile_legacy_object_storage(self, workspace_id: str) -> bool:
-        """Advance one globally admitted workspace through durable completion."""
-        try:
-            if self._legacy_object_storage_active_workspace is not None and self._legacy_object_storage_active_workspace != workspace_id:
-                # One loop tick must never wait behind a pending workspace: it
-                # needs to return so the next tick can poll the active job.
-                return False
-            if self._legacy_object_storage_active_workspace is None:
-                self._legacy_object_storage_active_workspace = workspace_id
-                self._legacy_object_storage_admission_changed.clear()
-            lock = self._legacy_object_storage_workspace_locks.setdefault(workspace_id, asyncio.Lock())
-            async with lock:
-                from ragtime.userspace.object_storage.legacy_migration import workspace_gc_fence
-
-                async with workspace_gc_fence(workspace_id):
-                    result = await self._legacy_object_storage_migrator.reconcile(
-                        workspace_id,
-                        runtime_active=await self._legacy_object_storage_runtime_active(workspace_id),
-                    )
-            unfinished = await asyncio.to_thread(self._legacy_object_storage_needs_reconciliation, workspace_id)
-            if not unfinished:
-                self._legacy_object_storage_active_workspace = None
-                self._legacy_object_storage_admission_changed.set()
-            return result
-        except (LegacyMigrationError, HTTPException) as exc:
-            # A stage error before receipt publication has no durable job to
-            # reserve the global pipeline.  Let later workspaces proceed.
-            receipts = await asyncio.to_thread(self._legacy_object_storage_migrator._load_receipts, workspace_id)
-            if not any(receipt.get("cleanup_state") != "consumed" for receipt in receipts):
-                self._legacy_object_storage_active_workspace = None
-                self._legacy_object_storage_admission_changed.set()
-            logger.warning("Legacy object-storage migration deferred for workspace=%s: %s", workspace_id, exc)
-            raise HTTPException(status_code=503, detail="Object storage migration in progress") from exc
+        return await self._legacy_object_storage_coordinator.reconcile(workspace_id)
 
     def _enqueue_legacy_object_storage_reconciliation(self, workspace_id: str) -> None:
-        task = self._legacy_object_storage_workspace_tasks.get(workspace_id)
-        if task is not None and not task.done():
-            return
-
-        async def run() -> None:
-            try:
-                await self._process_legacy_object_storage(workspace_id)
-            except HTTPException:
-                pass
-
-        task = asyncio.create_task(run(), name=f"legacy-object-storage-{workspace_id}")
-        self._legacy_object_storage_workspace_tasks[workspace_id] = task
+        self._legacy_object_storage_coordinator.enqueue(workspace_id)
 
     async def _process_legacy_object_storage(self, workspace_id: str) -> bool:
-        """Background-only migration advancement; never invoked by an HTTP read."""
-        if not await asyncio.to_thread(self._legacy_object_storage_needs_reconciliation, workspace_id):
-            return True
-        receipts = await asyncio.to_thread(self._legacy_object_storage_migrator._load_receipts, workspace_id)
-        unfinished = any(receipt.get("cleanup_state") != "consumed" for receipt in receipts)
-        try:
-            config = await object_storage_control.get_workspace(workspace_id)
-        except HTTPException as exc:
-            if exc.status_code != 404:
-                raise
-            legacy = await asyncio.to_thread(self._legacy_object_storage_payload, workspace_id)
-            if legacy is None:
-                raise HTTPException(status_code=503, detail="Object storage migration in progress") from exc
-            await object_storage_control.ensure_workspace(workspace_id, legacy)
-            return await self._reconcile_legacy_object_storage(workspace_id)
-
-        legacy_state = str(config.get("legacy_import_state") or "")
-        if legacy_state == "completed":
-            if unfinished:
-                # Reconcile validates the receipt identity before it ever GC's.
-                return await self._reconcile_legacy_object_storage(workspace_id)
-            logger.warning("Retaining legacy object-storage source without bound receipt workspace=%s", workspace_id)
-            self._legacy_object_storage_terminal_workspaces.add(workspace_id)
-            return True
-        if config.get("state") == "ready" and not legacy_state:
-            logger.warning("Retaining ambiguous legacy object-storage source workspace=%s", workspace_id)
-            self._legacy_object_storage_terminal_workspaces.add(workspace_id)
-            return True
-        if not unfinished and await asyncio.to_thread(self._legacy_object_storage_payload, workspace_id) is None:
-            # Gateway pending/failed state with no registered source is fenced.
-            raise HTTPException(status_code=503, detail="Object storage migration in progress")
-        return await self._reconcile_legacy_object_storage(workspace_id)
+        return await self._legacy_object_storage_coordinator.process(workspace_id)
 
     async def schedule_legacy_object_storage_reconciliation(self) -> None:
-        """Start post-readiness reconciliation; gateway startup depends on this app."""
-        async with self._legacy_object_storage_reconciliation_lock:
-            if self._legacy_object_storage_reconciliation_task and not self._legacy_object_storage_reconciliation_task.done():
-                return
-            self._legacy_object_storage_reconciliation_task = asyncio.create_task(
-                self._legacy_object_storage_reconciliation_loop(), name="legacy-object-storage-reconciliation"
-            )
+        await self._legacy_object_storage_coordinator.start()
 
     async def shutdown_legacy_object_storage_reconciliation(self) -> None:
-        task = self._legacy_object_storage_reconciliation_task
-        self._legacy_object_storage_reconciliation_task = None
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        workspace_tasks = list(self._legacy_object_storage_workspace_tasks.values())
-        self._legacy_object_storage_workspace_tasks.clear()
-        for workspace_task in workspace_tasks:
-            workspace_task.cancel()
-        if workspace_tasks:
-            await asyncio.gather(*workspace_tasks, return_exceptions=True)
-
-    def _legacy_object_storage_unfinished_ids(self, workspace_ids: list[str]) -> set[str]:
-        return {
-            workspace_id
-            for workspace_id in workspace_ids
-            if any(receipt.get("cleanup_state") != "consumed" for receipt in self._legacy_object_storage_migrator._load_receipts(workspace_id))
-        }
+        await self._legacy_object_storage_coordinator.shutdown()
 
     def _legacy_object_storage_orphan_ids(self, live_workspace_ids: set[str]) -> set[str]:
-        if not self._workspaces_dir.is_dir():
-            return set()
-        return {
-            path.name for path in self._workspaces_dir.iterdir() if path.is_dir() and path.name not in live_workspace_ids and (path / "s3" / "buckets").exists()
-        }
-
-    async def _legacy_object_storage_reconciliation_loop(self) -> None:
-        delay = 2.0
-        while True:
-            try:
-                db = await get_db()
-                workspaces = await db.workspace.find_many(order={"id": "asc"})
-                workspace_ids = [str(getattr(workspace, "id", "") or "") for workspace in workspaces]
-                workspace_ids = [workspace_id for workspace_id in workspace_ids if workspace_id]
-                unfinished = await asyncio.to_thread(self._legacy_object_storage_unfinished_ids, workspace_ids)
-                active = self._legacy_object_storage_active_workspace
-                workspace_ids.sort(key=lambda workspace_id: (0 if workspace_id == active else 1 if workspace_id in unfinished else 2, workspace_id))
-                for workspace_id in workspace_ids:
-                    if not await asyncio.to_thread(self._legacy_object_storage_needs_reconciliation, workspace_id):
-                        continue
-                    try:
-                        await self._process_legacy_object_storage(workspace_id)
-                    except HTTPException:
-                        continue
-                orphans = await asyncio.to_thread(self._legacy_object_storage_orphan_ids, set(workspace_ids))
-                for workspace_id in sorted(orphans - self._legacy_object_storage_reported_orphans):
-                    logger.warning("Retaining orphan legacy object-storage directory workspace=%s", workspace_id)
-                self._legacy_object_storage_reported_orphans.update(orphans)
-                # Pending work is polled promptly.  Once terminal, avoid an
-                # expensive DB/filesystem scan every two seconds.
-                delay = 2.0 if self._legacy_object_storage_active_workspace else 30.0
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("Legacy object-storage reconciliation loop failed: %s", exc)
-                delay = min(max(delay, 30.0) * 2, 60.0)
-            await asyncio.sleep(delay)
+        return self._legacy_object_storage_coordinator.orphan_ids(live_workspace_ids)
 
     async def _ensure_managed_object_storage(self, workspace_id: str) -> dict[str, Any]:
-        """Return ready gateway storage, fencing only unfinished import work."""
-        needs_reconciliation = await asyncio.to_thread(self._legacy_object_storage_needs_reconciliation, workspace_id)
-        try:
-            config = await object_storage_control.get_workspace(workspace_id)
-        except HTTPException as exc:
-            if exc.status_code != 404:
-                raise
-            if not needs_reconciliation:
-                return await object_storage_control.ensure_workspace(workspace_id)
-            self._enqueue_legacy_object_storage_reconciliation(workspace_id)
-            raise HTTPException(status_code=503, detail="Object storage migration in progress") from exc
-        legacy_state = str(config.get("legacy_import_state") or "")
-        if legacy_state in {"pending", "copying", "failed"}:
-            self._enqueue_legacy_object_storage_reconciliation(workspace_id)
-            raise HTTPException(status_code=503, detail="Object storage migration in progress")
-        if legacy_state == "completed" or (config.get("state") == "ready" and not legacy_state):
-            if needs_reconciliation:
-                self._enqueue_legacy_object_storage_reconciliation(workspace_id)
-            return config
-        if not needs_reconciliation:
-            return config
-        self._enqueue_legacy_object_storage_reconciliation(workspace_id)
-        raise HTTPException(status_code=503, detail="Object storage migration in progress")
+        return await self._legacy_object_storage_coordinator.ensure_managed(workspace_id)
 
     @staticmethod
     def _parse_object_storage_datetime(raw_value: Any) -> datetime:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import getpass
 import hashlib
 import hmac
@@ -25,6 +24,7 @@ from urllib.request import Request, urlopen
 
 from ragtime.config.settings import ENCRYPTION_KEY_FILE, settings
 from ragtime.core.backup_crypto import BackupCryptoError, decrypt_stream, encrypt_stream, is_encrypted_backup
+from ragtime.core.file_lock import backup_restore_lock
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -637,14 +637,9 @@ def _read_tty_line(prompt: str) -> str:
 
 @contextmanager
 def locked_operation() -> Iterator[None]:
-    """Serialize backup/restore with userspace storage filesystem transitions."""
-    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with LOCK_PATH.open("a+b") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    """Compatibility wrapper which preserves the patchable local lock path."""
+    with backup_restore_lock(LOCK_PATH):
+        yield
 
 
 # Compatibility for internal callers; new filesystem users import the public helper.
@@ -923,6 +918,7 @@ def _copy_tree_contents(
     destination_dir: Path,
     *,
     replace: bool,
+    preserve_paths: set[Path] | None = None,
     progress: Optional[ProgressCallback] = None,
     progress_phase: str = "files_restore_start",
     progress_start: int = 0,
@@ -941,14 +937,19 @@ def _copy_tree_contents(
         message=progress_message,
     )
     item_count = 0
+    preserved = preserve_paths or set()
     if replace:
         for child in list(destination_dir.iterdir()):
+            if Path(child.name) in preserved:
+                continue
             if child.is_dir() and not child.is_symlink():
                 shutil.rmtree(child)
             else:
                 child.unlink()
     for child in all_children:
         relative = child.relative_to(source_dir)
+        if relative in preserved:
+            continue
         target = destination_dir / relative
         if child.is_dir() and not child.is_symlink():
             target.mkdir(parents=True, exist_ok=True)
@@ -1101,6 +1102,68 @@ def _managed_key_source_path(extract_dir: Path) -> Optional[Path]:
         if candidate.exists():
             return candidate
     return None
+
+
+_PRESERVABLE_DATA_KEY_NAMES = (".encryption_key", ".jwt_secret")
+
+
+def _validate_regular_key(path: Path, *, location: str) -> None:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+        raise BackupValidationError(f"Backup archive contains an invalid {location} key")
+
+
+def _archive_data_key_paths(data_source: Path) -> dict[str, Path]:
+    key_paths: dict[str, Path] = {}
+    for name in _PRESERVABLE_DATA_KEY_NAMES:
+        path = data_source / name
+        if path.exists() or path.is_symlink():
+            _validate_regular_key(path, location="archived")
+            key_paths[name] = path
+    return key_paths
+
+
+def _preserved_destination_key_paths(archived_keys: dict[str, Path]) -> set[Path]:
+    preserved: set[Path] = set()
+    for name in _PRESERVABLE_DATA_KEY_NAMES:
+        if name in archived_keys:
+            continue
+        path = DATA_DIR / name
+        if path.exists() or path.is_symlink():
+            if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+                raise BackupValidationError("Backup restore cannot preserve an unsafe existing key path")
+            preserved.add(Path(name))
+    return preserved
+
+
+def _directory_has_entries(path: Optional[Path]) -> bool:
+    try:
+        return path is not None and path.is_dir() and any(path.iterdir())
+    except OSError:
+        return False
+
+
+def _validate_files_restore_key_policy(
+    *,
+    manifest: BackupManifest,
+    data_source: Path,
+    restored_storage: Optional[Path],
+    replace_data: bool,
+) -> set[Path]:
+    archived_keys = _archive_data_key_paths(data_source)
+    archived_managed_key = archived_keys.get(".encryption_key")
+    if manifest.includes_managed_key and archived_managed_key is None:
+        raise BackupValidationError("Backup archive does not contain a managed encryption key")
+    if archived_managed_key is not None and not ((manifest.encrypted and manifest.includes_managed_key) or manifest.legacy_embedded_key):
+        raise BackupValidationError("Backup archive managed encryption key is not validated")
+
+    preserved = _preserved_destination_key_paths(archived_keys) if replace_data else set()
+    destination_key = DATA_DIR / ".encryption_key"
+    has_authoritative_key = archived_managed_key is not None or Path(".encryption_key") in preserved
+    if not has_authoritative_key and destination_key.exists() and not destination_key.is_symlink():
+        has_authoritative_key = destination_key.is_file() and destination_key.stat().st_size > 0
+    if _directory_has_entries(restored_storage) and not has_authoritative_key:
+        raise BackupValidationError("Keyless initialized object storage restore requires an authoritative key")
+    return preserved
 
 
 def _install_database_only_managed_key(extract_dir: Path) -> None:
@@ -1343,6 +1406,16 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
             raise BackupValidationError("Backup archive does not contain a database dump")
         if restore_scope in {BackupScope.FULL, BackupScope.FILES} and data_source is None:
             raise BackupValidationError("Backup archive does not contain data files")
+        preserved_data_keys: set[Path] = set()
+        if restore_scope in {BackupScope.FULL, BackupScope.FILES}:
+            if data_source is None:
+                raise BackupValidationError("Backup archive does not contain data files")
+            preserved_data_keys = _validate_files_restore_key_policy(
+                manifest=manifest,
+                data_source=data_source,
+                restored_storage=restored_storage,
+                replace_data=options.replace_data,
+            )
         _emit_progress(progress, "validation_complete", progress=44, message="Restore validated; confirmation required", scope=restore_scope.value)
     except (BackupCryptoError, tarfile.TarError, OSError, json.JSONDecodeError) as exc:
         raise BackupValidationError(str(exc)) from exc
@@ -1399,6 +1472,7 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
                         data_source,
                         DATA_DIR,
                         replace=options.replace_data,
+                        preserve_paths=preserved_data_keys,
                         progress=progress,
                         progress_phase="files_restore_start",
                         progress_start=90,

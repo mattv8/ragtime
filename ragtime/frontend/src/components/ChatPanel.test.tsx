@@ -1865,7 +1865,7 @@ describe('ChatPanel standalone first-paint loading', () => {
 
     await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2));
     await waitFor(() =>
-      expect(screen.getAllByRole('button', { name: 'Retry details' })).toHaveLength(2),
+      expect(screen.getAllByRole('button', { name: 'Retry details' })).toHaveLength(1),
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2);

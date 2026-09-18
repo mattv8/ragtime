@@ -16,7 +16,7 @@ from typing import Any, Callable, Iterator
 
 from fastapi import HTTPException
 
-from ragtime.core.server_backup import locked_operation
+from ragtime.core.file_lock import backup_restore_lock as locked_operation
 from ragtime.userspace.object_storage import control
 
 _GENERATION = re.compile(r"^[0-9a-f]{32}$")
@@ -197,6 +197,36 @@ class LegacyObjectStorageMigrator:
     def _validate_receipt(self, workspace_id: str, receipt: dict[str, Any]) -> None:
         generation = receipt.get("generation")
         manifest = receipt.get("manifest")
+        if receipt.get("version") == 2:
+            if (
+                set(receipt)
+                != {
+                    "version",
+                    "workspace_id",
+                    "generation",
+                    "manifest_sha256",
+                    "cleanup_state",
+                    "retained_file_count",
+                    "retained_reasons",
+                }
+                or receipt.get("workspace_id") != workspace_id
+                or not isinstance(generation, str)
+                or not _GENERATION.fullmatch(generation)
+                or not isinstance(receipt.get("manifest_sha256"), str)
+                or not _SHA256.fullmatch(receipt["manifest_sha256"])
+                or receipt.get("cleanup_state") != "consumed"
+                or not isinstance(receipt.get("retained_file_count"), int)
+                or receipt["retained_file_count"] < 0
+                or not isinstance(receipt.get("retained_reasons"), dict)
+                or len(receipt["retained_reasons"]) > 32
+                or any(
+                    not isinstance(reason, str) or not reason or len(reason) > 256 or not isinstance(count, int) or count < 1
+                    for reason, count in receipt["retained_reasons"].items()
+                )
+                or sum(receipt["retained_reasons"].values()) != receipt["retained_file_count"]
+            ):
+                raise LegacyMigrationError("invalid compact legacy migration receipt")
+            return
         if (
             receipt.get("version") != 1
             or receipt.get("workspace_id") != workspace_id
@@ -258,10 +288,33 @@ class LegacyObjectStorageMigrator:
         ):
             raise LegacyMigrationError("invalid cleanup evidence")
 
+    @staticmethod
+    def _compact_consumed_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
+        retained_files = receipt.get("retained_files", {})
+        reasons: dict[str, int] = {}
+        if isinstance(retained_files, dict):
+            for reason in retained_files.values():
+                label = (reason if isinstance(reason, str) and reason else "unspecified retained source")[:256]
+                if label in reasons or len(reasons) < 31:
+                    reasons[label] = reasons.get(label, 0) + 1
+                else:
+                    reasons["other retained sources"] = reasons.get("other retained sources", 0) + 1
+        return {
+            "version": 2,
+            "workspace_id": receipt["workspace_id"],
+            "generation": receipt["generation"],
+            "manifest_sha256": receipt["manifest_sha256"],
+            "cleanup_state": "consumed",
+            "retained_file_count": sum(reasons.values()),
+            "retained_reasons": reasons,
+        }
+
     def _load_receipts(self, workspace_id: str) -> list[dict[str, Any]]:
         self._validate_workspace_id(workspace_id)
         try:
-            with self._receipt_root(workspace_id) as fd:
+            # Restore can replace the receipt tree.  Acquire the shared lock before
+            # opening it so a v1 terminal record is never compacted from a stale fd.
+            with locked_operation(), self._receipt_root(workspace_id) as fd:
                 names = os.listdir(fd)
                 receipts: list[dict[str, Any]] = []
                 for name in sorted(names):
@@ -279,10 +332,21 @@ class LegacyObjectStorageMigrator:
                     if not isinstance(receipt, dict):
                         raise LegacyMigrationError("invalid legacy migration receipt")
                     self._validate_receipt(workspace_id, receipt)
+                    if receipt.get("version") == 1 and receipt.get("cleanup_state") == "consumed":
+                        receipt = self._compact_consumed_receipt(receipt)
+                        self._write_json_atomic(self._receipt_path(workspace_id, generation), receipt)
                     receipts.append(receipt)
                 return receipts
         except FileNotFoundError:
             return []
+
+    def load_receipts(self, workspace_id: str) -> list[dict[str, Any]]:
+        """Load durable receipt identities, compacting historical terminal records."""
+        return self._load_receipts(workspace_id)
+
+    def has_unfinished_receipt(self, workspace_id: str) -> bool:
+        """Whether a receipt still requires import, verification, or source GC."""
+        return any(receipt.get("cleanup_state") != "consumed" for receipt in self._load_receipts(workspace_id))
 
     def _reclaim_tmp_generations(self, workspace_id: str) -> None:
         """Discard only canonical unpublished directories while holding backup flock."""
@@ -378,7 +442,7 @@ class LegacyObjectStorageMigrator:
                     raise LegacyMigrationError("legacy source contains non-regular entry")
 
         walk(root_fd, ())
-        return items
+        return sorted(items, key=lambda item: item[0].as_posix())
 
     def stage(self, workspace_id: str) -> dict[str, Any]:
         """Copy source bytes through pinned no-follow descriptors and publish once."""
@@ -494,20 +558,25 @@ class LegacyObjectStorageMigrator:
                 _fsync(receipt_fd)
             except FileNotFoundError:
                 pass
-            receipt["cleanup_state"] = "consumed"
-            self._write_json_atomic(self._receipt_path(workspace_id, str(receipt["generation"])), receipt)
+            self._write_json_atomic(
+                self._receipt_path(workspace_id, str(receipt["generation"])),
+                self._compact_consumed_receipt(receipt),
+            )
 
     async def reconcile(self, workspace_id: str, *, runtime_active: bool = False) -> bool:
         await self._filesystem(self._reclaim_tmp_generations, workspace_id)
         receipts = await self._filesystem(self._load_receipts, workspace_id)
-        if any(item.get("cleanup_state") == "consumed" for item in receipts):
-            return True
         unreceipted = await self._filesystem(self._unreceipted_generations, workspace_id, receipts)
-        orphan_state = await self._reconcile_unreceipted_generations(workspace_id, unreceipted)
-        if orphan_state is not None:
-            return orphan_state
+        if any(item.get("cleanup_state") == "consumed" for item in receipts):
+            # A terminal identity must not submit a peer generation reintroduced by
+            # restore.  Orphans can still be reclaimed only after gateway proof.
+            await self._reconcile_unreceipted_generations(workspace_id, unreceipted)
+            return True
         receipt = next((item for item in receipts if item.get("cleanup_state") != "consumed"), None)
         if receipt is None:
+            orphan_state = await self._reconcile_unreceipted_generations(workspace_id, unreceipted)
+            if orphan_state is not None:
+                return orphan_state
             receipt = await self._filesystem(self.stage, workspace_id)
         generation, digest = str(receipt["generation"]), str(receipt["manifest_sha256"])
         if receipt.get("cleanup_state") == "published":
@@ -517,6 +586,7 @@ class LegacyObjectStorageMigrator:
             return False
         if status.get("gc_completed"):
             await self._filesystem(self._consume, workspace_id, receipt)
+            await self._reconcile_unreceipted_generations(workspace_id, unreceipted)
             return True
         verified = status.get("verified_files")
         if isinstance(verified, list) and receipt.get("verified_files") != verified:
@@ -528,6 +598,7 @@ class LegacyObjectStorageMigrator:
         if receipt.get("cleanup_state") == "source_gc_completed":
             await control.acknowledge_legacy_gc(workspace_id, generation, digest)
             await self._filesystem(self._consume, workspace_id, receipt)
+            await self._reconcile_unreceipted_generations(workspace_id, unreceipted)
         return True
 
     def _gc_verified(self, workspace_id: str, receipt: dict[str, Any]) -> None:

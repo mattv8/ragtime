@@ -28,11 +28,13 @@ import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 
 /** Private, bearer-protected control endpoint.  It deliberately has no provider credentials in responses. */
 public final class ControlServer implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final int MAX_REQUEST_BODY_BYTES = 1024 * 1024;
     private final Registry registry;
     private final StorageEngine engine;
     private final InetSocketAddress address;
@@ -201,16 +203,23 @@ public final class ControlServer implements AutoCloseable {
         return JSON.createObjectNode().put("success",true).put("workspace_id",id).put("cleanup_state","retained_tombstone");
     }
     private ObjectNode importLegacy(String id, ObjectNode body) {
-        String generation = body.path("generation").asText(), manifestSha = body.path("manifest_sha256").asText();
+        if (!body.path("generation").isTextual() || !body.path("manifest_sha256").isTextual()) {
+            throw new BadRequest(400, "invalid staged import identity");
+        }
+        String generation = body.path("generation").textValue(), manifestSha = body.path("manifest_sha256").textValue();
         if (!generation.matches("[0-9a-f]{32}") || !manifestSha.matches("[0-9a-f]{64}")) throw new BadRequest(400, "invalid staged import identity");
         final boolean[] enqueue={false};
         registry.maintenanceLock().readLock().lock(); registry.workspaceLock(id).writeLock().lock();
         try { registry.mutate(state -> {
             ObjectNode workspace=requiredWorkspace(state,id); if("revoked".equals(workspace.path("state").asText())) throw new BadRequest(404,"workspace not found");
             ObjectNode existing=LegacyImportService.job(state,id);
-            if(existing!=null) { if(!generation.equals(existing.path("generation").asText()) || !manifestSha.equals(existing.path("manifest_sha256").asText())) throw new BadRequest(409,"legacy import identity conflict"); if("failed".equals(existing.path("state").asText())) { existing.put("state","pending").remove("error"); enqueue[0]=true; } return; }
-            if("completed".equals(workspace.path("legacy_import_state").asText()) || !"pending".equals(workspace.path("legacy_import_state").asText()) || !"ready".equals(workspace.path("state").asText())) throw new BadRequest(409,"workspace is not eligible for staged legacy import");
-            ObjectNode job=state.withObject("legacy_import_jobs").putObject(id); job.put("workspace_id",id).put("generation",generation).put("manifest_sha256",manifestSha).put("state","pending").put("gc_completed",false); workspace.put("state","importing"); enqueue[0]=true;
+            if(existing!=null) {
+                if(!generation.equals(existing.path("generation").asText()) || !manifestSha.equals(existing.path("manifest_sha256").asText())) throw new BadRequest(409,"legacy import identity conflict");
+                if("failed".equals(existing.path("state").asText())) { existing.put("state","pending").remove("error"); workspace.put("state", "importing").put("legacy_import_state", "pending"); enqueue[0]=true; }
+                return;
+            }
+            if (!adoptableLegacyWorkspace(workspace) || activeJob(state, id)) throw new BadRequest(409,"workspace is not eligible for staged legacy import");
+            ObjectNode job=state.withObject("legacy_import_jobs").putObject(id); job.put("workspace_id",id).put("generation",generation).put("manifest_sha256",manifestSha).put("state","pending").put("gc_completed",false); workspace.put("state","importing").put("legacy_import_state", "pending"); enqueue[0]=true;
         }); } finally { registry.workspaceLock(id).writeLock().unlock(); registry.maintenanceLock().readLock().unlock(); }
         if(enqueue[0]) migrationExecutor.submit(() -> legacyImports.run(id)); return legacyImportStatus(id);
     }
@@ -223,7 +232,7 @@ public final class ControlServer implements AutoCloseable {
         ObjectNode job = LegacyImportService.job(registry.snapshot(), id); if (job == null) throw new BadRequest(404, "legacy import not found");
         ObjectNode result=JSON.createObjectNode(); for(String field:new String[]{"workspace_id","generation","manifest_sha256","state"}) result.put(field,job.path(field).asText()); result.put("gc_completed",job.path("gc_completed").asBoolean(false));
         if ("completed".equals(job.path("state").asText()) && !job.path("gc_completed").asBoolean(false)) {
-            try { Path evidence=registry.root().resolve("_legacy_imports").resolve(id).resolve(job.path("generation").asText()).resolve("verification.json"); byte[] bytes=Files.readAllBytes(evidence); if(!LegacyImporter.sha256(bytes).equals(job.path("verification_sha256").asText())) throw new IOException("verification evidence mismatch"); JsonNode node=JSON.readTree(bytes); if(!id.equals(node.path("workspace_id").asText()) || !job.path("generation").asText().equals(node.path("generation").asText()) || !job.path("manifest_sha256").asText().equals(node.path("manifest_sha256").asText()) || !node.path("verified_files").isArray()) throw new IOException("invalid verification evidence"); result.set("verified_files",node.path("verified_files")); }
+            try { result.set("verified_files", readVerificationEvidence(id, job)); }
             catch(Exception error) { result.put("verification_evidence_available",false); }
         }
         return result;
@@ -242,6 +251,12 @@ public final class ControlServer implements AutoCloseable {
     }
     private ObjectNode migrations() { ArrayNode jobs = JSON.createArrayNode(); registry.snapshot().path("migrations").elements().forEachRemaining(n -> jobs.add(n.deepCopy())); return JSON.createObjectNode().set("jobs", jobs); }
     private static boolean activeJob(ObjectNode state,String workspaceId) { for(JsonNode job:state.path("migrations")) if(workspaceId.equals(job.path("workspace_id").asText()) && (job.path("state").asText().equals("pending")||job.path("state").asText().equals("copying")||job.path("state").asText().equals("verifying"))) return true; return false; }
+    private static boolean adoptableLegacyWorkspace(ObjectNode workspace) {
+        String state = workspace.path("state").asText();
+        String legacyState = workspace.path("legacy_import_state").asText();
+        return ("ready".equals(state) || "importing".equals(state))
+                && ("pending".equals(legacyState) || "copying".equals(legacyState) || "failed".equals(legacyState));
+    }
     private ObjectNode retryMigration(String id) { registry.mutate(state -> { JsonNode node = state.path("migrations").get(id); if (!(node instanceof ObjectNode job)) throw new IllegalArgumentException("migration not found"); String status = job.path("state").asText(); if (!status.equals("failed") && !status.equals("pending")) throw new IllegalArgumentException("migration cannot be retried"); job.put("state","pending"); job.remove("error"); }); migrationExecutor.submit(() -> migrationService.run(id)); return migrations(); }
     private ObjectNode prepareBackup() {
         BackupLease lease = new BackupLease(registry, engine); if (!backup.compareAndSet(null, lease)) throw new BadRequest(409, "backup is already prepared"); lease.owner.start();
@@ -266,7 +281,48 @@ public final class ControlServer implements AutoCloseable {
     private static void copyPresent(JsonNode from, ObjectNode to, String... names) { for (String name : names) if (from.has(name) && !from.path(name).isNull()) to.put(name, from.path(name).asText()); }
     private static void copyPublic(ObjectNode from, ObjectNode to, String... names) { for (String name : names) if (from.has(name)) to.put(name, from.path(name).asText()); }
     private static String randomHex(int bytes) { byte[] value = new byte[bytes]; RANDOM.nextBytes(value); StringBuilder result = new StringBuilder(bytes*2); for (byte b:value) result.append(String.format("%02x", b)); return result.toString(); }
-    private static ObjectNode readBody(HttpExchange exchange) throws IOException { long length=exchange.getRequestHeaders().getFirst("Content-Length")==null?-1:Long.parseLong(exchange.getRequestHeaders().getFirst("Content-Length")); if(length>1_048_576) throw new BadRequest(413,"request body is too large"); byte[] data=exchange.getRequestBody().readNBytes(1_048_577); if(data.length>1_048_576) throw new BadRequest(413,"request body is too large"); return data.length == 0 ? JSON.createObjectNode() : (ObjectNode) JSON.readTree(data); }
+    private ArrayNode readVerificationEvidence(String workspaceId, ObjectNode job) throws Exception {
+        Path evidence = registry.root().resolve("_legacy_imports").resolve(workspaceId).resolve(job.path("generation").asText()).resolve("verification.json");
+        byte[] bytes = LegacyImporter.readBounded(evidence, LegacyImporter.MAX_MANIFEST_OR_EVIDENCE_BYTES, "verification evidence");
+        if (!LegacyImporter.sha256(bytes).equals(job.path("verification_sha256").asText())) throw new IOException("verification evidence mismatch");
+        JsonNode node = JSON.readTree(bytes);
+        if (!node.isObject() || !node.path("version").isIntegralNumber() || !node.path("version").canConvertToInt() || node.path("version").asInt() != 1
+                || !node.path("workspace_id").isTextual() || !workspaceId.equals(node.path("workspace_id").textValue())
+                || !node.path("generation").isTextual() || !job.path("generation").asText().equals(node.path("generation").textValue())
+                || !node.path("manifest_sha256").isTextual() || !job.path("manifest_sha256").asText().equals(node.path("manifest_sha256").textValue())
+                || !node.path("verified_files").isArray()) throw new IOException("invalid verification evidence");
+        ArrayNode files = (ArrayNode) node.path("verified_files");
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        for (JsonNode file : files) if (!file.isTextual() || !safeEvidencePath(file.textValue()) || !seen.add(file.textValue())) throw new IOException("invalid verification evidence");
+        return files;
+    }
+    private static boolean safeEvidencePath(String path) {
+        return path.matches("buckets/(?:[^/]+/)*[^/]+") && !path.contains("//")
+                && !path.contains("/../") && !path.contains("/./")
+                && !path.endsWith("/..") && !path.endsWith("/.");
+    }
+    private static ObjectNode readBody(HttpExchange exchange) throws IOException {
+        String contentLength = exchange.getRequestHeaders().getFirst("Content-Length");
+        try {
+            if (contentLength != null && Long.parseLong(contentLength) > MAX_REQUEST_BODY_BYTES) throw new BadRequest(413,"request body is too large");
+        } catch (NumberFormatException error) { throw new BadRequest(400, "invalid request body length"); }
+        byte[] data = readBounded(exchange.getRequestBody(), MAX_REQUEST_BODY_BYTES);
+        if (data.length == 0) return JSON.createObjectNode();
+        JsonNode parsed = JSON.readTree(data);
+        if (!(parsed instanceof ObjectNode body)) throw new BadRequest(400, "request body must be an object");
+        return body;
+    }
+    private static byte[] readBounded(java.io.InputStream input, int limit) throws IOException {
+        try (input; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            for (int read; (read = input.read(buffer)) >= 0;) {
+                if (read == 0) continue;
+                if (output.size() > limit - read) throw new BadRequest(413, "request body is too large");
+                output.write(buffer, 0, read);
+            }
+            return output.toByteArray();
+        }
+    }
     private static void respond(HttpExchange exchange, int status, ObjectNode value) throws IOException { byte[] data = JSON.writeValueAsBytes(value); exchange.getResponseHeaders().set("Content-Type", "application/json"); exchange.sendResponseHeaders(status, data.length); exchange.getResponseBody().write(data); }
     private static void error(HttpExchange exchange, int status, String detail) throws IOException { ObjectNode body = JSON.createObjectNode().put("detail", detail); respond(exchange, status, body); }
     private static final class BadRequest extends RuntimeException { final int status; BadRequest(int status, String message) { super(message); this.status=status; } }

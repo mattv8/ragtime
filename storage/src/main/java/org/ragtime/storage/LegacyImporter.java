@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -30,6 +31,8 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 final class LegacyImporter {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final String OBJECT_SUFFIX = "._S3rver_object";
+    static final int MAX_MANIFEST_OR_EVIDENCE_BYTES = 64 * 1024 * 1024;
+    private static final int MAX_METADATA_BYTES = 1024 * 1024;
     private final Registry registry;
     private final StorageEngine engine;
 
@@ -40,13 +43,13 @@ final class LegacyImporter {
         Path generationRoot = registry.root().resolve("_legacy_imports").resolve(workspaceId).resolve(generation);
         Path manifestPath = generationRoot.resolve("manifest.json");
         requireNoSymlinkAncestors(generationRoot); if (Files.isSymbolicLink(manifestPath)) throw new IOException("symlink in staged import");
-        byte[] manifestBytes = Files.readAllBytes(manifestPath);
+        byte[] manifestBytes = readBounded(manifestPath, MAX_MANIFEST_OR_EVIDENCE_BYTES, "staged manifest");
         if (!sha256(manifestBytes).equals(manifestSha256)) throw new IOException("staged manifest digest mismatch");
         JsonNode manifest = JSON.readTree(manifestBytes);
         validateManifest(manifest, workspaceId, generation);
         Path buckets = generationRoot.resolve("buckets");
         if (!Files.isDirectory(buckets, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(generationRoot) || Files.isSymbolicLink(buckets)) throw new IOException("invalid staged buckets directory");
-        Map<String, Entry> entries = validateFiles(generationRoot, manifest.path("files"));
+        Map<String, Entry> entries = validateFiles(generationRoot, manifest.get("files"));
         ObjectNode workspace = registry.workspace(workspaceId);
         if (workspace == null || "revoked".equals(workspace.path("state").asText())) throw new IOException("workspace unavailable");
         List<String> verified = new ArrayList<>();
@@ -68,8 +71,7 @@ final class LegacyImporter {
                 String metadataPath = relative.substring(0, relative.length() - OBJECT_SUFFIX.length()) + "._S3rver_metadata.json";
                 JsonNode headers = JSON.createObjectNode();
                 if (entries.containsKey(metadataPath)) {
-                    if (Files.size(generationRoot.resolve(metadataPath)) > 1024 * 1024) throw new IOException("S3rver metadata too large");
-                    headers = JSON.readTree(Files.readAllBytes(generationRoot.resolve(metadataPath)));
+                    headers = JSON.readTree(readBounded(generationRoot.resolve(metadataPath), MAX_METADATA_BYTES, "S3rver metadata"));
                     if (headers == null || !headers.isObject()) throw new IOException("invalid S3rver metadata");
                 }
                 copy(workspaceId, generation, manifestSha256, bucket, logical, file, headers, entry);
@@ -95,14 +97,31 @@ final class LegacyImporter {
     }
 
     private static void validateManifest(JsonNode node, String workspaceId, String generation) throws IOException {
-        if (!node.isObject() || node.path("version").asInt() != 1 || !workspaceId.equals(node.path("workspace_id").asText()) || !generation.equals(node.path("generation").asText()) || !node.path("files").isArray()) throw new IOException("invalid staged manifest");
+        if (!node.isObject()
+                || !node.path("version").isIntegralNumber() || !node.path("version").canConvertToInt() || node.path("version").asInt() != 1
+                || !node.path("workspace_id").isTextual() || !workspaceId.equals(node.path("workspace_id").textValue())
+                || !node.path("generation").isTextual() || !generation.equals(node.path("generation").textValue())
+                || !generation.matches("[0-9a-f]{32}") || !node.path("files").isArray()) {
+            throw new IOException("invalid staged manifest");
+        }
     }
     private static Map<String, Entry> validateFiles(Path root, JsonNode files) throws Exception {
-        Map<String, Entry> result = new HashMap<>(); String previous = "";
+        Map<String, Entry> result = new HashMap<>();
+        if (files == null || !files.isArray()) throw new IOException("invalid staged manifest files");
         for (JsonNode item : files) {
-            String path = item.path("path").asText(); long size = item.path("size").asLong(-1); String digest = item.path("sha256").asText();
-            if (!path.matches("buckets/(?:[^/]+/)*[^/]+") || path.contains("//") || path.contains("/../") || path.contains("/./") || path.endsWith("/..") || path.endsWith("/.") || path.compareTo(previous) <= 0 || size < 0 || !digest.matches("[0-9a-f]{64}") || result.putIfAbsent(path, new Entry(path, size, digest)) != null) throw new IOException("invalid staged manifest file");
-            previous = path;
+            if (!item.isObject() || !item.path("path").isTextual() || !item.path("size").isIntegralNumber()
+                    || !item.path("size").canConvertToLong() || !item.path("sha256").isTextual()) {
+                throw new IOException("invalid staged manifest file");
+            }
+            String path = item.path("path").textValue();
+            long size = item.path("size").longValue();
+            String digest = item.path("sha256").textValue();
+            Path resolved = root.resolve(path).normalize();
+            Path bucketsRoot = root.resolve("buckets").normalize();
+            if (!safeManifestPath(path, resolved, bucketsRoot) || size < 0 || !digest.matches("[0-9a-f]{64}")
+                    || result.putIfAbsent(path, new Entry(path, size, digest)) != null) {
+                throw new IOException("invalid staged manifest file");
+            }
         }
         Set<String> actual = new HashSet<>();
         try (var paths = Files.walk(root.resolve("buckets"))) {
@@ -130,7 +149,7 @@ final class LegacyImporter {
         }
     }
     private void copy(String workspaceId, String generation, String manifestSha256, JsonNode bucket, String key, Path source, JsonNode headers, Entry entry) throws Exception {
-        if (headers.toString().getBytes(StandardCharsets.UTF_8).length > 1024 * 1024) throw new IOException("S3rver metadata too large");
+        if (headers.toString().getBytes(StandardCharsets.UTF_8).length > MAX_METADATA_BYTES) throw new IOException("S3rver metadata too large");
         copyVerified(workspaceId,generation,manifestSha256,bucket,key,source,headers,entry);
     }
     private void copyVerified(String workspaceId, String generation, String manifestSha256, JsonNode bucket, String key, Path source, JsonNode headers, Entry entry) throws Exception {
@@ -142,7 +161,14 @@ final class LegacyImporter {
             BlobStore store = engine.physicalStore(bucket.path("backend_id").asText());
             String physicalBucket = engine.physicalBucket(bucket.path("backend_id").asText()), destination = engine.physicalPrefix(workspaceId, bucket.path("id").asText()) + key;
             Map<String, String> userMetadata = new HashMap<>();
-            headers.fields().forEachRemaining(header -> { if (header.getKey().startsWith("x-amz-meta-")) userMetadata.put(header.getKey().substring(11), header.getValue().asText()); });
+            var headerFields = headers.fields();
+            while (headerFields.hasNext()) {
+                var header = headerFields.next();
+                if (header.getKey().startsWith("x-amz-meta-")) {
+                    if (!header.getValue().isTextual()) throw new IOException("invalid S3rver metadata");
+                    userMetadata.put(header.getKey().substring(11), header.getValue().textValue());
+                }
+            }
             byte[] expected = HexFormat.of().parseHex(entry.sha256);
             if (Files.size(source)!=entry.size || !MessageDigest.isEqual(expected,hash(Files.newInputStream(source)))) throw new IOException("staged source changed during import");
             String contentType=headers.path("content-type").asText(Files.probeContentType(Path.of(key))), cacheControl=headers.path("cache-control").asText(null), contentDisposition=headers.path("content-disposition").asText(null), contentEncoding=headers.path("content-encoding").asText(null), contentLanguage=headers.path("content-language").asText(null);
@@ -161,6 +187,26 @@ final class LegacyImporter {
         if(Files.isSymbolicLink(current)) throw new IOException("symlink in staged import");
     }
     private static JsonNode findBucket(ObjectNode workspace, String name) { for (JsonNode bucket : workspace.path("buckets")) if (name.equals(bucket.path("name").asText())) return bucket; return null; }
+    private static boolean safeManifestPath(String path, Path resolved, Path bucketsRoot) {
+        return path.matches("buckets/(?:[^/]+/)*[^/]+")
+                && !path.contains("//") && !path.contains("\\0")
+                && !path.contains("/../") && !path.contains("/./")
+                && !path.endsWith("/..") && !path.endsWith("/.")
+                && resolved.startsWith(bucketsRoot)
+                && !resolved.equals(bucketsRoot);
+    }
+    static byte[] readBounded(Path path, int limit, String description) throws IOException {
+        if (Files.size(path) > limit) throw new IOException(description + " is too large");
+        try (InputStream input = Files.newInputStream(path); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[65536];
+            for (int read; (read = input.read(buffer)) >= 0;) {
+                if (read == 0) continue;
+                if (output.size() > limit - read) throw new IOException(description + " is too large");
+                output.write(buffer, 0, read);
+            }
+            return output.toByteArray();
+        }
+    }
     private static byte[] hash(InputStream source) throws Exception { try (source) { MessageDigest digest = MessageDigest.getInstance("SHA-256"); byte[] buffer = new byte[65536]; for (int read; (read = source.read(buffer)) >= 0;) if (read > 0) digest.update(buffer, 0, read); return digest.digest(); } }
     static String sha256(byte[] source) throws Exception { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(source)); }
     private record Entry(String path, long size, String sha256) { }

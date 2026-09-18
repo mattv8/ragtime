@@ -179,7 +179,8 @@ class LegacyObjectStorageMigrationTests(unittest.IsolatedAsyncioTestCase):
             await self.migrator.reconcile("ws")
         self.assertTrue(file.exists())
         stored = self.migrator._load_receipts("ws")[0]
-        self.assertEqual("source changed", stored["retained_files"]["buckets/assets/a.txt"])
+        self.assertEqual(1, stored["retained_file_count"])
+        self.assertEqual({"source changed": 1}, stored["retained_reasons"])
 
     async def test_cancelled_filesystem_waits_for_worker_before_returning(self) -> None:
         started = threading.Event()

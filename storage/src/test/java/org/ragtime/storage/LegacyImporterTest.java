@@ -2,6 +2,7 @@ package org.ragtime.storage;
 
 import static org.junit.jupiter.api.Assertions.*;
 import java.nio.file.Files;
+import java.io.RandomAccessFile;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import org.junit.jupiter.api.Test;
@@ -47,6 +48,49 @@ class LegacyImporterTest {
             registry.mutate(state -> { var workspace=state.withObject("workspaces").putObject("ws"); workspace.put("workspace_id","ws").put("state","ready"); workspace.putArray("buckets").addObject().put("id","bucket-id").put("name","uploads").put("backend_id","local"); });
             assertThrows(java.io.IOException.class,()->new LegacyImporter(registry,engine).importStaged("ws",generation,sha(manifest)));
         }
+    }
+    @Test void acceptsAPreviouslyBoundUnsortedNestedManifest() throws Exception {
+        var root=Files.createTempDirectory("legacy-import"); String generation="0123456789abcdef0123456789abcdef";
+        var bucket=Files.createDirectories(root.resolve("_legacy_imports/ws").resolve(generation).resolve("buckets/uploads/dir"));
+        Files.writeString(bucket.resolve("file.txt"), "nested"); Files.writeString(bucket.getParent().resolve("dir.txt"), "sibling");
+        String manifest=manifest(generation,
+                "buckets/uploads/dir/file.txt", "nested",
+                "buckets/uploads/dir.txt", "sibling");
+        Files.writeString(bucket.getParent().getParent().getParent().resolve("manifest.json"),manifest);
+        try(var registry=new Registry(root,"fixture-key"); var engine=new StorageEngine(registry,root,"fixture-key")) {
+            importingWorkspace(registry, generation, sha(manifest));
+            new LegacyImporter(registry,engine).importStaged("ws",generation,sha(manifest));
+            assertEquals(2, engine.workspaceStore("ws").list(ListObjectsV2Request.builder().bucket("uploads").build()).contents().size());
+        }
+    }
+    @Test void acceptsPythonCodePointOrderedSupplementaryUnicodeManifest() throws Exception {
+        var root=Files.createTempDirectory("legacy-import"); String generation="0123456789abcdef0123456789abcdef";
+        var bucket=Files.createDirectories(root.resolve("_legacy_imports/ws").resolve(generation).resolve("buckets/uploads"));
+        String privateUse="\uE000.txt", supplementary="\uD800\uDC00.txt";
+        Files.writeString(bucket.resolve(privateUse), "private"); Files.writeString(bucket.resolve(supplementary), "supplementary");
+        String manifest=manifest(generation,
+                "buckets/uploads/" + privateUse, "private",
+                "buckets/uploads/" + supplementary, "supplementary");
+        Files.writeString(bucket.getParent().getParent().resolve("manifest.json"),manifest);
+        try(var registry=new Registry(root,"fixture-key"); var engine=new StorageEngine(registry,root,"fixture-key")) {
+            importingWorkspace(registry, generation, sha(manifest));
+            new LegacyImporter(registry,engine).importStaged("ws",generation,sha(manifest));
+            assertEquals(2, engine.workspaceStore("ws").list(ListObjectsV2Request.builder().bucket("uploads").build()).contents().size());
+        }
+    }
+    @Test void rejectsOversizedManifestBeforeReadingItsBody() throws Exception {
+        var root=Files.createTempDirectory("legacy-import"); String generation="0123456789abcdef0123456789abcdef";
+        var manifest=root.resolve("_legacy_imports/ws").resolve(generation).resolve("manifest.json"); Files.createDirectories(manifest.getParent());
+        try (var file = new RandomAccessFile(manifest.toFile(), "rw")) { file.setLength((long) LegacyImporter.MAX_MANIFEST_OR_EVIDENCE_BYTES + 1); }
+        try(var registry=new Registry(root,"fixture-key"); var engine=new StorageEngine(registry,root,"fixture-key")) {
+            assertThrows(java.io.IOException.class,()->new LegacyImporter(registry,engine).importStaged("ws",generation,"a".repeat(64)));
+        }
+    }
+    private static void importingWorkspace(Registry registry, String generation, String manifestHash) {
+        registry.mutate(state -> { var workspace=state.withObject("workspaces").putObject("ws"); workspace.put("workspace_id","ws").put("state","importing"); workspace.putArray("buckets").addObject().put("id","bucket-id").put("name","uploads").put("backend_id","local"); state.withObject("legacy_import_jobs").putObject("ws").put("workspace_id","ws").put("generation",generation).put("manifest_sha256",manifestHash).put("state","copying"); });
+    }
+    private static String manifest(String generation, String firstPath, String firstContents, String secondPath, String secondContents) throws Exception {
+        return "{\"version\":1,\"workspace_id\":\"ws\",\"generation\":\""+generation+"\",\"files\":[{\"path\":\""+firstPath+"\",\"size\":"+firstContents.getBytes().length+",\"sha256\":\""+sha(firstContents)+"\"},{\"path\":\""+secondPath+"\",\"size\":"+secondContents.getBytes().length+",\"sha256\":\""+sha(secondContents)+"\"}]}";
     }
     private static String sha(String value) throws Exception { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes())); }
 }
