@@ -165,14 +165,27 @@ describe('PdmWebhookSettings', () => {
       enabled: true,
       webhook_id: 'webhook-1',
     });
-    renderSettings();
+    renderSettings({
+      activationResult: {
+        ...disabledConfig,
+        enabled: true,
+        webhook_id: 'webhook-1',
+        secret: 'uncopied-secret',
+      },
+    });
     await screen.findByRole('button', { name: 'Pause webhook' });
     await user.click(screen.getByRole('button', { name: 'Pause webhook' }));
     await waitFor(() => expect(apiMock.pausePdmWebhook).toHaveBeenCalledWith('pdm-1'));
     expect(screen.getByText('Paused')).toBeTruthy();
+    expect((screen.getByLabelText('PDM one-time secret') as HTMLInputElement).value).toBe(
+      'uncopied-secret',
+    );
     await user.click(screen.getByRole('button', { name: 'Resume webhook' }));
     await waitFor(() => expect(apiMock.resumePdmWebhook).toHaveBeenCalledWith('pdm-1'));
     expect(screen.getByText('Active')).toBeTruthy();
+    expect((screen.getByLabelText('PDM one-time secret') as HTMLInputElement).value).toBe(
+      'uncopied-secret',
+    );
   });
   it('does not reveal a stale secret after changing tools during an enable request', async () => {
     const user = userEvent.setup();
@@ -206,6 +219,31 @@ describe('PdmWebhookSettings', () => {
     });
     await waitFor(() => expect(screen.queryByLabelText('PDM one-time secret')).toBeNull());
     expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).value).toBe('0');
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).disabled).toBe(
+      false,
+    );
+
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), 'webhook');
+    await waitFor(() => expect(apiMock.enablePdmWebhook).toHaveBeenCalledTimes(2));
+  });
+  it('keeps completion cadence read-only while allowing the one-time-secret copy action', () => {
+    renderSettings({
+      cadenceDisabled: true,
+      activationResult: {
+        ...disabledConfig,
+        enabled: true,
+        webhook_id: 'webhook-1',
+        secret: 'completion-secret',
+      },
+    });
+
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).disabled).toBe(
+      true,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Copy PDM webhook secret' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
   });
   it('hydrates an activation result and renders its one-time secret', () => {
     renderSettings({

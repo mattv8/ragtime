@@ -2707,6 +2707,7 @@ export function ToolWizard({
   const [configurePdmWebhookAfterCreate, setConfigurePdmWebhookAfterCreate] = useState(false);
   const [pdmWebhookActivationResult, setPdmWebhookActivationResult] =
     useState<PdmWebhookEnableResponse | null>(null);
+  const [pdmWebhookBusy, setPdmWebhookBusy] = useState(false);
 
   // PDM discovery state
   const [pdmDiscoveringDatabases, setPdmDiscoveringDatabases] = useState(false);
@@ -5388,6 +5389,7 @@ export function ToolWizard({
           webhookDeliveryRequested={configurePdmWebhookAfterCreate}
           onWebhookDeliveryRequestedChange={setConfigurePdmWebhookAfterCreate}
           activationResult={pdmWebhookActivationResult}
+          onBusyChange={setPdmWebhookBusy}
         />
 
         <div className="connection-panel">
@@ -7352,6 +7354,7 @@ export function ToolWizard({
           <p className="wizard-help">Copy the webhook URL and one-time secret before finishing.</p>
           <PdmWebhookSettings
             toolId={createdToolId}
+            cadenceDisabled
             intervalHours={pdmConfig.reindex_interval_hours ?? 0}
             startMinute={pdmConfig.reindex_start_minute ?? null}
             timezone={pdmConfig.reindex_timezone ?? null}
@@ -7367,10 +7370,11 @@ export function ToolWizard({
             webhookDeliveryRequested={false}
             onWebhookDeliveryRequestedChange={setConfigurePdmWebhookAfterCreate}
             activationResult={pdmWebhookActivationResult}
+            onBusyChange={setPdmWebhookBusy}
           />
         </div>
         <div className="wizard-footer">
-          <button type="button" className="btn" onClick={onSave}>
+          <button type="button" className="btn" onClick={onSave} disabled={pdmWebhookBusy}>
             Done
           </button>
         </div>

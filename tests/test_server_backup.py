@@ -1,6 +1,8 @@
 import io
 import json
 import os
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -90,6 +92,24 @@ def _make_encrypted_tar_entries(path: Path, entries: list[dict[str, object]], pa
         plaintext_path = Path(tmpdir) / "payload.tar.gz"
         _make_tar_entries(plaintext_path, entries)
         _encrypt_tarball(plaintext_path, path, password)
+
+
+def _other_process_lock_state(lock_path: Path) -> str:
+    probe = """import fcntl, sys
+with open(sys.argv[1], 'a+b') as handle:
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print('busy')
+    else:
+        print('acquired')
+"""
+    return subprocess.run(
+        [sys.executable, "-c", probe, str(lock_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 class _NonSeekableInput(io.RawIOBase):
@@ -1314,6 +1334,99 @@ class ServerBackupTests(unittest.TestCase):
             self.assertEqual(events[1], ("restore_db", "database.dump"))
             self.assertEqual(events[2], ("migrations", "fail"))
             self.assertEqual(events[3][0], "rollback_db")
+
+    def test_restore_keeps_lock_during_migration_failure_rollbacks(self) -> None:
+        from ragtime.core import server_backup
+        from ragtime.core.server_backup import BackupMutationError, RestoreOptions, restore_backup
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "full.tar.gz"
+            _make_tar(
+                archive_path,
+                {
+                    "backup-meta.json": json.dumps({"format": "tar.gz", "version": 1, "scope": "full"}).encode(),
+                    "database.dump": b"dump",
+                    "data/new.txt": b"new",
+                },
+            )
+            data_dir = Path(tmpdir) / "data"
+            data_dir.mkdir()
+            (data_dir / "old.txt").write_text("old", encoding="utf-8")
+            rollback_locks: list[str] = []
+            original_restore_snapshot = server_backup._restore_snapshot
+
+            def probe_snapshot(snapshot: Path, destination: Path) -> None:
+                rollback_locks.append(_other_process_lock_state(Path(tmpdir) / "restore.lock"))
+                original_restore_snapshot(snapshot, destination)
+
+            def probe_database(_archive: Path) -> None:
+                rollback_locks.append(_other_process_lock_state(Path(tmpdir) / "restore.lock"))
+
+            with (
+                mock.patch.object(server_backup, "DATA_DIR", data_dir),
+                mock.patch.object(server_backup, "LOCK_PATH", Path(tmpdir) / "restore.lock"),
+                mock.patch.object(server_backup, "_create_database_safety_dump", side_effect=lambda destination: destination.write_bytes(b"safety")),
+                mock.patch.object(server_backup, "_terminate_other_database_connections", return_value=None),
+                mock.patch.object(server_backup, "_restore_database", return_value=None),
+                mock.patch.object(server_backup, "_run_migrations", side_effect=RuntimeError("migration failed")),
+                mock.patch.object(server_backup, "_restore_snapshot", side_effect=probe_snapshot),
+                mock.patch.object(server_backup, "_restore_database_from_safety_dump", side_effect=probe_database),
+            ):
+                with self.assertRaises(BackupMutationError):
+                    restore_backup(RestoreOptions(archive_path=archive_path, restore_confirmation="RESTORE ragtime"))
+
+            self.assertEqual(rollback_locks, ["busy", "busy"])
+            self.assertEqual((data_dir / "old.txt").read_text(encoding="utf-8"), "old")
+
+    def test_restore_keeps_lock_during_file_copy_failure_rollbacks(self) -> None:
+        from ragtime.core import server_backup
+        from ragtime.core.server_backup import BackupMutationError, RestoreOptions, restore_backup
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "full.tar.gz"
+            _make_tar(
+                archive_path,
+                {
+                    "backup-meta.json": json.dumps({"format": "tar.gz", "version": 1, "scope": "full"}).encode(),
+                    "database.dump": b"dump",
+                    "data/new.txt": b"new",
+                },
+            )
+            data_dir = Path(tmpdir) / "data"
+            data_dir.mkdir()
+            (data_dir / "old.txt").write_text("old", encoding="utf-8")
+            rollback_locks: list[str] = []
+            original_restore_snapshot = server_backup._restore_snapshot
+            original_copy_tree = server_backup._copy_tree_contents
+
+            def probe_snapshot(snapshot: Path, destination: Path) -> None:
+                rollback_locks.append(_other_process_lock_state(Path(tmpdir) / "restore.lock"))
+                original_restore_snapshot(snapshot, destination)
+
+            def probe_database(_archive: Path) -> None:
+                rollback_locks.append(_other_process_lock_state(Path(tmpdir) / "restore.lock"))
+
+            def fail_file_restore(source: Path, destination: Path, **kwargs) -> int:
+                if destination == data_dir:
+                    raise RuntimeError("file copy failed")
+                return original_copy_tree(source, destination, **kwargs)
+
+            with (
+                mock.patch.object(server_backup, "DATA_DIR", data_dir),
+                mock.patch.object(server_backup, "LOCK_PATH", Path(tmpdir) / "restore.lock"),
+                mock.patch.object(server_backup, "_create_database_safety_dump", side_effect=lambda destination: destination.write_bytes(b"safety")),
+                mock.patch.object(server_backup, "_terminate_other_database_connections", return_value=None),
+                mock.patch.object(server_backup, "_restore_database", return_value=None),
+                mock.patch.object(server_backup, "_run_migrations", return_value=None),
+                mock.patch.object(server_backup, "_copy_tree_contents", side_effect=fail_file_restore),
+                mock.patch.object(server_backup, "_restore_snapshot", side_effect=probe_snapshot),
+                mock.patch.object(server_backup, "_restore_database_from_safety_dump", side_effect=probe_database),
+            ):
+                with self.assertRaises(BackupMutationError):
+                    restore_backup(RestoreOptions(archive_path=archive_path, restore_confirmation="RESTORE ragtime"))
+
+            self.assertEqual(rollback_locks, ["busy", "busy"])
+            self.assertEqual((data_dir / "old.txt").read_text(encoding="utf-8"), "old")
 
     def test_local_admin_mirroring_uses_psql_variable_binding_and_role_precedence(self) -> None:
         from ragtime.core.server_backup import _mirror_local_admin_access

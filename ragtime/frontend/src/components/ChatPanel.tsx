@@ -10554,6 +10554,9 @@ export function ChatPanel({
   // rows come exclusively from visibleMessageEntries; history actions hydrate
   // via ensureFullActiveConversation before touching positional data.
   const renderedConversation = activeConversationMetadata;
+  // Tool configuration is metadata-only. Do not fetch an entire transcript just
+  // to make the selected conversation's controls usable.
+  const conversationForTools = activeConversation ?? activeConversationMetadata;
   const persistedUserMessageEntries = useMemo<ChatMessageNavigationEntry[]>(() => {
     if (!activeConversationMetadata) return [];
     const hasPendingTailUserMessage =
@@ -11721,19 +11724,19 @@ export function ChatPanel({
 
   // Computed conversation ownership and permissions
   const conversationOwnerId = useMemo(() => {
-    if (!activeConversation) return null;
+    if (!conversationForTools) return null;
     const ownerMember = conversationMembers.find((m) => m.role === 'owner');
-    return ownerMember?.user_id || activeConversation.user_id || null;
-  }, [activeConversation, conversationMembers]);
+    return ownerMember?.user_id || conversationForTools.user_id || null;
+  }, [conversationForTools, conversationMembers]);
 
   const myConversationRole = useMemo(() => {
-    if (!activeConversation || !currentUser) return null;
+    if (!conversationForTools || !currentUser) return null;
     const myMember = conversationMembers.find((m) => m.user_id === currentUser.id);
     return myMember?.role || null;
-  }, [activeConversation, currentUser, conversationMembers]);
+  }, [conversationForTools, currentUser, conversationMembers]);
 
   const isConversationOwner =
-    myConversationRole === 'owner' || activeConversation?.user_id === currentUser?.id;
+    myConversationRole === 'owner' || conversationForTools?.user_id === currentUser?.id;
   const isConversationViewer = myConversationRole === 'viewer';
 
   const saveConversationToolOptions = useCallback(
@@ -11741,17 +11744,17 @@ export function ChatPanel({
       nextOptions: Record<string, ConversationToolOptionState>,
       previousOptions: Record<string, ConversationToolOptionState>,
     ) => {
-      if (!activeConversation) return;
+      if (!conversationForTools) return;
       conversationToolOptionsRef.current = nextOptions;
       setConversationToolOptions(nextOptions);
       setSavingTools(true);
       try {
-        await api.updateConversationTools(activeConversation.id, {
+        await api.updateConversationTools(conversationForTools.id, {
           tool_selection_mode: effectiveConversationToolSelection.mode,
           tool_config_ids: effectiveConversationToolSelection.toolIds,
           tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
           disabled_builtin_tool_ids: conversationDisabledBuiltInToolIds,
-          subagents_enabled: activeConversation.subagents_enabled !== false,
+          subagents_enabled: conversationForTools.subagents_enabled !== false,
           tool_options: nextOptions,
         });
       } catch (err) {
@@ -11762,7 +11765,7 @@ export function ChatPanel({
         setSavingTools(false);
       }
     },
-    [activeConversation, conversationDisabledBuiltInToolIds, effectiveConversationToolSelection],
+    [conversationForTools, conversationDisabledBuiltInToolIds, effectiveConversationToolSelection],
   );
 
   const handleToggleConversationToolOption = useCallback(
@@ -11771,7 +11774,7 @@ export function ChatPanel({
       optionKey: 'write_access_enabled' | 'read_only_enabled',
       nextValue: boolean,
     ) => {
-      if (!activeConversation || isConversationViewer) return;
+      if (!conversationForTools || isConversationViewer) return;
       const previous = conversationToolOptionsRef.current;
       const nextOptions: Record<string, ConversationToolOptionState> = { ...previous };
       if (nextValue) {
@@ -11789,7 +11792,7 @@ export function ChatPanel({
       }
       await saveConversationToolOptions(nextOptions, previous);
     },
-    [activeConversation, isConversationViewer, saveConversationToolOptions],
+    [conversationForTools, isConversationViewer, saveConversationToolOptions],
   );
 
   const isConversationToolWritable = useCallback(
@@ -11801,7 +11804,8 @@ export function ChatPanel({
 
   const getToolMenuItems = useCallback(
     (tool: UserSpaceAvailableTool): ToolSelectorMenuItem[] => {
-      if (!activeConversation || isConversationViewer || tool.allow_write === undefined) return [];
+      if (!conversationForTools || isConversationViewer || tool.allow_write === undefined)
+        return [];
       const options = conversationToolOptions[tool.id] || {};
       const disabled = savingTools || false;
       if (!hasConversationToolWriteAccessLevel(tool)) {
@@ -11848,7 +11852,7 @@ export function ChatPanel({
       ];
     },
     [
-      activeConversation,
+      conversationForTools,
       conversationToolOptions,
       handleToggleConversationToolOption,
       isConversationViewer,
@@ -11878,7 +11882,7 @@ export function ChatPanel({
 
   const getToolGroupMenuItems = useCallback(
     (group: ToolSelectorToolGroup): ToolSelectorMenuItem[] => {
-      if (!activeConversation || isConversationViewer) return [];
+      if (!conversationForTools || isConversationViewer) return [];
       const tools = group.tools.filter((tool): tool is UserSpaceAvailableTool => Boolean(tool.id));
       if (tools.length === 0) return [];
       const groupItem = getConversationToolGroupWriteMenuItem(
@@ -11906,7 +11910,7 @@ export function ChatPanel({
       ];
     },
     [
-      activeConversation,
+      conversationForTools,
       conversationToolOptions,
       isConversationViewer,
       saveConversationToolOptions,
@@ -11918,7 +11922,7 @@ export function ChatPanel({
   const canManageConversationMembers =
     Boolean(activeConversation) && (hasWorkspaceChatCollaboration || isConversationOwner);
   const canUseConversationTools =
-    Boolean(activeConversation) &&
+    Boolean(conversationForTools) &&
     !isReadOnly &&
     (hasWorkspaceChatCollaboration || !isConversationViewer);
   const showPromptDebugButton = Boolean(debugMode && isAdmin && activeConversation);
@@ -12115,7 +12119,13 @@ export function ChatPanel({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
-  const historyPrependAnchorRef = useRef<{ key: string; offset: number } | null>(null);
+  const historyPrependAnchorRef = useRef<{
+    key: string;
+    offset: number;
+    operation: number | null;
+  } | null>(null);
+  const historyPrependOperationRef = useRef(0);
+  const [completedHistoryPrependOperation, setCompletedHistoryPrependOperation] = useState(0);
   const historyAnchorRestoreInProgressRef = useRef(false);
   const userMessageWrapperElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const userMessageWrapperRefCallbacksRef = useRef<
@@ -12133,6 +12143,7 @@ export function ChatPanel({
   const autoHydratedDeferredEntriesRef = useRef(new Map<string, Set<number>>());
   const [autoHydratingDeferredIndex, setAutoHydratingDeferredIndex] = useState<number | null>(null);
   const autoHydratingDeferredRequestRef = useRef(0);
+  const autoHydratingDeferredIndexRef = useRef<number | null>(null);
   const autoScrollFrameRef = useRef<number | null>(null);
   const navigatorScrollFrameRef = useRef<number | null>(null);
   const pendingUserMessageNavigationTargetRef = useRef<{
@@ -13086,12 +13097,16 @@ export function ChatPanel({
     historyPrependAnchorRef.current = null;
     autoHydratedDeferredEntriesRef.current.clear();
     autoHydratingDeferredRequestRef.current += 1;
+    autoHydratingDeferredIndexRef.current = null;
     setAutoHydratingDeferredIndex(null);
   }, [standaloneSelectedId]);
 
   const hydrateDeferredEntry = useCallback(
     (index: number) => {
       if (!standaloneSelectedId || !standaloneWindowRevision) return;
+      // Both automatic hydration and the retry control enter through this
+      // boundary. A retry cannot replace the active request's ownership.
+      if (autoHydratingDeferredIndexRef.current !== null) return;
       const hydrationKey = `${standaloneSelectedId}:${standaloneWindowRevision}`;
       const attempted =
         autoHydratedDeferredEntriesRef.current.get(hydrationKey) ?? new Set<number>();
@@ -13099,9 +13114,11 @@ export function ChatPanel({
       attempted.add(index);
       const requestId = autoHydratingDeferredRequestRef.current + 1;
       autoHydratingDeferredRequestRef.current = requestId;
+      autoHydratingDeferredIndexRef.current = index;
       setAutoHydratingDeferredIndex(index);
       void loadStandaloneWindowMessage(index).finally(() => {
         if (autoHydratingDeferredRequestRef.current === requestId) {
+          autoHydratingDeferredIndexRef.current = null;
           setAutoHydratingDeferredIndex(null);
         }
       });
@@ -13258,9 +13275,11 @@ export function ChatPanel({
         )
       : undefined;
     if (root && first) {
+      const pendingOperation = historyPrependAnchorRef.current?.operation ?? null;
       historyPrependAnchorRef.current = {
         key: first.dataset.chatMessageKey || '',
         offset: first.getBoundingClientRect().top - root.getBoundingClientRect().top,
+        operation: pendingOperation,
       };
       return true;
     }
@@ -13268,14 +13287,30 @@ export function ChatPanel({
   }, []);
 
   const loadOlderWithAnchor = useCallback(() => {
-    captureHistoryPrependAnchor();
-    void standaloneWindow.loadOlder();
+    const capturedAnchor = captureHistoryPrependAnchor();
+    const operation = historyPrependOperationRef.current + 1;
+    historyPrependOperationRef.current = operation;
+    if (capturedAnchor && historyPrependAnchorRef.current) {
+      historyPrependAnchorRef.current.operation = operation;
+    } else {
+      historyPrependAnchorRef.current = null;
+    }
+    void standaloneWindow.loadOlder().finally(() => {
+      setCompletedHistoryPrependOperation(operation);
+    });
   }, [captureHistoryPrependAnchor, standaloneWindow]);
 
   useLayoutEffect(() => {
     const anchor = historyPrependAnchorRef.current;
     const root = chatMessagesRef.current;
-    if (!anchor || !root) return;
+    // The anchor belongs to an older-page operation, not to arbitrary DOM
+    // growth (such as deferred-message detail hydration). Only consume it
+    // when the specific older-page request that captured it has completed.
+    if (!anchor || !root || anchor.operation !== completedHistoryPrependOperation) return;
+    if (standaloneWindow.olderError) {
+      historyPrependAnchorRef.current = null;
+      return;
+    }
     const target = Array.from(root.querySelectorAll<HTMLElement>('[data-chat-message-key]')).find(
       (element) => element.dataset.chatMessageKey === anchor.key,
     );
@@ -13289,7 +13324,7 @@ export function ChatPanel({
       historyAnchorRestoreInProgressRef.current = false;
       programmaticScrollRef.current = false;
     });
-  }, [visibleMessageEntries]);
+  }, [completedHistoryPrependOperation, standaloneWindow.olderError, visibleMessageEntries]);
 
   const handleScroll = useCallback(() => {
     if (!chatMessagesRef.current) return;
@@ -14173,9 +14208,9 @@ export function ChatPanel({
 
   const handleToolSelectionChange = useCallback(
     (selection: UserSpaceToolSelection) => {
-      if (!activeConversation || isConversationViewer) return;
+      if (!conversationForTools || isConversationViewer) return;
 
-      const conversationId = activeConversation.id;
+      const conversationId = conversationForTools.id;
       setPendingConversationToolSelection({ conversationId, selection });
       setSavingTools(true);
 
@@ -14191,7 +14226,7 @@ export function ChatPanel({
             tool_config_ids: selection.toolIds,
             tool_group_ids: selection.toolGroupIds,
             disabled_builtin_tool_ids: conversationDisabledBuiltInToolIdsRef.current,
-            subagents_enabled: activeConversation.subagents_enabled !== false,
+            subagents_enabled: conversationForTools.subagents_enabled !== false,
             tool_options: conversationToolOptionsRef.current,
           })
           .then(() => {
@@ -14217,7 +14252,7 @@ export function ChatPanel({
           });
       }, 200);
     },
-    [activeConversation, isConversationViewer],
+    [conversationForTools, isConversationViewer],
   );
 
   useEffect(() => {
@@ -14239,13 +14274,13 @@ export function ChatPanel({
 
   const handleToggleConversationBuiltInTool = useCallback(
     async (toolId: string) => {
-      if (!activeConversation || isConversationViewer) return;
+      if (!conversationForTools || isConversationViewer) return;
       if (toolId === WORKSPACE_SUBAGENTS_TOOL_ID) {
         if (!hasWorkspaceConversationContext) return;
-        const nextEnabled = activeConversation.subagents_enabled === false;
+        const nextEnabled = conversationForTools.subagents_enabled === false;
         setSavingTools(true);
         try {
-          await api.updateConversationTools(activeConversation.id, {
+          await api.updateConversationTools(conversationForTools.id, {
             tool_selection_mode: effectiveConversationToolSelection.mode,
             tool_config_ids: effectiveConversationToolSelection.toolIds,
             tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
@@ -14253,14 +14288,16 @@ export function ChatPanel({
             subagents_enabled: nextEnabled,
             tool_options: conversationToolOptionsRef.current,
           });
-          const updatedConversation: Conversation = {
-            ...activeConversation,
-            subagents_enabled: nextEnabled,
-          };
-          setActiveConversation(updatedConversation);
-          setConversations((prev) =>
-            prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
-          );
+          if (activeConversation) {
+            const updatedConversation: Conversation = {
+              ...activeConversation,
+              subagents_enabled: nextEnabled,
+            };
+            setActiveConversation(updatedConversation);
+            setConversations((prev) =>
+              prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
+            );
+          }
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Failed to update subagents setting');
         } finally {
@@ -14292,22 +14329,24 @@ export function ChatPanel({
       setSavingTools(true);
 
       try {
-        await api.updateConversationTools(activeConversation.id, {
+        await api.updateConversationTools(conversationForTools.id, {
           tool_selection_mode: effectiveConversationToolSelection.mode,
           tool_config_ids: effectiveConversationToolSelection.toolIds,
           tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
           disabled_builtin_tool_ids: normalized,
-          subagents_enabled: activeConversation.subagents_enabled !== false,
+          subagents_enabled: conversationForTools.subagents_enabled !== false,
           tool_options: conversationToolOptionsRef.current,
         });
-        const updatedConversation: Conversation = {
-          ...activeConversation,
-          disabled_builtin_tool_ids: normalized,
-        };
-        setActiveConversation(updatedConversation);
-        setConversations((prev) =>
-          prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
-        );
+        if (activeConversation) {
+          const updatedConversation: Conversation = {
+            ...activeConversation,
+            disabled_builtin_tool_ids: normalized,
+          };
+          setActiveConversation(updatedConversation);
+          setConversations((prev) =>
+            prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
+          );
+        }
       } catch (err) {
         setConversationDisabledBuiltInToolIds(previous);
         setError(err instanceof Error ? err.message : 'Failed to update built-in tool selection');
@@ -14317,6 +14356,7 @@ export function ChatPanel({
     },
     [
       activeConversation,
+      conversationForTools,
       conversationDisabledBuiltInToolIds,
       effectiveConversationToolSelection,
       hasWorkspaceConversationContext,
@@ -14326,18 +14366,18 @@ export function ChatPanel({
 
   const handleBulkConversationBuiltInToggle = useCallback(
     async (selected: boolean) => {
-      if (!activeConversation || isConversationViewer) return;
+      if (!conversationForTools || isConversationViewer) return;
       const nextDisabled = selected ? [] : CHAT_BUILT_IN_TOOL_IDS;
       const normalized = normalizeDisabledBuiltInToolIds(nextDisabled);
       const previous = conversationDisabledBuiltInToolIdsRef.current;
       const nextSubagentsEnabled = hasWorkspaceConversationContext
         ? selected
-        : activeConversation.subagents_enabled !== false;
+        : conversationForTools.subagents_enabled !== false;
       setConversationDisabledBuiltInToolIds(normalized);
       setSavingTools(true);
 
       try {
-        await api.updateConversationTools(activeConversation.id, {
+        await api.updateConversationTools(conversationForTools.id, {
           tool_selection_mode: effectiveConversationToolSelection.mode,
           tool_config_ids: effectiveConversationToolSelection.toolIds,
           tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
@@ -14346,15 +14386,17 @@ export function ChatPanel({
           tool_options: conversationToolOptionsRef.current,
         });
 
-        const updatedConversation: Conversation = {
-          ...activeConversation,
-          disabled_builtin_tool_ids: normalized,
-          subagents_enabled: nextSubagentsEnabled,
-        };
-        setActiveConversation(updatedConversation);
-        setConversations((prev) =>
-          prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
-        );
+        if (activeConversation) {
+          const updatedConversation: Conversation = {
+            ...activeConversation,
+            disabled_builtin_tool_ids: normalized,
+            subagents_enabled: nextSubagentsEnabled,
+          };
+          setActiveConversation(updatedConversation);
+          setConversations((prev) =>
+            prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
+          );
+        }
       } catch (err) {
         setConversationDisabledBuiltInToolIds(previous);
         setError(err instanceof Error ? err.message : 'Failed to update built-in tool selection');
@@ -14364,6 +14406,7 @@ export function ChatPanel({
     },
     [
       activeConversation,
+      conversationForTools,
       effectiveConversationToolSelection,
       hasWorkspaceConversationContext,
       isConversationViewer,
@@ -14372,11 +14415,11 @@ export function ChatPanel({
 
   const handleBulkWorkspaceBuiltInToggle = useCallback(
     async (selected: boolean) => {
-      if (!activeConversation || isConversationViewer || !hasWorkspaceConversationContext) return;
+      if (!conversationForTools || isConversationViewer || !hasWorkspaceConversationContext) return;
 
       setSavingTools(true);
       try {
-        await api.updateConversationTools(activeConversation.id, {
+        await api.updateConversationTools(conversationForTools.id, {
           tool_selection_mode: effectiveConversationToolSelection.mode,
           tool_config_ids: effectiveConversationToolSelection.toolIds,
           tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
@@ -14384,14 +14427,16 @@ export function ChatPanel({
           subagents_enabled: selected,
           tool_options: conversationToolOptionsRef.current,
         });
-        const updatedConversation: Conversation = {
-          ...activeConversation,
-          subagents_enabled: selected,
-        };
-        setActiveConversation(updatedConversation);
-        setConversations((prev) =>
-          prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
-        );
+        if (activeConversation) {
+          const updatedConversation: Conversation = {
+            ...activeConversation,
+            subagents_enabled: selected,
+          };
+          setActiveConversation(updatedConversation);
+          setConversations((prev) =>
+            prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
+          );
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to update subagents setting');
       } finally {
@@ -14400,6 +14445,7 @@ export function ChatPanel({
     },
     [
       activeConversation,
+      conversationForTools,
       conversationDisabledBuiltInToolIds,
       effectiveConversationToolSelection,
       hasWorkspaceConversationContext,
@@ -14413,7 +14459,7 @@ export function ChatPanel({
         await handleBulkConversationBuiltInToggle(selected);
         return;
       }
-      if (!activeConversation || isConversationViewer) return;
+      if (!conversationForTools || isConversationViewer) return;
 
       const nextDisabled = selected ? [] : CHAT_BUILT_IN_TOOL_IDS;
       const normalized = normalizeDisabledBuiltInToolIds(nextDisabled);
@@ -14422,22 +14468,24 @@ export function ChatPanel({
       setSavingTools(true);
 
       try {
-        await api.updateConversationTools(activeConversation.id, {
+        await api.updateConversationTools(conversationForTools.id, {
           tool_selection_mode: effectiveConversationToolSelection.mode,
           tool_config_ids: effectiveConversationToolSelection.toolIds,
           tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
           disabled_builtin_tool_ids: normalized,
-          subagents_enabled: activeConversation.subagents_enabled !== false,
+          subagents_enabled: conversationForTools.subagents_enabled !== false,
           tool_options: conversationToolOptionsRef.current,
         });
-        const updatedConversation: Conversation = {
-          ...activeConversation,
-          disabled_builtin_tool_ids: normalized,
-        };
-        setActiveConversation(updatedConversation);
-        setConversations((prev) =>
-          prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
-        );
+        if (activeConversation) {
+          const updatedConversation: Conversation = {
+            ...activeConversation,
+            disabled_builtin_tool_ids: normalized,
+          };
+          setActiveConversation(updatedConversation);
+          setConversations((prev) =>
+            prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
+          );
+        }
       } catch (err) {
         setConversationDisabledBuiltInToolIds(previous);
         setError(err instanceof Error ? err.message : 'Failed to update built-in tool selection');
@@ -14447,6 +14495,7 @@ export function ChatPanel({
     },
     [
       activeConversation,
+      conversationForTools,
       effectiveConversationToolSelection,
       handleBulkConversationBuiltInToggle,
       hasWorkspaceConversationContext,
@@ -19087,6 +19136,7 @@ export function ChatPanel({
                                     type="button"
                                     className="btn btn-secondary btn-sm"
                                     onClick={() => hydrateDeferredEntry(entry.index)}
+                                    disabled={autoHydratingDeferredIndex !== null}
                                   >
                                     Retry details
                                   </button>

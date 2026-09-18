@@ -10,6 +10,7 @@ import { ReindexIntervalSelect } from './ReindexIntervalSelect';
 interface PdmWebhookSettingsProps {
   toolId: string | null;
   disabled?: boolean;
+  cadenceDisabled?: boolean;
   intervalHours: number;
   startMinute: number | null;
   timezone: string | null;
@@ -19,6 +20,7 @@ interface PdmWebhookSettingsProps {
   webhookDeliveryRequested: boolean;
   onWebhookDeliveryRequestedChange: (enabled: boolean) => void;
   activationResult?: PdmWebhookEnableResponse | null;
+  onBusyChange?: (busy: boolean) => void;
 }
 
 function formatTimestamp(value: string | null): string {
@@ -29,6 +31,7 @@ function formatTimestamp(value: string | null): string {
 export function PdmWebhookSettings({
   toolId,
   disabled = false,
+  cadenceDisabled = false,
   intervalHours,
   startMinute,
   timezone,
@@ -38,6 +41,7 @@ export function PdmWebhookSettings({
   webhookDeliveryRequested,
   onWebhookDeliveryRequestedChange,
   activationResult = null,
+  onBusyChange,
 }: PdmWebhookSettingsProps) {
   const [config, setConfig] = useState<PdmWebhookConfig | null>(null);
   const [secret, setSecret] = useState<string | null>(null);
@@ -51,6 +55,8 @@ export function PdmWebhookSettings({
     const generation = ++requestGenerationRef.current;
     setSecret(null);
     setError(null);
+    setBusy(false);
+    onBusyChange?.(false);
     if (!toolId) {
       setConfig(null);
       setLoading(false);
@@ -74,7 +80,7 @@ export function PdmWebhookSettings({
       requestGenerationRef.current += 1;
       setSecret(null);
     };
-  }, [toolId]);
+  }, [toolId, onBusyChange]);
 
   useEffect(() => {
     if (!activationResult) return;
@@ -82,7 +88,9 @@ export function PdmWebhookSettings({
     setConfig(activationResult);
     setSecret(activationResult.secret);
     setLoading(false);
-  }, [activationResult]);
+    setBusy(false);
+    onBusyChange?.(false);
+  }, [activationResult, onBusyChange]);
 
   useEffect(() => {
     if (!config?.enabled || intervalHours <= 0) return;
@@ -93,23 +101,31 @@ export function PdmWebhookSettings({
 
   const runAction = async (
     action: () => Promise<PdmWebhookConfig & { secret?: string | null }>,
+    secretHandling: 'clear' | 'preserve' | 'replace',
   ): Promise<boolean> => {
     if (!toolId) return false;
     const generation = ++requestGenerationRef.current;
     setBusy(true);
+    onBusyChange?.(true);
     setError(null);
     try {
       const result = await action();
       if (requestGenerationRef.current !== generation) return false;
       setConfig(result);
-      setSecret(typeof result.secret === 'string' ? result.secret : null);
+      if (secretHandling === 'clear') setSecret(null);
+      if (secretHandling === 'replace') {
+        setSecret(typeof result.secret === 'string' ? result.secret : null);
+      }
       return true;
     } catch (reason) {
       if (requestGenerationRef.current !== generation) return false;
       setError(reason instanceof Error ? reason.message : 'Webhook action failed');
       return false;
     } finally {
-      if (requestGenerationRef.current === generation) setBusy(false);
+      if (requestGenerationRef.current === generation) {
+        setBusy(false);
+        onBusyChange?.(false);
+      }
     }
   };
 
@@ -125,8 +141,8 @@ export function PdmWebhookSettings({
     }
 
     const succeeded = enabled
-      ? await runAction(() => api.enablePdmWebhook(toolId))
-      : await runAction(() => api.disablePdmWebhook(toolId));
+      ? await runAction(() => api.enablePdmWebhook(toolId), 'replace')
+      : await runAction(() => api.disablePdmWebhook(toolId), 'clear');
     if (succeeded && enabled) {
       onIntervalChange(0);
       onStartMinuteChange(null);
@@ -153,7 +169,7 @@ export function PdmWebhookSettings({
         timezone={timezone}
         onStartMinuteChange={onStartMinuteChange}
         onTimezoneChange={onTimezoneChange}
-        disabled={disabled || loading || busy}
+        disabled={disabled || cadenceDisabled || loading || busy}
       />
       {loading && <p className="field-help">Loading webhook settings…</p>}
       {webhookDeliveryRequested && !toolId && !activationResult && (
@@ -251,7 +267,9 @@ export function PdmWebhookSettings({
             {config?.enabled && toolId && (
               <>
                 <DeleteConfirmButton
-                  onDelete={() => void runAction(() => api.rotatePdmWebhookSecret(toolId))}
+                  onDelete={() =>
+                    void runAction(() => api.rotatePdmWebhookSecret(toolId), 'replace')
+                  }
                   disabled={disabled || busy}
                   className="btn btn-sm btn-secondary"
                   title="Rotate secret"
@@ -262,8 +280,10 @@ export function PdmWebhookSettings({
                   type="button"
                   className="btn btn-sm btn-secondary"
                   onClick={() =>
-                    void runAction(() =>
-                      config.paused ? api.resumePdmWebhook(toolId) : api.pausePdmWebhook(toolId),
+                    void runAction(
+                      () =>
+                        config.paused ? api.resumePdmWebhook(toolId) : api.pausePdmWebhook(toolId),
+                      'preserve',
                     )
                   }
                   disabled={disabled || busy}

@@ -1352,93 +1352,98 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
     db_mutated = False
     try:
         with _locked_operation():
-            _emit_progress(progress, "start", progress=45, message="Starting restore", scope=restore_scope.value)
-            if restore_scope in {BackupScope.FULL, BackupScope.FILES}:
-                snapshot_message = "Creating data safety snapshot"
-                _emit_progress(progress, "data_snapshot_start", progress=48, message=snapshot_message)
-                snapshot_path, snapshot_count = _snapshot_directory(
-                    DATA_DIR,
-                    Path(tempdir.name),
-                    progress=progress,
-                    progress_start=48,
-                    progress_end=50,
-                    progress_message=snapshot_message,
-                )
-                _emit_progress(progress, "data_snapshot_complete", progress=50, message="Created data safety snapshot", item_count=snapshot_count)
-            if restore_scope in {BackupScope.FULL, BackupScope.DATABASE}:
-                database_safety_dump_path = Path(tempdir.name) / "database-safety.dump"
-                _emit_progress(progress, "database_safety_dump_start", progress=55, message="Creating database safety dump")
-                _create_database_safety_dump(database_safety_dump_path)
-                _emit_progress(progress, "database_safety_dump_complete", progress=60, message="Created database safety dump", item_count=1)
+            try:
+                _emit_progress(progress, "start", progress=45, message="Starting restore", scope=restore_scope.value)
+                if restore_scope in {BackupScope.FULL, BackupScope.FILES}:
+                    snapshot_message = "Creating data safety snapshot"
+                    _emit_progress(progress, "data_snapshot_start", progress=48, message=snapshot_message)
+                    snapshot_path, snapshot_count = _snapshot_directory(
+                        DATA_DIR,
+                        Path(tempdir.name),
+                        progress=progress,
+                        progress_start=48,
+                        progress_end=50,
+                        progress_message=snapshot_message,
+                    )
+                    _emit_progress(progress, "data_snapshot_complete", progress=50, message="Created data safety snapshot", item_count=snapshot_count)
+                if restore_scope in {BackupScope.FULL, BackupScope.DATABASE}:
+                    database_safety_dump_path = Path(tempdir.name) / "database-safety.dump"
+                    _emit_progress(progress, "database_safety_dump_start", progress=55, message="Creating database safety dump")
+                    _create_database_safety_dump(database_safety_dump_path)
+                    _emit_progress(progress, "database_safety_dump_complete", progress=60, message="Created database safety dump", item_count=1)
 
-            if restore_scope in {BackupScope.FULL, BackupScope.DATABASE}:
-                _emit_progress(progress, "database_restore_start", progress=65, message="Restoring database")
-                _terminate_other_database_connections()
-                _restore_database(extract_dir / "database.dump", data_only=options.pg_data_only)
-                _emit_progress(progress, "database_restore_complete", progress=70, message="Database restore complete")
-                db_mutated = True
-                if not options.skip_migrations and not options.pg_data_only:
-                    _emit_progress(progress, "database_migrations_start", progress=75, message="Applying database migrations")
-                    _run_migrations()
-                    _emit_progress(progress, "database_migrations_complete", progress=80, message="Database migrations applied")
-                if options.mirror_local_admin_access:
-                    _mirror_local_admin_access(options.mirror_local_admin_from, options.local_admin_username)
-                    _emit_progress(progress, "admin_access_mirror", progress=85, message="Local admin access mirrored")
-                _invalidate_restored_runtime_sessions()
-                _emit_progress(progress, "runtime_sessions_invalidate", progress=88, message="Restored runtime sessions invalidated")
-                if restore_scope == BackupScope.DATABASE and manifest.includes_managed_key:
-                    _install_database_only_managed_key(extract_dir)
+                if restore_scope in {BackupScope.FULL, BackupScope.DATABASE}:
+                    _emit_progress(progress, "database_restore_start", progress=65, message="Restoring database")
+                    _terminate_other_database_connections()
+                    _restore_database(extract_dir / "database.dump", data_only=options.pg_data_only)
+                    _emit_progress(progress, "database_restore_complete", progress=70, message="Database restore complete")
+                    db_mutated = True
+                    if not options.skip_migrations and not options.pg_data_only:
+                        _emit_progress(progress, "database_migrations_start", progress=75, message="Applying database migrations")
+                        _run_migrations()
+                        _emit_progress(progress, "database_migrations_complete", progress=80, message="Database migrations applied")
+                    if options.mirror_local_admin_access:
+                        _mirror_local_admin_access(options.mirror_local_admin_from, options.local_admin_username)
+                        _emit_progress(progress, "admin_access_mirror", progress=85, message="Local admin access mirrored")
+                    _invalidate_restored_runtime_sessions()
+                    _emit_progress(progress, "runtime_sessions_invalidate", progress=88, message="Restored runtime sessions invalidated")
+                    if restore_scope == BackupScope.DATABASE and manifest.includes_managed_key:
+                        _install_database_only_managed_key(extract_dir)
 
-            if restore_scope in {BackupScope.FULL, BackupScope.FILES}:
-                files_restore_message = "Restoring data files"
-                _emit_progress(progress, "files_restore_start", progress=90, message=files_restore_message)
-                if data_source is None:
-                    raise BackupValidationError("Backup archive does not contain data files")
-                restored_items = _copy_tree_contents(
-                    data_source,
-                    DATA_DIR,
-                    replace=options.replace_data,
-                    progress=progress,
-                    progress_phase="files_restore_start",
-                    progress_start=90,
-                    progress_end=95,
-                    progress_message=files_restore_message,
-                )
-                _emit_progress(
-                    progress,
-                    "files_restore_complete",
-                    progress=95,
-                    message=f"Restored {restored_items} data item{'s' if restored_items != 1 else ''}",
-                    item_count=restored_items,
-                )
-                _invalidate_restored_workspace_runtime_artifacts()
-                _emit_progress(progress, "workspace_runtime_invalidate", progress=97, message="Workspace runtime artifacts invalidated")
-                key_path = DATA_DIR / ".encryption_key"
-                if key_path.exists():
-                    key_path.chmod(0o600)
+                if restore_scope in {BackupScope.FULL, BackupScope.FILES}:
+                    files_restore_message = "Restoring data files"
+                    _emit_progress(progress, "files_restore_start", progress=90, message=files_restore_message)
+                    if data_source is None:
+                        raise BackupValidationError("Backup archive does not contain data files")
+                    restored_items = _copy_tree_contents(
+                        data_source,
+                        DATA_DIR,
+                        replace=options.replace_data,
+                        progress=progress,
+                        progress_phase="files_restore_start",
+                        progress_start=90,
+                        progress_end=95,
+                        progress_message=files_restore_message,
+                    )
+                    _emit_progress(
+                        progress,
+                        "files_restore_complete",
+                        progress=95,
+                        message=f"Restored {restored_items} data item{'s' if restored_items != 1 else ''}",
+                        item_count=restored_items,
+                    )
+                    _invalidate_restored_workspace_runtime_artifacts()
+                    _emit_progress(progress, "workspace_runtime_invalidate", progress=97, message="Workspace runtime artifacts invalidated")
+                    key_path = DATA_DIR / ".encryption_key"
+                    if key_path.exists():
+                        key_path.chmod(0o600)
 
-            _emit_progress(progress, "complete", progress=100, message="Restore completed", scope=restore_scope.value)
-            if options.scope_override is not None:
-                manifest.scope = options.scope_override
-            return manifest
+                _emit_progress(progress, "complete", progress=100, message="Restore completed", scope=restore_scope.value)
+                if options.scope_override is not None:
+                    manifest.scope = options.scope_override
+                return manifest
+            except Exception as exc:
+                rollback_errors: list[str] = []
+                if snapshot_path is not None:
+                    try:
+                        _restore_snapshot(snapshot_path, DATA_DIR)
+                    except Exception as rollback_exc:
+                        logger.error("Data rollback failed after restore error: %s", rollback_exc)
+                        rollback_errors.append(f"data rollback failed: {rollback_exc}")
+                if db_mutated and database_safety_dump_path is not None and database_safety_dump_path.exists():
+                    try:
+                        _restore_database_from_safety_dump(database_safety_dump_path)
+                    except Exception as rollback_exc:
+                        logger.error("Database rollback failed after restore error: %s", rollback_exc)
+                        rollback_errors.append(f"database rollback failed: {rollback_exc}")
+                if rollback_errors:
+                    raise BackupRollbackError(f"{exc}; {'; '.join(rollback_errors)}") from exc
+                if isinstance(exc, BackupMutationError):
+                    raise
+                raise BackupMutationError(str(exc)) from exc
+    except (BackupMutationError, BackupRollbackError):
+        raise
     except Exception as exc:
-        rollback_errors: list[str] = []
-        if snapshot_path is not None:
-            try:
-                _restore_snapshot(snapshot_path, DATA_DIR)
-            except Exception as rollback_exc:
-                logger.error("Data rollback failed after restore error: %s", rollback_exc)
-                rollback_errors.append(f"data rollback failed: {rollback_exc}")
-        if db_mutated and database_safety_dump_path is not None and database_safety_dump_path.exists():
-            try:
-                _restore_database_from_safety_dump(database_safety_dump_path)
-            except Exception as rollback_exc:
-                logger.error("Database rollback failed after restore error: %s", rollback_exc)
-                rollback_errors.append(f"database rollback failed: {rollback_exc}")
-        if rollback_errors:
-            raise BackupRollbackError(f"{exc}; {'; '.join(rollback_errors)}") from exc
-        if isinstance(exc, BackupMutationError):
-            raise
         raise BackupMutationError(str(exc)) from exc
     finally:
         tempdir.cleanup()

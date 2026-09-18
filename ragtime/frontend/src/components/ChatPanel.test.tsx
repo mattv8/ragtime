@@ -1864,7 +1864,9 @@ describe('ChatPanel standalone first-paint loading', () => {
     );
 
     await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2));
-    expect(await screen.findByRole('button', { name: 'Retry details' })).toBeDefined();
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: 'Retry details' })).toHaveLength(2),
+    );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2);
   });
@@ -3156,8 +3158,341 @@ describe('ChatPanel tool group menu refresh', () => {
     const source = readFileSync(join(cwd(), 'src/components/ChatPanel.tsx'), 'utf8');
 
     expect(source).toMatch(
-      /const getToolGroupMenuItems = useCallback\([\s\S]*?\[\s*activeConversation,\s*conversationToolOptions,\s*isConversationViewer,\s*saveConversationToolOptions,\s*savingTools,\s*\]/,
+      /const getToolGroupMenuItems = useCallback\([\s\S]*?\[\s*conversationForTools,\s*conversationToolOptions,\s*isConversationViewer,\s*saveConversationToolOptions,\s*savingTools,\s*\]/,
     );
+  });
+});
+
+describe('ChatPanel bounded-window operation boundaries', () => {
+  it('keeps manual deferred-detail retry behind the automatic hydration flight', async () => {
+    const conversation = makeConversation('hydrate-retry-race', 'Newest reply', {
+      messages: [
+        {
+          role: 'user',
+          content: 'old',
+          timestamp: '2026-09-11T12:00:00.000Z',
+          message_id: 'race-0',
+        },
+        {
+          role: 'assistant',
+          content: 'middle',
+          timestamp: '2026-09-11T12:00:01.000Z',
+          message_id: 'race-1',
+        },
+        {
+          role: 'user',
+          content: 'new',
+          timestamp: '2026-09-11T12:00:02.000Z',
+          message_id: 'race-2',
+        },
+      ],
+    });
+    const entries: ConversationWindowEntry[] = conversation.messages.map((message, index) => {
+      if (index === 0) {
+        return {
+          index,
+          key: message.message_id || String(index),
+          state: 'ready' as const,
+          message,
+          preview: null,
+        };
+      }
+      return {
+        index,
+        key: message.message_id || String(index),
+        state: 'deferred' as const,
+        message: null,
+        preview: {
+          role: message.role,
+          content: String(message.content),
+          timestamp: message.timestamp,
+          message_id: message.message_id || null,
+          content_truncated: false,
+          has_details: true,
+        },
+      };
+    });
+    let rejectNewest: ((reason?: unknown) => void) | undefined;
+    let resolveMiddle: ((entry: ConversationWindowEntry) => void) | undefined;
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeWindow(conversation, { entries }));
+    apiMock.getConversationWindowMessage.mockImplementation((_id: string, index: number) => {
+      if (
+        index === 2 &&
+        apiMock.getConversationWindowMessage.mock.calls.filter(([, i]) => i === 2).length === 1
+      ) {
+        return new Promise<ConversationWindowEntry>((_resolve, reject) => {
+          rejectNewest = reject;
+        });
+      }
+      if (index === 1) {
+        return new Promise<ConversationWindowEntry>((resolve) => {
+          resolveMiddle = resolve;
+        });
+      }
+      return new Promise<ConversationWindowEntry>(() => undefined);
+    });
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+    await waitFor(() =>
+      expect(apiMock.getConversationWindowMessage.mock.calls.map(([, index]) => index)).toEqual([
+        2,
+      ]),
+    );
+    rejectNewest?.(new Error('newest failed'));
+    await waitFor(() =>
+      expect(apiMock.getConversationWindowMessage.mock.calls.map(([, index]) => index)).toEqual([
+        2, 1,
+      ]),
+    );
+    const retryDetails = await screen.findByRole('button', { name: 'Retry details' });
+    expect(retryDetails.hasAttribute('disabled')).toBe(true);
+    await userEvent.setup().click(retryDetails);
+    expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2);
+    resolveMiddle?.({
+      ...entries[1],
+      state: 'ready',
+      message: conversation.messages[1],
+      preview: null,
+    });
+    await waitFor(() => expect(retryDetails.hasAttribute('disabled')).toBe(false));
+    await userEvent.setup().click(retryDetails);
+    await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(3));
+  });
+
+  it('restores a pending older-page anchor after deferred detail hydration completes', async () => {
+    window.requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    const conversation = makeConversation('anchor-detail-race', 'latest', {
+      messages: [
+        {
+          role: 'user',
+          content: 'old question',
+          timestamp: '2026-09-11T12:00:00.000Z',
+          message_id: 'anchor-0',
+        },
+        {
+          role: 'assistant',
+          content: 'old response',
+          timestamp: '2026-09-11T12:00:01.000Z',
+          message_id: 'anchor-1',
+        },
+        {
+          role: 'user',
+          content: 'visible question',
+          timestamp: '2026-09-11T12:00:02.000Z',
+          message_id: 'anchor-2',
+        },
+        {
+          role: 'assistant',
+          content: 'deferred latest',
+          timestamp: '2026-09-11T12:00:03.000Z',
+          message_id: 'anchor-3',
+        },
+      ],
+    });
+    const deferred: ConversationWindowEntry = {
+      index: 3,
+      key: 'anchor-3',
+      state: 'deferred',
+      message: null,
+      preview: {
+        role: 'assistant',
+        content: 'deferred latest',
+        timestamp: conversation.messages[3].timestamp,
+        message_id: 'anchor-3',
+        content_truncated: false,
+        has_details: true,
+      },
+    };
+    const firstPage = makeWindow(conversation, {
+      entries: [
+        {
+          index: 2,
+          key: 'anchor-2',
+          state: 'ready',
+          message: conversation.messages[2],
+          preview: null,
+        },
+      ],
+      nextCursor: 'older',
+      hasMore: true,
+    });
+    const olderPage = makeWindow(conversation, {
+      entries: [
+        {
+          index: 0,
+          key: 'anchor-0',
+          state: 'ready',
+          message: conversation.messages[0],
+          preview: null,
+        },
+        {
+          index: 1,
+          key: 'anchor-1',
+          state: 'ready',
+          message: conversation.messages[1],
+          preview: null,
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+    });
+    let resolveDetail: ((entry: ConversationWindowEntry) => void) | undefined;
+    let resolveOlder: ((page: ConversationMessageWindow) => void) | undefined;
+    apiMock.getConversationLatestExchange.mockResolvedValue(
+      makeWindow(conversation, { entries: [deferred], nextCursor: 'older', hasMore: true }),
+    );
+    apiMock.getConversationMessageWindow.mockResolvedValueOnce(firstPage).mockImplementationOnce(
+      () =>
+        new Promise<ConversationMessageWindow>((resolve) => {
+          resolveOlder = resolve;
+        }),
+    );
+    apiMock.getConversationWindowMessage.mockImplementation(
+      () =>
+        new Promise<ConversationWindowEntry>((resolve) => {
+          resolveDetail = resolve;
+        }),
+    );
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+    const loadEarlier = await screen.findByRole('button', { name: 'Load earlier messages' });
+    await waitFor(() => expect(resolveDetail).toBeDefined());
+    const root = document.querySelector('.chat-messages') as HTMLElement;
+    let scrollTop = 200;
+    Object.defineProperty(root, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+    });
+    Object.defineProperties(root, {
+      clientHeight: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, value: 1000 },
+    });
+    root.getBoundingClientRect = () =>
+      ({
+        top: 100,
+        bottom: 500,
+        left: 0,
+        right: 300,
+        width: 300,
+        height: 400,
+        x: 0,
+        y: 100,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    let prepended = false;
+    for (const element of Array.from(
+      document.querySelectorAll<HTMLElement>('[data-chat-message-key]'),
+    )) {
+      const key = element.dataset.chatMessageKey;
+      element.getBoundingClientRect = () => {
+        const top = key === 'anchor-2' ? (prepended ? 360 : 120) : key === 'anchor-3' ? 220 : 160;
+        return {
+          top,
+          bottom: top + 60,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 60,
+          x: 0,
+          y: top,
+          toJSON: () => ({}),
+        } as DOMRect;
+      };
+    }
+    fireEvent.scroll(root);
+    fireEvent.click(loadEarlier);
+    await waitFor(() => expect(resolveOlder).toBeDefined());
+    resolveDetail?.({
+      index: 3,
+      key: 'anchor-3',
+      state: 'ready',
+      message: conversation.messages[3],
+      preview: null,
+    });
+    await waitFor(() => expect(document.querySelector('.chat-message-deferred')).toBeNull());
+    prepended = true;
+    resolveOlder?.(olderPage);
+    await waitFor(() => expect(scrollTop).toBe(440));
+  });
+
+  it('loads earlier messages when no message intersects the viewport for anchoring', async () => {
+    const conversation = makeConversation('unanchored-older-page', 'latest');
+    const latestEntry = makeWindow(conversation).entries[1];
+    const firstPage = makeWindow(conversation, {
+      entries: [latestEntry],
+      nextCursor: 'older',
+      hasMore: true,
+    });
+    const olderPage = makeWindow(conversation, {
+      entries: [makeWindow(conversation).entries[0]],
+      nextCursor: null,
+      hasMore: false,
+    });
+    apiMock.getConversationLatestExchange.mockResolvedValue(firstPage);
+    apiMock.getConversationMessageWindow
+      .mockResolvedValueOnce(firstPage)
+      .mockResolvedValueOnce(olderPage);
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+    const loadEarlier = await screen.findByRole('button', { name: 'Load earlier messages' });
+    const root = document.querySelector('.chat-messages') as HTMLElement;
+    root.getBoundingClientRect = () =>
+      ({
+        top: 100,
+        bottom: 200,
+        left: 0,
+        right: 300,
+        width: 300,
+        height: 100,
+        x: 0,
+        y: 100,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    for (const element of Array.from(
+      document.querySelectorAll<HTMLElement>('[data-chat-message-key]'),
+    )) {
+      element.getBoundingClientRect = () =>
+        ({
+          top: 300,
+          bottom: 360,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 60,
+          x: 0,
+          y: 300,
+          toJSON: () => ({}),
+        }) as DOMRect;
+    }
+
+    await userEvent.setup().click(loadEarlier);
+    await waitFor(() => expect(apiMock.getConversationMessageWindow).toHaveBeenCalledTimes(2));
+    expect(document.querySelector('#chat-window-history-error')).toBeNull();
+  });
+
+  it('shows usable conversation tools for a standalone partial window without fetching its full transcript', async () => {
+    const conversation = makeConversation('partial-tools', 'partial reply');
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, { entries: [], nextCursor: null, hasMore: false }),
+    );
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+    await screen.findByText('partial reply');
+    expect((await screen.findAllByTitle(/Conversation Tools/)).length).toBeGreaterThan(0);
+    expect(apiMock.getConversation).not.toHaveBeenCalled();
   });
 });
 
