@@ -141,8 +141,9 @@ jobs:
       runtime_image: ${{ steps.digest-images.outputs.runtime_image || steps.empty-images.outputs.runtime_image }}
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/managed-buildx
-        with: {scope: base-resolve}
+      # Registry manifest inspection uses the Buildx CLI but does not need a builder.
+      - name: Verify Buildx CLI
+        run: docker buildx version
       - uses: docker/login-action@v3
         if: ${{ needs.access.outputs.can_publish == 'true' }}
         with:
