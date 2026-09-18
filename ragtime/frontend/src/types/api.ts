@@ -5424,7 +5424,12 @@ export interface SqliteHistoryPreview {
 }
 
 /** Recovery state is advisory: an active operation has no recoverable operation ID. */
-export type SqliteHistoryMaintenanceState = 'active' | 'interrupted' | 'invalid' | 'release_pending' | (string & {});
+export type SqliteHistoryMaintenanceState =
+  | 'active'
+  | 'interrupted'
+  | 'invalid'
+  | 'release_pending'
+  | (string & {});
 
 export interface SqliteHistoryMaintenanceStateResponse {
   state: SqliteHistoryMaintenanceState;

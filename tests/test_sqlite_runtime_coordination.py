@@ -52,8 +52,9 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)
             (data / "_userspace" / "workspaces" / "workspace-1" / "files").mkdir(parents=True)
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "runtime_manager_enabled", return_value=False
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "runtime_manager_enabled", return_value=False),
             ):
                 async with sqlite_runtime.sqlite_workspace_access("workspace-1"):
                     with self.assertRaises(HTTPException) as blocked:
@@ -71,9 +72,11 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
             marker.parent.mkdir()
             marker.write_text('{"workspace_id":"workspace-1","lease_id":"lease-1","state":"active","origin":"online"}')
             request = mock.AsyncMock()
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "runtime_manager_enabled", return_value=True
-            ), mock.patch.object(sqlite_runtime, "runtime_manager_request", request):
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "runtime_manager_enabled", return_value=True),
+                mock.patch.object(sqlite_runtime, "runtime_manager_request", request),
+            ):
                 # Use the raw operation context because ordinary access correctly
                 # rejects the durable marker before admitting a new reader.
                 async with sqlite_runtime._sqlite_workspace_operation("workspace-1", exclusive=False):
@@ -121,9 +124,7 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         task.cancel()
         release.set()
-        with self.assertLogs("ragtime.userspace.sqlite_runtime", level="ERROR") as logs, self.assertRaises(
-            asyncio.CancelledError
-        ):
+        with self.assertLogs("ragtime.userspace.sqlite_runtime", level="ERROR") as logs, self.assertRaises(asyncio.CancelledError):
             await task
         self.assertIn("Cancelled SQLite blocking operation completed with an error", logs.output[0])
 
@@ -143,8 +144,9 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
                 entered.set()
                 return original(*args, **kwargs)
 
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "_acquire_operation_lock", side_effect=acquire
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "_acquire_operation_lock", side_effect=acquire),
             ):
                 task = asyncio.create_task(sqlite_runtime._sqlite_workspace_operation("workspace-1", exclusive=True).__aenter__())
                 await asyncio.to_thread(entered.wait)
@@ -176,8 +178,9 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
                 async with sqlite_runtime._sqlite_workspace_operation("workspace-1", exclusive=False):
                     self.assertTrue(await sqlite_runtime.sqlite_workspace_operation_active("workspace-1"))
 
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "_acquire_operation_lock", side_effect=acquire
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "_acquire_operation_lock", side_effect=acquire),
             ):
                 async with sqlite_runtime._sqlite_workspace_operation("workspace-1", exclusive=False):
                     child_task = asyncio.create_task(child())
@@ -199,8 +202,9 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
                 calls += 1
                 return original(*args, **kwargs)
 
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "_acquire_operation_lock", side_effect=acquire
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "_acquire_operation_lock", side_effect=acquire),
             ):
                 async with sqlite_runtime._sqlite_workspace_operation("workspace-1", exclusive=False):
                     async with sqlite_runtime._sqlite_workspace_operation("workspace-1", exclusive=False):
@@ -239,11 +243,12 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
 
             request = mock.AsyncMock()
             original = sqlite_runtime.sqlite_workspace_recovery
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "runtime_manager_enabled", return_value=True
-            ), mock.patch.object(sqlite_runtime, "runtime_manager_request", request), mock.patch.object(
-                sqlite_runtime, "sqlite_workspace_recovery", wraps=original
-            ) as recovery:
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "runtime_manager_enabled", return_value=True),
+                mock.patch.object(sqlite_runtime, "runtime_manager_request", request),
+                mock.patch.object(sqlite_runtime, "sqlite_workspace_recovery", wraps=original) as recovery,
+            ):
                 async with sqlite_runtime.sqlite_workspace_recovery("workspace-1", "lease-1"):
                     child_task = asyncio.create_task(child())
                 proceed.set()
@@ -286,9 +291,11 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(method, "DELETE")
                 return {}
 
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "runtime_manager_enabled", return_value=True
-            ), mock.patch.object(sqlite_runtime, "runtime_manager_request", side_effect=request):
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "runtime_manager_enabled", return_value=True),
+                mock.patch.object(sqlite_runtime, "runtime_manager_request", side_effect=request),
+            ):
                 async with sqlite_runtime.sqlite_workspace_access("workspace-1", maintenance=True) as root:
                     self.assertEqual(root, files.resolve())
                     self.assertTrue(sqlite_runtime._marker_path("workspace-1").exists())
@@ -308,9 +315,11 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
                     return {"authoritative_root": str(files)}
                 return {}
 
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "runtime_manager_enabled", return_value=True
-            ), mock.patch.object(sqlite_runtime, "runtime_manager_request", side_effect=request):
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "runtime_manager_enabled", return_value=True),
+                mock.patch.object(sqlite_runtime, "runtime_manager_request", side_effect=request),
+            ):
                 with self.assertRaises(RuntimeError):
                     async with sqlite_runtime.sqlite_workspace_access("workspace-1", maintenance=True):
                         raise RuntimeError("publication interrupted")
@@ -325,10 +334,10 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)
             (data / "_userspace" / "workspaces" / "workspace-1" / "files").mkdir(parents=True)
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "runtime_manager_enabled", return_value=True
-            ), mock.patch.object(
-                sqlite_runtime, "runtime_manager_request", side_effect=HTTPException(status_code=502, detail="unavailable")
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "runtime_manager_enabled", return_value=True),
+                mock.patch.object(sqlite_runtime, "runtime_manager_request", side_effect=HTTPException(status_code=502, detail="unavailable")),
             ):
                 with self.assertRaises(HTTPException) as unavailable:
                     async with sqlite_runtime.sqlite_workspace_access("workspace-1"):
@@ -343,8 +352,9 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
             data = Path(temporary)
             files = data / "_userspace" / "workspaces" / "workspace-1" / "files"
             files.mkdir(parents=True)
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "runtime_manager_enabled", return_value=False
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "runtime_manager_enabled", return_value=False),
             ):
                 async with sqlite_runtime.sqlite_workspace_access("workspace-1", maintenance=True) as root:
                     self.assertEqual(root, files)
@@ -361,8 +371,9 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
             mirror = workspace / "rootfs" / "workspace"
             mirror.mkdir(parents=True)
             (mirror / "active.txt").write_text("runtime evidence")
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "runtime_manager_enabled", return_value=False
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "runtime_manager_enabled", return_value=False),
             ):
                 with self.assertRaises(HTTPException) as blocked:
                     async with sqlite_runtime.sqlite_workspace_access("workspace-1", maintenance=True):
@@ -373,9 +384,7 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_marker_blocks_admission_after_worker_restart(self) -> None:
         from runtime.worker.service import WorkerService
 
-        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
-            "os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False
-        ):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict("os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False):
             marker = Path(temporary) / "workspaces" / "workspace-1" / "sqlite_backups" / "sqlite-maintenance-intent.json"
             marker.parent.mkdir(parents=True)
             marker.write_text("{}")
@@ -387,9 +396,7 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_release_is_idempotent_only_without_an_active_lease(self) -> None:
         from runtime.worker.service import WorkerService
 
-        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
-            "os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False
-        ):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict("os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False):
             worker = WorkerService()
             await worker.release_sqlite_workspace_access("workspace-1", "lease-1")
             worker._workspace_maintenance["workspace-1"] = {"lease-1": (False, mock.Mock())}
@@ -400,9 +407,7 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_allows_two_shared_leases_and_releases_exactly_one(self) -> None:
         from runtime.worker.service import WorkerService
 
-        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
-            "os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False
-        ):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict("os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False):
             worker = WorkerService()
             await worker.acquire_sqlite_workspace_access("workspace-1", "lease-1", maintenance=False)
             await worker.acquire_sqlite_workspace_access("workspace-1", "lease-2", maintenance=False)
@@ -417,9 +422,7 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_shared_lease_allows_pty_but_blocks_public_stop(self) -> None:
         from runtime.worker.service import WorkerService
 
-        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
-            "os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False
-        ):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict("os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False):
             worker = WorkerService()
             worker._sessions["session-1"] = mock.Mock(id="session-1", workspace_id="workspace-1")
             await worker.acquire_sqlite_workspace_access("workspace-1", "lease-1", maintenance=False)
@@ -431,9 +434,7 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_maintenance_drain_bypass_requires_matching_regular_marker(self) -> None:
         from runtime.worker.service import WorkerService
 
-        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
-            "os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False
-        ):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict("os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False):
             worker = WorkerService()
             worker._workspace_maintenance["workspace-1"] = {"lease-1": (True, mock.Mock())}
             marker = Path(temporary) / "workspaces" / "workspace-1" / "sqlite_backups" / "sqlite-maintenance-intent.json"
@@ -449,9 +450,7 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
         from runtime.worker import service as worker_service_module
         from runtime.worker.service import WorkerService
 
-        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
-            "os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False
-        ):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict("os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False):
             worker = WorkerService()
             canonical = Path(temporary) / "workspaces" / "workspace-1" / "files"
             canonical.mkdir(parents=True)
@@ -459,8 +458,9 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
             spec.rootfs_path = canonical.parent / "rootfs"
             spec.sandbox_workspace = "/workspace"
             worker._sessions["session-1"] = mock.Mock(workspace_id="workspace-1", state="running", sandbox_spec=spec)
-            with mock.patch.object(worker, "_resolve_workspace_root", return_value=(canonical.parent, canonical, spec)), mock.patch.object(
-                worker_service_module, "workspace_mirror_required", return_value=True
+            with (
+                mock.patch.object(worker, "_resolve_workspace_root", return_value=(canonical.parent, canonical, spec)),
+                mock.patch.object(worker_service_module, "workspace_mirror_required", return_value=True),
             ):
                 with self.assertRaises(HTTPException) as unavailable:
                     await worker.acquire_sqlite_workspace_access("workspace-1", "lease-1", maintenance=False)
@@ -473,10 +473,10 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)
             (data / "_userspace" / "workspaces" / "workspace-1" / "files").mkdir(parents=True)
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "runtime_manager_enabled", return_value=True
-            ), mock.patch.object(
-                sqlite_runtime, "runtime_manager_request", side_effect=HTTPException(status_code=409, detail="busy")
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "runtime_manager_enabled", return_value=True),
+                mock.patch.object(sqlite_runtime, "runtime_manager_request", side_effect=HTTPException(status_code=409, detail="busy")),
             ):
                 with self.assertRaises(HTTPException) as busy:
                     async with sqlite_runtime.sqlite_workspace_access("workspace-1", maintenance=True):
@@ -518,9 +518,11 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
                 marker.write_text('{"workspace_id":"workspace-1","lease_id":"foreign","state":"acquiring"}')
                 raise HTTPException(status_code=409, detail="busy")
 
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "runtime_manager_enabled", return_value=True
-            ), mock.patch.object(sqlite_runtime, "runtime_manager_request", side_effect=request):
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "runtime_manager_enabled", return_value=True),
+                mock.patch.object(sqlite_runtime, "runtime_manager_request", side_effect=request),
+            ):
                 with self.assertRaises(HTTPException) as busy:
                     async with sqlite_runtime.sqlite_workspace_access("workspace-1", maintenance=True):
                         pass
@@ -535,12 +537,8 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             marker = Path(temporary) / "sqlite_backups" / "sqlite-maintenance-intent.json"
-            sqlite_runtime._claim_marker(
-                marker, {"workspace_id": "workspace-1", "lease_id": "lease-1", "state": "acquiring"}
-            )
-            sqlite_runtime._update_owned_marker(
-                marker, "lease-1", {"workspace_id": "workspace-1", "lease_id": "lease-1", "state": "active"}
-            )
+            sqlite_runtime._claim_marker(marker, {"workspace_id": "workspace-1", "lease_id": "lease-1", "state": "acquiring"})
+            sqlite_runtime._update_owned_marker(marker, "lease-1", {"workspace_id": "workspace-1", "lease_id": "lease-1", "state": "active"})
 
             self.assertEqual("active", json.loads(marker.read_text())["state"])
             self.assertTrue(sqlite_runtime._remove_owned_marker(marker, "lease-1"))
@@ -552,14 +550,10 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             marker = Path(temporary) / "sqlite_backups" / "sqlite-maintenance-intent.json"
-            sqlite_runtime._claim_marker(
-                marker, {"workspace_id": "workspace-1", "lease_id": "lease-1", "state": "acquiring"}
-            )
+            sqlite_runtime._claim_marker(marker, {"workspace_id": "workspace-1", "lease_id": "lease-1", "state": "acquiring"})
 
             with self.assertRaises(HTTPException) as blocked:
-                sqlite_runtime._update_owned_marker(
-                    marker, "lease-1", {"workspace_id": "workspace-1", "lease_id": "foreign", "state": "active"}
-                )
+                sqlite_runtime._update_owned_marker(marker, "lease-1", {"workspace_id": "workspace-1", "lease_id": "foreign", "state": "active"})
 
             self.assertEqual(blocked.exception.status_code, 423)
             self.assertEqual("lease-1", json.loads(marker.read_text())["lease_id"])
@@ -602,8 +596,9 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
             marker.write_text('{"workspace_id":"workspace-1","lease_id":"foreign","state":"active"}')
             request = mock.AsyncMock()
 
-            with mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)), mock.patch.object(
-                sqlite_runtime, "runtime_manager_request", request
+            with (
+                mock.patch.object(sqlite_runtime.settings, "index_data_path", str(data)),
+                mock.patch.object(sqlite_runtime, "runtime_manager_request", request),
             ):
                 with self.assertRaises(HTTPException) as blocked:
                     await sqlite_runtime.recover_sqlite_workspace_maintenance("workspace-1", "lease-1", action="abort")
@@ -636,9 +631,7 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
         from runtime.worker import service as worker_service_module
         from runtime.worker.service import WorkerService
 
-        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
-            "os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False
-        ):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict("os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False):
             worker = WorkerService()
             canonical = Path(temporary) / "workspaces" / "workspace-1" / "files"
             canonical.mkdir(parents=True)
@@ -647,13 +640,14 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
             worker._sessions["session-1"] = mock.Mock(id="session-1", workspace_id="workspace-1", state="running")
             worker.stop_session = mock.AsyncMock(side_effect=lambda _session, **_kwargs: events.append("stop"))
             caps = mock.Mock(mode="chroot")
-            with mock.patch.object(worker, "_resolve_workspace_root", return_value=(canonical.parent, canonical, spec)), mock.patch.object(
-                worker_service_module, "detect_capabilities", return_value=caps
-            ), mock.patch.object(worker_service_module, "workspace_mirror_required", return_value=True), mock.patch.object(
-                worker_service_module, "reconcile_stopped_workspace_mirror", side_effect=lambda _spec: events.append("reconcile")
-            ), mock.patch.object(
-                worker_service_module, "archive_workspace_mirror", side_effect=lambda _spec: events.append("archive")
-            ), mock.patch.object(worker_api, "evict_workspace_ptys", new=mock.AsyncMock(side_effect=lambda _workspace: events.append("pty"))):
+            with (
+                mock.patch.object(worker, "_resolve_workspace_root", return_value=(canonical.parent, canonical, spec)),
+                mock.patch.object(worker_service_module, "detect_capabilities", return_value=caps),
+                mock.patch.object(worker_service_module, "workspace_mirror_required", return_value=True),
+                mock.patch.object(worker_service_module, "reconcile_stopped_workspace_mirror", side_effect=lambda _spec: events.append("reconcile")),
+                mock.patch.object(worker_service_module, "archive_workspace_mirror", side_effect=lambda _spec: events.append("archive")),
+                mock.patch.object(worker_api, "evict_workspace_ptys", new=mock.AsyncMock(side_effect=lambda _workspace: events.append("pty"))),
+            ):
                 await worker.acquire_sqlite_workspace_access("workspace-1", "lease-1", maintenance=True)
                 await worker.release_sqlite_workspace_access("workspace-1", "lease-1")
 
@@ -793,17 +787,25 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_worker_shared_lease_stop_leaves_session_unchanged_on_blocked_stop(self) -> None:
         """WorkerService.stop_session must check shared lease before mutating session state."""
-        from runtime.worker.service import WorkerService
+        from runtime.worker.service import SandboxSpec, WorkerService
 
-        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
-            "os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False
-        ):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict("os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False):
             worker = WorkerService()
+            workspace_root = Path(temporary) / "workspaces" / "workspace-1"
+            workspace_files = workspace_root / "files"
+            rootfs_path = workspace_root / "rootfs"
+            workspace_files.mkdir(parents=True)
+            (rootfs_path / "workspace").mkdir(parents=True)
             session_mock = mock.Mock(
                 id="session-1",
                 workspace_id="workspace-1",
                 state="running",
                 runtime_operation_id="op-1",
+                sandbox_spec=SandboxSpec(
+                    workspace_id="workspace-1",
+                    workspace_files_path=workspace_files,
+                    rootfs_path=rootfs_path,
+                ),
             )
             worker._sessions["session-1"] = session_mock
             startup_task = mock.Mock()
@@ -831,12 +833,8 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
 
         manager = SessionManager()
         manager._workspace_sqlite_maintenance["workspace-1"] = {"lease-1": False}
-        manager._worker_service.health = mock.AsyncMock(
-            return_value=mock.Mock(metadata={"runtime_capabilities": {"sqlite_workspace_maintenance": True}})
-        )
-        manager._worker_service.acquire_sqlite_workspace_access = mock.AsyncMock(
-            side_effect=RuntimeError("simulated failure")
-        )
+        manager._worker_service.health = mock.AsyncMock(return_value=mock.Mock(metadata={"runtime_capabilities": {"sqlite_workspace_maintenance": True}}))
+        manager._worker_service.acquire_sqlite_workspace_access = mock.AsyncMock(side_effect=RuntimeError("simulated failure"))
 
         with self.assertRaises(RuntimeError):
             await manager.acquire_sqlite_workspace_maintenance(
@@ -850,27 +848,22 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
         """Worker acquire_sqlite_workspace_access must only cleanup leases it newly created."""
         from runtime.worker.service import WorkerService
 
-        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
-            "os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False
-        ):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict("os.environ", {"RUNTIME_WORKSPACE_ROOT": temporary}, clear=False):
             worker = WorkerService()
             canonical = Path(temporary) / "workspaces" / "workspace-1" / "files"
             canonical.mkdir(parents=True)
             spec = mock.Mock(workspace_id="workspace-1", workspace_files_path=canonical)
 
             # First acquire a shared lease successfully
-            with mock.patch.object(
-                worker, "_resolve_workspace_root", return_value=(canonical.parent, canonical, spec)
-            ):
+            with mock.patch.object(worker, "_resolve_workspace_root", return_value=(canonical.parent, canonical, spec)):
                 await worker.acquire_sqlite_workspace_access("workspace-1", "lease-1", maintenance=False)
 
             self.assertIn("lease-1", worker._workspace_maintenance.get("workspace-1", {}))
 
             # Now attempt idempotent acquire of the same lease but force it to fail in the try block
-            with mock.patch.object(
-                worker, "_resolve_workspace_root", return_value=(canonical.parent, canonical, spec)
-            ), mock.patch.object(
-                worker, "_workspace_startup_lock", side_effect=RuntimeError("simulated failure")
+            with (
+                mock.patch.object(worker, "_resolve_workspace_root", return_value=(canonical.parent, canonical, spec)),
+                mock.patch.object(worker, "_workspace_startup_lock", side_effect=RuntimeError("simulated failure")),
             ):
                 with self.assertRaises(RuntimeError):
                     await worker.acquire_sqlite_workspace_access("workspace-1", "lease-1", maintenance=False)

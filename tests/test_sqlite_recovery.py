@@ -90,7 +90,10 @@ class SqliteRecoveryTests(unittest.TestCase):
         self.migrations.joinpath("001_base.sql").write_text(first, encoding="utf-8")
         self.migrations.joinpath("002_note.sql").write_text(second, encoding="utf-8")
         backup = self._db("backup.sqlite3", first + " INSERT INTO item VALUES (1, 'old');")
-        current = self._db("current.sqlite3", "CREATE TABLE item (id INTEGER PRIMARY KEY, value TEXT, note TEXT); INSERT INTO item VALUES (1, 'new', 'n'); INSERT INTO item VALUES (2, 'only-current', 'n');")
+        current = self._db(
+            "current.sqlite3",
+            "CREATE TABLE item (id INTEGER PRIMARY KEY, value TEXT, note TEXT); INSERT INTO item VALUES (1, 'new', 'n'); INSERT INTO item VALUES (2, 'only-current', 'n');",
+        )
         self._ledger(backup, {"001_base.sql": first})
         self._ledger(current, {"001_base.sql": first, "002_note.sql": second})
         output = self.root / "candidate.sqlite3"
@@ -102,7 +105,10 @@ class SqliteRecoveryTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT id, value, note FROM item").fetchall(), [(1, "old", None)])
 
     def test_merge_reports_conflicts_and_use_backup_updates_without_rowid(self) -> None:
-        backup = self._db("backup.sqlite3", "CREATE TABLE item (a INTEGER, b INTEGER, value BLOB, PRIMARY KEY(a, b)); INSERT INTO item VALUES (1, 1, x'01'); INSERT INTO item VALUES (2, 2, x'02');")
+        backup = self._db(
+            "backup.sqlite3",
+            "CREATE TABLE item (a INTEGER, b INTEGER, value BLOB, PRIMARY KEY(a, b)); INSERT INTO item VALUES (1, 1, x'01'); INSERT INTO item VALUES (2, 2, x'02');",
+        )
         current = self._db("current.sqlite3", "CREATE TABLE item (a INTEGER, b INTEGER, value BLOB, PRIMARY KEY(a, b)); INSERT INTO item VALUES (1, 1, x'03');")
         output = self.root / "candidate.sqlite3"
         result = prepare_restore(backup, current, self.migrations, output, mode="merge", conflict_policy="use_backup")
@@ -114,8 +120,14 @@ class SqliteRecoveryTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT a, b, hex(value) FROM item ORDER BY a").fetchall(), [(1, 1, "01"), (2, 2, "02")])
 
     def test_merge_blocks_trigger_writes_and_unsafe_migrations(self) -> None:
-        backup = self._db("backup.sqlite3", "CREATE TABLE item (id INTEGER PRIMARY KEY, value TEXT); CREATE TRIGGER audit AFTER UPDATE ON item BEGIN SELECT 1; END; INSERT INTO item VALUES (1, 'backup');")
-        current = self._db("current.sqlite3", "CREATE TABLE item (id INTEGER PRIMARY KEY, value TEXT); CREATE TRIGGER audit AFTER UPDATE ON item BEGIN SELECT 1; END; INSERT INTO item VALUES (1, 'current');")
+        backup = self._db(
+            "backup.sqlite3",
+            "CREATE TABLE item (id INTEGER PRIMARY KEY, value TEXT); CREATE TRIGGER audit AFTER UPDATE ON item BEGIN SELECT 1; END; INSERT INTO item VALUES (1, 'backup');",
+        )
+        current = self._db(
+            "current.sqlite3",
+            "CREATE TABLE item (id INTEGER PRIMARY KEY, value TEXT); CREATE TRIGGER audit AFTER UPDATE ON item BEGIN SELECT 1; END; INSERT INTO item VALUES (1, 'current');",
+        )
         result = prepare_restore(backup, current, self.migrations, self.root / "candidate.sqlite3", mode="merge", conflict_policy="use_backup")
         self.assertFalse(result["can_apply"])
         self.assertTrue(any("trigger" in blocker.lower() for blocker in result["blockers"]))
@@ -145,7 +157,11 @@ class SqliteRecoveryTests(unittest.TestCase):
         self.migrations.joinpath("001_base.sql").write_text(base, encoding="utf-8")
         self.migrations.joinpath("002_keywords.sql").write_text(forward, encoding="utf-8")
         backup = self._db("backup.sqlite3", base)
-        current = self._db("current.sqlite3", base + " CREATE TABLE \"begin\" (\"commit\" TEXT, \"rollback\" TEXT); CREATE TRIGGER item_audit AFTER INSERT ON item BEGIN INSERT INTO \"begin\" (\"commit\", \"rollback\") VALUES ('BEGIN', 'COMMIT'); END;")
+        current = self._db(
+            "current.sqlite3",
+            base
+            + ' CREATE TABLE "begin" ("commit" TEXT, "rollback" TEXT); CREATE TRIGGER item_audit AFTER INSERT ON item BEGIN INSERT INTO "begin" ("commit", "rollback") VALUES (\'BEGIN\', \'COMMIT\'); END;',
+        )
         self._ledger(backup, {"001_base.sql": base})
         self._ledger(current, {"001_base.sql": base, "002_keywords.sql": forward})
 
@@ -156,7 +172,9 @@ class SqliteRecoveryTests(unittest.TestCase):
     def test_forward_migration_rejects_forbidden_leading_commands(self) -> None:
         base = "CREATE TABLE item (id INTEGER PRIMARY KEY);"
         self.migrations.joinpath("001_base.sql").write_text(base, encoding="utf-8")
-        for index, command in enumerate(("BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT work", "RELEASE work", "PRAGMA user_version", "ATTACH ':memory:' AS other", "DETACH other")):
+        for index, command in enumerate(
+            ("BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT work", "RELEASE work", "PRAGMA user_version", "ATTACH ':memory:' AS other", "DETACH other")
+        ):
             with self.subTest(command=command):
                 migration = f"{command}; ALTER TABLE item ADD COLUMN value_{index} TEXT;"
                 name = f"002_forbidden_{index}.sql"
@@ -198,13 +216,11 @@ class SqliteRecoveryTests(unittest.TestCase):
         base_sql = "CREATE TABLE item (id INTEGER PRIMARY KEY, value TEXT);"
         db1 = self._db(
             "db1.sqlite3",
-            base_sql
-            + "INSERT INTO item VALUES (1, 'a'); INSERT INTO item VALUES (2, 'b');",
+            base_sql + "INSERT INTO item VALUES (1, 'a'); INSERT INTO item VALUES (2, 'b');",
         )
         db2 = self._db(
             "db2.sqlite3",
-            base_sql
-            + "INSERT INTO item VALUES (2, 'b'); INSERT INTO item VALUES (1, 'a');",
+            base_sql + "INSERT INTO item VALUES (2, 'b'); INSERT INTO item VALUES (1, 'a');",
         )
         self.assertEqual(database_fingerprint(db1), database_fingerprint(db2))
 
@@ -214,8 +230,7 @@ class SqliteRecoveryTests(unittest.TestCase):
         db1 = self._db("db1.sqlite3", base_sql + "INSERT INTO item VALUES (1, 'a');")
         db2 = self._db(
             "db2.sqlite3",
-            base_sql
-            + "INSERT INTO item VALUES (1, 'a'); INSERT INTO item VALUES (2, 'a');",
+            base_sql + "INSERT INTO item VALUES (1, 'a'); INSERT INTO item VALUES (2, 'a');",
         )
         self.assertNotEqual(database_fingerprint(db1), database_fingerprint(db2))
 
@@ -255,9 +270,7 @@ class SqliteRecoveryTests(unittest.TestCase):
         sql = "CREATE TABLE num (id INTEGER PRIMARY KEY, value NUMERIC);"
         db_null = self._db("null.sqlite3", sql + "INSERT INTO num VALUES (1, NULL);")
         db_zero = self._db("zero.sqlite3", sql + "INSERT INTO num VALUES (1, 0);")
-        db_float = self._db(
-            "float.sqlite3", sql + "INSERT INTO num VALUES (1, 0.0);"
-        )
+        db_float = self._db("float.sqlite3", sql + "INSERT INTO num VALUES (1, 0.0);")
         self.assertNotEqual(database_fingerprint(db_null), database_fingerprint(db_zero))
 
     def test_fingerprint_respects_collation_in_ordering(self) -> None:
@@ -278,13 +291,11 @@ class SqliteRecoveryTests(unittest.TestCase):
         sql = "CREATE TABLE item (id TEXT PRIMARY KEY, value TEXT) WITHOUT ROWID;"
         db1 = self._db(
             "db1.sqlite3",
-            sql
-            + "INSERT INTO item VALUES ('a', '1'); INSERT INTO item VALUES ('b', '2');",
+            sql + "INSERT INTO item VALUES ('a', '1'); INSERT INTO item VALUES ('b', '2');",
         )
         db2 = self._db(
             "db2.sqlite3",
-            sql
-            + "INSERT INTO item VALUES ('b', '2'); INSERT INTO item VALUES ('a', '1');",
+            sql + "INSERT INTO item VALUES ('b', '2'); INSERT INTO item VALUES ('a', '1');",
         )
         self.assertEqual(database_fingerprint(db1), database_fingerprint(db2))
 
@@ -340,13 +351,15 @@ class SqliteRecoveryTests(unittest.TestCase):
             first_hash = _schema_hash(conn)
         with _connect_readonly(second) as conn:
             self.assertEqual(first_hash, _schema_hash(conn))
-        for index, changed in enumerate((
-            base.replace("value >= 0", "value > 0"),
-            base.replace("COLLATE NOCASE", "COLLATE RTRIM"),
-            base.replace("value * 2", "value * 3"),
-            base.replace("item_name ON item(name)", "item_name ON item(value)"),
-            base.replace("SELECT 1", "SELECT 2"),
-        )):
+        for index, changed in enumerate(
+            (
+                base.replace("value >= 0", "value > 0"),
+                base.replace("COLLATE NOCASE", "COLLATE RTRIM"),
+                base.replace("value * 2", "value * 3"),
+                base.replace("item_name ON item(name)", "item_name ON item(value)"),
+                base.replace("SELECT 1", "SELECT 2"),
+            )
+        ):
             path = self._db(f"different-{index}.sqlite3", changed)
             with _connect_readonly(path) as conn:
                 self.assertNotEqual(first_hash, _schema_hash(conn))
@@ -364,7 +377,9 @@ class SqliteRecoveryTests(unittest.TestCase):
         self.assertTrue(any("current database" in blocker for blocker in missing_ledger["blockers"]))
         same_backup = self._db("same-backup.sqlite3", base)
         same_current = self._db("same-current.sqlite3", base)
-        unknown_policy = prepare_restore(same_backup, same_current, self.migrations, self.root / "unknown-policy.sqlite3", mode="merge", table_policies={"absent": "use_backup"})
+        unknown_policy = prepare_restore(
+            same_backup, same_current, self.migrations, self.root / "unknown-policy.sqlite3", mode="merge", table_policies={"absent": "use_backup"}
+        )
         self.assertFalse(unknown_policy["can_apply"])
         self.assertTrue(any("Unknown table policy" in blocker for blocker in unknown_policy["blockers"]))
 
@@ -419,8 +434,12 @@ class SqliteRecoveryTests(unittest.TestCase):
     def test_merge_keyed_diff_uses_sqlite_nocase_and_numeric_affinity(self) -> None:
         nocase = "CREATE TABLE text_item (id TEXT PRIMARY KEY COLLATE NOCASE, value TEXT);"
         numeric = "CREATE TABLE numeric_item (id INTEGER PRIMARY KEY, value TEXT);"
-        backup = self._db("backup.sqlite3", nocase + numeric + "INSERT INTO text_item VALUES ('A', 'backup'); INSERT INTO numeric_item VALUES ('01', 'backup');")
-        current = self._db("current.sqlite3", nocase + numeric + "INSERT INTO text_item VALUES ('a', 'current'); INSERT INTO numeric_item VALUES (1, 'current');")
+        backup = self._db(
+            "backup.sqlite3", nocase + numeric + "INSERT INTO text_item VALUES ('A', 'backup'); INSERT INTO numeric_item VALUES ('01', 'backup');"
+        )
+        current = self._db(
+            "current.sqlite3", nocase + numeric + "INSERT INTO text_item VALUES ('a', 'current'); INSERT INTO numeric_item VALUES (1, 'current');"
+        )
         output = self.root / "candidate.sqlite3"
 
         result = prepare_restore(backup, current, self.migrations, output, mode="merge", conflict_policy="use_backup")

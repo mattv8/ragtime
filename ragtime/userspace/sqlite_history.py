@@ -6,6 +6,7 @@ are written before an atomically replaced manifest under the workspace sibling
 the shared runtime/engine contracts; this module owns catalog integrity and the
 control-plane orchestration around those contracts.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,6 +28,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from ragtime.core.logging import get_logger
+from ragtime.userspace.sqlite_capture_admission import capture_request_admission, run_admitted_subprocess
 from ragtime.userspace.sqlite_runtime import (
     assert_sqlite_workspace_maintenance_held,
     read_marker,
@@ -124,7 +126,7 @@ def _require_regular_file(path: Path, *, allow_missing: bool = False) -> bool:
 
 
 @contextmanager
-def _catalog_lock(root: Path) -> Iterator[None]:
+def _catalog_lock(root: Path, *, blocking: bool = True) -> Iterator[None]:
     _require_regular_directory(root.parent)
     _require_regular_directory(root, create=True)
     lock_path = root / ".lock"
@@ -138,7 +140,10 @@ def _catalog_lock(root: Path) -> Iterator[None]:
     with os.fdopen(lock_fd, "a+b") as lock:
         if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
             raise HTTPException(status_code=409, detail="SQLite history storage is invalid")
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError as exc:
+            raise HTTPException(status_code=503, detail="SQLite history catalog is busy") from exc
         try:
             yield
         finally:
@@ -150,6 +155,9 @@ class SqliteHistoryService:
         self._files_dir_for_workspace = files_dir_for_workspace
         self._scheduler_task: asyncio.Task[None] | None = None
         self._stopping = False
+        self._schedule_cursor = 0
+        self._next_due_cache: dict[str, datetime] = {}
+        self._next_cleanup_cache: dict[str, datetime] = {}
 
     def _root(self, workspace_id: str) -> Path:
         files = self._files_dir_for_workspace(workspace_id)
@@ -196,7 +204,15 @@ class SqliteHistoryService:
     def _load(self, root: Path, workspace_id: str) -> dict[str, Any]:
         path = self._manifest_path(root)
         if not _require_regular_file(path, allow_missing=True):
-            return {"version": 1, "workspace_id": workspace_id, "backups": [], "previews": {}, "operations": {}, "last_scheduled_at": None}
+            return {
+                "version": 1,
+                "workspace_id": workspace_id,
+                "backups": [],
+                "previews": {},
+                "operations": {},
+                "last_scheduled_at": None,
+                "next_scheduled_at": None,
+            }
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(value, dict) or value.get("workspace_id") != workspace_id:
@@ -204,6 +220,7 @@ class SqliteHistoryService:
             value.setdefault("backups", [])
             value.setdefault("previews", {})
             value.setdefault("operations", {})
+            value.setdefault("next_scheduled_at", None)
             return value
         except Exception as exc:
             raise HTTPException(status_code=409, detail="SQLite history catalog is unreadable") from exc
@@ -247,6 +264,7 @@ class SqliteHistoryService:
 
     async def list_backups(self, workspace_id: str, *, database_name: str | None = None, snapshot_id: str | None = None) -> list[dict[str, Any]]:
         root = self._root(workspace_id)
+
         def read() -> list[dict[str, Any]]:
             with _catalog_lock(root):
                 manifest = self._load(root, workspace_id)
@@ -256,13 +274,18 @@ class SqliteHistoryService:
                 if snapshot_id:
                     rows = [row for row in rows if row.get("snapshot_id") == snapshot_id]
                 protected = self._protected_backup_ids(manifest)
-                return [self._backup_response(dict(row), can_delete=row.get("id") not in protected) for row in sorted(rows, key=lambda row: row["created_at"], reverse=True)]
+                return [
+                    self._backup_response(dict(row), can_delete=row.get("id") not in protected)
+                    for row in sorted(rows, key=lambda row: row["created_at"], reverse=True)
+                ]
+
         return await run_sqlite_blocking(read)
 
     async def interrupted_maintenance(self, workspace_id: str) -> dict[str, Any] | None:
         if await sqlite_workspace_operation_active(workspace_id):
             return {"state": "active", "operation_id": None, "detail": "SQLite workspace operation is active", "can_complete": False, "can_abort": False}
         root = self._root(workspace_id)
+
         def read() -> dict[str, Any] | None:
             with _catalog_lock(root):
                 manifest = self._load(root, workspace_id)
@@ -277,45 +300,126 @@ class SqliteHistoryService:
                     try:
                         payload = read_marker(marker)
                     except HTTPException:
-                        return {"state": "invalid", "operation_id": "unknown", "detail": "SQLite maintenance fence is invalid and requires operator recovery", "can_complete": False, "can_abort": False}
+                        return {
+                            "state": "invalid",
+                            "operation_id": "unknown",
+                            "detail": "SQLite maintenance fence is invalid and requires operator recovery",
+                            "can_complete": False,
+                            "can_abort": False,
+                        }
                     if payload is None:
                         return None
                     lease_id = str(payload.get("lease_id") or "")
                     if not lease_id:
-                        return {"state": "invalid", "operation_id": "unknown", "detail": "SQLite maintenance fence is invalid and requires operator recovery", "can_complete": False, "can_abort": False}
+                        return {
+                            "state": "invalid",
+                            "operation_id": "unknown",
+                            "detail": "SQLite maintenance fence is invalid and requires operator recovery",
+                            "can_complete": False,
+                            "can_abort": False,
+                        }
                     # A marker left behind after a terminal receipt means the
                     # operation already finished but the idempotent release did
                     # not complete.  Surface it as a release-retry of the SAME
                     # terminal action so the operator can clear the fence without
                     # republishing; recover_operation handles this idempotently.
-                    terminal = next(((operation_id, row) for operation_id, row in operations.items() if row.get("lease_id") == lease_id and row.get("status") in {"completed", "aborted"}), None)
+                    terminal = next(
+                        (
+                            (operation_id, row)
+                            for operation_id, row in operations.items()
+                            if row.get("lease_id") == lease_id and row.get("status") in {"completed", "aborted"}
+                        ),
+                        None,
+                    )
                     if terminal is not None:
                         terminal_id, terminal_row = terminal
                         aborted = terminal_row.get("status") == "aborted"
-                        return {"state": "release_pending", "operation_id": terminal_id, "detail": "SQLite maintenance finished but the runtime fence still needs to be released", "can_complete": not aborted, "can_abort": aborted}
-                    return {"state": "interrupted", "operation_id": lease_id, "detail": "SQLite maintenance was interrupted before a restore operation was recorded", "can_complete": False, "can_abort": True}
+                        return {
+                            "state": "release_pending",
+                            "operation_id": terminal_id,
+                            "detail": "SQLite maintenance finished but the runtime fence still needs to be released",
+                            "can_complete": not aborted,
+                            "can_abort": aborted,
+                        }
+                    return {
+                        "state": "interrupted",
+                        "operation_id": lease_id,
+                        "detail": "SQLite maintenance was interrupted before a restore operation was recorded",
+                        "can_complete": False,
+                        "can_abort": True,
+                    }
                 operation_id, row = pending
                 # Abort is safe only before publication.  A persisted
                 # publication-state marker makes the UI require completion.
                 state = str(row.get("publication_state") or "prepublication")
-                return {"state": "interrupted", "operation_id": operation_id, "detail": "SQLite restore maintenance was interrupted", "can_complete": True, "can_abort": state == "prepublication"}
+                return {
+                    "state": "interrupted",
+                    "operation_id": operation_id,
+                    "detail": "SQLite restore maintenance was interrupted",
+                    "can_complete": True,
+                    "can_abort": state == "prepublication",
+                }
+
         return await run_sqlite_blocking(read)
 
     async def run_maintenance_once(self) -> None:
-        """Run due hourly captures and catalog cleanup serially."""
+        """Run a bounded, fair maintenance pass; cleanup is not capture-gated."""
         from ragtime.userspace.service import userspace_service
-        workspaces = [
-            path.name
-            for path in (userspace_service.root_path / "workspaces").iterdir()
-            if path.is_dir() and not path.is_symlink()
-        ] if (userspace_service.root_path / "workspaces").is_dir() else []
+
+        workspaces = (
+            sorted(path.name for path in (userspace_service.root_path / "workspaces").iterdir() if path.is_dir() and not path.is_symlink())
+            if (userspace_service.root_path / "workspaces").is_dir()
+            else []
+        )
+        active = set(workspaces)
+        self._next_due_cache = {workspace_id: due for workspace_id, due in self._next_due_cache.items() if workspace_id in active}
+        self._next_cleanup_cache = {workspace_id: due for workspace_id, due in self._next_cleanup_cache.items() if workspace_id in active}
+        if workspaces:
+            offset = self._schedule_cursor % len(workspaces)
+            workspaces = workspaces[offset:] + workspaces[:offset]
+            self._schedule_cursor = (offset + 1) % len(workspaces)
+        deadline = asyncio.get_running_loop().time() + 30
+        admitted = 0
         for workspace_id in workspaces:
+            if admitted >= 8 or asyncio.get_running_loop().time() >= deadline:
+                break
             try:
+                now = _now()
+                next_due = self._next_due_cache.get(workspace_id)
+                next_cleanup = self._next_cleanup_cache.get(workspace_id)
+                # A fully initialized workspace needs no filesystem/catalog work
+                # until one cached deadline is reached.
+                if next_due is not None and next_cleanup is not None and next_due > now and next_cleanup > now:
+                    continue
                 root = self._root(workspace_id)
-                due = await run_sqlite_blocking(self._claim_scheduled_due_sync, root, workspace_id)
-                if due:
-                    await self.capture_workspace_databases(workspace_id, trigger="scheduled")
-                    await run_sqlite_blocking(self._record_scheduled_attempt, root, workspace_id)
+                # The liveness flock is deliberately held across the durable
+                # claim, child capture, and completion.  A stale claim is only
+                # recoverable after this lock has proved its former owner gone.
+                liveness = await self._acquire_scheduled_liveness(root)
+                if liveness is None:
+                    continue
+                try:
+                    cleanup_due = self._next_cleanup_cache.get(workspace_id, now) <= now
+                    if cleanup_due:
+                        due = await run_sqlite_blocking(self._cleanup_and_due_sync, root, workspace_id, True)
+                        self._next_cleanup_cache[workspace_id] = now + timedelta(hours=1)
+                        self._next_due_cache[workspace_id] = await run_sqlite_blocking(self._next_scheduled_due_sync, root, workspace_id, True)
+                    else:
+                        due = self._next_due_cache.get(workspace_id, now) <= now
+                    claim = await run_sqlite_blocking(self._claim_scheduled_due_sync, root, workspace_id, True, True) if due else None
+                    if not claim:
+                        self._next_due_cache[workspace_id] = await run_sqlite_blocking(self._next_scheduled_due_sync, root, workspace_id, True)
+                        continue
+                    admitted += 1
+                    success = False
+                    try:
+                        outcomes = await self.capture_workspace_databases(workspace_id, trigger="scheduled")
+                        success = all(row.get("status") != "failed" for row in outcomes)
+                    finally:
+                        await run_sqlite_blocking(self._complete_scheduled_attempt_sync, root, workspace_id, claim, success)
+                        self._next_due_cache[workspace_id] = _now() + (timedelta(hours=1) if success else timedelta(minutes=5))
+                finally:
+                    await run_sqlite_blocking(self._release_scheduled_liveness_lock, liveness)
             except Exception as exc:
                 # Runtime may be unavailable; the next hourly pass retries.
                 logger.warning(
@@ -326,45 +430,127 @@ class SqliteHistoryService:
                 )
                 continue
 
-    def _record_scheduled_attempt(self, root: Path, workspace_id: str) -> None:
-        with _catalog_lock(root):
-            manifest = self._load(root, workspace_id)
-            manifest["last_scheduled_at"] = _now().isoformat()
-            self._save(root, manifest)
+    @staticmethod
+    def _try_scheduled_liveness_lock(root: Path) -> Any | None:
+        _require_regular_directory(root.parent)
+        _require_regular_directory(root, create=True)
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        handle: Any | None = None
+        try:
+            fd = os.open(root / ".scheduled-attempt.lock", flags, 0o600)
+            handle = os.fdopen(fd, "a+b")
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                handle.close()
+                return None
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return handle
+        except (OSError, BlockingIOError):
+            if handle is not None:
+                handle.close()
+            return None
 
-    def _claim_scheduled_due_sync(self, root: Path, workspace_id: str) -> bool:
+    async def _acquire_scheduled_liveness(self, root: Path) -> Any | None:
+        """Release a thread-acquired flock even if this task is cancelled."""
+        task = asyncio.create_task(run_sqlite_blocking(self._try_scheduled_liveness_lock, root))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # `run_sqlite_blocking` drains its worker; do the same here so a
+            # cancellation cannot strand a flock acquired just after cancel.
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+            if not task.cancelled() and task.exception() is None and task.result() is not None:
+                release = asyncio.create_task(run_sqlite_blocking(self._release_scheduled_liveness_lock, task.result()))
+                while not release.done():
+                    try:
+                        await asyncio.shield(release)
+                    except asyncio.CancelledError:
+                        continue
+                release.result()
+            raise
+
+    @staticmethod
+    def _release_scheduled_liveness_lock(handle: Any) -> None:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+    @staticmethod
+    def _scheduled_initial_due(workspace_id: str, now: datetime) -> datetime:
+        return now + timedelta(seconds=int(hashlib.sha256(workspace_id.encode()).hexdigest()[:8], 16) % 301)
+
+    def _claim_scheduled_due_sync(self, root: Path, workspace_id: str, try_lock: bool = False, recover_orphan_claim: bool = False) -> str | None:
         """Atomically decide/claim a due run so replicas cannot overlap."""
-        with _catalog_lock(root):
+        with _catalog_lock(root, blocking=not try_lock):
             manifest = self._load(root, workspace_id)
             now = _now()
             claim = manifest.get("scheduled_claim")
-            if claim and datetime.fromisoformat(claim["claimed_at"]) > now - timedelta(hours=1):
+            if claim and not recover_orphan_claim:
+                return None
+            next_due = manifest.get("next_scheduled_at")
+            if next_due is None:
+                # Legacy manifests that already have a successful timestamp keep
+                # their hourly cadence; first-seen workspaces get only jitter.
+                previous = manifest.get("last_scheduled_at")
+                next_time = (datetime.fromisoformat(previous) + timedelta(hours=1)) if previous else self._scheduled_initial_due(workspace_id, now)
+                manifest["next_scheduled_at"] = next_time.isoformat()
+                self._save(root, manifest)
+                return None
+            if datetime.fromisoformat(next_due) > now:
+                return None
+            claim_id = uuid4().hex
+            manifest["scheduled_claim"] = {"claimed_at": now.isoformat(), "claim_id": claim_id}
+            self._save(root, manifest)
+            return claim_id
+
+    def _next_scheduled_due_sync(self, root: Path, workspace_id: str, try_lock: bool = False) -> datetime:
+        with _catalog_lock(root, blocking=not try_lock):
+            manifest = self._load(root, workspace_id)
+            value = manifest.get("next_scheduled_at")
+            return datetime.fromisoformat(value) if value else self._scheduled_initial_due(workspace_id, _now())
+
+    def _complete_scheduled_attempt_sync(self, root: Path, workspace_id: str, claim_id: str, success: bool) -> bool:
+        with _catalog_lock(root):
+            manifest = self._load(root, workspace_id)
+            claim = manifest.get("scheduled_claim") or {}
+            if claim.get("claim_id") != claim_id:
                 return False
-            previous = manifest.get("last_scheduled_at")
-            if previous and datetime.fromisoformat(previous) > now - timedelta(hours=1):
-                return False
-            manifest["scheduled_claim"] = {"claimed_at": now.isoformat(), "claim_id": uuid4().hex}
+            now = _now()
+            manifest.pop("scheduled_claim", None)
+            if success:
+                manifest["last_scheduled_at"] = now.isoformat()
+            manifest["next_scheduled_at"] = (now + (timedelta(hours=1) if success else timedelta(minutes=5))).isoformat()
             self._save(root, manifest)
             return True
 
-    def _cleanup_and_due_sync(self, root: Path, workspace_id: str) -> bool:
-        with _catalog_lock(root):
+    def _cleanup_and_due_sync(self, root: Path, workspace_id: str, try_lock: bool = False) -> bool:
+        with _catalog_lock(root, blocking=not try_lock):
             manifest = self._load(root, workspace_id)
             now = _now()
             referenced = {str(row.get("blob")) for row in manifest["backups"] if row.get("blob")}
             previews = manifest["previews"]
             operations = manifest["operations"]
+            expired_candidates: set[str] = set()
             for preview_id, preview in list(previews.items()):
                 if datetime.fromisoformat(preview["expires_at"]) <= now:
                     if any(row.get("preview_id") == preview_id and row.get("status") == "intent" for row in operations.values()):
                         continue
-                    self._protected_path(root, preview["candidate"], "candidates").unlink(missing_ok=True)
+                    expired_candidates.add(str(preview["candidate"]))
                     previews.pop(preview_id)
             for directory in (root / "blobs", root / "candidates"):
                 if directory.is_dir() and not directory.is_symlink():
                     for entry in directory.iterdir():
                         rel = entry.relative_to(root).as_posix()
-                        candidate_refs = referenced | {str(row.get("candidate")) for row in previews.values()} | {str(row.get("candidate")) for row in operations.values() if row.get("status") == "intent"}
+                        candidate_refs = (
+                            referenced
+                            | expired_candidates
+                            | {str(row.get("candidate")) for row in previews.values()}
+                            | {str(row.get("candidate")) for row in operations.values() if row.get("status") == "intent"}
+                        )
                         if entry.is_file() and not entry.is_symlink() and rel not in candidate_refs:
                             entry.unlink()
             download_dir = root / "downloads"
@@ -372,10 +558,19 @@ class SqliteHistoryService:
                 for entry in download_dir.iterdir():
                     if entry.is_file() and not entry.is_symlink() and datetime.fromtimestamp(entry.stat().st_mtime, timezone.utc) < now - _DOWNLOAD_TTL:
                         entry.unlink()
-            self._prune_locked(root, manifest)
-            previous = manifest.get("last_scheduled_at")
-            due = previous is None or datetime.fromisoformat(previous) <= now - timedelta(hours=1)
+            removed = self._prune_locked(root, manifest)
+            next_due = manifest.get("next_scheduled_at")
+            if next_due is None:
+                previous = manifest.get("last_scheduled_at")
+                next_time = datetime.fromisoformat(previous) + timedelta(hours=1) if previous else self._scheduled_initial_due(workspace_id, now)
+                manifest["next_scheduled_at"] = next_time.isoformat()
+                due = False
+            else:
+                due = datetime.fromisoformat(next_due) <= now
             self._save(root, manifest)
+            for candidate in expired_candidates:
+                self._protected_path(root, candidate, "candidates").unlink(missing_ok=True)
+            self._unlink_unreferenced(root, manifest, removed)
             return due
 
     def start(self) -> None:
@@ -396,15 +591,34 @@ class SqliteHistoryService:
     async def _scheduler(self) -> None:
         while not self._stopping:
             await self.run_maintenance_once()
-            await asyncio.sleep(3600)
+            await asyncio.sleep(60)
 
-    async def capture_workspace_databases(self, workspace_id: str, *, trigger: Literal["manual", "snapshot", "scheduled", "pre_restore"], snapshot_id: str | None = None, snapshot_git_commit_hash: str | None = None, mandatory: bool = False, database_names: set[str] | None = None, files_dir: Path | None = None) -> list[dict[str, Any]]:
+    async def capture_workspace_databases(
+        self,
+        workspace_id: str,
+        *,
+        trigger: Literal["manual", "snapshot", "scheduled", "pre_restore"],
+        snapshot_id: str | None = None,
+        snapshot_git_commit_hash: str | None = None,
+        mandatory: bool = False,
+        database_names: set[str] | None = None,
+        files_dir: Path | None = None,
+    ) -> list[dict[str, Any]]:
         if trigger not in _TRIGGERS:
             raise ValueError("invalid history trigger")
         if files_dir is None:
             # sqlite_workspace_access already calls assert_sqlite_workspace_available internally.
-            async with sqlite_workspace_access(workspace_id) as pinned_files_dir:
-                return await self.capture_workspace_databases(workspace_id, trigger=trigger, snapshot_id=snapshot_id, snapshot_git_commit_hash=snapshot_git_commit_hash, mandatory=mandatory, database_names=database_names, files_dir=pinned_files_dir)
+            async with capture_request_admission():
+                async with sqlite_workspace_access(workspace_id) as pinned_files_dir:
+                    return await self.capture_workspace_databases(
+                        workspace_id,
+                        trigger=trigger,
+                        snapshot_id=snapshot_id,
+                        snapshot_git_commit_hash=snapshot_git_commit_hash,
+                        mandatory=mandatory,
+                        database_names=database_names,
+                        files_dir=pinned_files_dir,
+                    )
         else:
             if trigger == "pre_restore":
                 await assert_sqlite_workspace_maintenance_held(workspace_id)
@@ -416,7 +630,9 @@ class SqliteHistoryService:
             results: list[dict[str, Any]] = []
             for name in names:
                 try:
-                    results.append(await run_sqlite_blocking(self._capture_one, workspace_id, root, files_dir, name, trigger, snapshot_id, snapshot_git_commit_hash))
+                    results.append(
+                        await run_sqlite_blocking(self._capture_one, workspace_id, root, files_dir, name, trigger, snapshot_id, snapshot_git_commit_hash)
+                    )
                 except Exception as exc:
                     failed = await run_sqlite_blocking(self._record_failure, workspace_id, root, name, trigger, snapshot_id, snapshot_git_commit_hash, exc)
                     results.append(failed)
@@ -442,22 +658,46 @@ class SqliteHistoryService:
         except (FileNotFoundError, SecureFileError):
             return []
 
-    def _capture_one(self, workspace_id: str, root: Path, files_dir: Path, name: str, trigger: str, snapshot_id: str | None, commit: str | None) -> dict[str, Any]:
+    def _capture_one(
+        self, workspace_id: str, root: Path, files_dir: Path, name: str, trigger: str, snapshot_id: str | None, commit: str | None
+    ) -> dict[str, Any]:
         with _catalog_lock(root):
             return self._capture_one_locked(workspace_id, root, files_dir, name, trigger, snapshot_id, commit)
 
-    def _capture_one_locked(self, workspace_id: str, root: Path, files_dir: Path, name: str, trigger: str, snapshot_id: str | None, commit: str | None) -> dict[str, Any]:
+    def _capture_one_locked(
+        self, workspace_id: str, root: Path, files_dir: Path, name: str, trigger: str, snapshot_id: str | None, commit: str | None
+    ) -> dict[str, Any]:
         _validate_database_name(name)
         backup_id = str(uuid4())
         blob_dir = _history_subdirectory(root, "blobs", create=True)
         destination = blob_dir / f"{backup_id}.sqlite3"
         manifest = self._load(root, workspace_id)
+        # A matching source token is only a hint until the immutable blob's
+        # recorded checksum and size are revalidated under this catalog lock.
+        # Safety captures intentionally do not shortcut this full capture.
+        has_token_candidate = any(
+            row.get("status") == "ready" and row.get("database_name") == name and isinstance(row.get("source_token"), str) for row in manifest["backups"]
+        )
+        source_token = self._probe_confined(files_dir, name) if trigger != "pre_restore" and has_token_candidate else None
+        reusable = self._latest_reusable_blob(root, manifest, name, source_token)
+        if reusable is not None:
+            if trigger == "scheduled":
+                logger.info("SQLite history capture outcome=skipped_unchanged workspace_id=%s database_name=%s", workspace_id, name)
+                return {"outcome": "skipped_unchanged", "database_name": name, "source_token": source_token}
+            row = self._new_alias_row(workspace_id, name, trigger, snapshot_id, commit, reusable, source_token)
+            manifest["backups"].append(row)
+            removed = self._prune_locked(root, manifest)
+            self._save(root, manifest)
+            self._unlink_unreferenced(root, manifest, removed)
+            logger.info("SQLite history capture outcome=reused workspace_id=%s database_name=%s logical_bytes=%s", workspace_id, name, row["size_bytes"])
+            return self._backup_response(row)
         # Free ordinary expired history before rejecting a safe new capture.
-        self._prune_locked(root, manifest)
-        self._enforce_quota(root, manifest, self._database_size_estimate(files_dir, name))
+        removed = self._prune_locked(root, manifest)
+        self._enforce_quota(root, manifest, self._database_size_estimate(files_dir, name), planned_removed=removed)
         # Eviction is durable before expensive source work: a capture failure
         # cannot leave catalog rows pointing at blobs already evicted.
         self._save(root, manifest)
+        self._unlink_unreferenced(root, manifest, removed)
         capture = self._capture_confined(files_dir, name, blob_dir, destination.name)
         # A WAL-backed source can be materially larger than its main file.  The
         # reservation above is conservative; produced bytes are authoritative.
@@ -469,11 +709,91 @@ class SqliteHistoryService:
         except Exception:
             destination.unlink(missing_ok=True)
             raise
-        row = {"id": backup_id, "workspace_id": workspace_id, "database_name": name, "created_at": _now().isoformat(), "trigger": trigger, "snapshot_id": snapshot_id, "snapshot_git_commit_hash": commit, "status": "ready", "size_bytes": int(capture["size_bytes"]), "sha256": str(capture["sha256"]), "error": None, "blob": f"blobs/{destination.name}", "fingerprint": capture.get("fingerprint"), "schema_hash": capture.get("schema_hash")}
+        row = {
+            "id": backup_id,
+            "workspace_id": workspace_id,
+            "database_name": name,
+            "created_at": _now().isoformat(),
+            "trigger": trigger,
+            "snapshot_id": snapshot_id,
+            "snapshot_git_commit_hash": commit,
+            "status": "ready",
+            "size_bytes": int(capture["size_bytes"]),
+            "sha256": str(capture["sha256"]),
+            "error": None,
+            "blob": f"blobs/{destination.name}",
+            "fingerprint": capture.get("fingerprint"),
+            "schema_hash": capture.get("schema_hash"),
+            "source_token": capture.get("source_token"),
+        }
+        # A mandatory pre-restore capture has completed verification before any
+        # sharing is considered.  Persist its alias before removing a duplicate.
+        duplicate = self._latest_reusable_blob(root, manifest, name, None, sha256=row["sha256"], size=row["size_bytes"])
+        duplicate_blob = None
+        if duplicate is not None:
+            duplicate_blob = row["blob"]
+            row["blob"] = duplicate["blob"]
         manifest["backups"].append(row)
-        self._prune_locked(root, manifest)
+        removed = self._prune_locked(root, manifest)
         self._save(root, manifest)
+        if duplicate_blob:
+            self._unlink_unreferenced(root, manifest, {duplicate_blob})
+        self._unlink_unreferenced(root, manifest, removed)
+        logger.info(
+            "SQLite history capture outcome=%s workspace_id=%s database_name=%s new_blob_bytes=%s logical_bytes=%s",
+            "reused" if duplicate else "captured",
+            workspace_id,
+            name,
+            0 if duplicate else row["size_bytes"],
+            row["size_bytes"],
+        )
         return self._backup_response(row)
+
+    def _latest_reusable_blob(
+        self, root: Path, manifest: dict[str, Any], name: str, token: str | None, *, sha256: str | None = None, size: int | None = None
+    ) -> dict[str, Any] | None:
+        if token is None and sha256 is None:
+            return None
+        rows = sorted(
+            (row for row in manifest["backups"] if row.get("status") == "ready" and row.get("database_name") == name),
+            key=lambda row: str(row.get("created_at")),
+            reverse=True,
+        )
+        for row in rows:
+            if token is not None and row.get("source_token") != token:
+                continue
+            if sha256 is not None and (row.get("sha256") != sha256 or int(row.get("size_bytes") or -1) != size):
+                continue
+            try:
+                blob = self._protected_path(root, str(row.get("blob") or ""), "blobs")
+                if not blob.is_file() or blob.stat().st_size != int(row.get("size_bytes") or -1) or _sha256(blob) != row.get("sha256"):
+                    continue
+            except HTTPException:
+                continue
+            return row
+        return None
+
+    @staticmethod
+    def _new_alias_row(
+        workspace_id: str, name: str, trigger: str, snapshot_id: str | None, commit: str | None, source: dict[str, Any], token: str | None
+    ) -> dict[str, Any]:
+        return {
+            "id": str(uuid4()),
+            "workspace_id": workspace_id,
+            "database_name": name,
+            "created_at": _now().isoformat(),
+            "trigger": trigger,
+            "snapshot_id": snapshot_id,
+            "snapshot_git_commit_hash": commit,
+            "status": "ready",
+            "size_bytes": int(source["size_bytes"]),
+            "sha256": source["sha256"],
+            "error": None,
+            "blob": source["blob"],
+            "fingerprint": source.get("fingerprint"),
+            "schema_hash": source.get("schema_hash"),
+            "source_token": token,
+        }
 
     @staticmethod
     def _database_size_estimate(files_dir: Path, name: str) -> int:
@@ -505,11 +825,19 @@ class SqliteHistoryService:
             with open_directory(files_dir, ".ragtime/db") as source_fd, open_directory(blob_dir.parent, "blobs", create=True) as destination_fd:
                 for fd in (source_fd, destination_fd):
                     os.set_inheritable(fd, True)
-                completed = subprocess.run(
+                completed = run_admitted_subprocess(
                     [
-                        sys.executable, "-m", "ragtime.userspace.sqlite_history_child",
-                        "--source-fd", str(source_fd), "--destination-fd", str(destination_fd),
-                        "--source-name", database_name, "--destination-name", destination_name,
+                        sys.executable,
+                        "-m",
+                        "ragtime.userspace.sqlite_history_child",
+                        "--source-fd",
+                        str(source_fd),
+                        "--destination-fd",
+                        str(destination_fd),
+                        "--source-name",
+                        database_name,
+                        "--destination-name",
+                        destination_name,
                     ],
                     pass_fds=(source_fd, destination_fd),
                     capture_output=True,
@@ -530,15 +858,68 @@ class SqliteHistoryService:
         except (json.JSONDecodeError, ValueError) as exc:
             raise HTTPException(status_code=503, detail="Secure SQLite capture confinement is unavailable") from exc
 
-    def _record_failure(self, workspace_id: str, root: Path, name: str, trigger: str, snapshot_id: str | None, commit: str | None, exc: Exception) -> dict[str, Any]:
+    @staticmethod
+    def _probe_confined(files_dir: Path, database_name: str) -> str | None:
+        """Ask the confined child for a conservative source token only."""
+        try:
+            with open_directory(files_dir, ".ragtime/db") as source_fd, open_directory(files_dir.parent, "sqlite_backups", create=True) as destination_fd:
+                for fd in (source_fd, destination_fd):
+                    os.set_inheritable(fd, True)
+                completed = run_admitted_subprocess(
+                    [
+                        sys.executable,
+                        "-m",
+                        "ragtime.userspace.sqlite_history_child",
+                        "--source-fd",
+                        str(source_fd),
+                        "--destination-fd",
+                        str(destination_fd),
+                        "--source-name",
+                        database_name,
+                        "--destination-name",
+                        "blobs/.probe",
+                        "--probe-source",
+                    ],
+                    pass_fds=(source_fd, destination_fd),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=60,
+                )
+            if completed.returncode:
+                return None
+            result = json.loads(completed.stdout)
+            token = result.get("source_token") if isinstance(result, dict) else None
+            return token if isinstance(token, str) else None
+        except (OSError, SecureFileError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            return None
+
+    def _record_failure(
+        self, workspace_id: str, root: Path, name: str, trigger: str, snapshot_id: str | None, commit: str | None, exc: Exception
+    ) -> dict[str, Any]:
         with _catalog_lock(root):
             manifest = self._load(root, workspace_id)
-            row = {"id": str(uuid4()), "workspace_id": workspace_id, "database_name": name, "created_at": _now().isoformat(), "trigger": trigger, "snapshot_id": snapshot_id, "snapshot_git_commit_hash": commit, "status": "failed", "size_bytes": 0, "sha256": None, "error": _safe_error(exc), "blob": None}
+            row = {
+                "id": str(uuid4()),
+                "workspace_id": workspace_id,
+                "database_name": name,
+                "created_at": _now().isoformat(),
+                "trigger": trigger,
+                "snapshot_id": snapshot_id,
+                "snapshot_git_commit_hash": commit,
+                "status": "failed",
+                "size_bytes": 0,
+                "sha256": None,
+                "error": _safe_error(exc),
+                "blob": None,
+            }
             manifest["backups"].append(row)
             self._save(root, manifest)
             return self._backup_response(row)
 
-    def _enforce_quota(self, root: Path, manifest: dict[str, Any], incoming: int, *, protected_ids: set[str] | None = None) -> None:
+    def _enforce_quota(
+        self, root: Path, manifest: dict[str, Any], incoming: int, *, protected_ids: set[str] | None = None, planned_removed: set[str] | None = None
+    ) -> None:
         """Reserve space without ever leaving a saved row without its blob.
 
         Decide the complete eviction set before changing disk.  When eviction is
@@ -546,30 +927,45 @@ class SqliteHistoryService:
         leaves an orphan which the ordinary sweep can safely collect.
         """
         used = self._history_disk_usage(root)
+        if planned_removed:
+            # Pruning has already removed these rows from the in-memory plan but
+            # cannot unlink until that plan is persisted.  Credit only blobs
+            # without a surviving alias, while leaving files/metadata untouched
+            # if reservation is impossible.
+            surviving = {str(row.get("blob")) for row in manifest["backups"] if row.get("blob")}
+            for relative in planned_removed - surviving:
+                try:
+                    used -= self._protected_path(root, relative, "blobs").stat().st_size
+                except FileNotFoundError:
+                    pass
         if used + incoming > _MAX_WORKSPACE_BYTES:
             protected = self._protected_backup_ids(manifest) | (protected_ids or set())
             candidates = sorted(
                 (row for row in manifest["backups"] if row.get("status") == "ready" and row["id"] not in protected),
                 key=lambda row: row["created_at"],
             )
-            evictions: list[tuple[dict[str, Any], Path, int]] = []
+            evictions: list[dict[str, Any]] = []
+            remaining = list(manifest["backups"])
             for row in candidates:
                 if used + incoming <= _MAX_WORKSPACE_BYTES:
                     break
-                blob = self._protected_path(root, str(row.get("blob") or ""), "blobs")
-                try:
-                    size = blob.stat().st_size
-                except FileNotFoundError:
-                    size = 0
-                evictions.append((row, blob, size))
-                used -= size
+                remaining.remove(row)
+                evictions.append(row)
+                # An alias only frees capacity after its final surviving
+                # reference is evicted.  Logical row sizes are never summed.
+                blob_name = str(row.get("blob") or "")
+                if blob_name and not any(other.get("blob") == blob_name for other in remaining):
+                    blob = self._protected_path(root, blob_name, "blobs")
+                    try:
+                        used -= blob.stat().st_size
+                    except FileNotFoundError:
+                        pass
             if used + incoming > _MAX_WORKSPACE_BYTES:
                 raise HTTPException(status_code=409, detail="SQLite history quota would be exceeded")
-            for row, _, _ in evictions:
+            for row in evictions:
                 manifest["backups"].remove(row)
             self._save(root, manifest)
-            for _, blob, _ in evictions:
-                blob.unlink(missing_ok=True)
+            self._unlink_unreferenced(root, manifest, {str(row.get("blob") or "") for row in evictions})
 
     @staticmethod
     def _history_disk_usage(root: Path) -> int:
@@ -587,7 +983,7 @@ class SqliteHistoryService:
                     total += details.st_size
         return total
 
-    def _prune_locked(self, root: Path, manifest: dict[str, Any]) -> None:
+    def _prune_locked(self, root: Path, manifest: dict[str, Any]) -> set[str]:
         cutoff = _now() - timedelta(days=_RETENTION_DAYS)
         ready_by_db: dict[str, list[dict[str, Any]]] = {}
         for row in manifest["backups"]:
@@ -598,10 +994,15 @@ class SqliteHistoryService:
         for rows in ready_by_db.values():
             rows.sort(key=lambda row: row["created_at"], reverse=True)
             for row in rows[_MAX_READY_PER_DATABASE:]:
-                if row.get("trigger") != "pre_restore" and row["id"] not in protected_backup_ids: removable.add(row["id"])
+                if row.get("trigger") != "pre_restore" and row["id"] not in protected_backup_ids:
+                    removable.add(row["id"])
             for row in rows[1:]:
                 old_pre_restore = row.get("trigger") == "pre_restore" and datetime.fromisoformat(row["created_at"]) < _now() - _PRE_RESTORE_MINIMUM
-                if (row.get("trigger") != "pre_restore" or old_pre_restore) and datetime.fromisoformat(row["created_at"]) < cutoff and row["id"] not in protected_backup_ids:
+                if (
+                    (row.get("trigger") != "pre_restore" or old_pre_restore)
+                    and datetime.fromisoformat(row["created_at"]) < cutoff
+                    and row["id"] not in protected_backup_ids
+                ):
                     removable.add(row["id"])
         # Failed captures are diagnostic only; retain one month rather than
         # allowing repeated scheduled failures to grow the manifest forever.
@@ -609,26 +1010,42 @@ class SqliteHistoryService:
             if row.get("status") == "failed" and datetime.fromisoformat(row["created_at"]) < cutoff:
                 removable.add(row["id"])
         kept = []
+        removed_blobs: set[str] = set()
         for row in manifest["backups"]:
             if row["id"] not in removable:
-                kept.append(row); continue
+                kept.append(row)
+                continue
             if row.get("blob"):
-                self._protected_path(root, str(row["blob"]), "blobs").unlink(missing_ok=True)
+                removed_blobs.add(str(row["blob"]))
         manifest["backups"] = kept
+        return removed_blobs
 
-    async def preview(self, workspace_id: str, backup_id: str, *, mode: str, conflict_policy: str, table_policies: dict[str, str] | None, user_id: str) -> dict[str, Any]:
+    def _unlink_unreferenced(self, root: Path, manifest: dict[str, Any], candidates: set[str]) -> None:
+        """Only unlink after the manifest durably stopped referencing a blob."""
+        referenced = {str(row.get("blob")) for row in manifest.get("backups", []) if row.get("blob")}
+        for relative in candidates - referenced:
+            if relative:
+                self._protected_path(root, relative, "blobs").unlink(missing_ok=True)
+
+    async def preview(
+        self, workspace_id: str, backup_id: str, *, mode: str, conflict_policy: str, table_policies: dict[str, str] | None, user_id: str
+    ) -> dict[str, Any]:
         # sqlite_workspace_access already calls assert_sqlite_workspace_available internally.
         async with sqlite_workspace_access(workspace_id) as files_dir:
             root = self._root(workspace_id)
             return await run_sqlite_blocking(self._preview_sync, workspace_id, root, files_dir, backup_id, mode, conflict_policy, table_policies, user_id)
 
-    def _preview_sync(self, workspace_id: str, root: Path, files_dir: Path, backup_id: str, mode: str, policy: str, table_policies: dict[str, str] | None, user_id: str) -> dict[str, Any]:
+    def _preview_sync(
+        self, workspace_id: str, root: Path, files_dir: Path, backup_id: str, mode: str, policy: str, table_policies: dict[str, str] | None, user_id: str
+    ) -> dict[str, Any]:
         with _catalog_lock(root):
             manifest = self._load(root, workspace_id)
             row = next((item for item in manifest["backups"] if item["id"] == backup_id and item.get("status") == "ready"), None)
-            if not row: raise HTTPException(status_code=404, detail="SQLite backup not found")
+            if not row:
+                raise HTTPException(status_code=404, detail="SQLite backup not found")
             backup = self._protected_path(root, row["blob"], "blobs")
-            if not backup.is_file() or _sha256(backup) != row["sha256"]: raise HTTPException(status_code=409, detail="SQLite backup integrity verification failed")
+            if not backup.is_file() or _sha256(backup) != row["sha256"]:
+                raise HTTPException(status_code=409, detail="SQLite backup integrity verification failed")
             migration_dir = files_dir / ".ragtime" / "db" / "migrations"
             # Preview preparation can hold a source online-backup copy and emit
             # a full candidate. Reserve both conservative inputs before the
@@ -642,8 +1059,14 @@ class SqliteHistoryService:
             # never a later mutable live file.
             try:
                 result = self._preview_confined(
-                    files_dir, root, str(row["blob"]), row["database_name"],
-                    f"candidates/{candidate.name}", mode, policy, table_policies or {},
+                    files_dir,
+                    root,
+                    str(row["blob"]),
+                    row["database_name"],
+                    f"candidates/{candidate.name}",
+                    mode,
+                    policy,
+                    table_policies or {},
                 )
                 self._enforce_quota(root, manifest, 0, protected_ids={backup_id})
             except Exception:
@@ -654,25 +1077,80 @@ class SqliteHistoryService:
             preview_id = None
             expires_at = None
             if result.get("can_apply"):
-                preview_id = str(uuid4()); expires_at = (_now() + _PREVIEW_TTL).isoformat()
-                manifest["previews"][preview_id] = {"backup_id": backup_id, "database_name": row["database_name"], "candidate": f"candidates/{candidate.name}", "candidate_sha256": result["candidate_sha256"], "current_fingerprint": current_fingerprint, "migration_fingerprint": migration_value, "mode": mode, "conflict_policy": policy, "table_policies": table_policies or {}, "user_id": user_id, "expires_at": expires_at}
+                preview_id = str(uuid4())
+                expires_at = (_now() + _PREVIEW_TTL).isoformat()
+                manifest["previews"][preview_id] = {
+                    "backup_id": backup_id,
+                    "database_name": row["database_name"],
+                    "candidate": f"candidates/{candidate.name}",
+                    "candidate_sha256": result["candidate_sha256"],
+                    "current_fingerprint": current_fingerprint,
+                    "migration_fingerprint": migration_value,
+                    "mode": mode,
+                    "conflict_policy": policy,
+                    "table_policies": table_policies or {},
+                    "user_id": user_id,
+                    "expires_at": expires_at,
+                }
                 self._save(root, manifest)
-            else: self._protected_path(root, f"candidates/{candidate.name}", "candidates").unlink(missing_ok=True)
-            return {"preview_id": preview_id, "backup_id": backup_id, "database_name": row["database_name"], "mode": mode, "conflict_policy": policy, "tables": result.get("tables", []), "migrations_applied": result.get("migrations_applied", []), "warnings": result.get("warnings", []), "blockers": result.get("blockers", []), "can_apply": bool(result.get("can_apply")), "expires_at": expires_at}
+            else:
+                self._protected_path(root, f"candidates/{candidate.name}", "candidates").unlink(missing_ok=True)
+            return {
+                "preview_id": preview_id,
+                "backup_id": backup_id,
+                "database_name": row["database_name"],
+                "mode": mode,
+                "conflict_policy": policy,
+                "tables": result.get("tables", []),
+                "migrations_applied": result.get("migrations_applied", []),
+                "warnings": result.get("warnings", []),
+                "blockers": result.get("blockers", []),
+                "can_apply": bool(result.get("can_apply")),
+                "expires_at": expires_at,
+            }
 
     @staticmethod
-    def _preview_confined(files_dir: Path, root: Path, backup: str, database_name: str, candidate: str, mode: str, policy: str, table_policies: dict[str, str]) -> dict[str, Any]:
+    def _preview_confined(
+        files_dir: Path, root: Path, backup: str, database_name: str, candidate: str, mode: str, policy: str, table_policies: dict[str, str]
+    ) -> dict[str, Any]:
         try:
             with open_directory(files_dir, ".ragtime/db") as source_fd, open_directory(root.parent, root.name) as destination_fd:
                 for fd in (source_fd, destination_fd):
                     os.set_inheritable(fd, True)
-                completed = subprocess.run([
-                    sys.executable, "-m", "ragtime.userspace.sqlite_history_child", "--source-fd", str(source_fd), "--destination-fd", str(destination_fd),
-                    "--source-name", database_name, "--destination-name", candidate,
-                    "--preview-backup", backup, "--preview-current", database_name,
-                    "--preview-migrations", "migrations", "--preview-candidate", candidate,
-                    "--mode", mode, "--conflict-policy", policy, "--table-policies", json.dumps(table_policies),
-                ], pass_fds=(source_fd, destination_fd), capture_output=True, text=True, check=False, timeout=60)
+                completed = run_admitted_subprocess(
+                    [
+                        sys.executable,
+                        "-m",
+                        "ragtime.userspace.sqlite_history_child",
+                        "--source-fd",
+                        str(source_fd),
+                        "--destination-fd",
+                        str(destination_fd),
+                        "--source-name",
+                        database_name,
+                        "--destination-name",
+                        candidate,
+                        "--preview-backup",
+                        backup,
+                        "--preview-current",
+                        database_name,
+                        "--preview-migrations",
+                        "migrations",
+                        "--preview-candidate",
+                        candidate,
+                        "--mode",
+                        mode,
+                        "--conflict-policy",
+                        policy,
+                        "--table-policies",
+                        json.dumps(table_policies),
+                    ],
+                    pass_fds=(source_fd, destination_fd),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=60,
+                )
         except (OSError, SecureFileError, subprocess.TimeoutExpired) as exc:
             raise HTTPException(status_code=503, detail="Secure SQLite restore confinement is unavailable") from exc
         if completed.returncode:
@@ -691,10 +1169,30 @@ class SqliteHistoryService:
         """Read live SQLite/migration fingerprints only in the Landlock child."""
         try:
             with open_directory(files_dir, ".ragtime/db") as source_fd, open_directory(root.parent, root.name) as destination_fd:
-                completed = subprocess.run([
-                    sys.executable, "-m", "ragtime.userspace.sqlite_history_child", "--source-fd", str(source_fd), "--destination-fd", str(destination_fd),
-                    "--source-name", database_name, "--destination-name", "candidates/.drift", "--fingerprint-current", database_name, "--fingerprint-migrations", "migrations",
-                ], pass_fds=(source_fd, destination_fd), capture_output=True, text=True, check=False, timeout=60)
+                completed = run_admitted_subprocess(
+                    [
+                        sys.executable,
+                        "-m",
+                        "ragtime.userspace.sqlite_history_child",
+                        "--source-fd",
+                        str(source_fd),
+                        "--destination-fd",
+                        str(destination_fd),
+                        "--source-name",
+                        database_name,
+                        "--destination-name",
+                        "candidates/.drift",
+                        "--fingerprint-current",
+                        database_name,
+                        "--fingerprint-migrations",
+                        "migrations",
+                    ],
+                    pass_fds=(source_fd, destination_fd),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=60,
+                )
         except (OSError, SecureFileError, subprocess.TimeoutExpired) as exc:
             raise HTTPException(status_code=503, detail="Secure SQLite drift confinement is unavailable") from exc
         if completed.returncode:
@@ -713,10 +1211,9 @@ class SqliteHistoryService:
             manifest = self._load(root, workspace_id)
             operation = next(
                 (
-                    row for row in manifest["operations"].values()
-                    if row.get("preview_id") == preview_id
-                    and row.get("status") == "completed"
-                    and row.get("user_id") == user_id
+                    row
+                    for row in manifest["operations"].values()
+                    if row.get("preview_id") == preview_id and row.get("status") == "completed" and row.get("user_id") == user_id
                 ),
                 None,
             )
@@ -763,51 +1260,94 @@ class SqliteHistoryService:
     def _apply_sync(self, workspace_id: str, root: Path, files_dir: Path, preview_id: str, user_id: str, lease_id: str) -> dict[str, Any]:
         with _catalog_lock(root):
             try:
-                manifest = self._load(root, workspace_id); preview = manifest["previews"].get(preview_id)
+                manifest = self._load(root, workspace_id)
+                preview = manifest["previews"].get(preview_id)
                 # Successful receipts outlive preview cleanup, but only the
                 # authenticated creator may retrieve them.  Legacy receipts
                 # without ownership are intentionally not inferred.
-                operation = next((row for row in manifest["operations"].values() if row.get("preview_id") == preview_id and row.get("status") == "completed" and row.get("user_id") == user_id), None)
+                operation = next(
+                    (
+                        row
+                        for row in manifest["operations"].values()
+                        if row.get("preview_id") == preview_id and row.get("status") == "completed" and row.get("user_id") == user_id
+                    ),
+                    None,
+                )
                 if operation:
                     return operation["result"]
-                if not preview or preview["user_id"] != user_id: raise HTTPException(status_code=409, detail="SQLite restore preview must be regenerated")
-                if datetime.fromisoformat(preview["expires_at"]) <= _now(): raise HTTPException(status_code=409, detail="SQLite restore preview expired; regenerate it")
+                if not preview or preview["user_id"] != user_id:
+                    raise HTTPException(status_code=409, detail="SQLite restore preview must be regenerated")
+                if datetime.fromisoformat(preview["expires_at"]) <= _now():
+                    raise HTTPException(status_code=409, detail="SQLite restore preview expired; regenerate it")
                 drift = self._drift_confined(files_dir, root, preview["database_name"])
-                if drift["current_fingerprint"] != preview["current_fingerprint"] or drift["migration_fingerprint"] != preview["migration_fingerprint"]: raise HTTPException(status_code=409, detail="SQLite database changed; regenerate restore preview")
+                if drift["current_fingerprint"] != preview["current_fingerprint"] or drift["migration_fingerprint"] != preview["migration_fingerprint"]:
+                    raise HTTPException(status_code=409, detail="SQLite database changed; regenerate restore preview")
                 candidate = self._protected_path(root, preview["candidate"], "candidates")
-                if not candidate.is_file() or _sha256(candidate) != preview["candidate_sha256"]: raise HTTPException(status_code=409, detail="SQLite restore candidate verification failed")
+                if not candidate.is_file() or _sha256(candidate) != preview["candidate_sha256"]:
+                    raise HTTPException(status_code=409, detail="SQLite restore candidate verification failed")
                 # A missing live target has no state to preserve.  Merge has
                 # already been rejected by the recovery engine in this case.
-                safety = self._capture_one_locked(workspace_id, root, files_dir, preview["database_name"], "pre_restore", None, None) if drift["current_fingerprint"] is not None else None
+                safety = (
+                    self._capture_one_locked(workspace_id, root, files_dir, preview["database_name"], "pre_restore", None, None)
+                    if drift["current_fingerprint"] is not None
+                    else None
+                )
             except Exception as exc:
                 raise _PreIntentFailure(exc) from exc
             # The mandatory capture atomically published its own catalog update.
             # Reload before recording the restore intent so it cannot be lost.
             manifest = self._load(root, workspace_id)
-            op_id = str(uuid4()); manifest["operations"][op_id] = {"preview_id": preview_id, "user_id": user_id, "status": "intent", "candidate": preview["candidate"], "safety_backup_id": safety["id"] if safety else None, "publication_state": "prepublication", "lease_id": lease_id, "created_at": _now().isoformat()}; self._save(root, manifest)
+            op_id = str(uuid4())
+            manifest["operations"][op_id] = {
+                "preview_id": preview_id,
+                "user_id": user_id,
+                "status": "intent",
+                "candidate": preview["candidate"],
+                "safety_backup_id": safety["id"] if safety else None,
+                "publication_state": "prepublication",
+                "lease_id": lease_id,
+                "created_at": _now().isoformat(),
+            }
+            self._save(root, manifest)
             # Durably cross to 'publishing' BEFORE the live database is replaced.
             # A crash after os.replace but before the terminal save then leaves
             # 'publishing' (not 'prepublication'), so abort is refused and only
             # completion (which re-publishes the idempotent candidate and clears
             # stale sidecars) can finish the interrupted restore.
-            manifest["operations"][op_id]["publication_state"] = "publishing"; self._save(root, manifest)
+            manifest["operations"][op_id]["publication_state"] = "publishing"
+            self._save(root, manifest)
             self._publish_verified_candidate(
-                root, str(preview["candidate"]), str(preview["candidate_sha256"]), files_dir,
-                str(preview["database_name"]), verification_error="SQLite publication integrity verification failed",
+                root,
+                str(preview["candidate"]),
+                str(preview["candidate_sha256"]),
+                files_dir,
+                str(preview["database_name"]),
+                verification_error="SQLite publication integrity verification failed",
             )
-            manifest["operations"][op_id]["publication_state"] = "published"; self._save(root, manifest)
-            result = {"operation_id": op_id, "restored_backup_id": preview["backup_id"], "safety_backup_id": safety["id"] if safety else None, "runtime_stopped": True, "status": "completed"}
-            manifest["operations"][op_id].update(status="completed", result=result, completed_at=_now().isoformat()); self._save(root, manifest)
+            manifest["operations"][op_id]["publication_state"] = "published"
+            self._save(root, manifest)
+            result = {
+                "operation_id": op_id,
+                "restored_backup_id": preview["backup_id"],
+                "safety_backup_id": safety["id"] if safety else None,
+                "runtime_stopped": True,
+                "status": "completed",
+            }
+            manifest["operations"][op_id].update(status="completed", result=result, completed_at=_now().isoformat())
+            self._save(root, manifest)
             return result
 
     async def download_path(self, workspace_id: str, backup_id: str) -> Path:
         root = self._root(workspace_id)
+
         def lookup() -> Path:
             with _catalog_lock(root):
                 row = next((item for item in self._load(root, workspace_id)["backups"] if item["id"] == backup_id and item.get("status") == "ready"), None)
-                if not row: raise HTTPException(status_code=404, detail="SQLite backup not found")
+                if not row:
+                    raise HTTPException(status_code=404, detail="SQLite backup not found")
                 path = self._protected_path(root, row["blob"], "blobs")
-                if not path.is_file() or _sha256(path) != row["sha256"]: raise HTTPException(status_code=409, detail="SQLite backup integrity verification failed")
+                if not path.is_file() or _sha256(path) != row["sha256"]:
+                    raise HTTPException(status_code=409, detail="SQLite backup integrity verification failed")
                 self._enforce_quota(root, self._load(root, workspace_id), path.stat().st_size, protected_ids={backup_id})
                 download_dir = _history_subdirectory(root, "downloads", create=True)
                 copy = download_dir / f"{uuid4()}.sqlite3"
@@ -822,19 +1362,25 @@ class SqliteHistoryService:
                     self._protected_path(root, f"downloads/{copy.name}", "downloads").unlink(missing_ok=True)
                     raise
                 return copy
+
         return await run_sqlite_blocking(lookup)
 
     async def delete(self, workspace_id: str, backup_id: str) -> None:
         root = self._root(workspace_id)
+
         def remove() -> None:
             with _catalog_lock(root):
-                manifest = self._load(root, workspace_id); row = next((item for item in manifest["backups"] if item["id"] == backup_id), None)
-                if not row: raise HTTPException(status_code=404, detail="SQLite backup not found")
-                if backup_id in self._protected_backup_ids(manifest): raise HTTPException(status_code=409, detail="SQLite backup is protected and cannot be deleted")
+                manifest = self._load(root, workspace_id)
+                row = next((item for item in manifest["backups"] if item["id"] == backup_id), None)
+                if not row:
+                    raise HTTPException(status_code=404, detail="SQLite backup not found")
+                if backup_id in self._protected_backup_ids(manifest):
+                    raise HTTPException(status_code=409, detail="SQLite backup is protected and cannot be deleted")
                 manifest["backups"].remove(row)
                 self._save(root, manifest)
                 if row.get("blob"):
-                    self._protected_path(root, str(row["blob"]), "blobs").unlink(missing_ok=True)
+                    self._unlink_unreferenced(root, manifest, {str(row["blob"])})
+
         await run_sqlite_blocking(remove)
 
     async def recover_operation(self, workspace_id: str, operation_id: str, *, action: Literal["complete", "abort"]) -> dict[str, Any]:
@@ -870,7 +1416,13 @@ class SqliteHistoryService:
             stored = operation.get("result")
             if isinstance(stored, dict):
                 return stored
-            return {"operation_id": operation_id, "restored_backup_id": None, "safety_backup_id": operation.get("safety_backup_id"), "runtime_stopped": True, "status": operation.get("status")}
+            return {
+                "operation_id": operation_id,
+                "restored_backup_id": None,
+                "safety_backup_id": operation.get("safety_backup_id"),
+                "runtime_stopped": True,
+                "status": operation.get("status"),
+            }
 
         # Receipt replay does not need (and must not acquire) recovery
         # ownership if its original marker is already gone or belongs to a new
@@ -935,7 +1487,8 @@ class SqliteHistoryService:
                     # Persist the terminal abort receipt BEFORE the marker is
                     # released so a crash mid-release cannot orphan the intent.
                     result = {"operation_id": operation_id, "status": "aborted"}
-                    operation.update(status="aborted", aborted_at=_now().isoformat(), result=result, lease_id=lease_id); self._save(root, manifest)
+                    operation.update(status="aborted", aborted_at=_now().isoformat(), result=result, lease_id=lease_id)
+                    self._save(root, manifest)
                     return lease_id, result
                 candidate = self._protected_path(root, str(operation.get("candidate") or ""), "candidates")
                 preview = manifest["previews"].get(operation.get("preview_id"))
@@ -944,20 +1497,32 @@ class SqliteHistoryService:
                 # Mirror _apply_sync: durably cross to 'publishing' BEFORE the
                 # live database is replaced, so an interrupted recovery-complete
                 # can only be finished by another complete, never aborted.
-                operation["publication_state"] = "publishing"; self._save(root, manifest)
+                operation["publication_state"] = "publishing"
+                self._save(root, manifest)
                 self._publish_verified_candidate(
-                    root, str(operation["candidate"]), str(preview["candidate_sha256"]),
-                    self._files_dir_for_workspace(workspace_id), str(preview["database_name"]),
+                    root,
+                    str(operation["candidate"]),
+                    str(preview["candidate_sha256"]),
+                    self._files_dir_for_workspace(workspace_id),
+                    str(preview["database_name"]),
                     verification_error="SQLite recovery publication verification failed",
                 )
-                result = {"operation_id": operation_id, "restored_backup_id": preview["backup_id"], "safety_backup_id": operation.get("safety_backup_id"), "runtime_stopped": True, "status": "completed"}
+                result = {
+                    "operation_id": operation_id,
+                    "restored_backup_id": preview["backup_id"],
+                    "safety_backup_id": operation.get("safety_backup_id"),
+                    "runtime_stopped": True,
+                    "status": "completed",
+                }
                 # Persist the terminal completed receipt (with published state)
                 # BEFORE releasing the marker.  The database is already durably
                 # published above, so this makes the catalog receipt terminal in
                 # the same locked save, closing the crash window that previously
                 # left an orphaned intent when release/finalize was interrupted.
-                operation.update(status="completed", publication_state="published", result=result, completed_at=_now().isoformat(), lease_id=lease_id); self._save(root, manifest)
+                operation.update(status="completed", publication_state="published", result=result, completed_at=_now().isoformat(), lease_id=lease_id)
+                self._save(root, manifest)
                 return lease_id, result
+
         # The pre-read marker only supplies a lease candidate.  The recovery
         # context takes the exclusive non-blocking operation flock and verifies
         # that marker again before *any* receipt mutation/publication.
@@ -975,5 +1540,6 @@ def get_sqlite_history_service() -> SqliteHistoryService:
     global _history_service
     if _history_service is None:
         from ragtime.userspace.service import userspace_service
+
         _history_service = SqliteHistoryService(userspace_service._workspace_files_dir)
     return _history_service

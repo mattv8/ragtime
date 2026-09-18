@@ -4468,7 +4468,11 @@ export const api = {
   ): Promise<SqliteHistoryPreview> {
     const response = await apiFetch(
       `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/${encodeURIComponent(backupId)}/preview`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) },
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
     );
     return handleResponse<SqliteHistoryPreview>(response);
   },
@@ -4479,7 +4483,11 @@ export const api = {
   ): Promise<SqliteHistoryRestoreResponse> {
     const response = await apiFetch(
       `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/restore`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preview_id: previewId }) },
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preview_id: previewId }),
+      },
     );
     return handleResponse<SqliteHistoryRestoreResponse>(response);
   },
@@ -4491,7 +4499,11 @@ export const api = {
   ): Promise<SqliteHistoryMaintenanceRecoveryResponse> {
     const response = await apiFetch(
       `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/maintenance/${encodeURIComponent(operationId)}/recover`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) },
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      },
     );
     return handleResponse<SqliteHistoryMaintenanceRecoveryResponse>(response);
   },

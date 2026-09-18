@@ -47,8 +47,9 @@ class GuardedRestoreTests(unittest.IsolatedAsyncioTestCase):
             yield self.files
             released = True
 
-        with mock.patch("ragtime.userspace.service.sqlite_workspace_access", access), mock.patch(
-            "ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=self._history()
+        with (
+            mock.patch("ragtime.userspace.service.sqlite_workspace_access", access),
+            mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=self._history()),
         ):
             with self.assertRaisesRegex(RuntimeError, "git failed"):
                 async with UserSpaceService._guarded_code_restore(self.service, "workspace"):
@@ -72,9 +73,11 @@ class GuardedRestoreTests(unittest.IsolatedAsyncioTestCase):
             else:
                 released = True
 
-        with mock.patch("ragtime.userspace.service.sqlite_workspace_access", access), mock.patch(
-            "ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=self._history()
-        ), mock.patch("runtime.core.secure_files.publish_regular_file", side_effect=OSError("publish failed")):
+        with (
+            mock.patch("ragtime.userspace.service.sqlite_workspace_access", access),
+            mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=self._history()),
+            mock.patch("runtime.core.secure_files.publish_regular_file", side_effect=OSError("publish failed")),
+        ):
             with self.assertRaisesRegex(OSError, "publish failed"):
                 async with UserSpaceService._guarded_code_restore(self.service, "workspace"):
                     pass
@@ -99,8 +102,9 @@ class GuardedRestoreTests(unittest.IsolatedAsyncioTestCase):
         async def access(workspace_id: str, *, maintenance: bool = False):
             yield self.files
 
-        with mock.patch("ragtime.userspace.service.sqlite_workspace_access", access), mock.patch(
-            "ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=self._history()
+        with (
+            mock.patch("ragtime.userspace.service.sqlite_workspace_access", access),
+            mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=self._history()),
         ):
             async with UserSpaceService._guarded_code_restore(self.service, "workspace"):
                 subprocess.run(["git", "checkout", "-f", old_commit], cwd=self.files, check=True, capture_output=True)

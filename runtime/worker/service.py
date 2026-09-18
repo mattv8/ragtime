@@ -960,9 +960,7 @@ class WorkerService:
             self._workspace_file_locks[workspace_id] = lock
         return lock
 
-    def _ensure_workspace_available_locked(
-        self, workspace_id: str, *, require_full_release: bool = False, maintenance_lease_id: str | None = None
-    ) -> None:
+    def _ensure_workspace_available_locked(self, workspace_id: str, *, require_full_release: bool = False, maintenance_lease_id: str | None = None) -> None:
         if self._has_durable_sqlite_maintenance_marker(workspace_id, maintenance_lease_id):
             raise HTTPException(status_code=423, detail="Workspace SQLite maintenance recovery is required")
         leases = self._workspace_maintenance.get(workspace_id, {})
@@ -998,9 +996,7 @@ class WorkerService:
             raise HTTPException(status_code=400, detail="Invalid workspace ID")
         return value
 
-    async def acquire_sqlite_workspace_access(
-        self, workspace_id: str, lease_id: str, *, maintenance: bool
-    ) -> dict[str, str | bool]:
+    async def acquire_sqlite_workspace_access(self, workspace_id: str, lease_id: str, *, maintenance: bool) -> dict[str, str | bool]:
         """Fence a workspace and return the only safe SQLite source path."""
         workspace_id = self._validate_workspace_id(workspace_id)
         if not lease_id or len(lease_id) > 128:
@@ -1020,10 +1016,7 @@ class WorkerService:
                 leases[lease_id] = (maintenance, spec)
             newly_registered = existing is None
             session_ids = [
-                session.id
-                for session in self._sessions.values()
-                if session.workspace_id == workspace_id
-                and session.state in {"starting", "running"}
+                session.id for session in self._sessions.values() if session.workspace_id == workspace_id and session.state in {"starting", "running"}
             ]
         try:
             if maintenance:
@@ -1053,8 +1046,7 @@ class WorkerService:
                             active = [
                                 session
                                 for session in self._sessions.values()
-                                if session.workspace_id == workspace_id
-                                and session.state in {"starting", "running"}
+                                if session.workspace_id == workspace_id and session.state in {"starting", "running"}
                             ]
                         if not active:
                             authoritative = canonical
@@ -2678,18 +2670,14 @@ class WorkerService:
             session.updated_at = utc_now()
             return self._session_response(session)
 
-    async def stop_session(
-        self, worker_session_id: str, *, _maintenance_lease_id: str | None = None
-    ) -> WorkerSessionResponse:
+    async def stop_session(self, worker_session_id: str, *, _maintenance_lease_id: str | None = None) -> WorkerSessionResponse:
         async with self._lock:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
             workspace_id = session.workspace_id
             # Check admission before any mutation: shared lease blocks public stop.
-            self._ensure_workspace_available_locked(
-                workspace_id, require_full_release=True, maintenance_lease_id=_maintenance_lease_id
-            )
+            self._ensure_workspace_available_locked(workspace_id, require_full_release=True, maintenance_lease_id=_maintenance_lease_id)
             # Fence the operation before cancelling it. A startup pipeline can
             # be between its off-lock spawn and its guarded commit; clearing
             # the operation id makes that commit terminate its new process.

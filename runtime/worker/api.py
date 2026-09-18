@@ -439,16 +439,12 @@ async def start_session(
 async def acquire_sqlite_workspace_maintenance(
     workspace_id: str, payload: RuntimeWorkspaceMaintenanceRequest, _auth: None = WorkerAuth
 ) -> RuntimeWorkspaceMaintenanceResponse:
-    result = await get_worker_service().acquire_sqlite_workspace_access(
-        workspace_id, payload.lease_id, maintenance=payload.maintenance
-    )
+    result = await get_worker_service().acquire_sqlite_workspace_access(workspace_id, payload.lease_id, maintenance=payload.maintenance)
     return RuntimeWorkspaceMaintenanceResponse.model_validate(result)
 
 
 @router.delete("/worker/workspaces/{workspace_id}/sqlite-maintenance/{lease_id}", status_code=204)
-async def release_sqlite_workspace_maintenance(
-    workspace_id: str, lease_id: str, _auth: None = WorkerAuth
-) -> None:
+async def release_sqlite_workspace_maintenance(workspace_id: str, lease_id: str, _auth: None = WorkerAuth) -> None:
     await get_worker_service().release_sqlite_workspace_access(workspace_id, lease_id)
 
 
@@ -867,9 +863,9 @@ async def pty(worker_session_id: str, websocket: WebSocket):
             master_fd, slave_fd = pty_module.openpty()
             await asyncio.to_thread(ensure_sandbox_ready, sandbox_spec)
 
-    # Write bash init file inside the sandbox rootfs so that PS1 renders
-    # a literal "$" regardless of UID, and updates based on the current
-    # working directory after each command.
+            # Write bash init file inside the sandbox rootfs so that PS1 renders
+            # a literal "$" regardless of UID, and updates based on the current
+            # working directory after each command.
             _write_sandbox_init_file(sandbox_spec)
             shell_command = [shell, "--noprofile", "--init-file", "/tmp/.sandbox_bashrc", "-i"]
 
@@ -877,12 +873,18 @@ async def pty(worker_session_id: str, websocket: WebSocket):
             environment = service.build_agent_process_environment(session)
             environment = sandbox_env(sandbox_spec, environment)
             environment["TERM"] = "xterm-256color"
-    # PS1 is set by the init file; PROMPT_COMMAND cleared to prevent
-    # any inherited prompt logic from overriding it.
+            # PS1 is set by the init file; PROMPT_COMMAND cleared to prevent
+            # any inherited prompt logic from overriding it.
             environment["PROMPT_COMMAND"] = ""
             process = await spawn_sandboxed(
-                sandbox_spec, shell_command, stdin=slave_fd, stdout=slave_fd,
-                stderr=slave_fd, env=environment, pty=True, ensure_ready=False,
+                sandbox_spec,
+                shell_command,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=environment,
+                pty=True,
+                ensure_ready=False,
             )
             _pty_processes[worker_session_id] = process
             _pty_master_fds[worker_session_id] = master_fd
@@ -893,7 +895,7 @@ async def pty(worker_session_id: str, websocket: WebSocket):
                     os.close(master_fd)
             raise
         finally:
-            if 'slave_fd' in locals():
+            if "slave_fd" in locals():
                 with contextlib.suppress(Exception):
                     os.close(slave_fd)
     if process is None or master_fd is None:

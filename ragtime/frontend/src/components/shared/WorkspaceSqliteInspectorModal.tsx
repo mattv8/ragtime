@@ -10,7 +10,6 @@ import {
   PlusCircle,
   RefreshCw,
   Save,
-  Sparkles,
   Table as TableIcon,
   Terminal,
   Trash2,
@@ -1298,7 +1297,6 @@ export function WorkspaceSqliteInspectorModal({
   }, [selectedDatabase, selectedTableName, step]);
 
   const selectedDatabaseCanWrite = isDatabaseWritable(selectedDatabase);
-  const effectivePersistenceMode = selectedDatabase?.persistence_mode ?? persistenceMode;
   const linkedBannerText = selectedDatabase
     ? `Linked from ${selectedDatabase.owner_workspace_name} · ${getDatabaseAccessLabel(selectedDatabase.access_mode)}${selectedDatabase.access_mode === 'read_write' ? ` · Changes affect the ${selectedDatabase.owner_workspace_name} workspace.` : ''}`
     : null;
@@ -1391,17 +1389,6 @@ export function WorkspaceSqliteInspectorModal({
         </div>
 
         <div className="modal-body userspace-sqlite-body">
-          {effectivePersistenceMode === 'exclude' && (
-            <div className="userspace-sqlite-banner">
-              <Sparkles size={14} />
-              <span>
-                {selectedDatabase?.ownership === 'linked'
-                  ? `${selectedDatabase.owner_workspace_name} currently excludes SQLite from snapshots. The first edit will switch that workspace to two-lane persistence (include).`
-                  : 'This workspace currently excludes SQLite from snapshots. The first edit will switch it to two-lane persistence (include).'}
-              </span>
-            </div>
-          )}
-
           {step === 'databases' && (
             <DatabasesStep
               databases={databases}

@@ -1,4 +1,5 @@
 """Request and response models for protected workspace SQLite history."""
+
 from __future__ import annotations
 
 from typing import Any, Literal

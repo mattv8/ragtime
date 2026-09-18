@@ -27,9 +27,11 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
             connection.execute("CREATE TABLE item (id INTEGER PRIMARY KEY, value TEXT)")
             connection.execute("INSERT INTO item(value) VALUES ('before')")
         self.history = SqliteHistoryService(lambda workspace_id: self.files)
+
         @asynccontextmanager
         async def recovery(workspace_id: str, lease_id: str):
             yield
+
         self._recovery_patch = mock.patch("ragtime.userspace.sqlite_history.sqlite_workspace_recovery", recovery)
         self._recovery_patch.start()
 
@@ -49,6 +51,7 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 if maintenance:
                     marker.unlink(missing_ok=True)
+
         return access
 
     async def test_capture_records_exact_snapshot_association_and_lists_after_live_delete(self) -> None:
@@ -104,7 +107,9 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("ragtime.userspace.sqlite_history.sqlite_workspace_access", self._runtime_boundary()):
             backup = (await self.history.capture_workspace_databases("workspace", trigger="manual"))[0]
             self.database.unlink()
-            preview = await self.history.preview("workspace", backup["id"], mode="overwrite", conflict_policy="keep_current", table_policies=None, user_id="owner")
+            preview = await self.history.preview(
+                "workspace", backup["id"], mode="overwrite", conflict_policy="keep_current", table_policies=None, user_id="owner"
+            )
             result = await self.history.apply("workspace", preview["preview_id"], user_id="owner")
 
         self.assertIsNone(result["safety_backup_id"])
@@ -116,7 +121,9 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         candidate.parent.mkdir(parents=True)
         candidate.write_bytes(b"candidate")
         manifest = {
-            "version": 1, "workspace_id": "workspace", "backups": [],
+            "version": 1,
+            "workspace_id": "workspace",
+            "backups": [],
             "previews": {"preview": {"candidate": "candidates/candidate.sqlite3", "expires_at": "2000-01-01T00:00:00+00:00"}},
             "operations": {"operation": {"preview_id": "preview", "candidate": "candidates/candidate.sqlite3", "status": "intent"}},
             "last_scheduled_at": None,
@@ -175,10 +182,13 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         outside_workspace.mkdir()
         (workspace_root / "linked-workspace").symlink_to(outside_workspace, target_is_directory=True)
 
-        with mock.patch(
-            "ragtime.userspace.service.userspace_service",
-            SimpleNamespace(root_path=Path(self.temp.name) / "scheduled-root"),
-        ), mock.patch.object(self.history, "capture_workspace_databases", new_callable=mock.AsyncMock) as capture:
+        with (
+            mock.patch(
+                "ragtime.userspace.service.userspace_service",
+                SimpleNamespace(root_path=Path(self.temp.name) / "scheduled-root"),
+            ),
+            mock.patch.object(self.history, "capture_workspace_databases", new_callable=mock.AsyncMock) as capture,
+        ):
             (Path(self.temp.name) / "scheduled-root" / "workspaces").parent.mkdir(parents=True, exist_ok=True)
             (Path(self.temp.name) / "scheduled-root" / "workspaces").symlink_to(workspace_root, target_is_directory=True)
             await self.history.run_maintenance_once()
@@ -189,12 +199,14 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         workspace_root = Path(self.temp.name) / "scheduled-root" / "workspaces"
         (workspace_root / "workspace").mkdir(parents=True)
 
-        with mock.patch(
-            "ragtime.userspace.service.userspace_service",
-            SimpleNamespace(root_path=workspace_root.parent),
-        ), mock.patch.object(self.history, "_root", side_effect=OSError("storage unavailable")), mock.patch(
-            "ragtime.userspace.sqlite_history.logger.warning"
-        ) as warning:
+        with (
+            mock.patch(
+                "ragtime.userspace.service.userspace_service",
+                SimpleNamespace(root_path=workspace_root.parent),
+            ),
+            mock.patch.object(self.history, "_root", side_effect=OSError("storage unavailable")),
+            mock.patch("ragtime.userspace.sqlite_history.logger.warning") as warning,
+        ):
             await self.history.run_maintenance_once()
 
         warning.assert_called_once()
@@ -209,10 +221,27 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         (blobs / "old.sqlite3").write_bytes(b"old!")
         (blobs / "new.sqlite3").write_bytes(b"newest-is-protected")
         manifest = {
-            "version": 1, "workspace_id": "workspace", "previews": {}, "operations": {},
+            "version": 1,
+            "workspace_id": "workspace",
+            "previews": {},
+            "operations": {},
             "backups": [
-                {"id": "old", "database_name": "app.sqlite3", "created_at": "2024-01-01T00:00:00+00:00", "status": "ready", "blob": "blobs/old.sqlite3", "trigger": "manual"},
-                {"id": "new", "database_name": "app.sqlite3", "created_at": "2024-01-02T00:00:00+00:00", "status": "ready", "blob": "blobs/new.sqlite3", "trigger": "manual"},
+                {
+                    "id": "old",
+                    "database_name": "app.sqlite3",
+                    "created_at": "2024-01-01T00:00:00+00:00",
+                    "status": "ready",
+                    "blob": "blobs/old.sqlite3",
+                    "trigger": "manual",
+                },
+                {
+                    "id": "new",
+                    "database_name": "app.sqlite3",
+                    "created_at": "2024-01-02T00:00:00+00:00",
+                    "status": "ready",
+                    "blob": "blobs/new.sqlite3",
+                    "trigger": "manual",
+                },
             ],
         }
         with mock.patch("ragtime.userspace.sqlite_history._MAX_WORKSPACE_BYTES", len(b"newest-is-protected")):
@@ -225,10 +254,16 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_delete_failed_capture_without_blob_removes_only_diagnostic_row(self) -> None:
         root = self.files.parent / "sqlite_backups"
-        self.history._save(root, {
-            "version": 1, "workspace_id": "workspace", "previews": {}, "operations": {},
-            "backups": [{"id": "failed", "database_name": "app.sqlite3", "created_at": "2024-01-01T00:00:00+00:00", "status": "failed", "blob": None}],
-        })
+        self.history._save(
+            root,
+            {
+                "version": 1,
+                "workspace_id": "workspace",
+                "previews": {},
+                "operations": {},
+                "backups": [{"id": "failed", "database_name": "app.sqlite3", "created_at": "2024-01-01T00:00:00+00:00", "status": "failed", "blob": None}],
+            },
+        )
 
         await self.history.delete("workspace", "failed")
 
@@ -237,10 +272,16 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
     async def test_apply_returns_creator_receipt_before_runtime_access_after_preview_removed(self) -> None:
         root = self.files.parent / "sqlite_backups"
         expected = {"operation_id": "done", "status": "completed", "runtime_stopped": True}
-        self.history._save(root, {
-            "version": 1, "workspace_id": "workspace", "backups": [], "previews": {},
-            "operations": {"done": {"preview_id": "expired-preview", "status": "completed", "user_id": "owner", "result": expected}},
-        })
+        self.history._save(
+            root,
+            {
+                "version": 1,
+                "workspace_id": "workspace",
+                "backups": [],
+                "previews": {},
+                "operations": {"done": {"preview_id": "expired-preview", "status": "completed", "user_id": "owner", "result": expected}},
+            },
+        )
 
         @asynccontextmanager
         async def unexpected_access(*args, **kwargs):
@@ -260,11 +301,32 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         blobs.mkdir(parents=True)
         backup = blobs / "backup.sqlite3"
         backup.write_bytes(b"backup")
-        self.history._save(root, {
-            "version": 1, "workspace_id": "workspace", "operations": {}, "previews": {},
-            "backups": [{"id": "backup", "database_name": "app.sqlite3", "created_at": "2024-01-01T00:00:00+00:00", "status": "ready", "blob": "blobs/backup.sqlite3", "sha256": hashlib.sha256(b"backup").hexdigest(), "trigger": "manual"}],
-        })
-        with mock.patch("ragtime.userspace.sqlite_history.sqlite_workspace_access", self._runtime_boundary()), mock.patch.object(self.history, "_database_size_estimate", return_value=8), mock.patch("ragtime.userspace.sqlite_history._MAX_WORKSPACE_BYTES", 10), mock.patch.object(self.history, "_preview_confined") as preview_child:
+        self.history._save(
+            root,
+            {
+                "version": 1,
+                "workspace_id": "workspace",
+                "operations": {},
+                "previews": {},
+                "backups": [
+                    {
+                        "id": "backup",
+                        "database_name": "app.sqlite3",
+                        "created_at": "2024-01-01T00:00:00+00:00",
+                        "status": "ready",
+                        "blob": "blobs/backup.sqlite3",
+                        "sha256": hashlib.sha256(b"backup").hexdigest(),
+                        "trigger": "manual",
+                    }
+                ],
+            },
+        )
+        with (
+            mock.patch("ragtime.userspace.sqlite_history.sqlite_workspace_access", self._runtime_boundary()),
+            mock.patch.object(self.history, "_database_size_estimate", return_value=8),
+            mock.patch("ragtime.userspace.sqlite_history._MAX_WORKSPACE_BYTES", 10),
+            mock.patch.object(self.history, "_preview_confined") as preview_child,
+        ):
             with self.assertRaises(HTTPException) as error:
                 await self.history.preview("workspace", "backup", mode="overwrite", conflict_policy="keep_current", table_policies=None, user_id="owner")
 
@@ -274,15 +336,32 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_download_reservation_rejects_before_copy_growth(self) -> None:
         import hashlib
+
         root = self.files.parent / "sqlite_backups"
         blobs = root / "blobs"
         blobs.mkdir(parents=True)
         backup = blobs / "backup.sqlite3"
         backup.write_bytes(b"backup")
-        self.history._save(root, {
-            "version": 1, "workspace_id": "workspace", "operations": {}, "previews": {},
-            "backups": [{"id": "backup", "database_name": "app.sqlite3", "created_at": "2024-01-01T00:00:00+00:00", "status": "ready", "blob": "blobs/backup.sqlite3", "sha256": hashlib.sha256(b"backup").hexdigest(), "trigger": "manual"}],
-        })
+        self.history._save(
+            root,
+            {
+                "version": 1,
+                "workspace_id": "workspace",
+                "operations": {},
+                "previews": {},
+                "backups": [
+                    {
+                        "id": "backup",
+                        "database_name": "app.sqlite3",
+                        "created_at": "2024-01-01T00:00:00+00:00",
+                        "status": "ready",
+                        "blob": "blobs/backup.sqlite3",
+                        "sha256": hashlib.sha256(b"backup").hexdigest(),
+                        "trigger": "manual",
+                    }
+                ],
+            },
+        )
 
         with mock.patch("ragtime.userspace.sqlite_history._MAX_WORKSPACE_BYTES", 10):
             with self.assertRaises(HTTPException) as error:
@@ -294,12 +373,27 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
     async def test_two_catalog_instances_claim_one_scheduled_run(self) -> None:
         root = self.files.parent / "sqlite_backups"
         other = SqliteHistoryService(lambda workspace_id: self.files)
+        self.history._save(
+            root,
+            {
+                "version": 1,
+                "workspace_id": "workspace",
+                "backups": [],
+                "previews": {},
+                "operations": {},
+                "last_scheduled_at": None,
+                "next_scheduled_at": "2000-01-01T00:00:00+00:00",
+            },
+        )
         claims = await asyncio.gather(
             asyncio.to_thread(self.history._claim_scheduled_due_sync, root, "workspace"),
             asyncio.to_thread(other._claim_scheduled_due_sync, root, "workspace"),
         )
 
-        self.assertEqual(1, claims.count(True))
+        claim_ids = [claim for claim in claims if claim is not None]
+        self.assertEqual(1, len(claim_ids))
+        self.assertIsInstance(claim_ids[0], str)
+        self.assertEqual(claim_ids[0], self.history._load(root, "workspace")["scheduled_claim"]["claim_id"])
 
     async def test_protected_history_rejects_symlink_and_special_leafs(self) -> None:
         root = self.files.parent / "sqlite_backups"
@@ -341,13 +435,13 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         marker = root / "sqlite-maintenance-intent.json"
         lease_id = "lease-123"
         marker.write_text(json.dumps({"lease_id": lease_id}), encoding="utf-8")
-        
+
         # Attempting to recover without an operation record should be abort-only.
         state = await self.history.interrupted_maintenance("workspace")
         self.assertEqual(lease_id, state["operation_id"])
         self.assertTrue(state["can_abort"])
         self.assertFalse(state["can_complete"])
-        
+
         # Marker persists after recovery state check.
         self.assertTrue(marker.exists())
 
@@ -358,17 +452,16 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         marker = root / "sqlite-maintenance-intent.json"
         lease_id = "lease-456"
         marker.write_text(json.dumps({"lease_id": lease_id}), encoding="utf-8")
-        
+
         with mock.patch(
             "ragtime.userspace.sqlite_history.recover_sqlite_workspace_maintenance",
             new_callable=mock.AsyncMock,
         ) as recover_mock:
             result = await self.history.recover_operation("workspace", lease_id, action="abort")
-        
+
         self.assertEqual("aborted", result["status"])
         self.assertEqual(lease_id, result["operation_id"])
         recover_mock.assert_awaited_once_with("workspace", lease_id, action="abort")
-
 
     def _seed_intent_operation(self, *, published: bool) -> tuple[Path, str, str]:
         """Create a marker + intent operation with a verifiable candidate.
@@ -396,8 +489,24 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
             "version": 1,
             "workspace_id": "workspace",
             "backups": [],
-            "previews": {"preview": {"backup_id": "backup-1", "database_name": "app.sqlite3", "candidate": "candidates/candidate.sqlite3", "candidate_sha256": candidate_sha}},
-            "operations": {operation_id: {"preview_id": "preview", "status": "intent", "candidate": "candidates/candidate.sqlite3", "safety_backup_id": "safety-1", "publication_state": "published" if published else "prepublication", "created_at": "2024-01-01T00:00:00+00:00"}},
+            "previews": {
+                "preview": {
+                    "backup_id": "backup-1",
+                    "database_name": "app.sqlite3",
+                    "candidate": "candidates/candidate.sqlite3",
+                    "candidate_sha256": candidate_sha,
+                }
+            },
+            "operations": {
+                operation_id: {
+                    "preview_id": "preview",
+                    "status": "intent",
+                    "candidate": "candidates/candidate.sqlite3",
+                    "safety_backup_id": "safety-1",
+                    "publication_state": "published" if published else "prepublication",
+                    "created_at": "2024-01-01T00:00:00+00:00",
+                }
+            },
             "last_scheduled_at": None,
         }
         self.history._save(root, manifest)
@@ -661,18 +770,25 @@ class SqliteHistoryApplyFencePreIntentTests(unittest.IsolatedAsyncioTestCase):
             "ragtime.userspace.sqlite_history.sqlite_workspace_access",
             sqlite_runtime.sqlite_workspace_access,
         )
-        self._settings_patch.start(); self._manager_patch.start(); self._boundary_patch.start()
+        self._settings_patch.start()
+        self._manager_patch.start()
+        self._boundary_patch.start()
 
     async def asyncTearDown(self) -> None:
-        self._boundary_patch.stop(); self._manager_patch.stop(); self._settings_patch.stop()
+        self._boundary_patch.stop()
+        self._manager_patch.stop()
+        self._settings_patch.stop()
         self.temp.cleanup()
 
     def _seed_preview(self, *, current_fingerprint: str) -> str:
         preview_id = "preview-1"
         manifest = {
-            "version": 1, "workspace_id": self.workspace_id, "backups": [],
+            "version": 1,
+            "workspace_id": self.workspace_id,
+            "backups": [],
             "previews": {preview_id: {**self._preview_common, "current_fingerprint": current_fingerprint, "expires_at": (_dt_now() + _dt_delta()).isoformat()}},
-            "operations": {}, "last_scheduled_at": None,
+            "operations": {},
+            "last_scheduled_at": None,
         }
         self.history._save(self.root, manifest)
         return preview_id
@@ -801,9 +917,11 @@ class SqliteHistoryApplyFencePreIntentTests(unittest.IsolatedAsyncioTestCase):
 
 def _dt_now():
     from datetime import datetime, timezone
+
     return datetime.now(timezone.utc)
 
 
 def _dt_delta():
     from datetime import timedelta
+
     return timedelta(minutes=15)

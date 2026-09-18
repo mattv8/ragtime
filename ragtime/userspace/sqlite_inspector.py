@@ -722,70 +722,70 @@ def apply_table_alterations(
             for step in alterations:
                 op = (step.op or "").strip().lower()
                 if op == "rename_table":
-                   new_name = validate_identifier(step.new_table_name or "", kind="New table name")
-                   conn.execute(f"ALTER TABLE {quote_identifier(current_table)} RENAME TO {quote_identifier(new_name)}")
-                   current_table = new_name
+                    new_name = validate_identifier(step.new_table_name or "", kind="New table name")
+                    conn.execute(f"ALTER TABLE {quote_identifier(current_table)} RENAME TO {quote_identifier(new_name)}")
+                    current_table = new_name
                 elif op == "add_column":
-                   if step.column is None:
-                       raise HTTPException(status_code=400, detail="add_column requires a column definition")
-                   col_sql = _render_column_definition(step.column)
-                   if step.column.primary_key:
-                       raise HTTPException(
-                           status_code=400,
-                           detail="SQLite cannot add a PRIMARY KEY column to an existing table",
-                       )
-                   conn.execute(f"ALTER TABLE {quote_identifier(current_table)} ADD COLUMN {col_sql}")
+                    if step.column is None:
+                        raise HTTPException(status_code=400, detail="add_column requires a column definition")
+                    col_sql = _render_column_definition(step.column)
+                    if step.column.primary_key:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="SQLite cannot add a PRIMARY KEY column to an existing table",
+                        )
+                    conn.execute(f"ALTER TABLE {quote_identifier(current_table)} ADD COLUMN {col_sql}")
                 elif op == "rename_column":
-                   old_col = validate_identifier(step.column_name or "", kind="Column name")
-                   new_col = validate_identifier(step.new_column_name or "", kind="New column name")
-                   try:
-                       conn.execute(f"ALTER TABLE {quote_identifier(current_table)} RENAME COLUMN {quote_identifier(old_col)} TO {quote_identifier(new_col)}")
-                   except sqlite3.OperationalError as exc:
-                       raise HTTPException(
-                           status_code=400,
-                           detail=(f"RENAME COLUMN requires SQLite 3.25 or newer; the embedded engine reported: {exc}"),
-                       ) from exc
+                    old_col = validate_identifier(step.column_name or "", kind="Column name")
+                    new_col = validate_identifier(step.new_column_name or "", kind="New column name")
+                    try:
+                        conn.execute(f"ALTER TABLE {quote_identifier(current_table)} RENAME COLUMN {quote_identifier(old_col)} TO {quote_identifier(new_col)}")
+                    except sqlite3.OperationalError as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(f"RENAME COLUMN requires SQLite 3.25 or newer; the embedded engine reported: {exc}"),
+                        ) from exc
                 elif op == "drop_column":
-                   col_name = validate_identifier(step.column_name or "", kind="Column name")
-                   try:
-                       conn.execute(f"ALTER TABLE {quote_identifier(current_table)} DROP COLUMN {quote_identifier(col_name)}")
-                   except sqlite3.OperationalError as exc:
-                       raise HTTPException(
-                           status_code=400,
-                           detail=(f"DROP COLUMN requires SQLite 3.35 or newer and the column must not be referenced by indexes/foreign keys: {exc}"),
-                       ) from exc
+                    col_name = validate_identifier(step.column_name or "", kind="Column name")
+                    try:
+                        conn.execute(f"ALTER TABLE {quote_identifier(current_table)} DROP COLUMN {quote_identifier(col_name)}")
+                    except sqlite3.OperationalError as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(f"DROP COLUMN requires SQLite 3.35 or newer and the column must not be referenced by indexes/foreign keys: {exc}"),
+                        ) from exc
                 elif op == "change_column_type":
-                   col_name = validate_identifier(step.column_name or "", kind="Column name")
-                   if step.column is None:
-                       raise HTTPException(status_code=400, detail="change_column_type requires a column definition with the new type")
-                   new_type = validate_column_type(step.column.type)
-                   if _row_count(conn, current_table) > 0:
-                       raise HTTPException(
-                           status_code=400,
-                           detail="Column type changes are only allowed on empty tables to avoid destructive data conversion",
-                       )
-                   if _foreign_keys(conn, current_table):
-                       raise HTTPException(status_code=400, detail="Column type changes are not supported for tables with foreign keys")
-                   user_indexes = [idx for idx in _index_info(conn, current_table) if idx.origin != "pk"]
-                   if user_indexes:
-                       raise HTTPException(status_code=400, detail="Column type changes are not supported for tables with indexes")
-                   columns = _column_info(conn, current_table)
-                   if not any(col.name == col_name for col in columns):
-                       raise HTTPException(status_code=404, detail=f"Column '{col_name}' not found")
-                   rendered = [_render_existing_column_definition(col, override_type=(new_type if col.name == col_name else None)) for col in columns]
-                   tmp_name = validate_identifier(f"__rt_tmp_{current_table[:48]}", kind="Temporary table name")
-                   counter = 1
-                   while _table_exists(conn, tmp_name):
-                       tmp_name = validate_identifier(
-                           f"__rt_tmp_{counter}_{current_table[:40]}",
-                           kind="Temporary table name",
-                       )
-                       counter += 1
-                   conn.execute(f"CREATE TABLE {quote_identifier(tmp_name)} (" + ", ".join(rendered) + ")")
-                   conn.execute(f"DROP TABLE {quote_identifier(current_table)}")
-                   conn.execute(f"ALTER TABLE {quote_identifier(tmp_name)} RENAME TO {quote_identifier(current_table)}")
+                    col_name = validate_identifier(step.column_name or "", kind="Column name")
+                    if step.column is None:
+                        raise HTTPException(status_code=400, detail="change_column_type requires a column definition with the new type")
+                    new_type = validate_column_type(step.column.type)
+                    if _row_count(conn, current_table) > 0:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Column type changes are only allowed on empty tables to avoid destructive data conversion",
+                        )
+                    if _foreign_keys(conn, current_table):
+                        raise HTTPException(status_code=400, detail="Column type changes are not supported for tables with foreign keys")
+                    user_indexes = [idx for idx in _index_info(conn, current_table) if idx.origin != "pk"]
+                    if user_indexes:
+                        raise HTTPException(status_code=400, detail="Column type changes are not supported for tables with indexes")
+                    columns = _column_info(conn, current_table)
+                    if not any(col.name == col_name for col in columns):
+                        raise HTTPException(status_code=404, detail=f"Column '{col_name}' not found")
+                    rendered = [_render_existing_column_definition(col, override_type=(new_type if col.name == col_name else None)) for col in columns]
+                    tmp_name = validate_identifier(f"__rt_tmp_{current_table[:48]}", kind="Temporary table name")
+                    counter = 1
+                    while _table_exists(conn, tmp_name):
+                        tmp_name = validate_identifier(
+                            f"__rt_tmp_{counter}_{current_table[:40]}",
+                            kind="Temporary table name",
+                        )
+                        counter += 1
+                    conn.execute(f"CREATE TABLE {quote_identifier(tmp_name)} (" + ", ".join(rendered) + ")")
+                    conn.execute(f"DROP TABLE {quote_identifier(current_table)}")
+                    conn.execute(f"ALTER TABLE {quote_identifier(tmp_name)} RENAME TO {quote_identifier(current_table)}")
                 else:
-                   raise HTTPException(status_code=400, detail=f"Unsupported alteration '{step.op}'")
+                    raise HTTPException(status_code=400, detail=f"Unsupported alteration '{step.op}'")
 
         return TableSchema(
             name=current_table,

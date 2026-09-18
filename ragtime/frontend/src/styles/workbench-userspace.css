@@ -596,6 +596,10 @@
   gap: var(--space-sm);
 }
 
+.database-history-group + .database-history-group {
+  margin-top: var(--space-md);
+}
+
 .database-history-group-heading {
   display: flex;
   align-items: center;

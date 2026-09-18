@@ -28,6 +28,35 @@ SQLite sidecar capacity before work, then checks actual produced bytes before
 publication. Preview candidates, temporary downloads, and their disk usage are
 also included in the workspace quota.
 
+### Unchanged databases and shared backups
+
+An hourly check skips creating a new record and backup file when it verifies
+that the database is unchanged. Manual captures and user/agent code snapshots
+still create separate history records, with their own timestamps and snapshot
+associations, but can reference the same immutable backup file. A record's
+`size_bytes` is the size of the recoverable database; adding record sizes does
+not measure physical storage usage. Deleting one record does not remove a file
+that another record still references.
+
+The confined child hashes the main database, WAL, and rollback-journal state
+through pinned file descriptors and checks that file identities and metadata
+remain stable. It ignores SHM synchronization state. A full capture receives a
+reusable source token only when its before/after source checks agree. Reuse also
+verifies the saved backup's size and checksum. Legacy records without a token,
+concurrent writes, replacement, checkpoint changes, or a nonempty rollback
+journal cause a conservative full capture rather than an unsafe skip.
+
+These checks still read the database/WAL and the existing backup. They avoid
+redundant backup copying, integrity scans, and durability writes; they are not
+zero-I/O or incremental backups. They assume coherent local POSIX filesystem
+metadata, not coarse or incoherent network-filesystem timestamps.
+
+Before a restore, the service always makes and verifies a fresh safety capture.
+Only after that capture succeeds can identical output share an existing file.
+Ordinary captures omit logical row fingerprinting and the redundant first
+integrity scan; restore preview and drift validation retain their logical
+fingerprint checks.
+
 ## Confinement and platform requirement
 
 Capture, restore-preview preparation, and live drift fingerprinting run in a
@@ -102,9 +131,38 @@ Quota eviction is planned before disk mutation. If protected usage leaves too
 little capacity, the operation fails with HTTP 409 before capture or destructive
 publication. When eviction is possible, the reduced catalog is saved before
 blobs are removed, so a subsequent capture failure cannot leave a ready record
-pointing to an evicted blob. Scheduled maintenance claims due work atomically
-under the catalog lock, preventing overlapping replicas; a failed attempt can
-be retried on a later hourly pass.
+pointing to an evicted blob. Shared backup files count once toward the quota;
+removing an alias frees no file space until its last reference is removed.
+
+### Scheduling and admission limits
+
+The scheduler checks for work every 60 seconds. First-seen workspaces receive
+a deterministic delay of up to five minutes before their first scheduled
+capture, subject to queue load. Successful checks schedule the next attempt
+one hour later; failures retry after five minutes. Each pass admits at most
+eight workspaces and stops admitting more after 30 seconds. An active capture
+is allowed to finish. Rotating discovery order avoids repeatedly preferring
+the first workspace. Cached due times reduce catalog reads between attempts.
+
+A per-workspace liveness lock spans the scheduled claim, capture, and completion.
+A replica can recover an abandoned claim only after acquiring that lock; a
+timeout alone does not displace active work. Maintenance also cleans expired
+preview candidates, orphaned backup files, and stale downloads independently of
+whether a new capture is due. Active restore candidates remain protected.
+
+Capture requests have a per-process limit of 16 outstanding requests. Confined
+capture, probe, preview, and drift subprocesses share two file-lock slots across
+app processes using the same `INDEX_DATA_PATH`. Slots live outside editable
+workspace files at `_userspace/sqlite_capture_slots`. Waiting for a slot is
+limited to five seconds; excess work receives a controlled busy failure rather
+than launching unlimited children. A cancelled caller drains its running worker
+before releasing admission. Processes with independent storage roots have
+independent budgets.
+
+Logs record admission wait and subprocess duration, capture/reuse/skip outcome,
+logical backup size, and new retained blob bytes where applicable. Retained
+bytes are not physical device IOPS: deduplicating after a changed-state capture
+can still incur copying before the duplicate file is removed.
 
 ## Validation and migrations
 
@@ -131,6 +189,12 @@ still consume SQLite temporary disk, I/O time, and process resources; this is
 not a universal resource or time guarantee. The feature also cannot protect
 against arbitrary workspace shell commands or external filesystem changes made
 outside its fenced operation.
+
+The catalog lock remains held during capture and probing, so history listing
+or deletion can wait for those operations. Continuously changing databases and
+checkpoint-heavy workloads may get fewer skips. Capture is still awaited by
+code-snapshot creation, so it contributes to response latency. Quotas and
+retention bound retained history, not cumulative source reads or write traffic.
 
 Focused automated tests and lint checks are recorded in the SQLite-history
 hardening lane reports. A live authenticated smoke result is not recorded here;

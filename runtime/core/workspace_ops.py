@@ -62,11 +62,7 @@ def iter_managed_sqlite_database_paths(workspace_files_dir: Path) -> list[Path]:
                     details = os.stat(name, dir_fd=database_fd, follow_symlinks=False)
                 except FileNotFoundError:
                     continue
-                if (
-                    stat.S_ISREG(details.st_mode)
-                    and is_managed_sqlite_artifact(f".ragtime/db/{name}")
-                    and Path(name).suffix.lower() in SQLITE_FILE_EXTENSIONS
-                ):
+                if stat.S_ISREG(details.st_mode) and is_managed_sqlite_artifact(f".ragtime/db/{name}") and Path(name).suffix.lower() in SQLITE_FILE_EXTENSIONS:
                     names.append(name)
     except (FileNotFoundError, SecureFileError, OSError):
         return []

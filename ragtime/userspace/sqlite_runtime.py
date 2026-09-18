@@ -32,15 +32,9 @@ _OPERATION_LOCK_NAME = "sqlite-operation.lock"
 _T = TypeVar("_T")
 _logger = logging.getLogger(__name__)
 
-_maintenance_held: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
-    "_sqlite_maintenance_held", default=frozenset()
-)
-_operation_held: contextvars.ContextVar[dict[str, tuple[bool, int, int, asyncio.Task[Any]]]] = contextvars.ContextVar(
-    "_sqlite_operation_held", default={}
-)
-_recovery_held: contextvars.ContextVar[dict[str, asyncio.Task[Any]]] = contextvars.ContextVar(
-    "_sqlite_recovery_held", default={}
-)
+_maintenance_held: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar("_sqlite_maintenance_held", default=frozenset())
+_operation_held: contextvars.ContextVar[dict[str, tuple[bool, int, int, asyncio.Task[Any]]]] = contextvars.ContextVar("_sqlite_operation_held", default={})
+_recovery_held: contextvars.ContextVar[dict[str, asyncio.Task[Any]]] = contextvars.ContextVar("_sqlite_recovery_held", default={})
 
 
 def _workspace_dir(workspace_id: str) -> Path:
@@ -204,7 +198,7 @@ def _fsync_marker_directory(path: Path) -> None:
 
 def read_marker(path: Path) -> dict[str, object] | None:
     """Return a validated marker payload, rejecting unsafe marker shapes.
-    
+
     Symlinks, directories, and malformed markers raise HTTP 423.
     Missing markers return None.
     """
@@ -465,9 +459,7 @@ async def sqlite_workspace_operation_active(workspace_id: str) -> bool:
     if workspace_id in _operation_held.get():
         return True
     try:
-        fd = await run_sqlite_blocking(
-            _acquire_operation_lock, _operation_lock_path(workspace_id), exclusive=True, nonblocking=True
-        )
+        fd = await run_sqlite_blocking(_acquire_operation_lock, _operation_lock_path(workspace_id), exclusive=True, nonblocking=True)
     except (BlockingIOError, OSError):
         return True
     await run_sqlite_blocking(_release_operation_lock, fd)

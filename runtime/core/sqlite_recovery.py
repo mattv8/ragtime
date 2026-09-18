@@ -83,9 +83,9 @@ def _json_value(value: Any) -> Any:
 
 
 def _table_names(conn: sqlite3.Connection) -> list[str]:
-    return [row[0] for row in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != ? ORDER BY name", (_LEDGER,)
-    )]
+    return [
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != ? ORDER BY name", (_LEDGER,))
+    ]
 
 
 def _quote(identifier: str) -> str:
@@ -167,8 +167,16 @@ def _schema_shape(conn: sqlite3.Connection) -> dict[str, Any]:
                     values[4] = values[4].lower()
                 index_columns.append(tuple(values))
             indexes.append((tuple(index), index_columns))
-        triggers = [_sql_tokens(row[0] or "") for row in conn.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name=? ORDER BY name", (name,))]
-        tables[name] = {"columns": columns, "indexes": indexes, "triggers": triggers, "virtual": bool(re.match(r"\s*CREATE\s+VIRTUAL\s+TABLE\b", sql, re.I)), "definition": _sql_tokens(sql)}
+        triggers = [
+            _sql_tokens(row[0] or "") for row in conn.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name=? ORDER BY name", (name,))
+        ]
+        tables[name] = {
+            "columns": columns,
+            "indexes": indexes,
+            "triggers": triggers,
+            "virtual": bool(re.match(r"\s*CREATE\s+VIRTUAL\s+TABLE\b", sql, re.I)),
+            "definition": _sql_tokens(sql),
+        }
     return tables
 
 
@@ -198,17 +206,11 @@ def database_fingerprint(path: Path) -> str:
 
         # Frame schema
         schema = _schema_shape(conn)
-        schema_json = json.dumps(
-            schema, sort_keys=True, default=str, separators=(",", ":")
-        ).encode()
+        schema_json = json.dumps(schema, sort_keys=True, default=str, separators=(",", ":")).encode()
         _frame(schema_json)
 
         # Identify shadow tables
-        shadow_names = {
-            row[1]
-            for row in conn.execute("PRAGMA table_list")
-            if row[2] == "shadow"
-        }
+        shadow_names = {row[1] for row in conn.execute("PRAGMA table_list") if row[2] == "shadow"}
 
         # Stream rows per non-shadow table
         for table in _table_names(conn):
@@ -229,10 +231,7 @@ def database_fingerprint(path: Path) -> str:
             select_parts = []
             for col in visible_columns:
                 select_parts.append(f"typeof({_quote(col)})")
-                select_parts.append(
-                    f"CASE WHEN typeof({_quote(col)})='text' "
-                    f"THEN CAST({_quote(col)} AS BLOB) ELSE {_quote(col)} END"
-                )
+                select_parts.append(f"CASE WHEN typeof({_quote(col)})='text' THEN CAST({_quote(col)} AS BLOB) ELSE {_quote(col)} END")
 
             query = (
                 f"SELECT {', '.join(select_parts)} FROM {_quote(table)} "
@@ -280,7 +279,14 @@ def migration_fingerprint(migrations_dir: Path) -> str:
     return hashlib.sha256(json.dumps(items, separators=(",", ":")).encode()).hexdigest()
 
 
-def capture_database(source: Path, destination: Path, *, timeout_seconds: float = 60) -> dict:
+def capture_database(
+    source: Path,
+    destination: Path,
+    *,
+    timeout_seconds: float = 60,
+    include_fingerprint: bool = True,
+    source_connection: sqlite3.Connection | None = None,
+) -> dict:
     if timeout_seconds <= 0:
         raise SqliteRecoveryError("Capture timeout must be positive")
     if not source.is_file():
@@ -294,32 +300,47 @@ def capture_database(source: Path, destination: Path, *, timeout_seconds: float 
     temp.unlink()
     started = time.monotonic()
     try:
-        source_conn = _connect_readonly(source)
+        owns_source_connection = source_connection is None
+        source_conn = source_connection or _connect_readonly(source)
+        capture_transaction_started = False
         try:
+            if source_conn.in_transaction:
+                raise SqliteRecoveryError("Caller-owned SQLite source connection has an active transaction")
             source_conn.execute("BEGIN")  # Establish a WAL read snapshot before backup.
-            source_conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
-            output_conn = sqlite3.connect(temp)
+            capture_transaction_started = True
             try:
-                def progress(_: int, __: int, ___: int) -> None:
-                    if time.monotonic() - started > timeout_seconds:
-                        raise SqliteRecoveryError("SQLite capture timed out")
-                source_conn.backup(output_conn, pages=128, progress=progress, sleep=0.001)
-                _check_capture_database(output_conn)
-                # A single-file artifact must not depend on a journal or WAL
-                # whose lifetime would otherwise end with connection GC.
-                _normalize_single_file_output(output_conn)
-                _check_capture_database(output_conn)
+                source_conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+                output_conn = sqlite3.connect(temp)
+                try:
+
+                    def progress(_: int, __: int, ___: int) -> None:
+                        if time.monotonic() - started > timeout_seconds:
+                            raise SqliteRecoveryError("SQLite capture timed out")
+
+                    source_conn.backup(output_conn, pages=128, progress=progress, sleep=0.001)
+                    if include_fingerprint:
+                        _check_capture_database(output_conn)
+                    # A single-file artifact must not depend on a journal or WAL
+                    # whose lifetime would otherwise end with connection GC.
+                    _normalize_single_file_output(output_conn)
+                    _check_capture_database(output_conn)
+                finally:
+                    output_conn.close()
             finally:
-                output_conn.close()
-            source_conn.rollback()
+                if capture_transaction_started:
+                    source_conn.rollback()
         finally:
-            source_conn.close()
+            if owns_source_connection:
+                source_conn.close()
         _durable_file(temp)
         os.replace(temp, destination)
         _durable_file(destination)
         with _connect_readonly(destination) as conn:
             schema_hash = _schema_hash(conn)
-        return {"sha256": _sha256_file(destination), "size_bytes": destination.stat().st_size, "schema_hash": schema_hash, "fingerprint": database_fingerprint(destination)}
+        result = {"sha256": _sha256_file(destination), "size_bytes": destination.stat().st_size, "schema_hash": schema_hash}
+        if include_fingerprint:
+            result["fingerprint"] = database_fingerprint(destination)
+        return result
     except Exception:
         temp.unlink(missing_ok=True)
         raise
@@ -382,7 +403,9 @@ def _leading_sql_token(statement: str) -> str | None:
     return None
 
 
-def _apply_forward_migrations(candidate: Path, backup_ledger: dict[str, str] | None, current_ledger: dict[str, str] | None, files: dict[str, tuple[str, str]], *, current_exists: bool) -> list[str]:
+def _apply_forward_migrations(
+    candidate: Path, backup_ledger: dict[str, str] | None, current_ledger: dict[str, str] | None, files: dict[str, tuple[str, str]], *, current_exists: bool
+) -> list[str]:
     if backup_ledger is None:
         raise SqliteRecoveryError("Schema conversion requires a _ragtime_migrations ledger in the backup")
     if current_exists and current_ledger is None:
@@ -434,9 +457,7 @@ def _row_query(table: str, columns: list[str], *, where: str = "", order_by: boo
     if where:
         query += f" WHERE {where}"
     if order_by:
-        query += " ORDER BY " + ", ".join(
-            f"typeof({_quote(column)}), {_quote(column)} COLLATE BINARY" for column in columns
-        )
+        query += " ORDER BY " + ", ".join(f"typeof({_quote(column)}), {_quote(column)} COLLATE BINARY" for column in columns)
     return query
 
 
@@ -501,10 +522,23 @@ def _copy_input(source: Path, destination: Path) -> None:
     capture_database(source, destination)
 
 
-def prepare_restore(backup_path: Path, current_path: Path | None, migrations_dir: Path, output_path: Path, *, mode: str, conflict_policy: str = "keep_current", table_policies: dict[str, str] | None = None) -> dict:
+def prepare_restore(
+    backup_path: Path,
+    current_path: Path | None,
+    migrations_dir: Path,
+    output_path: Path,
+    *,
+    mode: str,
+    conflict_policy: str = "keep_current",
+    table_policies: dict[str, str] | None = None,
+) -> dict:
     result: dict[str, Any] = {"mode": mode, "migrations_applied": [], "tables": [], "warnings": [], "blockers": [], "can_apply": False}
     table_policies = table_policies or {}
-    if mode not in {"merge", "overwrite"} or conflict_policy not in {"keep_current", "use_backup"} or any(value not in {"keep_current", "use_backup"} for value in table_policies.values()):
+    if (
+        mode not in {"merge", "overwrite"}
+        or conflict_policy not in {"keep_current", "use_backup"}
+        or any(value not in {"keep_current", "use_backup"} for value in table_policies.values())
+    ):
         result["blockers"].append("Invalid restore mode or conflict policy")
         return result
     if output_path.exists():
@@ -634,7 +668,13 @@ def _merge(candidate: Path, backup: Path, result: dict[str, Any], default_policy
                 else:
                     report["conflicts"] += 1
                     if len(report["conflict_samples"]) < 20:
-                        report["conflict_samples"].append({"key": _preview_row({name: value for name, value in zip(pk, key)}), "current": _preview_row(dict(zip(columns, current_row))), "backup": _preview_row(dict(zip(columns, backup_values)))})
+                        report["conflict_samples"].append(
+                            {
+                                "key": _preview_row({name: value for name, value in zip(pk, key)}),
+                                "current": _preview_row(dict(zip(columns, current_row))),
+                                "backup": _preview_row(dict(zip(columns, backup_values))),
+                            }
+                        )
                     if policy == "use_backup":
                         report["updated"] += 1
             writes = report["inserted"] + report["updated"]
@@ -658,11 +698,17 @@ def _merge(candidate: Path, backup: Path, result: dict[str, Any], default_policy
                     key = tuple(values_by_column[column] for column in pk)
                     current_row = current_conn.execute(_row_query(table, columns, where=where), key).fetchone()
                     if current_row is None:
-                        current_conn.execute(f"INSERT INTO {_quote(table)} ({', '.join(_quote(col) for col in writable)}) VALUES ({', '.join('?' for _ in writable)})", tuple(values_by_column[col] for col in writable))
+                        current_conn.execute(
+                            f"INSERT INTO {_quote(table)} ({', '.join(_quote(col) for col in writable)}) VALUES ({', '.join('?' for _ in writable)})",
+                            tuple(values_by_column[col] for col in writable),
+                        )
                     elif tuple(current_row) != backup_values and policy == "use_backup":
                         changed = [col for col in writable if col not in pk]
                         if changed:
-                            current_conn.execute(f"UPDATE {_quote(table)} SET {', '.join(f'{_quote(col)}=?' for col in changed)} WHERE {' AND '.join(f'{_quote(col)}=?' for col in pk)}", tuple(values_by_column[col] for col in changed) + key)
+                            current_conn.execute(
+                                f"UPDATE {_quote(table)} SET {', '.join(f'{_quote(col)}=?' for col in changed)} WHERE {' AND '.join(f'{_quote(col)}=?' for col in pk)}",
+                                tuple(values_by_column[col] for col in changed) + key,
+                            )
             _repair_sequences(current_conn, backup_conn, plans)
             _check_database(current_conn)
             current_conn.commit()

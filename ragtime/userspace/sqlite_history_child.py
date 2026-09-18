@@ -4,6 +4,7 @@ This is deliberately a tiny exec boundary: SQLite receives descriptor-rooted
 ``/proc/self/fd`` names only after Landlock has limited it to the already-pinned
 workspace database directory and private history destination directory.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -16,7 +17,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from runtime.core.sqlite_recovery import capture_database, database_fingerprint, migration_fingerprint, prepare_restore
+from runtime.core.sqlite_capture_state import pinned_source_state, source_state_token
+from runtime.core.sqlite_recovery import _connect_readonly, capture_database, database_fingerprint, migration_fingerprint, prepare_restore
 from runtime.worker import mount_sync_launcher as _landlock
 
 
@@ -111,7 +113,7 @@ def _freeze_migrations(source_fd: int, scratch: Path) -> Path:
                         while block := os.read(source, 1024 * 1024):
                             view = memoryview(block)
                             while view:
-                                view = view[os.write(destination, view):]
+                                view = view[os.write(destination, view) :]
                     finally:
                         os.close(destination)
                 finally:
@@ -138,6 +140,7 @@ def main() -> None:
     parser.add_argument("--table-policies", default="{}")
     parser.add_argument("--fingerprint-current")
     parser.add_argument("--fingerprint-migrations")
+    parser.add_argument("--probe-source", action="store_true")
     args = parser.parse_args()
     source_name = _name(args.source_name)
     destination_name = _name(args.destination_name)
@@ -145,7 +148,9 @@ def main() -> None:
         _install_sqlite_landlock(args.source_fd, args.destination_fd)
         source_root = f"/proc/self/fd/{args.source_fd}"
         destination_root = f"/proc/self/fd/{args.destination_fd}"
-        if args.fingerprint_current:
+        if args.probe_source:
+            print(json.dumps({"source_token": source_state_token(args.source_fd, source_name)}, sort_keys=True))
+        elif args.fingerprint_current:
             scratch = Path(tempfile.mkdtemp(prefix=".sqlite-history-", dir=destination_root))
             try:
                 # SQLite fingerprints must use an online backup too: reading
@@ -185,17 +190,39 @@ def main() -> None:
                     capture_database(current, current_copy)
                     current_fingerprint = database_fingerprint(current_copy)
                 migrations = _freeze_migrations(args.source_fd, scratch)
-                result = prepare_restore(backup, current_copy if current_copy.exists() else None, migrations, candidate, mode=args.mode or "", conflict_policy=args.conflict_policy or "", table_policies=json.loads(args.table_policies))
+                result = prepare_restore(
+                    backup,
+                    current_copy if current_copy.exists() else None,
+                    migrations,
+                    candidate,
+                    mode=args.mode or "",
+                    conflict_policy=args.conflict_policy or "",
+                    table_policies=json.loads(args.table_policies),
+                )
                 result["current_fingerprint"] = current_fingerprint
                 result["migration_fingerprint"] = migration_fingerprint(migrations)
             finally:
                 shutil.rmtree(scratch, ignore_errors=True)
             print(json.dumps(result, sort_keys=True))
         else:
-            _require_regular(args.source_fd, source_name)
-            source = os.path.join(source_root, source_name)
             destination = os.path.join(destination_root, destination_name)
-            print(json.dumps(capture_database(Path(source), Path(destination)), sort_keys=True))
+            with pinned_source_state(args.source_fd, source_name) as state:
+                if state.main_fd is None:
+                    raise ValueError("SQLite source is not a regular file")
+                source = Path(f"/proc/self/fd/{state.main_fd}")
+                source_connection = _connect_readonly(source)
+                try:
+                    source_connection.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+                    if not state.refresh_after_warmup():
+                        raise ValueError("SQLite source changed during readonly warmup")
+                    before = state.token()
+                    result = capture_database(source, Path(destination), include_fingerprint=False, source_connection=source_connection)
+                finally:
+                    source_connection.close()
+                after = state.token()
+            if before is not None and before == after:
+                result["source_token"] = after
+            print(json.dumps(result, sort_keys=True))
     except Exception as exc:
         print(f"confined SQLite capture failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         raise SystemExit(77)

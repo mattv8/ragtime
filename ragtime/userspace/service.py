@@ -5874,19 +5874,19 @@ class UserSpaceService:
                         stderr_path.open("wb") as stderr_handle,
                     ):
                         process = await asyncio.create_subprocess_exec(
-                        sys.executable,
-                        "-m",
-                        "ragtime.userspace.sqlite_import",
-                        "--sqlite-path",
-                        str(sqlite_path),
-                        "--dump-path",
-                        str(dump_path),
-                        "--filename",
-                        filename,
-                        "--progress-path",
-                        str(progress_path),
-                        stdout=stdout_handle,
-                        stderr=stderr_handle,
+                            sys.executable,
+                            "-m",
+                            "ragtime.userspace.sqlite_import",
+                            "--sqlite-path",
+                            str(sqlite_path),
+                            "--dump-path",
+                            str(dump_path),
+                            "--filename",
+                            filename,
+                            "--progress-path",
+                            str(progress_path),
+                            stdout=stdout_handle,
+                            stderr=stderr_handle,
                         )
                     record = self._workspace_sqlite_import_task_statuses.get(task_id)
                     if record is not None:
@@ -11169,9 +11169,7 @@ class UserSpaceService:
         body_error: BaseException | None = None
         async with sqlite_workspace_access(workspace_id, maintenance=True) as files_dir:
             history = get_sqlite_history_service()
-            await history.capture_workspace_databases(
-                workspace_id, trigger="pre_restore", mandatory=True, files_dir=files_dir
-            )
+            await history.capture_workspace_databases(workspace_id, trigger="pre_restore", mandatory=True, files_dir=files_dir)
             with tempfile.TemporaryDirectory(prefix="ragtime-code-restore-") as temp_name:
                 temp_dir = Path(temp_name)
                 preserved: dict[str, Path] = {}
@@ -11193,9 +11191,7 @@ class UserSpaceService:
                     body_error = exc
                 try:
                     for name in preserved:
-                        await run_sqlite_blocking(
-                            publish_regular_file, temp_dir, f"blobs/{name}", files_dir, f".ragtime/db/{name}"
-                        )
+                        await run_sqlite_blocking(publish_regular_file, temp_dir, f"blobs/{name}", files_dir, f".ragtime/db/{name}")
                         for suffix in ("-wal", "-shm", "-journal"):
                             await run_sqlite_blocking(delete_file, files_dir, f".ragtime/db/{name}{suffix}")
                 except SecureFileError as exc:

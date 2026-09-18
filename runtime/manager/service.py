@@ -899,9 +899,7 @@ class SessionManager:
             cwd=cwd,
         )
 
-    async def acquire_sqlite_workspace_maintenance(
-        self, workspace_id: str, request: RuntimeWorkspaceMaintenanceRequest
-    ) -> RuntimeWorkspaceMaintenanceResponse:
+    async def acquire_sqlite_workspace_maintenance(self, workspace_id: str, request: RuntimeWorkspaceMaintenanceRequest) -> RuntimeWorkspaceMaintenanceResponse:
         """Delegate the per-workspace fence; POST is deliberately non-retryable upstream."""
         health = await self._worker_service.health()
         capabilities = dict((health.metadata or {}).get("runtime_capabilities") or {})
@@ -918,9 +916,7 @@ class SessionManager:
                 leases[request.lease_id] = request.maintenance
             newly_registered = current is None
         try:
-            result = await self._worker_service.acquire_sqlite_workspace_access(
-                workspace_id, request.lease_id, maintenance=request.maintenance
-            )
+            result = await self._worker_service.acquire_sqlite_workspace_access(workspace_id, request.lease_id, maintenance=request.maintenance)
             return RuntimeWorkspaceMaintenanceResponse.model_validate(result)
         except Exception:
             if newly_registered:
