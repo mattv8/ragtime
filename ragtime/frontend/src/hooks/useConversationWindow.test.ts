@@ -114,6 +114,70 @@ describe('useConversationWindow', () => {
     expect(result.current.entries).toEqual([]);
   });
 
+  it('rejects a mismatched adopted conversation without pending-selection opt-in', () => {
+    const { result } = renderHook(() =>
+      useConversationWindow({ conversationId: 'one', enabled: true }),
+    );
+
+    act(() => result.current.adoptFullConversation(conversation('other')));
+
+    expect(result.current.metadata).toBeNull();
+    expect(result.current.entries).toEqual([]);
+  });
+
+  it('refetches a normally adopted current conversation after being re-enabled', async () => {
+    api.getConversationLatestExchange.mockResolvedValue(window('one', null));
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useConversationWindow({ conversationId: 'one', enabled }),
+      { initialProps: { enabled: true } },
+    );
+    await waitFor(() => expect(result.current.metadata?.id).toBe('one'));
+
+    act(() => result.current.adoptFullConversation(conversation('one')));
+    vi.clearAllMocks();
+    rerender({ enabled: false });
+    expect(result.current.entries).toEqual([]);
+    rerender({ enabled: true });
+
+    await waitFor(() => expect(api.getConversationLatestExchange).toHaveBeenCalledTimes(1));
+    expect(result.current.entries[0]?.state).toBe('deferred');
+  });
+
+  it('keeps an adopted conversation settled through its first selection, then refetches it after navigation', async () => {
+    const created = conversation('created');
+    api.getConversationLatestExchange
+      .mockResolvedValueOnce(window('other', null))
+      .mockResolvedValueOnce(window('created', null));
+    const { result, rerender } = renderHook(
+      ({ id }) => useConversationWindow({ conversationId: id, enabled: true }),
+      { initialProps: { id: null as string | null } },
+    );
+
+    act(() => result.current.adoptFullConversation(created, { pendingSelection: true }));
+    rerender({ id: created.id });
+
+    await waitFor(() => expect(result.current.fullConversation?.id).toBe(created.id));
+    expect(api.getConversationLatestExchange).not.toHaveBeenCalled();
+    expect(api.getConversationMessageWindow).not.toHaveBeenCalled();
+
+    rerender({ id: 'other' });
+    await waitFor(() =>
+      expect(api.getConversationLatestExchange).toHaveBeenCalledWith(
+        'other',
+        undefined,
+        expect.anything(),
+      ),
+    );
+    rerender({ id: created.id });
+    await waitFor(() =>
+      expect(api.getConversationLatestExchange).toHaveBeenCalledWith(
+        'created',
+        undefined,
+        expect.anything(),
+      ),
+    );
+  });
+
   it('deduplicates explicit full hydration and adopts the complete response', async () => {
     api.getConversationLatestExchange.mockResolvedValueOnce(window('one', null));
     let resolveFull!: (value: Conversation) => void;

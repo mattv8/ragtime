@@ -184,6 +184,8 @@ from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
 logger = get_logger(__name__)
 
+_CONVERSATION_WINDOW_PAGE_BUDGET_BYTES = 256 * 1024
+
 
 class ConversationBranchMutationError(RuntimeError):
     """A branch mutation was rejected without changing persisted state."""
@@ -3096,47 +3098,88 @@ class IndexerRepository:
         )
 
     async def _query_conversation_window(
-        self, conversation_id: str, *, before_index: int | None, latest_exchange: bool, limit: int = 50, message_index: int | None = None
+        self,
+        conversation_id: str,
+        *,
+        before_index: int | None,
+        latest_exchange: bool,
+        limit: int = 50,
+        message_index: int | None = None,
+        thin_oversized: bool = True,
     ) -> dict[str, Any] | None:
         """Read metadata, revision, and only the selected canonical JSON entries in one snapshot."""
         db = await self._get_db()
-        before_predicate = "TRUE" if before_index is None else f"e.message_index < {int(before_index)}"
-        selection = (
-            f"e.message_index = {message_index}"
+        ordinary_page = not latest_exchange and message_index is None
+        positions = (
+            f"SELECT {int(message_index)} AS message_index"
             if message_index is not None
-            else "e.message_index = c.total_message_count - 1 OR e.message_index = c.latest_user_index"
+            else "SELECT DISTINCT message_index FROM unnest(ARRAY[c.total_message_count - 1, c.latest_user_index]) AS message_index WHERE message_index IS NOT NULL"
             if latest_exchange
-            else before_predicate
+            else ""
         )
-        limit_clause = "" if latest_exchange or message_index is not None else f"LIMIT {limit}"
+        latest_user_index = "max(CASE WHEN item.value->>'role' = 'user' THEN item.ordinality - 1 END)" if latest_exchange else "NULL::bigint"
+        readable_content = """coalesce(nullif(e.message->>'content', ''),
+                        (SELECT event.value->>'content'
+                         FROM jsonb_array_elements(CASE WHEN jsonb_typeof(e.message->'events') = 'array' THEN e.message->'events' ELSE '[]'::jsonb END) AS event(value)
+                         WHERE event.value->>'type' = 'content' AND event.value ? 'content'
+                         LIMIT 1), '')"""
+        oversized_projection = (
+            f"""
+                    CASE WHEN octet_length(e.message::text) > {_CONVERSATION_WINDOW_PAGE_BUDGET_BYTES} THEN
+                        jsonb_set(
+                            e.message - 'events' - 'tool_calls',
+                            '{{content}}',
+                            to_jsonb({readable_content}),
+                            true
+                        )
+                    ELSE e.message END
+        """
+            if thin_oversized
+            else "e.message"
+        )
+        force_deferred = f"octet_length(e.message::text) > {_CONVERSATION_WINDOW_PAGE_BUDGET_BYTES}" if thin_oversized else "FALSE"
+        entry_source = (
+            f"""
+                SELECT item.ordinality - 1 AS message_index, item.value AS message
+                FROM c
+                CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.messages) = 'array' THEN c.messages ELSE '[]'::jsonb END) WITH ORDINALITY AS item(value, ordinality)
+                WHERE item.ordinality - 1 < {int(before_index) if before_index is not None else "c.total_message_count"}
+                ORDER BY message_index DESC
+                LIMIT {limit}
+            """
+            if ordinary_page
+            else f"""
+                SELECT positions.message_index, c.messages -> positions.message_index::integer AS message
+                FROM c
+                CROSS JOIN LATERAL ({positions}) AS positions
+                WHERE positions.message_index >= 0 AND positions.message_index < c.total_message_count
+            """
+        )
         return_rows = await db.query_raw(f"""
             WITH c AS (
                 SELECT c.*, u.username, u.display_name,
                     CASE WHEN jsonb_typeof(c.messages) = 'array' THEN jsonb_array_length(c.messages) ELSE 0 END AS total_message_count,
-                    max(CASE WHEN item.value->>'role' = 'user' THEN item.ordinality - 1 END) AS latest_user_index,
+                    {latest_user_index} AS latest_user_index,
                     encode(sha256(convert_to(c.messages::text || coalesce(c.active_branch_id, ''), 'UTF8')), 'hex') AS revision,
-                    jsonb_typeof(c.messages) = 'array' AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(c.messages) = 'array' THEN c.messages ELSE '[]'::jsonb END) AS check_item(value) WHERE jsonb_typeof(check_item.value) <> 'object') AS is_canonical
+                    jsonb_typeof(c.messages) = 'array' AND coalesce(bool_and(jsonb_typeof(item.value) = 'object'), TRUE) AS is_canonical
                 FROM conversations c
                 LEFT JOIN users u ON u.id = c.user_id
                 LEFT JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.messages) = 'array' THEN c.messages ELSE '[]'::jsonb END) WITH ORDINALITY AS item(value, ordinality) ON TRUE
                 WHERE c.id = {_sql_quote_literal(conversation_id)}
                 GROUP BY c.id, u.username, u.display_name
-            ), e AS (
-                SELECT c.id, item.ordinality - 1 AS message_index, item.value AS message
-                FROM c CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(c.messages) = 'array' THEN c.messages ELSE '[]'::jsonb END) WITH ORDINALITY AS item(value, ordinality)
             ), selected AS (
                 SELECT e.message_index,
-                    {"jsonb_set(e.message - 'events' - 'tool_calls', '{content}', to_jsonb(coalesce(nullif(e.message->>'content', ''), (SELECT event.value->>'content' FROM jsonb_array_elements(CASE WHEN jsonb_typeof(e.message->'events') = 'array' THEN e.message->'events' ELSE '[]'::jsonb END) AS event(value) WHERE event.value->>'type' = 'content' AND event.value ? 'content' LIMIT 1), '')), true)" if latest_exchange else "e.message"} AS message,
+                    {f"jsonb_set(e.message - 'events' - 'tool_calls', '{{content}}', to_jsonb({readable_content}), true)" if latest_exchange else oversized_projection} AS message,
                     (e.message ? 'events' OR e.message ? 'tool_calls') AS has_details,
+                    {force_deferred} AS force_deferred,
                     coalesce(e.message->>'message_id', 'legacy:' || e.message_index || ':' || encode(sha256(convert_to(e.message::text, 'UTF8')), 'hex')) AS entry_key
-                FROM e JOIN c ON c.id = e.id
-                WHERE {selection} ORDER BY e.message_index DESC {limit_clause}
+                FROM ({entry_source}) AS e
             )
             SELECT c.id, c.title, c.model, c.user_id, c.workspace_id, c.username, c.display_name, c.total_tokens,
                 c.active_task_id, c.active_branch_id, c.disabled_builtin_tool_ids, c.subagents_enabled,
                 c.parent_conversation_id, c.subagent_role, c.subagent_index, c.tool_selection_mode,
                 c.tool_output_mode, c.created_at, c.updated_at, c.total_message_count, c.revision, c.is_canonical,
-                COALESCE((SELECT jsonb_agg(jsonb_build_object('index', selected.message_index, 'message', selected.message, 'has_details', selected.has_details, 'key', selected.entry_key) ORDER BY selected.message_index) FROM selected), '[]'::jsonb) AS entries
+                COALESCE((SELECT jsonb_agg(jsonb_build_object('index', selected.message_index, 'message', selected.message, 'has_details', selected.has_details, 'force_deferred', selected.force_deferred, 'key', selected.entry_key) ORDER BY selected.message_index) FROM selected), '[]'::jsonb) AS entries
             FROM c
         """)
         return return_rows[0] if return_rows else None
@@ -3154,7 +3197,12 @@ class IndexerRepository:
         force_ready: bool = False,
     ) -> ConversationMessageWindow | None:
         row = await self._query_conversation_window(
-            conversation_id, before_index=before_index, latest_exchange=latest_exchange, limit=limit, message_index=message_index
+            conversation_id,
+            before_index=before_index,
+            latest_exchange=latest_exchange,
+            limit=limit,
+            message_index=message_index,
+            thin_oversized=not latest_exchange and not force_ready,
         )
         if row is None:
             return None
@@ -3171,7 +3219,7 @@ class IndexerRepository:
         raw_entries_value = row.get("entries")
         raw_entries = raw_entries_value if isinstance(raw_entries_value, list) else []
         entries: list[ConversationWindowEntry] = []
-        budget = 256 * 1024
+        budget = _CONVERSATION_WINDOW_PAGE_BUDGET_BYTES
         used = 0
         for raw_entry in raw_entries:
             if not isinstance(raw_entry, dict) or not isinstance(raw_entry.get("message"), dict):
@@ -3189,6 +3237,16 @@ class IndexerRepository:
                     )
                 )
                 continue
+            if bool(raw_entry.get("force_deferred")):
+                deferred_entry = ConversationWindowEntry(
+                    index=index,
+                    key=key,
+                    state="deferred",
+                    preview=self._window_preview(message_data, max_bytes=1024, has_details=bool(raw_entry.get("has_details"))),
+                )
+                entries.append(deferred_entry)
+                used += len(json.dumps(deferred_entry.model_dump(mode="json"), separators=(",", ":")).encode())
+                continue
             message = self._parse_messages_json([message_data])[0]
             ready_entry = ConversationWindowEntry(index=index, key=key, state="ready", message=message)
             ready_size = len(json.dumps(ready_entry.model_dump(mode="json"), separators=(",", ":")).encode())
@@ -3205,9 +3263,10 @@ class IndexerRepository:
             entries.append(ready_entry)
             used += ready_size
         ready_messages = [entry.message for entry in entries if entry.message is not None]
-        if ready_messages:
+        ready_message_ids = [message.message_id for message in ready_messages if message.message_id]
+        if ready_message_ids:
             try:
-                snapshot_links = await self.get_message_snapshot_links_for_conversation(conversation_id)
+                snapshot_links = await self.get_message_snapshot_links_for_conversation(conversation_id, message_ids=ready_message_ids)
                 for message in ready_messages:
                     if message.message_id and message.message_id in snapshot_links:
                         message.snapshot_restore = snapshot_links[message.message_id]
@@ -5119,11 +5178,17 @@ class IndexerRepository:
             "updated_at": link.updatedAt,
         }
 
-    async def get_message_snapshot_links_for_conversation(self, conversation_id: str) -> dict[str, MessageSnapshotRestore]:
+    async def get_message_snapshot_links_for_conversation(
+        self, conversation_id: str, *, message_ids: list[str] | None = None
+    ) -> dict[str, MessageSnapshotRestore]:
         """Return links keyed by message_id for one conversation."""
+        if message_ids is not None and not message_ids:
+            return {}
         db = await self._get_db()
         try:
-            links = await db.conversationmessagesnapshotlink.find_many(where={"conversationId": conversation_id})
+            links = await db.conversationmessagesnapshotlink.find_many(
+                where={"conversationId": conversation_id} if message_ids is None else {"conversationId": conversation_id, "messageId": {"in": message_ids}}
+            )
         except Exception as e:
             logger.warning(f"Failed to list message snapshot links: {e}")
             return {}

@@ -290,6 +290,8 @@ from ragtime.userspace.models import (
 )
 from ragtime.userspace.object_storage import client as object_storage_client
 from ragtime.userspace.object_storage import control as object_storage_control
+from ragtime.userspace.object_storage.legacy_coordinator import LegacyObjectStorageCoordinator
+from ragtime.userspace.object_storage.legacy_migration import LegacyObjectStorageMigrator
 from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
 from ragtime.userspace.sqlite_import import SqlImportResult
 from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
@@ -1504,6 +1506,21 @@ class UserSpaceService:
         self._workspaces_dir.mkdir(parents=True, exist_ok=True)
         self._archive_tasks_dir.mkdir(parents=True, exist_ok=True)
         self._sqlite_import_tasks_dir.mkdir(parents=True, exist_ok=True)
+        self._legacy_object_storage_migrator = LegacyObjectStorageMigrator(
+            self._base_dir / "_object_storage",
+            self._workspace_dir,
+        )
+        self._legacy_object_storage_coordinator = LegacyObjectStorageCoordinator(
+            self._legacy_object_storage_migrator,
+            workspace_ids=lambda: self._legacy_object_storage_workspace_ids(),
+            runtime_active=lambda workspace_id: self._legacy_object_storage_runtime_active(workspace_id),
+            legacy_payload=lambda workspace_id: self._legacy_object_storage_payload(workspace_id),
+            config_path=self._workspace_object_storage_config_path,
+            workspaces_dir=self._workspaces_dir,
+            logger=logger,
+        )
+        # Compatibility for callers/tests which observe outstanding lazy work.
+        self._legacy_object_storage_workspace_tasks = self._legacy_object_storage_coordinator.workspace_tasks
         self._execution_proofs: dict[str, dict[str, _ExecutionProofRecord]] = {}
         self._live_data_execution_warnings: dict[str, _LiveDataExecutionWarningRecord] = {}
         self._runtime_bridge_sqlite_rate_limits: dict[tuple[str, str], _RuntimeBridgeSqliteRateLimitBucket] = {}
@@ -7215,24 +7232,42 @@ class UserSpaceService:
             "buckets": [bucket for bucket in buckets if isinstance(bucket, dict)] if isinstance(buckets, list) else [],
         }
 
+    async def _legacy_object_storage_runtime_active(self, workspace_id: str) -> bool:
+        """Do not remove retired writer files while a runtime can still use them."""
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        return await userspace_runtime_service.has_active_or_stopping_workspace_session(workspace_id)
+
+    async def _legacy_object_storage_workspace_ids(self) -> list[str]:
+        db = await get_db()
+        workspaces = await db.workspace.find_many(order={"id": "asc"})
+        return [workspace_id for workspace in workspaces if (workspace_id := str(getattr(workspace, "id", "") or ""))]
+
+    # Thin adapters preserve internal compatibility while scheduling lives in
+    # the focused coordinator.
+    def _legacy_object_storage_needs_reconciliation(self, workspace_id: str) -> bool:
+        return self._legacy_object_storage_coordinator.needs_reconciliation(workspace_id)
+
+    async def _reconcile_legacy_object_storage(self, workspace_id: str) -> bool:
+        return await self._legacy_object_storage_coordinator.reconcile(workspace_id)
+
+    def _enqueue_legacy_object_storage_reconciliation(self, workspace_id: str) -> None:
+        self._legacy_object_storage_coordinator.enqueue(workspace_id)
+
+    async def _process_legacy_object_storage(self, workspace_id: str) -> bool:
+        return await self._legacy_object_storage_coordinator.process(workspace_id)
+
+    async def schedule_legacy_object_storage_reconciliation(self) -> None:
+        await self._legacy_object_storage_coordinator.start()
+
+    async def shutdown_legacy_object_storage_reconciliation(self) -> None:
+        await self._legacy_object_storage_coordinator.shutdown()
+
+    def _legacy_object_storage_orphan_ids(self, live_workspace_ids: set[str]) -> set[str]:
+        return self._legacy_object_storage_coordinator.orphan_ids(live_workspace_ids)
+
     async def _ensure_managed_object_storage(self, workspace_id: str) -> dict[str, Any]:
-        """Perform the one-time gateway transition for a workspace if needed."""
-        try:
-            config = await object_storage_control.get_workspace(workspace_id)
-            if config.get("legacy_import_state") in {"pending", "copying", "failed"}:
-                await object_storage_control.import_legacy(workspace_id)
-                return await object_storage_control.get_workspace(workspace_id)
-            return config
-        except HTTPException as exc:
-            if exc.status_code != 404:
-                raise
-        legacy = self._legacy_object_storage_payload(workspace_id)
-        config = await object_storage_control.ensure_workspace(workspace_id, legacy)
-        if legacy is not None:
-            # The gateway records completion, so concurrent/retried transitions
-            # are safe and never turn ordinary GETs into repeated imports.
-            await object_storage_control.import_legacy(workspace_id)
-        return config
+        return await self._legacy_object_storage_coordinator.ensure_managed(workspace_id)
 
     @staticmethod
     def _parse_object_storage_datetime(raw_value: Any) -> datetime:

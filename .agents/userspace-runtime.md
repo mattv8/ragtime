@@ -7,8 +7,10 @@ Scope: runtime execution, workspace file/mount I/O, and preview proxies.
 - One shared runtime container is intentional. Per-workspace containers or
   microVMs are not the performance roadmap.
 - Keep mutable devserver responses uncacheable; frequent edits are the primary
-  workload. The [fresh-rootfs cost tradeoff](../docs/userspace-runtime-performance.md)
-  is accepted in favor of recurring work.
+  workload. The no-mount chroot fallback intentionally pays independent-inode
+  provisioning cost on first launch to preserve isolation; normal starts reuse
+  the persisted rootfs and generation marker. Do not restore writable system
+  hardlinks or weaken sandbox isolation to improve a cold metric.
 
 ## File-operation sequencing
 

@@ -24,6 +24,10 @@ class _Response:
 
 
 class ServerBackupObjectStorageTests(unittest.TestCase):
+    def test_backup_skips_only_unpublished_legacy_staging_generation(self) -> None:
+        self.assertTrue(server_backup._should_skip_data_path(Path("_userspace/_object_storage/_legacy_imports/ws/tmp-0123/buckets/a")))
+        self.assertFalse(server_backup._should_skip_data_path(Path("_userspace/_object_storage/_legacy_imports/ws/0123/manifest.json")))
+
     def test_database_restore_with_managed_key_requires_offline_confirmation_when_destination_storage_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

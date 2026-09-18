@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ToolWizard } from './ToolWizard';
@@ -22,6 +22,8 @@ const apiMock = vi.hoisted(() => ({
   triggerSchemaIndex: vi.fn(),
   triggerPdmIndex: vi.fn(),
   getPdmWebhook: vi.fn(),
+  enablePdmWebhook: vi.fn(),
+  rotatePdmWebhookSecret: vi.fn(),
   discoverMounts: vi.fn(),
   browseFilesystem: vi.fn(),
   browseSSHFilesystem: vi.fn(),
@@ -281,6 +283,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.restoreAllMocks();
   vi.clearAllMocks();
@@ -303,10 +306,8 @@ describe('ToolWizard', () => {
       />,
     );
 
-    expect(
-      (screen.getByLabelText('Automatic incremental indexing') as HTMLSelectElement).value,
-    ).toBe('0');
-    fireEvent.change(screen.getByLabelText('Automatic incremental indexing'), {
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).value).toBe('0');
+    fireEvent.change(screen.getByLabelText('Auto Re-index Interval'), {
       target: { value: '6' },
     });
     fireEvent.change(screen.getByPlaceholderText('server.database.windows.net'), {
@@ -384,6 +385,314 @@ describe('ToolWizard', () => {
       expect(apiMock.updateToolConfig).toHaveBeenCalledWith('pdm-existing', expect.anything()),
     );
     expect(apiMock.triggerPdmIndex).not.toHaveBeenCalled();
+  });
+
+  it('defers new PDM webhook activation until after creation and waits for Done before saving', async () => {
+    const onSave = vi.fn();
+    apiMock.createToolConfig.mockResolvedValueOnce({
+      ...postgresContainerTool,
+      id: 'pdm-created',
+      tool_type: 'solidworks_pdm',
+    });
+    apiMock.enablePdmWebhook.mockResolvedValueOnce({
+      enabled: true,
+      paused: false,
+      webhook_id: 'webhook-1',
+      webhook_url: 'https://ragtime.example.test/pdm/webhooks/webhook-1',
+      secret: 'pdm-one-time-secret',
+      created_at: '2026-01-01T00:00:00Z',
+      last_received_at: null,
+      pending: false,
+      active_job_id: null,
+      last_attempt_at: null,
+      last_success_at: null,
+      last_error: null,
+    });
+    apiMock.getPdmWebhook.mockResolvedValue({
+      enabled: true,
+      paused: false,
+      webhook_id: 'webhook-1',
+      webhook_url: 'https://ragtime.example.test/pdm/webhooks/webhook-1',
+      created_at: '2026-01-01T00:00:00Z',
+      last_received_at: null,
+      pending: false,
+      active_job_id: null,
+      last_attempt_at: null,
+      last_success_at: null,
+      last_error: null,
+    });
+
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={onSave}
+        defaultToolType="solidworks_pdm"
+      />,
+    );
+
+    expect(screen.queryByLabelText('PDM webhook URL')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Auto Re-index Interval'), {
+      target: { value: 'webhook' },
+    });
+    expect(apiMock.enablePdmWebhook).not.toHaveBeenCalled();
+    await screen.findByText(/generated after this PDM tool is created/i);
+    fireEvent.change(screen.getByPlaceholderText('server.database.windows.net'), {
+      target: { value: 'pdm.example' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('sa or domain\\\\user'), {
+      target: { value: 'pdm-user' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('********'), {
+      target: { value: 'pdm-password' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('PDM_Vault'), { target: { value: 'PDM_Vault' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText(/Configure which documents and metadata to index/);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByPlaceholderText('e.g., Production Database, Staging Odoo');
+    fireEvent.change(screen.getByPlaceholderText('e.g., Production Database, Staging Odoo'), {
+      target: { value: 'Engineering PDM' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByRole('button', { name: 'Create Tool' });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Tool' }));
+
+    await waitFor(() => expect(apiMock.enablePdmWebhook).toHaveBeenCalledWith('pdm-created'));
+    expect(apiMock.triggerPdmIndex).toHaveBeenCalledWith('pdm-created');
+    expect(apiMock.createToolConfig.mock.invocationCallOrder[0]).toBeLessThan(
+      apiMock.updateToolAccessPolicy.mock.invocationCallOrder[0],
+    );
+    expect(apiMock.updateToolAccessPolicy.mock.invocationCallOrder[0]).toBeLessThan(
+      apiMock.triggerPdmIndex.mock.invocationCallOrder[0],
+    );
+    expect(apiMock.triggerPdmIndex.mock.invocationCallOrder[0]).toBeLessThan(
+      apiMock.enablePdmWebhook.mock.invocationCallOrder[0],
+    );
+    expect(screen.getByTestId('pdm-webhook-activation-complete')).toBeTruthy();
+    expect((screen.getByLabelText('PDM webhook URL') as HTMLInputElement).value).toContain(
+      'webhook-1',
+    );
+    expect((screen.getByLabelText('PDM one-time secret') as HTMLInputElement).value).toBe(
+      'pdm-one-time-secret',
+    );
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).disabled).toBe(
+      true,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Copy PDM webhook secret' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    expect(onSave).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Done disabled until a completion-state secret rotation is visible', async () => {
+    const onSave = vi.fn();
+    const rotateRequest = createDeferredPromise<{
+      enabled: boolean;
+      paused: boolean;
+      webhook_id: string;
+      webhook_url: string;
+      created_at: string | null;
+      last_received_at: string | null;
+      pending: boolean;
+      active_job_id: string | null;
+      last_attempt_at: string | null;
+      last_success_at: string | null;
+      last_error: string | null;
+      secret: string;
+    }>();
+    apiMock.createToolConfig.mockResolvedValueOnce({
+      ...postgresContainerTool,
+      id: 'pdm-created',
+      tool_type: 'solidworks_pdm',
+    });
+    apiMock.enablePdmWebhook.mockResolvedValueOnce({
+      enabled: true,
+      paused: false,
+      webhook_id: 'webhook-1',
+      webhook_url: 'https://ragtime.example.test/pdm/webhooks/webhook-1',
+      secret: 'initial-secret',
+      created_at: null,
+      last_received_at: null,
+      pending: false,
+      active_job_id: null,
+      last_attempt_at: null,
+      last_success_at: null,
+      last_error: null,
+    });
+    apiMock.getPdmWebhook.mockResolvedValue({
+      enabled: true,
+      paused: false,
+      webhook_id: 'webhook-1',
+    });
+    apiMock.rotatePdmWebhookSecret.mockReturnValue(rotateRequest.promise);
+
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={onSave}
+        defaultToolType="solidworks_pdm"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Auto Re-index Interval'), {
+      target: { value: 'webhook' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('server.database.windows.net'), {
+      target: { value: 'pdm.example' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('sa or domain\\\\user'), {
+      target: { value: 'pdm-user' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('********'), {
+      target: { value: 'pdm-password' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('PDM_Vault'), { target: { value: 'PDM_Vault' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText(/Configure which documents and metadata to index/);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByPlaceholderText('e.g., Production Database, Staging Odoo');
+    fireEvent.change(screen.getByPlaceholderText('e.g., Production Database, Staging Odoo'), {
+      target: { value: 'Engineering PDM' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByRole('button', { name: 'Create Tool' });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Tool' }));
+    await screen.findByTestId('pdm-webhook-activation-complete');
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate secret' }));
+    for (let second = 0; second < 3; second += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }));
+
+    expect(apiMock.rotatePdmWebhookSecret).toHaveBeenCalledWith('pdm-created');
+    expect((screen.getByRole('button', { name: 'Done' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(onSave).not.toHaveBeenCalled();
+
+    await act(async () => {
+      rotateRequest.resolve({
+        enabled: true,
+        paused: false,
+        webhook_id: 'webhook-1',
+        webhook_url: 'https://ragtime.example.test/pdm/webhooks/webhook-1',
+        secret: 'rotated-secret',
+        created_at: null,
+        last_received_at: null,
+        pending: false,
+        active_job_id: null,
+        last_attempt_at: null,
+        last_success_at: null,
+        last_error: null,
+      });
+      await rotateRequest.promise;
+    });
+    vi.useRealTimers();
+
+    expect((screen.getByLabelText('PDM one-time secret') as HTMLInputElement).value).toBe(
+      'rotated-secret',
+    );
+    expect((screen.getByRole('button', { name: 'Done' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+
+  it('retries failed deferred PDM webhook activation without creating the tool again', async () => {
+    const onSave = vi.fn();
+    apiMock.createToolConfig.mockResolvedValueOnce({
+      ...postgresContainerTool,
+      id: 'pdm-created',
+      tool_type: 'solidworks_pdm',
+    });
+    apiMock.enablePdmWebhook
+      .mockRejectedValueOnce(new Error('Webhook enable failed'))
+      .mockResolvedValueOnce({
+        enabled: true,
+        paused: false,
+        webhook_id: 'webhook-1',
+        webhook_url: 'https://ragtime.example.test/pdm/webhooks/webhook-1',
+        secret: 'retry-secret',
+        created_at: '2026-01-01T00:00:00Z',
+        last_received_at: null,
+        pending: false,
+        active_job_id: null,
+        last_attempt_at: null,
+        last_success_at: null,
+        last_error: null,
+      });
+    apiMock.getPdmWebhook.mockResolvedValue({
+      enabled: true,
+      paused: false,
+      webhook_id: 'webhook-1',
+      webhook_url: 'https://ragtime.example.test/pdm/webhooks/webhook-1',
+      created_at: '2026-01-01T00:00:00Z',
+      last_received_at: null,
+      pending: false,
+      active_job_id: null,
+      last_attempt_at: null,
+      last_success_at: null,
+      last_error: null,
+    });
+
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={onSave}
+        defaultToolType="solidworks_pdm"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Auto Re-index Interval'), {
+      target: { value: 'webhook' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('server.database.windows.net'), {
+      target: { value: 'pdm.example' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('sa or domain\\\\user'), {
+      target: { value: 'pdm-user' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('********'), {
+      target: { value: 'pdm-password' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('PDM_Vault'), { target: { value: 'PDM_Vault' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText(/Configure which documents and metadata to index/);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByPlaceholderText('e.g., Production Database, Staging Odoo');
+    fireEvent.change(screen.getByPlaceholderText('e.g., Production Database, Staging Odoo'), {
+      target: { value: 'Engineering PDM' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByRole('button', { name: 'Create Tool' });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Tool' }));
+
+    await screen.findByText('Webhook enable failed');
+    expect(apiMock.createToolConfig).toHaveBeenCalledTimes(1);
+    expect(onSave).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Tool' }));
+    await waitFor(() => expect(apiMock.enablePdmWebhook).toHaveBeenCalledTimes(2));
+    expect(apiMock.createToolConfig).toHaveBeenCalledTimes(1);
+    expect(apiMock.updateToolConfig).toHaveBeenCalledWith('pdm-created', expect.anything());
+    expect(screen.getByTestId('pdm-webhook-activation-complete')).toBeTruthy();
   });
 
   it('adds an Access step before review for every wizard variant', async () => {

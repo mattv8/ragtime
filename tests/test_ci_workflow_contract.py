@@ -109,8 +109,78 @@ class CiWorkflowContractTests(unittest.TestCase):
 
         self.assertIn("can_publish == 'true'", base["jobs"]["build"]["if"])
         resolve_steps = base["jobs"]["resolve"]["steps"]
+        self.assertFalse(any(step.get("uses") == "./.github/actions/managed-buildx" for step in resolve_steps))
+        self.assertFalse(any("setup-buildx" in step.get("uses", "") for step in resolve_steps))
+        buildx_version = next(step for step in resolve_steps if step.get("name") == "Verify Buildx CLI")
+        self.assertEqual(buildx_version["run"], "docker buildx version")
+        self.assertTrue(any(step.get("uses") == "./.github/actions/managed-buildx" for step in base["jobs"]["build"]["steps"]))
         read_only_resolve = next(step for step in resolve_steps if step.get("id") == "empty-images")
         self.assertIn("imagetools inspect", read_only_resolve["run"])
+
+        trusted_resolve = next(step for step in resolve_steps if step.get("id") == "digest-images")
+        with tempfile.TemporaryDirectory() as directory:
+            docker_log = Path(directory) / "docker.log"
+            fake_docker = Path(directory) / "docker"
+            fake_docker.write_text(
+                "#!/usr/bin/env bash\n"
+                'printf \'%s\\n\' "$*" >> "$DOCKER_LOG"\n'
+                'if [ "$1 $2" = "buildx version" ]; then printf "buildx v0.0.0\\n"; exit 0; fi\n'
+                'if [ "$1 $2 $3" != "buildx imagetools inspect" ]; then exit 1; fi\n'
+                'if [ "$DOCKER_MODE" = "anonymous-failure" ]; then printf "denied\\n" >&2; exit 1; fi\n'
+                'if [ "$DOCKER_MODE" = "invalid-digest" ]; then printf "sha256:invalid\\n"; exit 0; fi\n'
+                'printf "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n"\n',
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            environment = {
+                "PATH": f"{directory}:{os.environ['PATH']}",
+                "DOCKER_LOG": str(docker_log),
+                "FRONTEND": "registry/frontend",
+                "PYTHON_CI": "registry/python-ci",
+                "PRODUCTION": "registry/production",
+                "RUNTIME": "registry/runtime",
+            }
+            for script, mode, expected_status, expected_outputs in (
+                (
+                    trusted_resolve["run"],
+                    "success",
+                    0,
+                    "frontend_image=registry/frontend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "python_ci_image=registry/python-ci@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "production_image=registry/production@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                    "runtime_image=registry/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                ),
+                (trusted_resolve["run"], "invalid-digest", 1, ""),
+                (
+                    read_only_resolve["run"],
+                    "anonymous-failure",
+                    0,
+                    "frontend_image=\npython_ci_image=\nproduction_image=\nruntime_image=\n",
+                ),
+            ):
+                with self.subTest(mode=mode):
+                    with tempfile.NamedTemporaryFile() as output:
+                        result = subprocess.run(
+                            ["bash", "-e", "-c", script],
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                            env={**os.environ, **environment, "DOCKER_MODE": mode, "GITHUB_OUTPUT": output.name},
+                        )
+                        output.seek(0)
+                        self.assertEqual(result.returncode, expected_status, result.stderr)
+                        self.assertEqual(output.read().decode(), expected_outputs)
+
+            docker_log.write_text("", encoding="utf-8")
+            version_result = subprocess.run(
+                ["bash", "-e", "-c", buildx_version["run"]],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**os.environ, **environment, "DOCKER_MODE": "success"},
+            )
+            self.assertEqual(version_result.returncode, 0, version_result.stderr)
+            self.assertEqual(docker_log.read_text(encoding="utf-8").splitlines(), ["buildx version"])
 
     def test_build_container_is_packaging_only(self) -> None:
         workflow = _load_workflow("build-container.yml")
@@ -255,6 +325,18 @@ class CiWorkflowContractTests(unittest.TestCase):
                         builder_sites += 1
                         self.assertIn("scope", step.get("with", {}))
         self.assertGreater(builder_sites, 0)
+
+    def test_managed_buildx_preflight_rounds_buildkit_minimum_to_gib(self) -> None:
+        action = yaml.load(
+            (ROOT / ".github" / "actions" / "managed-buildx" / "action.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        minimum_gib = int(action["inputs"]["min-free-gib"]["default"])
+        buildkit_config = (ROOT / "docker" / "buildkitd.ci.toml").read_text(encoding="utf-8")
+        match = re.search(r'minFreeSpace = "(\d+)GB"', buildkit_config)
+        self.assertIsNotNone(match)
+        assert match is not None
+        self.assertGreater(minimum_gib * 1024**3, int(match.group(1)) * 1000**3)
 
     def test_workflows_contain_no_hardcoded_usernames(self) -> None:
         for workflow_file in (ROOT / ".github" / "workflows").glob("*.yml"):

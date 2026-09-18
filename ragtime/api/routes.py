@@ -17,7 +17,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from ragtime import __version__
 from ragtime.config import settings
 from ragtime.core.api_accounting import log_api_request
-from ragtime.core.app_settings import get_app_settings
+from ragtime.core.app_settings import get_app_settings, get_health_llm_settings
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
     compose_model_display_label,
@@ -571,7 +571,7 @@ async def health_check(
             llm_provider="",
         )
 
-    app_settings = await get_app_settings()
+    health_llm_settings = await get_health_llm_settings()
 
     # Get real-time memory stats
     process = psutil.Process()
@@ -604,8 +604,8 @@ async def health_check(
         status=status,
         version=__version__,
         indexes_loaded=loading_status["retrievers_available"],
-        model=app_settings.get("llm_model", "gpt-4-turbo"),
-        llm_provider=app_settings.get("llm_provider", "openai"),
+        model=health_llm_settings["llm_model"],
+        llm_provider=health_llm_settings["llm_provider"],
         indexes_ready=loading_status["indexes_ready"],
         indexes_loading=loading_status["indexes_loading"],
         indexes_total=loading_status["indexes_total"],

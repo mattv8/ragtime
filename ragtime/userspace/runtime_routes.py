@@ -1602,15 +1602,6 @@ async def _primitive_capabilities(
                     config = await get_config(workspace_id, user_id)
                     if config is not None:
                         buckets = [bucket.name for bucket in config.buckets]
-                else:
-                    # Compatibility for lightweight primitive consumers that
-                    # expose only the legacy metadata fixture; object IO never
-                    # uses this filesystem-backed configuration.
-                    payload = service._ensure_object_storage_config(workspace_id)
-                    bucket_items = payload.get("buckets") if isinstance(payload, dict) else []
-                    if not isinstance(bucket_items, list):
-                        bucket_items = []
-                    buckets = [str(item.get("name")) for item in bucket_items if isinstance(item, dict) and item.get("name")]
     return {
         "workspace_id": workspace_id,
         "mode": preview_mode,

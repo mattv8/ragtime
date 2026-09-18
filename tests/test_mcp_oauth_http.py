@@ -10,10 +10,17 @@ import httpx
 from ragtime import main
 from ragtime.api import auth as api_auth
 from ragtime.core.auth import AuthResult, encode_jwt_payload
+from ragtime.core.rate_limit import limiter
 
 
 class McpOAuthHttpTests(unittest.IsolatedAsyncioTestCase):
     """Exercise the production root and alias routes without application lifespan."""
+
+    def setUp(self) -> None:
+        limiter._storage.reset()
+
+    def tearDown(self) -> None:
+        limiter._storage.reset()
 
     async def test_password_token_aliases_omit_null_refresh_and_disable_caching(self) -> None:
         user = SimpleNamespace(id="transport-user", securityGeneration=0)

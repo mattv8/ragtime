@@ -81,3 +81,15 @@ async def delete_workspace(workspace_id: str) -> None:
 
 async def import_legacy(workspace_id: str) -> dict[str, Any]:
     return await request("POST", f"/v1/workspaces/{workspace_id}/import-legacy")
+
+
+async def submit_legacy_import(workspace_id: str, generation: str, manifest_sha256: str) -> dict[str, Any]:
+    return await request("POST", f"/v1/workspaces/{workspace_id}/legacy-import", {"generation": generation, "manifest_sha256": manifest_sha256})
+
+
+async def get_legacy_import(workspace_id: str) -> dict[str, Any]:
+    return await request("GET", f"/v1/workspaces/{workspace_id}/legacy-import")
+
+
+async def acknowledge_legacy_gc(workspace_id: str, generation: str, manifest_sha256: str) -> dict[str, Any]:
+    return await request("POST", f"/v1/workspaces/{workspace_id}/legacy-import/gc", {"generation": generation, "manifest_sha256": manifest_sha256})

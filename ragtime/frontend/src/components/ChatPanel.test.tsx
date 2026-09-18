@@ -108,6 +108,35 @@ const apiMock = vi.hoisted(() => {
       legacy_conversation: null,
     };
   });
+  mock.getConversationWindowMessage.mockImplementation(
+    async (conversationId: string, index: number) => {
+      const latestResult = [...mock.getConversationLatestExchange.mock.results]
+        .reverse()
+        .find(
+          (_result, resultIndex) =>
+            mock.getConversationLatestExchange.mock.calls[
+              mock.getConversationLatestExchange.mock.calls.length - 1 - resultIndex
+            ]?.[0] === conversationId,
+        );
+      const latest = await latestResult?.value;
+      const entry = latest?.entries.find(
+        (candidate: ConversationWindowEntry) => candidate.index === index,
+      );
+      if (!entry) throw new Error(`Missing deferred entry fixture for ${conversationId}:${index}`);
+      if (entry.state === 'ready') return entry;
+      return {
+        ...entry,
+        state: 'ready' as const,
+        message: {
+          role: entry.preview.role,
+          content: entry.preview.content,
+          timestamp: entry.preview.timestamp,
+          message_id: entry.preview.message_id ?? undefined,
+        },
+        preview: null,
+      };
+    },
+  );
   return mock;
 });
 
@@ -713,6 +742,58 @@ afterEach(() => {
 });
 
 describe('ChatPanel standalone first-paint loading', () => {
+  it('shows the main loading state instead of the welcome screen while bootstrap selection is pending', async () => {
+    let releaseBootstrap: ((rows: ConversationSummary[]) => void) | undefined;
+    apiMock.listConversationSummaries.mockImplementation(
+      (_workspaceId: unknown, options: { limit?: number; owner_scope?: string }) => {
+        if (options.owner_scope === 'self' && options.limit === 1) {
+          return new Promise<ConversationSummary[]>((resolve) => (releaseBootstrap = resolve));
+        }
+        return Promise.resolve([]);
+      },
+    );
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} />);
+
+    expect(await screen.findByText('Loading conversation')).toBeDefined();
+    expect(screen.queryByText('Start a conversation')).toBeNull();
+    releaseBootstrap?.([]);
+    expect(await screen.findByText('Start a conversation')).toBeDefined();
+  });
+
+  it('shows latest-exchange previews while the bootstrap message page is still loading', async () => {
+    let releasePage: ((page: ConversationMessageWindow) => void) | undefined;
+    const selected = makeConversation('bootstrap-preview', 'Deferred bootstrap preview', {
+      title: 'Bootstrap preview',
+    });
+    apiMock.listConversationSummaries.mockImplementationOnce(
+      (_workspaceId: unknown, options: { limit?: number; owner_scope?: string }) => {
+        if (options.owner_scope === 'self' && options.limit === 1) {
+          return Promise.resolve([makeSummary(selected.id, selected.title)]);
+        }
+        return Promise.resolve([]);
+      },
+    );
+    apiMock.getConversationLatestExchange.mockResolvedValueOnce(makeLatestExchange(selected));
+    apiMock.getConversationMessageWindow.mockImplementationOnce(
+      () => new Promise<ConversationMessageWindow>((resolve) => (releasePage = resolve)),
+    );
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} />);
+
+    expect(await screen.findByText('Deferred bootstrap preview')).toBeDefined();
+    expect(document.querySelector('#chat-window-main-loading')).toBeNull();
+    expect(screen.queryByText('Start a conversation')).toBeNull();
+    await waitFor(() => expect(releasePage).toBeDefined());
+
+    releasePage?.({
+      ...makeLatestExchange(selected),
+      entries: [],
+      next_cursor: null,
+      has_more: false,
+    });
+  });
+
   it('renders the selected detail and usable composer before the deferred sidebar page completes', async () => {
     let releaseSidebarPage: ((rows: ConversationSummary[]) => void) | undefined;
     const selected = makeConversation('recent-1', 'First paint response', {
@@ -746,6 +827,49 @@ describe('ChatPanel standalone first-paint loading', () => {
     expect(apiMock.listUserSpaceWorkspaces).not.toHaveBeenCalled();
 
     releaseSidebarPage?.([]);
+  });
+
+  it('lands a standalone conversation at the newest message after deferred details hydrate', async () => {
+    const conversation = makeConversation('initial-bottom', 'Newest response');
+    let resolveDetails: ((entry: ConversationWindowEntry) => void) | undefined;
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationWindowMessage.mockImplementation(
+      (_id: string, index: number) =>
+        new Promise<ConversationWindowEntry>((resolve) => {
+          if (index === 1) resolveDetails = resolve;
+        }),
+    );
+    window.requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+    await waitFor(() => expect(resolveDetails).toBeDefined());
+    const messagesRoot = document.querySelector('.chat-messages') as HTMLElement;
+    let scrollTop = 0;
+    Object.defineProperties(messagesRoot, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 800 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    const scrollTo = vi.fn((options?: ScrollToOptions | number, y?: number) => {
+      scrollTop = typeof options === 'number' ? Number(y) : Number(options?.top);
+    });
+    messagesRoot.scrollTo = scrollTo;
+
+    resolveDetails?.({ ...makeWindow(conversation).entries[1], index: 1 });
+    await waitFor(() => expect(scrollTop).toBe(800));
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(scrollTop).toBe(800);
   });
 
   it('prioritizes an authorized shared preferred id and skips an older preferred detail', async () => {
@@ -942,7 +1066,126 @@ describe('ChatPanel standalone first-paint loading', () => {
     expect(screen.getByText('Created chat stays active')).toBeDefined();
   });
 
-  it('preserves the first visible ready message position when earlier history prepends', async () => {
+  it('keeps fresh-chat bubble skeletons until an adopted conversation is ready', async () => {
+    const current = makeConversation('fresh-current', 'Current reply', {
+      model: 'openai::gpt-test',
+    });
+    const created = makeConversation('fresh-created', 'Fresh reply', { model: 'openai::gpt-test' });
+    let resolveCreate: ((conversation: Conversation) => void) | undefined;
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        models: [
+          { id: 'gpt-test', name: 'Test model', provider: 'openai', context_limit: 128_000 },
+        ],
+        default_model: 'gpt-test',
+        current_model: 'gpt-test',
+        allowed_models: ['gpt-test'],
+        allowed_openapi_models: [],
+      }),
+    } as Response);
+    apiMock.getConversationLatestExchange.mockImplementation((id: string) => {
+      if (id === current.id) return Promise.resolve(makeLatestExchange(current));
+      throw new Error(`Unexpected latest-exchange request for ${id}`);
+    });
+    apiMock.createConversation.mockImplementation(
+      () => new Promise<Conversation>((resolve) => (resolveCreate = resolve)),
+    );
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={current.id} />);
+    expect(await screen.findByText('Current reply')).toBeDefined();
+
+    await userEvent.setup().click(screen.getByTitle('Start a new conversation'));
+    expect(document.querySelector('.chat-message-skeleton-list')).not.toBeNull();
+    expect(document.querySelector('#chat-window-main-loading')).toBeNull();
+    expect(apiMock.createConversation).toHaveBeenCalledWith(
+      { model: 'openai::gpt-test' },
+      undefined,
+    );
+
+    resolveCreate?.(created);
+    expect(await screen.findByText('Fresh reply')).toBeDefined();
+    expect(document.querySelector('#chat-window-main-loading')).toBeNull();
+    expect(apiMock.getConversationLatestExchange).not.toHaveBeenCalledWith(
+      created.id,
+      undefined,
+      expect.anything(),
+    );
+    expect(screen.getByLabelText('Message').hasAttribute('disabled')).toBe(false);
+  });
+
+  it('uses the server fallback when the active standalone model is unavailable', async () => {
+    const current = makeConversation('missing-model', 'Current reply', {
+      model: 'personal-default',
+    });
+    const created = makeConversation('server-default', 'Fresh reply');
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        models: [
+          { id: 'gpt-test', name: 'Test model', provider: 'openai', context_limit: 128_000 },
+        ],
+        default_model: 'gpt-test',
+        current_model: 'gpt-test',
+        allowed_models: ['gpt-test'],
+        allowed_openapi_models: [],
+      }),
+    } as Response);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(current));
+    apiMock.createConversation.mockResolvedValue(created);
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={current.id} />);
+    expect(await screen.findByText('Current reply')).toBeDefined();
+
+    await userEvent.setup().click(screen.getByTitle('Start a new conversation'));
+
+    expect(apiMock.createConversation).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  it('defers workspace new-chat model selection to the server', async () => {
+    const current = makeConversation('workspace-current', 'Workspace reply', {
+      model: 'openai::gpt-test',
+      workspace_id: 'ws-model-policy',
+    });
+    const created = makeConversation('workspace-created', 'Fresh workspace reply', {
+      workspace_id: 'ws-model-policy',
+    });
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        models: [
+          { id: 'gpt-test', name: 'Test model', provider: 'openai', context_limit: 128_000 },
+        ],
+        default_model: 'gpt-test',
+        current_model: 'gpt-test',
+        allowed_models: ['gpt-test'],
+        allowed_openapi_models: [],
+      }),
+    } as Response);
+    apiMock.createConversation.mockResolvedValue(created);
+
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-model-policy"
+        workspaceChatState={makeWorkspaceChatState(current)}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+    expect(await screen.findByText('Workspace reply')).toBeDefined();
+
+    await userEvent.setup().click(screen.getByTitle('Start a new conversation'));
+
+    expect(apiMock.createConversation).toHaveBeenCalledWith(undefined, 'ws-model-policy');
+  });
+
+  it('preserves the first visible ready message position when programmatic anchor restoration emits a scroll event', async () => {
+    window.requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
     const conversation = makeConversation('history-anchor', 'Newest ready response', {
       messages: [
         {
@@ -993,10 +1236,13 @@ describe('ChatPanel standalone first-paint loading', () => {
       nextCursor: null,
       hasMore: false,
     });
+    let releaseEarlierPage: ((page: ConversationMessageWindow) => void) | undefined;
     apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
     apiMock.getConversationMessageWindow
       .mockResolvedValueOnce(firstPage)
-      .mockResolvedValueOnce(earlierPage);
+      .mockImplementationOnce(
+        () => new Promise<ConversationMessageWindow>((resolve) => (releaseEarlierPage = resolve)),
+      );
 
     renderChatPanel(
       <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
@@ -1012,12 +1258,18 @@ describe('ChatPanel standalone first-paint loading', () => {
     });
     const messagesRoot = document.querySelector('.chat-messages') as HTMLElement;
     let scrollTop = 200;
+    let emitProgrammaticScroll = false;
     Object.defineProperty(messagesRoot, 'scrollTop', {
       configurable: true,
       get: () => scrollTop,
       set: (value: number) => {
         scrollTop = value;
+        if (emitProgrammaticScroll) fireEvent.scroll(messagesRoot);
       },
+    });
+    Object.defineProperties(messagesRoot, {
+      clientHeight: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, value: 1_000 },
     });
     messagesRoot.getBoundingClientRect = () =>
       ({
@@ -1032,6 +1284,7 @@ describe('ChatPanel standalone first-paint loading', () => {
         toJSON: () => ({}),
       }) as DOMRect;
     let prepended = false;
+    let userScrolled = false;
     const messageWrappers = Array.from(
       document.querySelectorAll<HTMLElement>('[data-chat-message-key]'),
     );
@@ -1042,7 +1295,7 @@ describe('ChatPanel standalone first-paint loading', () => {
     messageWrappers.forEach((wrapper) => {
       const key = wrapper.dataset.chatMessageKey;
       wrapper.getBoundingClientRect = () => {
-        const top = key === 'anchor-visible-user' ? 20 : prepended ? 260 : 160;
+        const top = key === 'anchor-visible-user' ? 20 : prepended ? 260 : userScrolled ? 220 : 160;
         return {
           top,
           bottom: top + 60,
@@ -1058,10 +1311,15 @@ describe('ChatPanel standalone first-paint loading', () => {
     });
 
     fireEvent.click(loadEarlier);
+    userScrolled = true;
+    scrollTop = 180;
+    fireEvent.scroll(messagesRoot);
+    emitProgrammaticScroll = true;
     prepended = true;
+    releaseEarlierPage?.(earlierPage);
 
     await waitFor(() => expect(apiMock.getConversationMessageWindow).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(scrollTop).toBe(300));
+    await waitFor(() => expect(scrollTop).toBe(220));
     expect(apiMock.getConversationMessageWindow).toHaveBeenLastCalledWith(
       conversation.id,
       { cursor: 'anchor-earlier', limit: 20 },
@@ -1479,7 +1737,7 @@ describe('ChatPanel standalone first-paint loading', () => {
     await waitFor(() => expect(apiMock.listConversationSummaries).toHaveBeenCalled());
   });
 
-  it('uses absolute message indexes for deferred detail actions after an older page prepends', async () => {
+  it('automatically uses absolute message indexes for deferred details after an older page prepends', async () => {
     const conversation = makeConversation('absolute-index', 'Latest preview');
     const latest = makeLatestExchange(conversation);
     const deferredAtNineteen: ConversationWindowEntry = {
@@ -1511,7 +1769,6 @@ describe('ChatPanel standalone first-paint loading', () => {
       <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
     );
 
-    await userEvent.setup().click(await screen.findByRole('button', { name: 'Load details' }));
     await waitFor(() =>
       expect(apiMock.getConversationWindowMessage).toHaveBeenCalledWith(
         conversation.id,
@@ -1521,6 +1778,97 @@ describe('ChatPanel standalone first-paint loading', () => {
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
+  });
+
+  it('shows queued deferred details as loading until each newest-first hydration settles', async () => {
+    const conversation = makeConversation('sequential-details', 'Newest assistant response', {
+      messages: [
+        {
+          role: 'user',
+          content: 'Oldest question',
+          timestamp: '2026-09-11T12:00:00.000Z',
+          message_id: 'sequential-0',
+        },
+        {
+          role: 'assistant',
+          content: 'Middle response',
+          timestamp: '2026-09-11T12:00:01.000Z',
+          message_id: 'sequential-1',
+        },
+        {
+          role: 'user',
+          content: 'Newest question',
+          timestamp: '2026-09-11T12:00:02.000Z',
+          message_id: 'sequential-2',
+        },
+      ],
+    });
+    const deferredEntries = conversation.messages.map((message, index) => ({
+      index,
+      key: message.message_id ?? `sequential-${index}`,
+      state: 'deferred' as const,
+      message: null,
+      preview: {
+        role: message.role,
+        content: String(message.content),
+        timestamp: message.timestamp,
+        message_id: message.message_id ?? null,
+        content_truncated: false,
+        has_details: true,
+      },
+    }));
+    let resolveNewest: ((entry: ConversationWindowEntry) => void) | undefined;
+    let resolveMiddle: ((entry: ConversationWindowEntry) => void) | undefined;
+    apiMock.getConversationLatestExchange.mockResolvedValue(
+      makeWindow(conversation, { entries: deferredEntries }),
+    );
+    apiMock.getConversationWindowMessage.mockImplementation((_: string, index: number) => {
+      if (index === 2) {
+        return new Promise<ConversationWindowEntry>((resolve) => (resolveNewest = resolve));
+      }
+      if (index === 1) {
+        return new Promise<ConversationWindowEntry>((resolve) => (resolveMiddle = resolve));
+      }
+      return Promise.resolve({ ...makeWindow(conversation).entries[index], index });
+    });
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(1));
+    expect(apiMock.getConversationWindowMessage.mock.calls[0]?.[1]).toBe(2);
+    expect(screen.getAllByText('Loading details')).toHaveLength(3);
+    expect(screen.queryByRole('button', { name: /details/i })).toBeNull();
+    expect(document.querySelectorAll('.chat-message-deferred[aria-busy="true"]')).toHaveLength(3);
+    resolveNewest?.({ ...makeWindow(conversation).entries[2], index: 2 });
+    await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2));
+    expect(apiMock.getConversationWindowMessage.mock.calls.map(([, index]) => index)).toEqual([
+      2, 1,
+    ]);
+    expect(screen.getAllByText('Loading details')).toHaveLength(2);
+    resolveMiddle?.({ ...makeWindow(conversation).entries[1], index: 1 });
+    await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(3));
+    expect(apiMock.getConversationWindowMessage.mock.calls.map(([, index]) => index)).toEqual([
+      2, 1, 0,
+    ]);
+  });
+
+  it('offers failed deferred hydration as a manual retry without automatically retrying it', async () => {
+    const conversation = makeConversation('failed-details', 'Deferred retry preview');
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationWindowMessage.mockRejectedValue(new Error('Detail unavailable'));
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: 'Retry details' })).toHaveLength(1),
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2);
   });
 
   it('hydrates the complete transcript only when editing a ready window message', async () => {
@@ -2810,8 +3158,341 @@ describe('ChatPanel tool group menu refresh', () => {
     const source = readFileSync(join(cwd(), 'src/components/ChatPanel.tsx'), 'utf8');
 
     expect(source).toMatch(
-      /const getToolGroupMenuItems = useCallback\([\s\S]*?\[\s*activeConversation,\s*conversationToolOptions,\s*isConversationViewer,\s*saveConversationToolOptions,\s*savingTools,\s*\]/,
+      /const getToolGroupMenuItems = useCallback\([\s\S]*?\[\s*conversationForTools,\s*conversationToolOptions,\s*isConversationViewer,\s*saveConversationToolOptions,\s*savingTools,\s*\]/,
     );
+  });
+});
+
+describe('ChatPanel bounded-window operation boundaries', () => {
+  it('keeps manual deferred-detail retry behind the automatic hydration flight', async () => {
+    const conversation = makeConversation('hydrate-retry-race', 'Newest reply', {
+      messages: [
+        {
+          role: 'user',
+          content: 'old',
+          timestamp: '2026-09-11T12:00:00.000Z',
+          message_id: 'race-0',
+        },
+        {
+          role: 'assistant',
+          content: 'middle',
+          timestamp: '2026-09-11T12:00:01.000Z',
+          message_id: 'race-1',
+        },
+        {
+          role: 'user',
+          content: 'new',
+          timestamp: '2026-09-11T12:00:02.000Z',
+          message_id: 'race-2',
+        },
+      ],
+    });
+    const entries: ConversationWindowEntry[] = conversation.messages.map((message, index) => {
+      if (index === 0) {
+        return {
+          index,
+          key: message.message_id || String(index),
+          state: 'ready' as const,
+          message,
+          preview: null,
+        };
+      }
+      return {
+        index,
+        key: message.message_id || String(index),
+        state: 'deferred' as const,
+        message: null,
+        preview: {
+          role: message.role,
+          content: String(message.content),
+          timestamp: message.timestamp,
+          message_id: message.message_id || null,
+          content_truncated: false,
+          has_details: true,
+        },
+      };
+    });
+    let rejectNewest: ((reason?: unknown) => void) | undefined;
+    let resolveMiddle: ((entry: ConversationWindowEntry) => void) | undefined;
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeWindow(conversation, { entries }));
+    apiMock.getConversationWindowMessage.mockImplementation((_id: string, index: number) => {
+      if (
+        index === 2 &&
+        apiMock.getConversationWindowMessage.mock.calls.filter(([, i]) => i === 2).length === 1
+      ) {
+        return new Promise<ConversationWindowEntry>((_resolve, reject) => {
+          rejectNewest = reject;
+        });
+      }
+      if (index === 1) {
+        return new Promise<ConversationWindowEntry>((resolve) => {
+          resolveMiddle = resolve;
+        });
+      }
+      return new Promise<ConversationWindowEntry>(() => undefined);
+    });
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+    await waitFor(() =>
+      expect(apiMock.getConversationWindowMessage.mock.calls.map(([, index]) => index)).toEqual([
+        2,
+      ]),
+    );
+    rejectNewest?.(new Error('newest failed'));
+    await waitFor(() =>
+      expect(apiMock.getConversationWindowMessage.mock.calls.map(([, index]) => index)).toEqual([
+        2, 1,
+      ]),
+    );
+    const retryDetails = await screen.findByRole('button', { name: 'Retry details' });
+    expect(retryDetails.hasAttribute('disabled')).toBe(true);
+    await userEvent.setup().click(retryDetails);
+    expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2);
+    resolveMiddle?.({
+      ...entries[1],
+      state: 'ready',
+      message: conversation.messages[1],
+      preview: null,
+    });
+    await waitFor(() => expect(retryDetails.hasAttribute('disabled')).toBe(false));
+    await userEvent.setup().click(retryDetails);
+    await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(3));
+  });
+
+  it('restores a pending older-page anchor after deferred detail hydration completes', async () => {
+    window.requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    const conversation = makeConversation('anchor-detail-race', 'latest', {
+      messages: [
+        {
+          role: 'user',
+          content: 'old question',
+          timestamp: '2026-09-11T12:00:00.000Z',
+          message_id: 'anchor-0',
+        },
+        {
+          role: 'assistant',
+          content: 'old response',
+          timestamp: '2026-09-11T12:00:01.000Z',
+          message_id: 'anchor-1',
+        },
+        {
+          role: 'user',
+          content: 'visible question',
+          timestamp: '2026-09-11T12:00:02.000Z',
+          message_id: 'anchor-2',
+        },
+        {
+          role: 'assistant',
+          content: 'deferred latest',
+          timestamp: '2026-09-11T12:00:03.000Z',
+          message_id: 'anchor-3',
+        },
+      ],
+    });
+    const deferred: ConversationWindowEntry = {
+      index: 3,
+      key: 'anchor-3',
+      state: 'deferred',
+      message: null,
+      preview: {
+        role: 'assistant',
+        content: 'deferred latest',
+        timestamp: conversation.messages[3].timestamp,
+        message_id: 'anchor-3',
+        content_truncated: false,
+        has_details: true,
+      },
+    };
+    const firstPage = makeWindow(conversation, {
+      entries: [
+        {
+          index: 2,
+          key: 'anchor-2',
+          state: 'ready',
+          message: conversation.messages[2],
+          preview: null,
+        },
+      ],
+      nextCursor: 'older',
+      hasMore: true,
+    });
+    const olderPage = makeWindow(conversation, {
+      entries: [
+        {
+          index: 0,
+          key: 'anchor-0',
+          state: 'ready',
+          message: conversation.messages[0],
+          preview: null,
+        },
+        {
+          index: 1,
+          key: 'anchor-1',
+          state: 'ready',
+          message: conversation.messages[1],
+          preview: null,
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+    });
+    let resolveDetail: ((entry: ConversationWindowEntry) => void) | undefined;
+    let resolveOlder: ((page: ConversationMessageWindow) => void) | undefined;
+    apiMock.getConversationLatestExchange.mockResolvedValue(
+      makeWindow(conversation, { entries: [deferred], nextCursor: 'older', hasMore: true }),
+    );
+    apiMock.getConversationMessageWindow.mockResolvedValueOnce(firstPage).mockImplementationOnce(
+      () =>
+        new Promise<ConversationMessageWindow>((resolve) => {
+          resolveOlder = resolve;
+        }),
+    );
+    apiMock.getConversationWindowMessage.mockImplementation(
+      () =>
+        new Promise<ConversationWindowEntry>((resolve) => {
+          resolveDetail = resolve;
+        }),
+    );
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+    const loadEarlier = await screen.findByRole('button', { name: 'Load earlier messages' });
+    await waitFor(() => expect(resolveDetail).toBeDefined());
+    const root = document.querySelector('.chat-messages') as HTMLElement;
+    let scrollTop = 200;
+    Object.defineProperty(root, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+    });
+    Object.defineProperties(root, {
+      clientHeight: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, value: 1000 },
+    });
+    root.getBoundingClientRect = () =>
+      ({
+        top: 100,
+        bottom: 500,
+        left: 0,
+        right: 300,
+        width: 300,
+        height: 400,
+        x: 0,
+        y: 100,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    let prepended = false;
+    for (const element of Array.from(
+      document.querySelectorAll<HTMLElement>('[data-chat-message-key]'),
+    )) {
+      const key = element.dataset.chatMessageKey;
+      element.getBoundingClientRect = () => {
+        const top = key === 'anchor-2' ? (prepended ? 360 : 120) : key === 'anchor-3' ? 220 : 160;
+        return {
+          top,
+          bottom: top + 60,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 60,
+          x: 0,
+          y: top,
+          toJSON: () => ({}),
+        } as DOMRect;
+      };
+    }
+    fireEvent.scroll(root);
+    fireEvent.click(loadEarlier);
+    await waitFor(() => expect(resolveOlder).toBeDefined());
+    resolveDetail?.({
+      index: 3,
+      key: 'anchor-3',
+      state: 'ready',
+      message: conversation.messages[3],
+      preview: null,
+    });
+    await waitFor(() => expect(document.querySelector('.chat-message-deferred')).toBeNull());
+    prepended = true;
+    resolveOlder?.(olderPage);
+    await waitFor(() => expect(scrollTop).toBe(440));
+  });
+
+  it('loads earlier messages when no message intersects the viewport for anchoring', async () => {
+    const conversation = makeConversation('unanchored-older-page', 'latest');
+    const latestEntry = makeWindow(conversation).entries[1];
+    const firstPage = makeWindow(conversation, {
+      entries: [latestEntry],
+      nextCursor: 'older',
+      hasMore: true,
+    });
+    const olderPage = makeWindow(conversation, {
+      entries: [makeWindow(conversation).entries[0]],
+      nextCursor: null,
+      hasMore: false,
+    });
+    apiMock.getConversationLatestExchange.mockResolvedValue(firstPage);
+    apiMock.getConversationMessageWindow
+      .mockResolvedValueOnce(firstPage)
+      .mockResolvedValueOnce(olderPage);
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+    const loadEarlier = await screen.findByRole('button', { name: 'Load earlier messages' });
+    const root = document.querySelector('.chat-messages') as HTMLElement;
+    root.getBoundingClientRect = () =>
+      ({
+        top: 100,
+        bottom: 200,
+        left: 0,
+        right: 300,
+        width: 300,
+        height: 100,
+        x: 0,
+        y: 100,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    for (const element of Array.from(
+      document.querySelectorAll<HTMLElement>('[data-chat-message-key]'),
+    )) {
+      element.getBoundingClientRect = () =>
+        ({
+          top: 300,
+          bottom: 360,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 60,
+          x: 0,
+          y: 300,
+          toJSON: () => ({}),
+        }) as DOMRect;
+    }
+
+    await userEvent.setup().click(loadEarlier);
+    await waitFor(() => expect(apiMock.getConversationMessageWindow).toHaveBeenCalledTimes(2));
+    expect(document.querySelector('#chat-window-history-error')).toBeNull();
+  });
+
+  it('shows usable conversation tools for a standalone partial window without fetching its full transcript', async () => {
+    const conversation = makeConversation('partial-tools', 'partial reply');
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, { entries: [], nextCursor: null, hasMore: false }),
+    );
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+    await screen.findByText('partial reply');
+    expect((await screen.findAllByTitle(/Conversation Tools/)).length).toBeGreaterThan(0);
+    expect(apiMock.getConversation).not.toHaveBeenCalled();
   });
 });
 

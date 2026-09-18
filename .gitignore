@@ -80,6 +80,9 @@ dmypy.json
 # Local data (not tracked)
 .data/
 
+# Local reference material (not tracked)
+/docs/
+
 # Docker
 *.log
 

@@ -32,7 +32,10 @@ export interface ConversationWindowState {
   loadOlder: () => Promise<void>;
   loadMessage: (index: number) => Promise<void>;
   ensureFullConversation: () => Promise<Conversation>;
-  adoptFullConversation: (conversation: Conversation) => void;
+  adoptFullConversation: (
+    conversation: Conversation,
+    options?: { pendingSelection?: boolean },
+  ) => void;
 }
 
 type WindowData = Omit<
@@ -138,6 +141,7 @@ export function useConversationWindow({
   const messagePromises = useRef(new Map<number, Promise<void>>());
   const retriedConflict = useRef(false);
   const pageTimeouts = useRef(new Set<number>());
+  const adoptedSelectionId = useRef<string | null>(null);
 
   // Keep imperative calls made before effects see the current render's selection.
   current.current = { conversationId, workspaceId, enabled };
@@ -155,6 +159,7 @@ export function useConversationWindow({
   const invalidate = useCallback(() => {
     generation.current += 1;
     abortRequests();
+    adoptedSelectionId.current = null;
     setState(emptyState());
   }, [abortRequests]);
 
@@ -188,6 +193,7 @@ export function useConversationWindow({
     async (preserveConflictRetry = false): Promise<void> => {
       const snapshot = current.current;
       if (!snapshot.enabled || !snapshot.conversationId) return;
+      adoptedSelectionId.current = null;
       const token = ++generation.current;
       abortRequests();
       if (!preserveConflictRetry) retriedConflict.current = false;
@@ -321,10 +327,24 @@ export function useConversationWindow({
   loadPageRef.current = loadPage;
 
   useEffect(() => {
-    if (enabled && conversationId) void reload();
+    if (enabled && conversationId && adoptedSelectionId.current === conversationId) {
+      adoptedSelectionId.current = null;
+    } else if (enabled && conversationId) void reload();
     else setState(emptyState());
-    return invalidate;
+    return () => {
+      const next = current.current;
+      if (
+        adoptedSelectionId.current === next.conversationId &&
+        next.enabled &&
+        next.workspaceId === workspaceId
+      ) {
+        return;
+      }
+      invalidate();
+    };
   }, [conversationId, enabled, invalidate, reload, workspaceId]);
+
+  useEffect(() => () => invalidate(), [invalidate]);
 
   const loadOlder = useCallback(async (): Promise<void> => {
     const cursor = state.olderCursor;
@@ -376,11 +396,19 @@ export function useConversationWindow({
   );
 
   const adoptFullConversation = useCallback(
-    (conversation: Conversation): void => {
+    (conversation: Conversation, options?: { pendingSelection?: boolean }): void => {
       const snapshot = current.current;
-      if (!snapshot.enabled || snapshot.conversationId !== conversation.id) return;
+      const pendingNewSelection =
+        options?.pendingSelection === true && snapshot.conversationId !== conversation.id;
+      if (
+        !snapshot.enabled ||
+        (!pendingNewSelection && snapshot.conversationId !== conversation.id)
+      ) {
+        return;
+      }
       generation.current += 1;
       abortRequests();
+      adoptedSelectionId.current = pendingNewSelection ? conversation.id : null;
       setState((previous) => ({
         ...previous,
         metadata: metadataFromConversation(conversation),

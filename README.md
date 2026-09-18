@@ -377,8 +377,6 @@ flowchart LR
          STORAGE_KEY_FILE: /run/ragtime-storage-key/.encryption_key
        volumes:
          - ./data/_userspace/_object_storage:/data/_userspace/_object_storage
-         # Required for legacy S3 import; the gateway reads old workspace buckets only.
-         - ./data/_userspace/workspaces:/data/_userspace/workspaces:ro
          - object-storage-key:/run/ragtime-storage-key:ro
        networks:
          - ragtime-network
@@ -487,7 +485,7 @@ The Indexer UI (http://localhost:8000, **Indexes** tab) supports multiple index 
 | **Git Clone** | FAISS or pgvector | FAISS: `data/indexes/<name>/`<br/>pgvector: `filesystem_embeddings` table | Repositories with optional private token auth |
 | **Filesystem** | FAISS or pgvector | FAISS: `data/indexes/<name>/`<br/>pgvector: `filesystem_embeddings` table | Live SMB/NFS shares, Docker volumes, local paths: incremental re-index |
 | **Schema** | pgvector | `schema_embeddings` table | Auto-generated from PostgreSQL/MSSQL/MySQL tools (enable in [Tool Configuration](#tool-configuration)) |
-| **PDM** | pgvector | `pdm_embeddings` table | Configuration-aware checked-in SolidWorks PDM metadata via SQL Server, including per-value origin versions. See [PDM indexing](docs/pdm.md). |
+| **PDM** | pgvector | `pdm_embeddings` table | Configuration-aware checked-in SolidWorks PDM metadata via SQL Server, including per-value origin versions. |
 
 Jobs run async with progress streaming to the UI.
 
@@ -559,7 +557,7 @@ The schemas below list the primary fields; several tools also accept optional fi
 | `odoo_shell` | `{code, reason}` |
 | `ssh_shell` | `{command, reason}` |
 | `filesystem_indexer` | `{query, max_results}` |
-| `solidworks_pdm` | `search_{tool}`: `{query, document_type}`; Chat also provides `lookup_{tool}` for exact indexed-snapshot lookup ([PDM indexing](docs/pdm.md)). |
+| `solidworks_pdm` | `search_{tool}`: `{query, document_type}`; Chat also provides `lookup_{tool}` for exact indexed-snapshot lookup. |
 | `knowledge_search` | `{query, index_name}` |
 | `schema_search` | `{prompt, limit}` |
 | `git_history` | `{action, ...}` |

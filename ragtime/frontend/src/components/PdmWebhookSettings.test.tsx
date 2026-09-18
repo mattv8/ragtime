@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PdmWebhookConfig, PdmWebhookEnableResponse } from '@/types';
 import { PdmWebhookSettings } from './PdmWebhookSettings';
@@ -34,6 +35,23 @@ function createDeferredPromise<T>() {
   return { promise, resolve };
 }
 
+function renderSettings(overrides: Partial<ComponentProps<typeof PdmWebhookSettings>> = {}) {
+  return render(
+    <PdmWebhookSettings
+      toolId="pdm-1"
+      intervalHours={0}
+      startMinute={null}
+      timezone={null}
+      onIntervalChange={vi.fn()}
+      onStartMinuteChange={vi.fn()}
+      onTimezoneChange={vi.fn()}
+      webhookDeliveryRequested={false}
+      onWebhookDeliveryRequestedChange={vi.fn()}
+      {...overrides}
+    />,
+  );
+}
+
 describe('PdmWebhookSettings', () => {
   beforeEach(() => {
     apiMock.getPdmWebhook.mockResolvedValue(disabledConfig);
@@ -49,17 +67,65 @@ describe('PdmWebhookSettings', () => {
     cleanup();
     vi.clearAllMocks();
   });
-  it('gates setup until the PDM tool is saved', () => {
-    render(<PdmWebhookSettings toolId={null} />);
-    expect(screen.getByText('Save this PDM tool before enabling webhook delivery.')).toBeTruthy();
+  it('shows webhook delivery in the cadence dropdown and hides metadata in manual mode', async () => {
+    renderSettings({ toolId: null });
+    expect(screen.getByRole('option', { name: 'Webhook delivery' })).toBeTruthy();
+    expect(screen.queryByTestId('pdm-webhook-status')).toBeNull();
+    expect(screen.queryByText('Save this PDM tool before enabling webhook delivery.')).toBeNull();
     expect(apiMock.getPdmWebhook).not.toHaveBeenCalled();
   });
-  it('enables a webhook, reveals its secret once, and clears it on dismiss', async () => {
+  it('defers webhook delivery for a new PDM tool without making an API request', async () => {
     const user = userEvent.setup();
-    render(<PdmWebhookSettings toolId="pdm-1" />);
-    await screen.findByRole('button', { name: 'Enable webhook' });
-    await user.click(screen.getByRole('button', { name: 'Enable webhook' }));
+    const onWebhookDeliveryRequestedChange = vi.fn();
+    const onIntervalChange = vi.fn();
+    const onStartMinuteChange = vi.fn();
+    const onTimezoneChange = vi.fn();
+    const { rerender } = renderSettings({
+      toolId: null,
+      onWebhookDeliveryRequestedChange,
+      onIntervalChange,
+      onStartMinuteChange,
+      onTimezoneChange,
+    });
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), 'webhook');
+    expect(onWebhookDeliveryRequestedChange).toHaveBeenCalledWith(true);
+    expect(onIntervalChange).toHaveBeenCalledWith(0);
+    expect(onStartMinuteChange).toHaveBeenCalledWith(null);
+    expect(onTimezoneChange).toHaveBeenCalledWith(null);
+    rerender(
+      <PdmWebhookSettings
+        toolId={null}
+        intervalHours={0}
+        startMinute={null}
+        timezone={null}
+        onIntervalChange={onIntervalChange}
+        onStartMinuteChange={onStartMinuteChange}
+        onTimezoneChange={onTimezoneChange}
+        webhookDeliveryRequested
+        onWebhookDeliveryRequestedChange={onWebhookDeliveryRequestedChange}
+      />,
+    );
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).value).toBe(
+      'webhook',
+    );
+    expect(
+      screen.getByText('Webhook setup will be generated after this PDM tool is created.'),
+    ).toBeTruthy();
+    expect(screen.queryByTestId('pdm-webhook-status')).toBeNull();
+    expect(apiMock.getPdmWebhook).not.toHaveBeenCalled();
+  });
+  it('enables a webhook from the cadence selector, reveals its secret once, and clears the schedule after success', async () => {
+    const user = userEvent.setup();
+    const onIntervalChange = vi.fn();
+    const onStartMinuteChange = vi.fn();
+    const onTimezoneChange = vi.fn();
+    renderSettings({ onIntervalChange, onStartMinuteChange, onTimezoneChange });
+    await screen.findByLabelText('Auto Re-index Interval');
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), 'webhook');
     await waitFor(() => expect(apiMock.enablePdmWebhook).toHaveBeenCalledWith('pdm-1'));
+    expect(onIntervalChange).toHaveBeenCalledWith(0);
+    expect(onStartMinuteChange).toHaveBeenCalledWith(null);
+    expect(onTimezoneChange).toHaveBeenCalledWith(null);
     expect((screen.getByLabelText('PDM one-time secret') as HTMLInputElement).value).toBe(
       'one-time-secret',
     );
@@ -75,7 +141,7 @@ describe('PdmWebhookSettings', () => {
       last_received_at: '2026-09-16T12:00:00Z',
       last_error: 'Indexing unavailable',
     });
-    render(<PdmWebhookSettings toolId="pdm-1" />);
+    renderSettings();
     await screen.findByTestId('pdm-webhook-status');
     expect(screen.getByText('Pending')).toBeTruthy();
     expect(screen.getByText('Indexing unavailable')).toBeTruthy();
@@ -99,14 +165,27 @@ describe('PdmWebhookSettings', () => {
       enabled: true,
       webhook_id: 'webhook-1',
     });
-    render(<PdmWebhookSettings toolId="pdm-1" />);
+    renderSettings({
+      activationResult: {
+        ...disabledConfig,
+        enabled: true,
+        webhook_id: 'webhook-1',
+        secret: 'uncopied-secret',
+      },
+    });
     await screen.findByRole('button', { name: 'Pause webhook' });
     await user.click(screen.getByRole('button', { name: 'Pause webhook' }));
     await waitFor(() => expect(apiMock.pausePdmWebhook).toHaveBeenCalledWith('pdm-1'));
     expect(screen.getByText('Paused')).toBeTruthy();
+    expect((screen.getByLabelText('PDM one-time secret') as HTMLInputElement).value).toBe(
+      'uncopied-secret',
+    );
     await user.click(screen.getByRole('button', { name: 'Resume webhook' }));
     await waitFor(() => expect(apiMock.resumePdmWebhook).toHaveBeenCalledWith('pdm-1'));
     expect(screen.getByText('Active')).toBeTruthy();
+    expect((screen.getByLabelText('PDM one-time secret') as HTMLInputElement).value).toBe(
+      'uncopied-secret',
+    );
   });
   it('does not reveal a stale secret after changing tools during an enable request', async () => {
     const user = userEvent.setup();
@@ -115,10 +194,22 @@ describe('PdmWebhookSettings', () => {
       Promise.resolve({ ...disabledConfig, webhook_id: toolId }),
     );
     apiMock.enablePdmWebhook.mockReturnValue(enableRequest.promise);
-    const { rerender } = render(<PdmWebhookSettings toolId="pdm-a" />);
-    await screen.findByRole('button', { name: 'Enable webhook' });
-    await user.click(screen.getByRole('button', { name: 'Enable webhook' }));
-    rerender(<PdmWebhookSettings toolId="pdm-b" />);
+    const { rerender } = renderSettings({ toolId: 'pdm-a' });
+    await screen.findByLabelText('Auto Re-index Interval');
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), 'webhook');
+    rerender(
+      <PdmWebhookSettings
+        toolId="pdm-b"
+        intervalHours={0}
+        startMinute={null}
+        timezone={null}
+        onIntervalChange={vi.fn()}
+        onStartMinuteChange={vi.fn()}
+        onTimezoneChange={vi.fn()}
+        webhookDeliveryRequested={false}
+        onWebhookDeliveryRequestedChange={vi.fn()}
+      />,
+    );
     await waitFor(() => expect(apiMock.getPdmWebhook).toHaveBeenCalledWith('pdm-b'));
     enableRequest.resolve({
       ...disabledConfig,
@@ -127,6 +218,120 @@ describe('PdmWebhookSettings', () => {
       secret: 'stale-secret',
     });
     await waitFor(() => expect(screen.queryByLabelText('PDM one-time secret')).toBeNull());
-    expect(screen.getByRole('button', { name: 'Enable webhook' })).toBeTruthy();
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).value).toBe('0');
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).disabled).toBe(
+      false,
+    );
+
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), 'webhook');
+    await waitFor(() => expect(apiMock.enablePdmWebhook).toHaveBeenCalledTimes(2));
+  });
+  it('keeps completion cadence read-only while allowing the one-time-secret copy action', () => {
+    renderSettings({
+      cadenceDisabled: true,
+      activationResult: {
+        ...disabledConfig,
+        enabled: true,
+        webhook_id: 'webhook-1',
+        secret: 'completion-secret',
+      },
+    });
+
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).disabled).toBe(
+      true,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Copy PDM webhook secret' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+  it('hydrates an activation result and renders its one-time secret', () => {
+    renderSettings({
+      toolId: null,
+      webhookDeliveryRequested: true,
+      activationResult: {
+        ...disabledConfig,
+        enabled: true,
+        webhook_id: 'webhook-1',
+        webhook_url: 'https://ragtime.example/webhooks/pdm/webhook-1',
+        secret: 'activation-secret',
+      },
+    });
+    expect((screen.getByLabelText('PDM one-time secret') as HTMLInputElement).value).toBe(
+      'activation-secret',
+    );
+    expect(screen.getByTestId('pdm-webhook-status')).toBeTruthy();
+  });
+  it('normalizes a legacy enabled webhook with a scheduled interval', async () => {
+    const onIntervalChange = vi.fn();
+    const onStartMinuteChange = vi.fn();
+    const onTimezoneChange = vi.fn();
+    apiMock.getPdmWebhook.mockResolvedValue({ ...disabledConfig, enabled: true });
+    renderSettings({
+      intervalHours: 24,
+      startMinute: 60,
+      timezone: 'UTC',
+      onIntervalChange,
+      onStartMinuteChange,
+      onTimezoneChange,
+    });
+    await screen.findByTestId('pdm-webhook-status');
+    expect(onIntervalChange).toHaveBeenCalledWith(0);
+    expect(onStartMinuteChange).toHaveBeenCalledWith(null);
+    expect(onTimezoneChange).toHaveBeenCalledWith(null);
+  });
+  it('disables the cadence selector while enabling a webhook', async () => {
+    const user = userEvent.setup();
+    const enableRequest = createDeferredPromise<PdmWebhookEnableResponse>();
+    apiMock.enablePdmWebhook.mockReturnValue(enableRequest.promise);
+    renderSettings();
+    await screen.findByLabelText('Auto Re-index Interval');
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), 'webhook');
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).disabled).toBe(
+      true,
+    );
+    enableRequest.resolve({ ...disabledConfig, enabled: true, secret: 'one-time-secret' });
+  });
+  it('applies a scheduled cadence only after successfully disabling webhook delivery', async () => {
+    const user = userEvent.setup();
+    const disableRequest = createDeferredPromise<PdmWebhookConfig>();
+    const onIntervalChange = vi.fn();
+    const onStartMinuteChange = vi.fn();
+    const onTimezoneChange = vi.fn();
+    apiMock.getPdmWebhook.mockResolvedValue({ ...disabledConfig, enabled: true });
+    apiMock.disablePdmWebhook.mockReturnValue(disableRequest.promise);
+    renderSettings({ onIntervalChange, onStartMinuteChange, onTimezoneChange });
+
+    await screen.findByTestId('pdm-webhook-status');
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), '24');
+    await user.click(screen.getByRole('button', { name: 'Disable webhook and continue' }));
+
+    expect(apiMock.disablePdmWebhook).toHaveBeenCalledWith('pdm-1');
+    expect(onIntervalChange).not.toHaveBeenCalled();
+    expect(onStartMinuteChange).not.toHaveBeenCalled();
+    expect(onTimezoneChange).not.toHaveBeenCalled();
+
+    disableRequest.resolve(disabledConfig);
+
+    await waitFor(() => expect(onIntervalChange).toHaveBeenCalledWith(24));
+    expect(onStartMinuteChange).toHaveBeenCalledTimes(1);
+    expect(onTimezoneChange).toHaveBeenCalledTimes(1);
+  });
+  it('keeps webhook delivery selected when disabling it fails', async () => {
+    const user = userEvent.setup();
+    const onIntervalChange = vi.fn();
+    apiMock.getPdmWebhook.mockResolvedValue({ ...disabledConfig, enabled: true });
+    apiMock.disablePdmWebhook.mockRejectedValue(new Error('Disable failed'));
+    renderSettings({ onIntervalChange });
+    await screen.findByTestId('pdm-webhook-status');
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), '0');
+    await user.click(screen.getByRole('button', { name: 'Disable webhook and continue' }));
+    await screen.findByRole('alert');
+    expect(apiMock.disablePdmWebhook).toHaveBeenCalledWith('pdm-1');
+    expect(onIntervalChange).not.toHaveBeenCalled();
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).value).toBe(
+      'webhook',
+    );
+    expect(screen.getByRole('button', { name: 'Disable webhook and continue' })).toBeTruthy();
   });
 });

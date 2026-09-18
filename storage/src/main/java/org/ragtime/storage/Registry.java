@@ -152,7 +152,7 @@ public final class Registry implements AutoCloseable {
     private static ObjectNode initialState() {
         ObjectNode result = JSON.createObjectNode(); result.put("version", 1); result.put("installation_id", UUID.randomUUID().toString()); result.put("default_backend_id", "local");
         ObjectNode backend = result.putObject("backends").putObject("local"); backend.put("id", "local"); backend.put("type", "local");
-        result.putObject("workspaces"); result.putObject("migrations"); return result;
+        result.putObject("workspaces"); result.putObject("migrations"); result.putObject("legacy_import_jobs"); return result;
     }
     @Override public void close() { }
 }

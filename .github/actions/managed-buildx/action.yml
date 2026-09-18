@@ -5,7 +5,7 @@ inputs:
   min-free-gib:
     description: Minimum free Docker filesystem space required before starting.
     required: false
-    default: '15'
+    default: '14'
   scope:
     description: Stable job or matrix-specific builder scope.
     required: false
@@ -44,5 +44,5 @@ runs:
         ### Managed BuildKit cache
 
         - Per-builder unused cache budget: 8 GB maximum, with 2 GB reserved.
-        - Builder creation requires 15 GiB free on Docker's filesystem; 25 GiB is recommended for heavy builds.
+        - Builder creation requires 14 GiB free (about 15.03 GB), exceeding BuildKit's 15 GB minimum; 25 GiB is recommended for heavy builds.
         EOF

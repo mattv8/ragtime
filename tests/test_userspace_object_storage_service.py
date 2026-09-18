@@ -1,5 +1,9 @@
+import asyncio
 import io
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from fastapi import HTTPException
@@ -53,55 +57,120 @@ class ObjectStorageClientTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ObjectStorageTransitionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_missing_gateway_workspace_imports_legacy_once(self) -> None:
-        service = object.__new__(UserSpaceService)
-        legacy = {"access_key_id": "legacy", "secret_access_key": "secret", "buckets": [{"name": "assets"}]}
-        with (
-            mock.patch(
-                "ragtime.userspace.service.object_storage_control.get_workspace",
-                new=mock.AsyncMock(side_effect=HTTPException(status_code=404, detail="missing")),
-            ),
-            mock.patch(
-                "ragtime.userspace.service.object_storage_control.ensure_workspace", new=mock.AsyncMock(return_value={"buckets": [{"name": "assets"}]})
-            ) as ensure,
-            mock.patch("ragtime.userspace.service.object_storage_control.import_legacy", new=mock.AsyncMock()) as import_legacy,
-            mock.patch.object(service, "_legacy_object_storage_payload", return_value=legacy),
-        ):
-            result = await service._ensure_managed_object_storage("workspace")
-        self.assertEqual([{"name": "assets"}], result["buckets"])
-        ensure.assert_awaited_once_with("workspace", legacy)
-        import_legacy.assert_awaited_once_with("workspace")
+    async def asyncSetUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        self.settings = mock.patch("ragtime.userspace.service.settings.index_data_path", self.root)
+        self.settings.start()
+        self.service = UserSpaceService()
+        self.workspace_id = "workspace"
+        self.buckets = self.service._workspace_dir(self.workspace_id) / "s3" / "buckets" / "assets"
+        self.buckets.mkdir(parents=True)
+        self.service._workspace_object_storage_config_path(self.workspace_id).parent.mkdir(parents=True, exist_ok=True)
+        self.service._workspace_object_storage_config_path(self.workspace_id).write_text(
+            json.dumps({"access_key_id": "legacy", "buckets": [{"name": "assets"}]}), encoding="utf-8"
+        )
 
-    async def test_existing_gateway_workspace_does_not_import_legacy(self) -> None:
-        service = object.__new__(UserSpaceService)
-        config = {"buckets": [{"name": "assets"}]}
-        with (
-            mock.patch("ragtime.userspace.service.object_storage_control.get_workspace", new=mock.AsyncMock(return_value=config)),
-            mock.patch("ragtime.userspace.service.object_storage_control.import_legacy", new=mock.AsyncMock()) as import_legacy,
-        ):
-            self.assertEqual(config, await service._ensure_managed_object_storage("workspace"))
-        import_legacy.assert_not_awaited()
+    async def asyncTearDown(self) -> None:
+        await self.service.shutdown_legacy_object_storage_reconciliation()
+        self.settings.stop()
+        self.tempdir.cleanup()
 
-    async def test_failed_existing_legacy_import_is_retried_before_use(self) -> None:
-        service = object.__new__(UserSpaceService)
-        failed = {"state": "importing", "legacy_import_state": "failed", "buckets": [{"name": "assets"}]}
-        complete = {**failed, "state": "ready", "legacy_import_state": "completed"}
+    async def test_bound_completed_gateway_job_resumes_gc_after_pending_poll(self) -> None:
+        source = self.buckets / "a.txt"
+        source.write_bytes(b"legacy")
+        pending_config = {"state": "importing", "legacy_import_state": "pending"}
+        complete_config = {"state": "ready", "legacy_import_state": "completed"}
+        pending = {"state": "pending"}
         with (
-            mock.patch("ragtime.userspace.service.object_storage_control.get_workspace", new=mock.AsyncMock(side_effect=[failed, complete])),
-            mock.patch("ragtime.userspace.service.object_storage_control.import_legacy", new=mock.AsyncMock()) as retry,
-        ):
-            self.assertEqual(complete, await service._ensure_managed_object_storage("workspace"))
-        retry.assert_awaited_once_with("workspace")
-
-    async def test_failed_import_never_silently_unfences_or_returns_partial_data(self) -> None:
-        service = object.__new__(UserSpaceService)
-        with (
-            mock.patch("ragtime.userspace.service.object_storage_control.get_workspace", new=mock.AsyncMock(return_value={"legacy_import_state": "failed"})),
+            mock.patch("ragtime.userspace.service.object_storage_control.get_workspace", new=mock.AsyncMock(side_effect=[pending_config, complete_config])),
+            mock.patch("ragtime.userspace.service.object_storage_control.ensure_workspace", new=mock.AsyncMock()),
+            mock.patch("ragtime.userspace.service.object_storage_control.submit_legacy_import", new=mock.AsyncMock()) as submit,
             mock.patch(
-                "ragtime.userspace.service.object_storage_control.import_legacy",
-                new=mock.AsyncMock(side_effect=HTTPException(status_code=409, detail="legacy conflict")),
-            ),
+                "ragtime.userspace.service.object_storage_control.get_legacy_import", new=mock.AsyncMock(side_effect=[pending, lambda workspace_id: None])
+            ) as status,
+            mock.patch("ragtime.userspace.service.object_storage_control.acknowledge_legacy_gc", new=mock.AsyncMock()) as acknowledge,
+            mock.patch.object(self.service, "_legacy_object_storage_runtime_active", new=mock.AsyncMock(return_value=False)),
+        ):
+            first = await self.service._process_legacy_object_storage(self.workspace_id)
+            receipt = self.service._legacy_object_storage_migrator._load_receipts(self.workspace_id)[0]
+            status.side_effect = [
+                {
+                    "state": "completed",
+                    "generation": receipt["generation"],
+                    "manifest_sha256": receipt["manifest_sha256"],
+                    "verified_files": ["buckets/assets/a.txt"],
+                }
+            ]
+            second = await self.service._process_legacy_object_storage(self.workspace_id)
+        self.assertFalse(first)
+        self.assertTrue(second)
+        self.assertFalse(source.exists())
+        self.assertGreaterEqual(submit.await_count, 1)
+        acknowledge.assert_awaited_once()
+
+    async def test_pending_workspace_does_not_block_second_loop_tick_and_releases_before_staging_it(self) -> None:
+        second = "second"
+        second_source = self.service._workspace_dir(second) / "s3" / "buckets" / "assets" / "b.txt"
+        second_source.parent.mkdir(parents=True)
+        second_source.write_bytes(b"second")
+        second_config = self.service._workspace_object_storage_config_path(second)
+        second_config.parent.mkdir(parents=True, exist_ok=True)
+        second_config.write_text(json.dumps({"buckets": [{"name": "assets"}]}), encoding="utf-8")
+        (self.buckets / "a.txt").write_bytes(b"first")
+        states = {self.workspace_id: "pending", second: "pending"}
+
+        async def workspace_config(workspace_id: str) -> dict[str, str]:
+            return {"state": "ready" if states[workspace_id] == "completed" else "importing", "legacy_import_state": states[workspace_id]}
+
+        async def import_status(workspace_id: str) -> dict[str, object]:
+            if states[workspace_id] != "completed":
+                return {"state": "pending"}
+            receipt = self.service._legacy_object_storage_migrator._load_receipts(workspace_id)[0]
+            return {
+                "state": "completed",
+                "generation": receipt["generation"],
+                "manifest_sha256": receipt["manifest_sha256"],
+                "verified_files": [item["path"] for item in receipt["manifest"]["files"]],
+            }
+
+        with (
+            mock.patch("ragtime.userspace.service.object_storage_control.get_workspace", new=mock.AsyncMock(side_effect=workspace_config)),
+            mock.patch("ragtime.userspace.service.object_storage_control.submit_legacy_import", new=mock.AsyncMock()),
+            mock.patch("ragtime.userspace.service.object_storage_control.get_legacy_import", new=mock.AsyncMock(side_effect=import_status)),
+            mock.patch("ragtime.userspace.service.object_storage_control.acknowledge_legacy_gc", new=mock.AsyncMock()),
+            mock.patch.object(self.service, "_legacy_object_storage_runtime_active", new=mock.AsyncMock(return_value=False)),
+        ):
+            self.assertFalse(await self.service._process_legacy_object_storage(self.workspace_id))
+            self.assertFalse(await asyncio.wait_for(self.service._process_legacy_object_storage(second), timeout=0.1))
+            self.assertFalse(self.service._legacy_object_storage_migrator._load_receipts(second))
+            states[self.workspace_id] = "completed"
+            self.assertTrue(await self.service._process_legacy_object_storage(self.workspace_id))
+            self.assertFalse(await self.service._process_legacy_object_storage(second))
+        self.assertTrue(self.service._legacy_object_storage_migrator._load_receipts(second))
+
+    async def test_shutdown_drains_lazy_worker_without_startup_loop(self) -> None:
+        async def wait_for_shutdown() -> None:
+            await asyncio.Event().wait()
+
+        worker = asyncio.create_task(wait_for_shutdown())
+        self.service._legacy_object_storage_workspace_tasks[self.workspace_id] = worker
+        await self.service.shutdown_legacy_object_storage_reconciliation()
+        self.assertTrue(worker.done())
+
+    async def test_orphan_legacy_directory_is_reportable_without_deletion(self) -> None:
+        orphan = self.service._workspace_dir("orphan") / "s3" / "buckets" / "assets" / "keep.txt"
+        orphan.parent.mkdir(parents=True)
+        orphan.write_bytes(b"keep")
+        self.assertEqual({"orphan"}, self.service._legacy_object_storage_orphan_ids({self.workspace_id}))
+        self.assertTrue(orphan.exists())
+
+    async def test_gateway_pending_fences_access_without_local_legacy_files(self) -> None:
+        (self.service._workspace_object_storage_config_path(self.workspace_id)).unlink()
+        with mock.patch(
+            "ragtime.userspace.service.object_storage_control.get_workspace",
+            new=mock.AsyncMock(return_value={"state": "importing", "legacy_import_state": "pending"}),
         ):
             with self.assertRaises(HTTPException) as failure:
-                await service._ensure_managed_object_storage("workspace")
-        self.assertEqual(failure.exception.status_code, 409)
+                await self.service._ensure_managed_object_storage(self.workspace_id)
+        self.assertEqual(503, failure.exception.status_code)

@@ -2343,6 +2343,19 @@ class UserSpaceRuntimeService:
         *,
         auto_start: bool = False,
     ) -> UserSpaceRuntimeSession:
+        """Serialize every runtime-start admission against legacy source GC."""
+        from ragtime.userspace.object_storage.legacy_migration import workspace_gc_fence
+
+        async with workspace_gc_fence(workspace_id):
+            return await self._ensure_session_row_unfenced(workspace_id, leased_by_user_id, auto_start=auto_start)
+
+    async def _ensure_session_row_unfenced(
+        self,
+        workspace_id: str,
+        leased_by_user_id: str,
+        *,
+        auto_start: bool = False,
+    ) -> UserSpaceRuntimeSession:
         db = await get_db()
         model = self._runtime_session_model(db)
         current = await self._get_active_session_row(workspace_id)
@@ -3250,6 +3263,15 @@ class UserSpaceRuntimeService:
         )
         names_by_id = {str(getattr(row, "id", "") or "").strip(): str(getattr(row, "name", "") or "").strip() for row in workspace_rows}
         return [(workspace_id, names_by_id.get(workspace_id) or workspace_id) for workspace_id in workspace_ids]
+
+    async def has_active_or_stopping_workspace_session(self, workspace_id: str) -> bool:
+        """Whether legacy storage source cleanup must defer for a workspace."""
+        db = await get_db()
+        model = self._runtime_session_model(db)
+        row = await model.find_first(
+            where={"workspaceId": workspace_id, "state": {"in": ["starting", "running", "stopping"]}},
+        )
+        return row is not None
 
     async def restart_runtime_env_vars_and_wait(
         self,
