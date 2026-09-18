@@ -1,20 +1,26 @@
 # SQLite snapshot history
 
 User Space stores protected SQLite history beside each workspace's editable
-`files/` directory, under its controlled `sqlite_backups` sibling. It requires
-no database migration, service, mount, or configuration setting. This is
-recovery protection for managed databases in `.ragtime/db/`; it is not a
-general filesystem backup or an atomic transaction covering workspace code and
-database writes.
+`files/` directory, under its controlled `sqlite_backups` sibling. PostgreSQL
+stores only durable capture-queue metadata; protected blobs and catalogs remain
+file-backed. This is recovery protection for managed databases in
+`.ragtime/db/`; it is not a general filesystem backup or an atomic transaction
+covering workspace code and database writes.
 
 ## Capture and catalog
 
 Managed files with the supported SQLite suffixes are captured through SQLite's
-online backup API. Captures can be requested manually, associated with a code
-snapshot, scheduled hourly, or required as a pre-restore safety point. The
-history feature is independent of the workspace SQLite persistence prompt
-setting, so a code snapshot can capture a managed database even when no code
-change is otherwise needed.
+online backup API. Manual, snapshot-associated, and hourly captures enter a
+durable queue and return an accepted job before SQLite work begins. A queued
+capture reads the database when the worker actually executes it, not when it
+was requested or when a code snapshot was created; ready-record timestamps
+therefore represent execution time. The history feature is independent of the
+workspace SQLite persistence prompt setting, so a code snapshot can capture a
+managed database even when no code change is otherwise needed.
+
+Pre-restore and guarded code-restore preservation remain inline while
+maintenance is held. Their mandatory safety capture is never queued behind
+ordinary work.
 
 Ready records contain the capture time, SHA-256, byte size, trigger, and, when
 applicable, the User Space snapshot ID and Git commit hash. Failed captures are
@@ -134,7 +140,33 @@ blobs are removed, so a subsequent capture failure cannot leave a ready record
 pointing to an evicted blob. Shared backup files count once toward the quota;
 removing an alias frees no file space until its last reference is removed.
 
-### Scheduling and admission limits
+### Scheduling, queueing, and admission limits
+
+The durable queue runs one ordinary capture globally and one per workspace.
+This global cap of one deliberately leaves one of the two confined-child slots
+available for inline safety and preview work. Pending jobs are FIFO among rows
+whose scheduled availability time has arrived, while a workspace with a running
+job is skipped. Repeating an exact request key returns the existing job; a
+reused key with different request data is rejected. Only active scheduled work
+coalesces. A failed scheduled job receives one new pending retry after five
+minutes, while an interrupted job is not replayed automatically.
+
+An owner or global administrator can list a workspace's jobs, observe queued,
+running, and terminal status, and cancel a pending job. Running cancellation is
+cooperative: the current database capture drains and completed records remain
+visible before the job becomes cancelled. Legacy synchronous capture requests
+remain compatible by waiting for their accepted job and returning the matching
+result; new callers should use the accepted-job API and poll status.
+
+Pending jobs survive a restart. A process that loses durable ownership does not
+resume ambiguous work; stale running jobs become `interrupted` after liveness
+fencing rather than being silently replayed. Queue rows retain terminal history
+for 30 days, separately from the file-backed backup retention policy.
+
+Safety and unchanged-capture behavior are unchanged. Queueing does not relax
+confinement, no-follow catalog/blob handling, quota admission, or mandatory
+pre-restore capture. It also does not make change detection free: unchanged
+checks still read the database/WAL and existing backup as described above.
 
 The scheduler checks for work every 60 seconds. First-seen workspaces receive
 a deterministic delay of up to five minutes before their first scheduled
@@ -144,11 +176,11 @@ eight workspaces and stops admitting more after 30 seconds. An active capture
 is allowed to finish. Rotating discovery order avoids repeatedly preferring
 the first workspace. Cached due times reduce catalog reads between attempts.
 
-A per-workspace liveness lock spans the scheduled claim, capture, and completion.
-A replica can recover an abandoned claim only after acquiring that lock; a
-timeout alone does not displace active work. Maintenance also cleans expired
-preview candidates, orphaned backup files, and stale downloads independently of
-whether a new capture is due. Active restore candidates remain protected.
+A per-job liveness lock spans queued capture and completion. A replica can
+recover an abandoned claim only after acquiring that lock; a timeout alone does
+not displace active work. Maintenance also cleans expired preview candidates,
+orphaned backup files, and stale downloads independently of whether a new
+capture is due. Active restore candidates remain protected.
 
 Capture requests have a per-process limit of 16 outstanding requests. Confined
 capture, probe, preview, and drift subprocesses share two file-lock slots across

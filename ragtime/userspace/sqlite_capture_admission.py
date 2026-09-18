@@ -14,7 +14,8 @@ import stat
 import subprocess
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -37,6 +38,17 @@ _admission_lock = threading.Lock()
 _outstanding_requests = 0
 _waiting_slot_callers = 0
 logger = get_logger(__name__)
+_capture_inherited_fds: ContextVar[tuple[int, ...]] = ContextVar("sqlite_capture_inherited_fds", default=())
+
+
+@contextmanager
+def inherit_capture_fds(fds: tuple[int, ...]) -> Any:
+    """Keep controller liveness descriptors open in confined capture children."""
+    token = _capture_inherited_fds.set(tuple(dict.fromkeys(fd for fd in fds if fd >= 0)))
+    try:
+        yield
+    finally:
+        _capture_inherited_fds.reset(token)
 
 
 def _busy(detail: str = "SQLite capture capacity is busy; retry shortly") -> HTTPException:
@@ -209,6 +221,13 @@ def run_admitted_subprocess(command: list[str], **subprocess_kwargs: Any) -> sub
             counted_waiter = False
         duration_started = time.monotonic()
         try:
+            supplied_fds = tuple(subprocess_kwargs.pop("pass_fds", ()))
+            # ``pass_fds`` is POSIX-only, as is the flock admission mechanism.
+            # Include the slot itself so a controller crash cannot release it
+            # while its child is still copying a database.
+            subprocess_kwargs["pass_fds"] = tuple(
+                dict.fromkeys((*supplied_fds, *_capture_inherited_fds.get(), slot_fd))
+            )
             completed = subprocess.run(command, **subprocess_kwargs)
         except BaseException:
             logger.info(

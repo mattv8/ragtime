@@ -18,6 +18,8 @@ import type {
   SqliteHistoryPreview,
   SqliteHistoryRestoreMode,
   SqliteHistoryBackupTrigger,
+  SqliteBackupJob,
+  SqliteBackupJobStatus,
 } from '@/types';
 
 interface DatabaseHistoryPanelProps {
@@ -54,6 +56,27 @@ const TRIGGER_LABEL: Record<SqliteHistoryBackupTrigger, string> = {
   pre_restore: 'Before restore',
   scheduled: 'Hourly',
 };
+
+const JOB_TRIGGER_LABEL: Record<SqliteBackupJob['trigger'], string> = {
+  manual: 'Manual backup',
+  snapshot: 'Code snapshot',
+  scheduled: 'Hourly backup',
+};
+
+const JOB_STATUS_LABEL: Record<SqliteBackupJobStatus, string> = {
+  pending: 'Pending',
+  running: 'Running',
+  completed: 'Completed',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+  interrupted: 'Interrupted',
+};
+
+const ACTIVE_JOB_STATUSES = new Set<SqliteBackupJobStatus>(['pending', 'running']);
+
+function isActiveJob(job: SqliteBackupJob): boolean {
+  return ACTIVE_JOB_STATUSES.has(job.status);
+}
 
 function groupBackups(
   backups: SqliteHistoryBackup[],
@@ -111,12 +134,20 @@ export function DatabaseHistoryPanel({
   const [recovering, setRecovering] = useState(false);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [capturingBackupId, setCapturingBackupId] = useState<string | null>(null);
+  const [captureJobs, setCaptureJobs] = useState<SqliteBackupJob[]>([]);
+  const [loadingJobs, setLoadingJobs] = useState(false);
+  const [jobsError, setJobsError] = useState<string | null>(null);
+  const [cancellingJobIds, setCancellingJobIds] = useState<Set<string>>(() => new Set());
   const [deletingBackupIds, setDeletingBackupIds] = useState<Set<string>>(() => new Set());
   const [downloadingBackupIds, setDownloadingBackupIds] = useState<Set<string>>(() => new Set());
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const generationRef = useRef(0);
+  const captureJobsGenerationRef = useRef(0);
+  const captureJobsRevisionRef = useRef(0);
+  const captureJobsRef = useRef<SqliteBackupJob[]>([]);
+  const previousActiveJobIdsRef = useRef<Set<string>>(new Set());
   const busyRef = useRef(false);
 
   const key = `${safeId(hostId)}-${safeId(workspaceId)}-${safeId(snapshotId ?? 'workspace')}-${safeId(databaseName ?? 'all')}`;
@@ -134,13 +165,15 @@ export function DatabaseHistoryPanel({
   }, []);
   const close = useCallback(() => {
     invalidatePreview();
+    captureJobsGenerationRef.current += 1;
+    captureJobsRevisionRef.current += 1;
     setOpen(false);
   }, [invalidatePreview]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options?: { preserveError?: boolean }) => {
     const generation = generationRef.current;
     setLoading(true);
-    setError(null);
+    if (!options?.preserveError) setError(null);
     try {
       const result = await api.listUserSpaceSqliteHistory(workspaceId, {
         databaseName,
@@ -155,6 +188,46 @@ export function DatabaseHistoryPanel({
     }
   }, [workspaceId, databaseName, snapshotId]);
 
+  const loadJobs = useCallback(async () => {
+    const generation = captureJobsGenerationRef.current;
+    const revision = captureJobsRevisionRef.current;
+    setLoadingJobs(true);
+    setJobsError(null);
+    try {
+      const result = await api.listUserSpaceSqliteBackupJobs(workspaceId, {
+        databaseName,
+        snapshotId,
+      });
+      if (
+        generation !== captureJobsGenerationRef.current ||
+        revision !== captureJobsRevisionRef.current
+      )
+        return;
+      const priorActiveIds = previousActiveJobIdsRef.current;
+      const completedActiveJob = result.jobs.some(
+        (job) => priorActiveIds.has(job.id) && !isActiveJob(job),
+      );
+      previousActiveJobIdsRef.current = new Set(
+        result.jobs.filter(isActiveJob).map((job) => job.id),
+      );
+      captureJobsRef.current = result.jobs;
+      setCaptureJobs(result.jobs);
+      if (completedActiveJob) void load({ preserveError: true });
+    } catch (caught) {
+      if (generation === captureJobsGenerationRef.current) {
+        if (caught instanceof ApiError && caught.status === 403) {
+          captureJobsRevisionRef.current += 1;
+          captureJobsRef.current = [];
+          previousActiveJobIdsRef.current = new Set();
+          setCaptureJobs([]);
+        }
+        setJobsError(caught instanceof Error ? caught.message : 'Unable to load capture jobs.');
+      }
+    } finally {
+      if (generation === captureJobsGenerationRef.current) setLoadingJobs(false);
+    }
+  }, [workspaceId, databaseName, snapshotId, load]);
+
   useEffect(() => {
     invalidatePreview();
     setSelected(null);
@@ -163,13 +236,55 @@ export function DatabaseHistoryPanel({
     setError(null);
     setRecovering(false);
     setCapturingBackupId(null);
+    captureJobsGenerationRef.current += 1;
+    captureJobsRevisionRef.current += 1;
+    previousActiveJobIdsRef.current = new Set();
+    captureJobsRef.current = [];
+    setCaptureJobs([]);
+    setLoadingJobs(false);
+    setJobsError(null);
+    setCancellingJobIds(new Set());
     setDeletingBackupIds(new Set());
     setDownloadingBackupIds(new Set());
   }, [workspaceId, databaseName, snapshotId, invalidatePreview]);
 
+  useEffect(
+    () => () => {
+      captureJobsGenerationRef.current += 1;
+      captureJobsRevisionRef.current += 1;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (history && !history.can_manage) {
+      captureJobsGenerationRef.current += 1;
+      captureJobsRevisionRef.current += 1;
+      captureJobsRef.current = [];
+      previousActiveJobIdsRef.current = new Set();
+      setCaptureJobs([]);
+    }
+  }, [history]);
+
   useEffect(() => {
     if (open) void load();
   }, [open, load]);
+
+  useEffect(() => {
+    if (!open || !ownerOrAdmin) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const poll = async () => {
+      await loadJobs();
+      if (!cancelled)
+        timer = window.setTimeout(poll, captureJobsRef.current.some(isActiveJob) ? 2_000 : 5_000);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [open, ownerOrAdmin, loadJobs]);
 
   useEffect(() => {
     if (!open) return;
@@ -302,18 +417,131 @@ export function DatabaseHistoryPanel({
 
   const capture = async () => {
     if (!databaseName || capturingBackupId || busy) return;
-    const generation = generationRef.current;
+    const generation = captureJobsGenerationRef.current;
     setCapturingBackupId(databaseName);
     setError(null);
     try {
-      await api.captureUserSpaceSqliteHistory(workspaceId, databaseName);
-      if (generation === generationRef.current) await load();
+      const requestId = crypto.randomUUID();
+      const result = await api.enqueueUserSpaceSqliteBackup(workspaceId, databaseName, requestId);
+      if (generation === captureJobsGenerationRef.current) {
+        const nextJobs = [result.job, ...captureJobsRef.current.filter((job) => job.id !== result.job.id)];
+        captureJobsRevisionRef.current += 1;
+        captureJobsRef.current = nextJobs;
+        setCaptureJobs(nextJobs);
+        previousActiveJobIdsRef.current = new Set([
+          ...previousActiveJobIdsRef.current,
+          result.job.id,
+        ]);
+      }
     } catch (caught) {
-      if (generation === generationRef.current)
+      if (generation === captureJobsGenerationRef.current)
         setError(caught instanceof Error ? caught.message : 'Capture failed.');
     } finally {
-      if (generation === generationRef.current) setCapturingBackupId(null);
+      if (generation === captureJobsGenerationRef.current) setCapturingBackupId(null);
     }
+  };
+
+  const cancelCaptureJob = async (jobId: string) => {
+    if (cancellingJobIds.has(jobId)) return;
+    const generation = captureJobsGenerationRef.current;
+    captureJobsRevisionRef.current += 1;
+    setCancellingJobIds((ids) => new Set(ids).add(jobId));
+    setJobsError(null);
+    try {
+      const result = await api.cancelUserSpaceSqliteBackupJob(workspaceId, jobId);
+      if (generation === captureJobsGenerationRef.current)
+        setCaptureJobs((jobs) => {
+          const nextJobs = jobs.map((job) => (job.id === jobId ? result.job : job));
+          captureJobsRevisionRef.current += 1;
+          captureJobsRef.current = nextJobs;
+          return nextJobs;
+        });
+    } catch (caught) {
+      if (generation === captureJobsGenerationRef.current)
+        setJobsError(caught instanceof Error ? caught.message : 'Unable to cancel capture job.');
+    } finally {
+      if (generation === captureJobsGenerationRef.current)
+        setCancellingJobIds((ids) => {
+          const next = new Set(ids);
+          next.delete(jobId);
+          return next;
+        });
+    }
+  };
+
+  const activeCaptureJobs = captureJobs
+    .filter(isActiveJob)
+    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.id.localeCompare(b.id));
+  const terminalCaptureJobs = captureJobs
+    .filter((job) => !isActiveJob(job))
+    .sort(
+      (a, b) =>
+        Date.parse(b.finished_at ?? b.updated_at) - Date.parse(a.finished_at ?? a.updated_at) ||
+        b.id.localeCompare(a.id),
+    );
+
+  const renderCaptureJob = (job: SqliteBackupJob) => {
+    const requestedDatabases = job.database_names.length
+      ? job.database_names.join(', ')
+      : 'All databases';
+    const hasProgress = job.total_databases > 0;
+    const isCancelling = cancellingJobIds.has(job.id);
+    return (
+      <article
+        key={job.id}
+        className="database-history-backup database-history-capture-job"
+        data-history-capture-job={job.id}
+        data-history-capture-status={job.status}
+      >
+        <div>
+          <strong>{requestedDatabases}</strong>
+          <span>
+            {JOB_TRIGGER_LABEL[job.trigger]} · Requested {new Date(job.created_at).toLocaleString()}
+            {job.started_at && ` · Started ${new Date(job.started_at).toLocaleString()}`}
+            {job.finished_at && ` · Finished ${new Date(job.finished_at).toLocaleString()}`}
+          </span>
+          {hasProgress && (
+            <span>
+              {job.completed_databases}/{job.total_databases} databases processed
+            </span>
+          )}
+          {isActiveJob(job) && (
+            <span className="userspace-muted">
+              Captures current database when the worker executes, not when requested.
+            </span>
+          )}
+          {job.backup_ids.length > 0 && job.status !== 'completed' && (
+            <span className="userspace-muted">
+              Partial result: {job.backup_ids.length} backup record
+              {job.backup_ids.length === 1 ? '' : 's'} available in history.
+            </span>
+          )}
+          {job.error_message && <span className="database-history-error">{job.error_message}</span>}
+        </div>
+        <div className="database-history-actions">
+          <span
+            className={`badge database-history-trigger-badge database-history-job-badge--${job.status}`}
+          >
+            {JOB_STATUS_LABEL[job.status]}
+          </span>
+          {isActiveJob(job) && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={isCancelling}
+              data-history-cancel-job={job.id}
+              onClick={() => void cancelCaptureJob(job.id)}
+            >
+              {isCancelling
+                ? 'Cancelling…'
+                : job.status === 'running'
+                  ? 'Cancel (after current DB)'
+                  : 'Cancel'}
+            </button>
+          )}
+        </div>
+      </article>
+    );
   };
 
   const download = async (backupId: string) => {
@@ -488,6 +716,35 @@ export function DatabaseHistoryPanel({
                   <Plus size={14} /> {capturingBackupId ? 'Capturing…' : 'Capture now'}
                 </button>
               )}
+              {ownerOrAdmin && (
+                <section className="database-history-capture-jobs" data-history-capture-jobs>
+                  {loadingJobs && <p className="userspace-muted">Loading capture jobs…</p>}
+                  {jobsError && (
+                    <p className="database-history-error" role="alert">
+                      {jobsError}
+                    </p>
+                  )}
+                  {activeCaptureJobs.length > 0 && (
+                    <>
+                      <h4 className="database-history-group-heading">Pending captures</h4>
+                      {activeCaptureJobs.map(renderCaptureJob)}
+                    </>
+                  )}
+                  {terminalCaptureJobs.length > 0 && (
+                    <details open={activeCaptureJobs.length === 0}>
+                      <summary className="database-history-group-heading">
+                        Recent captures ({terminalCaptureJobs.length})
+                      </summary>
+                      <div className="database-history-capture-job-list">
+                        {terminalCaptureJobs.slice(0, 3).map(renderCaptureJob)}
+                      </div>
+                    </details>
+                  )}
+                  {!loadingJobs && !activeCaptureJobs.length && !terminalCaptureJobs.length && (
+                    <p className="userspace-muted">No queued captures for this view.</p>
+                  )}
+                </section>
+              )}
               {canManage &&
                 history &&
                 (() => {
@@ -573,13 +830,21 @@ export function DatabaseHistoryPanel({
                     );
                   });
                 })()}
-              {history && canManage && history.backups.length === 0 && (
-                <p className="userspace-muted">
-                  {snapshotId
-                    ? 'Database history was not captured for this snapshot.'
-                    : 'No captured database backups. Missing live databases can still be recovered here once a backup exists.'}
-                </p>
-              )}
+              {history &&
+                canManage &&
+                history.backups.length === 0 &&
+                (snapshotId && activeCaptureJobs.length > 0 ? (
+                  <p className="userspace-muted" data-history-snapshot-queue-notice>
+                    A capture for this snapshot is queued. Database state is captured when the
+                    worker executes, not at enqueue time.
+                  </p>
+                ) : (
+                  <p className="userspace-muted">
+                    {snapshotId
+                      ? 'Database history was not captured for this snapshot.'
+                      : 'No captured database backups. Missing live databases can still be recovered here once a backup exists.'}
+                  </p>
+                ))}
               {selected && !receipt && (
                 <section
                   className="database-history-wizard"

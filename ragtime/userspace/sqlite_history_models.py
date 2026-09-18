@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -9,6 +10,12 @@ from pydantic import BaseModel, Field
 
 class SqliteHistoryCaptureRequest(BaseModel):
     database_name: str = Field(min_length=1, max_length=255)
+    request_id: str | None = Field(default=None, min_length=8, max_length=128)
+
+
+class SqliteHistoryCaptureJobRequest(BaseModel):
+    database_name: str = Field(min_length=1, max_length=255)
+    request_id: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 class SqliteHistoryPreviewRequest(BaseModel):
@@ -39,6 +46,42 @@ class SqliteHistoryBackup(BaseModel):
     error: str | None = None
     can_restore: bool = False
     can_delete: bool = False
+    capture_job_id: str | None = None
+
+
+SqliteHistoryCaptureJobStatus = Literal[
+    "pending", "running", "completed", "failed", "cancelled", "interrupted"
+]
+
+
+class SqliteHistoryCaptureJob(BaseModel):
+    """Safe public representation of a durable SQLite capture request."""
+
+    id: str
+    workspace_id: str
+    trigger: Literal["manual", "snapshot", "scheduled"]
+    database_names: list[str] = Field(default_factory=list)
+    snapshot_id: str | None = None
+    snapshot_git_commit_hash: str | None = None
+    status: SqliteHistoryCaptureJobStatus
+    created_at: datetime
+    available_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    updated_at: datetime
+    completed_databases: int = 0
+    total_databases: int = 0
+    backup_ids: list[str] = Field(default_factory=list)
+    error_message: str | None = None
+    cancel_requested: bool = False
+
+
+class SqliteHistoryCaptureJobResponse(BaseModel):
+    job: SqliteHistoryCaptureJob
+
+
+class SqliteHistoryCaptureJobListResponse(BaseModel):
+    jobs: list[SqliteHistoryCaptureJob]
 
 
 class SqliteHistoryInterruptedMaintenance(BaseModel):

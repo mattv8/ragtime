@@ -1650,6 +1650,7 @@ model Workspace {
   snapshots                   UserSpaceSnapshot[]
   codeIndexState              WorkspaceCodeIndexState?
   codeIndexJobs               WorkspaceCodeIndexJob[]
+  sqliteBackupJobs            WorkspaceSqliteBackupJob[]
   codeIndexDirtyPaths         WorkspaceCodeIndexDirtyPath[]
   codeSymbols                 WorkspaceCodeSymbol[]
   outgoingAgentGrants         WorkspaceAgentGrant[]                 @relation("AgentGrantSource")
@@ -1853,6 +1854,40 @@ model WorkspaceCodeIndexJob {
   @@index([status])
   @@index([waitingForJobId])
   @@map("workspace_code_index_jobs")
+}
+
+model WorkspaceSqliteBackupJob {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()::text"))
+  workspaceId           String    @map("workspace_id")
+  requestedById         String?   @map("requested_by_id")
+  trigger               String
+  databaseNames         String[]  @default([]) @map("database_names")
+  snapshotId            String?   @map("snapshot_id")
+  snapshotGitCommitHash String?   @map("snapshot_git_commit_hash")
+  requestKey            String    @map("request_key")
+  requestHash           String    @map("request_hash")
+  status                String    @default("pending")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  availableAt           DateTime  @default(now()) @map("available_at")
+  startedAt             DateTime? @map("started_at")
+  finishedAt            DateTime? @map("finished_at")
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at")
+  heartbeatAt           DateTime? @map("heartbeat_at")
+  ownerToken            String?   @map("owner_token")
+  cancelRequested       Boolean   @default(false) @map("cancel_requested")
+  completedDatabases    Int       @default(0) @map("completed_databases")
+  totalDatabases        Int       @default(0) @map("total_databases")
+  backupIds             String[]  @default([]) @map("backup_ids")
+  errorMessage          String?   @map("error_message")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, requestKey])
+  @@index([workspaceId, status])
+  @@index([status, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([heartbeatAt])
+  @@map("workspace_sqlite_backup_jobs")
 }
 
 model WorkspaceCodeIndexDirtyPath {

@@ -5397,6 +5397,35 @@ export interface SqliteHistoryBackup {
   error: string | null;
   can_restore: boolean;
   can_delete: boolean;
+  capture_job_id?: string | null;
+}
+
+export type SqliteBackupJobStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
+
+export interface SqliteBackupJob {
+  id: string;
+  workspace_id: string;
+  trigger: 'manual' | 'snapshot' | 'scheduled';
+  database_names: string[];
+  snapshot_id: string | null;
+  snapshot_git_commit_hash: string | null;
+  status: SqliteBackupJobStatus;
+  created_at: string;
+  available_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+  completed_databases: number;
+  total_databases: number;
+  backup_ids: string[];
+  error_message: string | null;
+  cancel_requested: boolean;
 }
 
 export interface SqliteHistoryTableReport {

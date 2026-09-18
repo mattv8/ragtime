@@ -306,6 +306,7 @@ import type {
   SqliteInspectorSqlQueryRequest,
   SqliteInspectorSqlQueryResponse,
   SqliteHistoryBackup,
+  SqliteBackupJob,
   SqliteHistoryConflictPolicy,
   SqliteHistoryListResponse,
   SqliteHistoryMaintenanceRecoveryResponse,
@@ -4430,16 +4431,70 @@ export const api = {
   async captureUserSpaceSqliteHistory(
     workspaceId: string,
     databaseName: string,
+    requestId?: string,
   ): Promise<{ backup: SqliteHistoryBackup }> {
     const response = await apiFetch(
       `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ database_name: databaseName }),
+        body: JSON.stringify({ database_name: databaseName, ...(requestId ? { request_id: requestId } : {}) }),
       },
     );
     return handleResponse<{ backup: SqliteHistoryBackup }>(response);
+  },
+
+  async enqueueUserSpaceSqliteBackup(
+    workspaceId: string,
+    databaseName: string,
+    requestId?: string,
+  ): Promise<{ job: SqliteBackupJob }> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/capture-jobs`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ database_name: databaseName, ...(requestId ? { request_id: requestId } : {}) }),
+      },
+    );
+    return handleResponse<{ job: SqliteBackupJob }>(response);
+  },
+
+  async listUserSpaceSqliteBackupJobs(
+    workspaceId: string,
+    options: { databaseName?: string; snapshotId?: string } = {},
+  ): Promise<{ jobs: SqliteBackupJob[] }> {
+    const search = new URLSearchParams();
+    if (options.databaseName) search.set('database_name', options.databaseName);
+    if (options.snapshotId) search.set('snapshot_id', options.snapshotId);
+    const query = search.toString();
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/capture-jobs${query ? `?${query}` : ''}`,
+      { cache: 'no-store' },
+    );
+    return handleResponse<{ jobs: SqliteBackupJob[] }>(response);
+  },
+
+  async getUserSpaceSqliteBackupJob(
+    workspaceId: string,
+    jobId: string,
+  ): Promise<{ job: SqliteBackupJob }> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/capture-jobs/${encodeURIComponent(jobId)}`,
+      { cache: 'no-store' },
+    );
+    return handleResponse<{ job: SqliteBackupJob }>(response);
+  },
+
+  async cancelUserSpaceSqliteBackupJob(
+    workspaceId: string,
+    jobId: string,
+  ): Promise<{ job: SqliteBackupJob }> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/capture-jobs/${encodeURIComponent(jobId)}/cancel`,
+      { method: 'POST' },
+    );
+    return handleResponse<{ job: SqliteBackupJob }>(response);
   },
 
   async downloadUserSpaceSqliteHistory(workspaceId: string, backupId: string): Promise<void> {

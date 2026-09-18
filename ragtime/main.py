@@ -138,6 +138,7 @@ from ragtime.userspace.share_auth import (
     set_share_auth_cookie,
     share_auth_token_from_request,
 )
+from ragtime.userspace.sqlite_backup_queue import get_sqlite_backup_queue_service
 from ragtime.userspace.sqlite_history import get_sqlite_history_service
 from ragtime.userspace.sqlite_history_routes import router as sqlite_history_router
 from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
@@ -269,6 +270,7 @@ async def lifespan(app: FastAPI):
 
     # Connect to database
     await connect_db()
+    await get_sqlite_backup_queue_service().start()
 
     # Seed tool health from persisted test results BEFORE any reader consults
     # tool availability. A process restart pauses live heartbeats; without this
@@ -361,6 +363,7 @@ async def lifespan(app: FastAPI):
     await tool_health_monitor.stop()
 
     # Cleanup - stop background services before disconnecting DB
+    await get_sqlite_backup_queue_service().stop()
     await background_task_service.stop()
     await server_backup_service.shutdown()
 

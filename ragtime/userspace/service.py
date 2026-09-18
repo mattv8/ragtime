@@ -21659,16 +21659,18 @@ class UserSpaceService:
             # stays low-latency and bounded under load.
             self._nudge_workspace_scm_watch_due(workspace_id, "export")
         # Database history is independent from Git's changed-file result.  A
-        # capture failure is recorded by the protected catalog but must not
-        # misreport a successful code snapshot as failed.
+        # queue admission failure must not misreport a successful code snapshot
+        # as failed; execution records its own catalog outcome later.
         try:
-            from ragtime.userspace.sqlite_history import get_sqlite_history_service
+            from ragtime.userspace.sqlite_backup_queue import get_sqlite_backup_queue_service
 
-            await get_sqlite_history_service().capture_workspace_databases(
+            await get_sqlite_backup_queue_service().enqueue(
                 workspace_id,
                 trigger="snapshot",
                 snapshot_id=snapshot_id,
                 snapshot_git_commit_hash=commit_hash,
+                requested_by_id=user_id,
+                request_key=f"snapshot:{snapshot_id}",
             )
         except Exception as exc:
             logger.warning("SQLite history capture failed after snapshot %s: %s", snapshot_id, type(exc).__name__)

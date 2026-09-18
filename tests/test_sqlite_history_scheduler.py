@@ -60,7 +60,7 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 self.service._cleanup_and_due_sync(self.root, "workspace", try_lock=True)
 
-    def test_maintenance_claims_due_workspace_through_injected_service_boundary(self) -> None:
+    def test_maintenance_enqueues_due_workspace_without_capturing(self) -> None:
         workspace_root = Path(self.temp.name) / "scheduled" / "workspaces" / "workspace"
         files = workspace_root / "files"
         files.mkdir(parents=True)
@@ -72,14 +72,27 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
         service._save(root, manifest)
         module = ModuleType("ragtime.userspace.service")
         module.userspace_service = SimpleNamespace(root_path=workspace_root.parent.parent)
+        queue = SimpleNamespace(enqueue=mock.AsyncMock(return_value={"id": "scheduled-job", "status": "pending"}))
+        queue_module = ModuleType("ragtime.userspace.sqlite_backup_queue")
+        queue_module.get_sqlite_backup_queue_service = lambda: queue
         with (
-            mock.patch.dict(sys.modules, {"ragtime.userspace.service": module}),
-            mock.patch.object(service, "capture_workspace_databases", new_callable=mock.AsyncMock, return_value=[{"outcome": "skipped_unchanged"}]) as capture,
+            mock.patch.dict(
+                sys.modules,
+                {
+                    "ragtime.userspace.service": module,
+                    "ragtime.userspace.sqlite_backup_queue": queue_module,
+                },
+            ),
+            mock.patch.object(service, "capture_workspace_databases", new_callable=mock.AsyncMock) as capture,
         ):
             asyncio.run(service.run_maintenance_once())
             with mock.patch.object(service, "_root", side_effect=AssertionError("cached no-due workspace should not touch storage")):
                 asyncio.run(service.run_maintenance_once())
-        capture.assert_awaited_once_with("workspace", trigger="scheduled")
+        capture.assert_not_awaited()
+        queue.enqueue.assert_awaited_once()
+        _, kwargs = queue.enqueue.await_args
+        self.assertEqual("scheduled", kwargs["trigger"])
+        self.assertEqual("scheduled:workspace:", kwargs["request_key"][:20])
 
     def test_cancelled_liveness_acquisition_drains_and_releases_handle(self) -> None:
         entered = threading.Event()

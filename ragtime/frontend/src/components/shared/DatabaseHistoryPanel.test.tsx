@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const apiMock = vi.hoisted(() => ({
   listUserSpaceSqliteHistory: vi.fn(),
   captureUserSpaceSqliteHistory: vi.fn(),
+  enqueueUserSpaceSqliteBackup: vi.fn(),
+  listUserSpaceSqliteBackupJobs: vi.fn(),
+  cancelUserSpaceSqliteBackupJob: vi.fn(),
   downloadUserSpaceSqliteHistory: vi.fn(),
   deleteUserSpaceSqliteHistory: vi.fn(),
   previewUserSpaceSqliteHistory: vi.fn(),
@@ -49,6 +52,29 @@ const secondBackup = {
   database_name: 'orders.sqlite3',
 };
 
+const captureJob = {
+  id: 'job-1',
+  workspace_id: 'ws-1',
+  requested_by_id: null,
+  trigger: 'manual' as const,
+  database_names: ['app.sqlite3'],
+  snapshot_id: null,
+  snapshot_git_commit_hash: null,
+  request_key: 'request-1',
+  status: 'pending' as const,
+  created_at: '2026-09-17T10:00:00Z',
+  available_at: '2026-09-17T10:00:00Z',
+  started_at: null,
+  finished_at: null,
+  updated_at: '2026-09-17T10:00:00Z',
+  heartbeat_at: null,
+  cancel_requested: false,
+  completed_databases: 0,
+  total_databases: 1,
+  backup_ids: [],
+  error_message: null,
+};
+
 describe('DatabaseHistoryPanel', () => {
   beforeEach(() => {
     Object.values(apiMock).forEach((mock) => mock.mockReset());
@@ -57,6 +83,8 @@ describe('DatabaseHistoryPanel', () => {
       backups: [backup],
       can_manage: true,
     });
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({ jobs: [] });
+    apiMock.enqueueUserSpaceSqliteBackup.mockResolvedValue({ job: captureJob });
     apiMock.previewUserSpaceSqliteHistory.mockResolvedValue({
       preview_id: 'preview-1',
       backup_id: backup.id,
@@ -195,6 +223,24 @@ describe('DatabaseHistoryPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Database history' }));
 
     expect(await screen.findByText(/not captured for this snapshot/i)).toBeTruthy();
+  });
+
+  it('shows queued capture jobs while the history request is still pending', async () => {
+    const user = userEvent.setup();
+    let resolveHistory!: (value: { workspace_id: string; backups: []; can_manage: boolean }) => void;
+    apiMock.listUserSpaceSqliteHistory.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveHistory = resolve;
+        }),
+    );
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({ jobs: [captureJob] });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await waitFor(() =>
+      expect(document.querySelector('[data-history-capture-job="job-1"]')).toBeTruthy(),
+    );
+    resolveHistory({ workspace_id: 'ws-1', backups: [], can_manage: true });
   });
 
   it('prioritizes event backups, orders each group deterministically, and preserves backup actions', async () => {
@@ -361,13 +407,13 @@ describe('DatabaseHistoryPanel', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('prevents duplicate capture-now requests with local busy state', async () => {
+  it('enqueues capture-now once while the enqueue request is in flight', async () => {
     const user = userEvent.setup();
-    let resolveCapture: (() => void) | undefined;
-    const capturePromise = new Promise<void>((resolve) => {
+    let resolveCapture: ((value: { job: typeof captureJob }) => void) | undefined;
+    const capturePromise = new Promise<{ job: typeof captureJob }>((resolve) => {
       resolveCapture = resolve;
     });
-    apiMock.captureUserSpaceSqliteHistory.mockImplementation(() => capturePromise);
+    apiMock.enqueueUserSpaceSqliteBackup.mockImplementation(() => capturePromise);
 
     render(
       <DatabaseHistoryPanel
@@ -393,10 +439,144 @@ describe('DatabaseHistoryPanel', () => {
     // Second click should not increment call count while button is disabled
     await user.click(captureButton);
 
-    expect(apiMock.captureUserSpaceSqliteHistory).toHaveBeenCalledTimes(1);
+    expect(apiMock.enqueueUserSpaceSqliteBackup).toHaveBeenCalledTimes(1);
 
     // Resolve the promise and button should be enabled again
-    resolveCapture?.();
+    resolveCapture?.({ job: captureJob });
+  });
+
+  it('uses a distinct request ID for each deliberate manual capture', async () => {
+    const user = userEvent.setup();
+    apiMock.enqueueUserSpaceSqliteBackup
+      .mockResolvedValueOnce({ job: captureJob })
+      .mockResolvedValueOnce({ job: { ...captureJob, id: 'job-2', request_key: 'request-2' } });
+    render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        databaseName="app.sqlite3"
+        ownerOrAdmin
+        hostId="workspace"
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const captureButton = await screen.findByRole('button', { name: 'Capture now' });
+    await user.click(captureButton);
+    await user.click(captureButton);
+    await waitFor(() => expect(apiMock.enqueueUserSpaceSqliteBackup).toHaveBeenCalledTimes(2));
+    const firstRequestId = apiMock.enqueueUserSpaceSqliteBackup.mock.calls[0]?.[2];
+    const secondRequestId = apiMock.enqueueUserSpaceSqliteBackup.mock.calls[1]?.[2];
+    expect(firstRequestId).toEqual(expect.any(String));
+    expect(secondRequestId).toEqual(expect.any(String));
+    expect(firstRequestId).not.toBe(secondRequestId);
+  });
+
+  it('keeps an accepted capture job when restore selection changes during enqueue', async () => {
+    const user = userEvent.setup();
+    let resolveEnqueue!: (value: { job: typeof captureJob }) => void;
+    apiMock.enqueueUserSpaceSqliteBackup.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveEnqueue = resolve;
+        }),
+    );
+    render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        databaseName="app.sqlite3"
+        ownerOrAdmin
+        hostId="workspace"
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await user.click(screen.getByRole('button', { name: 'Capture now' }));
+    await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
+    resolveEnqueue({ job: captureJob });
+    await waitFor(() =>
+      expect(document.querySelector('[data-history-capture-job="job-1"]')).toBeTruthy(),
+    );
+    expect((screen.getByRole('button', { name: 'Capture now' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+
+  it('does not let an older poll erase an accepted capture job', async () => {
+    const user = userEvent.setup();
+    let resolveJobs!: (value: { jobs: [] }) => void;
+    apiMock.listUserSpaceSqliteBackupJobs.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveJobs = resolve;
+        }),
+    );
+    render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        databaseName="app.sqlite3"
+        ownerOrAdmin
+        hostId="workspace"
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await waitFor(() => expect(apiMock.listUserSpaceSqliteBackupJobs).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('button', { name: 'Capture now' }));
+    await waitFor(() =>
+      expect(document.querySelector('[data-history-capture-job="job-1"]')).toBeTruthy(),
+    );
+    resolveJobs({ jobs: [] });
+    await Promise.resolve();
+    expect(document.querySelector('[data-history-capture-job="job-1"]')).toBeTruthy();
+  });
+
+  it('shows scoped capture jobs and keeps cancel busy per job', async () => {
+    const user = userEvent.setup();
+    let resolveCancel!: (value: { job: typeof captureJob }) => void;
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({ jobs: [captureJob] });
+    apiMock.cancelUserSpaceSqliteBackupJob.mockImplementation(
+      () => new Promise((resolve) => { resolveCancel = resolve; }),
+    );
+    render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        databaseName="app.sqlite3"
+        snapshotId="snap-1"
+        ownerOrAdmin
+        hostId="snapshot-snap-1"
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await waitFor(() =>
+      expect(apiMock.listUserSpaceSqliteBackupJobs).toHaveBeenCalledWith('ws-1', {
+        databaseName: 'app.sqlite3',
+        snapshotId: 'snap-1',
+      }),
+    );
+    const cancel = await screen.findByRole('button', { name: 'Cancel' });
+    await user.click(cancel);
+    expect(cancel.hasAttribute('disabled')).toBe(true);
+    resolveCancel({ job: captureJob });
+  });
+
+  it('ignores a capture-jobs response that arrives after the dialog closes', async () => {
+    const user = userEvent.setup();
+    let resolveJobs!: (value: { jobs: typeof captureJob[] }) => void;
+    apiMock.listUserSpaceSqliteBackupJobs
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveJobs = resolve;
+          }),
+      )
+      .mockResolvedValue({ jobs: [] });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await waitFor(() => expect(apiMock.listUserSpaceSqliteBackupJobs).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('button', { name: 'Close database history' }));
+    resolveJobs({ jobs: [captureJob] });
+    await Promise.resolve();
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await waitFor(() => expect(apiMock.listUserSpaceSqliteBackupJobs).toHaveBeenCalledTimes(2));
+    expect(document.querySelector('[data-history-capture-job="job-1"]')).toBeNull();
   });
 
   it('prevents duplicate delete requests with local busy state', async () => {

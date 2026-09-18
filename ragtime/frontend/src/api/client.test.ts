@@ -269,6 +269,44 @@ describe('SQLite history API client', () => {
     );
     clickSpy.mockRestore();
   });
+
+  it('uses queue capture endpoints with encoded paths and optional filters', async () => {
+    const job = { id: 'job/1', status: 'pending' };
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ job }))
+      .mockResolvedValueOnce(jsonResponse({ jobs: [job] }))
+      .mockResolvedValueOnce(jsonResponse({ job }))
+      .mockResolvedValueOnce(jsonResponse({ job: { ...job, status: 'cancelled' } }));
+
+    await api.enqueueUserSpaceSqliteBackup('ws/1', 'app.sqlite3', 'request-123');
+    await api.listUserSpaceSqliteBackupJobs('ws/1', {
+      databaseName: 'app.sqlite3',
+      snapshotId: 'snapshot/1',
+    });
+    await api.getUserSpaceSqliteBackupJob('ws/1', 'job/1');
+    await api.cancelUserSpaceSqliteBackupJob('ws/1', 'job/1');
+
+    const base = '/indexes/userspace/workspaces/ws%2F1/sqlite-history/capture-jobs';
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      base,
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ database_name: 'app.sqlite3', request_id: 'request-123' }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `${base}?database_name=app.sqlite3&snapshot_id=snapshot%2F1`,
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(3, `${base}/job%2F1`, expect.any(Object));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      `${base}/job%2F1/cancel`,
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
 });
 
 describe('PDM webhook client', () => {

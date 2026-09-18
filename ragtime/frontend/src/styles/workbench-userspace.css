@@ -522,6 +522,8 @@
 }
 
 .database-history-body,
+.database-history-capture-jobs,
+.database-history-capture-job-list,
 .database-history-backup,
 .database-history-recovery,
 .database-history-wizard,
@@ -541,6 +543,23 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-bg-secondary);
+}
+
+.database-history-capture-jobs,
+.database-history-capture-job-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.database-history-capture-jobs details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.database-history-capture-jobs summary {
+  cursor: pointer;
 }
 
 .database-history-backup,
@@ -636,6 +655,37 @@
   border: 1px solid var(--color-border);
   background: var(--color-bg-tertiary);
   color: var(--color-text-muted);
+}
+
+.database-history-job-badge--pending,
+.database-history-job-badge--cancelled {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+}
+
+.database-history-job-badge--running {
+  border: 1px solid var(--color-primary-border);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.database-history-job-badge--completed {
+  border: 1px solid var(--color-success-border);
+  background: var(--color-success-light);
+  color: var(--color-success);
+}
+
+.database-history-job-badge--failed {
+  border: 1px solid var(--color-error-border);
+  background: var(--color-error-light);
+  color: var(--color-error);
+}
+
+.database-history-job-badge--interrupted {
+  border: 1px solid var(--color-warning-border);
+  background: var(--color-warning-light);
+  color: var(--color-warning);
 }
 
 @media (max-width: 768px) {

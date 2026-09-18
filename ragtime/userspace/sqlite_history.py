@@ -22,7 +22,7 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePath
-from typing import Any, Callable, Iterator, Literal
+from typing import Any, Awaitable, Callable, Iterator, Literal
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -410,14 +410,26 @@ class SqliteHistoryService:
                     if not claim:
                         self._next_due_cache[workspace_id] = await run_sqlite_blocking(self._next_scheduled_due_sync, root, workspace_id, True)
                         continue
-                    admitted += 1
-                    success = False
                     try:
-                        outcomes = await self.capture_workspace_databases(workspace_id, trigger="scheduled")
-                        success = all(row.get("status") != "failed" for row in outcomes)
-                    finally:
-                        await run_sqlite_blocking(self._complete_scheduled_attempt_sync, root, workspace_id, claim, success)
-                        self._next_due_cache[workspace_id] = _now() + (timedelta(hours=1) if success else timedelta(minutes=5))
+                        # Capture execution belongs to the durable queue.  Keep
+                        # the manifest claim only until the enqueue is accepted;
+                        # the queue owns retries and later failure visibility.
+                        from ragtime.userspace.sqlite_backup_queue import get_sqlite_backup_queue_service
+
+                        await get_sqlite_backup_queue_service().enqueue(
+                            workspace_id,
+                            trigger="scheduled",
+                            request_key=f"scheduled:{workspace_id}:{claim}",
+                        )
+                    except Exception:
+                        # Do not advance the manifest until a durable queue row
+                        # exists.  Releasing this claim makes the next scheduler
+                        # pass retry the enqueue without performing SQLite I/O.
+                        raise
+                    else:
+                        admitted += 1
+                        await run_sqlite_blocking(self._complete_scheduled_attempt_sync, root, workspace_id, claim, True)
+                        self._next_due_cache[workspace_id] = _now() + timedelta(hours=1)
                 finally:
                     await run_sqlite_blocking(self._release_scheduled_liveness_lock, liveness)
             except Exception as exc:
@@ -603,6 +615,9 @@ class SqliteHistoryService:
         mandatory: bool = False,
         database_names: set[str] | None = None,
         files_dir: Path | None = None,
+        capture_job_id: str | None = None,
+        cancel_check: Callable[[], Awaitable[bool]] | None = None,
+        progress_callback: Callable[[int, int], Awaitable[None]] | None = None,
     ) -> list[dict[str, Any]]:
         if trigger not in _TRIGGERS:
             raise ValueError("invalid history trigger")
@@ -618,6 +633,9 @@ class SqliteHistoryService:
                         mandatory=mandatory,
                         database_names=database_names,
                         files_dir=pinned_files_dir,
+                        capture_job_id=capture_job_id,
+                        cancel_check=cancel_check,
+                        progress_callback=progress_callback,
                     )
         else:
             if trigger == "pre_restore":
@@ -628,16 +646,45 @@ class SqliteHistoryService:
                 wanted = {_validate_database_name(name) for name in database_names}
                 names = [name for name in names if name in wanted]
             results: list[dict[str, Any]] = []
+            total = len(names)
             for name in names:
+                # Queue cancellation is cooperative at database boundaries.
+                # Database/store failures deliberately propagate: treating an
+                # unknown cancellation state as a user cancellation can hide a
+                # capture that may still be in progress elsewhere.
+                if trigger != "pre_restore" and cancel_check is not None and await cancel_check():
+                    break
                 try:
                     results.append(
-                        await run_sqlite_blocking(self._capture_one, workspace_id, root, files_dir, name, trigger, snapshot_id, snapshot_git_commit_hash)
+                        await run_sqlite_blocking(
+                            self._capture_one,
+                            workspace_id,
+                            root,
+                            files_dir,
+                            name,
+                            trigger,
+                            snapshot_id,
+                            snapshot_git_commit_hash,
+                            capture_job_id,
+                        )
                     )
                 except Exception as exc:
-                    failed = await run_sqlite_blocking(self._record_failure, workspace_id, root, name, trigger, snapshot_id, snapshot_git_commit_hash, exc)
+                    failed = await run_sqlite_blocking(
+                        self._record_failure,
+                        workspace_id,
+                        root,
+                        name,
+                        trigger,
+                        snapshot_id,
+                        snapshot_git_commit_hash,
+                        exc,
+                        capture_job_id,
+                    )
                     results.append(failed)
                     if mandatory:
                         raise HTTPException(status_code=409, detail="Mandatory SQLite safety backup failed") from exc
+                if progress_callback is not None:
+                    await progress_callback(len(results), total)
             return results
 
     @staticmethod
@@ -659,19 +706,46 @@ class SqliteHistoryService:
             return []
 
     def _capture_one(
-        self, workspace_id: str, root: Path, files_dir: Path, name: str, trigger: str, snapshot_id: str | None, commit: str | None
+        self,
+        workspace_id: str,
+        root: Path,
+        files_dir: Path,
+        name: str,
+        trigger: str,
+        snapshot_id: str | None,
+        commit: str | None,
+        capture_job_id: str | None = None,
     ) -> dict[str, Any]:
         with _catalog_lock(root):
-            return self._capture_one_locked(workspace_id, root, files_dir, name, trigger, snapshot_id, commit)
+            return self._capture_one_locked(workspace_id, root, files_dir, name, trigger, snapshot_id, commit, capture_job_id)
 
     def _capture_one_locked(
-        self, workspace_id: str, root: Path, files_dir: Path, name: str, trigger: str, snapshot_id: str | None, commit: str | None
+        self,
+        workspace_id: str,
+        root: Path,
+        files_dir: Path,
+        name: str,
+        trigger: str,
+        snapshot_id: str | None,
+        commit: str | None,
+        capture_job_id: str | None = None,
     ) -> dict[str, Any]:
         _validate_database_name(name)
         backup_id = str(uuid4())
         blob_dir = _history_subdirectory(root, "blobs", create=True)
         destination = blob_dir / f"{backup_id}.sqlite3"
         manifest = self._load(root, workspace_id)
+        if capture_job_id is not None:
+            existing = next(
+                (
+                    row
+                    for row in manifest["backups"]
+                    if row.get("capture_job_id") == capture_job_id and row.get("database_name") == name
+                ),
+                None,
+            )
+            if existing is not None:
+                return self._backup_response(dict(existing))
         # A matching source token is only a hint until the immutable blob's
         # recorded checksum and size are revalidated under this catalog lock.
         # Safety captures intentionally do not shortcut this full capture.
@@ -684,7 +758,7 @@ class SqliteHistoryService:
             if trigger == "scheduled":
                 logger.info("SQLite history capture outcome=skipped_unchanged workspace_id=%s database_name=%s", workspace_id, name)
                 return {"outcome": "skipped_unchanged", "database_name": name, "source_token": source_token}
-            row = self._new_alias_row(workspace_id, name, trigger, snapshot_id, commit, reusable, source_token)
+            row = self._new_alias_row(workspace_id, name, trigger, snapshot_id, commit, reusable, source_token, capture_job_id)
             manifest["backups"].append(row)
             removed = self._prune_locked(root, manifest)
             self._save(root, manifest)
@@ -725,6 +799,7 @@ class SqliteHistoryService:
             "fingerprint": capture.get("fingerprint"),
             "schema_hash": capture.get("schema_hash"),
             "source_token": capture.get("source_token"),
+            "capture_job_id": capture_job_id,
         }
         # A mandatory pre-restore capture has completed verification before any
         # sharing is considered.  Persist its alias before removing a duplicate.
@@ -775,7 +850,14 @@ class SqliteHistoryService:
 
     @staticmethod
     def _new_alias_row(
-        workspace_id: str, name: str, trigger: str, snapshot_id: str | None, commit: str | None, source: dict[str, Any], token: str | None
+        workspace_id: str,
+        name: str,
+        trigger: str,
+        snapshot_id: str | None,
+        commit: str | None,
+        source: dict[str, Any],
+        token: str | None,
+        capture_job_id: str | None = None,
     ) -> dict[str, Any]:
         return {
             "id": str(uuid4()),
@@ -793,6 +875,7 @@ class SqliteHistoryService:
             "fingerprint": source.get("fingerprint"),
             "schema_hash": source.get("schema_hash"),
             "source_token": token,
+            "capture_job_id": capture_job_id,
         }
 
     @staticmethod
@@ -895,7 +978,15 @@ class SqliteHistoryService:
             return None
 
     def _record_failure(
-        self, workspace_id: str, root: Path, name: str, trigger: str, snapshot_id: str | None, commit: str | None, exc: Exception
+        self,
+        workspace_id: str,
+        root: Path,
+        name: str,
+        trigger: str,
+        snapshot_id: str | None,
+        commit: str | None,
+        exc: Exception,
+        capture_job_id: str | None = None,
     ) -> dict[str, Any]:
         with _catalog_lock(root):
             manifest = self._load(root, workspace_id)
@@ -912,6 +1003,7 @@ class SqliteHistoryService:
                 "sha256": None,
                 "error": _safe_error(exc),
                 "blob": None,
+                "capture_job_id": capture_job_id,
             }
             manifest["backups"].append(row)
             self._save(root, manifest)
