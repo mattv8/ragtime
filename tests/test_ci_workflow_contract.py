@@ -256,6 +256,18 @@ class CiWorkflowContractTests(unittest.TestCase):
                         self.assertIn("scope", step.get("with", {}))
         self.assertGreater(builder_sites, 0)
 
+    def test_managed_buildx_preflight_rounds_buildkit_minimum_to_gib(self) -> None:
+        action = yaml.load(
+            (ROOT / ".github" / "actions" / "managed-buildx" / "action.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        minimum_gib = int(action["inputs"]["min-free-gib"]["default"])
+        buildkit_config = (ROOT / "docker" / "buildkitd.ci.toml").read_text(encoding="utf-8")
+        match = re.search(r'minFreeSpace = "(\d+)GB"', buildkit_config)
+        self.assertIsNotNone(match)
+        assert match is not None
+        self.assertGreater(minimum_gib * 1024**3, int(match.group(1)) * 1000**3)
+
     def test_workflows_contain_no_hardcoded_usernames(self) -> None:
         for workflow_file in (ROOT / ".github" / "workflows").glob("*.yml"):
             with self.subTest(workflow=workflow_file.name):
