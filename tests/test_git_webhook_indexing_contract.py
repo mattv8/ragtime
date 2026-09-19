@@ -13,7 +13,7 @@ from ragtime.git_webhooks.models import GitWebhookDelivery, GitWebhookDeliverySt
 from ragtime.git_webhooks.repository import format_git_webhook_target_key
 from ragtime.git_webhooks.service import GitWebhookService
 from ragtime.indexer.models import IndexConfig, IndexJob, IndexStatus
-from ragtime.indexer.resource_governor import resource_governor
+from ragtime.indexer.resource_governor import IndexingResourceGovernor, MiB, _Metrics
 from ragtime.indexer.service import IndexerService
 
 
@@ -228,6 +228,18 @@ class GitWebhookIndexingContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def _capture_documents_for_depth(self, repo_dir: Path, *, depth: int):
         captured: dict[str, list] = {}
+        # This contract tests git history, not admission under real host pressure.
+        governor = IndexingResourceGovernor(
+            sampler=lambda: _Metrics(
+                sampled_monotonic=0,
+                system_total_bytes=8 * 1024 * MiB,
+                system_available_bytes=6 * 1024 * MiB,
+                cgroup_limit_bytes=4 * 1024 * MiB,
+                cgroup_usage_bytes=1 * 1024 * MiB,
+                memory_source="cgroup_v2",
+                cpu_capacity=4.0,
+            )
+        )
         service = IndexerService(index_base_path=str(repo_dir.parent / f"indexes-{depth}"))
         job = IndexJob(
             id=f"job-depth-{depth}",
@@ -254,9 +266,10 @@ class GitWebhookIndexingContractTests(unittest.IsolatedAsyncioTestCase):
             captured["documents"] = await asyncio.to_thread(read_spooled_documents)
             raise _StopAfterDocuments("captured documents before chunking")
 
-        await resource_governor.start()
+        await governor.start()
         try:
             with (
+                mock.patch("ragtime.indexer.service.resource_governor", governor),
                 mock.patch("ragtime.indexer.service.UPLOAD_TMP_DIR", repo_dir.parent / "index-data" / "_tmp"),
                 mock.patch("ragtime.indexer.service.repository.update_job", new=mock.AsyncMock()),
                 mock.patch(
@@ -267,8 +280,9 @@ class GitWebhookIndexingContractTests(unittest.IsolatedAsyncioTestCase):
             ):
                 with self.assertRaises(_StopAfterDocuments):
                     await service._create_faiss_index(job, repo_dir)
+            self.assertEqual(governor.snapshot()["committed_bytes"], 0)
         finally:
-            await resource_governor.stop()
+            await governor.stop()
 
         return captured["documents"]
 
