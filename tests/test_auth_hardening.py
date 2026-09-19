@@ -259,6 +259,7 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
                 sourceSyncedAt=None,
                 sourceExpiresAt=None,
                 cachedGroups=["cn=admins,dc=example,dc=com"],
+                hostedChatEnabled=True,
             ),
             SimpleNamespace(
                 id="user-2",
@@ -273,6 +274,7 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
                 sourceSyncedAt=None,
                 sourceExpiresAt=None,
                 cachedGroups=[],
+                hostedChatEnabled=False,
             ),
         ]
         memberships = [
@@ -361,6 +363,7 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
         recovery_delegate = RecoveryCodeDelegate()
         webauthn_delegate = WebauthnCredentialDelegate()
         db = SimpleNamespace(
+            appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(hostedChatEnabled=True))),
             user=UserDelegate(),
             authgroupmembership=membership_delegate,
             authgroup=group_delegate,
@@ -401,6 +404,8 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response.users[1].mfa_enabled)
         self.assertFalse(response.users[1].mfa_required)
         self.assertEqual(response.users[1].recovery_codes_remaining, 1)
+        self.assertTrue(response.users[0].hosted_chat_enabled_effective)
+        self.assertFalse(response.users[1].hosted_chat_enabled_effective)
         self.assertEqual(len(membership_delegate.calls), 1)
         self.assertEqual(len(group_delegate.calls), 1)
         self.assertEqual(len(factor_delegate.calls), 1)
@@ -421,6 +426,7 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
             sourceSyncedAt=None,
             sourceExpiresAt=None,
             cachedGroups=[],
+            hostedChatEnabled=False,
         )
 
         class UserDelegate:
@@ -443,6 +449,7 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
                 return []
 
         db = SimpleNamespace(
+            appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(hostedChatEnabled=True))),
             user=UserDelegate(),
             authgroupmembership=MembershipDelegate(),
             authgroup=EmptyFindManyDelegate(),
@@ -465,6 +472,7 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
             response = await api_auth.list_users(skip=0, take=50, _user=cast(api_auth.User, SimpleNamespace(id="admin-1")))
 
         self.assertFalse(response.users[0].mfa_enabled)
+        self.assertFalse(response.users[0].hosted_chat_enabled_effective)
 
 
 # ---------------------------------------------------------------------------

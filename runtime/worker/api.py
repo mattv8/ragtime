@@ -34,6 +34,8 @@ from runtime.manager.models import (
     RuntimeBridgeCredentialMetadata,
     RuntimeContentProbeRequest,
     RuntimeContentProbeResponse,
+    RuntimeExecJobRequest,
+    RuntimeExecJobResponse,
     RuntimeExecRequest,
     RuntimeExecResponse,
     RuntimeExternalBrowseRequest,
@@ -584,6 +586,34 @@ async def exec_command(
         timeout_seconds=payload.timeout_seconds,
         cwd=payload.cwd,
     )
+
+
+@router.post("/worker/sessions/{worker_session_id}/exec-jobs", response_model=RuntimeExecJobResponse)
+async def start_exec_job(worker_session_id: str, payload: RuntimeExecJobRequest, _auth: None = WorkerAuth) -> RuntimeExecJobResponse:
+    return await get_worker_service().start_exec_job(
+        worker_session_id,
+        payload.command,
+        timeout_seconds=payload.timeout_seconds,
+        cwd=payload.cwd,
+        user_id=payload.user_id,
+        credential_id=payload.credential_id,
+        operation=payload.operation,
+    )
+
+
+@router.get("/worker/sessions/{worker_session_id}/exec-jobs", response_model=list[RuntimeExecJobResponse])
+async def list_exec_jobs(worker_session_id: str, _auth: None = WorkerAuth) -> list[RuntimeExecJobResponse]:
+    return await get_worker_service().list_exec_jobs(worker_session_id)
+
+
+@router.get("/worker/sessions/{worker_session_id}/exec-jobs/{job_id}", response_model=RuntimeExecJobResponse)
+async def get_exec_job(worker_session_id: str, job_id: str, cursor: int = 0, limit: int = 16384, _auth: None = WorkerAuth) -> RuntimeExecJobResponse:
+    return await get_worker_service().get_exec_job(worker_session_id, job_id, cursor=cursor, limit=limit)
+
+
+@router.post("/worker/sessions/{worker_session_id}/exec-jobs/{job_id}/cancel", response_model=RuntimeExecJobResponse)
+async def cancel_exec_job(worker_session_id: str, job_id: str, _auth: None = WorkerAuth) -> RuntimeExecJobResponse:
+    return await get_worker_service().cancel_exec_job(worker_session_id, job_id)
 
 
 @router.post(

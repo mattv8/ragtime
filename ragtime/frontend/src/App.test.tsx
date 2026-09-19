@@ -165,7 +165,9 @@ vi.mock('./components/ChatPage', () => ({
 }));
 
 vi.mock('./components/UserSpacePanel', () => ({
-  UserSpacePanel: () => null,
+  UserSpacePanel: ({ hostedChatEnabled }: { hostedChatEnabled?: boolean }) => (
+    <div data-testid="userspace-panel" data-hosted-chat={String(hostedChatEnabled)} />
+  ),
 }));
 
 vi.mock('./components/ToolsPanel', () => ({
@@ -322,12 +324,39 @@ function mockAuthenticatedNonAdmin(): void {
   });
 }
 
+function mockHostedChatDisabledNonAdmin(): void {
+  mockAuthenticatedNonAdmin();
+  apiMock.getAuthStatus.mockResolvedValue({
+    authenticated: true,
+    ldap_configured: false,
+    local_admin_enabled: true,
+    debug_mode: false,
+    api_key_configured: true,
+    session_cookie_secure: false,
+    allowed_origins_open: false,
+    hosted_chat_enabled: false,
+  });
+}
+
 async function flushMicrotasks(): Promise<void> {
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
   });
 }
+
+describe('hosted chat capability', () => {
+  it('redirects a disabled user from a chat URL, hides Chat, and does not mount ChatPage', async () => {
+    window.history.replaceState({}, '', '/?view=chat');
+    mockHostedChatDisabledNonAdmin();
+    render(<App />);
+    await screen.findByTestId('userspace-panel');
+    expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Enter chat fullscreen' })).toBeNull();
+    expect(screen.getByTestId('userspace-panel').getAttribute('data-hosted-chat')).toBe('false');
+    await waitFor(() => expect(window.location.search).toContain('view=userspace'));
+  });
+});
 
 describe('OpenRouter credit alerts', () => {
   it('shows a persistent admin credit alert and clears it after recovery', async () => {

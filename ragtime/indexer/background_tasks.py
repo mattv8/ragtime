@@ -30,6 +30,7 @@ except Exception:  # pragma: no cover - defensive import guard
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.datetimes import coerce_utc_datetime, utc_now
 from ragtime.core.event_bus import task_event_bus
+from ragtime.core.hosted_execution_policy import hosted_execution_context, require_hosted_execution
 from ragtime.core.logging import get_logger
 from ragtime.core.scheduling import is_anchored_schedule_due
 from ragtime.core.sql_utils import strip_table_metadata
@@ -889,6 +890,14 @@ class BackgroundTaskService:
         """
         task_id = existing_task_id or ""
 
+        async def run_with_policy_context() -> None:
+            # Keep both identities bound for every nested provider boundary,
+            # including calls made after the request's ContextVar is gone.
+            conversation = await repository.get_conversation(conversation_id)
+            caller_user_id = str(current_user_context.get("user_id") or "").strip() if current_user_context else None
+            with hosted_execution_context(caller_user_id, getattr(conversation, "user_id", None)):
+                await run()
+
         async def run() -> None:
             nonlocal task_id
             effective_execution_policy = execution_policy
@@ -936,6 +945,13 @@ class BackgroundTaskService:
                 if not conv:
                     await repository.update_chat_task_status(task_id, ChatTaskStatus.failed, "Conversation not found")
                     return
+
+                # A queued task can outlive the request that created it. Resolve
+                # policy afresh before it prepares or starts any model work.
+                await require_hosted_execution(
+                    str(current_user_context.get("user_id") or "") if current_user_context else None,
+                    conv.user_id,
+                )
 
                 # Build chat history (exclude the user message we're about to process)
                 # Include tool call information so the LLM has full context
@@ -1720,7 +1736,7 @@ class BackgroundTaskService:
         task_context = contextvars.copy_context()
         if _LC_CHILD_RUNNABLE_CONFIG_VAR is not None:
             task_context.run(_LC_CHILD_RUNNABLE_CONFIG_VAR.set, None)
-        asyncio_task = asyncio.create_task(run(), context=task_context)
+        asyncio_task = asyncio.create_task(run_with_policy_context(), context=task_context)
 
         # We need to get task_id synchronously, so we'll use a placeholder
         # The actual task ID will be set inside the coroutine
@@ -1743,6 +1759,7 @@ class BackgroundTaskService:
         snapshot_tail_message_id: Optional[str],
         snapshot_user_id: str,
         snapshot_parent_branch_id: Optional[str],
+        caller_user_id: Optional[str] = None,
         replace_message_id: Optional[str] = None,
         replace_message_index: Optional[int] = None,
     ) -> str:
@@ -1760,6 +1777,7 @@ class BackgroundTaskService:
                 snapshot_tail_message_id=snapshot_tail_message_id,
                 snapshot_user_id=snapshot_user_id,
                 snapshot_parent_branch_id=snapshot_parent_branch_id,
+                caller_user_id=caller_user_id,
                 replace_message_id=replace_message_id,
                 replace_message_index=replace_message_index,
             )
@@ -1779,10 +1797,13 @@ class BackgroundTaskService:
         snapshot_tail_message_id: Optional[str],
         snapshot_user_id: str,
         snapshot_parent_branch_id: Optional[str],
+        caller_user_id: Optional[str] = None,
         replace_message_id: Optional[str] = None,
         replace_message_index: Optional[int] = None,
     ) -> None:
         try:
+            conv = await repository.get_conversation(conversation_id)
+            await require_hosted_execution(caller_user_id, getattr(conv, "user_id", None))
             await repository.update_chat_task_status(task_id, ChatTaskStatus.running)
             await task_event_bus.publish(
                 f"conversation:{conversation_id}",
@@ -1794,7 +1815,8 @@ class BackgroundTaskService:
                 },
             )
 
-            summary = await rag.summarize_for_compaction(messages_to_summarize, model)
+            with hosted_execution_context(caller_user_id, getattr(conv, "user_id", None)):
+                summary = await rag.summarize_for_compaction(messages_to_summarize, model)
             compacted = await repository.compact_conversation(
                 conversation_id,
                 compaction_index,

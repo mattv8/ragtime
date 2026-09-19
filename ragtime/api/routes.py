@@ -18,6 +18,7 @@ from ragtime import __version__
 from ragtime.config import settings
 from ragtime.core.api_accounting import log_api_request
 from ragtime.core.app_settings import get_app_settings, get_health_llm_settings
+from ragtime.core.hosted_execution_policy import require_hosted_execution
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
     compose_model_display_label,
@@ -526,12 +527,17 @@ async def _resolve_effective_model(
 
 async def verify_api_key(authorization: Optional[str] = Header(None)):
     """Verify API key if configured."""
+    # Workspace-development credentials are never accepted on hosted surfaces,
+    # including deployments that intentionally leave API_KEY unset.
+    scheme, separator, bearer_value = (authorization or "").strip().partition(" ")
+    if scheme.casefold() == "bearer" and separator and bearer_value.strip().startswith("rtdev_"):
+        raise HTTPException(status_code=401, detail="Workspace development credentials are not accepted on this endpoint")
     if settings.api_key:
         if not authorization:
             raise HTTPException(status_code=401, detail="API key required")
 
         # Support both "Bearer <key>" and raw key
-        key = authorization.replace("Bearer ", "").strip()
+        key = bearer_value.strip() if scheme.casefold() == "bearer" and separator else authorization.strip()
         if not hmac.compare_digest(key, settings.api_key):
             raise HTTPException(status_code=401, detail="Invalid API key")
 
@@ -633,6 +639,9 @@ async def chat_completions(request: ChatCompletionRequest):
     Main chat endpoint with RAG and tool calling.
     OpenAI API compatible for use with OpenWebUI and similar tools.
     """
+    # /v1 has no caller identity (and can be anonymous when API_KEY is unset),
+    # so it is deliberately governed by the global policy only.
+    await require_hosted_execution()
     if not rag.is_ready:
         asyncio.ensure_future(
             log_api_request(

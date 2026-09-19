@@ -205,6 +205,7 @@ model AppSettings {
   availableModelsCacheEnabled         Boolean @default(true) @map("available_models_cache_enabled")
   showToolCardFooterActions           Boolean @default(false) @map("show_tool_card_footer_actions")
   toolSkillsEnabled                   Boolean @default(true) @map("tool_skills_enabled")
+  hostedChatEnabled                   Boolean @default(true) @map("hosted_chat_enabled")
   userspaceBuildModel                 String? @map("userspace_build_model")
   openrouterCreditMonitorEnabled      Boolean @default(false) @map("openrouter_credit_monitor_enabled")
   openrouterLowCreditThresholdUsd     Float   @default(5) @map("openrouter_low_credit_threshold_usd")
@@ -1061,6 +1062,7 @@ model User {
   role               UserRole      @default(user)
   roleManuallySet    Boolean       @default(false) @map("role_manually_set") // True when admin manually changed role; cleared on LDAP login
   themePack          String?       @map("theme_pack") // Per-user app theme pack; null means inherit the global default
+  hostedChatEnabled  Boolean?      @map("hosted_chat_enabled") // Null inherits the instance hosted-execution policy
   defaultChatModel   String?       @map("default_chat_model")
   mfaPreferredMethod String?       @map("mfa_preferred_method") // Preferred 2FA method presented first at login; null means inherit the global default
   lastLoginAt        DateTime?     @map("last_login_at")
@@ -1098,6 +1100,8 @@ model User {
   workspacePreferences                 WorkspaceUserPreference[]
   approvedWorkspacePublishedEndpoints  WorkspacePublishedEndpoint[]          @relation("PublishedEndpointApprover")
   createdWorkspaceServiceCredentials   WorkspaceServiceCredential[]          @relation("WorkspaceServiceCredentialCreator")
+  workspaceDevelopmentCredentials      WorkspaceDevelopmentCredential[]      @relation("WorkspaceDevelopmentCredentialUser")
+  createdWorkspaceIndexGrants          WorkspaceIndexGrant[]                 @relation("WorkspaceIndexGrantCreator")
   oauthGrants                          OAuthGrant[]
 
   @@index([authProvider])
@@ -1664,6 +1668,8 @@ model Workspace {
   userPreferences             WorkspaceUserPreference[]
   publishedEndpoints          WorkspacePublishedEndpoint[]
   serviceCredentials          WorkspaceServiceCredential[]
+  developmentCredentials      WorkspaceDevelopmentCredential[]
+  indexGrants                 WorkspaceIndexGrant[]
   apiRequestLogs              WorkspaceApiRequestLog[]
 
   @@unique([ownerUserId, nameNormalized])
@@ -1722,6 +1728,46 @@ model WorkspaceServiceCredential {
   @@index([expiresAt])
   @@index([createdByUserId])
   @@map("workspace_service_credentials")
+}
+
+/// Scoped bearer credentials for external workspace-development clients.
+/// These are intentionally distinct from published application credentials.
+model WorkspaceDevelopmentCredential {
+  id          String    @id @default(uuid())
+  workspaceId String    @map("workspace_id")
+  userId      String    @map("user_id")
+  selector    String    @unique
+  tokenHash   String    @map("token_hash")
+  name        String
+  scopes      Json      @default("[\"read\", \"write\", \"exec\"]")
+  expiresAt   DateTime? @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation("WorkspaceDevelopmentCredentialUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("workspace_development_credentials")
+}
+
+/// Explicit grants from a workspace to a general document/schema/PDM index.
+model WorkspaceIndexGrant {
+  id          String   @id @default(uuid())
+  workspaceId String   @map("workspace_id")
+  indexName   String   @map("index_name")
+  createdById String   @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User      @relation("WorkspaceIndexGrantCreator", fields: [createdById], references: [id])
+
+  @@unique([workspaceId, indexName])
+  @@index([createdById])
+  @@map("workspace_index_grants")
 }
 
 model WorkspaceServiceCredentialEndpoint {

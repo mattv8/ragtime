@@ -10,6 +10,7 @@ from typing import Any, Iterable
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ragtime.config import settings
+from ragtime.core.hosted_execution_policy import require_hosted_execution
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import TABLE_METADATA_END, TABLE_METADATA_START
 from ragtime.indexer.models import (
@@ -562,6 +563,7 @@ async def _repair_with_ai(
 ) -> _ValidatedPayload | None:
     if not request.allow_ai_repair:
         return None
+    await require_hosted_execution(context.user_id, context.conversation.user_id)
     if not rag.is_ready:
         raise RuntimeError("RAG service initializing, please retry")
 
@@ -572,6 +574,7 @@ async def _repair_with_ai(
         raise RuntimeError(error_message or "No LLM is available for visualization repair")
 
     system_prompt, user_prompt = _build_repair_prompt(request, rerun_output)
+    await require_hosted_execution(context.user_id, context.conversation.user_id)
     response = await request_llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
     response_text = _message_content_to_text(getattr(response, "content", response))
     await _persist_repair_debug_record(

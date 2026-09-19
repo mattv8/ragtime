@@ -31,6 +31,9 @@ export interface User {
   mfa_enabled?: boolean;
   mfa_required?: boolean;
   recovery_codes_remaining?: number;
+  /** Null inherits the server-wide hosted chat policy. */
+  hosted_chat_enabled?: boolean | null;
+  hosted_chat_enabled_effective?: boolean;
 }
 
 export type TotpPolicy = 'optional' | 'required_all' | 'required_admins_groups';
@@ -67,6 +70,22 @@ export interface UserDirectoryEntry {
   id: string;
   username: string;
   display_name: string | null;
+}
+
+export interface WorkspaceDevelopmentCredential {
+  id: string;
+  workspace_id: string;
+  user_id: string;
+  name: string;
+  scopes: string[];
+  expires_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceDevelopmentCredentialSecretResponse extends WorkspaceDevelopmentCredential {
+  token: string;
 }
 
 export interface AuthProviderConfig {
@@ -274,6 +293,8 @@ export interface AuthStatus {
   authenticated_webgl_background_enabled?: boolean;
   chat_compaction_threshold_percent?: number;
   chat_auto_compaction_threshold_percent?: number;
+  /** Effective current-user hosted generation capability. */
+  hosted_chat_enabled?: boolean;
 }
 
 // =============================================================================
@@ -956,6 +977,7 @@ export interface AppSettings {
   server_name: string;
   default_theme_pack: string;
   authenticated_webgl_background_enabled: boolean;
+  hosted_chat_enabled?: boolean;
   openapi_model_prefix_enabled: boolean;
   show_tool_card_footer_actions: boolean;
   export_password_min_length?: number;
@@ -1130,6 +1152,7 @@ export interface UpdateSettingsRequest {
   server_name?: string;
   default_theme_pack?: string;
   authenticated_webgl_background_enabled?: boolean;
+  hosted_chat_enabled?: boolean;
   openapi_model_prefix_enabled?: boolean;
   show_tool_card_footer_actions?: boolean;
   export_password_min_length?: number;

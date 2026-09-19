@@ -1403,6 +1403,7 @@ class IndexerRepository:
                 "toolSkillsEnabled",
                 DEFAULT_TOOL_SKILLS_ENABLED,
             ),
+            hosted_chat_enabled=getattr(settings, "hostedChatEnabled", True),
             # Embedding settings
             embedding_provider=getattr(settings, "embeddingProvider", DEFAULT_EMBEDDING_PROVIDER),
             embedding_model=getattr(settings, "embeddingModel", DEFAULT_EMBEDDING_MODEL),
@@ -1783,6 +1784,7 @@ class IndexerRepository:
             "available_models_cache_enabled": "availableModelsCacheEnabled",
             "show_tool_card_footer_actions": "showToolCardFooterActions",
             "tool_skills_enabled": "toolSkillsEnabled",
+            "hosted_chat_enabled": "hostedChatEnabled",
             "userspace_build_model": "userspaceBuildModel",
             "openrouter_credit_monitor_enabled": "openrouterCreditMonitorEnabled",
             "openrouter_low_credit_threshold_usd": "openrouterLowCreditThresholdUsd",

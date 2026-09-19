@@ -32,6 +32,7 @@ from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
+from langchain_core.callbacks.base import AsyncCallbackHandler
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -40,7 +41,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+from langchain_core.runnables import RunnableConfig, RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
@@ -95,6 +96,7 @@ from ragtime.core.file_constants import (
     USERSPACE_THEME_AUDIT_EXTENSIONS,
     USERSPACE_TYPESCRIPT_EXTENSIONS,
 )
+from ragtime.core.hosted_execution_policy import require_hosted_execution
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
     get_context_limit,
@@ -222,8 +224,7 @@ from ragtime.rag.prompts import (
     build_subagent_model_guidance_prompt,
     build_tool_system_prompt,
     build_userspace_diagnostics_turn_reminder_line,
-    build_userspace_entrypoint_nudge,
-    build_userspace_mode_prompt_addition,
+    build_userspace_instruction_sections,
     build_userspace_mounts_prompt_fragment,
     build_userspace_object_storage_prompt_fragment,
     build_userspace_turn_reminder,
@@ -287,6 +288,26 @@ from ragtime.userspace.subagent_service import (
 from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
 
 logger = get_logger(__name__)
+
+
+class _HostedExecutionGateCallback(AsyncCallbackHandler):
+    """Recheck policy immediately before every LangChain model sub-run."""
+
+    raise_error = True
+
+    def __init__(self, *user_ids: str | None) -> None:
+        self._user_ids = user_ids
+
+    async def on_chat_model_start(self, *args: Any, **kwargs: Any) -> None:
+        await require_hosted_execution(*self._user_ids)
+
+    async def on_llm_start(self, *args: Any, **kwargs: Any) -> None:
+        await require_hosted_execution(*self._user_ids)
+
+
+def _hosted_execution_callback_config(*user_ids: str | None) -> RunnableConfig:
+    return {"callbacks": [_HostedExecutionGateCallback(*user_ids)]}
+
 
 _TOOL_SKILL_CONTROL_TOOL_NAMES = {"search_tool_skills", "load_tool_skills", "unload_tool_skills"}
 _USERSPACE_EAGER_TOOL_NAMES = {
@@ -2489,16 +2510,19 @@ class _CopilotChatOpenAI(ChatOpenAI):
         self._refresh_copilot_request_headers()
         request_targets_responses = self._request_targets_responses_api(**kwargs)
         try:
+            await require_hosted_execution()
             async for chunk in super()._astream(*args, **kwargs):
                 yield chunk
         except Exception as exc:
             if request_targets_responses and self._is_chat_completions_only_error(exc):
                 self._switch_to_chat_completions_api()
+                await require_hosted_execution()
                 async for chunk in super()._astream(*args, **kwargs):
                     yield chunk
                 return
 
             if self._downgrade_reasoning_parameters(exc):
+                await require_hosted_execution()
                 async for chunk in super()._astream(*args, **kwargs):
                     yield chunk
                 return
@@ -2508,10 +2532,12 @@ class _CopilotChatOpenAI(ChatOpenAI):
             if not request_targets_responses and (unsupported_api or probe_responses):
                 self._switch_to_responses_api(cache_result=unsupported_api)
                 try:
+                    await require_hosted_execution()
                     async for chunk in super()._astream(*args, **kwargs):
                         yield chunk
                 except Exception as retry_exc:
                     if self.use_responses_api and self._downgrade_reasoning_parameters(retry_exc):
+                        await require_hosted_execution()
                         async for chunk in super()._astream(*args, **kwargs):
                             yield chunk
                     else:
@@ -2519,6 +2545,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
             elif self._is_token_expired_auth_error(exc):
                 refreshed = await self._refresh_expired_copilot_token()
                 if refreshed:
+                    await require_hosted_execution()
                     async for chunk in super()._astream(*args, **kwargs):
                         yield chunk
                     return
@@ -7534,10 +7561,14 @@ class RAGComponents:
         content: Any,
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
         model_id: Optional[str] = None,
     ) -> tuple[Any, Optional[dict[str, int]]]:
         """Expand chat attachment parts into text chunks before provider serialization."""
+        # Attachment expansion can invoke provider-backed image/OCR helpers.
+        hosted_principals = (user_id, owner_user_id)
+        await require_hosted_execution(*hosted_principals)
         return await preprocess_chat_attachment_content_parts(
             content,
             conversation_id=conversation_id,
@@ -7546,7 +7577,7 @@ class RAGComponents:
             model_id=model_id,
         )
 
-    async def _convert_message_to_langchain_async(self, message: Any) -> Any:
+    async def _convert_message_to_langchain_async(self, message: Any, *, user_id: Optional[str] = None, owner_user_id: Optional[str] = None) -> Any:
         """Async message conversion with non-blocking image downsampling."""
         if isinstance(message, str):
             return message
@@ -7558,6 +7589,8 @@ class RAGComponents:
         if isinstance(content, list):
             content, attachment_stats = await self.preprocess_message_content_async(
                 content,
+                user_id=user_id,
+                owner_user_id=owner_user_id,
                 model_id=None,
             )
             if attachment_stats:
@@ -9423,12 +9456,14 @@ class RAGComponents:
 
         while True:
             try:
+                await require_hosted_execution(user_id)
                 result = await current_executor.ainvoke(
                     {
                         "input": current_user_input,
                         "user_input": [HumanMessage(content=current_user_input)],
                         "chat_history": current_chat_history,
-                    }
+                    },
+                    config=_hosted_execution_callback_config(user_id),
                 )
             except Exception as invoke_err:
                 retry_content = None
@@ -15407,6 +15442,7 @@ class RAGComponents:
         )
         export_context: dict[str, Any] = {}
         subagent_model_ids: list[str] = []
+        userspace_instruction_sections: dict[str, str] = {}
 
         workspace_id = (workspace_context or {}).get("workspace_id", "")
         if not isinstance(workspace_id, str):
@@ -15453,11 +15489,11 @@ class RAGComponents:
                 if not display_name_supplied:
                     display_name = str(getattr(current_user, "displayName", "") or "").strip()
 
-        user_identity_prompt_fragment = build_current_user_prompt_fragment(
+        user_identity_turn_line = build_current_user_turn_reminder_line(
             username=username,
             display_name=display_name,
         )
-        user_identity_turn_line = build_current_user_turn_reminder_line(
+        user_identity_prompt_fragment = build_current_user_prompt_fragment(
             username=username,
             display_name=display_name,
         )
@@ -15689,20 +15725,6 @@ class RAGComponents:
             if isinstance(subagent_private_prompt, str) and subagent_private_prompt.strip():
                 prompt_additions += "\n\n" + subagent_private_prompt.strip()
 
-            # Cache nudge fragment by entrypoint state signature.
-            nudge_cache_key = (
-                "userspace_nudge",
-                ep_status.state,
-                is_default,
-                ep_status.framework or "",
-                ep_status.command or "",
-                ep_status.cwd or ".",
-            )
-            nudge_fragment = self._request_prompt_cache.get(nudge_cache_key)
-            if nudge_fragment is None:
-                nudge_fragment = build_userspace_entrypoint_nudge(ep_status, is_default_static=is_default)
-                self._request_prompt_cache[nudge_cache_key] = nudge_fragment
-            prompt_additions += nudge_fragment
             prompt_additions += self._build_userspace_env_var_prompt_fragment(env_var_summaries)
             prompt_additions += self._build_userspace_mount_prompt_fragment(
                 mountable_sources,
@@ -15766,16 +15788,20 @@ class RAGComponents:
             "In the final answer, present the returned markdown_link exactly as a normal filename.ext link."
         )
         if mode == "userspace":
-            prompt_additions = (
-                build_userspace_mode_prompt_addition(
-                    include_sqlite_persistence=include_sqlite_persistence,
-                    has_live_data_tools=bool(allowed_tool_config_ids),
-                    workspace_continuity=continuity_ctx,
-                    available_tool_names=available_userspace_tool_names,
-                    shared_sqlite_databases=shared_sqlite_databases,
-                )
-                + prompt_additions
+            userspace_instruction_sections = build_userspace_instruction_sections(
+                include_sqlite_persistence=include_sqlite_persistence,
+                has_live_data_tools=bool(allowed_tool_config_ids),
+                workspace_continuity=continuity_ctx,
+                entrypoint_status=ep_status,
+                is_default_static=is_default,
+                username=username,
+                display_name=display_name,
+                available_tool_names=available_userspace_tool_names,
+                shared_sqlite_databases=shared_sqlite_databases,
+                mounts_enabled=bool(workspace_mounts),
+                object_storage_enabled=bool(object_storage_config),
             )
+            prompt_additions = userspace_instruction_sections["workspace"] + userspace_instruction_sections["entrypoint"] + prompt_additions
             userspace_diagnostics_turn_hint = build_userspace_diagnostics_turn_reminder_line(
                 diagnostic_summary,
                 available_tool_names=available_userspace_tool_names,
@@ -15813,7 +15839,9 @@ class RAGComponents:
             if "create_download_link" in runtime_tool_names:
                 prompt_additions += download_export_prompt
 
-        if user_identity_prompt_fragment:
+        if mode == "userspace":
+            prompt_additions = userspace_instruction_sections["identity"] + prompt_additions
+        elif user_identity_prompt_fragment:
             prompt_additions = user_identity_prompt_fragment + prompt_additions
 
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -16385,10 +16413,12 @@ class RAGComponents:
         messages: list[BaseMessage],
         *,
         label: str,
+        user_ids: tuple[str | None, ...] = (),
     ):
         for attempt in range(LLM_TRANSIENT_STREAM_RETRY_ATTEMPTS + 1):
             emitted_chunk = False
             try:
+                await require_hosted_execution(*user_ids)
                 async for chunk in llm.astream(messages):
                     emitted_chunk = True
                     yield chunk
@@ -16690,6 +16720,7 @@ class RAGComponents:
 
         if request_llm is not None:
             try:
+                await require_hosted_execution()
                 normalized_part = await self._normalize_image_part_async(part)
                 response = await request_llm.ainvoke(
                     [
@@ -16715,6 +16746,9 @@ class RAGComponents:
                 if text:
                     return f"[Image attachment analyzed for compaction; image data omitted.]\n{text}"
             except Exception as exc:
+                detail = getattr(exc, "detail", None)
+                if isinstance(detail, dict) and detail.get("code") == "hosted_execution_disabled":
+                    raise
                 logger.info("Could not analyze image attachment for compaction; trying OCR fallback: %s", exc)
 
         ocr_text = await self._extract_image_text_for_compaction(part)
@@ -16802,6 +16836,7 @@ class RAGComponents:
 
     async def summarize_for_compaction(self, messages: list[Any], conversation_model: Optional[str]) -> str:
         """Summarize older conversation history for transparent context compaction."""
+        await require_hosted_execution()
         if not messages:
             raise ValueError("No messages were provided for compaction")
 
@@ -16861,6 +16896,7 @@ class RAGComponents:
         request_llm = request_resolution.llm
         if request_llm is None:
             raise RuntimeError(self._no_llm_configured_message(request_resolution))
+        await require_hosted_execution()
         response = await request_llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
         summary = self._extract_text_from_chat_model_output(response)
         summary = summary.strip()
@@ -17247,6 +17283,7 @@ class RAGComponents:
         conversation_model: Optional[str] = None,
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
         current_user_context: Optional[dict[str, Any]] = None,
         current_time_context: Optional[dict[str, Any]] = None,
         chat_task_id: Optional[str] = None,
@@ -17264,11 +17301,13 @@ class RAGComponents:
         Returns:
             The assistant's response.
         """
+        hosted_principals = (user_id, owner_user_id)
+        await require_hosted_execution(*hosted_principals)
         if chat_history is None:
             chat_history = []
 
         # Convert to LangChain format (preserves multimodal content)
-        langchain_content = await self._convert_message_to_langchain_async(user_message)
+        langchain_content = await self._convert_message_to_langchain_async(user_message, user_id=user_id, owner_user_id=owner_user_id)
 
         try:
             executor = self.agent_executor
@@ -17474,12 +17513,14 @@ class RAGComponents:
                         )
                         result = {"output": output}
                     else:
+                        await require_hosted_execution(*hosted_principals)
                         result = await executor.ainvoke(
                             {
                                 "input": agent_content,
                                 "user_input": [HumanMessage(content=agent_content)],
                                 "chat_history": chat_history,
-                            }
+                            },
+                            config=_hosted_execution_callback_config(*hosted_principals),
                         )
                 except Exception as invoke_err:
                     if request_context.get("tool_skill_mode") == "enabled":
@@ -17497,12 +17538,14 @@ class RAGComponents:
                     request_tool_state["image_input_ocr_retry"] = True
                     agent_content = retry_content
                     provider_messages[-1]["content"] = self._serialize_prompt_content(agent_content)
+                    await require_hosted_execution(*hosted_principals)
                     result = await executor.ainvoke(
                         {
                             "input": agent_content,
                             "user_input": [HumanMessage(content=agent_content)],
                             "chat_history": chat_history,
-                        }
+                        },
+                        config=_hosted_execution_callback_config(*hosted_principals),
                     )
                 output = result.get("output", "I couldn't generate a response.")
                 # Handle Anthropic-style content blocks (list of dicts with 'text' key)
@@ -17562,6 +17605,7 @@ class RAGComponents:
                 provider_name = llm_resolution.provider or str((self._app_settings or {}).get("llm_provider", "openai")).lower()
                 effective_model = request_model_id
                 try:
+                    await require_hosted_execution(*hosted_principals)
                     response = await request_llm.ainvoke(messages)
                 except Exception as invoke_err:
                     retry_content = None
@@ -17577,6 +17621,7 @@ class RAGComponents:
                     request_tool_state["image_input_ocr_retry"] = True
                     direct_content = retry_content
                     messages[-1] = HumanMessage(content=direct_content)
+                    await require_hosted_execution(*hosted_principals)
                     response = await request_llm.ainvoke(messages)
                 content = response.content
                 debug_metadata = self._build_request_debug_metadata(
@@ -17605,6 +17650,9 @@ class RAGComponents:
                 return content if isinstance(content, str) else str(content)
 
         except Exception as e:
+            detail = getattr(e, "detail", None)
+            if isinstance(detail, dict) and detail.get("code") == "hosted_execution_disabled":
+                raise
             logger.exception("Error processing query")
             return self._chat_runtime_error_message(
                 e,
@@ -17621,6 +17669,7 @@ class RAGComponents:
         conversation_model: Optional[str] = None,
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
         current_user_context: Optional[dict[str, Any]] = None,
         current_time_context: Optional[dict[str, Any]] = None,
         chat_task_id: Optional[str] = None,
@@ -17647,11 +17696,13 @@ class RAGComponents:
             - Content: str (individual tokens/chunks)
             - Max iterations: {"type": "max_iterations_reached"}
         """
+        hosted_principals = (user_id, owner_user_id)
+        await require_hosted_execution(*hosted_principals)
         if chat_history is None:
             chat_history = []
 
         # Convert to LangChain format (preserves multimodal content)
-        langchain_content = await self._convert_message_to_langchain_async(user_message)
+        langchain_content = await self._convert_message_to_langchain_async(user_message, user_id=user_id, owner_user_id=owner_user_id)
 
         # Select the appropriate agent executor
         executor = self.agent_executor_ui if is_ui else self.agent_executor
@@ -18005,6 +18056,7 @@ class RAGComponents:
                                 )
                             return AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS
 
+                        await require_hosted_execution(*hosted_principals)
                         agent_stream = executor.astream_events(
                             {
                                 "input": attempt_input,
@@ -18012,6 +18064,7 @@ class RAGComponents:
                                 "chat_history": attempt_chat_history,
                             },
                             version="v2",
+                            config=_hosted_execution_callback_config(*hosted_principals),
                         )
                         agent_stream_iter = agent_stream.__aiter__()
                         while True:
@@ -18618,6 +18671,7 @@ class RAGComponents:
                                 request_llm,
                                 synthesis_messages,
                                 label="internal final synthesis",
+                                user_ids=hosted_principals,
                             ):
                                 synthesis_chunk_count += 1
                                 reasoning_text = self._extract_reasoning_from_stream_chunk(chunk)
@@ -18666,6 +18720,7 @@ class RAGComponents:
                                 attempt_emitted_content,
                             )
                             if not attempt_emitted_content:
+                                await require_hosted_execution(*hosted_principals)
                                 synthesis_response = await request_llm.ainvoke(synthesis_messages)
                                 final_reasoning = self._extract_reasoning_from_chat_model_output(synthesis_response)
                                 reasoning_suffix = self._compute_missing_suffix(
@@ -18815,6 +18870,7 @@ class RAGComponents:
                                 request_llm,
                                 messages,
                                 label="direct chat",
+                                user_ids=hosted_principals,
                             ):
                                 reasoning_text = self._extract_reasoning_from_stream_chunk(chunk)
                                 if reasoning_text:
