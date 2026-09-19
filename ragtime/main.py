@@ -138,6 +138,9 @@ from ragtime.userspace.share_auth import (
     set_share_auth_cookie,
     share_auth_token_from_request,
 )
+from ragtime.userspace.sqlite_backup_queue import get_sqlite_backup_queue_service
+from ragtime.userspace.sqlite_history import get_sqlite_history_service
+from ragtime.userspace.sqlite_history_routes import router as sqlite_history_router
 from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
 
 # Import indexer routes (always available now that it's part of ragtime)
@@ -267,6 +270,7 @@ async def lifespan(app: FastAPI):
 
     # Connect to database
     await connect_db()
+    await get_sqlite_backup_queue_service().start()
 
     # Seed tool health from persisted test results BEFORE any reader consults
     # tool availability. A process restart pauses live heartbeats; without this
@@ -326,6 +330,7 @@ async def lifespan(app: FastAPI):
     userspace_service.schedule_workspace_mount_watch()
     userspace_service.schedule_workspace_scm_watch()
     await userspace_service.schedule_legacy_object_storage_reconciliation()
+    get_sqlite_history_service().start()
     userspace_runtime_service.schedule_runtime_bridge_refresh_watch()
     await workspace_code_index_service.start()
     await git_webhook_service.start()
@@ -352,11 +357,13 @@ async def lifespan(app: FastAPI):
     await userspace_service.shutdown_workspace_mount_watch()
     await userspace_service.shutdown_workspace_scm_watch()
     await userspace_service.shutdown_legacy_object_storage_reconciliation()
+    await get_sqlite_history_service().stop()
     await userspace_runtime_service.shutdown_runtime_bridge_refresh_watch()
     await stop_openrouter_credit_monitor()
     await tool_health_monitor.stop()
 
     # Cleanup - stop background services before disconnecting DB
+    await get_sqlite_backup_queue_service().stop()
     await background_task_service.stop()
     await server_backup_service.shutdown()
 
@@ -542,6 +549,7 @@ app.include_router(pdm_automation_router)
 app.include_router(indexer_router)
 app.include_router(server_backup_router)
 app.include_router(userspace_router)
+app.include_router(sqlite_history_router)
 app.include_router(userspace_external_api_router)
 app.include_router(userspace_runtime_router)
 app.include_router(agent_router)  # Public workspace agent surface at /agent/w/{token}

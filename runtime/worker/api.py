@@ -46,6 +46,8 @@ from runtime.manager.models import (
     RuntimePdfReadResponse,
     RuntimeScreenshotRequest,
     RuntimeScreenshotResponse,
+    RuntimeWorkspaceMaintenanceRequest,
+    RuntimeWorkspaceMaintenanceResponse,
     WorkerHealthResponse,
     WorkerSessionResponse,
     WorkerStartSessionRequest,
@@ -433,6 +435,19 @@ async def start_session(
     return await get_worker_service().start_session(payload)
 
 
+@router.post("/worker/workspaces/{workspace_id}/sqlite-maintenance", response_model=RuntimeWorkspaceMaintenanceResponse)
+async def acquire_sqlite_workspace_maintenance(
+    workspace_id: str, payload: RuntimeWorkspaceMaintenanceRequest, _auth: None = WorkerAuth
+) -> RuntimeWorkspaceMaintenanceResponse:
+    result = await get_worker_service().acquire_sqlite_workspace_access(workspace_id, payload.lease_id, maintenance=payload.maintenance)
+    return RuntimeWorkspaceMaintenanceResponse.model_validate(result)
+
+
+@router.delete("/worker/workspaces/{workspace_id}/sqlite-maintenance/{lease_id}", status_code=204)
+async def release_sqlite_workspace_maintenance(workspace_id: str, lease_id: str, _auth: None = WorkerAuth) -> None:
+    await get_worker_service().release_sqlite_workspace_access(workspace_id, lease_id)
+
+
 @router.get("/worker/sessions/{worker_session_id}", response_model=WorkerSessionResponse)
 async def get_session(
     worker_session_id: str,
@@ -784,6 +799,7 @@ async def preview_websocket(
 # ---------------------------------------------------------------------------
 _pty_processes: dict[str, asyncio.subprocess.Process] = {}
 _pty_master_fds: dict[str, int] = {}
+_pty_workspace_ids: dict[str, str] = {}
 _pty_lock = asyncio.Lock()
 
 
@@ -799,11 +815,23 @@ async def _evict_pty(session_id: str) -> None:
     """Terminate any existing PTY process for *session_id*."""
     process = _pty_processes.pop(session_id, None)
     master_fd = _pty_master_fds.pop(session_id, None)
+    _pty_workspace_ids.pop(session_id, None)
     if process is not None and process.returncode is None:
         await _terminate_pty_process(process)
     if master_fd is not None:
         with contextlib.suppress(Exception):
             os.close(master_fd)
+
+
+async def evict_workspace_ptys(workspace_id: str) -> None:
+    """Atomically close every PTY for a workspace before maintenance continues."""
+    async with _pty_lock:
+        for session_id in tuple(_pty_processes):
+            session_workspace_id = _pty_workspace_ids.get(session_id)
+            if session_workspace_id is None:
+                session_workspace_id = await get_worker_service().workspace_id_for_session(session_id)
+            if session_workspace_id == workspace_id:
+                await _evict_pty(session_id)
 
 
 @router.websocket("/worker/sessions/{worker_session_id}/pty")
@@ -814,63 +842,71 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     token = websocket.headers.get("x-pty-token", "") or websocket.query_params.get("token", "")
     try:
         session = await get_worker_service().verify_pty_token(worker_session_id, token)
+        await get_worker_service().assert_pty_available(worker_session_id)
     except HTTPException as exc:
         await websocket.close(code=4403 if exc.status_code == 403 else 4404)
         return
 
     await websocket.accept()
 
-    # Evict any previous PTY for this session before spawning a new one
-    async with _pty_lock:
-        await _evict_pty(worker_session_id)
-
-    # PTY shell runs inside the workspace sandbox
+    # Hold the PTY admission lock from the final availability check through
+    # registration. Maintenance takes this same lock before it drains PTYs, so
+    # no shell can slip through the former check-to-spawn window.
     shell = "/bin/bash"
-    master_fd, slave_fd = pty_module.openpty()
-
-    # Build sandbox environment for the PTY session
+    master_fd: int | None = None
+    process: asyncio.subprocess.Process | None = None
     sandbox_spec = session.sandbox_spec
-    await asyncio.to_thread(ensure_sandbox_ready, sandbox_spec)
+    async with _pty_lock:
+        try:
+            await get_worker_service().assert_pty_available(worker_session_id)
+            await _evict_pty(worker_session_id)
+            master_fd, slave_fd = pty_module.openpty()
+            await asyncio.to_thread(ensure_sandbox_ready, sandbox_spec)
 
-    # Write bash init file inside the sandbox rootfs so that PS1 renders
-    # a literal "$" regardless of UID, and updates based on the current
-    # working directory after each command.
-    _write_sandbox_init_file(sandbox_spec)
-    shell_command = [shell, "--noprofile", "--init-file", "/tmp/.sandbox_bashrc", "-i"]
+            # Write bash init file inside the sandbox rootfs so that PS1 renders
+            # a literal "$" regardless of UID, and updates based on the current
+            # working directory after each command.
+            _write_sandbox_init_file(sandbox_spec)
+            shell_command = [shell, "--noprofile", "--init-file", "/tmp/.sandbox_bashrc", "-i"]
 
-    service = get_worker_service()
-    environment = service.build_agent_process_environment(session)
-    environment = sandbox_env(sandbox_spec, environment)
-    environment["TERM"] = "xterm-256color"
-    # PS1 is set by the init file; PROMPT_COMMAND cleared to prevent
-    # any inherited prompt logic from overriding it.
-    environment["PROMPT_COMMAND"] = ""
-
-    try:
-        process = await spawn_sandboxed(
-            sandbox_spec,
-            shell_command,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            env=environment,
-            pty=True,
-            ensure_ready=False,
-        )
-        logger.debug(
-            "PTY spawned: worker_session_id=%s workspace_id=%s pid=%s mode=%s",
-            worker_session_id,
-            session.workspace_id,
-            process.pid,
-            sandbox_spec.mode,
-        )
-    finally:
-        with contextlib.suppress(Exception):
-            os.close(slave_fd)
-
-    # Register in PTY tracker so future connections can evict this one
-    _pty_processes[worker_session_id] = process
-    _pty_master_fds[worker_session_id] = master_fd
+            service = get_worker_service()
+            environment = service.build_agent_process_environment(session)
+            environment = sandbox_env(sandbox_spec, environment)
+            environment["TERM"] = "xterm-256color"
+            # PS1 is set by the init file; PROMPT_COMMAND cleared to prevent
+            # any inherited prompt logic from overriding it.
+            environment["PROMPT_COMMAND"] = ""
+            process = await spawn_sandboxed(
+                sandbox_spec,
+                shell_command,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=environment,
+                pty=True,
+                ensure_ready=False,
+            )
+            _pty_processes[worker_session_id] = process
+            _pty_master_fds[worker_session_id] = master_fd
+            _pty_workspace_ids[worker_session_id] = session.workspace_id
+        except Exception:
+            if master_fd is not None:
+                with contextlib.suppress(Exception):
+                    os.close(master_fd)
+            raise
+        finally:
+            if "slave_fd" in locals():
+                with contextlib.suppress(Exception):
+                    os.close(slave_fd)
+    if process is None or master_fd is None:
+        return
+    logger.debug(
+        "PTY spawned: worker_session_id=%s workspace_id=%s pid=%s mode=%s",
+        worker_session_id,
+        session.workspace_id,
+        process.pid,
+        sandbox_spec.mode,
+    )
 
     await websocket.send_text(
         json.dumps(
@@ -1015,6 +1051,7 @@ async def pty(worker_session_id: str, websocket: WebSocket):
         # registered one (a newer connection may have already replaced it)
         if _pty_processes.get(worker_session_id) is process:
             _pty_processes.pop(worker_session_id, None)
+            _pty_workspace_ids.pop(worker_session_id, None)
         if _pty_master_fds.get(worker_session_id) == master_fd:
             _pty_master_fds.pop(worker_session_id, None)
         if redaction_carry:

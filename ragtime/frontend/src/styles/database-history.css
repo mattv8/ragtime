@@ -1,0 +1,188 @@
+/* SQLite recovery history is intentionally a first-class workbench surface. */
+.database-history-snapshot-host {
+  padding: var(--space-sm);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.database-history-panel {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+}
+
+.database-history-body,
+.database-history-capture-jobs,
+.database-history-capture-job-list,
+.database-history-backup,
+.database-history-recovery,
+.database-history-wizard,
+.database-history-preview,
+.database-history-receipt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.database-history-backup,
+.database-history-recovery,
+.database-history-wizard,
+.database-history-preview,
+.database-history-receipt {
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+}
+
+.database-history-capture-jobs,
+.database-history-capture-job-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.database-history-capture-jobs details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.database-history-capture-jobs summary {
+  cursor: pointer;
+}
+
+.database-history-backup,
+.database-history-recovery {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.database-history-backup > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.database-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.database-history-warning {
+  color: var(--color-warning);
+}
+
+.database-history-error {
+  color: var(--color-error);
+}
+
+.database-history-maintenance-busy {
+  padding: var(--space-sm);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-light);
+  color: var(--color-text-primary);
+}
+
+.database-history-preview pre {
+  overflow: auto;
+  padding: var(--space-xs);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-terminal-surface);
+  color: var(--color-text-inverse);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.database-history-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.database-history-group + .database-history-group {
+  margin-top: var(--space-md);
+}
+
+.database-history-group-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.database-history-trigger-badge {
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: var(--leading-tight);
+}
+
+.database-history-trigger-badge--checkpoint {
+  border: 1px solid var(--color-primary-border);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.database-history-trigger-badge--safety {
+  border: 1px solid var(--color-warning-border);
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
+
+.database-history-trigger-badge--hourly {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+}
+
+.database-history-job-badge--pending,
+.database-history-job-badge--cancelled {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+}
+
+.database-history-job-badge--running {
+  border: 1px solid var(--color-primary-border);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.database-history-job-badge--completed {
+  border: 1px solid var(--color-success-border);
+  background: var(--color-success-light);
+  color: var(--color-success);
+}
+
+.database-history-job-badge--failed {
+  border: 1px solid var(--color-error-border);
+  background: var(--color-error-light);
+  color: var(--color-error);
+}
+
+.database-history-job-badge--interrupted {
+  border: 1px solid var(--color-warning-border);
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
+
+@media (max-width: 768px) {
+  .database-history-backup,
+  .database-history-recovery {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

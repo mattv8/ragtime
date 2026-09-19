@@ -85,6 +85,8 @@ services:
     volumes:
       # Mount source code for hot reload
       - ../ragtime:/ragtime/ragtime
+      # Runtime shared modules are imported by Ragtime User Space services.
+      - ../runtime:/ragtime/runtime
       # Mount tests for containerized pytest runs
       - ../tests:/ragtime/tests:ro
       # Mount scripts folder

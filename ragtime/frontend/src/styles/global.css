@@ -7,6 +7,7 @@
 @import './layout.css';
 @import './chat.css';
 @import './attachments.css';
+@import './database-history.css';
 @import './workbench.css';
 @import './workbench-chat.css';
 @import './workbench-userspace.css';

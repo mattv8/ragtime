@@ -506,3 +506,25 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Modern uses the workbench's panel/widget hierarchy. */
+[data-theme-pack='modern'] .database-history-snapshot-host {
+  border-bottom: var(--workbench-container-border);
+  background: var(--color-panel);
+}
+
+[data-theme-pack='modern'] .database-history-panel {
+  border: var(--workbench-container-border);
+  border-radius: var(--workbench-surface-radius);
+  background: var(--color-panel);
+}
+
+[data-theme-pack='modern'] .database-history-backup,
+[data-theme-pack='modern'] .database-history-recovery,
+[data-theme-pack='modern'] .database-history-wizard,
+[data-theme-pack='modern'] .database-history-preview,
+[data-theme-pack='modern'] .database-history-receipt {
+  border: var(--workbench-container-border);
+  border-radius: var(--workbench-surface-radius);
+  background: var(--color-widget);
+}

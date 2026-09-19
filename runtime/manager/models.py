@@ -600,6 +600,21 @@ class RuntimeManagerMaintenanceLeaseResponse(BaseModel):
         return cls(active=False, active_session_count=0)
 
 
+class RuntimeWorkspaceMaintenanceRequest(BaseModel):
+    """A non-retryable, per-workspace SQLite maintenance fence request."""
+
+    lease_id: str = Field(min_length=1, max_length=128, description="Opaque caller-held maintenance lease ID")
+    maintenance: bool = Field(description="True drains the workspace; false pins its current authoritative root")
+
+
+class RuntimeWorkspaceMaintenanceResponse(BaseModel):
+    workspace_id: str = Field(description="Validated workspace ID")
+    lease_id: str = Field(description="Lease owning this workspace fence")
+    authoritative_root: str = Field(description="Pinned authoritative workspace files root")
+    sandbox_mode: str = Field(description="bind or chroot")
+    maintenance: bool = Field(description="Whether the lease drains and blocks the workspace")
+
+
 class WorkerHealthResponse(BaseModel):
     status: str = Field(description="Worker status")
     service_mode: str = Field(description="Runtime service mode")

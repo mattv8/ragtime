@@ -7,9 +7,13 @@ already trusted directory descriptor with ``O_NOFOLLOW``.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 
 class SecureFileError(Exception):
@@ -149,6 +153,132 @@ def delete_file(root: Path, relative_path: str) -> bool:
                 return False
             os.unlink(leaf, dir_fd=parent_fd)
             return True
+        finally:
+            os.close(parent_fd)
+    finally:
+        os.close(root_fd)
+
+
+@contextmanager
+def open_directory(root: Path, relative_path: str, *, create: bool = False) -> Iterator[int]:
+    """Yield a pinned directory below ``root`` without following components.
+
+    The returned descriptor, rather than a subsequently reopened pathname, is
+    the capability callers must pass to untrusted-file helpers/children.
+    """
+    parts = _components(relative_path)
+    root_fd = _open_root(root)
+    try:
+        parent_fd, leaf = _open_parent(root_fd, [*parts, ".placeholder"], create=create)
+        try:
+            # _open_parent opens every actual directory component above its
+            # final leaf; using a harmless synthetic leaf lets it return the
+            # requested directory descriptor without a path re-open.
+            if leaf != ".placeholder":  # defensive; _components guarantees it.
+                raise SecureFileError("Invalid workspace directory path")
+            yield parent_fd
+        finally:
+            os.close(parent_fd)
+    finally:
+        os.close(root_fd)
+
+
+def ensure_directory(root: Path, relative_path: str) -> None:
+    """Create a directory chain through no-follow descriptors if needed."""
+    with open_directory(root, relative_path, create=True):
+        pass
+
+
+def publish_regular_file(
+    source_root: Path,
+    source_relative: str,
+    target_root: Path,
+    target_relative: str,
+) -> None:
+    """Atomically publish a regular source file using pinned parent FDs.
+
+    Both paths are opened component-by-component with ``O_NOFOLLOW``.  This
+    deliberately avoids the unsafe ``resolve()``-then-``replace()`` pattern
+    when a workspace directory can be replaced between validation and publish.
+    """
+    source_parts = _components(source_relative)
+    target_parts = _components(target_relative)
+    source_root_fd = _open_root(source_root)
+    target_root_fd = _open_root(target_root)
+    try:
+        source_parent_fd, source_leaf = _open_parent(source_root_fd, source_parts, create=False)
+        try:
+            source_fd = os.open(source_leaf, _flags(), dir_fd=source_parent_fd)
+            try:
+                _require_regular(source_fd)
+                target_parent_fd, target_leaf = _open_parent(target_root_fd, target_parts, create=False)
+                try:
+                    temporary = f".{target_leaf}.{uuid.uuid4().hex}.tmp"
+                    target_fd = os.open(
+                        temporary,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600,
+                        dir_fd=target_parent_fd,
+                    )
+                    try:
+                        while block := os.read(source_fd, 1024 * 1024):
+                            offset = 0
+                            while offset < len(block):
+                                offset += os.write(target_fd, block[offset:])
+                        os.fsync(target_fd)
+                    except Exception:
+                        os.unlink(temporary, dir_fd=target_parent_fd)
+                        raise
+                    finally:
+                        os.close(target_fd)
+                    os.replace(temporary, target_leaf, src_dir_fd=target_parent_fd, dst_dir_fd=target_parent_fd)
+                    os.fsync(target_parent_fd)
+                finally:
+                    os.close(target_parent_fd)
+            finally:
+                os.close(source_fd)
+        finally:
+            os.close(source_parent_fd)
+    finally:
+        os.close(source_root_fd)
+        os.close(target_root_fd)
+
+
+def sha256_regular_file(root: Path, relative_path: str) -> str:
+    """Hash a regular file through a no-follow descriptor."""
+    parts = _components(relative_path)
+    root_fd = _open_root(root)
+    try:
+        parent_fd, leaf = _open_parent(root_fd, parts, create=False)
+        try:
+            fd = os.open(leaf, _flags(), dir_fd=parent_fd)
+            try:
+                _require_regular(fd)
+                digest = hashlib.sha256()
+                while block := os.read(fd, 1024 * 1024):
+                    digest.update(block)
+                return digest.hexdigest()
+            finally:
+                os.close(fd)
+        finally:
+            os.close(parent_fd)
+    finally:
+        os.close(root_fd)
+
+
+def stat_regular_file(root: Path, relative_path: str) -> os.stat_result:
+    """Return metadata for a regular file through a no-follow descriptor."""
+    parts = _components(relative_path)
+    root_fd = _open_root(root)
+    try:
+        parent_fd, leaf = _open_parent(root_fd, parts, create=False)
+        try:
+            fd = os.open(leaf, _flags(), dir_fd=parent_fd)
+            try:
+                _require_regular(fd)
+                return os.fstat(fd)
+            finally:
+                os.close(fd)
         finally:
             os.close(parent_fd)
     finally:

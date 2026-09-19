@@ -10,7 +10,7 @@ from langchain_core.documents import Document
 
 from ragtime.indexer.embedding_errors import EmbeddingFailureKind, EmbeddingOperationError
 from ragtime.indexer.models import IndexJobPhase, IndexStatus
-from ragtime.indexer.resource_governor import resource_governor
+from ragtime.indexer.resource_governor import IndexingResourceGovernor, MiB, _Metrics
 from ragtime.indexer.service import IndexerService
 from ragtime.rag.components import RAGComponents
 from ragtime.rag.components import rag as global_rag
@@ -46,10 +46,29 @@ class FakeFaissIndex:
 
 class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        await resource_governor.start()
+        # Hot-load behavior must not depend on the CI host's current free memory.
+        self.resource_governor = IndexingResourceGovernor(
+            sampler=lambda: _Metrics(
+                sampled_monotonic=0,
+                system_total_bytes=8 * 1024 * MiB,
+                system_available_bytes=6 * 1024 * MiB,
+                cgroup_limit_bytes=4 * 1024 * MiB,
+                cgroup_usage_bytes=1 * 1024 * MiB,
+                memory_source="cgroup_v2",
+                cpu_capacity=4.0,
+            )
+        )
+        self.resource_governor_patch = patch(
+            "ragtime.indexer.resource_governor.resource_governor",
+            self.resource_governor,
+        )
+        self.resource_governor_patch.start()
+        self.addCleanup(self.resource_governor_patch.stop)
+        self.addAsyncCleanup(self.resource_governor.stop)
+        await self.resource_governor.start()
 
     async def asyncTearDown(self) -> None:
-        await resource_governor.stop()
+        self.assertEqual(self.resource_governor.snapshot()["committed_bytes"], 0)
 
     async def test_load_faiss_index_from_metadata_loads_index_before_returning(self):
         with tempfile.TemporaryDirectory() as directory:

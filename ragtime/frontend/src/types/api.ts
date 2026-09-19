@@ -5373,3 +5373,118 @@ export interface SqliteInspectorRowListParams {
   order_by?: string;
   order_direction?: 'asc' | 'desc';
 }
+
+// ---------------------------------------------------------------------------
+// SQLite database history and recovery
+// ---------------------------------------------------------------------------
+
+export type SqliteHistoryBackupTrigger = 'manual' | 'snapshot' | 'scheduled' | 'pre_restore';
+export type SqliteHistoryBackupStatus = 'ready' | 'failed';
+export type SqliteHistoryRestoreMode = 'merge' | 'overwrite';
+export type SqliteHistoryConflictPolicy = 'keep_current' | 'use_backup';
+
+export interface SqliteHistoryBackup {
+  id: string;
+  workspace_id: string;
+  database_name: string;
+  created_at: string;
+  trigger: SqliteHistoryBackupTrigger;
+  snapshot_id: string | null;
+  snapshot_git_commit_hash: string | null;
+  status: SqliteHistoryBackupStatus;
+  size_bytes: number;
+  sha256: string | null;
+  error: string | null;
+  can_restore: boolean;
+  can_delete: boolean;
+  capture_job_id?: string | null;
+}
+
+export type SqliteBackupJobStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
+
+export interface SqliteBackupJob {
+  id: string;
+  workspace_id: string;
+  trigger: 'manual' | 'snapshot' | 'scheduled';
+  database_names: string[];
+  snapshot_id: string | null;
+  snapshot_git_commit_hash: string | null;
+  status: SqliteBackupJobStatus;
+  created_at: string;
+  available_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+  completed_databases: number;
+  total_databases: number;
+  backup_ids: string[];
+  error_message: string | null;
+  cancel_requested: boolean;
+}
+
+export interface SqliteHistoryTableReport {
+  name: string;
+  inserted: number;
+  updated: number;
+  deleted: number;
+  unchanged: number;
+  conflicts: number;
+  conflict_samples: Array<{ key: Record<string, unknown>; current: unknown; backup: unknown }>;
+}
+
+export interface SqliteHistoryPreview {
+  preview_id: string | null;
+  backup_id: string;
+  database_name: string;
+  mode: SqliteHistoryRestoreMode;
+  conflict_policy: SqliteHistoryConflictPolicy;
+  tables: SqliteHistoryTableReport[];
+  migrations_applied: string[];
+  warnings: string[];
+  blockers: string[];
+  can_apply: boolean;
+  expires_at: string | null;
+}
+
+/** Recovery state is advisory: an active operation has no recoverable operation ID. */
+export type SqliteHistoryMaintenanceState =
+  | 'active'
+  | 'interrupted'
+  | 'invalid'
+  | 'release_pending'
+  | (string & {});
+
+export interface SqliteHistoryMaintenanceStateResponse {
+  state: SqliteHistoryMaintenanceState;
+  operation_id: string | null;
+  detail?: string | null;
+  can_complete?: boolean;
+  can_abort?: boolean;
+}
+
+export interface SqliteHistoryListResponse {
+  workspace_id: string;
+  backups: SqliteHistoryBackup[];
+  can_manage: boolean;
+  interrupted_maintenance?: SqliteHistoryMaintenanceStateResponse | null;
+}
+
+export interface SqliteHistoryRestoreResponse {
+  operation_id: string;
+  restored_backup_id: string;
+  safety_backup_id: string | null;
+  runtime_stopped: true;
+  status: 'completed';
+}
+
+export interface SqliteHistoryMaintenanceRecoveryResponse {
+  operation_id: string;
+  status: string;
+  runtime_stopped?: boolean;
+}
