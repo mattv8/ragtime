@@ -129,9 +129,13 @@ class PinnedSourceState:
             if entry.fd is None:
                 _frame(digest, b"absent")
                 continue
+            details = entry.details
+            if details is None:
+                self._invalid = True
+                return None
             try:
                 before = os.fstat(entry.fd)
-                if _metadata(before) != _metadata(entry.details):
+                if _metadata(before) != _metadata(details):
                     self._invalid = True
                     return None
                 _frame(digest, b"present")

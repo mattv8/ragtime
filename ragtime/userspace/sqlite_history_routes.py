@@ -9,6 +9,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from ragtime.core.security import get_current_user
+from ragtime.userspace.service import userspace_service
+from ragtime.userspace.sqlite_backup_queue import get_sqlite_backup_queue_service
 from ragtime.userspace.sqlite_history import get_sqlite_history_service
 from ragtime.userspace.sqlite_history_models import (
     SqliteHistoryCaptureJobListResponse,
@@ -28,18 +30,29 @@ router = APIRouter(prefix="/indexes/userspace", tags=["User Space SQLite History
 
 
 async def _manage(workspace_id: str, user: Any) -> None:
-    from ragtime.userspace.service import userspace_service
-
     await userspace_service._enforce_workspace_access(workspace_id, user.id, required_role="owner", is_admin=getattr(user, "role", "") == "admin")
 
 
 def _public_capture_job(job: dict[str, Any]) -> dict[str, Any]:
     """Exclude queue ownership and idempotency internals from API responses."""
     fields = {
-        "id", "workspace_id", "trigger", "database_names", "snapshot_id",
-        "snapshot_git_commit_hash", "status", "created_at", "available_at",
-        "started_at", "finished_at", "updated_at", "completed_databases",
-        "total_databases", "backup_ids", "error_message", "cancel_requested",
+        "id",
+        "workspace_id",
+        "trigger",
+        "database_names",
+        "snapshot_id",
+        "snapshot_git_commit_hash",
+        "status",
+        "created_at",
+        "available_at",
+        "started_at",
+        "finished_at",
+        "updated_at",
+        "completed_databases",
+        "total_databases",
+        "backup_ids",
+        "error_message",
+        "cancel_requested",
     }
     return {field: job[field] for field in fields if field in job}
 
@@ -61,17 +74,17 @@ async def list_sqlite_history(
 @router.post("/workspaces/{workspace_id}/sqlite-history", response_model=SqliteHistoryCaptureResponse)
 async def capture_sqlite_history(workspace_id: str, request: SqliteHistoryCaptureRequest, user: Any = Depends(get_current_user)):
     await _manage(workspace_id, user)
-    from ragtime.userspace.sqlite_backup_queue import get_sqlite_backup_queue_service
-
     queue = get_sqlite_backup_queue_service()
-    job = await queue.enqueue(
+    enqueued_job = await queue.enqueue(
         workspace_id,
         trigger="manual",
         database_names={request.database_name},
         requested_by_id=user.id,
         request_key=request.request_id,
     )
-    job = await queue.wait_for_job(workspace_id, job["id"])
+    job = await queue.wait_for_job(workspace_id, enqueued_job["id"])
+    if job is None:
+        raise HTTPException(status_code=404, detail="Capture job not found")
     if job["status"] in {"cancelled", "interrupted"}:
         raise HTTPException(status_code=409, detail=f"Capture job {job['id']} is {job['status']}")
 
@@ -89,12 +102,8 @@ async def capture_sqlite_history(workspace_id: str, request: SqliteHistoryCaptur
     response_model=SqliteHistoryCaptureJobResponse,
     status_code=202,
 )
-async def enqueue_sqlite_history_capture_job(
-    workspace_id: str, request: SqliteHistoryCaptureJobRequest, user: Any = Depends(get_current_user)
-):
+async def enqueue_sqlite_history_capture_job(workspace_id: str, request: SqliteHistoryCaptureJobRequest, user: Any = Depends(get_current_user)):
     await _manage(workspace_id, user)
-    from ragtime.userspace.sqlite_backup_queue import get_sqlite_backup_queue_service
-
     job = await get_sqlite_backup_queue_service().enqueue(
         workspace_id,
         trigger="manual",
@@ -113,19 +122,13 @@ async def list_sqlite_history_capture_jobs(
     user: Any = Depends(get_current_user),
 ):
     await _manage(workspace_id, user)
-    from ragtime.userspace.sqlite_backup_queue import get_sqlite_backup_queue_service
-
-    jobs = await get_sqlite_backup_queue_service().list_jobs(
-        workspace_id, database_name=database_name, snapshot_id=snapshot_id, limit=50
-    )
+    jobs = await get_sqlite_backup_queue_service().list_jobs(workspace_id, database_name=database_name, snapshot_id=snapshot_id, limit=50)
     return {"jobs": [_public_capture_job(job) for job in jobs]}
 
 
 @router.get("/workspaces/{workspace_id}/sqlite-history/capture-jobs/{job_id}", response_model=SqliteHistoryCaptureJobResponse)
 async def get_sqlite_history_capture_job(workspace_id: str, job_id: str, user: Any = Depends(get_current_user)):
     await _manage(workspace_id, user)
-    from ragtime.userspace.sqlite_backup_queue import get_sqlite_backup_queue_service
-
     job = await get_sqlite_backup_queue_service().get_job(workspace_id, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Capture job not found")
@@ -135,8 +138,6 @@ async def get_sqlite_history_capture_job(workspace_id: str, job_id: str, user: A
 @router.post("/workspaces/{workspace_id}/sqlite-history/capture-jobs/{job_id}/cancel", response_model=SqliteHistoryCaptureJobResponse)
 async def cancel_sqlite_history_capture_job(workspace_id: str, job_id: str, user: Any = Depends(get_current_user)):
     await _manage(workspace_id, user)
-    from ragtime.userspace.sqlite_backup_queue import get_sqlite_backup_queue_service
-
     job = await get_sqlite_backup_queue_service().cancel(workspace_id, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Capture job not found")
@@ -167,7 +168,12 @@ async def delete_sqlite_history(workspace_id: str, backup_id: str, user: Any = D
 async def preview_sqlite_history(workspace_id: str, backup_id: str, request: SqliteHistoryPreviewRequest, user: Any = Depends(get_current_user)):
     await _manage(workspace_id, user)
     return await get_sqlite_history_service().preview(
-        workspace_id, backup_id, mode=request.mode, conflict_policy=request.conflict_policy, table_policies=request.table_policies, user_id=user.id
+        workspace_id,
+        backup_id,
+        mode=request.mode,
+        conflict_policy=request.conflict_policy,
+        table_policies=dict(request.table_policies) if request.table_policies is not None else None,
+        user_id=user.id,
     )
 
 

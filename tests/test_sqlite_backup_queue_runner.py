@@ -70,9 +70,11 @@ class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
         store = _Store(job)
         service = SqliteBackupQueueService(store)
         history = _History()
-        with tempfile.TemporaryDirectory() as temp, mock.patch(
-            "ragtime.userspace.sqlite_backup_queue.settings.index_data_path", temp
-        ), mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=history):
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch("ragtime.userspace.sqlite_backup_queue.settings.index_data_path", temp),
+            mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=history),
+        ):
             await service._run_claimed(job)
 
         self.assertEqual([{"status": "completed", "backup_ids": ["ready-backup"], "error_message": None}], store.finished)
@@ -84,11 +86,13 @@ class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
         owner = str(uuid4())
         job = {"id": job_id, "workspace_id": "workspace-a", "owner_token": owner, "status": "running", "trigger": "manual", "database_names": []}
         store = _Store(job)
-        store.is_cancel_requested = mock.AsyncMock(return_value=True)
         service = SqliteBackupQueueService(store)
         history = _History()
-        with tempfile.TemporaryDirectory() as temp, mock.patch("ragtime.userspace.sqlite_backup_queue.settings.index_data_path", temp), mock.patch(
-            "ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=history
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch("ragtime.userspace.sqlite_backup_queue.settings.index_data_path", temp),
+            mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=history),
+            mock.patch.object(store, "is_cancel_requested", new=mock.AsyncMock(return_value=True)),
         ):
             await service._run_claimed(job)
         self.assertEqual("cancelled", store.finished[0]["status"])
@@ -98,9 +102,11 @@ class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
         store = _Store(job)
         service = SqliteBackupQueueService(store)
         history = _History()
-        history.capture_workspace_databases = mock.AsyncMock(return_value=[{"id": "failed-backup", "status": "failed"}])
-        with tempfile.TemporaryDirectory() as temp, mock.patch.object(queue.settings, "index_data_path", temp), mock.patch(
-            "ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=history
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.object(queue.settings, "index_data_path", temp),
+            mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=history),
+            mock.patch.object(history, "capture_workspace_databases", new=mock.AsyncMock(return_value=[{"id": "failed-backup", "status": "failed"}])),
         ):
             await service._run_claimed(job)
         self.assertEqual("failed", store.finished[0]["status"])
@@ -112,20 +118,22 @@ class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
         store = _Store(job)
         heartbeat_started = asyncio.Event()
 
-        async def failed_heartbeat(*_args) -> bool:
+        async def failed_heartbeat(job_id: str, owner_token: str) -> bool:
             heartbeat_started.set()
             raise RuntimeError("database unavailable")
 
-        store.heartbeat = failed_heartbeat
         service = SqliteBackupQueueService(store)
 
-        async def drained_capture(*_args):
+        async def drained_capture(_job: dict[str, object], _owner_token: str, _lock_fd: int) -> list[dict[str, str]]:
             await heartbeat_started.wait()
             return [{"id": "ready-before-error", "status": "ready"}]
 
-        service._capture = drained_capture  # type: ignore[method-assign]
-        with tempfile.TemporaryDirectory() as temp, mock.patch.object(queue.settings, "index_data_path", temp), mock.patch.object(
-            queue, "_HEARTBEAT_SECONDS", 0
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.object(queue.settings, "index_data_path", temp),
+            mock.patch.object(queue, "_HEARTBEAT_SECONDS", 0),
+            mock.patch.object(store, "heartbeat", new=failed_heartbeat),
+            mock.patch.object(service, "_capture", new=drained_capture),
         ):
             await service._run_claimed(job)
         self.assertEqual("interrupted", store.finished[0]["status"])
@@ -136,8 +144,10 @@ class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
         job = self._job()
         store = _Store(job)
         service = SqliteBackupQueueService(store)
-        service._capture_job_backup_ids = mock.AsyncMock(return_value=[])  # type: ignore[method-assign]
-        with mock.patch.object(queue, "_try_job_lock", side_effect=OSError("unsafe lock")):
+        with (
+            mock.patch.object(queue, "_try_job_lock", side_effect=OSError("unsafe lock")),
+            mock.patch.object(service, "_capture_job_backup_ids", new=mock.AsyncMock(return_value=[])),
+        ):
             await service._run_claimed(job)
         self.assertEqual({}, service._owned_jobs)
         self.assertEqual("interrupted", store.finished[0]["status"])
@@ -146,10 +156,10 @@ class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
         job = self._job()
         store = _Store(job)
         service = SqliteBackupQueueService(store)
-        service._capture = mock.AsyncMock()  # type: ignore[method-assign]
-        with mock.patch.object(queue, "_try_job_lock", return_value=None):
+        capture = mock.AsyncMock()
+        with mock.patch.object(queue, "_try_job_lock", return_value=None), mock.patch.object(service, "_capture", new=capture):
             await service._run_claimed(job)
-        service._capture.assert_not_awaited()
+        capture.assert_not_awaited()
         self.assertEqual([], store.finished)
         self.assertEqual({}, service._owned_jobs)
 
@@ -158,8 +168,12 @@ class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
         store = _Store(job)
         service = SqliteBackupQueueService(store)
         service._stopping = True
-        service._capture = mock.AsyncMock()  # type: ignore[method-assign]
-        with tempfile.TemporaryDirectory() as temp, mock.patch.object(queue.settings, "index_data_path", temp):
+        capture = mock.AsyncMock()
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.object(queue.settings, "index_data_path", temp),
+            mock.patch.object(service, "_capture", new=capture),
+        ):
             await service._run_claimed(job)
-        service._capture.assert_not_awaited()
+        capture.assert_not_awaited()
         self.assertEqual("cancelled", store.finished[0]["status"])

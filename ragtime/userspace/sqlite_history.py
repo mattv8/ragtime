@@ -737,11 +737,7 @@ class SqliteHistoryService:
         manifest = self._load(root, workspace_id)
         if capture_job_id is not None:
             existing = next(
-                (
-                    row
-                    for row in manifest["backups"]
-                    if row.get("capture_job_id") == capture_job_id and row.get("database_name") == name
-                ),
+                (row for row in manifest["backups"] if row.get("capture_job_id") == capture_job_id and row.get("database_name") == name),
                 None,
             )
             if existing is not None:
@@ -1309,7 +1305,10 @@ class SqliteHistoryService:
                 ),
                 None,
             )
-            return operation.get("result") if isinstance(operation and operation.get("result"), dict) else None
+            if operation is None:
+                return None
+            result = operation.get("result")
+            return result if isinstance(result, dict) else None
 
     @staticmethod
     def _publish_verified_candidate(root: Path, candidate: str, candidate_sha256: str, files_dir: Path, database_name: str, *, verification_error: str) -> None:
@@ -1578,10 +1577,10 @@ class SqliteHistoryService:
                         raise HTTPException(status_code=409, detail="Published SQLite restore must be completed, not aborted")
                     # Persist the terminal abort receipt BEFORE the marker is
                     # released so a crash mid-release cannot orphan the intent.
-                    result = {"operation_id": operation_id, "status": "aborted"}
-                    operation.update(status="aborted", aborted_at=_now().isoformat(), result=result, lease_id=lease_id)
+                    abort_result: dict[str, Any] = {"operation_id": operation_id, "status": "aborted"}
+                    operation.update(status="aborted", aborted_at=_now().isoformat(), result=abort_result, lease_id=lease_id)
                     self._save(root, manifest)
-                    return lease_id, result
+                    return lease_id, abort_result
                 candidate = self._protected_path(root, str(operation.get("candidate") or ""), "candidates")
                 preview = manifest["previews"].get(operation.get("preview_id"))
                 if not preview or not candidate.is_file() or _sha256(candidate) != preview.get("candidate_sha256"):
@@ -1599,7 +1598,7 @@ class SqliteHistoryService:
                     str(preview["database_name"]),
                     verification_error="SQLite recovery publication verification failed",
                 )
-                result = {
+                completed_result: dict[str, Any] = {
                     "operation_id": operation_id,
                     "restored_backup_id": preview["backup_id"],
                     "safety_backup_id": operation.get("safety_backup_id"),
@@ -1611,9 +1610,15 @@ class SqliteHistoryService:
                 # published above, so this makes the catalog receipt terminal in
                 # the same locked save, closing the crash window that previously
                 # left an orphaned intent when release/finalize was interrupted.
-                operation.update(status="completed", publication_state="published", result=result, completed_at=_now().isoformat(), lease_id=lease_id)
+                operation.update(
+                    status="completed",
+                    publication_state="published",
+                    result=completed_result,
+                    completed_at=_now().isoformat(),
+                    lease_id=lease_id,
+                )
                 self._save(root, manifest)
-                return lease_id, result
+                return lease_id, completed_result
 
         # The pre-read marker only supplies a lease candidate.  The recovery
         # context takes the exclusive non-blocking operation flock and verifies

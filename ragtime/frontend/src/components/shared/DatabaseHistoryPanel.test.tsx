@@ -227,7 +227,11 @@ describe('DatabaseHistoryPanel', () => {
 
   it('shows queued capture jobs while the history request is still pending', async () => {
     const user = userEvent.setup();
-    let resolveHistory!: (value: { workspace_id: string; backups: []; can_manage: boolean }) => void;
+    let resolveHistory!: (value: {
+      workspace_id: string;
+      backups: [];
+      can_manage: boolean;
+    }) => void;
     apiMock.listUserSpaceSqliteHistory.mockImplementation(
       () =>
         new Promise((resolve) => {
@@ -494,9 +498,9 @@ describe('DatabaseHistoryPanel', () => {
     await waitFor(() =>
       expect(document.querySelector('[data-history-capture-job="job-1"]')).toBeTruthy(),
     );
-    expect((screen.getByRole('button', { name: 'Capture now' }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    expect(
+      (screen.getByRole('button', { name: 'Capture now' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
 
   it('does not let an older poll erase an accepted capture job', async () => {
@@ -532,7 +536,10 @@ describe('DatabaseHistoryPanel', () => {
     let resolveCancel!: (value: { job: typeof captureJob }) => void;
     apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({ jobs: [captureJob] });
     apiMock.cancelUserSpaceSqliteBackupJob.mockImplementation(
-      () => new Promise((resolve) => { resolveCancel = resolve; }),
+      () =>
+        new Promise((resolve) => {
+          resolveCancel = resolve;
+        }),
     );
     render(
       <DatabaseHistoryPanel
@@ -558,7 +565,7 @@ describe('DatabaseHistoryPanel', () => {
 
   it('ignores a capture-jobs response that arrives after the dialog closes', async () => {
     const user = userEvent.setup();
-    let resolveJobs!: (value: { jobs: typeof captureJob[] }) => void;
+    let resolveJobs!: (value: { jobs: (typeof captureJob)[] }) => void;
     apiMock.listUserSpaceSqliteBackupJobs
       .mockImplementationOnce(
         () =>

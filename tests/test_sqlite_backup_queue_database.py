@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from datetime import timedelta
 from pathlib import Path
+from typing import Any, Awaitable, Callable, cast
 from unittest import mock
 from uuid import uuid4
 
@@ -58,27 +59,34 @@ class SqliteBackupQueueDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.first.workspace.create(data={"id": workspace_id, "name": f"sqlite-queue-db-{workspace_id}", "ownerUserId": self.user_id})
         return workspace_id
 
-    async def _call(self, db: Prisma, method: str, *args: object, **kwargs: object) -> object:
+    async def _call(self, db: Prisma, method: str, *args: object, **kwargs: object) -> Any:
+        """Dispatch store methods whose name is selected by this integration fixture."""
         token = _task_db.set(db)
         try:
             return await getattr(SqliteBackupQueueStore(), method)(*args, **kwargs)
         finally:
             _task_db.reset(token)
 
-    async def _enqueue(self, db: Prisma, workspace_id: str, key: str, **kwargs: object) -> dict:
-        result = await self._call(db, "enqueue", workspace_id, trigger="manual", database_names=["app.sqlite3"], requested_by_id=self.user_id, request_key=key, **kwargs)
+    async def _enqueue(self, db: Prisma, workspace_id: str, key: str, **kwargs: object) -> dict[str, Any]:
+        result = await self._call(
+            db, "enqueue", workspace_id, trigger="manual", database_names=["app.sqlite3"], requested_by_id=self.user_id, request_key=key, **kwargs
+        )
         assert isinstance(result, dict)
         return result
 
-    async def _finish(self, db: Prisma, job: dict, owner_token: str, status: str = "completed") -> None:
-        result = await self._call(db, "finish", job["id"], owner_token, status=status, backup_ids=[], error_message="capture failed" if status == "failed" else None)
+    async def _finish(self, db: Prisma, job: dict[str, Any], owner_token: str, status: str = "completed") -> None:
+        result = await self._call(
+            db, "finish", job["id"], owner_token, status=status, backup_ids=[], error_message="capture failed" if status == "failed" else None
+        )
         self.assertTrue(result)
 
     async def test_atomic_claim_enforces_global_cap_and_workspace_exclusion(self) -> None:
         first_workspace, second_workspace = await self._workspace(), await self._workspace()
         first_job = await self._enqueue(self.first, first_workspace, "first")
         second_job = await self._enqueue(self.second, second_workspace, "second")
-        await self.first.execute_raw("UPDATE workspace_sqlite_backup_jobs SET created_at = NOW() - ($1 * INTERVAL '1 second') WHERE id = $2", 60, first_job["id"])
+        await self.first.execute_raw(
+            "UPDATE workspace_sqlite_backup_jobs SET created_at = NOW() - ($1 * INTERVAL '1 second') WHERE id = $2", 60, first_job["id"]
+        )
         claimed = await self._call(self.first, "claim_next", "owner-first")
         self.assertEqual(claimed["id"], first_job["id"])
         self.assertIsNone(await self._call(self.second, "claim_next", "owner-second"))
@@ -92,15 +100,29 @@ class SqliteBackupQueueDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_concurrent_idempotency_hash_conflict_and_fifo_eligibility(self) -> None:
         first_workspace, second_workspace = await self._workspace(), await self._workspace()
-        same_key = await asyncio.gather(self._enqueue(self.first, first_workspace, "idempotent-key"), self._enqueue(self.second, first_workspace, "idempotent-key"))
+        same_key = await asyncio.gather(
+            self._enqueue(self.first, first_workspace, "idempotent-key"), self._enqueue(self.second, first_workspace, "idempotent-key")
+        )
         self.assertEqual(same_key[0]["id"], same_key[1]["id"])
         with self.assertRaises(HTTPException) as conflict:
-            await self._call(self.second, "enqueue", first_workspace, trigger="manual", database_names=["other.sqlite3"], requested_by_id=self.user_id, request_key="idempotent-key")
+            await self._call(
+                self.second,
+                "enqueue",
+                first_workspace,
+                trigger="manual",
+                database_names=["other.sqlite3"],
+                requested_by_id=self.user_id,
+                request_key="idempotent-key",
+            )
         self.assertEqual(conflict.exception.status_code, 409)
-        await self.first.execute_raw("UPDATE workspace_sqlite_backup_jobs SET created_at = NOW() - ($1 * INTERVAL '1 second') WHERE id = $2", 60, same_key[0]["id"])
+        await self.first.execute_raw(
+            "UPDATE workspace_sqlite_backup_jobs SET created_at = NOW() - ($1 * INTERVAL '1 second') WHERE id = $2", 60, same_key[0]["id"]
+        )
         future_job = await self._enqueue(self.first, second_workspace, "future")
         ready_job = await self._enqueue(self.second, await self._workspace(), "ready")
-        await self.first.execute_raw("UPDATE workspace_sqlite_backup_jobs SET available_at = NOW() + ($1 * INTERVAL '1 second') WHERE id = $2", 600, future_job["id"])
+        await self.first.execute_raw(
+            "UPDATE workspace_sqlite_backup_jobs SET available_at = NOW() + ($1 * INTERVAL '1 second') WHERE id = $2", 600, future_job["id"]
+        )
         claimed = await self._call(self.first, "claim_next", "fifo-owner")
         self.assertEqual(claimed["id"], same_key[0]["id"])
         await self._finish(self.first, claimed, "fifo-owner")
@@ -126,7 +148,9 @@ class SqliteBackupQueueDatabaseTests(unittest.IsolatedAsyncioTestCase):
         workspace_id, other_workspace = await self._workspace(), await self._workspace()
         job, other = await self._enqueue(self.first, workspace_id, "race"), await self._enqueue(self.first, other_workspace, "other")
         await self.first.execute_raw("UPDATE workspace_sqlite_backup_jobs SET created_at = NOW() - ($1 * INTERVAL '1 second') WHERE id = $2", 60, job["id"])
-        claimed, cancelled = await asyncio.gather(self._call(self.first, "claim_next", "actual-owner"), self._call(self.second, "cancel", workspace_id, job["id"]))
+        claimed, cancelled = await asyncio.gather(
+            self._call(self.first, "claim_next", "actual-owner"), self._call(self.second, "cancel", workspace_id, job["id"])
+        )
         stored = await self._call(self.first, "get_job", workspace_id, job["id"])
         self.assertIn(stored["status"], {"cancelled", "running"})
         if claimed is not None:
@@ -160,12 +184,16 @@ class SqliteBackupQueueDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as global_cap:
             await self._enqueue(self.second, await self._workspace(), "global-cap-overflow")
         self.assertEqual(global_cap.exception.status_code, 503)
-        indexes = await self.first.query_raw("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'workspace_sqlite_backup_jobs'")
+        indexes = await self.first.query_raw(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'workspace_sqlite_backup_jobs'"
+        )
         names = {str(row["indexname"]) for row in indexes}
         self.assertIn("workspace_sqlite_backup_jobs_status_created_at_idx", names)
         self.assertIn("workspace_sqlite_backup_jobs_workspace_id_status_idx", names)
         self.assertIn("workspace_sqlite_backup_jobs_workspace_id_created_at_idx", names)
-        constraints = await self.first.query_raw("SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid = 'workspace_sqlite_backup_jobs'::regclass")
+        constraints = await self.first.query_raw(
+            "SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid = 'workspace_sqlite_backup_jobs'::regclass"
+        )
         self.assertTrue(any("FOREIGN KEY" in str(row["definition"]) and "ON DELETE CASCADE" in str(row["definition"]) for row in constraints))
 
     async def test_two_real_runners_capture_wal_databases_serially(self) -> None:
@@ -187,7 +215,7 @@ class SqliteBackupQueueDatabaseTests(unittest.IsolatedAsyncioTestCase):
             first_runner, second_runner = SqliteBackupQueueService(), SqliteBackupQueueService()
             active_captures = peak_captures = 0
 
-            async def capture_with_peak(original: object, *args: object) -> list[dict]:
+            async def capture_with_peak(original: Callable[..., Awaitable[list[dict[str, Any]]]], *args: object) -> list[dict[str, Any]]:
                 nonlocal active_captures, peak_captures
                 active_captures += 1
                 peak_captures = max(peak_captures, active_captures)
@@ -196,10 +224,13 @@ class SqliteBackupQueueDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     active_captures -= 1
 
-            first_capture, second_capture = first_runner._capture, second_runner._capture
-            async def first_wrapped(*args: object) -> list[dict]:
+            first_capture = cast(Callable[..., Awaitable[list[dict[str, Any]]]], first_runner._capture)
+            second_capture = cast(Callable[..., Awaitable[list[dict[str, Any]]]], second_runner._capture)
+
+            async def first_wrapped(*args: object) -> list[dict[str, Any]]:
                 return await capture_with_peak(first_capture, *args)
-            async def second_wrapped(*args: object) -> list[dict]:
+
+            async def second_wrapped(*args: object) -> list[dict[str, Any]]:
                 return await capture_with_peak(second_capture, *args)
 
             with (
@@ -212,22 +243,37 @@ class SqliteBackupQueueDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 first_token = _task_db.set(self.first)
                 try:
                     await first_runner.start()
-                    first_snapshot = await first_runner.enqueue(workspace_ids[0], trigger="snapshot", snapshot_id="snapshot-one", snapshot_git_commit_hash="commit-one", requested_by_id=self.user_id, request_key="snapshot-one")
-                    second_snapshot = await first_runner.enqueue(workspace_ids[0], trigger="snapshot", snapshot_id="snapshot-two", snapshot_git_commit_hash="commit-two", request_key="snapshot-two")
-                    third_manual = await first_runner.enqueue(workspace_ids[1], trigger="manual", database_names=["app.sqlite3"], requested_by_id=self.user_id, request_key="manual-two")
+                    first_snapshot = await first_runner.enqueue(
+                        workspace_ids[0],
+                        trigger="snapshot",
+                        snapshot_id="snapshot-one",
+                        snapshot_git_commit_hash="commit-one",
+                        requested_by_id=self.user_id,
+                        request_key="snapshot-one",
+                    )
+                    second_snapshot = await first_runner.enqueue(
+                        workspace_ids[0], trigger="snapshot", snapshot_id="snapshot-two", snapshot_git_commit_hash="commit-two", request_key="snapshot-two"
+                    )
+                    third_manual = await first_runner.enqueue(
+                        workspace_ids[1], trigger="manual", database_names=["app.sqlite3"], requested_by_id=self.user_id, request_key="manual-two"
+                    )
                 finally:
                     _task_db.reset(first_token)
                 second_token = _task_db.set(self.second)
                 try:
                     await second_runner.start()
-                    fourth_manual = await second_runner.enqueue(workspace_ids[2], trigger="manual", database_names=["app.sqlite3"], requested_by_id=self.user_id, request_key="manual-three")
+                    fourth_manual = await second_runner.enqueue(
+                        workspace_ids[2], trigger="manual", database_names=["app.sqlite3"], requested_by_id=self.user_id, request_key="manual-three"
+                    )
                 finally:
                     _task_db.reset(second_token)
 
-                async def wait(db: Prisma, runner: SqliteBackupQueueService, workspace_id: str, job_id: str) -> dict:
+                async def wait(db: Prisma, runner: SqliteBackupQueueService, workspace_id: str, job_id: str) -> dict[str, Any]:
                     token = _task_db.set(db)
                     try:
-                        return await asyncio.wait_for(runner.wait_for_job(workspace_id, job_id), timeout=90)
+                        result = await asyncio.wait_for(runner.wait_for_job(workspace_id, job_id), timeout=90)
+                        assert result is not None
+                        return result
                     finally:
                         _task_db.reset(token)
 

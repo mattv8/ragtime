@@ -7,8 +7,10 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 from fastapi import HTTPException
@@ -138,6 +140,7 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         root.mkdir(parents=True)
         (root / "sqlite-maintenance-intent.json").write_text(json.dumps({"lease_id": "lease-1"}), encoding="utf-8")
         state = await self.history.interrupted_maintenance("workspace")
+        assert state is not None
         self.assertEqual("lease-1", state["operation_id"])
         self.assertTrue(state["can_abort"])
         self.assertFalse(state["can_complete"])
@@ -249,7 +252,8 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.to_thread(self.history._enforce_quota, root, manifest, 1)
 
         self.assertEqual(409, error.exception.status_code)
-        self.assertEqual(["old", "new"], [row["id"] for row in manifest["backups"]])
+        backups = cast(list[dict[str, object]], manifest["backups"])
+        self.assertEqual(["old", "new"], [row["id"] for row in backups])
         self.assertTrue((blobs / "old.sqlite3").exists())
 
     async def test_delete_failed_capture_without_blob_removes_only_diagnostic_row(self) -> None:
@@ -438,6 +442,7 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
 
         # Attempting to recover without an operation record should be abort-only.
         state = await self.history.interrupted_maintenance("workspace")
+        assert state is not None
         self.assertEqual(lease_id, state["operation_id"])
         self.assertTrue(state["can_abort"])
         self.assertFalse(state["can_complete"])
@@ -553,6 +558,7 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         # release-retry of the SAME (complete) action rather than vanish or flip
         # to an abort affordance.
         state = await self.history.interrupted_maintenance("workspace")
+        assert state is not None
         self.assertEqual(operation_id, state["operation_id"])
         self.assertTrue(state["can_complete"])
         self.assertFalse(state["can_abort"])
@@ -600,6 +606,7 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         # The fence marker still needs releasing, so the banner surfaces a
         # release-retry of the SAME (abort) action, not a stuck intent.
         state = await self.history.interrupted_maintenance("workspace")
+        assert state is not None
         self.assertEqual(operation_id, state["operation_id"])
         self.assertTrue(state["can_abort"])
         self.assertFalse(state["can_complete"])
@@ -690,6 +697,7 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
 
         state = await self.history.interrupted_maintenance("workspace")
         self.assertIsNotNone(state)
+        assert state is not None
         self.assertEqual("unknown", state["operation_id"])
         self.assertFalse(state["can_complete"])
         self.assertFalse(state["can_abort"])
@@ -702,6 +710,7 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
 
         state = await self.history.interrupted_maintenance("workspace")
         self.assertIsNotNone(state)
+        assert state is not None
         self.assertEqual("unknown", state["operation_id"])
         self.assertFalse(state["can_complete"])
         self.assertFalse(state["can_abort"])
@@ -834,6 +843,7 @@ class SqliteHistoryApplyFencePreIntentTests(unittest.IsolatedAsyncioTestCase):
         operation_id, operation = next(iter(self.history._load(self.root, self.workspace_id)["operations"].items()))
         self.assertEqual("completed", operation["status"])
         state = await self.history.interrupted_maintenance(self.workspace_id)
+        assert state is not None
         self.assertEqual(operation_id, state["operation_id"])
         self.assertTrue(state["can_complete"])
         self.assertFalse(state["can_abort"])
@@ -872,6 +882,7 @@ class SqliteHistoryApplyFencePreIntentTests(unittest.IsolatedAsyncioTestCase):
 
         # The UI must require completion, not offer abort.
         state = await self.history.interrupted_maintenance(self.workspace_id)
+        assert state is not None
         self.assertEqual(operation_id, state["operation_id"])
         self.assertTrue(state["can_complete"])
         self.assertFalse(state["can_abort"])
@@ -916,12 +927,8 @@ class SqliteHistoryApplyFencePreIntentTests(unittest.IsolatedAsyncioTestCase):
 
 
 def _dt_now():
-    from datetime import datetime, timezone
-
     return datetime.now(timezone.utc)
 
 
 def _dt_delta():
-    from datetime import timedelta
-
     return timedelta(minutes=15)

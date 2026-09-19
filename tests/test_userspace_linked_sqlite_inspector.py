@@ -14,8 +14,10 @@ from fastapi import HTTPException
 
 from ragtime.userspace import routes as userspace_routes
 from ragtime.userspace import sqlite_inspector as sqlite_inspector_helpers
+from ragtime.userspace import sqlite_runtime
 from ragtime.userspace.models import SqliteInspectorDatabaseSummary
 from ragtime.userspace.service import UserSpaceService
+from ragtime.userspace.sqlite_history import SqliteHistoryService
 from tests.test_userspace_sqlite_shared import _FakeGrantTable, _FakeUserTable, _FakeWorkspaceMemberTable, _WorkspaceRowBase
 
 
@@ -112,11 +114,19 @@ class LinkedSqliteInspectorServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.service = UserSpaceService()
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.workspace_root = Path(self.temp_dir.name)
+        self.index_data_root = Path(self.temp_dir.name)
+        self.workspace_root = self.index_data_root / "_userspace" / "workspaces"
+        self.sqlite_history = SqliteHistoryService(self._workspace_files_dir)
+        self._sqlite_runtime_settings_patch = mock.patch.object(sqlite_runtime.settings, "index_data_path", str(self.index_data_root))
+        self._sqlite_runtime_manager_patch = mock.patch.object(sqlite_runtime, "runtime_manager_enabled", return_value=False)
+        self._sqlite_runtime_settings_patch.start()
+        self._sqlite_runtime_manager_patch.start()
         self.promoted_workspaces: list[str] = []
         self.audit_events: list[dict[str, Any]] = []
 
     def tearDown(self) -> None:
+        self._sqlite_runtime_manager_patch.stop()
+        self._sqlite_runtime_settings_patch.stop()
         self.temp_dir.cleanup()
 
     def _grant(
@@ -173,8 +183,10 @@ class LinkedSqliteInspectorServiceTests(unittest.IsolatedAsyncioTestCase):
 
     def _sqlite_upload_copy(self, source_workspace_id: str) -> Path:
         source_path = self.workspace_root / f"{source_workspace_id}-upload.sqlite3"
-        sqlite_inspector_helpers.initialize_database(self.workspace_root / source_workspace_id / "upload-files", "upload.sqlite3")
-        original = self.workspace_root / source_workspace_id / "upload-files" / ".ragtime" / "db" / "upload.sqlite3"
+        upload_files_dir = self.workspace_root / source_workspace_id / "upload-files"
+        upload_files_dir.parent.mkdir(parents=True, exist_ok=True)
+        sqlite_inspector_helpers.initialize_database(upload_files_dir, "upload.sqlite3")
+        original = upload_files_dir / ".ragtime" / "db" / "upload.sqlite3"
         source_path.write_bytes(original.read_bytes())
         return source_path
 
@@ -217,6 +229,7 @@ class LinkedSqliteInspectorServiceTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(self.service, "_ensure_sqlite_mode_included", side_effect=_ensure_sqlite_mode_included),
             mock.patch.object(self.service, "_record_runtime_audit_event", new=_record_runtime_audit_event),
             mock.patch.object(self.service, "_sync_runtime_bootstrap_config", return_value=None),
+            mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=self.sqlite_history),
         )
 
     async def test_list_sqlite_databases_merges_owned_and_linked_access_modes_and_missing_state(self) -> None:
@@ -454,6 +467,8 @@ class LinkedSqliteInspectorServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(initialized_summary.owner_workspace_id, "target-ws")
         self.assertEqual(initialized_summary.persistence_mode, "include")
         self.assertEqual(imported_database.owner_workspace_id, "target-ws")
+        safety_backups = self.sqlite_history._load(self.workspace_root / "target-ws" / "sqlite_backups", "target-ws")["backups"]
+        self.assertTrue(any(backup["trigger"] == "pre_restore" for backup in safety_backups))
         self.assertEqual(linked_summary.owner_workspace_id, "target-ws")
         self.assertEqual(workspace_rows["source-ws"].sqlite_persistence_mode, "exclude")
         self.assertEqual(workspace_rows["target-ws"].sqlite_persistence_mode, "include")

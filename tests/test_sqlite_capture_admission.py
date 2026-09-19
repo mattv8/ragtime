@@ -10,6 +10,9 @@ import sys
 import tempfile
 import threading
 import unittest
+from multiprocessing.process import BaseProcess
+from multiprocessing.queues import Queue
+from multiprocessing.synchronize import Barrier
 from pathlib import Path
 from unittest import mock
 
@@ -21,7 +24,7 @@ from ragtime.userspace.sqlite_runtime import run_sqlite_blocking
 _BLOCKING_CHILD = "import os, sys; os.write(int(sys.argv[1]), b'1'); os.read(int(sys.argv[2]), 1)"
 
 
-def _run_blocking_child(ready_fd: int, release_fd: int, result_queue: multiprocessing.Queue[str]) -> None:
+def _run_blocking_child(ready_fd: int, release_fd: int, result_queue: Queue[str]) -> None:
     try:
         admission.run_admitted_subprocess(
             [sys.executable, "-c", _BLOCKING_CHILD, str(ready_fd), str(release_fd)],
@@ -34,7 +37,7 @@ def _run_blocking_child(ready_fd: int, release_fd: int, result_queue: multiproce
         result_queue.put("completed")
 
 
-def _initialize_slot_directory(start: multiprocessing.synchronize.Barrier, result_queue: multiprocessing.Queue[str]) -> None:
+def _initialize_slot_directory(start: Barrier, result_queue: Queue[str]) -> None:
     start.wait()
     try:
         admission.run_admitted_subprocess([sys.executable, "-c", ""], check=True)
@@ -70,7 +73,7 @@ class SqliteCaptureAdmissionTests(unittest.TestCase):
     def test_concurrent_processes_initialize_missing_slot_directories(self) -> None:
         context = multiprocessing.get_context("fork")
         start = context.Barrier(4)
-        results: multiprocessing.Queue[str] = context.Queue()
+        results: Queue[str] = context.Queue()
         processes = [context.Process(target=_initialize_slot_directory, args=(start, results)) for _ in range(4)]
         for process in processes:
             process.start()
@@ -106,11 +109,11 @@ class SqliteCaptureAdmissionTests(unittest.TestCase):
         context = multiprocessing.get_context("fork")
         ready_read, ready_write = os.pipe()
         release_read, release_write = os.pipe()
-        results: multiprocessing.Queue[str] = context.Queue()
+        results: Queue[str] = context.Queue()
         original_wait = admission.CAPTURE_SLOT_WAIT_SECONDS
         admission.CAPTURE_SLOT_WAIT_SECONDS = 0.2
-        holders: list[multiprocessing.Process] = []
-        rejected: multiprocessing.Process | None = None
+        holders: list[BaseProcess] = []
+        rejected: BaseProcess | None = None
         try:
             holders = [context.Process(target=_run_blocking_child, args=(ready_write, release_read, results)) for _ in range(2)]
             for holder in holders:
@@ -119,13 +122,15 @@ class SqliteCaptureAdmissionTests(unittest.TestCase):
                 self.assertTrue(select.select([ready_read], [], [], 5)[0], "child never acquired its slot")
                 self.assertEqual(b"1", os.read(ready_read, 1))
 
-            rejected = context.Process(target=_run_blocking_child, args=(ready_write, release_read, results))
-            rejected.start()
+            rejected_process = context.Process(target=_run_blocking_child, args=(ready_write, release_read, results))
+            rejected_process.start()
+            rejected = rejected_process
             self.assertEqual("http-503", results.get(timeout=5))
 
             os.write(release_write, b"12")
             self.assertEqual("completed", results.get(timeout=5))
             self.assertEqual("completed", results.get(timeout=5))
+            assert rejected is not None
             for process in [*holders, rejected]:
                 process.join(timeout=5)
                 self.assertEqual(0, process.exitcode)

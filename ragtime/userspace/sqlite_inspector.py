@@ -787,14 +787,14 @@ def apply_table_alterations(
                 else:
                     raise HTTPException(status_code=400, detail=f"Unsupported alteration '{step.op}'")
 
-        return TableSchema(
-            name=current_table,
-            type="table",
-            columns=_column_info(conn, current_table),
-            indexes=_index_info(conn, current_table),
-            foreign_keys=_foreign_keys(conn, current_table),
-            sql=_table_sql(conn, current_table),
-        )
+            return TableSchema(
+                name=current_table,
+                type="table",
+                columns=_column_info(conn, current_table),
+                indexes=_index_info(conn, current_table),
+                foreign_keys=_foreign_keys(conn, current_table),
+                sql=_table_sql(conn, current_table),
+            )
 
 
 def _table_sql(conn: sqlite3.Connection, table_name: str) -> str | None:

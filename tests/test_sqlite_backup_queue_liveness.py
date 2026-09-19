@@ -32,7 +32,7 @@ class SqliteBackupQueueLivenessTests(unittest.IsolatedAsyncioTestCase):
         service = queue.SqliteBackupQueueService(store)
         with tempfile.TemporaryDirectory() as temp, mock.patch.object(queue.settings, "index_data_path", temp):
             fd = queue._try_job_lock(job_id)
-            self.assertIsNotNone(fd)
+            assert fd is not None
             try:
                 self.assertEqual([], await service.recover_stale())
             finally:
@@ -51,9 +51,7 @@ class SqliteBackupQueueLivenessTests(unittest.IsolatedAsyncioTestCase):
                 from ragtime.userspace.sqlite_capture_admission import inherit_capture_fds, run_admitted_subprocess
 
                 with inherit_capture_fds((fd,)):
-                    result = run_admitted_subprocess(
-                        [sys.executable, "-c", "import os,sys; os.fstat(int(sys.argv[1]))", str(fd)], check=True
-                    )
+                    result = run_admitted_subprocess([sys.executable, "-c", "import os,sys; os.fstat(int(sys.argv[1]))", str(fd)], check=True)
                 self.assertEqual(0, result.returncode)
             finally:
                 queue._release_job_lock(fd)

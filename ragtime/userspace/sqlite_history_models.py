@@ -49,9 +49,7 @@ class SqliteHistoryBackup(BaseModel):
     capture_job_id: str | None = None
 
 
-SqliteHistoryCaptureJobStatus = Literal[
-    "pending", "running", "completed", "failed", "cancelled", "interrupted"
-]
+SqliteHistoryCaptureJobStatus = Literal["pending", "running", "completed", "failed", "cancelled", "interrupted"]
 
 
 class SqliteHistoryCaptureJob(BaseModel):

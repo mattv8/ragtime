@@ -4438,7 +4438,10 @@ export const api = {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ database_name: databaseName, ...(requestId ? { request_id: requestId } : {}) }),
+        body: JSON.stringify({
+          database_name: databaseName,
+          ...(requestId ? { request_id: requestId } : {}),
+        }),
       },
     );
     return handleResponse<{ backup: SqliteHistoryBackup }>(response);
@@ -4454,7 +4457,10 @@ export const api = {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ database_name: databaseName, ...(requestId ? { request_id: requestId } : {}) }),
+        body: JSON.stringify({
+          database_name: databaseName,
+          ...(requestId ? { request_id: requestId } : {}),
+        }),
       },
     );
     return handleResponse<{ job: SqliteBackupJob }>(response);

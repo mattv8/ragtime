@@ -128,6 +128,8 @@ async def _sqlite_workspace_operation(workspace_id: str, *, exclusive: bool, non
     held = _operation_held.get()
     current = held.get(workspace_id)
     task = asyncio.current_task()
+    if task is None:
+        raise RuntimeError("SQLite workspace operation requires an asyncio task")
     if current is not None and current[3] is task:
         current_exclusive, depth, fd, _owner = current
         if exclusive and not current_exclusive:
@@ -349,11 +351,11 @@ async def _sqlite_workspace_access_locked(workspace_id: str, *, maintenance: boo
                 lease_id,
                 {"workspace_id": workspace_id, "lease_id": lease_id, "state": "offline-active", "origin": "offline"},
             )
-            token = _maintenance_held.set(_maintenance_held.get() | {workspace_id})
+            offline_token = _maintenance_held.set(_maintenance_held.get() | {workspace_id})
             try:
                 yield canonical
             finally:
-                _maintenance_held.reset(token)
+                _maintenance_held.reset(offline_token)
         except BaseException:
             # An interrupted offline publication is no safer than an online one.
             raise
@@ -369,6 +371,7 @@ async def _sqlite_workspace_access_locked(workspace_id: str, *, maintenance: boo
             {"workspace_id": workspace_id, "lease_id": lease_id, "state": "acquiring", "origin": "online"},
         )
     acquired = False
+    online_token: contextvars.Token[frozenset[str]] | None = None
     try:
         result = await runtime_manager_request(
             "POST",
@@ -389,14 +392,12 @@ async def _sqlite_workspace_access_locked(workspace_id: str, *, maintenance: boo
                 lease_id,
                 {"workspace_id": workspace_id, "lease_id": lease_id, "state": "active", "origin": "online"},
             )
-            token = _maintenance_held.set(_maintenance_held.get() | {workspace_id})
-        else:
-            token = None
+            online_token = _maintenance_held.set(_maintenance_held.get() | {workspace_id})
         try:
             yield root
         finally:
-            if token is not None:
-                _maintenance_held.reset(token)
+            if online_token is not None:
+                _maintenance_held.reset(online_token)
     except BaseException as exc:
         # A clean conflict proves the worker never admitted this maintenance
         # lease; unlike transport/5xx ambiguity it is safe to clear intent.

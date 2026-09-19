@@ -31,6 +31,7 @@ class SqliteBackupQueueCaptureTests(unittest.TestCase):
 
     def test_capture_job_tags_snapshot_rows_and_reuses_same_database_result(self) -> None:
         (self.database_dir / "app.sqlite3").write_bytes(b"source")
+
         async def capture() -> list[dict[str, object]]:
             with mock.patch.object(
                 self.service,

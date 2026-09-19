@@ -272,11 +272,7 @@ class SqliteBackupQueueService:
         from ragtime.userspace.sqlite_history import get_sqlite_history_service
 
         backups = await get_sqlite_history_service().list_backups(workspace_id)
-        return [
-            backup["id"]
-            for backup in backups
-            if backup.get("capture_job_id") == job_id and backup.get("status") in {"ready", "failed"}
-        ]
+        return [backup["id"] for backup in backups if backup.get("capture_job_id") == job_id and backup.get("status") in {"ready", "failed"}]
 
     async def _capture(self, job: dict[str, Any], owner_token: str, lock_fd: int) -> list[dict[str, Any]]:
         from ragtime.userspace.sqlite_history import get_sqlite_history_service
@@ -333,7 +329,11 @@ class SqliteBackupQueueService:
             if lock_fd is None:
                 continue
             try:
-                if await self._store.interrupt(job["id"], job.get("owner_token"), error_message="Backup worker heartbeat expired"):
+                owner_token = job.get("owner_token")
+                if not isinstance(owner_token, str):
+                    logger.warning("SQLite backup queue stale job has no owner token job_id=%s", job["id"])
+                    continue
+                if await self._store.interrupt(job["id"], owner_token, error_message="Backup worker heartbeat expired"):
                     interrupted.append(job["id"])
             finally:
                 _release_job_lock(lock_fd)

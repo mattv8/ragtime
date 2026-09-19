@@ -11,6 +11,8 @@ from typing import Any, Callable, Collection, Iterator, Literal
 
 from fastapi import HTTPException
 
+from runtime.core.secure_files import SecureFileError, open_directory
+
 SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
 SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
 
@@ -52,8 +54,6 @@ def iter_managed_sqlite_database_paths(workspace_files_dir: Path) -> list[Path]:
     descriptors.  A directory symlink must not turn a harmless catalogue scan
     into host filesystem disclosure.
     """
-    from runtime.core.secure_files import SecureFileError, open_directory
-
     try:
         with open_directory(workspace_files_dir, ".ragtime/db") as database_fd:
             names: list[str] = []

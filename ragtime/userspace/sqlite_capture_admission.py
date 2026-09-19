@@ -225,9 +225,7 @@ def run_admitted_subprocess(command: list[str], **subprocess_kwargs: Any) -> sub
             # ``pass_fds`` is POSIX-only, as is the flock admission mechanism.
             # Include the slot itself so a controller crash cannot release it
             # while its child is still copying a database.
-            subprocess_kwargs["pass_fds"] = tuple(
-                dict.fromkeys((*supplied_fds, *_capture_inherited_fds.get(), slot_fd))
-            )
+            subprocess_kwargs["pass_fds"] = tuple(dict.fromkeys((*supplied_fds, *_capture_inherited_fds.get(), slot_fd)))
             completed = subprocess.run(command, **subprocess_kwargs)
         except BaseException:
             logger.info(

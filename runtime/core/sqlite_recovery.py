@@ -415,7 +415,15 @@ def _apply_forward_migrations(
         for name, checksum in ledger.items():
             if name not in files or files[name][1] != checksum:
                 raise SqliteRecoveryError(f"Migration lineage is missing or changed: {name}")
-    wanted = set(current_ledger) if current_exists else set(files)
+    if current_exists:
+        # The guard above rejects an existing database without a ledger.
+        # Keep the narrowing local so migration selection cannot silently use
+        # every migration for a corrupt current database.
+        if current_ledger is None:
+            raise SqliteRecoveryError("Schema conversion requires a _ragtime_migrations ledger in the current database")
+        wanted = set(current_ledger)
+    else:
+        wanted = set(files)
     forward = sorted(wanted - set(backup_ledger))
     with sqlite3.connect(candidate) as conn:
         conn.execute("PRAGMA foreign_keys=ON")

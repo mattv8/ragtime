@@ -71,10 +71,10 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
         manifest["next_scheduled_at"] = (_now() - timedelta(seconds=1)).isoformat()
         service._save(root, manifest)
         module = ModuleType("ragtime.userspace.service")
-        module.userspace_service = SimpleNamespace(root_path=workspace_root.parent.parent)
+        setattr(module, "userspace_service", SimpleNamespace(root_path=workspace_root.parent.parent))
         queue = SimpleNamespace(enqueue=mock.AsyncMock(return_value={"id": "scheduled-job", "status": "pending"}))
         queue_module = ModuleType("ragtime.userspace.sqlite_backup_queue")
-        queue_module.get_sqlite_backup_queue_service = lambda: queue
+        setattr(queue_module, "get_sqlite_backup_queue_service", lambda: queue)
         with (
             mock.patch.dict(
                 sys.modules,

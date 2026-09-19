@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from typing import cast
 from unittest import mock
 
 from fastapi import HTTPException
@@ -142,5 +143,6 @@ class SqliteHistoryDedupTests(unittest.TestCase):
         with mock.patch("ragtime.userspace.sqlite_history._MAX_WORKSPACE_BYTES", 1):
             with self.assertRaises(HTTPException):
                 self.service._enforce_quota(self.root, manifest, 1)
-        self.assertEqual(["only"], [row["id"] for row in manifest["backups"]])
+        backups = cast(list[dict[str, object]], manifest["backups"])
+        self.assertEqual(["only"], [row["id"] for row in backups])
         self.assertTrue(blob.exists())

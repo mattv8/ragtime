@@ -11,11 +11,11 @@ from unittest import mock
 
 from fastapi import HTTPException
 
+from ragtime.userspace.sqlite_runtime import _acquire_operation_lock, _release_operation_lock
+
 
 def _hold_shared_sqlite_operation_lock(path: str, ready, release) -> None:
     """Child-process fixture for advisory flock exclusion."""
-    from ragtime.userspace.sqlite_runtime import _acquire_operation_lock, _release_operation_lock
-
     fd = _acquire_operation_lock(Path(path), exclusive=False)
     try:
         ready.set()
@@ -490,8 +490,8 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             marker = Path(temporary) / "sqlite_backups" / "sqlite-maintenance-intent.json"
-            first = {"workspace_id": "workspace-1", "lease_id": "first", "state": "acquiring"}
-            second = {"workspace_id": "workspace-1", "lease_id": "second", "state": "acquiring"}
+            first: dict[str, object] = {"workspace_id": "workspace-1", "lease_id": "first", "state": "acquiring"}
+            second: dict[str, object] = {"workspace_id": "workspace-1", "lease_id": "second", "state": "acquiring"}
 
             results = await asyncio.gather(
                 asyncio.to_thread(sqlite_runtime._claim_marker, marker, first),
@@ -638,7 +638,6 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
             spec = mock.Mock(workspace_id="workspace-1", workspace_files_path=canonical)
             events: list[str] = []
             worker._sessions["session-1"] = mock.Mock(id="session-1", workspace_id="workspace-1", state="running")
-            worker.stop_session = mock.AsyncMock(side_effect=lambda _session, **_kwargs: events.append("stop"))
             caps = mock.Mock(mode="chroot")
             with (
                 mock.patch.object(worker, "_resolve_workspace_root", return_value=(canonical.parent, canonical, spec)),
@@ -647,6 +646,7 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(worker_service_module, "reconcile_stopped_workspace_mirror", side_effect=lambda _spec: events.append("reconcile")),
                 mock.patch.object(worker_service_module, "archive_workspace_mirror", side_effect=lambda _spec: events.append("archive")),
                 mock.patch.object(worker_api, "evict_workspace_ptys", new=mock.AsyncMock(side_effect=lambda _workspace: events.append("pty"))),
+                mock.patch.object(worker, "stop_session", new=mock.AsyncMock(side_effect=lambda _session, **_kwargs: events.append("stop"))),
             ):
                 await worker.acquire_sqlite_workspace_access("workspace-1", "lease-1", maintenance=True)
                 await worker.release_sqlite_workspace_access("workspace-1", "lease-1")
@@ -811,7 +811,7 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
             startup_task = mock.Mock()
             worker._startup_tasks["session-1"] = startup_task
             worker._devserver_processes["session-1"] = mock.Mock()
-            worker._active_execs["session-1"] = {"exec-1": mock.Mock()}
+            worker._active_execs["session-1"] = {1: mock.Mock()}
 
             # Acquire a shared (non-maintenance) lease
             await worker.acquire_sqlite_workspace_access("workspace-1", "lease-1", maintenance=False)

@@ -170,23 +170,26 @@ export function DatabaseHistoryPanel({
     setOpen(false);
   }, [invalidatePreview]);
 
-  const load = useCallback(async (options?: { preserveError?: boolean }) => {
-    const generation = generationRef.current;
-    setLoading(true);
-    if (!options?.preserveError) setError(null);
-    try {
-      const result = await api.listUserSpaceSqliteHistory(workspaceId, {
-        databaseName,
-        snapshotId,
-      });
-      if (generation === generationRef.current) setHistory(result);
-    } catch (caught) {
-      if (generation === generationRef.current)
-        setError(caught instanceof Error ? caught.message : 'Unable to load database history.');
-    } finally {
-      if (generation === generationRef.current) setLoading(false);
-    }
-  }, [workspaceId, databaseName, snapshotId]);
+  const load = useCallback(
+    async (options?: { preserveError?: boolean }) => {
+      const generation = generationRef.current;
+      setLoading(true);
+      if (!options?.preserveError) setError(null);
+      try {
+        const result = await api.listUserSpaceSqliteHistory(workspaceId, {
+          databaseName,
+          snapshotId,
+        });
+        if (generation === generationRef.current) setHistory(result);
+      } catch (caught) {
+        if (generation === generationRef.current)
+          setError(caught instanceof Error ? caught.message : 'Unable to load database history.');
+      } finally {
+        if (generation === generationRef.current) setLoading(false);
+      }
+    },
+    [workspaceId, databaseName, snapshotId],
+  );
 
   const loadJobs = useCallback(async () => {
     const generation = captureJobsGenerationRef.current;
@@ -424,7 +427,10 @@ export function DatabaseHistoryPanel({
       const requestId = crypto.randomUUID();
       const result = await api.enqueueUserSpaceSqliteBackup(workspaceId, databaseName, requestId);
       if (generation === captureJobsGenerationRef.current) {
-        const nextJobs = [result.job, ...captureJobsRef.current.filter((job) => job.id !== result.job.id)];
+        const nextJobs = [
+          result.job,
+          ...captureJobsRef.current.filter((job) => job.id !== result.job.id),
+        ];
         captureJobsRevisionRef.current += 1;
         captureJobsRef.current = nextJobs;
         setCaptureJobs(nextJobs);
@@ -471,7 +477,9 @@ export function DatabaseHistoryPanel({
 
   const activeCaptureJobs = captureJobs
     .filter(isActiveJob)
-    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.id.localeCompare(b.id));
+    .sort(
+      (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.id.localeCompare(b.id),
+    );
   const terminalCaptureJobs = captureJobs
     .filter((job) => !isActiveJob(job))
     .sort(

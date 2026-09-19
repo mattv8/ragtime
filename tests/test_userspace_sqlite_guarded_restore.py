@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import cast
 from unittest import mock
 
 from ragtime.userspace import sqlite_inspector
@@ -52,7 +53,7 @@ class GuardedRestoreTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=self._history()),
         ):
             with self.assertRaisesRegex(RuntimeError, "git failed"):
-                async with UserSpaceService._guarded_code_restore(self.service, "workspace"):
+                async with UserSpaceService._guarded_code_restore(cast(UserSpaceService, self.service), "workspace"):
                     self.db.unlink()
                     raise RuntimeError("git failed")
 
@@ -79,7 +80,7 @@ class GuardedRestoreTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("runtime.core.secure_files.publish_regular_file", side_effect=OSError("publish failed")),
         ):
             with self.assertRaisesRegex(OSError, "publish failed"):
-                async with UserSpaceService._guarded_code_restore(self.service, "workspace"):
+                async with UserSpaceService._guarded_code_restore(cast(UserSpaceService, self.service), "workspace"):
                     pass
         self.assertFalse(released)
 
@@ -106,7 +107,7 @@ class GuardedRestoreTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("ragtime.userspace.service.sqlite_workspace_access", access),
             mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=self._history()),
         ):
-            async with UserSpaceService._guarded_code_restore(self.service, "workspace"):
+            async with UserSpaceService._guarded_code_restore(cast(UserSpaceService, self.service), "workspace"):
                 subprocess.run(["git", "checkout", "-f", old_commit], cwd=self.files, check=True, capture_output=True)
                 subprocess.run(
                     ["git", "clean", "-fd", "--exclude=/.ragtime/db/app.sqlite3"],

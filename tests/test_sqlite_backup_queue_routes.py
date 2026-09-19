@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import sys
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest import mock
 
 from fastapi import HTTPException
+from starlette.routing import Route
 
 from ragtime.userspace import sqlite_history_routes as routes
 from ragtime.userspace.sqlite_history_models import SqliteHistoryCaptureJobRequest
@@ -48,18 +48,14 @@ class SqliteBackupQueueRouteTests(unittest.IsolatedAsyncioTestCase):
             get_job=mock.AsyncMock(return_value=_job()),
             cancel=mock.AsyncMock(return_value=_job(status="cancelled", finished_at=datetime.now(timezone.utc))),
         )
-        self.queue_module = SimpleNamespace(get_sqlite_backup_queue_service=lambda: self.queue)
         self.manage = mock.patch.object(routes, "_manage", new_callable=mock.AsyncMock)
         self.manage.start()
-        self.modules = mock.patch.dict(
-            sys.modules,
-            {"ragtime.userspace.sqlite_backup_queue": self.queue_module},
-        )
-        self.modules.start()
+        self.queue_service = mock.patch.object(routes, "get_sqlite_backup_queue_service", return_value=self.queue)
+        self.queue_service.start()
         self.user = SimpleNamespace(id="owner-1", role="user")
 
     async def asyncTearDown(self) -> None:
-        self.modules.stop()
+        self.queue_service.stop()
         self.manage.stop()
 
     async def test_enqueue_passes_actor_and_hides_queue_internals(self) -> None:
@@ -85,9 +81,7 @@ class SqliteBackupQueueRouteTests(unittest.IsolatedAsyncioTestCase):
         await routes.get_sqlite_history_capture_job("workspace-1", "job-1", self.user)
         await routes.cancel_sqlite_history_capture_job("workspace-1", "job-1", self.user)
 
-        self.queue.list_jobs.assert_awaited_once_with(
-            "workspace-1", database_name="app.sqlite3", snapshot_id="snapshot-1", limit=50
-        )
+        self.queue.list_jobs.assert_awaited_once_with("workspace-1", database_name="app.sqlite3", snapshot_id="snapshot-1", limit=50)
         self.queue.get_job.assert_awaited_once_with("workspace-1", "job-1")
         self.queue.cancel.assert_awaited_once_with("workspace-1", "job-1")
 
@@ -139,7 +133,7 @@ class SqliteBackupQueueRouteTests(unittest.IsolatedAsyncioTestCase):
         self.queue.enqueue.assert_not_awaited()
 
     def test_capture_job_routes_precede_dynamic_backup_routes(self) -> None:
-        paths = [route.path for route in routes.router.routes]
+        paths = [route.path for route in routes.router.routes if isinstance(route, Route)]
         self.assertLess(
             paths.index("/indexes/userspace/workspaces/{workspace_id}/sqlite-history/capture-jobs"),
             paths.index("/indexes/userspace/workspaces/{workspace_id}/sqlite-history/{backup_id}/download"),
