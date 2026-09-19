@@ -148,6 +148,24 @@ When you call `spawn_subagents`:
 """
 
 
+USERSPACE_EXTERNAL_HARNESS_GUIDANCE_PROMPT = """
+
+## EXTERNAL HARNESS RESPONSIBILITIES
+
+- You are the harness responsible for this workspace. Use only the operations,
+  resources, and credentials explicitly supplied in the current instruction
+  bundle; server-side authorization remains authoritative.
+- Decompose independent work, choose any available execution/model capability,
+  and coordinate workers or review passes using your own facilities. Keep a
+  single owner for integration, validation, and snapshot creation.
+- Before mutations, read the supplied workspace facts and relevant files. Make
+  incremental changes, validate every changed source file, fix reported errors,
+  then create a snapshot when the workspace is stable.
+- Refresh this bundle when its context revision changes. Do not infer access to
+  tools, indexes, workspaces, or credentials absent from the bundle.
+"""
+
+
 def dedupe_subagent_model_ids(model_ids: Iterable[str] | None) -> list[str]:
     """Return exact allowed model IDs, preserving order and removing blanks/duplicates."""
     seen: set[str] = set()
@@ -435,6 +453,55 @@ def build_userspace_turn_reminder_with_env_vars(
         env_var_reminder_line=env_var_reminder_line,
         runtime_status_reminder_line=_normalize_optional_turn_line(runtime_status_reminder_line) + _normalize_optional_turn_line(diagnostics_reminder_line),
     )
+
+
+def build_userspace_instruction_sections(
+    *,
+    include_sqlite_persistence: bool,
+    has_live_data_tools: bool,
+    workspace_continuity: str,
+    entrypoint_status: EntrypointStatus,
+    is_default_static: bool,
+    username: str | None = None,
+    display_name: str | None = None,
+    available_tool_names: set[str] | None = None,
+    shared_sqlite_databases: list[dict[str, str]] | None = None,
+    mounts_enabled: bool = False,
+    mounts: list[dict[str, str]] | None = None,
+    object_storage_enabled: bool = False,
+    object_storage_buckets: list[dict[str, str]] | None = None,
+) -> dict[str, str]:
+    """Assemble the reusable User Space prompt sections from request facts.
+
+    This is deliberately pure so internal request assembly and external
+    instruction delivery can share the same prompt builders without a curated
+    second copy of platform constraints.
+    """
+
+    return {
+        "base": BASE_USERSPACE_SYSTEM_PROMPT,
+        "workspace": build_userspace_mode_prompt_addition(
+            include_sqlite_persistence=include_sqlite_persistence,
+            has_live_data_tools=has_live_data_tools,
+            workspace_continuity=workspace_continuity,
+            available_tool_names=available_tool_names,
+            shared_sqlite_databases=shared_sqlite_databases or [],
+        ),
+        "entrypoint": build_userspace_entrypoint_nudge(
+            entrypoint_status,
+            is_default_static=is_default_static,
+        ),
+        "identity": build_current_user_prompt_fragment(username, display_name),
+        "mounts": build_userspace_mounts_prompt_fragment(
+            mounts_enabled=mounts_enabled,
+            mounts=mounts,
+        ),
+        "object_storage": build_userspace_object_storage_prompt_fragment(
+            object_storage_enabled=object_storage_enabled,
+            buckets=object_storage_buckets,
+        ),
+        "external_harness": USERSPACE_EXTERNAL_HARNESS_GUIDANCE_PROMPT,
+    }
 
 
 def build_current_user_prompt_fragment(

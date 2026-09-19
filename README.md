@@ -525,6 +525,29 @@ Core concepts that affect how Ragtime is deployed and used.
 
 Workspace owners and admins can open **Share Workspace**, enable **External Agent Access**, and copy the generated instructions into Claude Cowork, Codex, ChatGPT, or another compatible agent to collaborate on the workspace.
 
+#### Bring Your Own Development Harness
+
+Ragtime can provide the workspace control plane while an external harness supplies reasoning. An admin can disable hosted chat for the instance in **Settings**, and can set a per-user hosted-chat override in **Users**. The global setting always wins. When hosted chat is disabled for a user, Ragtime does not make hosted generative calls for that user's development work; retrieval and provider-backed embeddings for indexing remain available.
+
+Use the workspace **Connect your agent** controls as the owner or an admin to create a revocable development credential. The secret is displayed only when it is created or rotated. It has the form `rtdev_<selector>_<secret>`, is bound to one workspace, has `read`, `write`, and/or `exec` scopes, and can have an expiry. List responses deliberately omit the secret. Revoke or rotate a credential when a harness no longer needs it.
+
+For MCP, add the default `/mcp` endpoint with a server name such as `rtdev` and send the development credential as a bearer token. First call `workspace_development_context` with the workspace ID. It returns the current instruction bundle and revision. Then call `workspace_development` with `workspace_id`, an operation name, and that operation's arguments. The operation catalog covers files, snapshots, validation, runtime and preview actions, authorized resources, index search/grants, and asynchronous exec jobs. The server checks the workspace binding, credential scope, and workspace role again for every call.
+
+HTTP is an equivalent wrapper around the same dispatcher:
+
+- `GET /indexes/userspace/development/workspaces/{workspace_id}/context`
+- `GET /indexes/userspace/development/workspaces/{workspace_id}/operations`
+- `POST /indexes/userspace/development/workspaces/{workspace_id}/operations/{operation}` with `{"arguments": {...}}`
+- Session-authenticated credential management is under `.../credentials` (`GET`, `POST`, `POST /{credential_id}/rotate`, and `DELETE /{credential_id}`).
+
+File writes, patches, and deletes require the current content hash. This detects API-lane conflicts but does not serialize shell edits made inside a running sandbox. Snapshots persist through the workspace Git history. In chroot compatibility mode, mirrored sandbox edits are reconciled during the runtime lifecycle, so do not treat an abrupt worker loss as an atomic durability guarantee.
+
+Each workspace has a hidden code index by default. General upload, Git, schema, or PDM indexes are unavailable to an external workspace until an owner grants them through the index-grant operations. Code-index updates use the durable queue rather than a direct background task.
+
+Exec credentials grant full workspace-developer trust. Programmatic exec jobs are bounded to two concurrent jobs per workspace and eight globally, retain at most 1 MiB of output per job, and keep the latest 100 finished jobs. The job API supports status, incremental output cursors, and cancellation; it does not promise process resumption after a worker loss.
+
+Development credentials are accepted only by the external development HTTP/MCP surface. They receive `401` on hosted chat, build, agent-management, and `/v1` routes. `/v1/chat/completions` uses the shared API-key/anonymous identity, so its hosted-execution gate is global-only; per-user `/v1` identity is a deferred feature. Shared and anonymous callers likewise cannot use a workspace development credential.
+
 ### Vector Store Abstraction
 
 Ragtime uses **two vector backends**: **FAISS** (in-memory, loaded at startup) and **pgvector** (PostgreSQL, persistent). Upload, Git, and Filesystem indexes can use either backend.

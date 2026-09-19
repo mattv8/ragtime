@@ -2387,6 +2387,7 @@ export function SettingsPanel({
         github_copilot_enterprise_url: data.github_copilot_enterprise_url,
         openai_codex_base_url: data.openai_codex_base_url,
         default_chat_model: data.default_chat_model ?? null,
+        hosted_chat_enabled: data.hosted_chat_enabled !== false,
         userspace_build_model: data.userspace_build_model ?? null,
         openrouter_credit_monitor_enabled: data.openrouter_credit_monitor_enabled ?? false,
         openrouter_low_credit_threshold_usd: data.openrouter_low_credit_threshold_usd ?? 5,
@@ -3072,6 +3073,7 @@ export function SettingsPanel({
         openrouter_credit_monitor_enabled: formData.openrouter_credit_monitor_enabled,
         openrouter_low_credit_threshold_usd: formData.openrouter_low_credit_threshold_usd,
         allowed_chat_models: formData.allowed_chat_models,
+        hosted_chat_enabled: formData.hosted_chat_enabled,
         chat_compaction_threshold_percent: formData.chat_compaction_threshold_percent,
         chat_auto_compaction_threshold_percent: formData.chat_auto_compaction_threshold_percent,
         // OpenAPI model settings
@@ -4473,6 +4475,30 @@ export function SettingsPanel({
         ariaLabel="Filter settings by keyword"
         completionCandidates={settingsFilterCompletionCandidates}
       />
+
+      <section
+        id="settings-hosted-chat-policy"
+        className="settings-accordion-item"
+        data-settings-section="hosted-chat-policy"
+        data-settings-filter-card="true"
+      >
+        <h3>Hosted chat policy</h3>
+        <p className="muted">
+          Disable Ragtime-hosted generation globally. Users with no individual override inherit this
+          setting.
+        </p>
+        <label className="settings-checkbox-row" htmlFor="settings-hosted-chat-enabled">
+          <input
+            id="settings-hosted-chat-enabled"
+            type="checkbox"
+            checked={formData.hosted_chat_enabled ?? settings?.hosted_chat_enabled ?? true}
+            onChange={(event) =>
+              setFormData((current) => ({ ...current, hosted_chat_enabled: event.target.checked }))
+            }
+          />
+          Enable hosted chat
+        </label>
+      </section>
 
       {!settingsFilterHasMatches && settingsFilter.hasActiveFilters && (
         <p className="muted settings-filter-empty">No settings match the current filters.</p>

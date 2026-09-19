@@ -150,6 +150,9 @@ vi.mock('./shared/ExternalApiAccessSection', () => ({
     </div>
   ),
 }));
+vi.mock('./shared/ConnectYourAgentPanel', () => ({
+  ConnectYourAgentPanel: () => <div data-testid="connect-your-agent" />,
+}));
 vi.mock('./shared/ShareLinkModal', () => ({
   ShareLinkModal: ({
     isOpen,
@@ -203,8 +206,16 @@ vi.mock('./shared/ShareLinkModal', () => ({
 }));
 vi.mock('./WorkspaceScmWizard', () => ({
   useWorkspaceScmWizardActivity: () => workspaceScmActivityMock,
-  WorkspaceScmWizard: ({ workspace }: { workspace?: { sqlite_persistence_mode?: string } }) => (
-    <div data-testid="workspace-scm-mode">{workspace?.sqlite_persistence_mode ?? 'missing'}</div>
+  WorkspaceScmWizard: ({
+    workspace,
+    onAskAgent,
+  }: {
+    workspace?: { sqlite_persistence_mode?: string };
+    onAskAgent?: () => void;
+  }) => (
+    <div data-testid="workspace-scm-mode" data-has-agent-action={String(Boolean(onAskAgent))}>
+      {workspace?.sqlite_persistence_mode ?? 'missing'}
+    </div>
   ),
 }));
 vi.mock('./shared/AdminWorkspaceModal', () => ({ default: () => null }));

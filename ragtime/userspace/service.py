@@ -20618,6 +20618,9 @@ class UserSpaceService:
         request: UpsertWorkspaceFileRequest,
         user_id: str,
         skip_live_data_enforcement: bool = False,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
+        mutation_lock_held: bool = False,
     ) -> UserSpaceFileResponse:
         workspace = await self._enforce_workspace_access(
             workspace_id,
@@ -20790,8 +20793,20 @@ class UserSpaceService:
             normalized_path,
         )
         mutation_lock = await self._get_workspace_file_mutation_lock(workspace_id, normalized_path)
-        async with mutation_lock:
-            stat = await asyncio.to_thread(
+
+        async def write_locked() -> Any:
+            actual_hash: str | None = None
+            if file_path.exists() and file_path.is_file():
+                try:
+                    existing_content = await asyncio.to_thread(file_path.read_text, encoding="utf-8")
+                except UnicodeDecodeError as exc:
+                    raise HTTPException(status_code=415, detail="Workspace file is not UTF-8 text") from exc
+                actual_hash = hashlib.sha256(existing_content.encode("utf-8")).hexdigest()
+            if require_content_hash and expected_content_hash != actual_hash:
+                raise HTTPException(
+                    status_code=409, detail={"code": "content_hash_conflict", "expected_hash": expected_content_hash, "actual_hash": actual_hash}
+                )
+            return await asyncio.to_thread(
                 self._write_workspace_file_sync,
                 file_path,
                 request.content,
@@ -20799,6 +20814,12 @@ class UserSpaceService:
                 request.live_data_connections,
                 request.live_data_checks,
             )
+
+        if mutation_lock_held:
+            stat = await write_locked()
+        else:
+            async with mutation_lock:
+                stat = await write_locked()
         await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
             workspace_id,
             [normalized_path],
@@ -20867,7 +20888,16 @@ class UserSpaceService:
             updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
         )
 
-    async def delete_workspace_file(self, workspace_id: str, relative_path: str, user_id: str) -> None:
+    async def delete_workspace_file(
+        self,
+        workspace_id: str,
+        relative_path: str,
+        user_id: str,
+        *,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
+        mutation_lock_held: bool = False,
+    ) -> None:
         await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         await self._ensure_workspace_git_repo(workspace_id)
         normalized_path = self._normalize_workspace_relative_path(relative_path)
@@ -20883,8 +20913,26 @@ class UserSpaceService:
             normalized_path,
         )
         mutation_lock = await self._get_workspace_file_mutation_lock(workspace_id, normalized_path)
-        async with mutation_lock:
+
+        async def delete_locked() -> None:
+            actual_hash: str | None = None
+            if file_path.exists() and file_path.is_file():
+                try:
+                    existing_content = await asyncio.to_thread(file_path.read_text, encoding="utf-8")
+                except UnicodeDecodeError as exc:
+                    raise HTTPException(status_code=415, detail="Workspace file is not UTF-8 text") from exc
+                actual_hash = hashlib.sha256(existing_content.encode("utf-8")).hexdigest()
+            if require_content_hash and expected_content_hash != actual_hash:
+                raise HTTPException(
+                    status_code=409, detail={"code": "content_hash_conflict", "expected_hash": expected_content_hash, "actual_hash": actual_hash}
+                )
             await asyncio.to_thread(self._delete_workspace_file_sync, file_path)
+
+        if mutation_lock_held:
+            await delete_locked()
+        else:
+            async with mutation_lock:
+                await delete_locked()
 
         await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
             workspace_id,

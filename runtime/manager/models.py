@@ -358,6 +358,30 @@ class RuntimeExecResponse(BaseModel):
     )
 
 
+class RuntimeExecJobRequest(RuntimeExecRequest):
+    """Addressable, disconnect-safe programmatic sandbox execution request."""
+
+    user_id: str | None = Field(default=None, description="Acting user ID for minimal job attribution")
+    credential_id: str | None = Field(default=None, description="Development credential ID for minimal job attribution")
+    operation: str = Field(default="exec", min_length=1, max_length=64, description="Calling operation name for minimal job attribution")
+
+
+class RuntimeExecJobResponse(BaseModel):
+    id: str = Field(description="Addressable execution job ID")
+    status: str = Field(description="running, completed, failed, cancelled, timed_out, or interrupted")
+    exit_code: int | None = Field(default=None, description="Process exit code once known")
+    output: str = Field(default="", description="Bounded output after the requested cursor")
+    cursor: int = Field(default=0, description="Effective absolute output cursor used for this response")
+    next_cursor: int = Field(default=0, description="Absolute cursor for the next output request")
+    truncated_before: int = Field(default=0, description="Output before this absolute cursor was discarded")
+    timed_out: bool = Field(default=False, description="Whether the job reached its timeout")
+    created_at: datetime = Field(description="Job creation timestamp")
+    finished_at: datetime | None = Field(default=None, description="Terminal transition timestamp")
+    user_id: str | None = Field(default=None, description="Minimal acting-user attribution")
+    credential_id: str | None = Field(default=None, description="Minimal credential attribution")
+    operation: str = Field(default="exec", description="Calling operation attribution")
+
+
 class RuntimeExternalBrowseRequest(BaseModel):
     url: str = Field(description="Absolute http/https URL to navigate to")
     timeout_ms: int = Field(

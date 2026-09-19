@@ -150,10 +150,11 @@ async def runtime_manager_request(
     json_payload: dict[str, Any] | None = None,
     timeout_override_seconds: float | None = None,
     retry_safe: bool = True,
+    allow_list_response: bool = False,
     surface_error_status: bool = False,
     unavailable_detail_prefix: str = "Runtime manager unavailable",
     request_failed_detail_prefix: str = "Runtime manager request failed",
-) -> dict[str, Any]:
+) -> Any:
     config = get_runtime_manager_request_config()
     url = f"{config.base_url}/{path.lstrip('/')}"
     timeout = httpx.Timeout(timeout_override_seconds if timeout_override_seconds is not None else config.timeout_seconds)
@@ -207,7 +208,9 @@ async def runtime_manager_request(
             return {}
         try:
             data = response.json()
-            return data if isinstance(data, dict) else {}
+            if isinstance(data, dict) or (allow_list_response and isinstance(data, list)):
+                return data
+            return {}
         except Exception:
             return {}
     finally:

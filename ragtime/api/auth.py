@@ -67,6 +67,7 @@ from ragtime.core.auth import (
 from ragtime.core.auth_methods import build_auth_method_statuses
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
+from ragtime.core.hosted_execution_policy import effective_hosted_execution_enabled, hosted_execution_enabled
 from ragtime.core.logging import get_logger
 from ragtime.core.mcp_accounting import (
     get_mcp_daily_trend,
@@ -398,6 +399,8 @@ class UserResponse(BaseModel):
     mfa_enabled: bool = False
     mfa_required: bool = False
     recovery_codes_remaining: int = 0
+    hosted_chat_enabled: Optional[bool] = None
+    hosted_chat_enabled_effective: bool = True
 
 
 class UserListResponse(BaseModel):
@@ -429,6 +432,13 @@ class UpdateUserRoleRequest(BaseModel):
     role: Literal["user", "admin"] = Field(
         ...,
         description="New role value ('user' or 'admin').",
+    )
+
+
+class UpdateUserHostedChatRequest(BaseModel):
+    hosted_chat_enabled: Optional[bool] = Field(
+        default=None,
+        description="Per-user hosted execution override; null inherits the global policy.",
     )
 
 
@@ -800,6 +810,7 @@ class AuthStatusResponse(BaseModel):
         default=DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT,
         description="Automatically compact the conversation once effective context usage reaches this percentage. Set to 100 to disable auto-compaction.",
     )
+    hosted_chat_enabled: bool = Field(default=True, description="Effective current-user hosted execution capability.")
 
 
 class DebugTotpCodeResponse(BaseModel):
@@ -853,6 +864,8 @@ async def _user_response(user: User) -> UserResponse:
         mfa_enabled=mfa_enabled,
         mfa_required=mfa_required,
         recovery_codes_remaining=recovery_codes_remaining,
+        hosted_chat_enabled=getattr(user, "hostedChatEnabled", None),
+        hosted_chat_enabled_effective=await hosted_execution_enabled(user.id),
     )
 
 
@@ -908,6 +921,8 @@ async def _bulk_user_responses(users: list[User]) -> list[UserResponse]:
     db = await get_db()
     auth_config = await get_auth_provider_config()
     user_ids = [user.id for user in users]
+    hosted_settings = await db.appsettings.find_unique(where={"id": "default"})
+    hosted_globally_enabled = bool(hosted_settings and getattr(hosted_settings, "hostedChatEnabled", False))
 
     memberships = await db.authgroupmembership.find_many(where={"userId": {"in": user_ids}})
     memberships_by_user_id: dict[str, list[Any]] = {}
@@ -959,6 +974,11 @@ async def _bulk_user_responses(users: list[User]) -> list[UserResponse]:
                     webauthn_enabled_user_ids,
                 ),
                 recovery_codes_remaining=recovery_code_counts.get(user.id, 0),
+                hosted_chat_enabled=getattr(user, "hostedChatEnabled", None),
+                hosted_chat_enabled_effective=effective_hosted_execution_enabled(
+                    hosted_globally_enabled,
+                    getattr(user, "hostedChatEnabled", None),
+                ),
             )
         )
     return responses
@@ -1370,7 +1390,7 @@ async def get_debug_totp_code() -> DebugTotpCodeResponse:
 @router.get("/status", response_model=AuthStatusResponse)
 async def get_auth_status(
     request: Request,
-    current_user: Optional[dict] = Depends(get_current_user_optional),
+    current_user: User | None = Depends(get_current_user_optional),
 ):
     """Get authentication system status.
 
@@ -1389,6 +1409,7 @@ async def get_auth_status(
     authenticated_webgl_background_enabled = DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED
     chat_compaction_threshold_percent = DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT
     chat_auto_compaction_threshold_percent = DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT
+    hosted_chat_enabled = True
 
     try:
         # Invalidate the settings cache before reading to ensure fresh values.
@@ -1430,6 +1451,7 @@ async def get_auth_status(
                 ),
             ),
         )
+        hosted_chat_enabled = bool(app_settings.get("hosted_chat_enabled", True))
     except Exception as exc:
         logger.debug("Failed to load server branding for auth status: %s", exc)
 
@@ -1455,6 +1477,7 @@ async def get_auth_status(
         authenticated_webgl_background_enabled=authenticated_webgl_background_enabled,
         chat_compaction_threshold_percent=chat_compaction_threshold_percent,
         chat_auto_compaction_threshold_percent=chat_auto_compaction_threshold_percent,
+        hosted_chat_enabled=(await hosted_execution_enabled(current_user.id) if current_user else hosted_chat_enabled),
     )
 
 
@@ -3106,6 +3129,21 @@ async def update_user_role(
     logger.info(f"User '{user.username}' role changed to '{resolved_role}' by admin '{current_user.username}'")
 
     return {"success": True, "role": resolved_role}
+
+
+@router.patch("/users/{user_id}/hosted-chat", response_model=UserResponse)
+async def update_user_hosted_chat(
+    user_id: str,
+    request: UpdateUserHostedChatRequest,
+    current_user: User = Depends(require_admin),
+):
+    """Set or clear a user's hosted execution override."""
+    db = await get_db()
+    user = await db.user.update(where={"id": user_id}, data={"hostedChatEnabled": request.hosted_chat_enabled})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    logger.info("Hosted chat override updated for user '%s' by admin '%s'", user.username, current_user.username)
+    return await _user_response(user)
 
 
 @router.post("/users/{user_id}/role/reset", response_model=ResetUserRoleResponse)

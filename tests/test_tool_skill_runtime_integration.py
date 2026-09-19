@@ -32,10 +32,20 @@ from tests.test_tool_skill_shared import (
     tool_by_name,
 )
 
-# Convenience aliases for backwards compatibility
+# Test executors mirror LangChain's callback-config invocation protocol.
 _FakeAction = FakeAction
-_FakeExecutor = FakeExecutor
-_FakeStreamExecutor = FakeStreamExecutor
+
+
+class _FakeExecutor(FakeExecutor):
+    async def ainvoke(self, payload: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.callback_configs = getattr(self, "callback_configs", []) + [config]
+        return await super().ainvoke(payload)
+
+
+class _FakeStreamExecutor(FakeStreamExecutor):
+    def astream_events(self, payload: dict[str, Any], version: str = "v2", config: dict[str, Any] | None = None):
+        self.callback_configs = getattr(self, "callback_configs", []) + [config]
+        return super().astream_events(payload, version=version)
 
 
 # Convenience wrappers (all delegate to shared module)
@@ -80,6 +90,21 @@ def _make_request_context(**kwargs: Any) -> dict[str, Any]:
 
 
 class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        async def _enabled_users(*, where: dict[str, Any]) -> list[SimpleNamespace]:
+            return [SimpleNamespace(id=user_id, hostedChatEnabled=None) for user_id in where["id"]["in"]]
+
+        policy_db = SimpleNamespace(
+            appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(hostedChatEnabled=True))),
+            user=SimpleNamespace(find_many=mock.AsyncMock(side_effect=_enabled_users)),
+        )
+        patcher = mock.patch(
+            "ragtime.core.hosted_execution_policy.get_db",
+            new=mock.AsyncMock(return_value=policy_db),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _make_rag(self, *, tool_name: str = "Demo SQL", tool_description: str = "Reads demo SQL rows.") -> rag_components.RAGComponents:
         return make_rag_components(tool_name=tool_name, tool_description=tool_description)
 

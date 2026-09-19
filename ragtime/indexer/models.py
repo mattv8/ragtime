@@ -620,6 +620,10 @@ class AppSettings(BaseModel):
         default=DEFAULT_TOOL_SKILLS_ENABLED,
         description="If True, allow conversations to persist requested on-demand tool skills.",
     )
+    hosted_chat_enabled: bool = Field(
+        default=True,
+        description="Allow Ragtime-hosted generative chat execution globally.",
+    )
     userspace_build_model: Optional[str] = Field(
         default=None,
         description="Provider-scoped model used for new User Space build tasks; null uses normal defaults.",

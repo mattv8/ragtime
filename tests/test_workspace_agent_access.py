@@ -9,6 +9,7 @@ from unittest import mock
 from fastapi import HTTPException
 
 from ragtime.userspace import agent_access
+from tests.hosted_execution_test_support import enabled_hosted_execution_policy
 
 UniqueViolationError: Any = getattr(importlib.import_module("prisma.errors"), "UniqueViolationError")
 
@@ -190,7 +191,10 @@ class AgentAccessTokenTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resolve_valid_token_returns_context(self) -> None:
         db = _fake_db(record=_fake_record())
-        with mock.patch.object(agent_access, "get_db", mock.AsyncMock(return_value=db)):
+        with (
+            enabled_hosted_execution_policy("user-1"),
+            mock.patch.object(agent_access, "get_db", mock.AsyncMock(return_value=db)),
+        ):
             ctx = await agent_access.resolve_agent_access_token("tok-abc")
         self.assertEqual(ctx.workspace_id, "ws-1")
         self.assertEqual(ctx.acting_user_id, "user-1")

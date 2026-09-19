@@ -73,6 +73,8 @@ import type {
   ModelPreferenceResponse,
   AuthStatus,
   User,
+  WorkspaceDevelopmentCredential,
+  WorkspaceDevelopmentCredentialSecretResponse,
   LdapConfig,
   LdapDiscoverRequest,
   LdapDiscoverResponse,
@@ -1013,6 +1015,85 @@ export const api = {
     const response = await apiFetch(`${AUTH_BASE}/users`, {});
     const data = await handleResponse<{ users: User[] } | User[]>(response);
     return Array.isArray(data) ? data : ((data as { users: User[] }).users ?? []);
+  },
+
+  async updateUserHostedChatEnabled(
+    userId: string,
+    hosted_chat_enabled: boolean | null,
+  ): Promise<User> {
+    const response = await apiFetch(
+      `${AUTH_BASE}/users/${encodeURIComponent(userId)}/hosted-chat`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hosted_chat_enabled }),
+      },
+    );
+    return handleResponse<User>(response);
+  },
+
+  async listWorkspaceDevelopmentCredentials(
+    workspaceId: string,
+  ): Promise<WorkspaceDevelopmentCredential[]> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/development/workspaces/${encodeURIComponent(workspaceId)}/credentials`,
+      { cache: 'no-store' },
+    );
+    const data = await handleResponse<{ items: WorkspaceDevelopmentCredential[] }>(response);
+    return data.items;
+  },
+
+  async createWorkspaceDevelopmentCredential(
+    workspaceId: string,
+    request: { name: string; scopes?: string[]; expires_at?: string | null },
+  ): Promise<WorkspaceDevelopmentCredentialSecretResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/development/workspaces/${encodeURIComponent(workspaceId)}/credentials`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
+    return handleResponse<WorkspaceDevelopmentCredentialSecretResponse>(response);
+  },
+
+  async rotateWorkspaceDevelopmentCredential(
+    workspaceId: string,
+    credentialId: string,
+  ): Promise<WorkspaceDevelopmentCredentialSecretResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/development/workspaces/${encodeURIComponent(workspaceId)}/credentials/${encodeURIComponent(credentialId)}/rotate`,
+      { method: 'POST' },
+    );
+    return handleResponse<WorkspaceDevelopmentCredentialSecretResponse>(response);
+  },
+
+  async revokeWorkspaceDevelopmentCredential(
+    workspaceId: string,
+    credentialId: string,
+  ): Promise<WorkspaceDevelopmentCredential> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/development/workspaces/${encodeURIComponent(workspaceId)}/credentials/${encodeURIComponent(credentialId)}`,
+      { method: 'DELETE' },
+    );
+    return handleResponse<WorkspaceDevelopmentCredential>(response);
+  },
+
+  async executeWorkspaceDevelopmentOperation<T>(
+    workspaceId: string,
+    operation: string,
+    arguments_: Record<string, unknown> = {},
+  ): Promise<T> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/development/workspaces/${encodeURIComponent(workspaceId)}/operations/${encodeURIComponent(operation)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ arguments: arguments_ }),
+      },
+    );
+    return handleResponse<T>(response);
   },
 
   /**
