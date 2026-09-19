@@ -15,15 +15,18 @@ Features:
 
 import argparse
 import asyncio
+import contextvars
+import json
 import logging
 import sys
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any, cast
 
 from mcp.server import NotificationOptions, Server
 from mcp.server.session import ServerSession
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, TextContent, Tool
 
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.database import connect_db, disconnect_db, get_db
@@ -31,8 +34,130 @@ from ragtime.core.logging import get_logger
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, mcp_tool_adapter
 from ragtime.rag import rag
+from ragtime.userspace.development_service import development_service
 
 logger = get_logger(__name__)
+
+# Server and tool definitions are shared; caller identity must not be. This
+# context is reset after every HTTP request and inherited only by that request's
+# MCP task.
+_development_principal: contextvars.ContextVar[Any | None] = contextvars.ContextVar("mcp_development_principal", default=None)
+
+
+@contextmanager
+def development_principal_context(principal: Any | None) -> Iterator[None]:
+    """Bind an authenticated development principal for one MCP request."""
+    token = _development_principal.set(principal)
+    try:
+        yield
+    finally:
+        _development_principal.reset(token)
+
+
+def get_request_development_principal() -> Any | None:
+    """Return the request-local principal; never cache this value."""
+    return _development_principal.get()
+
+
+async def _get_development_operations(principal: Any) -> list[dict[str, Any]]:
+    """Get only operations whose declared scope is present on this credential."""
+    operations = development_service.list_operations()
+    scopes = set(getattr(principal, "scopes", frozenset()))
+    return [operation for operation in operations if str(operation.get("scope", "read")) in scopes]
+
+
+async def _development_tools_for_principal(principal: Any) -> list[Tool]:
+    operations = await _get_development_operations(principal)
+    if not operations:
+        return []
+    operation_names = [str(operation["name"]) for operation in operations if operation.get("name")]
+    operation_descriptions = "\n".join(f"- {operation['name']}: {operation.get('description', '')}" for operation in operations if operation.get("name"))
+    return [
+        Tool(
+            name="workspace_development",
+            description=(
+                "Perform an authorized workspace development operation. Operations are "
+                "authorized again when executed; pass only the arguments defined for the "
+                "selected operation. Available operations for this request:\n"
+                f"{operation_descriptions}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workspace_id": {"type": "string", "description": "Authorized workspace identifier."},
+                    "operation": {
+                        "type": "string",
+                        "enum": operation_names,
+                        "description": "Development operation to perform.",
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "description": "Arguments for the selected operation, matching its documented input schema.",
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["workspace_id", "operation"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="workspace_development_context",
+            description="Retrieve the current authorized workspace development context and instruction bundle.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workspace_id": {"type": "string", "description": "Authorized workspace identifier."},
+                },
+                "required": ["workspace_id"],
+                "additionalProperties": False,
+            },
+        ),
+    ]
+
+
+def _development_error(code: str, message: Any) -> CallToolResult:
+    """Return MCP's structured, machine-readable error result."""
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps({"error": {"code": code, "message": message}}))],
+        isError=True,
+    )
+
+
+async def _execute_development_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
+    """Dispatch a development MCP tool through the shared service layer."""
+    principal = get_request_development_principal()
+    if principal is None:
+        return _development_error("authentication_required", "A session, MCP OAuth user token, or workspace development credential is required.")
+
+    workspace_id = arguments.get("workspace_id")
+    if not isinstance(workspace_id, str) or not workspace_id:
+        return _development_error("invalid_arguments", "workspace_id is required.")
+    operation = "context" if name == "workspace_development_context" else arguments.get("operation")
+    if not isinstance(operation, str) or not operation:
+        return _development_error("invalid_arguments", "operation is required.")
+    operation_arguments = {} if name == "workspace_development_context" else arguments.get("arguments", {})
+    if not isinstance(operation_arguments, dict):
+        return _development_error("invalid_arguments", "arguments must be an object.")
+
+    try:
+        allowed_names = {str(item["name"]) for item in await _get_development_operations(principal) if item.get("name")}
+        if operation not in allowed_names:
+            return _development_error("operation_not_allowed", "The requested operation is not available for this credential.")
+        result = await development_service.execute(principal, workspace_id, operation, operation_arguments)
+        return CallToolResult(content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False, default=str))])
+    except Exception as exc:
+        # The shared service remains the authorization boundary. Keep failures
+        # structured without returning a traceback through MCP.
+        status_code = getattr(exc, "status_code", None)
+        detail = getattr(exc, "detail", None)
+        message = detail if detail is not None else str(exc)
+        code = (
+            str(detail.get("code"))
+            if isinstance(detail, dict) and detail.get("code")
+            else ("operation_failed" if status_code is None else f"http_{status_code}")
+        )
+        return _development_error(code, message or "Workspace development operation failed.")
+
 
 # Default MCP server identity (brandable from settings)
 _DEFAULT_MCP_SERVER_ID = "ragtime"
@@ -209,16 +334,26 @@ def _register_handlers(
         _track_active_session(server)
 
         try:
-            tool_definitions = await tool_adapter.get_available_tools(route_filter=route_filter)
+            principal = get_request_development_principal()
+            # A workspace development credential is deliberately not a general
+            # MCP route credential. It can see only its workspace development
+            # tools, never the legacy global tool catalog.
+            if getattr(principal, "credential_id", None) is None:
+                tool_definitions = await tool_adapter.get_available_tools(route_filter=route_filter)
 
-            for tool_def in tool_definitions:
-                tools.append(
-                    Tool(
-                        name=tool_def.name,
-                        description=tool_def.description,
-                        inputSchema=tool_def.input_schema,
+                for tool_def in tool_definitions:
+                    tools.append(
+                        Tool(
+                            name=tool_def.name,
+                            description=tool_def.description,
+                            inputSchema=tool_def.input_schema,
+                        )
                     )
-                )
+
+            if principal is not None and route_filter is None:
+                # Definitions are rebuilt per request because the operation
+                # list is scope-dependent. The shared adapter remains cached.
+                tools.extend(await _development_tools_for_principal(principal))
 
             logger.debug(f"MCP list_tools: exposing {len(tools)} tools")
 
@@ -229,7 +364,7 @@ def _register_handlers(
         return tools
 
     @server.call_tool()
-    async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent] | CallToolResult:
         """
         Execute a tool and return the result.
 
@@ -245,6 +380,14 @@ def _register_handlers(
         logger.debug(f"MCP call_tool arguments: {arguments}")
 
         try:
+            if name in {"workspace_development", "workspace_development_context"}:
+                if route_filter is not None:
+                    return _development_error("tool_not_available", "Workspace development tools are available only on the default MCP route.")
+                return await _execute_development_tool(name, arguments)
+
+            if getattr(get_request_development_principal(), "credential_id", None) is not None:
+                return _development_error("tool_not_available", "Workspace development credentials cannot call legacy MCP tools.")
+
             # If a route filter is active, validate the tool is allowed
             if route_filter is not None:
                 if not await tool_adapter.is_tool_allowed_by_route_filter(name, route_filter):

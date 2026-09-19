@@ -886,6 +886,34 @@ class SessionManager:
             cwd=cwd,
         )
 
+    async def start_exec_job(
+        self,
+        provider_session_id: str,
+        command: str,
+        *,
+        timeout_seconds: int = 120,
+        cwd: str | None = None,
+        user_id: str | None = None,
+        credential_id: str | None = None,
+        operation: str = "exec",
+    ):
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.start_exec_job(
+            session.worker_session_id, command, timeout_seconds=timeout_seconds, cwd=cwd, user_id=user_id, credential_id=credential_id, operation=operation
+        )
+
+    async def list_exec_jobs(self, provider_session_id: str):
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.list_exec_jobs(session.worker_session_id)
+
+    async def get_exec_job(self, provider_session_id: str, job_id: str, *, cursor: int = 0, limit: int = 16384):
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.get_exec_job(session.worker_session_id, job_id, cursor=cursor, limit=limit)
+
+    async def cancel_exec_job(self, provider_session_id: str, job_id: str):
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.cancel_exec_job(session.worker_session_id, job_id)
+
     async def external_browse(
         self,
         payload: "RuntimeExternalBrowseRequest",

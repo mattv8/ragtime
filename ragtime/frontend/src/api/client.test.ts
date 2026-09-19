@@ -9,6 +9,40 @@ function jsonResponse(body: unknown, status: number = 200): Response {
   });
 }
 
+describe('workspace development operation requests', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    ['exec_start', { command: 'npm test' }],
+    ['exec_get', { job_id: 'job-1', cursor: 128 }],
+    ['exec_cancel', { job_id: 'job-1' }],
+  ])(
+    'wraps %s arguments in the development operation request envelope',
+    async (operation, arguments_) => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({}));
+
+      await api.executeWorkspaceDevelopmentOperation('workspace/1', operation, arguments_);
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/indexes/userspace/development/workspaces/workspace%2F1/operations/${operation}`,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ arguments: arguments_ }),
+        }),
+      );
+    },
+  );
+});
+
 describe('git webhook client normalization', () => {
   const fetchMock = vi.fn<typeof fetch>();
 

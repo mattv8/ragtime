@@ -12,6 +12,8 @@ from runtime.manager.models import (
     RuntimeBridgeCredentialMetadata,
     RuntimeContentProbeRequest,
     RuntimeContentProbeResponse,
+    RuntimeExecJobRequest,
+    RuntimeExecJobResponse,
     RuntimeExecRequest,
     RuntimeExecResponse,
     RuntimeExternalBrowseRequest,
@@ -268,6 +270,30 @@ def create_app() -> FastAPI:
             timeout_seconds=payload.timeout_seconds,
             cwd=payload.cwd,
         )
+
+    @application.post("/sessions/{provider_session_id}/exec-jobs", response_model=RuntimeExecJobResponse)
+    async def start_exec_job(provider_session_id: str, payload: RuntimeExecJobRequest, _auth: None = ManagerAuth) -> RuntimeExecJobResponse:
+        return await manager.start_exec_job(
+            provider_session_id,
+            payload.command,
+            timeout_seconds=payload.timeout_seconds,
+            cwd=payload.cwd,
+            user_id=payload.user_id,
+            credential_id=payload.credential_id,
+            operation=payload.operation,
+        )
+
+    @application.get("/sessions/{provider_session_id}/exec-jobs", response_model=list[RuntimeExecJobResponse])
+    async def list_exec_jobs(provider_session_id: str, _auth: None = ManagerAuth) -> list[RuntimeExecJobResponse]:
+        return await manager.list_exec_jobs(provider_session_id)
+
+    @application.get("/sessions/{provider_session_id}/exec-jobs/{job_id}", response_model=RuntimeExecJobResponse)
+    async def get_exec_job(provider_session_id: str, job_id: str, cursor: int = 0, limit: int = 16384, _auth: None = ManagerAuth) -> RuntimeExecJobResponse:
+        return await manager.get_exec_job(provider_session_id, job_id, cursor=cursor, limit=limit)
+
+    @application.post("/sessions/{provider_session_id}/exec-jobs/{job_id}/cancel", response_model=RuntimeExecJobResponse)
+    async def cancel_exec_job(provider_session_id: str, job_id: str, _auth: None = ManagerAuth) -> RuntimeExecJobResponse:
+        return await manager.cancel_exec_job(provider_session_id, job_id)
 
     @application.post(
         "/sessions/{provider_session_id}/external-browse",

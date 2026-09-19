@@ -187,6 +187,7 @@ import { WorkspaceSqliteInspectorModal } from './shared/WorkspaceSqliteInspector
 import { WorkspaceObjectStorageExplorer } from './shared/WorkspaceObjectStorageExplorer';
 import { AgentAccessSection } from './shared/AgentAccessSection';
 import { ExternalApiAccessSection } from './shared/ExternalApiAccessSection';
+import { ConnectYourAgentPanel } from './shared/ConnectYourAgentPanel';
 import { ShareLinkModal } from './shared/ShareLinkModal';
 import type { LdapGroup } from './LdapGroupSelect';
 import { Popover, DisabledPopover } from './Popover';
@@ -208,6 +209,7 @@ import { applyTerminalTheme, readTerminalTheme } from '@/theme/terminalTheme';
 
 interface UserSpacePanelProps {
   currentUser: User;
+  hostedChatEnabled?: boolean;
   debugMode?: boolean;
   openWorkspaceRequest?: { workspaceId: string; requestId: number } | null;
   onFullscreenChange?: (fullscreen: boolean) => void;
@@ -941,6 +943,7 @@ export function getWorkspaceToolReadOnlyDescription(
 
 export function UserSpacePanel({
   currentUser,
+  hostedChatEnabled = true,
   debugMode = false,
   openWorkspaceRequest = null,
   onFullscreenChange,
@@ -4679,7 +4682,7 @@ export function UserSpacePanel({
 
   const handleAskAgentToPrepareWorkspace = useCallback(
     async (prompt: string) => {
-      if (!activeWorkspaceId) return;
+      if (!hostedChatEnabled || !activeWorkspaceId) return;
       expandChat();
       setError(null);
 
@@ -4717,6 +4720,7 @@ export function UserSpacePanel({
       activeWorkspaceId,
       awaitAvailableModelsReady,
       expandChat,
+      hostedChatEnabled,
       refreshAvailableModels,
       updateActiveWorkspaceConversationId,
     ],
@@ -8939,7 +8943,7 @@ export function UserSpacePanel({
               )}
             </button>
           )}
-          {activeWorkspaceId && (
+          {hostedChatEnabled && activeWorkspaceId && (
             <AgentAccessButton
               onClick={handleOpenAgentAccessModal}
               title="Manage cross-workspace agent access"
@@ -9269,6 +9273,13 @@ export function UserSpacePanel({
 
       {rightPaneCollapsed ? renderUserspaceOverlay(' userspace-status-overlay-root') : null}
 
+      {activeWorkspaceId && (
+        <ConnectYourAgentPanel
+          workspaceId={activeWorkspaceId}
+          canManage={isOwner || currentUser.role === 'admin'}
+        />
+      )}
+
       {/* === Main content: left pane (editor+chat) | right pane (preview+snapshots) === */}
       <div
         className="userspace-content"
@@ -9442,94 +9453,98 @@ export function UserSpacePanel({
             </div>
           </div>
 
-          <ResizeHandle
-            direction="vertical"
-            ariaLabel="Resize workspace editor and chat"
-            value={Math.round(editorFraction * 100)}
-            min={10}
-            max={90}
-            valueUnit="percent"
-            onResize={handleResizeEditorChat}
-            onResizeTo={handleResizeEditorChatTo}
-            onResizeEnd={commitEditorChatFraction}
-            collapsed={editorChatCollapsedSide ?? undefined}
-            collapsible={{
-              side: 'after',
-              restoreValue: Math.round(
-                Math.min(0.9, Math.max(0.1, prevEditorFraction.current || 0.6)) * 100,
-              ),
-            }}
-          />
+          {hostedChatEnabled && (
+            <ResizeHandle
+              direction="vertical"
+              ariaLabel="Resize workspace editor and chat"
+              value={Math.round(editorFraction * 100)}
+              min={10}
+              max={90}
+              valueUnit="percent"
+              onResize={handleResizeEditorChat}
+              onResizeTo={handleResizeEditorChatTo}
+              onResizeEnd={commitEditorChatFraction}
+              collapsed={editorChatCollapsedSide ?? undefined}
+              collapsible={{
+                side: 'after',
+                restoreValue: Math.round(
+                  Math.min(0.9, Math.max(0.1, prevEditorFraction.current || 0.6)) * 100,
+                ),
+              }}
+            />
+          )}
 
-          {/* Chat section */}
-          <div
-            className="userspace-chat-section"
-            ref={chatSectionRef}
-            style={{
-              display: editorChatCollapsedSide === 'after' ? 'none' : undefined,
-              flex: editorChatCollapsedSide === 'before' ? 1 : 1 - editorFractionLiveRef.current,
-            }}
-          >
-            {activeWorkspaceId ? (
-              <ChatPanel
-                key={activeWorkspaceId}
-                currentUser={currentUser}
-                debugMode={debugMode}
-                workspaceId={activeWorkspaceId}
-                workspaceChatState={activeWorkspaceChatSnapshot}
-                workspaceAvailableTools={availableTools}
-                workspaceToolSelectionMode={effectiveWorkspaceToolSelection.mode}
-                workspaceSelectedToolIds={effectiveWorkspaceToolSelection.toolIds}
-                workspaceSelectedToolGroupIds={effectiveWorkspaceToolSelection.toolGroupIds}
-                workspaceToolGroups={toolGroups}
-                onRequestEnableWorkspaceTool={handleRequestEnableWorkspaceTool}
-                onWorkspaceBuiltInToolsChange={handleWorkspaceBuiltInToolsChange}
-                conversationShareableUserIds={workspaceChatShareableUserIds}
-                onUserMessageSubmitted={handleUserMessageSubmitted}
-                onConversationStateChange={handleConversationStateChange}
-                onActiveConversationChange={updateActiveWorkspaceConversationId}
-                onBranchSwitch={handleBranchSwitch}
-                onOpenWorkspaceFile={handleSelectFile}
-                onRegisterContextReferenceInserter={handleRegisterContextReferenceInserter}
-                onContextReferencesChange={handleContextReferencesChange}
-                onOpenContextReference={handleOpenChatContextReference}
-                onMessageSnapshotRestored={handleMessageSnapshotRestored}
-                onSnapshotsMaybeChanged={handleSnapshotsMaybeChanged}
-                embedded
-                readOnly={false}
-                allowAdminReadOnlyBypass={isAdminImpersonating}
-                inputBanner={
-                  branchRestoreSnapshotId ? (
-                    <div className="chat-branch-restore-banner">
-                      <span>This branch has an associated code snapshot.</span>
-                      {canEditWorkspace ? (
+          {/* Chat section is omitted entirely for BYO-harness users. */}
+          {hostedChatEnabled && (
+            <div
+              className="userspace-chat-section"
+              ref={chatSectionRef}
+              style={{
+                display: editorChatCollapsedSide === 'after' ? 'none' : undefined,
+                flex: editorChatCollapsedSide === 'before' ? 1 : 1 - editorFractionLiveRef.current,
+              }}
+            >
+              {activeWorkspaceId ? (
+                <ChatPanel
+                  key={activeWorkspaceId}
+                  currentUser={currentUser}
+                  debugMode={debugMode}
+                  workspaceId={activeWorkspaceId}
+                  workspaceChatState={activeWorkspaceChatSnapshot}
+                  workspaceAvailableTools={availableTools}
+                  workspaceToolSelectionMode={effectiveWorkspaceToolSelection.mode}
+                  workspaceSelectedToolIds={effectiveWorkspaceToolSelection.toolIds}
+                  workspaceSelectedToolGroupIds={effectiveWorkspaceToolSelection.toolGroupIds}
+                  workspaceToolGroups={toolGroups}
+                  onRequestEnableWorkspaceTool={handleRequestEnableWorkspaceTool}
+                  onWorkspaceBuiltInToolsChange={handleWorkspaceBuiltInToolsChange}
+                  conversationShareableUserIds={workspaceChatShareableUserIds}
+                  onUserMessageSubmitted={handleUserMessageSubmitted}
+                  onConversationStateChange={handleConversationStateChange}
+                  onActiveConversationChange={updateActiveWorkspaceConversationId}
+                  onBranchSwitch={handleBranchSwitch}
+                  onOpenWorkspaceFile={handleSelectFile}
+                  onRegisterContextReferenceInserter={handleRegisterContextReferenceInserter}
+                  onContextReferencesChange={handleContextReferencesChange}
+                  onOpenContextReference={handleOpenChatContextReference}
+                  onMessageSnapshotRestored={handleMessageSnapshotRestored}
+                  onSnapshotsMaybeChanged={handleSnapshotsMaybeChanged}
+                  embedded
+                  readOnly={false}
+                  allowAdminReadOnlyBypass={isAdminImpersonating}
+                  inputBanner={
+                    branchRestoreSnapshotId ? (
+                      <div className="chat-branch-restore-banner">
+                        <span>This branch has an associated code snapshot.</span>
+                        {canEditWorkspace ? (
+                          <button
+                            className="chat-branch-restore-btn confirm"
+                            onClick={handleConfirmBranchRestore}
+                          >
+                            Restore
+                          </button>
+                        ) : (
+                          <span className="chat-branch-restore-note">
+                            Only workspace owners and editors can restore files.
+                          </span>
+                        )}
                         <button
-                          className="chat-branch-restore-btn confirm"
-                          onClick={handleConfirmBranchRestore}
+                          className="chat-branch-restore-btn dismiss"
+                          onClick={handleDismissBranchRestore}
                         >
-                          Restore
+                          Dismiss
                         </button>
-                      ) : (
-                        <span className="chat-branch-restore-note">
-                          Only workspace owners and editors can restore files.
-                        </span>
-                      )}
-                      <button
-                        className="chat-branch-restore-btn dismiss"
-                        onClick={handleDismissBranchRestore}
-                      >
-                        Dismiss
-                      </button>
-                    </div>
-                  ) : undefined
-                }
-              />
-            ) : (
-              <div className="userspace-chat-placeholder">
-                <p className="userspace-muted">Select or create a workspace to start chatting</p>
-              </div>
-            )}
-          </div>
+                      </div>
+                    ) : undefined
+                  }
+                />
+              ) : (
+                <div className="userspace-chat-placeholder">
+                  <p className="userspace-muted">Select or create a workspace to start chatting</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <ResizeHandle
@@ -10151,7 +10166,7 @@ export function UserSpacePanel({
           workspace={activeWorkspace}
           onClose={() => setShowScmWizard(false)}
           onSyncComplete={handleWorkspaceScmSyncComplete}
-          onAskAgent={handleAskAgentToPrepareWorkspace}
+          onAskAgent={hostedChatEnabled ? handleAskAgentToPrepareWorkspace : undefined}
           onWorkspaceChanged={async () => {
             const refreshedWorkspace = await api.getUserSpaceWorkspace(activeWorkspace.id);
             setWorkspaces((current) =>
@@ -12074,7 +12089,7 @@ export function UserSpacePanel({
         updatingShareLabel={savingShareLabel}
         deletingSelectedShareLink={deletingSelectedShareLink}
         agentAccessSection={
-          isOwner && activeWorkspace ? (
+          hostedChatEnabled && isOwner && activeWorkspace ? (
             <AgentAccessSection workspaceId={activeWorkspace.id} />
           ) : undefined
         }

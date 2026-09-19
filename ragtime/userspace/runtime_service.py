@@ -1955,14 +1955,16 @@ class UserSpaceRuntimeService:
         json_payload: dict[str, Any] | None = None,
         timeout_override_seconds: float | None = None,
         retry_safe: bool = True,
+        allow_list_response: bool = False,
         surface_error_status: bool = False,
-    ) -> dict[str, Any]:
+    ) -> Any:
         return await runtime_manager_request(
             method,
             path,
             json_payload=json_payload,
             timeout_override_seconds=timeout_override_seconds,
             retry_safe=retry_safe,
+            allow_list_response=allow_list_response,
             surface_error_status=surface_error_status,
         )
 
@@ -2007,6 +2009,7 @@ class UserSpaceRuntimeService:
             "POST",
             "/sessions/start",
             json_payload=payload,
+            retry_safe=False,
         )
         await self._cache_runtime_mount_spec_signature(
             str(response.get("provider_session_id") or existing_provider_session_id or ""),

@@ -339,6 +339,8 @@ export function App() {
     null,
   );
   const [chatOpenRequest, setChatOpenRequest] = useState<ChatOpenRequest | null>(null);
+  // Auth loading blocks all authenticated routes, so this fallback is never used before resolution.
+  const hostedChatEnabled = authStatus?.hosted_chat_enabled !== false;
 
   const handleOpenWorkspaceFromUsers = useCallback((workspaceId: string) => {
     setWorkspaceOpenRequest((prev) => ({
@@ -348,13 +350,17 @@ export function App() {
     setActiveView('userspace');
   }, []);
 
-  const handleOpenChatFromUsers = useCallback((conversationId: string) => {
-    setChatOpenRequest((prev) => ({
-      conversationId,
-      requestId: (prev?.requestId ?? 0) + 1,
-    }));
-    setActiveView('chat');
-  }, []);
+  const handleOpenChatFromUsers = useCallback(
+    (conversationId: string) => {
+      if (!hostedChatEnabled) return;
+      setChatOpenRequest((prev) => ({
+        conversationId,
+        requestId: (prev?.requestId ?? 0) + 1,
+      }));
+      setActiveView('chat');
+    },
+    [hostedChatEnabled],
+  );
 
   const forceLoginScreen = useCallback(() => {
     setObservedServerBackupJob(null);
@@ -390,6 +396,12 @@ export function App() {
     });
     return unsubscribe;
   }, [forceLoginScreen]);
+
+  useEffect(() => {
+    if (currentUser && !hostedChatEnabled && activeView === 'chat') {
+      setActiveView('userspace');
+    }
+  }, [activeView, currentUser, hostedChatEnabled]);
 
   const refreshConfigurationWarnings = useCallback(async () => {
     try {
@@ -569,6 +581,7 @@ export function App() {
   }, [userspaceSharedRoute]);
 
   const handleLoginSuccess = (user: User) => {
+    setAuthLoading(true);
     setCurrentUser(user);
 
     // Refresh auth posture flags now that session auth is established.
@@ -588,10 +601,12 @@ export function App() {
         setThemePack(resolveThemePackId(user.theme_pack, status.default_theme_pack));
       } catch (err) {
         console.error('Failed to refresh auth status after login:', err);
+      } finally {
+        setAuthLoading(false);
       }
     })();
 
-    // If non-admin tried to access admin view via URL, redirect to chat
+    // If non-admin tried to access an admin view via URL, redirect to the workspace.
     if (user.role !== 'admin' && activeView !== 'chat' && activeView !== 'userspace') {
       setActiveView('userspace');
     }
@@ -775,9 +790,10 @@ export function App() {
     if (activeView !== 'chat') {
       setChatFullscreen(false);
     }
-  }, [currentUser, isAdmin, activeView]);
+  }, [currentUser, isAdmin, activeView, hostedChatEnabled]);
 
-  const isChatView = activeView === 'chat' || (!isAdmin && activeView !== 'userspace');
+  const isChatView =
+    hostedChatEnabled && (activeView === 'chat' || (!isAdmin && activeView !== 'userspace'));
   const isUserspaceView = activeView === 'userspace';
   const isIndexerView = activeView === 'indexer';
   const lockViewportLayout = isChatView || isUserspaceView;
@@ -806,7 +822,11 @@ export function App() {
     const existingConversationId = params.get('conversation');
     // Non-admins should only have user-space or chat views in URL
     const viewToSync =
-      !isAdmin && activeView !== 'chat' && activeView !== 'userspace' ? 'userspace' : activeView;
+      !isAdmin && activeView !== 'chat' && activeView !== 'userspace'
+        ? 'userspace'
+        : activeView === 'chat' && !hostedChatEnabled
+          ? 'userspace'
+          : activeView;
     params.set('view', viewToSync);
     params.delete('conversation');
     if (viewToSync === 'chat') {
@@ -821,7 +841,7 @@ export function App() {
     }
     const newUrl = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({}, '', newUrl);
-  }, [activeView, highlightSetting, oauthParams, isAdmin, userspaceSharedRoute]);
+  }, [activeView, highlightSetting, oauthParams, isAdmin, userspaceSharedRoute, hostedChatEnabled]);
 
   const loadJobs = useCallback(async () => {
     try {
@@ -1246,13 +1266,15 @@ export function App() {
               id="workbench-topnav-links"
               className={`topnav-links${isNavOverflowOpen ? ' is-open' : ''}`}
             >
-              <button
-                type="button"
-                className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
-                onClick={() => handleViewSelect('chat')}
-              >
-                Chat
-              </button>
+              {hostedChatEnabled && (
+                <button
+                  type="button"
+                  className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
+                  onClick={() => handleViewSelect('chat')}
+                >
+                  Chat
+                </button>
+              )}
               <button
                 type="button"
                 className={`topnav-link ${activeView === 'userspace' ? 'active' : ''}`}
@@ -1385,6 +1407,7 @@ export function App() {
                 <Suspense fallback={<RouteViewFallback />}>
                   <LazyUserSpacePanel
                     currentUser={currentUser}
+                    hostedChatEnabled={hostedChatEnabled}
                     debugMode={Boolean(authStatus?.debug_mode)}
                     openWorkspaceRequest={workspaceOpenRequest}
                     onFullscreenChange={setUserspaceFullscreen}
@@ -1455,7 +1478,7 @@ export function App() {
                   <LazyUsersPanel
                     currentUser={currentUser}
                     onOpenWorkspace={handleOpenWorkspaceFromUsers}
-                    onOpenChat={handleOpenChatFromUsers}
+                    onOpenChat={hostedChatEnabled ? handleOpenChatFromUsers : undefined}
                   />
                 </Suspense>
               </div>

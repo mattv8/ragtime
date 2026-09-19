@@ -29,6 +29,7 @@ import contextlib
 import ctypes
 import ctypes.util
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -994,6 +995,74 @@ def _files_have_same_content(left: Path, right: Path, *, chunk_size: int = 1024 
                 return True
 
 
+def _workspace_mirror_hash_path(spec: SandboxSpec) -> Path:
+    return spec.rootfs_path.parent / ".ragtime_workspace_mirror_hashes.json"
+
+
+def _workspace_tree_hashes(root: Path) -> dict[str, str]:
+    """Return content hashes for reconcilable workspace entries, without following links."""
+    hashes: dict[str, str] = {}
+    if not root.is_dir():
+        return hashes
+    for base, dirs, files in os.walk(root, topdown=True, followlinks=False):
+        dirs[:] = [name for name in dirs if name not in _WORKSPACE_RECOVERY_SKIP_DIRS]
+        for name in files:
+            path = Path(base) / name
+            if path.suffix in _WORKSPACE_SYNC_SKIP_SUFFIXES or name.endswith(".artifact.json"):
+                continue
+            relative = str(path.relative_to(root)).replace("\\", "/")
+            try:
+                if path.is_symlink():
+                    hashes[relative] = "link:" + os.readlink(path)
+                elif path.is_file():
+                    digest = hashlib.sha256()
+                    _update_hash_from_file(digest, path)
+                    hashes[relative] = "file:" + digest.hexdigest()
+            except OSError:
+                continue
+    return hashes
+
+
+def _update_hash_from_file(digest: Any, path: Path) -> None:
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+
+
+def _read_workspace_mirror_hashes(spec: SandboxSpec) -> dict[str, str] | None:
+    try:
+        payload = json.loads(_workspace_mirror_hash_path(spec).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    hashes = payload.get("hashes") if isinstance(payload, dict) else None
+    return hashes if isinstance(hashes, dict) and all(isinstance(key, str) and isinstance(value, str) for key, value in hashes.items()) else None
+
+
+def _write_workspace_mirror_hashes(spec: SandboxSpec) -> None:
+    try:
+        path = _workspace_mirror_hash_path(spec)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+        temporary.write_text(json.dumps({"version": 1, "hashes": _workspace_tree_hashes(spec.workspace_files_path)}), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError as exc:
+        logger.warning("Failed to persist workspace mirror hashes for %s: %s", spec.workspace_id, exc)
+
+
+def _copy_mirror_path_to_canonical(source: Path, destination: Path) -> None:
+    if source.is_symlink():
+        _copy_workspace_symlink(source, destination)
+    elif source.is_file():
+        _copy_workspace_file_if_needed(source, destination, prefer_source=True)
+
+
+def _remove_canonical_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
 def _sync_workspace_copy_to_canonical(
     spec: SandboxSpec,
     source_workspace: Path,
@@ -1054,6 +1123,36 @@ def _reconcile_workspace_copy(spec: SandboxSpec, *, label: str, prefer_source: b
     source_workspace = spec.rootfs_path / spec.sandbox_workspace.lstrip("/")
     if not source_workspace.is_dir() or not spec.workspace_files_path.is_dir():
         return
+    baseline = _read_workspace_mirror_hashes(spec)
+    if baseline is not None and not prefer_source:
+        canonical_hashes = _workspace_tree_hashes(spec.workspace_files_path)
+        mirror_hashes = _workspace_tree_hashes(source_workspace)
+        conflicts: list[str] = []
+        for relative in sorted(set(baseline) | set(canonical_hashes) | set(mirror_hashes)):
+            baseline_hash = baseline.get(relative)
+            canonical_hash = canonical_hashes.get(relative)
+            mirror_hash = mirror_hashes.get(relative)
+            canonical_changed = canonical_hash != baseline_hash
+            mirror_changed = mirror_hash != baseline_hash
+            if canonical_changed and mirror_changed and canonical_hash != mirror_hash:
+                conflicts.append(relative)
+                continue
+            if mirror_changed and not canonical_changed:
+                destination = spec.workspace_files_path / relative
+                if mirror_hash is None:
+                    _remove_canonical_path(destination)
+                else:
+                    _copy_mirror_path_to_canonical(source_workspace / relative, destination)
+        if conflicts:
+            archive = _safe_legacy_archive_path(spec.rootfs_path.parent, f"{label}-conflict")
+            try:
+                source_workspace.rename(archive)
+                _ensure_real_directory(source_workspace)
+                logger.warning("Workspace mirror drift conflict for %s preserved at %s (%s paths)", spec.workspace_id, archive, len(conflicts))
+            except OSError as exc:
+                logger.warning("Failed to archive workspace mirror conflict for %s: %s", spec.workspace_id, exc)
+        _write_workspace_mirror_hashes(spec)
+        return
     try:
         has_recoverable_content = _workspace_tree_has_meaningful_content(
             source_workspace,
@@ -1090,6 +1189,7 @@ def _reconcile_workspace_copy(spec: SandboxSpec, *, label: str, prefer_source: b
         )
         return
     _ensure_real_directory(source_workspace)
+    _write_workspace_mirror_hashes(spec)
     logger.info(
         "Reconciled legacy sandbox workspace for %s: copied=%s same=%s preserved_canonical=%s skipped=%s errors=%s archive=%s",
         spec.workspace_id,
@@ -1167,6 +1267,8 @@ def provision_rootfs(spec: SandboxSpec) -> None:
             )
         except Exception as exc:
             logger.warning("provision_rootfs: workspace mirror failed: %s", exc)
+        else:
+            _write_workspace_mirror_hashes(spec)
 
     # Minimal /etc files needed for basic operation
     _provision_etc(rootfs)

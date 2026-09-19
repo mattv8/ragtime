@@ -240,7 +240,7 @@ const ALL_DAY_RANGES = [7, 30, 90, 180, 240, 360] as const;
 interface UsersPanelProps {
   currentUser: User | null;
   onOpenWorkspace: (workspaceId: string) => void;
-  onOpenChat: (conversationId: string) => void;
+  onOpenChat?: (conversationId: string) => void;
 }
 
 type ExpandedUserDetailMode = 'workspaces' | 'chats';
@@ -560,6 +560,24 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   const [usageLoading, setUsageLoading] = useState(false);
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const handleHostedChatPolicyChange = useCallback(
+    async (userId: string, value: string) => {
+      setActionLoading(`hosted-chat-${userId}`);
+      try {
+        const updated = await api.updateUserHostedChatEnabled(
+          userId,
+          value === 'inherit' ? null : value === 'enabled',
+        );
+        setUsers((current) => current.map((user) => (user.id === updated.id ? updated : user)));
+        toast.success('Hosted chat policy updated');
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Failed to update hosted chat policy');
+      } finally {
+        setActionLoading(null);
+      }
+    },
+    [toast],
+  );
   const [showCreateLocalUserModal, setShowCreateLocalUserModal] = useState(false);
   const [showManageAuthGroupsModal, setShowManageAuthGroupsModal] = useState(false);
 
@@ -2630,6 +2648,29 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                   <span className="users-action-muted">-</span>
                                 ) : (
                                   <div className="users-confirm-group">
+                                    <select
+                                      aria-label={`Hosted chat policy for ${user.username}`}
+                                      className="users-btn-inline"
+                                      value={
+                                        user.hosted_chat_enabled === null ||
+                                        user.hosted_chat_enabled === undefined
+                                          ? 'inherit'
+                                          : user.hosted_chat_enabled
+                                            ? 'enabled'
+                                            : 'disabled'
+                                      }
+                                      disabled={actionLoading === `hosted-chat-${user.id}`}
+                                      onChange={(event) => {
+                                        void handleHostedChatPolicyChange(
+                                          user.id,
+                                          event.target.value,
+                                        );
+                                      }}
+                                    >
+                                      <option value="inherit">Chat: inherit</option>
+                                      <option value="enabled">Chat: enabled</option>
+                                      <option value="disabled">Chat: disabled</option>
+                                    </select>
                                     <button
                                       type="button"
                                       className="btn btn-sm btn-secondary users-btn-inline"
@@ -2721,7 +2762,7 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                       <UserConversationRowList
                                         conversations={sortedStandaloneChats}
                                         loading={standaloneChatsLoadingUserId === user.id}
-                                        onSelect={(conversation) => onOpenChat(conversation.id)}
+                                        onSelect={(conversation) => onOpenChat?.(conversation.id)}
                                         onDelete={handleDeleteConversation}
                                         onCancelTask={handleCancelConversationTask}
                                         renderMeta={(conversation) => {

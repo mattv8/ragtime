@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import codecs
 import contextlib
 import errno
 import hashlib
@@ -29,6 +30,7 @@ from runtime.manager.models import (
     RuntimeBridgeCredentialMetadata,
     RuntimeContentProbeRequest,
     RuntimeContentProbeResponse,
+    RuntimeExecJobResponse,
     RuntimeExecResponse,
     RuntimeExternalBrowseLink,
     RuntimeExternalBrowseRequest,
@@ -342,7 +344,37 @@ class WorkerSession:
     bridge_token_file_initial_token: str | None = None
 
 
+@dataclass
+class _ExecJob:
+    id: str
+    session_id: str
+    workspace_id: str
+    command: str
+    cwd: str | None
+    timeout_seconds: int
+    user_id: str | None
+    credential_id: str | None
+    operation: str
+    created_at: datetime
+    status: str = "running"
+    exit_code: int | None = None
+    finished_at: datetime | None = None
+    output: bytearray = field(default_factory=bytearray)
+    truncated_before: int = 0
+    process: asyncio.subprocess.Process | None = None
+    cancel_requested: bool = False
+    output_redaction_carry: str = ""
+    output_decoder: Any = field(default_factory=lambda: codecs.getincrementaldecoder("utf-8")(errors="replace"))
+
+
 class WorkerService:
+    _EXEC_JOB_MAX_OUTPUT_BYTES: int = 1024 * 1024
+    _EXEC_JOB_MAX_FINISHED_PER_WORKSPACE = 100
+    _EXEC_JOB_MAX_RUNNING_PER_WORKSPACE = 2
+    _EXEC_JOB_MAX_RUNNING_GLOBAL = 8
+    _EXEC_JOB_READ_LIMIT_DEFAULT = 16 * 1024
+    _EXEC_JOB_READ_LIMIT_MAX = 64 * 1024
+
     def __init__(self) -> None:
         self._sessions: dict[str, WorkerSession] = {}
         self._provider_to_session: dict[str, str] = {}
@@ -359,6 +391,9 @@ class WorkerService:
         self._runtime_config_file = ".ragtime/runtime-entrypoint.json"
         self._startup_tasks: dict[str, asyncio.Task[None]] = {}
         self._active_execs: dict[str, dict[int, Any]] = {}
+        self._exec_jobs: dict[str, _ExecJob] = {}
+        self._exec_job_tasks: dict[str, asyncio.Task[None]] = {}
+        self._exec_job_workspaces_loaded: set[str] = set()
         self._app_restart_requests: dict[tuple[str, str], WorkerSessionResponse] = {}
         self._workspace_startup_locks: dict[str, asyncio.Lock] = {}
         # Lock order: startup lock -> file lock -> mount semaphore. File APIs
@@ -727,16 +762,21 @@ class WorkerService:
             return "", ""
 
         overlap = 0
-        for _, secret_value, _ in self._workspace_secret_redaction_items(session):
+        carry_length = 0
+        for key, secret_value, _ in self._workspace_secret_redaction_items(session):
             max_prefix_length = min(len(secret_value) - 1, len(combined))
             for prefix_length in range(max_prefix_length, 0, -1):
                 if combined.endswith(secret_value[:prefix_length]):
                     overlap = max(overlap, prefix_length)
+                    # Keep enough leading context for the existing key/value
+                    # redactor to recognize the completed secret next chunk.
+                    carry_length = max(carry_length, prefix_length + len(key) + 10)
                     break
 
         if overlap > 0:
-            output_text = combined[:-overlap]
-            next_carry = combined[-overlap:]
+            carry_length = min(len(combined), carry_length)
+            output_text = combined[:-carry_length]
+            next_carry = combined[-carry_length:]
         else:
             output_text = combined
             next_carry = ""
@@ -2515,6 +2555,13 @@ class WorkerService:
                 startup_task.cancel()
             devserver_process, log_handle = self._take_devserver_resources_locked(session.id)
             active_execs = tuple(self._active_execs.pop(session.id, {}).values())
+            for job in self._exec_jobs.values():
+                if job.session_id == session.id and job.status == "running":
+                    job.status = "interrupted"
+                    job.finished_at = utc_now()
+                    job.cancel_requested = True
+            self._prune_exec_jobs_locked(session.workspace_id)
+            self._persist_exec_jobs_locked(session.workspace_root, session.workspace_id)
             for key in [key for key in self._app_restart_requests if key[0] == session.id]:
                 del self._app_restart_requests[key]
             workspace_id = session.workspace_id
@@ -2862,6 +2909,351 @@ class WorkerService:
         return {"success": True, "path": rel_path}
 
     _EXEC_MAX_OUTPUT_BYTES = 60_000
+
+    def _exec_job_ledger_path(self, workspace_root: Path) -> Path:
+        return workspace_root / ".runtime-exec-jobs.json"
+
+    def _persist_exec_jobs_locked(self, workspace_root: Path, workspace_id: str) -> None:
+        """Persist bounded job metadata locally; this is not a cross-process lock."""
+        jobs = [job for job in self._exec_jobs.values() if job.workspace_id == workspace_id]
+        payload = {
+            "version": 1,
+            "jobs": [
+                {
+                    "id": job.id,
+                    "session_id": job.session_id,
+                    "workspace_id": job.workspace_id,
+                    "command": job.command,
+                    "cwd": job.cwd,
+                    "timeout_seconds": job.timeout_seconds,
+                    "user_id": job.user_id,
+                    "credential_id": job.credential_id,
+                    "operation": job.operation,
+                    "created_at": job.created_at.isoformat(),
+                    "status": job.status,
+                    "exit_code": job.exit_code,
+                    "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+                    "output": bytes(job.output).decode("utf-8", errors="replace"),
+                    "truncated_before": job.truncated_before,
+                }
+                for job in jobs
+            ],
+        }
+        try:
+            workspace_root.mkdir(parents=True, exist_ok=True)
+            ledger = self._exec_job_ledger_path(workspace_root)
+            temporary = ledger.with_name(f"{ledger.name}.tmp-{os.getpid()}")
+            temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+            os.replace(temporary, ledger)
+        except OSError as exc:
+            logger.warning("Failed to persist runtime exec-job ledger for %s: %s", workspace_id, exc)
+
+    def _load_exec_jobs_locked(self, session: WorkerSession) -> None:
+        if session.workspace_id in self._exec_job_workspaces_loaded:
+            return
+        self._exec_job_workspaces_loaded.add(session.workspace_id)
+        try:
+            payload = json.loads(self._exec_job_ledger_path(session.workspace_root).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
+            return
+        for item in payload["jobs"][-self._EXEC_JOB_MAX_FINISHED_PER_WORKSPACE :]:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                continue
+            try:
+                created_at = datetime.fromisoformat(str(item["created_at"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            finished_at = None
+            if item.get("finished_at"):
+                with contextlib.suppress(TypeError, ValueError):
+                    finished_at = datetime.fromisoformat(str(item["finished_at"]))
+            status = str(item.get("status") or "interrupted")
+            if status == "running":
+                status = "interrupted"
+                finished_at = utc_now()
+            operation = item.get("operation")
+            if not isinstance(operation, str):
+                operation = "exec"
+            self._exec_jobs[item["id"]] = _ExecJob(
+                id=item["id"],
+                session_id=session.id,
+                workspace_id=session.workspace_id,
+                command=str(item.get("command") or ""),
+                cwd=item.get("cwd") if isinstance(item.get("cwd"), str) else None,
+                timeout_seconds=int(item.get("timeout_seconds") or 120),
+                user_id=item.get("user_id") if isinstance(item.get("user_id"), str) else None,
+                credential_id=item.get("credential_id") if isinstance(item.get("credential_id"), str) else None,
+                operation=operation,
+                created_at=created_at,
+                status=status,
+                exit_code=item.get("exit_code") if isinstance(item.get("exit_code"), int) else None,
+                finished_at=finished_at,
+                output=bytearray(str(item.get("output") or "").encode("utf-8")),
+                truncated_before=max(0, int(item.get("truncated_before") or 0)),
+            )
+        self._prune_exec_jobs_locked(session.workspace_id)
+        self._persist_exec_jobs_locked(session.workspace_root, session.workspace_id)
+
+    def _prune_exec_jobs_locked(self, workspace_id: str) -> None:
+        finished = sorted(
+            (job for job in self._exec_jobs.values() if job.workspace_id == workspace_id and job.status != "running"),
+            key=lambda job: job.finished_at or job.created_at,
+        )
+        for job in finished[: -self._EXEC_JOB_MAX_FINISHED_PER_WORKSPACE]:
+            self._exec_jobs.pop(job.id, None)
+
+    def _exec_job_response(self, job: _ExecJob, *, cursor: int = 0, limit: int = 0) -> RuntimeExecJobResponse:
+        start = max(cursor, job.truncated_before)
+        end = min(job.truncated_before + len(job.output), start + limit) if limit else job.truncated_before + len(job.output)
+        offset_start = start - job.truncated_before
+        offset_end = end - job.truncated_before
+        return RuntimeExecJobResponse(
+            id=job.id,
+            status=job.status,
+            exit_code=job.exit_code,
+            output=bytes(job.output[offset_start:offset_end]).decode("utf-8", errors="replace"),
+            cursor=start,
+            next_cursor=end,
+            truncated_before=job.truncated_before,
+            timed_out=job.status == "timed_out",
+            created_at=job.created_at,
+            finished_at=job.finished_at,
+            user_id=job.user_id,
+            credential_id=job.credential_id,
+            operation=job.operation,
+        )
+
+    def _append_exec_job_output_locked(self, job: _ExecJob, session: WorkerSession, data: bytes) -> None:
+        if not data:
+            return
+        decoded = job.output_decoder.decode(data, final=False)
+        redacted, job.output_redaction_carry = self.split_workspace_secret_output(
+            session,
+            decoded,
+            carry=job.output_redaction_carry,
+        )
+        self._append_redacted_exec_job_output_locked(job, redacted)
+
+    def _flush_exec_job_output_locked(self, job: _ExecJob, session: WorkerSession) -> None:
+        decoded = job.output_decoder.decode(b"", final=True)
+        combined = f"{job.output_redaction_carry}{decoded}"
+        job.output_redaction_carry = ""
+        self._append_redacted_exec_job_output_locked(job, self.redact_workspace_secret_output(session, combined))
+
+    def _append_redacted_exec_job_output_locked(self, job: _ExecJob, text: str) -> None:
+        if not text:
+            return
+        redacted = text.encode("utf-8")
+        job.output.extend(redacted)
+        overflow = len(job.output) - self._EXEC_JOB_MAX_OUTPUT_BYTES
+        if overflow > 0:
+            del job.output[:overflow]
+            job.truncated_before += overflow
+
+    async def start_exec_job(
+        self,
+        worker_session_id: str,
+        command: str,
+        *,
+        timeout_seconds: int = 120,
+        cwd: str | None = None,
+        user_id: str | None = None,
+        credential_id: str | None = None,
+        operation: str = "exec",
+    ) -> RuntimeExecJobResponse:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            if session.state != "running":
+                raise HTTPException(status_code=409, detail="Worker session is still starting or is not active")
+            self._load_exec_jobs_locked(session)
+            workspace_running = sum(job.status == "running" and job.workspace_id == session.workspace_id for job in self._exec_jobs.values())
+            global_running = sum(job.status == "running" for job in self._exec_jobs.values())
+            if workspace_running >= self._EXEC_JOB_MAX_RUNNING_PER_WORKSPACE:
+                raise HTTPException(status_code=429, detail="Workspace execution job quota exceeded")
+            if global_running >= self._EXEC_JOB_MAX_RUNNING_GLOBAL:
+                raise HTTPException(status_code=429, detail="Global execution job quota exceeded")
+            if cwd:
+                normalized_cwd = Path(cwd.replace("\\", "/"))
+                if normalized_cwd.is_absolute() or any(part == ".." for part in normalized_cwd.parts):
+                    raise HTTPException(status_code=400, detail="cwd must be within the workspace root")
+            job = _ExecJob(
+                id=f"exec-{os.urandom(12).hex()}",
+                session_id=session.id,
+                workspace_id=session.workspace_id,
+                command=command,
+                cwd=cwd,
+                timeout_seconds=max(1, min(timeout_seconds, RUNTIME_EXEC_TIMEOUT_HARD_CAP_SECONDS)),
+                user_id=user_id,
+                credential_id=credential_id,
+                operation=operation,
+                created_at=utc_now(),
+            )
+            self._exec_jobs[job.id] = job
+            self._persist_exec_jobs_locked(session.workspace_root, session.workspace_id)
+            task = asyncio.create_task(self._run_exec_job(job.id))
+            self._exec_job_tasks[job.id] = task
+            task.add_done_callback(lambda _task: self._exec_job_tasks.pop(job.id, None))
+            return self._exec_job_response(job)
+
+    async def _run_exec_job(self, job_id: str) -> None:
+        process: asyncio.subprocess.Process | None = None
+        reservation: object | None = None
+        workspace_root: Path | None = None
+        deadline = asyncio.get_running_loop().time()
+        async with self._lock:
+            job = self._exec_jobs.get(job_id)
+            if not job:
+                return
+            if job.cancel_requested:
+                job.status, job.finished_at = "cancelled", utc_now()
+                return
+            session = self._sessions.get(job.session_id)
+            if not session:
+                job.status, job.finished_at = "interrupted", utc_now()
+                return
+            redaction_session = session
+            reservation = object()
+            self._active_execs.setdefault(session.id, {})[id(reservation)] = reservation
+            sandbox_cwd = f"{SANDBOX_WORKSPACE_MOUNT}/{Path(job.cwd).as_posix()}" if job.cwd else SANDBOX_WORKSPACE_MOUNT
+            sandbox_spec, environment = session.sandbox_spec, self.build_agent_process_environment(session)
+            workspace_root = session.workspace_root
+            deadline = asyncio.get_running_loop().time() + job.timeout_seconds
+        try:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            process = await asyncio.wait_for(
+                spawn_sandboxed(
+                    sandbox_spec,
+                    ["sh", "-lc", job.command],
+                    cwd=sandbox_cwd,
+                    env=environment,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                ),
+                timeout=remaining,
+            )
+            discard_process = False
+            async with self._lock:
+                active = self._active_execs.setdefault(job.session_id, {})
+                active.pop(id(reservation), None)
+                current = self._sessions.get(job.session_id)
+                if current is not session or job.status != "running" or job.cancel_requested:
+                    discard_process = True
+                    if job.status == "running":
+                        job.status = "cancelled" if job.cancel_requested else "interrupted"
+                        job.finished_at = utc_now()
+                else:
+                    job.process = process
+                    active[id(process)] = process
+            if discard_process:
+                await terminate_process_group(process)
+                return
+            while True:
+                try:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    chunk = await asyncio.wait_for(process.stdout.read(8192), timeout=remaining)  # type: ignore[union-attr]
+                except asyncio.TimeoutError:
+                    async with self._lock:
+                        job.status = "timed_out"
+                    await terminate_process_group(process)
+                    break
+                if not chunk:
+                    break
+                async with self._lock:
+                    current = self._sessions.get(job.session_id)
+                    if current:
+                        self._append_exec_job_output_locked(job, current, chunk)
+            await process.wait()
+            async with self._lock:
+                if job.status == "running":
+                    job.status = "cancelled" if job.cancel_requested else ("completed" if process.returncode == 0 else "failed")
+                job.exit_code, job.finished_at = process.returncode, utc_now()
+        except asyncio.CancelledError:
+            if process is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(terminate_process_group(process))
+            async with self._lock:
+                if job.status == "running":
+                    job.status, job.finished_at = "cancelled", utc_now()
+            raise
+        except asyncio.TimeoutError:
+            async with self._lock:
+                if job.status == "running":
+                    job.status, job.finished_at = "timed_out", utc_now()
+            if process is not None:
+                await terminate_process_group(process)
+        except Exception as exc:
+            async with self._lock:
+                if job.status == "running":
+                    job.status, job.exit_code, job.finished_at = "failed", -1, utc_now()
+                    session = self._sessions.get(job.session_id)
+                    if session:
+                        self._append_exec_job_output_locked(job, session, f"Failed to execute command: {exc}".encode())
+        finally:
+            async with self._lock:
+                self._flush_exec_job_output_locked(job, redaction_session)
+                active = self._active_execs.get(job.session_id, {})
+                if reservation is not None:
+                    active.pop(id(reservation), None)
+                if process:
+                    active.pop(id(process), None)
+                self._prune_exec_jobs_locked(job.workspace_id)
+                if workspace_root is not None:
+                    self._persist_exec_jobs_locked(workspace_root, job.workspace_id)
+
+    async def get_exec_job(self, worker_session_id: str, job_id: str, *, cursor: int = 0, limit: int = _EXEC_JOB_READ_LIMIT_DEFAULT) -> RuntimeExecJobResponse:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            self._load_exec_jobs_locked(session)
+            job = self._exec_jobs.get(job_id)
+            if not job or job.workspace_id != session.workspace_id:
+                raise HTTPException(status_code=404, detail="Execution job not found")
+            return self._exec_job_response(job, cursor=max(0, cursor), limit=max(1, min(limit, self._EXEC_JOB_READ_LIMIT_MAX)))
+
+    async def list_exec_jobs(self, worker_session_id: str) -> list[RuntimeExecJobResponse]:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            self._load_exec_jobs_locked(session)
+            return [
+                self._exec_job_response(job)
+                for job in sorted(self._exec_jobs.values(), key=lambda item: item.created_at, reverse=True)
+                if job.workspace_id == session.workspace_id
+            ]
+
+    async def cancel_exec_job(self, worker_session_id: str, job_id: str) -> RuntimeExecJobResponse:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            self._load_exec_jobs_locked(session)
+            job = self._exec_jobs.get(job_id)
+            if not job or job.workspace_id != session.workspace_id:
+                raise HTTPException(status_code=404, detail="Execution job not found")
+            if job.status != "running":
+                return self._exec_job_response(job)
+            job.cancel_requested = True
+            process = job.process
+            if process is None:
+                job.status, job.finished_at = "cancelled", utc_now()
+                self._persist_exec_jobs_locked(session.workspace_root, session.workspace_id)
+        if process:
+            await terminate_process_group(process)
+            async with self._lock:
+                if job.status == "running" and job.process is process:
+                    job.status, job.exit_code, job.finished_at = "cancelled", process.returncode, utc_now()
+                    self._persist_exec_jobs_locked(session.workspace_root, session.workspace_id)
+        return await self.get_exec_job(worker_session_id, job_id)
 
     async def exec_command(
         self,

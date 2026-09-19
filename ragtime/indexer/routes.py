@@ -96,6 +96,7 @@ from ragtime.core.encryption_health import recheck_encryption_key_health
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
+from ragtime.core.hosted_execution_policy import require_hosted_execution
 from ragtime.core.http_timeouts import get_http_proxy_safe_timeout_seconds
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
@@ -9059,10 +9060,12 @@ async def _validate_generation_ready_after_user_message(
     stored_model: str,
     *,
     user_id: Optional[str] = None,
+    caller_user_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> str:
     """Validate generation readiness after the submitted user message is saved."""
     try:
+        await require_hosted_execution(caller_user_id, user_id)
         if not rag.is_ready:
             raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
         return await _validate_conversation_model_before_send(
@@ -12378,7 +12381,6 @@ async def _send_message_to_loaded_conversation(
         "user",
         user_message,
     )
-    schedule_title_generation(conversation_id, user_message)
     if updated_conversation is None:
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
@@ -12387,9 +12389,11 @@ async def _send_message_to_loaded_conversation(
         conversation_id,
         conv.model,
         user_id=conv.user_id,
+        caller_user_id=user.id,
         workspace_id=conv.workspace_id,
     )
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
+    schedule_title_generation(conversation_id, user_message, user_id=user.id)
 
     chat_history = await _build_chat_history_for_conversation(
         conv.messages[:-1],
@@ -12405,6 +12409,7 @@ async def _send_message_to_loaded_conversation(
             current_user_message,
             conversation_id=conversation_id,
             user_id=user.id,
+            owner_user_id=conv.user_id,
             workspace_id=workspace_id,
             model_id=conv.model,
         )
@@ -12430,6 +12435,7 @@ async def _send_message_to_loaded_conversation(
             conversation_model=conv.model,
             conversation_id=conversation_id,
             user_id=user.id,
+            owner_user_id=conv.user_id,
             current_user_context=current_user_context,
             current_time_context=current_time_context,
             ui_theme_context=ui_theme_context,
@@ -12511,7 +12517,6 @@ async def _send_background_message_to_loaded_conversation(
         "user",
         user_message,
     )
-    schedule_title_generation(conversation_id, user_message)
     if updated_conversation is None:
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
@@ -12520,9 +12525,11 @@ async def _send_background_message_to_loaded_conversation(
         conversation_id,
         conv.model,
         user_id=conv.user_id,
+        caller_user_id=user.id,
         workspace_id=conv.workspace_id,
     )
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
+    schedule_title_generation(conversation_id, user_message, user_id=user.id)
     current_time_context = _build_current_time_prompt_context(request)
     ui_theme_context = _build_ui_theme_prompt_context(request)
 
@@ -14300,6 +14307,7 @@ async def compact_conversation(
         snapshot_tail_message_id=snapshot_tail_message_id,
         snapshot_user_id=user.id,
         snapshot_parent_branch_id=conv.active_branch_id,
+        caller_user_id=user.id,
         replace_message_id=request.replace_message_id,
         replace_message_index=replace_marker_index,
     )
@@ -14790,6 +14798,7 @@ async def edit_resend_conversation_branch(
             conversation_id,
             conv.model,
             user_id=conv.user_id,
+            caller_user_id=user.id,
             workspace_id=conv.workspace_id,
         )
         conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
@@ -14814,7 +14823,7 @@ async def edit_resend_conversation_branch(
         await repository.cancel_chat_task(claimed_task.id)
         raise
 
-    schedule_title_generation(conversation_id, user_message)
+    schedule_title_generation(conversation_id, user_message, user_id=user.id)
     branches = await repository.get_conversation_branches(conversation_id)
     branch_summary = next((candidate for candidate in branches if candidate.id == branch.id), None)
     if not branch_summary:
@@ -15007,7 +15016,6 @@ async def send_message_stream(
 
     # Add user message
     await repository.add_message(conversation_id, "user", user_message)
-    schedule_title_generation(conversation_id, user_message)
 
     # Refresh conversation to get updated messages
     conv = await repository.get_conversation(conversation_id)
@@ -15018,9 +15026,11 @@ async def send_message_stream(
         conversation_id,
         conv.model,
         user_id=conv.user_id,
+        caller_user_id=user.id,
         workspace_id=conv.workspace_id,
     )
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
+    schedule_title_generation(conversation_id, user_message, user_id=user.id)
 
     # Build chat history for RAG
     chat_history = await _build_chat_history_for_conversation(
@@ -15073,6 +15083,7 @@ async def send_message_stream(
                 conversation_model=conv.model,
                 conversation_id=conversation_id,
                 user_id=user.id,
+                owner_user_id=conv.user_id,
                 current_user_context=current_user_context,
                 current_time_context=current_time_context,
                 ui_theme_context=ui_theme_context,
@@ -16068,16 +16079,17 @@ async def send_message_background(
         raise HTTPException(status_code=500, detail="Failed to add user message")
 
     conv = updated_conversation
-    schedule_title_generation(conversation_id, user_message)
 
     try:
         resolved_model = await _validate_generation_ready_after_user_message(
             conversation_id,
             conv.model,
             user_id=conv.user_id,
+            caller_user_id=user.id,
             workspace_id=conv.workspace_id,
         )
         conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
+        schedule_title_generation(conversation_id, user_message, user_id=user.id)
     except Exception:
         await repository.cancel_chat_task(claimed_task.id)
         raise

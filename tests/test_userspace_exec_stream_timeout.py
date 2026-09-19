@@ -4,13 +4,15 @@ from typing import Any, cast
 from unittest import mock
 
 from ragtime.rag.components import RAGComponents
+from tests.hosted_execution_test_support import enabled_hosted_execution_policy
 
 
 class _EventExecutor:
     tools: list[Any] = []
 
-    def astream_events(self, _input, version):
+    def astream_events(self, _input, version, config):
         assert version == "v2"
+        assert config is not None
 
         async def events():
             yield {
@@ -62,6 +64,7 @@ class UserSpaceExecStreamTimeoutTests(unittest.IsolatedAsyncioTestCase):
             return await original_wait_for(awaitable, timeout=timeout)
 
         with (
+            enabled_hosted_execution_policy(),
             mock.patch.object(rag, "agent_executor", executor),
             # The terminal began when 1800 was allowed, then the administrator
             # lowered the maximum before the event-stream watchdog armed.
@@ -96,7 +99,10 @@ class UserSpaceExecStreamTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_concurrent_terminal_guards_cleanup_independently(self) -> None:
         class ConcurrentExecutor(_EventExecutor):
-            def astream_events(self, _input, version):
+            def astream_events(self, _input, version, config):
+                assert version == "v2"
+                assert config is not None
+
                 async def events():
                     for event in (
                         {"event": "on_tool_start", "name": "run_terminal_command", "run_id": "long", "data": {"input": {"timeout_seconds": 1800}}},
@@ -137,6 +143,7 @@ class UserSpaceExecStreamTimeoutTests(unittest.IsolatedAsyncioTestCase):
             return await original_wait_for(awaitable, timeout=timeout)
 
         with (
+            enabled_hosted_execution_policy(),
             executor_patch,
             mock.patch(
                 "ragtime.rag.components.get_app_settings",
