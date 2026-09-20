@@ -418,6 +418,25 @@ def _sanitize_tool_connection_int_fields(connection_config: dict[str, Any]) -> d
     return sanitized
 
 
+def _discovery_ssh_tunnel_config_dict(
+    request: PostgresDiscoverRequest | MssqlDiscoverRequest | MysqlDiscoverRequest | InfluxdbDiscoverRequest | PdmDiscoverRequest,
+    *,
+    host: str,
+    port: int,
+) -> dict[str, str | int | None]:
+    return {
+        "host": host,
+        "port": port,
+        "ssh_tunnel_host": request.ssh_tunnel_host,
+        "ssh_tunnel_port": request.ssh_tunnel_port,
+        "ssh_tunnel_user": request.ssh_tunnel_user,
+        "ssh_tunnel_password": request.ssh_tunnel_password,
+        "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
+        "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
+        "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
+    }
+
+
 def _get_model_preferences_module() -> Any:
     return importlib.import_module("ragtime.indexer.model_preferences")
 
@@ -3557,17 +3576,7 @@ async def discover_postgres_databases(request: PostgresDiscoverRequest, _user: U
 
         # Set up SSH tunnel if enabled
         if request.ssh_tunnel_enabled:
-            tunnel_config_dict = {
-                "host": request.host,
-                "port": request.port,
-                "ssh_tunnel_host": request.ssh_tunnel_host,
-                "ssh_tunnel_port": request.ssh_tunnel_port,
-                "ssh_tunnel_user": request.ssh_tunnel_user,
-                "ssh_tunnel_password": request.ssh_tunnel_password,
-                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
-                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
-                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
-            }
+            tunnel_config_dict = _discovery_ssh_tunnel_config_dict(request, host=request.host, port=request.port)
             tunnel_config = ssh_tunnel_config_from_dict(tunnel_config_dict, default_remote_port=5432)
             tunnel = SSHTunnel(tunnel_config)
             tunnel.start()
@@ -3765,17 +3774,7 @@ async def discover_mssql_databases(request: MssqlDiscoverRequest, _user: User = 
 
         # Set up SSH tunnel if enabled
         if request.ssh_tunnel_enabled:
-            tunnel_config_dict = {
-                "host": request.host,
-                "port": request.port,
-                "ssh_tunnel_host": request.ssh_tunnel_host,
-                "ssh_tunnel_port": request.ssh_tunnel_port,
-                "ssh_tunnel_user": request.ssh_tunnel_user,
-                "ssh_tunnel_password": request.ssh_tunnel_password,
-                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
-                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
-                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
-            }
+            tunnel_config_dict = _discovery_ssh_tunnel_config_dict(request, host=request.host, port=request.port)
             tunnel_config = ssh_tunnel_config_from_dict(tunnel_config_dict, default_remote_port=1433)
             tunnel = SSHTunnel(tunnel_config)
             tunnel.start()
@@ -4071,17 +4070,7 @@ async def discover_mysql_databases(request: MysqlDiscoverRequest, _user: User = 
 
         # Set up SSH tunnel if enabled
         if request.ssh_tunnel_enabled:
-            tunnel_config_dict = {
-                "host": request.host or "127.0.0.1",
-                "port": request.port,
-                "ssh_tunnel_host": request.ssh_tunnel_host,
-                "ssh_tunnel_port": request.ssh_tunnel_port,
-                "ssh_tunnel_user": request.ssh_tunnel_user,
-                "ssh_tunnel_password": request.ssh_tunnel_password,
-                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
-                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
-                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
-            }
+            tunnel_config_dict = _discovery_ssh_tunnel_config_dict(request, host=request.host or "127.0.0.1", port=request.port)
             tunnel_config = ssh_tunnel_config_from_dict(tunnel_config_dict, default_remote_port=3306)
             tunnel = SSHTunnel(tunnel_config)
             tunnel.start()
@@ -4218,17 +4207,7 @@ async def discover_influxdb_buckets(request: InfluxdbDiscoverRequest, _user: Use
         effective_url = f"{scheme}://{host}:{port}"
 
         if request.ssh_tunnel_enabled:
-            tunnel_config_dict = {
-                "host": host,
-                "port": port,
-                "ssh_tunnel_host": request.ssh_tunnel_host,
-                "ssh_tunnel_port": request.ssh_tunnel_port,
-                "ssh_tunnel_user": request.ssh_tunnel_user,
-                "ssh_tunnel_password": request.ssh_tunnel_password,
-                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
-                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
-                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
-            }
+            tunnel_config_dict = _discovery_ssh_tunnel_config_dict(request, host=host, port=port)
             tunnel_config = ssh_tunnel_config_from_dict(tunnel_config_dict, default_remote_port=port)
             tunnel = SSHTunnel(tunnel_config)
             tunnel.start()
@@ -4274,17 +4253,7 @@ async def discover_pdm_schema(request: PdmDiscoverRequest, _user: User = Depends
 
         # Start SSH tunnel if enabled
         if request.ssh_tunnel_enabled:
-            tunnel_config_dict = {
-                "host": request.host,  # Remote endpoint from SSH server's perspective
-                "port": request.port,
-                "ssh_tunnel_host": request.ssh_tunnel_host,
-                "ssh_tunnel_port": request.ssh_tunnel_port,
-                "ssh_tunnel_user": request.ssh_tunnel_user,
-                "ssh_tunnel_password": request.ssh_tunnel_password,
-                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
-                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
-                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
-            }
+            tunnel_config_dict = _discovery_ssh_tunnel_config_dict(request, host=request.host, port=request.port)
             tunnel_config = ssh_tunnel_config_from_dict(
                 tunnel_config_dict,
                 default_remote_port=1433,  # MSSQL default port

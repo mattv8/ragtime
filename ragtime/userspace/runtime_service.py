@@ -2286,9 +2286,10 @@ class UserSpaceRuntimeService:
             json_payload={"expected_content_hash": expected_content_hash, "require_content_hash": require_content_hash},
         )
 
-    async def _runtime_provider_capture_screenshot(
+    async def _runtime_provider_post(
         self,
         provider_session_id: str | None,
+        suffix: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         if not provider_session_id:
@@ -2296,51 +2297,37 @@ class UserSpaceRuntimeService:
         self._require_runtime_manager()
         return await self._runtime_manager_request(
             "POST",
-            f"/sessions/{provider_session_id}/screenshot",
+            f"/sessions/{provider_session_id}/{suffix}",
             json_payload=payload,
         )
+
+    async def _runtime_provider_capture_screenshot(
+        self,
+        provider_session_id: str | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._runtime_provider_post(provider_session_id, "screenshot", payload)
 
     async def _runtime_provider_content_probe(
         self,
         provider_session_id: str | None,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        if not provider_session_id:
-            raise HTTPException(status_code=404, detail="Runtime session unavailable")
-        self._require_runtime_manager()
-        return await self._runtime_manager_request(
-            "POST",
-            f"/sessions/{provider_session_id}/content-probe",
-            json_payload=payload,
-        )
+        return await self._runtime_provider_post(provider_session_id, "content-probe", payload)
 
     async def _runtime_provider_external_browse(
         self,
         provider_session_id: str | None,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        if not provider_session_id:
-            raise HTTPException(status_code=404, detail="Runtime session unavailable")
-        self._require_runtime_manager()
-        return await self._runtime_manager_request(
-            "POST",
-            f"/sessions/{provider_session_id}/external-browse",
-            json_payload=payload,
-        )
+        return await self._runtime_provider_post(provider_session_id, "external-browse", payload)
 
     async def _runtime_provider_mcp_tool_call(
         self,
         provider_session_id: str | None,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        if not provider_session_id:
-            raise HTTPException(status_code=404, detail="Runtime session unavailable")
-        self._require_runtime_manager()
-        return await self._runtime_manager_request(
-            "POST",
-            f"/sessions/{provider_session_id}/mcp/tools/call",
-            json_payload=payload,
-        )
+        return await self._runtime_provider_post(provider_session_id, "mcp/tools/call", payload)
 
     async def _runtime_provider_mcp_tool_list(
         self,
