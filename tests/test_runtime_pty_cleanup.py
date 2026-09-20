@@ -57,6 +57,7 @@ class RuntimePtyCleanupTests(unittest.IsolatedAsyncioTestCase):
         )
         service = SimpleNamespace(
             verify_pty_token=mock.AsyncMock(return_value=session),
+            assert_pty_available=mock.AsyncMock(),
             build_agent_process_environment=mock.Mock(return_value={"EXISTING": "1"}),
         )
         websocket = _DisconnectingWebSocket()
@@ -74,6 +75,7 @@ class RuntimePtyCleanupTests(unittest.IsolatedAsyncioTestCase):
             await worker_api.pty("worker-session-1", websocket)
 
         spawn.assert_awaited_once()
+        service.assert_pty_available.assert_has_awaits([mock.call("worker-session-1"), mock.call("worker-session-1")])
         await_args = spawn.await_args
         assert await_args is not None
         self.assertTrue(await_args.kwargs["pty"])

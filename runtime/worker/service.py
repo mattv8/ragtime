@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import sys
 import threading
 import time
@@ -54,12 +55,14 @@ from runtime.manager.models import (
 from runtime.worker.sandbox import (
     SANDBOX_WORKSPACE_MOUNT,
     SandboxSpec,
+    archive_workspace_mirror,
     cleanup_sandbox,
     detect_capabilities,
     ensure_sandbox_ready,
     get_sandbox_spec,
     materialize_mounts,
     recommended_startup_concurrency,
+    reconcile_stopped_workspace_mirror,
     sandbox_diagnostics,
     spawn_sandboxed,
     terminate_process_group,
@@ -365,6 +368,7 @@ class WorkerService:
         # use only the file lock and never await it while holding _lock.
         self._workspace_file_locks: dict[str, asyncio.Lock] = {}
         self._workspace_cleanup_tasks: dict[str, asyncio.Task[None]] = {}
+        self._workspace_maintenance: dict[str, dict[str, tuple[bool, SandboxSpec]]] = {}
         self._background_cleanup_tasks: set[asyncio.Task[None]] = set()
         self._startup_semaphore = asyncio.Semaphore(
             get_positive_int_env(
@@ -931,7 +935,7 @@ class WorkerService:
             launch_command=(" ".join(session.devserver_command) if session.devserver_command else None),
             launch_cwd=session.launch_cwd,
             launch_port=session.devserver_port,
-            runtime_capabilities={**sandbox_diagnostics(), "bridge_credential_file": True},
+            runtime_capabilities={**sandbox_diagnostics(), "bridge_credential_file": True, "sqlite_workspace_maintenance": True},
             devserver_running=session.devserver_running,
             last_error=session.last_error,
             runtime_operation_id=session.runtime_operation_id,
@@ -955,6 +959,169 @@ class WorkerService:
             lock = asyncio.Lock()
             self._workspace_file_locks[workspace_id] = lock
         return lock
+
+    def _ensure_workspace_available_locked(self, workspace_id: str, *, require_full_release: bool = False, maintenance_lease_id: str | None = None) -> None:
+        if self._has_durable_sqlite_maintenance_marker(workspace_id, maintenance_lease_id):
+            raise HTTPException(status_code=423, detail="Workspace SQLite maintenance recovery is required")
+        leases = self._workspace_maintenance.get(workspace_id, {})
+        if leases and (require_full_release or any(maintenance for maintenance, _ in leases.values())):
+            if maintenance_lease_id and leases.get(maintenance_lease_id, (False, None))[0]:
+                return
+            raise HTTPException(status_code=423, detail="Workspace SQLite maintenance is active")
+
+    def _has_durable_sqlite_maintenance_marker(self, workspace_id: str, maintenance_lease_id: str | None = None) -> bool:
+        """Fail closed on a protected sibling marker left by a crashed app."""
+        workspace_id = self._validate_workspace_id(workspace_id)
+        marker = self._root / "workspaces" / workspace_id / "sqlite_backups" / "sqlite-maintenance-intent.json"
+        try:
+            # The path is outside the sandbox/user files tree.  A symlink or
+            # any unexpected entry is still an interrupted-maintenance signal.
+            entry = os.lstat(marker)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        if not maintenance_lease_id or not stat.S_ISREG(entry.st_mode):
+            return True
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return True
+        return payload.get("lease_id") != maintenance_lease_id
+
+    @staticmethod
+    def _validate_workspace_id(workspace_id: str) -> str:
+        value = str(workspace_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", value):
+            raise HTTPException(status_code=400, detail="Invalid workspace ID")
+        return value
+
+    async def acquire_sqlite_workspace_access(self, workspace_id: str, lease_id: str, *, maintenance: bool) -> dict[str, str | bool]:
+        """Fence a workspace and return the only safe SQLite source path."""
+        workspace_id = self._validate_workspace_id(workspace_id)
+        if not lease_id or len(lease_id) > 128:
+            raise HTTPException(status_code=400, detail="Invalid SQLite maintenance lease")
+        workspace_root, canonical, spec = self._resolve_workspace_root(workspace_id)
+        del workspace_root
+        async with self._lock:
+            leases = self._workspace_maintenance.setdefault(workspace_id, {})
+            existing = leases.get(lease_id)
+            if existing and existing[0] != maintenance:
+                raise HTTPException(status_code=409, detail="Workspace SQLite maintenance lease mode conflicts")
+            if existing is None:
+                if maintenance and leases:
+                    raise HTTPException(status_code=409, detail="Workspace SQLite maintenance is already held")
+                if not maintenance and any(active_maintenance for active_maintenance, _ in leases.values()):
+                    raise HTTPException(status_code=409, detail="Workspace SQLite maintenance is already held")
+                leases[lease_id] = (maintenance, spec)
+            newly_registered = existing is None
+            session_ids = [
+                session.id for session in self._sessions.values() if session.workspace_id == workspace_id and session.state in {"starting", "running"}
+            ]
+        try:
+            if maintenance:
+                # Import lazily to avoid the worker service/API module cycle.
+                from runtime.worker.api import evict_workspace_ptys
+
+                if newly_registered:
+                    await evict_workspace_ptys(workspace_id)
+                    for session_id in session_ids:
+                        try:
+                            await self.stop_session(session_id, _maintenance_lease_id=lease_id)
+                        except HTTPException as exc:
+                            if exc.status_code != 404:
+                                raise
+                async with self._workspace_startup_lock(workspace_id):
+                    async with self._workspace_file_lock(workspace_id):
+                        caps = detect_capabilities()
+                        if workspace_mirror_required(spec, caps):
+                            await asyncio.to_thread(reconcile_stopped_workspace_mirror, spec)
+                        authoritative = canonical
+            else:
+                # Never await either workspace lock while holding _lock.  Once
+                # synchronized, choose from the current active session only.
+                async with self._workspace_startup_lock(workspace_id):
+                    async with self._workspace_file_lock(workspace_id):
+                        async with self._lock:
+                            active = [
+                                session
+                                for session in self._sessions.values()
+                                if session.workspace_id == workspace_id and session.state in {"starting", "running"}
+                            ]
+                        if not active:
+                            authoritative = canonical
+                        else:
+                            mirrors = {
+                                session.sandbox_spec.rootfs_path / session.sandbox_spec.sandbox_workspace.lstrip("/")
+                                for session in active
+                                if workspace_mirror_required(session.sandbox_spec, detect_capabilities())
+                            }
+                            if not mirrors:
+                                authoritative = canonical
+                            elif len(mirrors) == 1 and next(iter(mirrors)).is_dir():
+                                authoritative = next(iter(mirrors))
+                            else:
+                                raise HTTPException(status_code=503, detail="Authoritative runtime workspace is unavailable")
+                caps = detect_capabilities()
+                if not authoritative.is_dir():
+                    raise HTTPException(status_code=503, detail="Authoritative runtime workspace is unavailable")
+        except BaseException:
+            # Only cleanup the lease if THIS call newly registered it.
+            if newly_registered:
+                async with self._lock:
+                    leases = self._workspace_maintenance.get(workspace_id, {})
+                    leases.pop(lease_id, None)
+                    if not leases:
+                        self._workspace_maintenance.pop(workspace_id, None)
+            raise
+        return {
+            "workspace_id": workspace_id,
+            "lease_id": lease_id,
+            "authoritative_root": str(authoritative),
+            "sandbox_mode": caps.mode,
+            "maintenance": maintenance,
+        }
+
+    async def release_sqlite_workspace_access(self, workspace_id: str, lease_id: str) -> None:
+        workspace_id = self._validate_workspace_id(workspace_id)
+        async with self._lock:
+            leases = self._workspace_maintenance.get(workspace_id, {})
+            lease = leases.get(lease_id)
+            if not lease:
+                # A runtime restart loses the in-memory lease but must not make
+                # verified Lane C recovery impossible.  The durable marker is
+                # still the fail-closed authority until the control plane clears
+                # it after receipt/candidate validation.
+                if leases:
+                    raise HTTPException(status_code=409, detail="Workspace SQLite maintenance lease owner mismatch")
+                return
+            maintenance, spec = lease
+        if maintenance:
+            async with self._workspace_startup_lock(workspace_id):
+                async with self._workspace_file_lock(workspace_id):
+                    caps = detect_capabilities()
+                    if workspace_mirror_required(spec, caps):
+                        await asyncio.to_thread(archive_workspace_mirror, spec)
+        async with self._lock:
+            leases = self._workspace_maintenance.get(workspace_id, {})
+            if lease_id not in leases:
+                raise HTTPException(status_code=409, detail="Workspace SQLite maintenance lease owner mismatch")
+            leases.pop(lease_id)
+            if not leases:
+                self._workspace_maintenance.pop(workspace_id, None)
+
+    async def assert_pty_available(self, worker_session_id: str) -> None:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            self._ensure_workspace_available_locked(session.workspace_id)
+
+    async def workspace_id_for_session(self, worker_session_id: str) -> str | None:
+        """Expose only the session's workspace identity to the PTY drain path."""
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            return session.workspace_id if session else None
 
     @staticmethod
     async def _drain_file_io_task(task: asyncio.Task[Any]) -> Any:
@@ -2140,6 +2307,8 @@ class WorkerService:
             # A stop may have registered its barrier after the first check but
             # before this startup acquired the workspace lock.
             await self._wait_for_workspace_cleanup(workspace_id)
+            async with self._lock:
+                self._ensure_workspace_available_locked(workspace_id, require_full_release=True)
             async with self._startup_semaphore:
                 async with self._lock:
                     session = self._sessions.get(session_id)
@@ -2406,6 +2575,7 @@ class WorkerService:
         request: WorkerStartSessionRequest,
     ) -> WorkerSessionResponse:
         async with self._lock:
+            self._ensure_workspace_available_locked(request.workspace_id, require_full_release=True)
             existing_session_id = self._provider_to_session.get(request.provider_session_id)
             if existing_session_id and existing_session_id in self._sessions:
                 session = self._sessions[existing_session_id]
@@ -2500,11 +2670,14 @@ class WorkerService:
             session.updated_at = utc_now()
             return self._session_response(session)
 
-    async def stop_session(self, worker_session_id: str) -> WorkerSessionResponse:
+    async def stop_session(self, worker_session_id: str, *, _maintenance_lease_id: str | None = None) -> WorkerSessionResponse:
         async with self._lock:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
+            workspace_id = session.workspace_id
+            # Check admission before any mutation: shared lease blocks public stop.
+            self._ensure_workspace_available_locked(workspace_id, require_full_release=True, maintenance_lease_id=_maintenance_lease_id)
             # Fence the operation before cancelling it. A startup pipeline can
             # be between its off-lock spawn and its guarded commit; clearing
             # the operation id makes that commit terminate its new process.
@@ -2517,7 +2690,6 @@ class WorkerService:
             active_execs = tuple(self._active_execs.pop(session.id, {}).values())
             for key in [key for key in self._app_restart_requests if key[0] == session.id]:
                 del self._app_restart_requests[key]
-            workspace_id = session.workspace_id
             sandbox_spec = session.sandbox_spec
             cleanup_task = asyncio.create_task(
                 self._finish_stop_cleanup(
@@ -2776,6 +2948,7 @@ class WorkerService:
                 enforce_sqlite_managed=True,
             )
             workspace_id = session.workspace_id
+            self._ensure_workspace_available_locked(workspace_id)
 
         file_lock = self._workspace_file_lock(workspace_id)
         async with file_lock:
@@ -2810,6 +2983,7 @@ class WorkerService:
                 enforce_sqlite_managed=True,
             )
             workspace_id = session.workspace_id
+            self._ensure_workspace_available_locked(workspace_id)
 
         file_lock = self._workspace_file_lock(workspace_id)
         async with file_lock:
@@ -2841,6 +3015,7 @@ class WorkerService:
                 enforce_sqlite_managed=True,
             )
             workspace_id = session.workspace_id
+            self._ensure_workspace_available_locked(workspace_id)
 
         file_lock = self._workspace_file_lock(workspace_id)
         async with file_lock:
@@ -2877,6 +3052,7 @@ class WorkerService:
                 raise HTTPException(status_code=404, detail="Worker session not found")
             if session.state not in {"running", "starting"}:
                 raise HTTPException(status_code=409, detail="Worker session not active")
+            self._ensure_workspace_available_locked(session.workspace_id)
 
             # Resolve cwd as a sandbox-internal path
             if cwd:
@@ -3714,8 +3890,9 @@ class WorkerService:
                 active_sessions=active_sessions,
                 metadata={
                     "worker_name": self._worker_name,
-                    "runtime_capabilities": {"bridge_credential_file": True},
+                    "runtime_capabilities": {"bridge_credential_file": True, "sqlite_workspace_maintenance": True},
                     "bridge_credential_file": True,
+                    "sqlite_workspace_maintenance": True,
                     **sandbox_diagnostics(),
                 },
             )

@@ -184,6 +184,7 @@ import { FileDiffOverlay } from './shared/FileDiffOverlay';
 import { useToast, ToastContainer } from './shared/Toast';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { WorkspaceSqliteInspectorModal } from './shared/WorkspaceSqliteInspectorModal';
+import { DatabaseHistoryPanel } from './shared/DatabaseHistoryPanel';
 import { WorkspaceObjectStorageExplorer } from './shared/WorkspaceObjectStorageExplorer';
 import { AgentAccessSection } from './shared/AgentAccessSection';
 import { ExternalApiAccessSection } from './shared/ExternalApiAccessSection';
@@ -9658,6 +9659,16 @@ export function UserSpacePanel({
             </button>
             {showSnapshots && (
               <div className="userspace-snapshots-list">
+                {activeWorkspaceId && (
+                  <div className="database-history-snapshot-host" data-history-host="workspace">
+                    <DatabaseHistoryPanel
+                      workspaceId={activeWorkspaceId}
+                      ownerOrAdmin={isOwner}
+                      triggerLabel="Database history"
+                      hostId="workspace"
+                    />
+                  </div>
+                )}
                 {restoringSnapshotId && (
                   <div
                     className="userspace-snapshot-busy-indicator"
@@ -9968,6 +9979,13 @@ export function UserSpacePanel({
                             </div>
 
                             <div className="userspace-snapshot-row-actions">
+                              <DatabaseHistoryPanel
+                                workspaceId={activeWorkspaceId ?? ''}
+                                ownerOrAdmin={isOwner}
+                                snapshotId={snapshot.id}
+                                triggerLabel="Database history"
+                                hostId={`snapshot-${snapshot.id}`}
+                              />
                               {isCurrentSnapshot ? (
                                 <span className="userspace-snapshot-current-badge">
                                   You are here
@@ -10129,6 +10147,7 @@ export function UserSpacePanel({
         workspaceId={activeWorkspaceId}
         workspaceName={activeWorkspace?.name}
         canEdit={canEditWorkspace}
+        canManageHistory={isOwner}
         onClose={handleCloseSqliteInspector}
         onPersistencePromoted={handleSqlitePersistencePromoted}
       />

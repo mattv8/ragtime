@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import re
 import shutil
 import sqlite3
+import stat
 import tempfile
 import time
 from contextlib import contextmanager
@@ -27,6 +29,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from fastapi import HTTPException
+
+from runtime.core.secure_files import SecureFileError, open_directory
 
 # Managed database location inside `<workspace>/files/`.
 MANAGED_DB_DIRNAME = ".ragtime/db"
@@ -248,7 +252,64 @@ def _managed_db_root(workspace_files_dir: Path) -> Path:
     return workspace_files_dir / MANAGED_DB_DIRNAME
 
 
-def _resolve_database_path(workspace_files_dir: Path, db_name: str) -> Path:
+@dataclass
+class _ManagedDatabasePath:
+    """A managed SQLite leaf addressed through pinned file/directory descriptors."""
+
+    directory_fd: int
+    name: str
+    file_fd: int = -1  # O_NOFOLLOW fd to the leaf; -1 when file does not yet exist
+
+    @property
+    def sqlite_path(self) -> str:
+        if self.file_fd >= 0:
+            return f"/proc/self/fd/{self.file_fd}"
+        return f"/proc/self/fd/{self.directory_fd}/{self.name}"
+
+    @property
+    def suffix(self) -> str:
+        return Path(self.name).suffix
+
+    def exists(self) -> bool:
+        try:
+            os.stat(self.name, dir_fd=self.directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        return True
+
+    def stat(self) -> os.stat_result:
+        return os.stat(self.name, dir_fd=self.directory_fd, follow_symlinks=False)
+
+    def unlink(self) -> None:
+        os.unlink(self.name, dir_fd=self.directory_fd)
+
+    def sidecar_name(self, suffix: str) -> str:
+        return self.name + suffix
+
+    def close(self) -> None:
+        if self.file_fd >= 0:
+            os.close(self.file_fd)
+            self.file_fd = -1
+        if self.directory_fd >= 0:
+            os.close(self.directory_fd)
+            self.directory_fd = -1
+
+    def __enter__(self) -> _ManagedDatabasePath:
+        return self
+
+    def __exit__(self, *unused: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        # All inspector call sites retain this handle for their SQLite
+        # connection. This fallback closes it on exceptional early exits.
+        try:
+            self.close()
+        except OSError:
+            pass
+
+
+def _resolve_database_path(workspace_files_dir: Path, db_name: str) -> _ManagedDatabasePath:
     cleaned = (db_name or "").strip()
     if not cleaned:
         raise HTTPException(status_code=400, detail="Database name is required")
@@ -260,19 +321,48 @@ def _resolve_database_path(workspace_files_dir: Path, db_name: str) -> Path:
             status_code=400,
             detail=("Database file must end with one of: " + ", ".join(sorted(ALLOWED_DB_EXTENSIONS))),
         )
-    root = _managed_db_root(workspace_files_dir).resolve()
-    candidate = (root / cleaned).resolve()
+    # Do not resolve this path: resolving `.ragtime` or `db` first would turn a
+    # symlink target into the apparent containment root.  Walk the managed
+    # directory from the trusted workspace root with descriptor-relative,
+    # no-follow opens instead, then reject every SQLite file SQLite could open.
     try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid database name") from exc
-    return candidate
+        # The workspace parent is trusted by the service. Create only its
+        # `files` child here; an existing symlink is still rejected by the
+        # no-follow open below.
+        workspace_files_dir.mkdir(mode=0o755, exist_ok=True)
+        with open_directory(workspace_files_dir, MANAGED_DB_DIRNAME, create=True) as database_fd:
+            for name in (cleaned, *(cleaned + suffix for suffix in ("-wal", "-shm", "-journal"))):
+                try:
+                    mode = os.stat(name, dir_fd=database_fd, follow_symlinks=False).st_mode
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISREG(mode):
+                    raise HTTPException(status_code=400, detail="Managed database path is unsafe")
+            # Keep a duplicate alive beyond this validation. SQLite opens the
+            # proc-fd directory path below, so it cannot re-walk a parent that
+            # an attacker replaces after validation.
+            dup_dir_fd = os.dup(database_fd)
+            # Pin the leaf inode itself so that a symlink swap between
+            # validation and the SQLite open cannot redirect the connection.
+            file_fd = -1
+            try:
+                file_fd = os.open(cleaned, os.O_RDWR | os.O_NOFOLLOW, dir_fd=database_fd)
+            except FileNotFoundError:
+                pass  # File does not exist yet (e.g. initialize_database)
+            # Other OSErrors (ELOOP from a symlink swap, EACCES, etc.) propagate
+            # to the outer handler and become a 400 — do NOT fall back to the
+            # directory-based path, which would re-walk the (now-malicious) leaf.
+            return _ManagedDatabasePath(dup_dir_fd, cleaned, file_fd)
+    except HTTPException:
+        raise
+    except (OSError, SecureFileError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Managed database path is unsafe") from exc
 
 
 @contextmanager
-def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
+def _connect(db_path: Path | _ManagedDatabasePath) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(
-        str(db_path),
+        db_path.sqlite_path if isinstance(db_path, _ManagedDatabasePath) else str(db_path),
         timeout=5.0,
         detect_types=0,
         isolation_level=None,  # autocommit; explicit transactions where needed
@@ -307,104 +397,115 @@ def _ensure_table_exists(conn: sqlite3.Connection, table_name: str) -> None:
 def list_databases(workspace_files_dir: Path) -> tuple[list[DatabaseSummary], int]:
     """List managed databases under `.ragtime/db/` and total bytes consumed."""
 
-    root = _managed_db_root(workspace_files_dir)
-    if not root.exists() or not root.is_dir():
+    try:
+        with open_directory(workspace_files_dir, MANAGED_DB_DIRNAME) as database_fd:
+            entries = sorted(os.listdir(database_fd), key=str.lower)
+    except FileNotFoundError:
+        return [], 0
+    except (OSError, SecureFileError, ValueError):
+        # A symlinked `.ragtime`/`db` component must not be enumerated.
         return [], 0
 
     summaries: list[DatabaseSummary] = []
     total_bytes = 0
-    for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
-        if not entry.is_file():
-            continue
-        if entry.suffix.lower() not in ALLOWED_DB_EXTENSIONS:
+    for name in entries:
+        if Path(name).suffix.lower() not in ALLOWED_DB_EXTENSIONS:
             continue
         try:
-            stat = entry.stat()
-        except OSError:
+            with open_directory(workspace_files_dir, MANAGED_DB_DIRNAME) as database_fd:
+                entry_stat = os.stat(name, dir_fd=database_fd, follow_symlinks=False)
+            if not stat.S_ISREG(entry_stat.st_mode):
+                continue
+            # Validate the leaf and SQLite sidecars before connecting via the
+            # legacy path-based SQLite API.
+            entry = _resolve_database_path(workspace_files_dir, name)
+        except HTTPException:
             continue
-        size_bytes = stat.st_size
-        total_bytes += size_bytes
-        table_count = 0
-        try:
-            with _connect(entry) as conn:
-                row = conn.execute("SELECT count(*) AS cnt FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'").fetchone()
-                table_count = int(row["cnt"]) if row else 0
-        except sqlite3.DatabaseError:
+        except (OSError, SecureFileError, ValueError):
+            continue
+        with entry:
+            size_bytes = entry_stat.st_size
+            total_bytes += size_bytes
             table_count = 0
-        summaries.append(
-            DatabaseSummary(
-                name=entry.name,
-                relative_path=f"{MANAGED_DB_DIRNAME}/{entry.name}",
-                size_bytes=size_bytes,
-                table_count=table_count,
-                last_modified_ms=int(stat.st_mtime * 1000),
+            try:
+                with _connect(entry) as conn:
+                    row = conn.execute("SELECT count(*) AS cnt FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'").fetchone()
+                    table_count = int(row["cnt"]) if row else 0
+            except sqlite3.DatabaseError:
+                table_count = 0
+            summaries.append(
+                DatabaseSummary(
+                    name=entry.name,
+                    relative_path=f"{MANAGED_DB_DIRNAME}/{entry.name}",
+                    size_bytes=size_bytes,
+                    table_count=table_count,
+                    last_modified_ms=int(entry_stat.st_mtime * 1000),
+                )
             )
-        )
     return summaries, total_bytes
 
 
 def initialize_database(workspace_files_dir: Path, db_name: str = DEFAULT_DATABASE_NAME) -> DatabaseSummary:
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    if not db_path.exists():
-        # Open and close to materialize an empty SQLite file.
-        with _connect(db_path):
-            pass
-    stat = db_path.stat()
-    return DatabaseSummary(
-        name=db_path.name,
-        relative_path=f"{MANAGED_DB_DIRNAME}/{db_path.name}",
-        size_bytes=stat.st_size,
-        table_count=0,
-        last_modified_ms=int(stat.st_mtime * 1000),
-    )
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            # Open and close to materialize an empty SQLite file.
+            with _connect(db_path):
+                pass
+        database_stat = db_path.stat()
+        return DatabaseSummary(
+            name=db_path.name,
+            relative_path=f"{MANAGED_DB_DIRNAME}/{db_path.name}",
+            size_bytes=database_stat.st_size,
+            table_count=0,
+            last_modified_ms=int(database_stat.st_mtime * 1000),
+        )
 
 
 def delete_database(workspace_files_dir: Path, db_name: str) -> None:
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="Database not found")
-    db_path.unlink()
-    # Best-effort cleanup of WAL/SHM sidecar files.
-    for sidecar_suffix in ("-wal", "-shm", "-journal"):
-        sidecar = db_path.with_name(db_path.name + sidecar_suffix)
-        try:
-            sidecar.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            pass
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            raise HTTPException(status_code=404, detail="Database not found")
+        db_path.unlink()
+        # Best-effort cleanup of WAL/SHM sidecar files.
+        for sidecar_suffix in ("-wal", "-shm", "-journal"):
+            try:
+                os.unlink(db_path.sidecar_name(sidecar_suffix), dir_fd=db_path.directory_fd)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
 
 
 def export_database_copy(workspace_files_dir: Path, db_name: str) -> Path:
     """Return a temporary consistent copy of a managed database."""
 
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="Database not found")
-    fd, temp_name = tempfile.mkstemp(prefix="ragtime-sqlite-", suffix=db_path.suffix)
-    Path(temp_name).unlink(missing_ok=True)
-    # Close the fd from mkstemp before sqlite creates the destination.
-    try:
-        import os
-
-        os.close(fd)
-    except OSError:
-        pass
-    out_path = Path(temp_name)
-    with _connect(db_path) as source:
-        dest = sqlite3.connect(str(out_path), timeout=5.0, isolation_level=None)
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            raise HTTPException(status_code=404, detail="Database not found")
+        fd, temp_name = tempfile.mkstemp(prefix="ragtime-sqlite-", suffix=db_path.suffix)
+        Path(temp_name).unlink(missing_ok=True)
+        # Close the fd from mkstemp before sqlite creates the destination.
         try:
-            source.backup(dest)
-        finally:
-            dest.close()
-    return out_path
+            os.close(fd)
+        except OSError:
+            pass
+        out_path = Path(temp_name)
+        with _connect(db_path) as source:
+            dest = sqlite3.connect(str(out_path), timeout=5.0, isolation_level=None)
+            try:
+                source.backup(dest)
+            finally:
+                dest.close()
+        return out_path
 
 
 def import_database_file(workspace_files_dir: Path, db_name: str, source_path: Path) -> DatabaseSummary:
-    """Validate and copy an uploaded SQLite database into the managed DB dir."""
+    """Validate and atomically publish an uploaded SQLite database.
 
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
+    The caller must already have stopped/fenced runtime writers.  Copying to a
+    sibling temporary file keeps a failed upload from corrupting the live DB.
+    """
+
     if not source_path.exists() or not source_path.is_file():
         raise HTTPException(status_code=400, detail="Uploaded database file was not readable")
     try:
@@ -418,16 +519,36 @@ def import_database_file(workspace_files_dir: Path, db_name: str, source_path: P
     except sqlite3.DatabaseError as exc:
         raise HTTPException(status_code=400, detail=f"Uploaded file is not a valid SQLite database: {exc}") from exc
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source_path, db_path)
-    for sidecar_suffix in ("-wal", "-shm", "-journal"):
-        sidecar = db_path.with_name(db_path.name + sidecar_suffix)
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{db_path.name}.",
+            suffix=".import",
+            dir=f"/proc/self/fd/{db_path.directory_fd}",
+        )
+        temporary = Path(temporary_name)
         try:
-            sidecar.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            pass
+            with os.fdopen(fd, "wb") as destination, source_path.open("rb") as source:
+                shutil.copyfileobj(source, destination)
+                destination.flush()
+                os.fsync(destination.fileno())
+            # Validate the exact bytes that will be published, not merely the
+            # upload path which could otherwise change between validation and copy.
+            with _connect(temporary) as conn:
+                row = conn.execute("PRAGMA integrity_check").fetchone()
+                if row is None or str(row[0]).lower() != "ok":
+                    raise HTTPException(status_code=400, detail="Uploaded file failed SQLite integrity check")
+                conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+            os.replace(temporary_name, db_path.name, dst_dir_fd=db_path.directory_fd)
+        except sqlite3.DatabaseError as exc:
+            raise HTTPException(status_code=400, detail=f"Uploaded file is not a valid SQLite database: {exc}") from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+        for sidecar_suffix in ("-wal", "-shm", "-journal"):
+            try:
+                os.unlink(db_path.sidecar_name(sidecar_suffix), dir_fd=db_path.directory_fd)
+            except FileNotFoundError:
+                pass
+        os.fsync(db_path.directory_fd)
     return initialize_database(workspace_files_dir, db_name)
 
 
@@ -442,22 +563,22 @@ def _row_count(conn: sqlite3.Connection, table_name: str) -> int:
 
 
 def list_tables(workspace_files_dir: Path, db_name: str) -> list[TableSummary]:
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="Database not found")
-    out: list[TableSummary] = []
-    with _connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY type, name"
-        ).fetchall()
-        for entry in rows:
-            tname = str(entry["name"])
-            try:
-                count = _row_count(conn, tname)
-            except sqlite3.DatabaseError:
-                count = 0
-            out.append(TableSummary(name=tname, type=str(entry["type"]), row_count=count))
-    return out
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            raise HTTPException(status_code=404, detail="Database not found")
+        out: list[TableSummary] = []
+        with _connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY type, name"
+            ).fetchall()
+            for entry in rows:
+                tname = str(entry["name"])
+                try:
+                    count = _row_count(conn, tname)
+                except sqlite3.DatabaseError:
+                    count = 0
+                out.append(TableSummary(name=tname, type=str(entry["type"]), row_count=count))
+        return out
 
 
 def _column_info(conn: sqlite3.Connection, table_name: str) -> list[ColumnInfo]:
@@ -512,24 +633,24 @@ def _foreign_keys(conn: sqlite3.Connection, table_name: str) -> list[ForeignKeyI
 
 
 def get_table_schema(workspace_files_dir: Path, db_name: str, table_name: str) -> TableSchema:
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="Database not found")
-    with _connect(db_path) as conn:
-        master = conn.execute(
-            "SELECT type, sql FROM sqlite_master WHERE name = ?",
-            (table_name,),
-        ).fetchone()
-        if master is None:
-            raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
-        return TableSchema(
-            name=table_name,
-            type=str(master["type"]),
-            columns=_column_info(conn, table_name),
-            indexes=_index_info(conn, table_name),
-            foreign_keys=_foreign_keys(conn, table_name),
-            sql=(str(master["sql"]) if master["sql"] is not None else None),
-        )
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            raise HTTPException(status_code=404, detail="Database not found")
+        with _connect(db_path) as conn:
+            master = conn.execute(
+                "SELECT type, sql FROM sqlite_master WHERE name = ?",
+                (table_name,),
+            ).fetchone()
+            if master is None:
+                raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+            return TableSchema(
+                name=table_name,
+                type=str(master["type"]),
+                columns=_column_info(conn, table_name),
+                indexes=_index_info(conn, table_name),
+                foreign_keys=_foreign_keys(conn, table_name),
+                sql=(str(master["sql"]) if master["sql"] is not None else None),
+            )
 
 
 def create_table(
@@ -561,27 +682,26 @@ def create_table(
             detail="Only one column-level PRIMARY KEY is supported (composite keys are not exposed yet)",
         )
 
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    sql = f"CREATE TABLE {quote_identifier(table_name)} (" + ", ".join(rendered_columns) + ")" + (" WITHOUT ROWID" if without_rowid else "")
-    with _connect(db_path) as conn:
-        if _table_exists(conn, table_name):
-            raise HTTPException(status_code=409, detail=f"Table '{table_name}' already exists")
-        try:
-            conn.execute(sql)
-        except sqlite3.DatabaseError as exc:
-            raise HTTPException(status_code=400, detail=f"Failed to create table: {exc}") from exc
-        return TableSummary(name=table_name, type="table", row_count=0)
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        sql = f"CREATE TABLE {quote_identifier(table_name)} (" + ", ".join(rendered_columns) + ")" + (" WITHOUT ROWID" if without_rowid else "")
+        with _connect(db_path) as conn:
+            if _table_exists(conn, table_name):
+                raise HTTPException(status_code=409, detail=f"Table '{table_name}' already exists")
+            try:
+                conn.execute(sql)
+            except sqlite3.DatabaseError as exc:
+                raise HTTPException(status_code=400, detail=f"Failed to create table: {exc}") from exc
+            return TableSummary(name=table_name, type="table", row_count=0)
 
 
 def drop_table(workspace_files_dir: Path, db_name: str, table_name: str) -> None:
     table_name = validate_identifier(table_name, kind="Table name")
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="Database not found")
-    with _connect(db_path) as conn:
-        _ensure_table_exists(conn, table_name)
-        conn.execute(f"DROP TABLE {quote_identifier(table_name)}")
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            raise HTTPException(status_code=404, detail="Database not found")
+        with _connect(db_path) as conn:
+            _ensure_table_exists(conn, table_name)
+            conn.execute(f"DROP TABLE {quote_identifier(table_name)}")
 
 
 def apply_table_alterations(
@@ -592,89 +712,89 @@ def apply_table_alterations(
 ) -> TableSchema:
     if not alterations:
         raise HTTPException(status_code=400, detail="At least one alteration is required")
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="Database not found")
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            raise HTTPException(status_code=404, detail="Database not found")
 
-    current_table = validate_identifier(table_name, kind="Table name")
-    with _connect(db_path) as conn:
-        _ensure_table_exists(conn, current_table)
-        for step in alterations:
-            op = (step.op or "").strip().lower()
-            if op == "rename_table":
-                new_name = validate_identifier(step.new_table_name or "", kind="New table name")
-                conn.execute(f"ALTER TABLE {quote_identifier(current_table)} RENAME TO {quote_identifier(new_name)}")
-                current_table = new_name
-            elif op == "add_column":
-                if step.column is None:
-                    raise HTTPException(status_code=400, detail="add_column requires a column definition")
-                col_sql = _render_column_definition(step.column)
-                if step.column.primary_key:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="SQLite cannot add a PRIMARY KEY column to an existing table",
-                    )
-                conn.execute(f"ALTER TABLE {quote_identifier(current_table)} ADD COLUMN {col_sql}")
-            elif op == "rename_column":
-                old_col = validate_identifier(step.column_name or "", kind="Column name")
-                new_col = validate_identifier(step.new_column_name or "", kind="New column name")
-                try:
-                    conn.execute(f"ALTER TABLE {quote_identifier(current_table)} RENAME COLUMN {quote_identifier(old_col)} TO {quote_identifier(new_col)}")
-                except sqlite3.OperationalError as exc:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(f"RENAME COLUMN requires SQLite 3.25 or newer; the embedded engine reported: {exc}"),
-                    ) from exc
-            elif op == "drop_column":
-                col_name = validate_identifier(step.column_name or "", kind="Column name")
-                try:
-                    conn.execute(f"ALTER TABLE {quote_identifier(current_table)} DROP COLUMN {quote_identifier(col_name)}")
-                except sqlite3.OperationalError as exc:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(f"DROP COLUMN requires SQLite 3.35 or newer and the column must not be referenced by indexes/foreign keys: {exc}"),
-                    ) from exc
-            elif op == "change_column_type":
-                col_name = validate_identifier(step.column_name or "", kind="Column name")
-                if step.column is None:
-                    raise HTTPException(status_code=400, detail="change_column_type requires a column definition with the new type")
-                new_type = validate_column_type(step.column.type)
-                if _row_count(conn, current_table) > 0:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Column type changes are only allowed on empty tables to avoid destructive data conversion",
-                    )
-                if _foreign_keys(conn, current_table):
-                    raise HTTPException(status_code=400, detail="Column type changes are not supported for tables with foreign keys")
-                user_indexes = [idx for idx in _index_info(conn, current_table) if idx.origin != "pk"]
-                if user_indexes:
-                    raise HTTPException(status_code=400, detail="Column type changes are not supported for tables with indexes")
-                columns = _column_info(conn, current_table)
-                if not any(col.name == col_name for col in columns):
-                    raise HTTPException(status_code=404, detail=f"Column '{col_name}' not found")
-                rendered = [_render_existing_column_definition(col, override_type=(new_type if col.name == col_name else None)) for col in columns]
-                tmp_name = validate_identifier(f"__rt_tmp_{current_table[:48]}", kind="Temporary table name")
-                counter = 1
-                while _table_exists(conn, tmp_name):
-                    tmp_name = validate_identifier(
-                        f"__rt_tmp_{counter}_{current_table[:40]}",
-                        kind="Temporary table name",
-                    )
-                    counter += 1
-                conn.execute(f"CREATE TABLE {quote_identifier(tmp_name)} (" + ", ".join(rendered) + ")")
-                conn.execute(f"DROP TABLE {quote_identifier(current_table)}")
-                conn.execute(f"ALTER TABLE {quote_identifier(tmp_name)} RENAME TO {quote_identifier(current_table)}")
-            else:
-                raise HTTPException(status_code=400, detail=f"Unsupported alteration '{step.op}'")
+        current_table = validate_identifier(table_name, kind="Table name")
+        with _connect(db_path) as conn:
+            _ensure_table_exists(conn, current_table)
+            for step in alterations:
+                op = (step.op or "").strip().lower()
+                if op == "rename_table":
+                    new_name = validate_identifier(step.new_table_name or "", kind="New table name")
+                    conn.execute(f"ALTER TABLE {quote_identifier(current_table)} RENAME TO {quote_identifier(new_name)}")
+                    current_table = new_name
+                elif op == "add_column":
+                    if step.column is None:
+                        raise HTTPException(status_code=400, detail="add_column requires a column definition")
+                    col_sql = _render_column_definition(step.column)
+                    if step.column.primary_key:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="SQLite cannot add a PRIMARY KEY column to an existing table",
+                        )
+                    conn.execute(f"ALTER TABLE {quote_identifier(current_table)} ADD COLUMN {col_sql}")
+                elif op == "rename_column":
+                    old_col = validate_identifier(step.column_name or "", kind="Column name")
+                    new_col = validate_identifier(step.new_column_name or "", kind="New column name")
+                    try:
+                        conn.execute(f"ALTER TABLE {quote_identifier(current_table)} RENAME COLUMN {quote_identifier(old_col)} TO {quote_identifier(new_col)}")
+                    except sqlite3.OperationalError as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(f"RENAME COLUMN requires SQLite 3.25 or newer; the embedded engine reported: {exc}"),
+                        ) from exc
+                elif op == "drop_column":
+                    col_name = validate_identifier(step.column_name or "", kind="Column name")
+                    try:
+                        conn.execute(f"ALTER TABLE {quote_identifier(current_table)} DROP COLUMN {quote_identifier(col_name)}")
+                    except sqlite3.OperationalError as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(f"DROP COLUMN requires SQLite 3.35 or newer and the column must not be referenced by indexes/foreign keys: {exc}"),
+                        ) from exc
+                elif op == "change_column_type":
+                    col_name = validate_identifier(step.column_name or "", kind="Column name")
+                    if step.column is None:
+                        raise HTTPException(status_code=400, detail="change_column_type requires a column definition with the new type")
+                    new_type = validate_column_type(step.column.type)
+                    if _row_count(conn, current_table) > 0:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Column type changes are only allowed on empty tables to avoid destructive data conversion",
+                        )
+                    if _foreign_keys(conn, current_table):
+                        raise HTTPException(status_code=400, detail="Column type changes are not supported for tables with foreign keys")
+                    user_indexes = [idx for idx in _index_info(conn, current_table) if idx.origin != "pk"]
+                    if user_indexes:
+                        raise HTTPException(status_code=400, detail="Column type changes are not supported for tables with indexes")
+                    columns = _column_info(conn, current_table)
+                    if not any(col.name == col_name for col in columns):
+                        raise HTTPException(status_code=404, detail=f"Column '{col_name}' not found")
+                    rendered = [_render_existing_column_definition(col, override_type=(new_type if col.name == col_name else None)) for col in columns]
+                    tmp_name = validate_identifier(f"__rt_tmp_{current_table[:48]}", kind="Temporary table name")
+                    counter = 1
+                    while _table_exists(conn, tmp_name):
+                        tmp_name = validate_identifier(
+                            f"__rt_tmp_{counter}_{current_table[:40]}",
+                            kind="Temporary table name",
+                        )
+                        counter += 1
+                    conn.execute(f"CREATE TABLE {quote_identifier(tmp_name)} (" + ", ".join(rendered) + ")")
+                    conn.execute(f"DROP TABLE {quote_identifier(current_table)}")
+                    conn.execute(f"ALTER TABLE {quote_identifier(tmp_name)} RENAME TO {quote_identifier(current_table)}")
+                else:
+                    raise HTTPException(status_code=400, detail=f"Unsupported alteration '{step.op}'")
 
-        return TableSchema(
-            name=current_table,
-            type="table",
-            columns=_column_info(conn, current_table),
-            indexes=_index_info(conn, current_table),
-            foreign_keys=_foreign_keys(conn, current_table),
-            sql=_table_sql(conn, current_table),
-        )
+            return TableSchema(
+                name=current_table,
+                type="table",
+                columns=_column_info(conn, current_table),
+                indexes=_index_info(conn, current_table),
+                foreign_keys=_foreign_keys(conn, current_table),
+                sql=_table_sql(conn, current_table),
+            )
 
 
 def _table_sql(conn: sqlite3.Connection, table_name: str) -> str | None:
@@ -746,42 +866,42 @@ def list_rows(
     if direction not in {"asc", "desc"}:
         raise HTTPException(status_code=400, detail="order_direction must be 'asc' or 'desc'")
 
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="Database not found")
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            raise HTTPException(status_code=404, detail="Database not found")
 
-    with _connect(db_path) as conn:
-        _ensure_table_exists(conn, table_name)
-        columns = _column_info(conn, table_name)
-        column_names = {c.name for c in columns}
-        order_clause = ""
-        if order_by:
-            if order_by not in column_names:
-                raise HTTPException(status_code=400, detail=f"Unknown order_by column '{order_by}'")
-            order_clause = f" ORDER BY {quote_identifier(order_by)} {direction.upper()}"
-        elif not _primary_key_columns(columns):
-            order_clause = " ORDER BY rowid ASC"
-        else:
-            pk_cols = ", ".join(quote_identifier(pk.name) for pk in _primary_key_columns(columns))
-            order_clause = f" ORDER BY {pk_cols} {direction.upper()}"
+        with _connect(db_path) as conn:
+            _ensure_table_exists(conn, table_name)
+            columns = _column_info(conn, table_name)
+            column_names = {c.name for c in columns}
+            order_clause = ""
+            if order_by:
+                if order_by not in column_names:
+                    raise HTTPException(status_code=400, detail=f"Unknown order_by column '{order_by}'")
+                order_clause = f" ORDER BY {quote_identifier(order_by)} {direction.upper()}"
+            elif not _primary_key_columns(columns):
+                order_clause = " ORDER BY rowid ASC"
+            else:
+                pk_cols = ", ".join(quote_identifier(pk.name) for pk in _primary_key_columns(columns))
+                order_clause = f" ORDER BY {pk_cols} {direction.upper()}"
 
-        total = _row_count(conn, table_name)
-        select_columns = ", ".join(quote_identifier(c.name) for c in columns)
-        has_pk = bool(_primary_key_columns(columns))
-        rowid_clause = "" if has_pk else ", rowid AS _rowid"
-        sql = f"SELECT {select_columns}{rowid_clause} FROM {quote_identifier(table_name)}{order_clause} LIMIT ? OFFSET ?"
-        rows = conn.execute(sql, (limit, offset)).fetchall()
-        out_rows: list[dict[str, Any]] = []
-        for row in rows:
-            record: dict[str, Any] = {}
-            for col in columns:
-                value = row[col.name]
-                record[col.name] = _coerce_value(value)
-            if not has_pk:
-                record["_rowid"] = int(row["_rowid"])
-            out_rows.append(record)
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
-        return RowPage(columns=columns, rows=out_rows, total=total, limit=limit, offset=offset, elapsed_ms=elapsed_ms)
+            total = _row_count(conn, table_name)
+            select_columns = ", ".join(quote_identifier(c.name) for c in columns)
+            has_pk = bool(_primary_key_columns(columns))
+            rowid_clause = "" if has_pk else ", rowid AS _rowid"
+            sql = f"SELECT {select_columns}{rowid_clause} FROM {quote_identifier(table_name)}{order_clause} LIMIT ? OFFSET ?"
+            rows = conn.execute(sql, (limit, offset)).fetchall()
+            out_rows: list[dict[str, Any]] = []
+            for row in rows:
+                record: dict[str, Any] = {}
+                for col in columns:
+                    value = row[col.name]
+                    record[col.name] = _coerce_value(value)
+                if not has_pk:
+                    record["_rowid"] = int(row["_rowid"])
+                out_rows.append(record)
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            return RowPage(columns=columns, rows=out_rows, total=total, limit=limit, offset=offset, elapsed_ms=elapsed_ms)
 
 
 def _coerce_value(value: Any) -> Any:
@@ -796,34 +916,34 @@ def insert_row(
     table_name: str,
     values: dict[str, Any],
 ) -> dict[str, Any]:
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="Database not found")
-    with _connect(db_path) as conn:
-        _ensure_table_exists(conn, table_name)
-        columns = _column_info(conn, table_name)
-        column_names = {c.name for c in columns}
-        provided = {k: v for k, v in (values or {}).items() if k in column_names}
-        if not provided:
-            # Insert with all defaults
-            try:
-                cur = conn.execute(f"INSERT INTO {quote_identifier(table_name)} DEFAULT VALUES")
-            except sqlite3.DatabaseError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            inserted_rowid = cur.lastrowid
-        else:
-            cols_sql = ", ".join(quote_identifier(k) for k in provided.keys())
-            placeholders = ", ".join("?" for _ in provided)
-            try:
-                cur = conn.execute(
-                    f"INSERT INTO {quote_identifier(table_name)} ({cols_sql}) VALUES ({placeholders})",
-                    list(provided.values()),
-                )
-            except sqlite3.DatabaseError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            inserted_rowid = cur.lastrowid
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            raise HTTPException(status_code=404, detail="Database not found")
+        with _connect(db_path) as conn:
+            _ensure_table_exists(conn, table_name)
+            columns = _column_info(conn, table_name)
+            column_names = {c.name for c in columns}
+            provided = {k: v for k, v in (values or {}).items() if k in column_names}
+            if not provided:
+                # Insert with all defaults
+                try:
+                    cur = conn.execute(f"INSERT INTO {quote_identifier(table_name)} DEFAULT VALUES")
+                except sqlite3.DatabaseError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                inserted_rowid = cur.lastrowid
+            else:
+                cols_sql = ", ".join(quote_identifier(k) for k in provided.keys())
+                placeholders = ", ".join("?" for _ in provided)
+                try:
+                    cur = conn.execute(
+                        f"INSERT INTO {quote_identifier(table_name)} ({cols_sql}) VALUES ({placeholders})",
+                        list(provided.values()),
+                    )
+                except sqlite3.DatabaseError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                inserted_rowid = cur.lastrowid
 
-        return _fetch_row_by_rowid(conn, table_name, columns, inserted_rowid)
+            return _fetch_row_by_rowid(conn, table_name, columns, inserted_rowid)
 
 
 def update_row(
@@ -835,38 +955,38 @@ def update_row(
 ) -> dict[str, Any]:
     if not updates:
         raise HTTPException(status_code=400, detail="No column updates supplied")
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="Database not found")
-    with _connect(db_path) as conn:
-        _ensure_table_exists(conn, table_name)
-        columns = _column_info(conn, table_name)
-        column_names = {c.name for c in columns}
-        applicable = {k: v for k, v in updates.items() if k in column_names}
-        if not applicable:
-            raise HTTPException(status_code=400, detail="No updatable columns supplied")
-        where_clause, where_params = _row_identifier(columns, row_key)
-        set_clause = ", ".join(f"{quote_identifier(k)} = ?" for k in applicable.keys())
-        try:
-            cur = conn.execute(
-                f"UPDATE {quote_identifier(table_name)} SET {set_clause} WHERE {where_clause}",
-                list(applicable.values()) + list(where_params),
-            )
-        except sqlite3.DatabaseError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Row not found")
-        # Re-fetch row via the same identifier
-        select_cols = ", ".join(quote_identifier(c.name) for c in columns)
-        has_pk = bool(_primary_key_columns(columns))
-        rowid_clause = "" if has_pk else ", rowid AS _rowid"
-        row = conn.execute(
-            f"SELECT {select_cols}{rowid_clause} FROM {quote_identifier(table_name)} WHERE {where_clause}",
-            where_params,
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Row not found after update")
-        return _row_to_dict(row, columns, include_rowid=not has_pk)
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            raise HTTPException(status_code=404, detail="Database not found")
+        with _connect(db_path) as conn:
+            _ensure_table_exists(conn, table_name)
+            columns = _column_info(conn, table_name)
+            column_names = {c.name for c in columns}
+            applicable = {k: v for k, v in updates.items() if k in column_names}
+            if not applicable:
+                raise HTTPException(status_code=400, detail="No updatable columns supplied")
+            where_clause, where_params = _row_identifier(columns, row_key)
+            set_clause = ", ".join(f"{quote_identifier(k)} = ?" for k in applicable.keys())
+            try:
+                cur = conn.execute(
+                    f"UPDATE {quote_identifier(table_name)} SET {set_clause} WHERE {where_clause}",
+                    list(applicable.values()) + list(where_params),
+                )
+            except sqlite3.DatabaseError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Row not found")
+            # Re-fetch row via the same identifier
+            select_cols = ", ".join(quote_identifier(c.name) for c in columns)
+            has_pk = bool(_primary_key_columns(columns))
+            rowid_clause = "" if has_pk else ", rowid AS _rowid"
+            row = conn.execute(
+                f"SELECT {select_cols}{rowid_clause} FROM {quote_identifier(table_name)} WHERE {where_clause}",
+                where_params,
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Row not found after update")
+            return _row_to_dict(row, columns, include_rowid=not has_pk)
 
 
 def delete_row(
@@ -875,35 +995,35 @@ def delete_row(
     table_name: str,
     row_key: dict[str, Any],
 ) -> None:
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="Database not found")
-    with _connect(db_path) as conn:
-        _ensure_table_exists(conn, table_name)
-        columns = _column_info(conn, table_name)
-        where_clause, where_params = _row_identifier(columns, row_key)
-        cur = conn.execute(
-            f"DELETE FROM {quote_identifier(table_name)} WHERE {where_clause}",
-            where_params,
-        )
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Row not found")
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            raise HTTPException(status_code=404, detail="Database not found")
+        with _connect(db_path) as conn:
+            _ensure_table_exists(conn, table_name)
+            columns = _column_info(conn, table_name)
+            where_clause, where_params = _row_identifier(columns, row_key)
+            cur = conn.execute(
+                f"DELETE FROM {quote_identifier(table_name)} WHERE {where_clause}",
+                where_params,
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Row not found")
 
 
 def export_table_csv(workspace_files_dir: Path, db_name: str, table_name: str) -> str:
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="Database not found")
-    with _connect(db_path) as conn:
-        _ensure_table_exists(conn, table_name)
-        columns = _column_info(conn, table_name)
-        output = io.StringIO(newline="")
-        writer = csv.writer(output)
-        writer.writerow([c.name for c in columns])
-        select_columns = ", ".join(quote_identifier(c.name) for c in columns)
-        for row in conn.execute(f"SELECT {select_columns} FROM {quote_identifier(table_name)}"):
-            writer.writerow([row[c.name] for c in columns])
-        return output.getvalue()
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            raise HTTPException(status_code=404, detail="Database not found")
+        with _connect(db_path) as conn:
+            _ensure_table_exists(conn, table_name)
+            columns = _column_info(conn, table_name)
+            output = io.StringIO(newline="")
+            writer = csv.writer(output)
+            writer.writerow([c.name for c in columns])
+            select_columns = ", ".join(quote_identifier(c.name) for c in columns)
+            for row in conn.execute(f"SELECT {select_columns} FROM {quote_identifier(table_name)}"):
+                writer.writerow([row[c.name] for c in columns])
+            return output.getvalue()
 
 
 def import_table_csv(
@@ -921,30 +1041,29 @@ def import_table_csv(
     field_names = [validate_identifier(name or "", kind="CSV column name") for name in reader.fieldnames]
     rows = list(reader)
 
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with _connect(db_path) as conn:
-        if _table_exists(conn, table_name):
-            if replace:
-                conn.execute(f"DROP TABLE {quote_identifier(table_name)}")
-            else:
-                columns = _column_info(conn, table_name)
-                existing = {c.name for c in columns}
-                missing = [name for name in field_names if name not in existing]
-                if missing:
-                    raise HTTPException(status_code=400, detail=f"CSV column(s) not found in table: {', '.join(missing)}")
-        if not _table_exists(conn, table_name):
-            column_sql = ", ".join(_render_column_definition(ColumnDefinition(name=name, type="TEXT")) for name in field_names)
-            conn.execute(f"CREATE TABLE {quote_identifier(table_name)} ({column_sql})")
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        with _connect(db_path) as conn:
+            if _table_exists(conn, table_name):
+                if replace:
+                    conn.execute(f"DROP TABLE {quote_identifier(table_name)}")
+                else:
+                    columns = _column_info(conn, table_name)
+                    existing = {c.name for c in columns}
+                    missing = [name for name in field_names if name not in existing]
+                    if missing:
+                        raise HTTPException(status_code=400, detail=f"CSV column(s) not found in table: {', '.join(missing)}")
+            if not _table_exists(conn, table_name):
+                column_sql = ", ".join(_render_column_definition(ColumnDefinition(name=name, type="TEXT")) for name in field_names)
+                conn.execute(f"CREATE TABLE {quote_identifier(table_name)} ({column_sql})")
 
-        if rows:
-            cols_sql = ", ".join(quote_identifier(name) for name in field_names)
-            placeholders = ", ".join("?" for _ in field_names)
-            conn.executemany(
-                f"INSERT INTO {quote_identifier(table_name)} ({cols_sql}) VALUES ({placeholders})",
-                [[row.get(name) for name in field_names] for row in rows],
-            )
-        return TableSummary(name=table_name, type="table", row_count=_row_count(conn, table_name))
+            if rows:
+                cols_sql = ", ".join(quote_identifier(name) for name in field_names)
+                placeholders = ", ".join("?" for _ in field_names)
+                conn.executemany(
+                    f"INSERT INTO {quote_identifier(table_name)} ({cols_sql}) VALUES ({placeholders})",
+                    [[row.get(name) for name in field_names] for row in rows],
+                )
+            return TableSummary(name=table_name, type="table", row_count=_row_count(conn, table_name))
 
 
 def execute_readonly_query(
@@ -966,21 +1085,21 @@ def execute_readonly_query(
     if max_rows <= 0 or max_rows > 500:
         max_rows = 200
 
-    db_path = _resolve_database_path(workspace_files_dir, db_name)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="Database not found")
-    with _connect(db_path) as conn:
-        conn.execute("PRAGMA query_only = ON")
-        try:
-            cursor = conn.execute(statement)
-            names = [str(desc[0]) for desc in (cursor.description or [])]
-            raw_rows = cursor.fetchmany(max_rows + 1)
-        except sqlite3.DatabaseError as exc:
-            raise HTTPException(status_code=400, detail=f"Query failed: {exc}") from exc
-        truncated = len(raw_rows) > max_rows
-        rows = raw_rows[:max_rows]
-        records = [{name: _coerce_value(row[name]) for name in names} for row in rows]
-        return QueryResult(columns=names, rows=records, row_count=len(records), truncated=truncated)
+    with _resolve_database_path(workspace_files_dir, db_name) as db_path:
+        if not db_path.exists():
+            raise HTTPException(status_code=404, detail="Database not found")
+        with _connect(db_path) as conn:
+            conn.execute("PRAGMA query_only = ON")
+            try:
+                cursor = conn.execute(statement)
+                names = [str(desc[0]) for desc in (cursor.description or [])]
+                raw_rows = cursor.fetchmany(max_rows + 1)
+            except sqlite3.DatabaseError as exc:
+                raise HTTPException(status_code=400, detail=f"Query failed: {exc}") from exc
+            truncated = len(raw_rows) > max_rows
+            rows = raw_rows[:max_rows]
+            records = [{name: _coerce_value(row[name]) for name in names} for row in rows]
+            return QueryResult(columns=names, rows=records, row_count=len(records), truncated=truncated)
 
 
 def _fetch_row_by_rowid(

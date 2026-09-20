@@ -305,6 +305,14 @@ import type {
   SqliteInspectorImportTableResponse,
   SqliteInspectorSqlQueryRequest,
   SqliteInspectorSqlQueryResponse,
+  SqliteHistoryBackup,
+  SqliteBackupJob,
+  SqliteHistoryConflictPolicy,
+  SqliteHistoryListResponse,
+  SqliteHistoryMaintenanceRecoveryResponse,
+  SqliteHistoryPreview,
+  SqliteHistoryRestoreMode,
+  SqliteHistoryRestoreResponse,
 } from '@/types';
 
 const API_BASE = '/indexes';
@@ -4404,6 +4412,162 @@ export const api = {
   },
 
   // ----- Workspace SQLite inspector -----
+
+  async listUserSpaceSqliteHistory(
+    workspaceId: string,
+    options: { databaseName?: string; snapshotId?: string } = {},
+  ): Promise<SqliteHistoryListResponse> {
+    const search = new URLSearchParams();
+    if (options.databaseName) search.set('database_name', options.databaseName);
+    if (options.snapshotId) search.set('snapshot_id', options.snapshotId);
+    const query = search.toString();
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history${query ? `?${query}` : ''}`,
+      { cache: 'no-store' },
+    );
+    return handleResponse<SqliteHistoryListResponse>(response);
+  },
+
+  async captureUserSpaceSqliteHistory(
+    workspaceId: string,
+    databaseName: string,
+    requestId?: string,
+  ): Promise<{ backup: SqliteHistoryBackup }> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          database_name: databaseName,
+          ...(requestId ? { request_id: requestId } : {}),
+        }),
+      },
+    );
+    return handleResponse<{ backup: SqliteHistoryBackup }>(response);
+  },
+
+  async enqueueUserSpaceSqliteBackup(
+    workspaceId: string,
+    databaseName: string,
+    requestId?: string,
+  ): Promise<{ job: SqliteBackupJob }> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/capture-jobs`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          database_name: databaseName,
+          ...(requestId ? { request_id: requestId } : {}),
+        }),
+      },
+    );
+    return handleResponse<{ job: SqliteBackupJob }>(response);
+  },
+
+  async listUserSpaceSqliteBackupJobs(
+    workspaceId: string,
+    options: { databaseName?: string; snapshotId?: string } = {},
+  ): Promise<{ jobs: SqliteBackupJob[] }> {
+    const search = new URLSearchParams();
+    if (options.databaseName) search.set('database_name', options.databaseName);
+    if (options.snapshotId) search.set('snapshot_id', options.snapshotId);
+    const query = search.toString();
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/capture-jobs${query ? `?${query}` : ''}`,
+      { cache: 'no-store' },
+    );
+    return handleResponse<{ jobs: SqliteBackupJob[] }>(response);
+  },
+
+  async getUserSpaceSqliteBackupJob(
+    workspaceId: string,
+    jobId: string,
+  ): Promise<{ job: SqliteBackupJob }> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/capture-jobs/${encodeURIComponent(jobId)}`,
+      { cache: 'no-store' },
+    );
+    return handleResponse<{ job: SqliteBackupJob }>(response);
+  },
+
+  async cancelUserSpaceSqliteBackupJob(
+    workspaceId: string,
+    jobId: string,
+  ): Promise<{ job: SqliteBackupJob }> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/capture-jobs/${encodeURIComponent(jobId)}/cancel`,
+      { method: 'POST' },
+    );
+    return handleResponse<{ job: SqliteBackupJob }>(response);
+  },
+
+  async downloadUserSpaceSqliteHistory(workspaceId: string, backupId: string): Promise<void> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/${encodeURIComponent(backupId)}/download`,
+    );
+    await downloadBlobResponse(response, `${backupId}.sqlite3`, 'Database history download failed');
+  },
+
+  async deleteUserSpaceSqliteHistory(workspaceId: string, backupId: string): Promise<void> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/${encodeURIComponent(backupId)}`,
+      { method: 'DELETE' },
+    );
+    await handleResponse<{ success: boolean }>(response);
+  },
+
+  async previewUserSpaceSqliteHistory(
+    workspaceId: string,
+    backupId: string,
+    request: {
+      mode: SqliteHistoryRestoreMode;
+      conflict_policy: SqliteHistoryConflictPolicy;
+      table_policies?: Record<string, SqliteHistoryConflictPolicy>;
+    },
+  ): Promise<SqliteHistoryPreview> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/${encodeURIComponent(backupId)}/preview`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
+    return handleResponse<SqliteHistoryPreview>(response);
+  },
+
+  async restoreUserSpaceSqliteHistory(
+    workspaceId: string,
+    previewId: string,
+  ): Promise<SqliteHistoryRestoreResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/restore`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preview_id: previewId }),
+      },
+    );
+    return handleResponse<SqliteHistoryRestoreResponse>(response);
+  },
+
+  async recoverUserSpaceSqliteHistoryMaintenance(
+    workspaceId: string,
+    operationId: string,
+    action: 'complete' | 'abort',
+  ): Promise<SqliteHistoryMaintenanceRecoveryResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/maintenance/${encodeURIComponent(operationId)}/recover`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      },
+    );
+    return handleResponse<SqliteHistoryMaintenanceRecoveryResponse>(response);
+  },
 
   async listUserSpaceSqliteDatabases(
     workspaceId: string,

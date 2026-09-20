@@ -10,7 +10,6 @@ import {
   PlusCircle,
   RefreshCw,
   Save,
-  Sparkles,
   Table as TableIcon,
   Terminal,
   Trash2,
@@ -32,6 +31,7 @@ import type {
 } from '@/types';
 
 import { DeleteConfirmButton } from '../DeleteConfirmButton';
+import { DatabaseHistoryPanel } from './DatabaseHistoryPanel';
 import { ToastContainer, useToast } from './Toast';
 
 const COLUMN_TYPES: SqliteInspectorColumnType[] = ['TEXT', 'INTEGER', 'REAL', 'NUMERIC', 'BLOB'];
@@ -45,6 +45,7 @@ interface WorkspaceSqliteInspectorModalProps {
   workspaceId: string | null;
   workspaceName?: string;
   canEdit: boolean;
+  canManageHistory?: boolean;
   onClose: () => void;
   onPersistencePromoted?: (workspaceId: string) => void;
 }
@@ -285,6 +286,7 @@ export function WorkspaceSqliteInspectorModal({
   workspaceId,
   workspaceName,
   canEdit,
+  canManageHistory = false,
   onClose,
   onPersistencePromoted,
 }: WorkspaceSqliteInspectorModalProps) {
@@ -1295,7 +1297,6 @@ export function WorkspaceSqliteInspectorModal({
   }, [selectedDatabase, selectedTableName, step]);
 
   const selectedDatabaseCanWrite = isDatabaseWritable(selectedDatabase);
-  const effectivePersistenceMode = selectedDatabase?.persistence_mode ?? persistenceMode;
   const linkedBannerText = selectedDatabase
     ? `Linked from ${selectedDatabase.owner_workspace_name} · ${getDatabaseAccessLabel(selectedDatabase.access_mode)}${selectedDatabase.access_mode === 'read_write' ? ` · Changes affect the ${selectedDatabase.owner_workspace_name} workspace.` : ''}`
     : null;
@@ -1376,20 +1377,18 @@ export function WorkspaceSqliteInspectorModal({
               <ArrowLeft size={14} />
             </button>
           )}
+          {workspaceId && (
+            <DatabaseHistoryPanel
+              workspaceId={workspaceId}
+              ownerOrAdmin={canManageHistory && selectedDatabase?.ownership !== 'linked'}
+              databaseName={selectedDatabase?.name}
+              triggerLabel="History"
+              hostId="inspector"
+            />
+          )}
         </div>
 
         <div className="modal-body userspace-sqlite-body">
-          {effectivePersistenceMode === 'exclude' && (
-            <div className="userspace-sqlite-banner">
-              <Sparkles size={14} />
-              <span>
-                {selectedDatabase?.ownership === 'linked'
-                  ? `${selectedDatabase.owner_workspace_name} currently excludes SQLite from snapshots. The first edit will switch that workspace to two-lane persistence (include).`
-                  : 'This workspace currently excludes SQLite from snapshots. The first edit will switch it to two-lane persistence (include).'}
-              </span>
-            </div>
-          )}
-
           {step === 'databases' && (
             <DatabasesStep
               databases={databases}
