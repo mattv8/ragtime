@@ -172,10 +172,27 @@ class RuntimeFileReadResponse(BaseModel):
     content: str = Field(description="File content")
     exists: bool = Field(description="Whether the file exists")
     updated_at: datetime = Field(description="Updated timestamp")
+    actual_updated_at: datetime | None = Field(default=None, description="Filesystem modification timestamp")
+    content_hash: str | None = Field(default=None, description="SHA-256 hash of the UTF-8 file content")
+    artifact_metadata: dict[str, Any] | None = Field(default=None, description="Artifact sidecar metadata")
+    is_utf8_text: bool = Field(default=True, description="Whether content is valid UTF-8 text")
 
 
 class RuntimeFileWriteRequest(BaseModel):
     content: str = Field(description="File content to persist")
+    expected_content_hash: str | None = Field(default=None, description="Required current SHA-256 hash; null requires the file be absent")
+    require_content_hash: bool = Field(default=False, description="Whether expected_content_hash must match, including null for an absent file")
+    artifact_metadata: dict[str, Any] | None = Field(default=None, description="Artifact sidecar metadata to persist with the file")
+
+
+class RuntimeFileDeleteRequest(BaseModel):
+    expected_content_hash: str | None = Field(default=None, description="Required current SHA-256 hash; null requires the file be absent")
+    require_content_hash: bool = Field(default=False, description="Whether expected_content_hash must match, including null for an absent file")
+
+
+class RuntimeFileMoveRequest(BaseModel):
+    old_path: str = Field(min_length=1, description="Existing workspace-relative path")
+    new_path: str = Field(min_length=1, description="New workspace-relative path")
 
 
 class RuntimeContentProbeRequest(BaseModel):

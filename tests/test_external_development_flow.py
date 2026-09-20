@@ -12,6 +12,7 @@ class ExternalDevelopmentOperationContractTests(unittest.TestCase):
             set(operations),
             {
                 "context",
+                "operation_describe",
                 "files_list",
                 "file_read",
                 "file_write",
@@ -27,6 +28,7 @@ class ExternalDevelopmentOperationContractTests(unittest.TestCase):
                 "runtime_stop",
                 "preview_launch",
                 "resources",
+                "http_api_catalog_search",
                 "execute_component",
                 "index_search",
                 "index_grants_list",
@@ -46,6 +48,26 @@ class ExternalDevelopmentOperationContractTests(unittest.TestCase):
     def test_content_hash_is_deterministic(self) -> None:
         self.assertEqual(development_service._hash("hello"), development_service._hash("hello"))
         self.assertNotEqual(development_service._hash("hello"), development_service._hash("goodbye"))
+
+    def test_file_contracts_advertise_the_validated_artifact_type(self) -> None:
+        for operation in development_service.list_operations():
+            if operation["name"] not in {"file_write", "file_patch"}:
+                continue
+            with self.subTest(operation=operation["name"]):
+                schema = operation["input_schema"]
+                artifact_schema = schema["properties"]["artifact_type"]
+                allowed: set[str | None] = set()
+                for alternative in artifact_schema.get("anyOf", [artifact_schema]):
+                    if alternative.get("type") == "null":
+                        allowed.add(None)
+                    elif "const" in alternative:
+                        allowed.add(alternative["const"])
+                    else:
+                        self.assertIn("enum", alternative, "Artifact type must not advertise arbitrary strings")
+                        allowed.update(alternative["enum"])
+                self.assertEqual(allowed, {"module_ts", None})
+                self.assertIn("$defs", schema)
+                self.assertIn("UserSpaceLiveDataConnection", schema["$defs"])
 
     def test_required_hash_and_types_are_rejected_before_dispatch(self) -> None:
         write = next(item for item in development_service.list_operations() if item["name"] == "file_write")

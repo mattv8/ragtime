@@ -14,9 +14,9 @@ The runtime container (``runtime/core/shared.py``) keeps a **copy** of
 runnable without the Ragtime application package. When adding or removing a
 framework here, mirror ``KNOWN_FRAMEWORKS`` in ``runtime/core/shared.py``.
 
-Keep changes to ``EntrypointStatus`` and ``parse_entrypoint_config``
-mirrored in both files as well; parser and registry duplication remain
-intentional compatibility contracts.
+Keep changes to ``EntrypointStatus``, ``parse_entrypoint_content``, and
+``parse_entrypoint_config`` mirrored in both files as well; parser and
+registry duplication remain intentional compatibility contracts.
 """
 
 from __future__ import annotations
@@ -82,25 +82,16 @@ class EntrypointStatus:
     raw: dict[str, str] = field(default_factory=dict)
 
 
-def parse_entrypoint_config(workspace_files_path: Path) -> EntrypointStatus:
-    """Parse the workspace runtime entrypoint and return a canonical status.
-
-    Args:
-        workspace_files_path: Host-side path to the workspace ``files/``
-            directory (i.e. the directory that *contains* ``.ragtime/``).
-
-    Returns:
-        An :class:`EntrypointStatus` describing the current state.
-    """
-    config_path = workspace_files_path / RUNTIME_ENTRYPOINT_CONFIG_PATH
-    if not config_path.exists() or not config_path.is_file():
+def parse_entrypoint_content(content: str | None) -> EntrypointStatus:
+    """Parse entrypoint JSON already read from an authoritative source."""
+    if content is None:
         return EntrypointStatus(
             state="missing",
             error=("No .ragtime/runtime-entrypoint.json found. Create one with a command, cwd, and framework to enable preview."),
         )
 
     try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        raw = json.loads(content)
     except Exception as exc:
         return EntrypointStatus(
             state="invalid",
@@ -141,3 +132,26 @@ def parse_entrypoint_config(workspace_files_path: Path) -> EntrypointStatus:
         error=None,
         raw=parsed_raw,
     )
+
+
+def parse_entrypoint_config(workspace_files_path: Path) -> EntrypointStatus:
+    """Parse the workspace runtime entrypoint and return a canonical status.
+
+    Args:
+        workspace_files_path: Host-side path to the workspace ``files/``
+            directory (i.e. the directory that *contains* ``.ragtime/``).
+
+    Returns:
+        An :class:`EntrypointStatus` describing the current state.
+    """
+    config_path = workspace_files_path / RUNTIME_ENTRYPOINT_CONFIG_PATH
+    if not config_path.exists() or not config_path.is_file():
+        return parse_entrypoint_content(None)
+
+    try:
+        return parse_entrypoint_content(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return EntrypointStatus(
+            state="invalid",
+            error=f"Failed to parse .ragtime/runtime-entrypoint.json: {exc}",
+        )

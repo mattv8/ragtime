@@ -19,10 +19,53 @@ function getErrorMessage(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback;
 }
 
+function buildSetupInstructions(
+  bootstrapManifestUrl: string,
+  workspaceId: string,
+  token: string,
+  credentialName: string,
+): string {
+  const lines = [
+    '# Set up native development client',
+    '',
+    `Authenticate with this workspace's development credential. Use the manifest URL to discover and install required skills, configuration, and rules.`,
+    '',
+    `**Manifest URL:**`,
+    bootstrapManifestUrl,
+    '',
+    `**Workspace ID:**`,
+    workspaceId,
+    '',
+    `**Credential (${credentialName}):**`,
+    token,
+    '',
+    '## Instructions for trusted receiving agent',
+    '',
+    '1. **Fetch the manifest** from the URL above with an Authorization: Bearer <credential> header. Choose the profile for your agent client.',
+    '',
+    '2. **Download and verify** all required skills, rules, and configuration files. Verify checksums as indicated in the manifest.',
+    '',
+    '3. **Install locally for your agent client** using that profile’s destinations and merge instructions. Preserve unrelated configuration, provider settings, and user rules; update managed entries without duplicating them. Keep setup files separate from the remote workspace’s application source.',
+    '',
+    '4. **Store the credential privately** outside version control. Arrange the environment variable(s) declared in the manifest when launching your client.',
+    '',
+    '5. **Load core guidance** and verify MCP connectivity and workspace context are accessible.',
+    '',
+    '6. **Report** whether your agent client needs a restart or new session to load the installed configuration.',
+    '',
+    'Keep the credential in the private store or launch environment from step 4. Do not repeat it in outputs, application files, managed configuration, summaries, or logs.',
+    '',
+    'If this credential has been revoked or rotated, create or rotate a new credential instead of re-using it.',
+  ];
+
+  return lines.join('\n');
+}
+
 export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAgentPanelProps) {
   const [open, setOpen] = useState(false);
   const [credentials, setCredentials] = useState<WorkspaceDevelopmentCredential[]>([]);
   const [token, setToken] = useState<string | null>(null);
+  const [tokenCredentialId, setTokenCredentialId] = useState<string | null>(null);
   const [name, setName] = useState('External agent');
   const [command, setCommand] = useState('');
   const [jobs, setJobs] = useState<ExecJob[]>([]);
@@ -81,6 +124,7 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
     let cancelled = false;
     setCredentials([]);
     setToken(null);
+    setTokenCredentialId(null);
     setJobs([]);
     setError(null);
     setOpen(false);
@@ -118,6 +162,7 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
       });
       if (isCurrentWorkspace(requestedWorkspaceId)) {
         setToken(created.token);
+        setTokenCredentialId(created.id);
         setCredentials((items) => [...items, created]);
       }
     }, 'Failed to create credential');
@@ -131,6 +176,7 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
       );
       if (isCurrentWorkspace(requestedWorkspaceId)) {
         setToken(rotated.token);
+        setTokenCredentialId(rotated.id);
         setCredentials((items) => items.map((item) => (item.id === rotated.id ? rotated : item)));
       }
     }, 'Failed to rotate credential');
@@ -144,6 +190,10 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
       );
       if (isCurrentWorkspace(requestedWorkspaceId)) {
         setCredentials((items) => items.map((item) => (item.id === revoked.id ? revoked : item)));
+        if (tokenCredentialId === credentialId) {
+          setToken(null);
+          setTokenCredentialId(null);
+        }
       }
     }, 'Failed to revoke credential');
   };
@@ -176,6 +226,7 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
   const tokenId = `workspace-agent-token-${workspaceId}`;
   const mcpUrl = `${window.location.origin}/mcp`;
   const operationsUrl = `${window.location.origin}/indexes/userspace/development/workspaces/${workspaceId}/operations`;
+  const bootstrapManifestUrl = `${window.location.origin}/indexes/userspace/development/workspaces/${workspaceId}/bootstrap`;
 
   return (
     <section
@@ -231,17 +282,57 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
                 </button>
               </div>
 
-              {token && (
-                <div id={tokenId} className="api-key-display">
-                  <code>{token}</code>
-                  <InlineCopyButton
-                    copyText={token}
-                    className="btn btn-secondary btn-sm"
-                    title="Copy development credential"
-                    ariaLabel="Copy development credential"
-                    label="Copy token"
-                  />
-                </div>
+              {token && tokenCredentialId && (
+                <>
+                  <div id={tokenId} className="api-key-display">
+                    <code>{token}</code>
+                    <InlineCopyButton
+                      copyText={token}
+                      className="btn btn-secondary btn-sm"
+                      title="Copy development credential"
+                      ariaLabel="Copy development credential"
+                      label="Copy token"
+                    />
+                  </div>
+
+                  <section
+                    id={`workspace-setup-instructions-${workspaceId}`}
+                    data-userspace-panel="setup-instructions"
+                  >
+                    <h4>Copy setup instructions</h4>
+                    <p className="muted">
+                      Share these instructions with your trusted receiving agent.
+                    </p>
+                    <div
+                      id={`workspace-setup-instructions-content-${workspaceId}`}
+                      className="code-block"
+                    >
+                      <pre>
+                        {buildSetupInstructions(
+                          bootstrapManifestUrl,
+                          workspaceId,
+                          token,
+                          credentials.find((c) => c.id === tokenCredentialId)?.name || 'credential',
+                        )}
+                      </pre>
+                      <InlineCopyButton
+                        copyText={() =>
+                          buildSetupInstructions(
+                            bootstrapManifestUrl,
+                            workspaceId,
+                            token,
+                            credentials.find((c) => c.id === tokenCredentialId)?.name ||
+                              'credential',
+                          )
+                        }
+                        className="btn btn-secondary btn-sm"
+                        title="Copy setup instructions"
+                        ariaLabel="Copy setup instructions"
+                        label="Copy instructions"
+                      />
+                    </div>
+                  </section>
+                </>
               )}
 
               {error && (

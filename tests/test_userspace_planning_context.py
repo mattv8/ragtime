@@ -68,6 +68,7 @@ class PlanningContextTests(unittest.IsolatedAsyncioTestCase):
     def _patches(self):
         from ragtime.userspace.service import userspace_service
 
+        self.authoritative_entrypoint_status = mock.AsyncMock(return_value=_fake_entrypoint())
         return [
             mock.patch.object(
                 userspace_service,
@@ -81,8 +82,8 @@ class PlanningContextTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(
                 userspace_service,
-                "get_workspace_entrypoint_status",
-                mock.Mock(return_value=_fake_entrypoint()),
+                "get_workspace_entrypoint_status_authoritative",
+                self.authoritative_entrypoint_status,
             ),
             mock.patch.object(
                 userspace_service,
@@ -137,6 +138,7 @@ class PlanningContextTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context["workspace"]["name"], "Sales Dashboard")
         self.assertEqual(context["architecture"]["framework"], "node")
+        self.authoritative_entrypoint_status.assert_awaited_once_with("ws-1")
         self.assertEqual(context["architecture"]["file_count"], 2)
         self.assertNotIn(".ragtime/runtime-entrypoint.json", context["architecture"]["key_files"])
         self.assertEqual(context["selected_tools"][0]["component_id"], "tool-1")
@@ -206,7 +208,7 @@ class PlanningContextTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(userspace_service, "enforce_workspace_role", mock.AsyncMock(return_value=workspace)),
             mock.patch.object(userspace_service, "list_workspace_files", mock.AsyncMock(return_value=_fake_files())),
-            mock.patch.object(userspace_service, "get_workspace_entrypoint_status", mock.Mock(return_value=_fake_entrypoint())),
+            mock.patch.object(userspace_service, "get_workspace_entrypoint_status_authoritative", mock.AsyncMock(return_value=_fake_entrypoint())),
             mock.patch.object(userspace_service, "is_default_static_entrypoint", mock.Mock(return_value=False)),
             mock.patch.object(userspace_service, "list_snapshots", mock.AsyncMock(return_value=[])),
             mock.patch.object(self.module, "resolve_effective_tool_ids", mock.AsyncMock(return_value=["tool-1", "tool-2"])),
@@ -245,7 +247,7 @@ class PlanningContextTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(userspace_service, "enforce_workspace_role", mock.AsyncMock(return_value=workspace)),
             mock.patch.object(userspace_service, "list_workspace_files", mock.AsyncMock(return_value=_fake_files())),
-            mock.patch.object(userspace_service, "get_workspace_entrypoint_status", mock.Mock(return_value=_fake_entrypoint())),
+            mock.patch.object(userspace_service, "get_workspace_entrypoint_status_authoritative", mock.AsyncMock(return_value=_fake_entrypoint())),
             mock.patch.object(userspace_service, "is_default_static_entrypoint", mock.Mock(return_value=False)),
             mock.patch.object(userspace_service, "list_snapshots", mock.AsyncMock(return_value=[])),
             mock.patch.object(self.module, "resolve_effective_tool_ids", mock.AsyncMock(side_effect=resolve_effective_tool_ids)),

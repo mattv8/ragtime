@@ -843,21 +843,39 @@ class SessionManager:
         provider_session_id: str,
         file_path: str,
         content: str,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
+        artifact_metadata: dict[str, Any] | None = None,
     ) -> RuntimeFileReadResponse:
         session = self._get_session_or_raise(provider_session_id)
         return await self._worker_service.write_file(
             session.worker_session_id,
             file_path,
             content,
+            expected_content_hash=expected_content_hash,
+            require_content_hash=require_content_hash,
+            artifact_metadata=artifact_metadata,
         )
 
     async def delete_file(
         self,
         provider_session_id: str,
         file_path: str,
+        *,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
     ) -> dict[str, Any]:
         session = self._get_session_or_raise(provider_session_id)
-        return await self._worker_service.delete_file(session.worker_session_id, file_path)
+        return await self._worker_service.delete_file(
+            session.worker_session_id,
+            file_path,
+            expected_content_hash=expected_content_hash,
+            require_content_hash=require_content_hash,
+        )
+
+    async def move_file(self, provider_session_id: str, old_path: str, new_path: str) -> dict[str, Any]:
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.move_file(session.worker_session_id, old_path, new_path)
 
     async def capture_screenshot(
         self,

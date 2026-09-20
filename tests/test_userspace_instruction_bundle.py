@@ -68,6 +68,8 @@ class InstructionBundleTests(unittest.TestCase):
         self.assertIn("SQLite local persistence", first["turn_instructions"])
         self.assertIn("AUTHORIZED-CREDENTIAL", str(first["capabilities"]))
         self.assertIn("Sales DB export", system)
+        self.assertIn("`index_search`", first["system_instructions"]["authorized_indexes"])
+        self.assertNotIn("`search_knowledge`", first["system_instructions"]["authorized_indexes"])
 
     def test_bundle_does_not_discover_or_include_unprovided_resources(self):
         context = self._context()

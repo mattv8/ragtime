@@ -7,8 +7,10 @@ conversation or substitutes the workspace owner for the caller.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import posixpath
 from typing import Any
 
 from fastapi import HTTPException
@@ -16,17 +18,25 @@ from pydantic import ValidationError
 
 from ragtime.core.database import get_db
 from ragtime.core.tool_access import resolve_tool_access
+from ragtime.http_api.models import HttpApiConnectionConfig, HttpApiRequest
+from ragtime.http_api.openapi import search_openapi_catalog
 from ragtime.indexer.models import SCHEMA_INDEXER_CAPABLE_TOOL_TYPES, ToolType
 from ragtime.indexer.pdm_service import search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import search_schema_index
+from ragtime.rag.components import rag
 from ragtime.tools.filesystem_indexer import search_filesystem_index
 from ragtime.userspace.agent_read_service import agent_read_service
 from ragtime.userspace.development_access import DevelopmentPrincipal
 from ragtime.userspace.instruction_bundle import build_instruction_bundle
+from ragtime.userspace.instruction_facts import build_env_var_turn_hint, normalize_facts
 from ragtime.userspace.models import ExecuteComponentRequest, UpsertWorkspaceFileRequest
 from ragtime.userspace.planning_service import planning_service
-from ragtime.userspace.service import userspace_service
+from ragtime.userspace.service import (
+    _USPACE_EXEC_BROWSER_SUPPORTED_TOOL_TYPES,
+    _USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES,
+    userspace_service,
+)
 
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -36,8 +46,19 @@ def _schema(properties: dict[str, Any], required: list[str] | None = None) -> di
     return result
 
 
+def _file_schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    """Expose the same content/metadata constraints that writes validate."""
+    model_schema = UpsertWorkspaceFileRequest.model_json_schema()
+    canonical_properties = model_schema.get("properties", {})
+    result = _schema({key: canonical_properties.get(key, value) for key, value in properties.items()}, required)
+    if "$defs" in model_schema:
+        result["$defs"] = model_schema["$defs"]
+    return result
+
+
 _OPERATIONS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
     ("context", "Complete ACL-filtered external harness instruction bundle.", "read", _schema({})),
+    ("operation_describe", "Describe one authorized operation and its input schema.", "read", _schema({"operation": {"type": "string"}}, ["operation"])),
     ("files_list", "List workspace files.", "read", _schema({"prefix": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}})),
     (
         "file_read",
@@ -49,7 +70,7 @@ _OPERATIONS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         "file_write",
         "Write a file when its expected content hash matches.",
         "write",
-        _schema(
+        _file_schema(
             {
                 "path": {"type": "string"},
                 "content": {"type": "string"},
@@ -66,7 +87,7 @@ _OPERATIONS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         "file_patch",
         "Apply an exact text replacement when its expected hash matches.",
         "write",
-        _schema(
+        _file_schema(
             {
                 "path": {"type": "string"},
                 "expected_hash": {"type": "string"},
@@ -103,6 +124,12 @@ _OPERATIONS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
     ("runtime_stop", "Stop the workspace runtime.", "exec", _schema({})),
     ("preview_launch", "Launch an authenticated workspace preview.", "exec", _schema({"control_plane_origin": {"type": "string"}})),
     ("resources", "List caller-authorized selected tools and granted indexes.", "read", _schema({})),
+    (
+        "http_api_catalog_search",
+        "Search an authorized HTTP API OpenAPI catalog.",
+        "read",
+        _schema({"component_id": {"type": "string"}, "query": {"type": "string"}, "limit": {"type": "integer"}}, ["component_id", "query"]),
+    ),
     (
         "execute_component",
         "Execute a caller-authorized selected tool read-only.",
@@ -235,44 +262,144 @@ class DevelopmentService:
         }
 
     async def _context(self, principal: DevelopmentPrincipal, workspace_id: str) -> dict[str, Any]:
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
         context = await planning_service.get_workspace_context(workspace_id, principal.user_id)
         db = await get_db()
         user = await db.user.find_unique(where={"id": principal.user_id})
         context["user"] = {"username": getattr(user, "username", None), "display_name": getattr(user, "displayName", None), "role": getattr(user, "role", None)}
         catalog = await self._resources(principal, workspace_id)
-        mounts = await userspace_service.list_workspace_mounts(workspace_id, principal.user_id, is_admin=principal.is_admin)
+        mounts, mountable_sources, env_vars, diagnostics = await asyncio.gather(
+            userspace_service.list_workspace_mounts(workspace_id, principal.user_id, is_admin=principal.is_admin),
+            userspace_service.list_mountable_sources(workspace_id, principal.user_id),
+            userspace_service.list_workspace_env_var_summaries(workspace_id, principal.user_id),
+            userspace_service.list_workspace_preview_diagnostic_summary(workspace_id),
+        )
+        try:
+            runtime_status = await userspace_runtime_service.get_devserver_status(workspace_id, principal.user_id)
+        except Exception:
+            # Context export must remain available when a transient provider
+            # readiness read fails; do not substitute a guessed runtime state.
+            runtime_status = None
         storage = await userspace_service.get_workspace_object_storage_summary(workspace_id, principal.user_id)
         shared_sqlite = await userspace_service.list_accessible_cross_workspace_sqlite_targets(workspace_id, principal.user_id)
         context["selected_tools"] = catalog["tools"]
         context["authorized_tools"] = catalog["tools"]
         context["authorized_indexes"] = catalog["indexes"]
         context["authorized_resources"] = {
-            "mounts_enabled": bool(mounts),
+            "mounts_enabled": bool(mounts or mountable_sources),
             "mounts": [
                 {
-                    "workspace_relative_path": getattr(item, "target_path", None),
+                    "workspace_relative_path": posixpath.relpath(str(getattr(item, "target_path", "/workspace") or "/workspace"), "/workspace"),
+                    "target_path": str(getattr(item, "target_path", "") or "/workspace"),
                     "source_name": getattr(item, "source_name", None),
+                    "source_path": getattr(item, "source_path", None),
+                    "description": getattr(item, "description", None),
                     "sync_status": getattr(item, "sync_status", None),
-                    "enabled": bool(getattr(item, "enabled", False)),
+                    "enabled": "true" if bool(getattr(item, "enabled", False)) else "false",
                 }
                 for item in mounts
             ],
             "object_storage_enabled": bool(storage and storage.buckets),
             "object_storage_buckets": [
-                {"name": bucket.name, "description": bucket.description, "is_default": storage is not None and bucket.name == storage.default_bucket_name}
+                {
+                    "name": bucket.name,
+                    "description": bucket.description,
+                    "public_root": f"/{bucket.name}/{getattr(bucket, 'public_prefix', 'public') or 'public'}",
+                    "private_root": f"/{bucket.name}/{getattr(bucket, 'private_prefix', 'private') or 'private'}",
+                    "is_default": "true" if storage is not None and bucket.name == storage.default_bucket_name else "false",
+                }
                 for bucket in (storage.buckets if storage else [])
             ],
             "shared_sqlite_databases": shared_sqlite,
         }
+        context["env_vars"] = [{"key": item.key, "has_value": item.has_value} for item in env_vars]
+        context["diagnostics"] = normalize_facts(diagnostics)
+        context["runtime_status"] = normalize_facts(runtime_status)
+        from ragtime.rag.components import RAGComponents
+        from ragtime.rag.prompts import build_userspace_diagnostics_turn_reminder_line
+
+        context["env_var_reminder_line"] = build_env_var_turn_hint(env_vars)
+        context["runtime_status_reminder_line"] = RAGComponents._build_userspace_runtime_status_turn_hint(runtime_status) if runtime_status else ""
+        context["diagnostics_reminder_line"] = build_userspace_diagnostics_turn_reminder_line(diagnostics)
         return build_instruction_bundle(context)
+
+    @staticmethod
+    def _browser_component_request_schema(tool_type: str) -> dict[str, Any]:
+        """Describe the payload accepted by execute_component, not tool-only fields."""
+        if tool_type == "http_api":
+            return HttpApiRequest.model_json_schema()
+        return {
+            "oneOf": [
+                {"type": "string", "description": "Read-only query text."},
+                {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            ]
+        }
+
+    async def _enrich_authorized_tool(self, tool_config: Any, access: str) -> dict[str, Any] | None:
+        """Build external metadata from the canonical runtime tool after ACL filtering."""
+        tool_type = str(getattr(getattr(tool_config, "tool_type", None), "value", getattr(tool_config, "tool_type", "")))
+        runtime_config = userspace_service._tool_config_runtime_dict(tool_config, allow_write=False)
+        try:
+            runtime_tool = await rag.build_primary_runtime_tool_from_config(runtime_config)
+        except Exception:
+            return None
+        if runtime_tool is None:
+            return None
+
+        canonical_description = str(getattr(runtime_tool, "description", "") or "")
+        browser_supported = tool_type in _USPACE_EXEC_BROWSER_SUPPORTED_TOOL_TYPES
+        server_supported = tool_type in _USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES
+        browser_lane: dict[str, Any] = {
+            "supported": browser_supported,
+            "mode": "browser_read_only",
+            "write_policy": "Browser/external execution is always read-only.",
+        }
+        if browser_supported:
+            browser_lane["request_schema"] = self._browser_component_request_schema(tool_type)
+            browser_lane["instructions"] = canonical_description
+            browser_lane["timeout_max_seconds"] = int(getattr(tool_config, "timeout_max_seconds", 300) or 300)
+        else:
+            browser_lane["reason"] = "This tool type is not supported on the browser/external read-only execute_component surface."
+
+        return {
+            "component_id": str(getattr(tool_config, "id", "")),
+            "name": str(getattr(tool_config, "name", "") or ""),
+            "tool_type": tool_type,
+            "description": str(getattr(tool_config, "description", "") or ""),
+            "canonical_description": canonical_description,
+            "access": access,
+            # Retained for planning-contract compatibility. Only the browser
+            # lane is callable through this external operation.
+            "execute_component": browser_lane,
+            "execution_lanes": {
+                "browser": browser_lane,
+                "server_runtime_bridge": {
+                    "supported": server_supported,
+                    "mode": "server_runtime_bridge",
+                    "write_policy": "Server execution applies workspace owner opt-in and tool access policy.",
+                },
+            },
+        }
 
     async def _resources(self, principal: DevelopmentPrincipal, workspace_id: str) -> dict[str, Any]:
         workspace = await self._workspace(principal, workspace_id, "read")
-        selected = await planning_service._selected_tools(workspace)
-        levels = await resolve_tool_access(
-            user_id=principal.user_id, is_admin=principal.is_admin, surface="workspace", tool_config_ids=[x["component_id"] for x in selected]
-        )
-        tools = [{**tool, "access": levels.get(tool["component_id"], "deny")} for tool in selected if levels.get(tool["component_id"]) != "deny"]
+        selected_ids = await planning_service._selected_tool_ids(workspace)
+        levels = await resolve_tool_access(user_id=principal.user_id, is_admin=principal.is_admin, surface="workspace", tool_config_ids=selected_ids)
+        allowed_tool_ids = [tool_id for tool_id in selected_ids if levels.get(tool_id, "deny") in {"read", "read_write"}]
+        tools: list[dict[str, Any]] = []
+        for tool_id in allowed_tool_ids:
+            tool_config = await repository.get_tool_config(tool_id)
+            if tool_config is None or not bool(getattr(tool_config, "enabled", False)):
+                continue
+            enriched = await self._enrich_authorized_tool(tool_config, levels[tool_id])
+            if enriched is not None:
+                tools.append(enriched)
         db = await get_db()
         grants = await db.workspaceindexgrant.find_many(where={"workspaceId": workspace_id}, order={"indexName": "asc"})
         indexes = [{"name": "workspace_code", "source_type": "workspace_code"}]
@@ -293,7 +420,7 @@ class DevelopmentService:
         indexes.extend(
             descriptor
             for descriptor in granted_descriptors
-            if not descriptor.get("backing_tool_id") or index_levels.get(descriptor["backing_tool_id"]) != "deny"
+            if not descriptor.get("backing_tool_id") or index_levels.get(descriptor["backing_tool_id"], "deny") in {"read", "read_write"}
         )
         return {
             "tools": tools,
@@ -400,9 +527,19 @@ class DevelopmentService:
         )
         if operation == "context":
             return await self._context(principal, workspace_id)
+        if operation == "operation_describe":
+            contract = next((item for item in self.list_operations(principal.scopes) if item["name"] == args["operation"]), None)
+            if contract is None:
+                raise HTTPException(status_code=404, detail="Operation is not authorized")
+            return contract
         if operation == "files_list":
             return await planning_service.list_files(
-                workspace_id, principal.user_id, prefix=str(args.get("prefix", "")), offset=int(args.get("offset", 0)), limit=int(args.get("limit", 200))
+                workspace_id,
+                principal.user_id,
+                prefix=str(args.get("prefix", "")),
+                offset=int(args.get("offset", 0)),
+                limit=int(args.get("limit", 200)),
+                developer_full_inventory=True,
             )
         if operation == "file_read":
             return await self._read_with_hash(principal, workspace_id, args["path"], start_line=args.get("start_line", 1), max_lines=args.get("max_lines", 400))
@@ -464,7 +601,7 @@ class DevelopmentService:
         if operation == "validate":
             from ragtime.rag.components import validate_userspace_source_content
 
-            status = userspace_service.get_workspace_entrypoint_status(workspace_id)
+            status = await userspace_service.get_workspace_entrypoint_status_authoritative(workspace_id)
             files = await userspace_service.list_workspace_files(workspace_id, principal.user_id, is_admin=principal.is_admin)
             diagnostics = []
             for item in files:
@@ -484,6 +621,9 @@ class DevelopmentService:
             from ragtime.userspace.runtime_service import userspace_runtime_service
 
             if operation == "runtime_status":
+                # Refresh provider-backed readiness first; this is read-only and
+                # deliberately does not start or reconcile a runtime session.
+                await userspace_runtime_service.get_devserver_status(workspace_id, principal.user_id)
                 return (await userspace_runtime_service.get_runtime_session(workspace_id, principal.user_id)).model_dump()
             if operation == "runtime_start":
                 return (await userspace_runtime_service.start_runtime_session(workspace_id, principal.user_id)).model_dump()
@@ -495,6 +635,38 @@ class DevelopmentService:
             ).model_dump()
         if operation == "resources":
             return await self._resources(principal, workspace_id)
+        if operation == "http_api_catalog_search":
+            catalog = await self._resources(principal, workspace_id)
+            tool = next((item for item in catalog["tools"] if item["component_id"] == args["component_id"]), None)
+            if tool is None or tool.get("tool_type") != "http_api":
+                raise HTTPException(status_code=403, detail="HTTP API tool is not authorized for this caller")
+            config = await repository.get_tool_config(args["component_id"])
+            if config is None:
+                raise HTTPException(status_code=404, detail="HTTP API tool is unavailable")
+            try:
+                connection = HttpApiConnectionConfig(**(getattr(config, "connection_config", {}) or {}))
+            except Exception as exc:
+                raise HTTPException(status_code=409, detail="HTTP API catalog is unavailable") from exc
+            if not connection.openapi_catalog:
+                return {"component_id": args["component_id"], "query": args["query"], "total_results": 0, "results": []}
+            limit = max(1, min(int(args.get("limit", 10)), 50))
+            matches = search_openapi_catalog(connection.openapi_catalog, args["query"], limit=limit)
+            return {
+                "component_id": args["component_id"],
+                "query": args["query"],
+                "total_results": len(matches),
+                "results": [
+                    {
+                        "operation_id": item.operation_id,
+                        "method": getattr(item.method, "value", item.method),
+                        "path": item.path,
+                        "summary": item.summary,
+                        "description": item.description,
+                        "tags": list(item.tags),
+                    }
+                    for item in matches
+                ],
+            }
         if operation == "execute_component":
             catalog = await self._resources(principal, workspace_id)
             tool = next((item for item in catalog["tools"] if item["component_id"] == args["component_id"]), None)

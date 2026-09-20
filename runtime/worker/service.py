@@ -74,6 +74,7 @@ from runtime.worker.sandbox import (
 from ..core.secure_files import SecureFileError
 from ..core.secure_files import delete_file as secure_delete_file
 from ..core.secure_files import read_text as secure_read_text
+from ..core.secure_files import stat_file as secure_stat_file
 from ..core.secure_files import write_text as secure_write_text
 from ..core.shared import (
     RUNTIME_BOOTSTRAP_CONFIG_PATH,
@@ -471,12 +472,24 @@ class WorkerService:
     ) -> tuple[int, bytes, bytes]:
         _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
         workspace_tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
+        # The active chroot mirror is a work tree, never the durable snapshot
+        # object store. Keep platform Git metadata at the worker-local canonical
+        # workspace path so commits made while active survive stop/restart.
+        git_env = dict(os.environ)
+        if env is not None:
+            git_env.update(env)
+        canonical_git_dir = workspace_files_path / ".git"
+        # A legacy .git file denotes an external/worktree layout. Leave that
+        # arrangement to Git rather than treating the file as a directory.
+        if not canonical_git_dir.is_file():
+            git_env["GIT_DIR"] = str(canonical_git_dir)
+            git_env["GIT_WORK_TREE"] = str(workspace_tree_root)
         try:
             process = await asyncio.create_subprocess_exec(
                 "git",
                 *args,
                 cwd=str(workspace_tree_root),
-                env=env,
+                env=git_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -501,31 +514,25 @@ class WorkerService:
     ) -> RuntimeWorkspaceFileListResponse:
         _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
         mount_specs = list(workspace_mounts or [])
-        tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
-
-        base_entries = await asyncio.to_thread(
-            list_workspace_tree_entries,
-            tree_root,
-            include_dirs=include_dirs,
-        )
-        mount_prefixes = deduplicate_ancestor_paths(
-            [repo_rel for spec in mount_specs if (repo_rel := workspace_mount_target_repo_relative_path(str(spec.get("target_path", "") or "")))]
-        )
-        if mount_prefixes and tree_root == workspace_files_path:
-            base_entries = [entry for entry in base_entries if not any(workspace_path_matches_mount_prefix(entry.path, prefix) for prefix in mount_prefixes)]
-
-        mount_entries = await asyncio.to_thread(
-            list_mount_source_tree_entries,
-            mount_specs,
-            include_dirs=include_dirs,
-        )
-        entries_by_path = {entry.path: entry for entry in base_entries}
-        for entry in mount_entries:
-            entries_by_path.setdefault(entry.path, entry)
-
-        return RuntimeWorkspaceFileListResponse(
-            files=[self._workspace_file_info(entry) for entry in sorted(entries_by_path.values(), key=lambda item: item.path)]
-        )
+        # List the same stable, worker-selected view used by file APIs. This
+        # also fences runtime stop/root transitions while an enumeration runs.
+        async with self._workspace_file_lock(workspace_id):
+            tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
+            base_entries = await asyncio.to_thread(list_workspace_tree_entries, tree_root, include_dirs=include_dirs)
+            mount_prefixes = deduplicate_ancestor_paths(
+                [repo_rel for spec in mount_specs if (repo_rel := workspace_mount_target_repo_relative_path(str(spec.get("target_path", "") or "")))]
+            )
+            if mount_prefixes and tree_root == workspace_files_path:
+                base_entries = [
+                    entry for entry in base_entries if not any(workspace_path_matches_mount_prefix(entry.path, prefix) for prefix in mount_prefixes)
+                ]
+            mount_entries = await asyncio.to_thread(list_mount_source_tree_entries, mount_specs, include_dirs=include_dirs)
+            entries_by_path = {entry.path: entry for entry in base_entries}
+            for entry in mount_entries:
+                entries_by_path.setdefault(entry.path, entry)
+            return RuntimeWorkspaceFileListResponse(
+                files=[self._workspace_file_info(entry) for entry in sorted(entries_by_path.values(), key=lambda item: item.path)]
+            )
 
     async def _active_workspace_tree_root(self, workspace_id: str, workspace_files_path: Path) -> Path:
         async with self._lock:
@@ -551,42 +558,43 @@ class WorkerService:
         args: list[str],
         env: dict[str, str] | None = None,
     ) -> RuntimeWorkspaceGitCommandResponse:
-        returncode, stdout_bytes, stderr_bytes = await self._run_git_in_workspace_raw(
-            workspace_id,
-            args=args,
-            env=env,
-        )
-        return RuntimeWorkspaceGitCommandResponse(
-            returncode=returncode,
-            stdout_b64=base64.b64encode(stdout_bytes).decode("ascii"),
-            stderr_b64=base64.b64encode(stderr_bytes).decode("ascii"),
-        )
+        # Snapshot and SCM commands operate on the active tree and cannot race
+        # another filesystem API mutation or a root transition.
+        async with self._workspace_file_lock(workspace_id):
+            returncode, stdout_bytes, stderr_bytes = await self._run_git_in_workspace_raw(
+                workspace_id,
+                args=args,
+                env=env,
+            )
+            return RuntimeWorkspaceGitCommandResponse(
+                returncode=returncode,
+                stdout_b64=base64.b64encode(stdout_bytes).decode("ascii"),
+                stderr_b64=base64.b64encode(stderr_bytes).decode("ascii"),
+            )
 
     async def get_workspace_scm_status(
         self,
         workspace_id: str,
     ) -> RuntimeWorkspaceScmStatusResponse:
-        _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
-        workspace_tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
-        sync_scope_paths = await asyncio.to_thread(
-            sync_scope_relative_paths,
-            workspace_tree_root,
-            ignored_relative_paths=PLATFORM_MANAGED_GITIGNORE_PATTERNS,
-        )
-        commit_result = await self._run_git_in_workspace_raw(
-            workspace_id,
-            args=["rev-parse", "HEAD"],
-        )
-        status_result = await self._run_git_in_workspace_raw(
-            workspace_id,
-            args=["status", "--porcelain", "--untracked-files=all"],
-        )
-        current_commit_hash = commit_result[1].decode("utf-8", errors="replace").strip() if commit_result[0] == 0 else ""
-        return RuntimeWorkspaceScmStatusResponse(
-            has_sync_scope_files=bool(sync_scope_paths),
-            has_uncommitted_changes=bool(status_result[1].decode("utf-8", errors="replace").strip()),
-            current_commit_hash=current_commit_hash or None,
-        )
+        async with self._workspace_file_lock(workspace_id):
+            _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
+            workspace_tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
+            sync_scope_paths = await asyncio.to_thread(
+                sync_scope_relative_paths,
+                workspace_tree_root,
+                ignored_relative_paths=PLATFORM_MANAGED_GITIGNORE_PATTERNS,
+            )
+            commit_result = await self._run_git_in_workspace_raw(workspace_id, args=["rev-parse", "HEAD"])
+            status_result = await self._run_git_in_workspace_raw(
+                workspace_id,
+                args=["status", "--porcelain", "--untracked-files=all"],
+            )
+            current_commit_hash = commit_result[1].decode("utf-8", errors="replace").strip() if commit_result[0] == 0 else ""
+            return RuntimeWorkspaceScmStatusResponse(
+                has_sync_scope_files=bool(sync_scope_paths),
+                has_uncommitted_changes=bool(status_result[1].decode("utf-8", errors="replace").strip()),
+                current_commit_hash=current_commit_hash or None,
+            )
 
     def _resolve_launch_cwd(self, session: WorkerSession) -> str:
         """Resolve the launch cwd as a sandbox-internal absolute path."""
@@ -1256,13 +1264,47 @@ class WorkerService:
         rel_path: str,
         content: str,
         exists: bool,
+        *,
+        actual_updated_at: datetime | None = None,
+        artifact_metadata: dict[str, Any] | None = None,
+        is_utf8_text: bool = True,
     ) -> RuntimeFileReadResponse:
         return RuntimeFileReadResponse(
             path=rel_path,
             content=content,
             exists=exists,
-            updated_at=session.updated_at,
+            # Legacy consumers use updated_at; actual_updated_at is optional so
+            # older constructors and unavailable descriptor stats remain valid.
+            updated_at=actual_updated_at or session.updated_at,
+            actual_updated_at=actual_updated_at,
+            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest() if exists else None,
+            artifact_metadata=artifact_metadata,
+            is_utf8_text=is_utf8_text,
         )
+
+    @staticmethod
+    def _write_file_bundle(root: Path, relative_path: str, content: str, artifact_metadata: dict[str, Any] | None) -> Any:
+        """Persist content and its sidecar as one cancellation-drained API unit."""
+        secure_write_text(root, relative_path, content)
+        sidecar_path = relative_path + ".artifact.json"
+        if artifact_metadata is None:
+            secure_delete_file(root, sidecar_path)
+        else:
+            secure_write_text(root, sidecar_path, json.dumps(artifact_metadata, separators=(",", ":"), ensure_ascii=False))
+        return secure_stat_file(root, relative_path)
+
+    @staticmethod
+    def _delete_file_bundle(root: Path, relative_path: str) -> None:
+        secure_delete_file(root, relative_path)
+        secure_delete_file(root, relative_path + ".artifact.json")
+
+    @staticmethod
+    def _move_file_bundle(old_root: Path, old_relative_path: str, new_root: Path, new_relative_path: str, content: str, sidecar: str | None) -> None:
+        secure_write_text(new_root, new_relative_path, content)
+        if sidecar is not None:
+            secure_write_text(new_root, new_relative_path + ".artifact.json", sidecar)
+        secure_delete_file(old_root, old_relative_path)
+        secure_delete_file(old_root, old_relative_path + ".artifact.json")
 
     def _pick_free_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -3090,36 +3132,56 @@ class WorkerService:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
-            rel_path = self._normalize_file_path(
-                file_path,
-                enforce_sqlite_managed=True,
-            )
+            rel_path = self._normalize_file_path(file_path, enforce_sqlite_managed=True)
             workspace_id = session.workspace_id
             self._ensure_workspace_available_locked(workspace_id)
 
-        file_lock = self._workspace_file_lock(workspace_id)
-        async with file_lock:
+        # Keep bytes, mtime, and sidecar from one API-serialized view. The
+        # lock cannot coordinate arbitrary shell writers, but it prevents a
+        # second filesystem API call from racing metadata after its byte read.
+        async with self._workspace_file_lock(workspace_id):
             async with self._lock:
                 session, root, root_relative_path, operation_id = self._capture_file_target_locked(worker_session_id, rel_path, mutation=False)
-            io_task = asyncio.create_task(asyncio.to_thread(secure_read_text, root, root_relative_path))
-            try:
-                content = await self._drain_file_io_task(io_task)
-            except asyncio.CancelledError:
-                raise
-        async with self._lock:
-            current = self._sessions.get(worker_session_id)
-            if current is not None and current is session and current.runtime_operation_id == operation_id:
-                current.updated_at = utc_now()
-            response_session = session
-        if content is None:
-            return self._runtime_file_response(response_session, rel_path, "", False)
-        return self._runtime_file_response(response_session, rel_path, content, True)
+            content = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_read_text, root, root_relative_path)))
+            # A descriptor stat distinguishes a real but non-UTF-8 regular file
+            # from an absent or unsafe target without reopening a path by name.
+            stat = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_stat_file, root, root_relative_path)))
+            exists = stat is not None
+            is_utf8_text = content is not None
+            artifact_metadata: dict[str, Any] | None = None
+            if exists:
+                sidecar_content = await self._drain_file_io_task(
+                    asyncio.create_task(asyncio.to_thread(secure_read_text, root, root_relative_path + ".artifact.json"))
+                )
+                try:
+                    parsed_sidecar = json.loads(sidecar_content) if sidecar_content else None
+                    artifact_metadata = parsed_sidecar if isinstance(parsed_sidecar, dict) else None
+                except json.JSONDecodeError:
+                    artifact_metadata = None
+            async with self._lock:
+                current = self._sessions.get(worker_session_id)
+                if current is not None and current is session and current.runtime_operation_id == operation_id:
+                    current.updated_at = utc_now()
+                response_session = session
+            actual_updated_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC) if stat else None
+            return self._runtime_file_response(
+                response_session,
+                rel_path,
+                content or "",
+                exists,
+                actual_updated_at=actual_updated_at,
+                artifact_metadata=artifact_metadata,
+                is_utf8_text=is_utf8_text,
+            )
 
     async def write_file(
         self,
         worker_session_id: str,
         file_path: str,
         content: str,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
+        artifact_metadata: dict[str, Any] | None = None,
     ) -> RuntimeFileReadResponse:
         async with self._lock:
             session = self._sessions.get(worker_session_id)
@@ -3136,23 +3198,46 @@ class WorkerService:
         async with file_lock:
             async with self._lock:
                 session, root, root_relative_path, operation_id = self._capture_file_target_locked(worker_session_id, rel_path, mutation=True)
-            io_task = asyncio.create_task(asyncio.to_thread(secure_write_text, root, root_relative_path, content))
+            previous_content = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_read_text, root, root_relative_path)))
+            actual_hash = hashlib.sha256(previous_content.encode("utf-8")).hexdigest() if previous_content is not None else None
+            if require_content_hash and expected_content_hash != actual_hash:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "content_hash_conflict", "expected_hash": expected_content_hash, "actual_hash": actual_hash},
+                )
             try:
-                await self._drain_file_io_task(io_task)
+                stat = await self._drain_file_io_task(
+                    asyncio.create_task(asyncio.to_thread(self._write_file_bundle, root, root_relative_path, content, artifact_metadata))
+                )
             except SecureFileError as exc:
                 raise HTTPException(status_code=403, detail="Unsafe workspace file path") from exc
             except OSError as exc:
                 if self._is_unsafe_file_error(exc):
                     raise HTTPException(status_code=403, detail="Unsafe workspace file path") from exc
                 raise
-        async with self._lock:
-            current = self._sessions.get(worker_session_id)
-            if current is not None and current is session and current.runtime_operation_id == operation_id:
-                current.updated_at = utc_now()
-            response_session = session
-        return self._runtime_file_response(response_session, rel_path, content, True)
+            async with self._lock:
+                current = self._sessions.get(worker_session_id)
+                if current is not None and current is session and current.runtime_operation_id == operation_id:
+                    current.updated_at = utc_now()
+                response_session = session
+            actual_updated_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC) if stat else None
+            return self._runtime_file_response(
+                response_session,
+                rel_path,
+                content,
+                True,
+                actual_updated_at=actual_updated_at,
+                artifact_metadata=artifact_metadata,
+            )
 
-    async def delete_file(self, worker_session_id: str, file_path: str) -> dict[str, str | bool]:
+    async def delete_file(
+        self,
+        worker_session_id: str,
+        file_path: str,
+        *,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
+    ) -> dict[str, str | bool]:
         async with self._lock:
             session = self._sessions.get(worker_session_id)
             if not session:
@@ -3168,9 +3253,15 @@ class WorkerService:
         async with file_lock:
             async with self._lock:
                 session, root, root_relative_path, operation_id = self._capture_file_target_locked(worker_session_id, rel_path, mutation=True)
-            io_task = asyncio.create_task(asyncio.to_thread(secure_delete_file, root, root_relative_path))
+            previous_content = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_read_text, root, root_relative_path)))
+            actual_hash = hashlib.sha256(previous_content.encode("utf-8")).hexdigest() if previous_content is not None else None
+            if require_content_hash and expected_content_hash != actual_hash:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "content_hash_conflict", "expected_hash": expected_content_hash, "actual_hash": actual_hash},
+                )
             try:
-                await self._drain_file_io_task(io_task)
+                await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(self._delete_file_bundle, root, root_relative_path)))
             except SecureFileError as exc:
                 raise HTTPException(status_code=403, detail="Unsafe workspace file path") from exc
             except OSError as exc:
@@ -3182,6 +3273,36 @@ class WorkerService:
             if current is not None and current is session and current.runtime_operation_id == operation_id:
                 current.updated_at = utc_now()
         return {"success": True, "path": rel_path}
+
+    async def move_file(self, worker_session_id: str, old_path: str, new_path: str) -> dict[str, str | bool]:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            old_rel = self._normalize_file_path(old_path, enforce_sqlite_managed=True)
+            new_rel = self._normalize_file_path(new_path, enforce_sqlite_managed=True)
+            if old_rel == new_rel:
+                raise HTTPException(status_code=400, detail="Source and destination paths must be different")
+            workspace_id = session.workspace_id
+        async with self._workspace_file_lock(workspace_id):
+            async with self._lock:
+                session, old_root, old_root_path, operation_id = self._capture_file_target_locked(worker_session_id, old_rel, mutation=True)
+                _target_session, new_root, new_root_path, _target_operation = self._capture_file_target_locked(worker_session_id, new_rel, mutation=True)
+            source = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_read_text, old_root, old_root_path)))
+            if source is None:
+                raise HTTPException(status_code=404, detail="File not found")
+            target = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_read_text, new_root, new_root_path)))
+            if target is not None:
+                raise HTTPException(status_code=409, detail="Target file already exists")
+            sidecar = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_read_text, old_root, old_root_path + ".artifact.json")))
+            await self._drain_file_io_task(
+                asyncio.create_task(asyncio.to_thread(self._move_file_bundle, old_root, old_root_path, new_root, new_root_path, source, sidecar))
+            )
+        async with self._lock:
+            current = self._sessions.get(worker_session_id)
+            if current is not None and current is session and current.runtime_operation_id == operation_id:
+                current.updated_at = utc_now()
+        return {"success": True, "old_path": old_rel, "new_path": new_rel}
 
     _EXEC_MAX_OUTPUT_BYTES = 60_000
 

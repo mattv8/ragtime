@@ -1038,8 +1038,6 @@ def _workspace_tree_has_meaningful_content(
             path = Path(root) / filename
             if path.suffix in _WORKSPACE_SYNC_SKIP_SUFFIXES:
                 continue
-            if filename.endswith(".artifact.json"):
-                continue
             relative_path = path.relative_to(workspace_root)
             canonical_path = canonical_root / relative_path
             if not canonical_path.is_file():
@@ -1080,7 +1078,7 @@ def _workspace_tree_hashes(root: Path) -> dict[str, str]:
         dirs[:] = [name for name in dirs if name not in _WORKSPACE_RECOVERY_SKIP_DIRS]
         for name in files:
             path = Path(base) / name
-            if path.suffix in _WORKSPACE_SYNC_SKIP_SUFFIXES or name.endswith(".artifact.json"):
+            if path.suffix in _WORKSPACE_SYNC_SKIP_SUFFIXES:
                 continue
             relative = str(path.relative_to(root)).replace("\\", "/")
             try:
@@ -1215,6 +1213,12 @@ def _reconcile_workspace_copy(spec: SandboxSpec, *, label: str, prefer_source: b
                     _remove_canonical_path(destination)
                 else:
                     _copy_mirror_path_to_canonical(source_workspace / relative, destination)
+            elif canonical_changed and not mirror_changed and canonical_hash is None:
+                # An inactive API/snapshot deletion is authoritative when the
+                # mirror remains at the clean-stop baseline. Remove the stale
+                # mirror entry before recording the new baseline; otherwise a
+                # later chroot launch can serve the deleted file directly.
+                _remove_canonical_path(source_workspace / relative)
         if conflicts:
             archive = _safe_legacy_archive_path(spec.rootfs_path.parent, f"{label}-conflict")
             try:
@@ -1335,7 +1339,13 @@ def provision_rootfs(spec: SandboxSpec) -> None:
             previous_mode,
             caps.mode,
         )
-    _reconcile_workspace_copy(spec, label="chroot-workspace")
+    # A normal stop leaves a baseline for the same sandbox mode. If a
+    # snapshot/restore changed canonical files while stopped, preserve that
+    # canonical change instead of re-importing the stale mirror on restart.
+    # Source-wins recovery remains reserved for a missing marker or a genuine
+    # sandbox-mode transition, where the mirror may be the only complete tree.
+    recover_mirror = previous_marker is None or previous_mode != caps.mode
+    _reconcile_workspace_copy(spec, label="chroot-workspace", prefer_source=recover_mirror)
     _ensure_real_directory(ws_dir)
 
     # In mount-capable sandbox modes the child bind-mounts the real
@@ -1355,6 +1365,11 @@ def provision_rootfs(spec: SandboxSpec) -> None:
         except Exception as exc:
             logger.warning("provision_rootfs: workspace mirror failed: %s", exc)
         else:
+            # copytree(dirs_exist_ok=True) updates present entries but never
+            # removes stale mirror paths. Reconcile deletions incrementally so
+            # inactive deletes, renames, and snapshot restores are authoritative
+            # on the next chroot start without replacing /workspace wholesale.
+            _remove_stale_workspace_mirror_entries(workspace_src, ws_dir)
             _write_workspace_mirror_hashes(spec)
 
     # Minimal /etc files needed for basic operation
@@ -2367,6 +2382,37 @@ def _detach_legacy_system_hardlinks(rootfs: Path, system_dirs: Sequence[str]) ->
 def _copy_file(src: str, dst: str) -> None:
     """Copy a file, replacing destination when present."""
     shutil.copy2(src, dst)
+
+
+def _remove_stale_workspace_mirror_entries(canonical_root: Path, mirror_root: Path) -> None:
+    """Remove stale project entries from a mirror without touching caches/mount roots."""
+    if not mirror_root.is_dir():
+        return
+    protected_dirs = _WORKSPACE_RECOVERY_SKIP_DIRS | _WORKSPACE_SYNC_SKIP_DIRS
+    for base, dirs, files in os.walk(mirror_root, topdown=False, followlinks=False):
+        base_path = Path(base)
+        relative_base = base_path.relative_to(mirror_root)
+        # Never descend into or delete runtime caches, VCS metadata, or mount
+        # roots that are intentionally not mirrored from canonical storage.
+        if any(part in protected_dirs for part in relative_base.parts):
+            continue
+        for filename in files:
+            relative = relative_base / filename
+            if filename.endswith(tuple(_WORKSPACE_SYNC_SKIP_SUFFIXES)):
+                continue
+            source = canonical_root / relative
+            target = base_path / filename
+            if not source.exists() and (target.is_file() or target.is_symlink()):
+                target.unlink(missing_ok=True)
+        for dirname in dirs:
+            relative = relative_base / dirname
+            if dirname in protected_dirs or any(part in protected_dirs for part in relative.parts):
+                continue
+            target_dir = base_path / dirname
+            source_dir = canonical_root / relative
+            if not source_dir.exists():
+                with contextlib.suppress(OSError):
+                    target_dir.rmdir()
 
 
 def _copy_file_if_changed(src: str, dst: str) -> None:

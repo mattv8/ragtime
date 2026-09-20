@@ -305,6 +305,35 @@ class SandboxProvisioningTests(unittest.TestCase):
                 (str(files), str(rootfs / "workspace")),
             )
 
+    def test_provision_rootfs_removes_stale_mirror_files_after_inactive_delete_or_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            mirror = rootfs / "workspace" / "dashboard"
+            files.joinpath("dashboard").mkdir(parents=True)
+            mirror.mkdir(parents=True)
+            files.joinpath("dashboard", "main.ts").write_text("stale B", encoding="utf-8")
+            mirror.joinpath("main.ts").write_text("stale B", encoding="utf-8")
+            spec = sandbox.SandboxSpec(workspace_id="workspace-restore", workspace_files_path=files, rootfs_path=rootfs, mode="chroot")
+            caps = self._chroot_caps_no_mount()
+            # Model a clean stop: baseline B exists before inactive restore.
+            sandbox._write_workspace_mirror_hashes(spec)
+            files.joinpath("dashboard", "main.ts").unlink()
+            files.joinpath("dashboard", "restored.ts").write_text("A", encoding="utf-8")
+            sandbox._write_sandbox_layout_marker(spec, caps)
+
+            with (
+                mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+                mock.patch.object(sandbox, "_provision_etc"),
+                mock.patch.object(sandbox, "_provision_dev"),
+            ):
+                sandbox.provision_rootfs(spec)
+
+            self.assertEqual((rootfs / "workspace" / "dashboard" / "restored.ts").read_text(encoding="utf-8"), "A")
+            self.assertFalse((rootfs / "workspace" / "dashboard" / "main.ts").exists())
+            self.assertEqual(files.joinpath("dashboard", "restored.ts").read_text(encoding="utf-8"), "A")
+
     def test_workspace_mirror_skips_exactly_identical_file_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

@@ -119,6 +119,14 @@ class RuntimeBridgeContractIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(userspace_service, "_workspaces_dir", self.workspaces_dir),
                 mock.patch.object(userspace_service, "_enforce_workspace_access", new=mock.AsyncMock(return_value=self._workspace())),
                 mock.patch.object(userspace_service, "_ensure_workspace_git_repo", new=mock.AsyncMock()),
+                # These are durable-tree fixtures: explicitly model no active
+                # runtime rather than letting the new authority probe need DB.
+                mock.patch(
+                    "ragtime.userspace.runtime_service.userspace_runtime_service.read_active_workspace_file_internal", new=mock.AsyncMock(return_value=None)
+                ),
+                mock.patch(
+                    "ragtime.userspace.runtime_service.userspace_runtime_service.write_active_workspace_file_internal", new=mock.AsyncMock(return_value=None)
+                ),
                 mock.patch.object(
                     userspace_service,
                     "ensure_workspace_path_not_in_disabled_mount",

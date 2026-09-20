@@ -58,7 +58,7 @@ from ragtime.core.encryption import (
     encrypt_json_passwords,
     encrypt_secret,
 )
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config, parse_entrypoint_content
 from ragtime.core.git import create_repository, parse_git_url
 from ragtime.core.http_timeouts import get_http_proxy_safe_timeout_seconds
 from ragtime.core.logging import get_logger
@@ -8280,6 +8280,19 @@ class UserSpaceService:
         self._entrypoint_status_cache[workspace_id] = (status, now)
         return status
 
+    async def get_workspace_entrypoint_status_authoritative(self, workspace_id: str) -> EntrypointStatus:
+        """Read entrypoint bytes from the active worker without changing sync callers."""
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        active = await userspace_runtime_service.read_active_workspace_file_internal(workspace_id, ".ragtime/runtime-entrypoint.json")
+        if active is None:
+            return self.get_workspace_entrypoint_status(workspace_id)
+        if not bool(active.get("exists", False)):
+            return parse_entrypoint_content(None)
+        if not bool(active.get("is_utf8_text", True)):
+            return EntrypointStatus(state="invalid", error="Failed to parse .ragtime/runtime-entrypoint.json: file is not UTF-8 text")
+        return parse_entrypoint_content(str(active.get("content", "")))
+
     def is_default_static_entrypoint(
         self,
         workspace_id: str,
@@ -8437,15 +8450,59 @@ class UserSpaceService:
             stderr=stderr_bytes.decode("utf-8", errors="replace"),
         )
 
+    async def _ensure_active_workspace_gitignore(self, workspace_id: str) -> bool:
+        """Maintain .gitignore in the active worker tree, retrying one CAS race."""
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        for attempt in range(2):
+            active = await userspace_runtime_service.read_active_workspace_file_internal(workspace_id, ".gitignore")
+            if active is None:
+                return False
+            existing_content = str(active.get("content", "")) if active.get("exists", False) else ""
+            existing_lines = existing_content.splitlines()
+            existing_set = {line.strip() for line in existing_lines if line.strip()}
+            required = (*WORKSPACE_DEFAULT_GITIGNORE_PATTERNS, *PLATFORM_MANAGED_GITIGNORE_PATTERNS)
+            missing = [pattern for pattern in required if pattern not in existing_set]
+            if not missing and bool(active.get("exists", False)):
+                return True
+            merged = list(existing_lines)
+            if merged and merged[-1].strip():
+                merged.append("")
+            merged.extend(missing)
+            metadata = active.get("artifact_metadata")
+            try:
+                await userspace_runtime_service.write_active_workspace_file_internal(
+                    workspace_id,
+                    ".gitignore",
+                    "\n".join(merged).strip("\n") + "\n",
+                    expected_content_hash=(str(active.get("content_hash")) if active.get("content_hash") is not None else None),
+                    require_content_hash=True,
+                    artifact_metadata=metadata if isinstance(metadata, dict) else None,
+                )
+            except HTTPException as exc:
+                if exc.status_code == 409 and attempt == 0:
+                    continue
+                raise
+            self.invalidate_file_list_cache(workspace_id)
+            return True
+        return True
+
     async def _ensure_workspace_git_repo(self, workspace_id: str) -> None:
+        # Git commands already resolve the worker-selected active root. Do not
+        # inspect the durable .git directory when an active worker is present.
+        if await self._ensure_active_workspace_gitignore(workspace_id):
+            initialized = await self._run_git(workspace_id, ["rev-parse", "--is-inside-work-tree"], check=False)
+            if initialized.returncode != 0:
+                await self._run_git(workspace_id, ["init"])
+            await self._ensure_workspace_git_identity(workspace_id)
+            return
+
         files_dir = self._workspace_files_dir(workspace_id)
         files_dir.mkdir(parents=True, exist_ok=True)
         git_dir = self._workspace_git_dir(workspace_id)
         if not git_dir.exists() or not git_dir.is_dir():
             await self._run_git(workspace_id, ["init"])
-
         await self._ensure_workspace_git_identity(workspace_id)
-
         self._ensure_workspace_gitignore(files_dir)
 
     async def _ensure_workspace_git_identity(self, workspace_id: str) -> None:
@@ -20634,13 +20691,18 @@ class UserSpaceService:
     ) -> list[UserSpaceFileInfo]:
         await self._enforce_workspace_access(workspace_id, user_id, is_admin=is_admin)
         await self._ensure_workspace_git_repo(workspace_id)
+
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        # Shell execs do not call the control-plane mutation hooks. An active
+        # worker tree is authoritative, so bypass the durable listing cache and
+        # expose completed exec changes immediately.
+        active_or_stopping = await userspace_runtime_service.has_active_workspace_session(workspace_id)
         cached = self._file_list_cache.get(workspace_id)
-        if cached is not None:
+        if not active_or_stopping and cached is not None:
             cached_result, cached_include_dirs, cached_ts = cached
             if cached_include_dirs == include_dirs and (_time.monotonic() - cached_ts) < _FILE_LIST_CACHE_TTL_SECONDS:
                 return cached_result
-
-        from ragtime.userspace.runtime_service import userspace_runtime_service
 
         base_result = await userspace_runtime_service.list_workspace_files_internal(
             workspace_id,
@@ -20671,11 +20733,15 @@ class UserSpaceService:
 
         base_result.sort(key=lambda item: item.path)
 
-        self._file_list_cache[workspace_id] = (
-            base_result,
-            include_dirs,
-            _time.monotonic(),
-        )
+        if active_or_stopping:
+            # Never carry an active-root listing into a later inactive fallback.
+            self._file_list_cache.pop(workspace_id, None)
+        else:
+            self._file_list_cache[workspace_id] = (
+                base_result,
+                include_dirs,
+                _time.monotonic(),
+            )
         return base_result
 
     async def _mark_workspace_code_index_dirty(
@@ -20720,32 +20786,53 @@ class UserSpaceService:
             normalized_path,
         )
 
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        # The generated dashboard entrypoint is another workspace write. When
+        # a runtime is active, it must use the same worker-selected tree as the
+        # requested module instead of silently changing the durable mirror.
         if _requires_entrypoint_wiring(normalized_path, request.artifact_type):
-            main_path = self._resolve_workspace_file_path(
+            active_main = await userspace_runtime_service.read_active_workspace_file_internal(
                 workspace_id,
                 _USERSPACE_PREVIEW_ENTRY_PATH,
             )
-            if not main_path.exists() or not main_path.is_file():
-                main_path.parent.mkdir(parents=True, exist_ok=True)
-                main_path.write_text(
-                    self._build_dashboard_entrypoint_content(normalized_path),
-                    encoding="utf-8",
+            if active_main is not None:
+                main_exists = bool(active_main.get("exists", False))
+                main_content = str(active_main.get("content", "")) if main_exists else ""
+                candidates = _entrypoint_module_specifier_candidates(normalized_path)
+                next_main_content = (
+                    main_content
+                    if main_exists and _entrypoint_references_module(main_content, candidates)
+                    else (
+                        self._append_dashboard_entrypoint_reference(main_content, normalized_path)
+                        if main_exists
+                        else self._build_dashboard_entrypoint_content(normalized_path)
+                    )
                 )
-
-            try:
-                main_content = main_path.read_text(encoding="utf-8")
-            except OSError:
-                main_content = ""
-
-            candidates = _entrypoint_module_specifier_candidates(normalized_path)
-            if not _entrypoint_references_module(main_content, candidates):
-                main_path.write_text(
-                    self._append_dashboard_entrypoint_reference(
-                        main_content,
-                        normalized_path,
-                    ),
-                    encoding="utf-8",
-                )
+                if next_main_content != main_content:
+                    metadata = active_main.get("artifact_metadata")
+                    await userspace_runtime_service.write_active_workspace_file_internal(
+                        workspace_id,
+                        _USERSPACE_PREVIEW_ENTRY_PATH,
+                        next_main_content,
+                        expected_content_hash=(str(active_main.get("content_hash")) if active_main.get("content_hash") is not None else None),
+                        require_content_hash=True,
+                        artifact_metadata=metadata if isinstance(metadata, dict) else None,
+                    )
+                    self._file_list_cache.pop(workspace_id, None)
+                    await self._mark_workspace_code_index_dirty(workspace_id, _USERSPACE_PREVIEW_ENTRY_PATH, "upsert")
+            else:
+                main_path = self._resolve_workspace_file_path(workspace_id, _USERSPACE_PREVIEW_ENTRY_PATH)
+                if not main_path.exists() or not main_path.is_file():
+                    main_path.parent.mkdir(parents=True, exist_ok=True)
+                    main_path.write_text(self._build_dashboard_entrypoint_content(normalized_path), encoding="utf-8")
+                try:
+                    main_content = main_path.read_text(encoding="utf-8")
+                except OSError:
+                    main_content = ""
+                candidates = _entrypoint_module_specifier_candidates(normalized_path)
+                if not _entrypoint_references_module(main_content, candidates):
+                    main_path.write_text(self._append_dashboard_entrypoint_reference(main_content, normalized_path), encoding="utf-8")
 
         parsed_live_data_connections = request.live_data_connections or []
         parsed_live_data_checks = request.live_data_checks or []
@@ -20872,6 +20959,35 @@ class UserSpaceService:
                             detail=LIVE_DATA_CONTEXT_ACCESS_MISSING_MESSAGE,
                         )
 
+        artifact_metadata: dict[str, Any] = {}
+        if request.artifact_type is not None:
+            artifact_metadata["artifact_type"] = request.artifact_type
+        if request.live_data_connections is not None:
+            artifact_metadata["live_data_connections"] = [item.model_dump(mode="json") for item in request.live_data_connections]
+        if request.live_data_checks is not None:
+            artifact_metadata["live_data_checks"] = [item.model_dump(mode="json") for item in request.live_data_checks]
+        runtime_result = await userspace_runtime_service.write_active_workspace_file_internal(
+            workspace_id,
+            normalized_path,
+            request.content,
+            expected_content_hash=expected_content_hash,
+            require_content_hash=require_content_hash,
+            artifact_metadata=artifact_metadata or None,
+        )
+        if runtime_result is not None:
+            self._file_list_cache.pop(workspace_id, None)
+            await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(workspace_id, [normalized_path])
+            await self._touch_workspace(workspace_id)
+            await self._mark_workspace_code_index_dirty(workspace_id, normalized_path, "upsert")
+            return UserSpaceFileResponse(
+                path=normalized_path,
+                content=str(runtime_result.get("content", request.content)),
+                artifact_type=request.artifact_type,
+                live_data_connections=request.live_data_connections,
+                live_data_checks=request.live_data_checks,
+                updated_at=coerce_utc_datetime(runtime_result.get("actual_updated_at") or runtime_result.get("updated_at")),
+            )
+
         file_path = await self._resolve_workspace_tree_file_path(
             workspace_id,
             normalized_path,
@@ -20904,6 +21020,7 @@ class UserSpaceService:
         else:
             async with mutation_lock:
                 stat = await write_locked()
+        self._file_list_cache.pop(workspace_id, None)
         await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
             workspace_id,
             [normalized_path],
@@ -20943,6 +21060,47 @@ class UserSpaceService:
             workspace_id,
             normalized_path,
         )
+
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        runtime_file = await userspace_runtime_service.read_active_workspace_file_internal(
+            workspace_id,
+            normalized_path,
+        )
+        if runtime_file is not None:
+            if not bool(runtime_file.get("exists", False)):
+                raise HTTPException(status_code=404, detail="File not found")
+            if not bool(runtime_file.get("is_utf8_text", True)):
+                raise HTTPException(
+                    status_code=415, detail=(f"Workspace file is not UTF-8 text and cannot be opened in the text editor. Path: {normalized_path}")
+                )
+            updated_at = runtime_file.get("actual_updated_at") or runtime_file.get("updated_at")
+            artifact_metadata = runtime_file.get("artifact_metadata")
+            artifact_metadata = artifact_metadata if isinstance(artifact_metadata, dict) else {}
+            connections = artifact_metadata.get("live_data_connections")
+            checks = artifact_metadata.get("live_data_checks")
+            parsed_connections: list[UserSpaceLiveDataConnection] = []
+            parsed_checks: list[UserSpaceLiveDataCheck] = []
+            for item in connections if isinstance(connections, list) else []:
+                if isinstance(item, dict):
+                    try:
+                        parsed_connections.append(UserSpaceLiveDataConnection.model_validate(item))
+                    except Exception:
+                        continue
+            for item in checks if isinstance(checks, list) else []:
+                if isinstance(item, dict):
+                    try:
+                        parsed_checks.append(UserSpaceLiveDataCheck.model_validate(item))
+                    except Exception:
+                        continue
+            return UserSpaceFileResponse(
+                path=normalized_path,
+                content=str(runtime_file.get("content", "")),
+                artifact_type=("module_ts" if artifact_metadata.get("artifact_type") == "module_ts" else None),
+                live_data_connections=parsed_connections or None,
+                live_data_checks=parsed_checks or None,
+                updated_at=coerce_utc_datetime(updated_at),
+            )
 
         file_path = await self._resolve_workspace_tree_file_path(
             workspace_id,
@@ -20992,6 +21150,22 @@ class UserSpaceService:
             normalized_path,
         )
 
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        if await userspace_runtime_service.delete_active_workspace_file_internal(
+            workspace_id,
+            normalized_path,
+            expected_content_hash=expected_content_hash,
+            require_content_hash=require_content_hash,
+        ):
+            self._file_list_cache.pop(workspace_id, None)
+            await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(workspace_id, [normalized_path])
+            await self._touch_workspace(workspace_id)
+            if normalized_path.strip("/") == ".ragtime/runtime-entrypoint.json":
+                self.invalidate_entrypoint_cache(workspace_id)
+            await self._mark_workspace_code_index_dirty(workspace_id, normalized_path, "delete")
+            return
+
         file_path = await self._resolve_workspace_tree_file_path(
             workspace_id,
             normalized_path,
@@ -21018,6 +21192,7 @@ class UserSpaceService:
             async with mutation_lock:
                 await delete_locked()
 
+        self._file_list_cache.pop(workspace_id, None)
         await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
             workspace_id,
             [normalized_path],
@@ -21063,6 +21238,19 @@ class UserSpaceService:
             normalized_new,
         )
 
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        if await userspace_runtime_service.move_active_workspace_file_internal(workspace_id, normalized_old, normalized_new):
+            self._file_list_cache.pop(workspace_id, None)
+            await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
+                workspace_id,
+                [normalized_old, normalized_new],
+            )
+            await self._touch_workspace(workspace_id)
+            await self._mark_workspace_code_index_dirty(workspace_id, normalized_old, "delete")
+            await self._mark_workspace_code_index_dirty(workspace_id, normalized_new, "upsert")
+            return {"old_path": normalized_old, "new_path": normalized_new}
+
         source_path = await self._resolve_workspace_tree_file_path(
             workspace_id,
             normalized_old,
@@ -21090,6 +21278,7 @@ class UserSpaceService:
             for mutation_lock in reversed(mutation_locks):
                 mutation_lock.release()
 
+        self._file_list_cache.pop(workspace_id, None)
         await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
             workspace_id,
             [normalized_old, normalized_new],
@@ -22332,12 +22521,27 @@ class UserSpaceService:
         workspace_id: str,
         component_id: str,
     ) -> str:
-        """Look up the default query for a component from the sidecar metadata."""
-        entry_file = self._workspace_files_dir(workspace_id) / _USERSPACE_PREVIEW_ENTRY_PATH
-        try:
-            _, connections, _ = await asyncio.to_thread(self._read_artifact_sidecar, entry_file)
-        except Exception:
-            return ""
+        """Look up the default query from authoritative active sidecar metadata."""
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        connections: list[UserSpaceLiveDataConnection] | None = None
+        active = await userspace_runtime_service.read_active_workspace_file_internal(workspace_id, _USERSPACE_PREVIEW_ENTRY_PATH)
+        if active is not None:
+            metadata = active.get("artifact_metadata")
+            raw_connections = metadata.get("live_data_connections") if isinstance(metadata, dict) else None
+            connections = []
+            for item in raw_connections if isinstance(raw_connections, list) else []:
+                if isinstance(item, dict):
+                    try:
+                        connections.append(UserSpaceLiveDataConnection.model_validate(item))
+                    except Exception:
+                        continue
+        else:
+            entry_file = self._workspace_files_dir(workspace_id) / _USERSPACE_PREVIEW_ENTRY_PATH
+            try:
+                _, connections, _ = await asyncio.to_thread(self._read_artifact_sidecar, entry_file)
+            except Exception:
+                return ""
         if not connections:
             return ""
         cid_lower = component_id.strip().lower()

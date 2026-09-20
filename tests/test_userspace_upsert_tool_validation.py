@@ -144,7 +144,8 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             mock.patch(
-                "ragtime.rag.components.userspace_service.get_workspace_entrypoint_status",
+                "ragtime.rag.components.userspace_service.get_workspace_entrypoint_status_authoritative",
+                new_callable=mock.AsyncMock,
                 return_value=types.SimpleNamespace(state="valid", framework="node", error=None),
             ),
             mock.patch(

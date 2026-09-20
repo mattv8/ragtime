@@ -99,6 +99,28 @@ def read_text(root: Path, relative_path: str, *, encoding: str = "utf-8") -> str
         return None
 
 
+def stat_file(root: Path, relative_path: str) -> os.stat_result | None:
+    """Return a regular file's descriptor-derived stat without following links."""
+    try:
+        parts = _components(relative_path)
+        root_fd = _open_root(root)
+        try:
+            parent_fd, leaf = _open_parent(root_fd, parts, create=False)
+            try:
+                fd = os.open(leaf, _flags(), dir_fd=parent_fd)
+                try:
+                    _require_regular(fd)
+                    return os.fstat(fd)
+                finally:
+                    os.close(fd)
+            finally:
+                os.close(parent_fd)
+        finally:
+            os.close(root_fd)
+    except (OSError, SecureFileError, ValueError):
+        return None
+
+
 def write_text(root: Path, relative_path: str, content: str, *, encoding: str = "utf-8") -> None:
     """Create or replace a regular file without following any symlink."""
     payload = content.encode(encoding)

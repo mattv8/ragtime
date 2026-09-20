@@ -1407,14 +1407,14 @@ def build_shared_sqlite_prompt_fragment(accessible_databases: list[dict[str, str
 
 def build_userspace_data_and_persistence_boundaries_fragment(
     *,
-    include_sqlite_persistence: bool,
-    has_live_data_tools: bool,
+    include_sqlite_persistence: bool | None,
+    has_live_data_tools: bool | None,
     shared_sqlite_databases: list[dict[str, str]],
 ) -> str:
     """Build the combined data/persistence guidance block when any relevant boundary applies."""
 
     shared_fragment = build_shared_sqlite_prompt_fragment(shared_sqlite_databases)
-    if not include_sqlite_persistence and not shared_fragment:
+    if include_sqlite_persistence is False and not shared_fragment:
         return ""
 
     sections = [
@@ -1422,7 +1422,7 @@ def build_userspace_data_and_persistence_boundaries_fragment(
         "- These sections define responsibilities, not mandatory work in every turn.\n",
     ]
 
-    if include_sqlite_persistence and has_live_data_tools:
+    if include_sqlite_persistence is not False and has_live_data_tools is not False:
         sections.extend(
             [
                 "\n##### Lane A - Live tool data\n",
@@ -1432,7 +1432,7 @@ def build_userspace_data_and_persistence_boundaries_fragment(
             ]
         )
 
-    if include_sqlite_persistence:
+    if include_sqlite_persistence is not False:
         sections.extend(
             [
                 "\n##### Lane B - Primary workspace SQLite\n",
@@ -1520,7 +1520,7 @@ USERSPACE_MODE_PROMPT_ADDITION = build_userspace_mode_prompt_addition(
 )
 
 
-def build_index_system_prompt(index_metadata: List[dict]) -> str:
+def build_index_system_prompt(index_metadata: List[dict], *, search_tool_name: str = "search_knowledge") -> str:
     """Build system prompt section describing available knowledge indexes.
 
     Args:
@@ -1568,7 +1568,7 @@ Available for search:
 
 Knowledge indexes are not searched automatically.
 Indexes may contain source code, documentation, business records, paperwork, manuals, or any other ingested content -- consult each one's listed description to judge what it covers.
-Use `search_knowledge` to run similarity search over these indexes whenever indexed background context could inform the answer (schemas, business logic, implementation details, policies, historical records, scanned documents, etc.) -- ideally before querying live systems.
+Use `{search_tool_name}` to run similarity search over these indexes whenever indexed background context could inform the answer (schemas, business logic, implementation details, policies, historical records, scanned documents, etc.) -- ideally before querying live systems.
 For broader recall, increase `k`. For full snippets when results are truncated, set `max_chars_per_result=0`.
 """
 

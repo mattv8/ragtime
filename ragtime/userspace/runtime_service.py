@@ -2175,11 +2175,85 @@ class UserSpaceRuntimeService:
             f"/sessions/{provider_session_id}/fs/{quote(file_path, safe='/@._-~')}",
         )
 
+    async def read_active_workspace_file_internal(
+        self,
+        workspace_id: str,
+        file_path: str,
+    ) -> dict[str, Any] | None:
+        """Read from a live worker without creating or refreshing a session."""
+        active = await self._get_active_session_row(workspace_id)
+        if active is None:
+            return None
+        session = self._to_runtime_session(active)
+        # Deliberately propagate provider errors: an active runtime is authoritative,
+        # so a stale durable-tree fallback would hide live worker writes.
+        return await self._runtime_provider_read_file(session.provider_session_id, file_path)
+
+    async def write_active_workspace_file_internal(
+        self,
+        workspace_id: str,
+        file_path: str,
+        content: str,
+        *,
+        expected_content_hash: str | None,
+        require_content_hash: bool,
+        artifact_metadata: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        active = await self._get_active_session_row(workspace_id)
+        if active is None:
+            return None
+        session = self._to_runtime_session(active)
+        return await self._runtime_provider_write_file(
+            session.provider_session_id,
+            file_path,
+            content,
+            expected_content_hash=expected_content_hash,
+            require_content_hash=require_content_hash,
+            artifact_metadata=artifact_metadata,
+        )
+
+    async def delete_active_workspace_file_internal(
+        self,
+        workspace_id: str,
+        file_path: str,
+        *,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
+    ) -> bool:
+        active = await self._get_active_session_row(workspace_id)
+        if active is None:
+            return False
+        session = self._to_runtime_session(active)
+        await self._runtime_provider_delete_file(
+            session.provider_session_id,
+            file_path,
+            expected_content_hash=expected_content_hash,
+            require_content_hash=require_content_hash,
+        )
+        return True
+
+    async def move_active_workspace_file_internal(self, workspace_id: str, old_path: str, new_path: str) -> bool:
+        active = await self._get_active_session_row(workspace_id)
+        if active is None:
+            return False
+        session = self._to_runtime_session(active)
+        self._require_runtime_manager()
+        await self._runtime_manager_request(
+            "POST",
+            f"/sessions/{session.provider_session_id}/fs/move",
+            json_payload={"old_path": old_path, "new_path": new_path},
+        )
+        return True
+
     async def _runtime_provider_write_file(
         self,
         provider_session_id: str | None,
         file_path: str,
         content: str,
+        *,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
+        artifact_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not provider_session_id:
             raise HTTPException(status_code=404, detail="Runtime session unavailable")
@@ -2187,13 +2261,21 @@ class UserSpaceRuntimeService:
         return await self._runtime_manager_request(
             "PUT",
             f"/sessions/{provider_session_id}/fs/{quote(file_path, safe='/@._-~')}",
-            json_payload={"content": content},
+            json_payload={
+                "content": content,
+                "expected_content_hash": expected_content_hash,
+                "require_content_hash": require_content_hash,
+                "artifact_metadata": artifact_metadata,
+            },
         )
 
     async def _runtime_provider_delete_file(
         self,
         provider_session_id: str | None,
         file_path: str,
+        *,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
     ) -> dict[str, Any]:
         if not provider_session_id:
             raise HTTPException(status_code=404, detail="Runtime session unavailable")
@@ -2201,6 +2283,7 @@ class UserSpaceRuntimeService:
         return await self._runtime_manager_request(
             "DELETE",
             f"/sessions/{provider_session_id}/fs/{quote(file_path, safe='/@._-~')}",
+            json_payload={"expected_content_hash": expected_content_hash, "require_content_hash": require_content_hash},
         )
 
     async def _runtime_provider_capture_screenshot(
@@ -3268,6 +3351,10 @@ class UserSpaceRuntimeService:
         )
         names_by_id = {str(getattr(row, "id", "") or "").strip(): str(getattr(row, "name", "") or "").strip() for row in workspace_rows}
         return [(workspace_id, names_by_id.get(workspace_id) or workspace_id) for workspace_id in workspace_ids]
+
+    async def has_active_workspace_session(self, workspace_id: str) -> bool:
+        """Whether a starting or running worker is authoritative for files."""
+        return await self._get_active_session_row(workspace_id) is not None
 
     async def has_active_or_stopping_workspace_session(self, workspace_id: str) -> bool:
         """Whether legacy storage source cleanup must defer for a workspace."""

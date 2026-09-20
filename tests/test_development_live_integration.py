@@ -1,5 +1,6 @@
 """Opt-in local-DB coverage for the external workspace development surface."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -10,6 +11,7 @@ from typing import TypedDict
 from unittest import mock
 from uuid import uuid4
 
+import httpx
 from fastapi import HTTPException
 from mcp.types import TextContent
 from prisma.enums import AuthProvider, UserRole, WorkspaceRole
@@ -171,3 +173,41 @@ class DevelopmentLiveIntegrationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException) as rejected:
                 await api_routes.verify_api_key(authorization=f"Bearer {created['token']}")
         self.assertEqual(rejected.exception.status_code, 401)
+
+    @unittest.skipUnless(os.environ.get("RAGTIME_BYO_BASE_URL"), "requires an isolated current-source HTTP server")
+    async def test_bootstrap_downloads_are_complete_authorized_and_revocable(self) -> None:
+        created, _ = await self._credential(scopes=["read"])
+        base_url = os.environ["RAGTIME_BYO_BASE_URL"].rstrip("/")
+        prefix = f"/indexes/userspace/development/workspaces/{self.workspace_id}"
+        async with httpx.AsyncClient(base_url=base_url, headers={"Authorization": f"Bearer {created['token']}"}, timeout=30) as client:
+            response = await client.get(f"{prefix}/bootstrap")
+            self.assertEqual(response.status_code, 200, response.text)
+            manifest = response.json()
+            self.assertEqual(manifest["scopes"], ["read"])
+            artifacts = {item["id"]: item for item in manifest["artifacts"]}
+            profile = manifest["profiles"]["opencode"]
+            downloaded = {}
+            for artifact_id in profile["artifact_ids"]:
+                with self.subTest(artifact=artifact_id):
+                    artifact = artifacts[artifact_id]
+                    result = await client.get(artifact["download_url"])
+                    self.assertEqual(result.status_code, 200, result.text)
+                    self.assertEqual(len(result.content), artifact["bytes"])
+                    self.assertEqual(hashlib.sha256(result.content).hexdigest(), artifact["sha256"])
+                    self.assertNotIn(created["token"], result.text)
+                    self.assertIn(artifact["content_type"].split(";")[0], result.headers["content-type"])
+                    downloaded[artifact_id] = result.text
+
+            config = json.loads(downloaded[profile["config_artifact"]])
+            self.assertIn("mcp", config)
+            self.assertTrue(config["instructions"])
+            self.assertIn(manifest["credential_env_var"], downloaded[profile["config_artifact"]])
+            stale = await client.get(f"{prefix}/bootstrap/files/core/rules.md", params={"revision": "stale"})
+            self.assertEqual(stale.status_code, 409)
+            unknown = await client.get(f"{prefix}/bootstrap/files/not-an-artifact")
+            self.assertEqual(unknown.status_code, 404)
+            other = await client.get(f"/indexes/userspace/development/workspaces/{self.other_workspace_id}/bootstrap")
+            self.assertEqual(other.status_code, 403)
+            await revoke_workspace_development_credential(workspace_id=self.workspace_id, credential_id=created["id"])
+            revoked = await client.get(f"{prefix}/bootstrap")
+            self.assertEqual(revoked.status_code, 401)

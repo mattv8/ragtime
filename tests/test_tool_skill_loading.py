@@ -1679,8 +1679,8 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(
                 rag_components.userspace_service,
-                "get_workspace_entrypoint_status",
-                return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd="."),
+                "get_workspace_entrypoint_status_authoritative",
+                new=mock.AsyncMock(return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd=".")),
             ),
             mock.patch.object(rag_components.userspace_service, "is_default_static_entrypoint", return_value=False),
             mock.patch.object(rag, "_build_userspace_continuity_prompt", new=mock.AsyncMock(return_value="")),

@@ -718,8 +718,8 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(
                 mock.patch.object(
                     rag_components.userspace_service,
-                    "get_workspace_entrypoint_status",
-                    return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd="."),
+                    "get_workspace_entrypoint_status_authoritative",
+                    new=mock.AsyncMock(return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd=".")),
                 )
             )
             stack.enter_context(
@@ -1038,8 +1038,8 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(
                 mock.patch.object(
                     rag_components.userspace_service,
-                    "get_workspace_entrypoint_status",
-                    return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd="."),
+                    "get_workspace_entrypoint_status_authoritative",
+                    new=mock.AsyncMock(return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd=".")),
                 )
             )
             stack.enter_context(

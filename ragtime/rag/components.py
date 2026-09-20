@@ -269,6 +269,7 @@ from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import build_docker_shell_command, build_odoo_shell_args, build_shell_input, filter_odoo_output
+from ragtime.userspace.instruction_facts import build_env_var_turn_hint
 from ragtime.userspace.models import (
     ArtifactType,
     UpsertWorkspaceEnvVarRequest,
@@ -7203,20 +7204,7 @@ class RAGComponents:
                 "create placeholder keys and instruct the user to fill values in Environment Variables.\n"
             )
 
-        max_items = 10
-        parts: list[str] = []
-        for item in env_vars[:max_items]:
-            key = str(getattr(item, "key", "") or "").strip()
-            if not key:
-                continue
-            has_value = bool(getattr(item, "has_value", False))
-            parts.append(f"{key}({'set' if has_value else 'missing'})")
-
-        if not parts:
-            return ""
-
-        suffix = "" if len(env_vars) <= max_items else f", +{len(env_vars) - max_items} more"
-        return "- Workspace env vars (keys only): " + ", ".join(parts) + suffix + ".\n"
+        return build_env_var_turn_hint(env_vars)
 
     @staticmethod
     def _sanitize_userspace_runtime_error_for_turn_hint(error_text: str) -> str:
@@ -11395,12 +11383,12 @@ class RAGComponents:
                 env_var=updated.model_dump(mode="json"),
             )
 
-        def _compute_authoritative_entrypoint(
+        async def _compute_authoritative_entrypoint(
             file_paths: set[str],  # noqa: ARG001 – kept for call-site compat
         ) -> tuple[str | None, str]:
-            ep_status = userspace_service.get_workspace_entrypoint_status(workspace_id)
+            ep_status = await userspace_service.get_workspace_entrypoint_status_authoritative(workspace_id)
             if ep_status.state == "valid":
-                is_default = userspace_service.is_default_static_entrypoint(workspace_id)
+                is_default = userspace_service.is_default_static_entrypoint(workspace_id, status=ep_status)
                 if is_default:
                     return (
                         ".ragtime/runtime-entrypoint.json",
@@ -11429,7 +11417,7 @@ class RAGComponents:
         async def _get_workspace_structure() -> dict[str, Any]:
             files = await userspace_service.list_workspace_files(workspace_id, user_id, include_dirs=True)
             file_paths = {file.path for file in files}
-            authoritative_entrypoint, entrypoint_reason = _compute_authoritative_entrypoint(file_paths)
+            authoritative_entrypoint, entrypoint_reason = await _compute_authoritative_entrypoint(file_paths)
             return {
                 "files": files,
                 "authoritative_entrypoint": authoritative_entrypoint,
@@ -15673,7 +15661,7 @@ class RAGComponents:
 
             # Dynamic entrypoint nudge: fetch status once and reuse for
             # both is_default check, nudge generation, and state summary.
-            ep_status = userspace_service.get_workspace_entrypoint_status(workspace_id)
+            ep_status = await userspace_service.get_workspace_entrypoint_status_authoritative(workspace_id)
             is_default = userspace_service.is_default_static_entrypoint(workspace_id, status=ep_status)
 
             continuity_ctx = await self._build_userspace_continuity_prompt(

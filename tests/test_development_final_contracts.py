@@ -94,7 +94,7 @@ class DevelopmentFinalContractTests(unittest.IsolatedAsyncioTestCase):
         }
         with (
             mock.patch.object(development_module.development_service, "_workspace", mock.AsyncMock()),
-            mock.patch.object(development_module.planning_service, "_selected_tools", mock.AsyncMock(return_value=[])),
+            mock.patch.object(development_module.planning_service, "_selected_tool_ids", mock.AsyncMock(return_value=[])),
             mock.patch.object(development_module, "get_db", mock.AsyncMock(return_value=db)),
             mock.patch.object(development_module.development_service, "_resolve_general_index_descriptor", mock.AsyncMock(return_value=descriptor)),
             mock.patch("ragtime.core.tool_access.get_db", mock.AsyncMock(return_value=ToolAccessDb())),
@@ -123,6 +123,75 @@ class DevelopmentFinalContractTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.status_code, 403)
         schema_search.assert_not_awaited()
+
+    async def test_resources_enriches_only_explicitly_acl_allowed_tools_with_canonical_contracts(self) -> None:
+        principal = DevelopmentPrincipal(user_id="user", is_admin=False, scopes=frozenset({"read"}))
+        workspace = SimpleNamespace(id="workspace")
+        postgres = SimpleNamespace(
+            id="postgres",
+            name="Analytics",
+            tool_type=SimpleNamespace(value="postgres"),
+            description="Configured SQL description, verbatim.",
+            connection_config={"password": "SECRET"},
+            timeout_max_seconds=45,
+            max_results=100,
+            enabled=True,
+        )
+        http = SimpleNamespace(
+            id="http",
+            name="Orders API",
+            tool_type=SimpleNamespace(value="http_api"),
+            description="Configured HTTP description, verbatim.",
+            connection_config={"bearer_token": "SECRET"},
+            timeout_max_seconds=45,
+            max_results=100,
+            enabled=True,
+        )
+        built = {
+            "postgres": SimpleNamespace(
+                description="Query Analytics. This database contains: Configured SQL description, verbatim. Include LIMIT clause to restrict results."
+            ),
+            "http": SimpleNamespace(
+                description="Send HTTP requests to Orders API. This API provides access to: Configured HTTP description, verbatim. Authentication is applied automatically. Only these per-request headers are approved: X-Request-ID. Omit all other headers."
+            ),
+        }
+
+        async def get_tool_config(tool_id: str):
+            if tool_id == "postgres":
+                return postgres
+            if tool_id == "http":
+                return http
+            raise AssertionError(f"Unauthorized config lookup: {tool_id}")
+
+        async def build(config):
+            return built[config["id"]]
+
+        db = SimpleNamespace(workspaceindexgrant=SimpleNamespace(find_many=mock.AsyncMock(return_value=[])))
+        with (
+            mock.patch.object(development_module.development_service, "_workspace", mock.AsyncMock(return_value=workspace)),
+            mock.patch.object(
+                development_module.planning_service, "_selected_tool_ids", mock.AsyncMock(return_value=["postgres", "http", "denied", "missing"])
+            ),
+            mock.patch.object(
+                development_module, "resolve_tool_access", mock.AsyncMock(return_value={"postgres": "read", "http": "read_write", "denied": "deny"})
+            ),
+            mock.patch.object(development_module.repository, "get_tool_config", mock.AsyncMock(side_effect=get_tool_config)),
+            mock.patch.object(development_module.rag, "build_primary_runtime_tool_from_config", mock.AsyncMock(side_effect=build)) as builder,
+            mock.patch.object(development_module, "get_db", mock.AsyncMock(return_value=db)),
+        ):
+            resources = await development_module.development_service._resources(principal, "workspace")
+
+        self.assertEqual([tool["component_id"] for tool in resources["tools"]], ["postgres", "http"])
+        self.assertIn("Configured SQL description, verbatim.", resources["tools"][0]["description"])
+        self.assertIn("Include LIMIT clause", resources["tools"][0]["execute_component"]["instructions"])
+        self.assertIn("Configured HTTP description, verbatim.", resources["tools"][1]["description"])
+        self.assertIn("Authentication is applied automatically", resources["tools"][1]["execute_component"]["instructions"])
+        self.assertNotIn("timeout", resources["tools"][0]["execute_component"]["request_schema"]["oneOf"][1]["properties"])
+        self.assertTrue(resources["tools"][0]["execution_lanes"]["browser"]["supported"])
+        self.assertEqual(resources["tools"][0]["execution_lanes"]["browser"]["mode"], "browser_read_only")
+        self.assertTrue(resources["tools"][0]["execution_lanes"]["server_runtime_bridge"]["supported"])
+        self.assertNotIn("SECRET", str(resources))
+        self.assertEqual([call.args[0]["id"] for call in builder.await_args_list], ["postgres", "http"])
 
     async def test_http_and_mcp_dispatchers_do_not_search_hidden_index(self) -> None:
         principal = DevelopmentPrincipal(user_id="viewer", is_admin=False, scopes=frozenset({"read"}))

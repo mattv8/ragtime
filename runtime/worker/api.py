@@ -527,6 +527,9 @@ async def write_file(
         worker_session_id,
         file_path,
         str(payload.get("content", "")),
+        expected_content_hash=(str(payload["expected_content_hash"]) if payload.get("expected_content_hash") is not None else None),
+        require_content_hash=bool(payload.get("require_content_hash", False)),
+        artifact_metadata=(payload.get("artifact_metadata") if isinstance(payload.get("artifact_metadata"), dict) else None),
     )
 
 
@@ -534,9 +537,29 @@ async def write_file(
 async def delete_file(
     worker_session_id: str,
     file_path: str,
+    payload: dict[str, Any] | None = None,
     _auth: None = WorkerAuth,
 ) -> dict[str, Any]:
-    return await get_worker_service().delete_file(worker_session_id, file_path)
+    payload = payload or {}
+    return await get_worker_service().delete_file(
+        worker_session_id,
+        file_path,
+        expected_content_hash=(str(payload["expected_content_hash"]) if payload.get("expected_content_hash") is not None else None),
+        require_content_hash=bool(payload.get("require_content_hash", False)),
+    )
+
+
+@router.post("/worker/sessions/{worker_session_id}/fs/move")
+async def move_file(
+    worker_session_id: str,
+    payload: dict[str, Any],
+    _auth: None = WorkerAuth,
+) -> dict[str, Any]:
+    return await get_worker_service().move_file(
+        worker_session_id,
+        str(payload.get("old_path", "")),
+        str(payload.get("new_path", "")),
+    )
 
 
 @router.post(

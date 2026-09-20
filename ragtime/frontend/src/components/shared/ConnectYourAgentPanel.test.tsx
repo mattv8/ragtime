@@ -6,13 +6,12 @@ import { ConnectYourAgentPanel } from './ConnectYourAgentPanel';
 const apiMock = vi.hoisted(() => ({
   listWorkspaceDevelopmentCredentials: vi.fn(),
   createWorkspaceDevelopmentCredential: vi.fn(),
+  rotateWorkspaceDevelopmentCredential: vi.fn(),
+  revokeWorkspaceDevelopmentCredential: vi.fn(),
   executeWorkspaceDevelopmentOperation: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({ api: apiMock }));
-vi.mock('./InlineCopyButton', () => ({
-  InlineCopyButton: () => <button type="button">Copy token</button>,
-}));
 
 describe('ConnectYourAgentPanel', () => {
   afterEach(() => {
@@ -83,5 +82,181 @@ describe('ConnectYourAgentPanel', () => {
       );
     });
     expect(screen.getByText('running')).toBeTruthy();
+  });
+
+  it('copies setup instructions with the current workspace manifest and fresh token', async () => {
+    const user = userEvent.setup();
+    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
+      id: 'credential-1',
+      workspace_id: 'workspace-1',
+      user_id: 'user-1',
+      name: 'My Agent',
+      scopes: ['read'],
+      expires_at: null,
+      revoked_at: null,
+      created_at: '2026-09-19T00:00:00Z',
+      updated_at: '2026-09-19T00:00:00Z',
+      token: 'fresh-token-value',
+    });
+
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+    await user.click(screen.getByRole('button', { name: 'Connect your agent' }));
+
+    const nameInput = screen.getByDisplayValue('External agent');
+    await user.clear(nameInput);
+    await user.type(nameInput, 'My Agent');
+    await user.click(screen.getByRole('button', { name: 'Create credential' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Copy setup instructions')).toBeTruthy();
+    });
+
+    const setupSection = screen.getByText('Copy setup instructions').closest('section');
+    expect(setupSection).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Copy setup instructions' }));
+
+    const copiedInstructions = await navigator.clipboard.readText();
+    expect(copiedInstructions).toContain(
+      `${window.location.origin}/indexes/userspace/development/workspaces/workspace-1/bootstrap`,
+    );
+    expect(copiedInstructions).toContain('workspace-1');
+    expect(copiedInstructions).toContain('fresh-token-value');
+  });
+
+  it('clears setup instructions when credential is revoked', async () => {
+    const user = userEvent.setup();
+    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
+      id: 'credential-1',
+      workspace_id: 'workspace-1',
+      user_id: 'user-1',
+      name: 'External agent',
+      scopes: ['read'],
+      expires_at: null,
+      revoked_at: null,
+      created_at: '2026-09-19T00:00:00Z',
+      updated_at: '2026-09-19T00:00:00Z',
+      token: 'development-token',
+    });
+
+    apiMock.revokeWorkspaceDevelopmentCredential.mockResolvedValue({
+      id: 'credential-1',
+      workspace_id: 'workspace-1',
+      user_id: 'user-1',
+      name: 'External agent',
+      scopes: ['read'],
+      expires_at: null,
+      revoked_at: '2026-09-19T00:00:01Z',
+      created_at: '2026-09-19T00:00:00Z',
+      updated_at: '2026-09-19T00:00:01Z',
+    });
+
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+    await user.click(screen.getByRole('button', { name: 'Connect your agent' }));
+    await user.click(screen.getByRole('button', { name: 'Create credential' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Copy setup instructions')).toBeTruthy();
+    });
+
+    // Find and click revoke button
+    const revokeButton = screen.getByRole('button', { name: 'Revoke' });
+    await user.click(revokeButton);
+
+    // Instructions should disappear
+    await waitFor(() => {
+      expect(screen.queryByText('Copy setup instructions')).toBeNull();
+    });
+  });
+
+  it('clears setup instructions when switching workspaces', async () => {
+    const user = userEvent.setup();
+    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
+      id: 'credential-1',
+      workspace_id: 'workspace-1',
+      user_id: 'user-1',
+      name: 'External agent',
+      scopes: ['read'],
+      expires_at: null,
+      revoked_at: null,
+      created_at: '2026-09-19T00:00:00Z',
+      updated_at: '2026-09-19T00:00:00Z',
+      token: 'development-token',
+    });
+
+    const { rerender } = render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+    await user.click(screen.getByRole('button', { name: 'Connect your agent' }));
+    await user.click(screen.getByRole('button', { name: 'Create credential' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Copy setup instructions')).toBeTruthy();
+    });
+
+    // Switch to different workspace
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([]);
+    rerender(<ConnectYourAgentPanel workspaceId="workspace-2" canManage />);
+
+    await waitFor(() => {
+      expect(screen.queryByText('Copy setup instructions')).toBeNull();
+    });
+  });
+
+  it('updates setup instructions when credential is rotated', async () => {
+    const user = userEvent.setup();
+    const originalToken = 'original-token';
+    const rotatedToken = 'rotated-token';
+
+    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
+      id: 'credential-1',
+      workspace_id: 'workspace-1',
+      user_id: 'user-1',
+      name: 'External agent',
+      scopes: ['read'],
+      expires_at: null,
+      revoked_at: null,
+      created_at: '2026-09-19T00:00:00Z',
+      updated_at: '2026-09-19T00:00:00Z',
+      token: originalToken,
+    });
+
+    apiMock.rotateWorkspaceDevelopmentCredential.mockResolvedValue({
+      id: 'credential-1',
+      workspace_id: 'workspace-1',
+      user_id: 'user-1',
+      name: 'External agent',
+      scopes: ['read'],
+      expires_at: null,
+      revoked_at: null,
+      created_at: '2026-09-19T00:00:00Z',
+      updated_at: '2026-09-19T00:00:02Z',
+      token: rotatedToken,
+    });
+
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+    await user.click(screen.getByRole('button', { name: 'Connect your agent' }));
+    await user.click(screen.getByRole('button', { name: 'Create credential' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(originalToken)).toBeTruthy();
+    });
+
+    // Rotate credential
+    const rotateButton = screen.getByRole('button', { name: 'Rotate' });
+    await user.click(rotateButton);
+
+    await waitFor(() => {
+      expect(screen.getByText(rotatedToken)).toBeTruthy();
+      expect(screen.queryByText(originalToken)).toBeNull();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Copy setup instructions' }));
+
+    const copiedInstructions = await navigator.clipboard.readText();
+    expect(copiedInstructions).toContain(
+      `${window.location.origin}/indexes/userspace/development/workspaces/workspace-1/bootstrap`,
+    );
+    expect(copiedInstructions).toContain('workspace-1');
+    expect(copiedInstructions).toContain(rotatedToken);
+    expect(copiedInstructions).not.toContain(originalToken);
   });
 });

@@ -16,6 +16,7 @@ from ragtime.rag.prompts import (
     build_userspace_turn_reminder_with_env_vars,
     build_workspace_continuity_context,
 )
+from ragtime.userspace.instruction_facts import build_env_var_turn_hint, normalize_facts, translate_internal_tool_references
 
 
 def _mapping(value: object) -> dict[str, Any]:
@@ -76,13 +77,14 @@ def build_instruction_bundle(context: dict) -> dict:
     shared_sqlite = _items(authorized_resources.get("shared_sqlite_databases") or source.get("shared_sqlite_databases"))
     credentials = source.get("authorized_build_credentials", source.get("build_credentials", []))
     credentials = credentials if isinstance(credentials, list) else []
+    env_vars = _items(source.get("env_vars") or source.get("environment_variables"))
     status, is_default_static = _entrypoint(source)
     snapshot = _mapping(source.get("snapshot_summary"))
     continuity = build_workspace_continuity_context(
         file_count=int(architecture.get("file_count") or 0),
         key_files=[str(value) for value in architecture.get("key_files", []) if isinstance(value, str)],
         framework=status.framework,
-        entrypoint_valid=status.state == "valid",
+        entrypoint_valid=status.state == "valid" and not is_default_static,
         last_snapshot_message=snapshot.get("last_message"),
         recent_failure_summaries=[str(value) for value in source.get("recent_failure_summaries", []) if value],
     )
@@ -105,16 +107,21 @@ def build_instruction_bundle(context: dict) -> dict:
         object_storage_enabled=bool(buckets or authorized_resources.get("object_storage_enabled", source.get("object_storage_enabled", False))),
         object_storage_buckets=buckets,
     )
-    sections["authorized_indexes"] = build_index_system_prompt(authorized_indexes)
+    sections = {key: translate_internal_tool_references(value) for key, value in sections.items()}
+    sections["authorized_indexes"] = build_index_system_prompt(authorized_indexes, search_tool_name="index_search")
     sections["authorized_tools"] = build_tool_system_prompt(selected_tools, no_tools_selected=True)
     env_line = str(source.get("env_var_reminder_line") or "")
+    if not env_line:
+        env_line = build_env_var_turn_hint(env_vars)
     turn = build_current_user_turn_reminder_line(user.get("username"), user.get("display_name"))
     turn += build_userspace_turn_reminder_with_env_vars(
         include_sqlite_persistence=sqlite_mode == "include",
         env_var_reminder_line=env_line,
         runtime_status_reminder_line=str(source.get("runtime_status_reminder_line") or ""),
-        diagnostics_reminder_line=build_userspace_diagnostics_turn_reminder_line(source.get("diagnostics"), available_tool_names=available_tool_names),
+        diagnostics_reminder_line=str(source.get("diagnostics_reminder_line") or "")
+        or build_userspace_diagnostics_turn_reminder_line(source.get("diagnostics"), available_tool_names=available_tool_names),
     )
+    turn = translate_internal_tool_references(turn)
     unsupported = [
         {"item": "global catalog discovery", "reason": "only caller-authorized resources supplied in context are exported"},
         {"item": "internal subagent and model APIs", "reason": "translated to external harness responsibilities"},
@@ -130,6 +137,30 @@ def build_instruction_bundle(context: dict) -> dict:
             "authorized_tools": selected_tools,
             "authorized_indexes": authorized_indexes,
             "authorized_build_credentials": credentials,
+        },
+        "facts": {
+            "entrypoint": {
+                "state": status.state,
+                "framework": status.framework,
+                "framework_known": status.framework_known,
+                "command": status.command,
+                "cwd": status.cwd,
+                "error": status.error,
+                "is_default_static": is_default_static,
+            },
+            "continuity": {
+                "file_count": int(architecture.get("file_count") or 0),
+                "key_files": [str(value) for value in architecture.get("key_files", []) if isinstance(value, str)],
+                "snapshot_summary": normalize_facts(snapshot),
+            },
+            "environment_variables": normalize_facts(env_vars),
+            "mounts": normalize_facts(mounts),
+            "object_storage_buckets": normalize_facts(buckets),
+            "shared_sqlite_databases": normalize_facts(shared_sqlite),
+            "runtime_status": normalize_facts(source.get("runtime_status")),
+            "runtime_blocker": str(source.get("runtime_status_reminder_line") or ""),
+            "diagnostics": normalize_facts(source.get("diagnostics") or []),
+            "recent_failure_summaries": [str(value) for value in source.get("recent_failure_summaries", []) if value],
         },
         "unsupported": unsupported,
     }
