@@ -32,10 +32,13 @@ class ContentProtectionCoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.code, "content_unclassifiable")
         classify.assert_not_awaited()
 
-    def test_public_error_never_contains_model_reason(self) -> None:
-        detail = ContentProtectionError("content_denied", "request-1").public_detail()
+    def test_public_error_contains_reason_and_next_step(self) -> None:
+        detail = ContentProtectionError("content_denied", "request-1", reason="Policy excludes this request.", reason_code="restricted_content").public_detail()
         self.assertEqual(detail["code"], "content_denied")
-        self.assertNotIn("reason", detail)
+        self.assertEqual(detail["reason"], "Policy excludes this request.")
+        self.assertIn(detail["reason"], detail["message"])
+        self.assertIn(detail["next_step"], detail["message"])
+        self.assertEqual(detail["reason_code"], "restricted_content")
 
     def test_truncated_or_inconsistent_provider_verdict_is_rejected(self) -> None:
         with self.assertRaises(ContentProtectionError):

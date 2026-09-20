@@ -63,6 +63,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { api, type ChatTaskStreamEvent } from '@/api';
+import { formatPublicErrorDetail } from '@/api/publicErrorDetail';
 import { getThemeFontFamily, subscribeToThemeChanges } from '@/theme';
 import type {
   Conversation,
@@ -14926,7 +14927,12 @@ export function ChatPanel({
             const status = data.status || (data.completed ? 'completed' : 'unknown');
             terminalStatus = status;
             if (status === 'failed' && data.error) {
-              setError(data.error);
+              setError(
+                formatPublicErrorDetail(
+                  { ...data, ...(typeof data.error === 'object' ? data.error : {}) },
+                  typeof data.error === 'string' ? data.error : 'Generation failed',
+                ),
+              );
             }
             break; // Exit loop, cleanup below
           }
@@ -15107,7 +15113,12 @@ export function ChatPanel({
         for await (const data of stream) {
           if (data.type === 'completion' || data.completed) {
             terminalStatus = data.status || (data.completed ? 'completed' : 'unknown');
-            terminalError = data.error || null;
+            terminalError = data.error
+              ? formatPublicErrorDetail(
+                  { ...data, ...(typeof data.error === 'object' ? data.error : {}) },
+                  typeof data.error === 'string' ? data.error : 'Failed to compact conversation',
+                )
+              : null;
             break;
           }
           const state = data.type === 'state' ? data.state : data;
@@ -19452,7 +19463,10 @@ export function ChatPanel({
                                                     role="status"
                                                   >
                                                     <AlertCircle size={14} aria-hidden="true" />
-                                                    <span>Generation failed: {ev.content}</span>
+                                                    <span>
+                                                      Generation failed:{' '}
+                                                      {formatPublicErrorDetail(ev, ev.content)}
+                                                    </span>
                                                   </div>,
                                                 );
                                               }

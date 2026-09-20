@@ -2,6 +2,7 @@ import json
 import unittest
 from unittest import mock
 
+from fastapi import HTTPException
 from mcp.types import TextContent
 
 from ragtime.content_protection.models import ContentProtectionError
@@ -143,7 +144,14 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(development_service, "execute", new=mock.AsyncMock(return_value={"content": "restricted"})),
             mock.patch(
                 "ragtime.mcp.server.authorize_external_content",
-                new=mock.AsyncMock(side_effect=ContentProtectionError("content_denied", "request-1")),
+                new=mock.AsyncMock(
+                    side_effect=ContentProtectionError(
+                        "content_denied",
+                        "request-1",
+                        reason="This request conflicts with the access policy.",
+                        reason_code="restricted_content",
+                    )
+                ),
             ),
         ):
             with mcp_server.development_principal_context(principal):
@@ -154,7 +162,30 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.isError)
         content = result.content[0]
         assert isinstance(content, TextContent)
-        self.assertEqual(json.loads(content.text)["error"]["message"], "content_denied")
+        detail = json.loads(content.text)["error"]
+        self.assertEqual(detail["reason"], "This request conflicts with the access policy.")
+        self.assertIn("next_step", detail)
+
+    async def test_wrapped_content_protection_detail_is_flattened_for_mcp(self) -> None:
+        principal = DevelopmentPrincipal(user_id="user-1", is_admin=False, scopes=frozenset({"read"}))
+        detail = ContentProtectionError(
+            "content_denied",
+            "request-2",
+            reason="This request conflicts with the access policy.",
+            reason_code="restricted_content",
+        ).public_detail()
+        with (
+            mock.patch.object(development_service, "list_operations", return_value=[{"name": "file_read", "scope": "read"}]),
+            mock.patch.object(development_service, "execute", new=mock.AsyncMock(side_effect=HTTPException(status_code=403, detail=detail))),
+        ):
+            with mcp_server.development_principal_context(principal):
+                result = await mcp_server._execute_development_tool(
+                    "workspace_development", {"workspace_id": "workspace-1", "operation": "file_read", "arguments": {}}
+                )  # pyright: ignore[reportPrivateUsage]
+
+        content = result.content[0]
+        assert isinstance(content, TextContent)
+        self.assertEqual(json.loads(content.text)["error"], detail)
 
     async def test_oauth_user_becomes_request_local_development_principal(self) -> None:
         scope = {"type": "http", "headers": [], "_mcp_oauth_user": mock.Mock(id="user-1", role="admin")}

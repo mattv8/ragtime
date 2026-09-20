@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { api } from './client';
+import { formatPublicErrorDetail } from './publicErrorDetail';
 
 function jsonResponse(body: unknown, status: number = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -1229,6 +1230,73 @@ describe('workspace external API credential client requests', () => {
       detail: 'Only revoked credentials can be deleted',
       message: 'Only revoked credentials can be deleted',
     });
+  });
+});
+
+describe('public content-protection error details', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('uses the complete nested FastAPI detail message without stringifying the object', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          detail: {
+            code: 'content_access_denied',
+            message:
+              'This request is outside your access profile. Try rephrasing your question within your access profile.',
+            reason: 'This request is outside your access profile.',
+            next_step: 'Try rephrasing your question within your access profile.',
+            request_id: 'request-123',
+            reason_code: 'profile_mismatch',
+          },
+        },
+        403,
+      ),
+    );
+
+    await expect(
+      api.deleteWorkspaceExternalApiCredential('workspace-1', 'credential-1'),
+    ).rejects.toMatchObject({
+      message:
+        'This request is outside your access profile. Try rephrasing your question within your access profile.',
+      publicDetail: {
+        code: 'content_access_denied',
+        reason_code: 'profile_mismatch',
+        request_id: 'request-123',
+      },
+    });
+  });
+
+  it('keeps generic failures on their existing fallback path when structured reasons are absent', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: { code: 'validation_error' } }, 422));
+
+    await expect(
+      api.deleteWorkspaceExternalApiCredential('workspace-1', 'credential-1'),
+    ).rejects.toMatchObject({ message: 'Request failed', publicDetail: undefined });
+  });
+
+  it('formats SSE classifier fields for plain-text UI display without exposing unused markup', () => {
+    expect(
+      formatPublicErrorDetail(
+        {
+          code: 'content_access_denied',
+          message: 'This request is outside your access profile. Try a narrower request.',
+          reason: '<img src=x onerror=alert(1)>',
+          next_step: 'Try a narrower request.',
+          request_id: 'request-123',
+        },
+        'Generation failed',
+      ),
+    ).toBe('This request is outside your access profile. Try a narrower request.');
   });
 });
 

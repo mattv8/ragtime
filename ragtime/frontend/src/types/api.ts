@@ -2724,9 +2724,25 @@ export interface ErrorMessageEvent {
   type: 'error';
   channel?: 'final';
   content: string;
+  code?: string;
+  message?: string;
+  reason?: string;
+  next_step?: string;
+  request_id?: string;
+  reason_code?: string;
 }
 
 export type MessageEvent = ContentEvent | ToolCallEvent | ReasoningEvent | ErrorMessageEvent;
+
+/** Public, user-safe detail returned for a content-protection refusal. */
+export interface PublicErrorDetail {
+  code: string;
+  message: string;
+  reason: string;
+  next_step: string;
+  request_id: string;
+  reason_code?: string;
+}
 
 // Multimodal content types
 export interface TextContent {

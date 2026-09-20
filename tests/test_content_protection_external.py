@@ -10,10 +10,26 @@ from ragtime.userspace.development_service import development_service
 
 class _Denied(Exception):
     def public_detail(self):
-        return {"code": "content_denied", "message": "This content is not available under your access profile."}
+        return {
+            "code": "content_denied",
+            "message": "This request conflicts with the access policy. Try rephrasing your question.",
+            "reason": "This request conflicts with the access policy.",
+            "next_step": "Try rephrasing your question.",
+            "request_id": "request-1",
+            "reason_code": "profile_mismatch",
+        }
 
 
 class ContentProtectionExternalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_error_detail_preserves_refusal_reason_and_next_step(self) -> None:
+        from ragtime.content_protection.external import public_error_detail
+
+        detail = public_error_detail(_Denied("restricted body"))
+
+        self.assertEqual(detail["reason"], "This request conflicts with the access policy.")
+        self.assertEqual(detail["next_step"], "Try rephrasing your question.")
+        self.assertNotIn("restricted body", str(detail))
+
     async def test_development_input_denial_prevents_operation_execution(self) -> None:
         principal = DevelopmentPrincipal(user_id="user-1", is_admin=False, scopes=frozenset({"read"}))
         with (

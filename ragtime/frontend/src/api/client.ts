@@ -244,8 +244,10 @@ import type {
   CreateServerRestoreJobRequest,
   ServerRestoreJob,
   CommitServerRestoreJobRequest,
+  PublicErrorDetail,
 } from '@/types';
 import { getThemeSnapshot } from '@/theme/themeSnapshot';
+import { formatPublicErrorDetail, getPublicErrorDetail } from './publicErrorDetail';
 
 import type {
   AuthProviderConfig,
@@ -440,13 +442,20 @@ function normalizeGitWebhookEnableResponse(
 }
 
 class ApiError extends Error {
+  public readonly detail?: string;
+  public readonly publicDetail?: PublicErrorDetail;
+
   constructor(
-    message: string,
+    message: unknown,
     public status: number,
-    public detail?: string,
+    detail?: unknown,
   ) {
-    super(message);
+    const publicDetail = getPublicErrorDetail(detail) ?? getPublicErrorDetail(message);
+    const fallback = typeof message === 'string' && message.trim() ? message : 'Request failed';
+    super(formatPublicErrorDetail(detail ?? message, fallback));
     this.name = 'ApiError';
+    this.detail = typeof detail === 'string' ? detail : undefined;
+    this.publicDetail = publicDetail ?? undefined;
   }
 
   /**
@@ -546,7 +555,12 @@ export interface ChatTaskStreamEvent {
   type?: string;
   completed?: boolean;
   status?: string;
-  error?: string;
+  error?: string | PublicErrorDetail;
+  code?: string;
+  reason?: string;
+  next_step?: string;
+  request_id?: string;
+  reason_code?: string;
   state?: ChatTaskStreamEvent;
   content?: string;
   events?: unknown[];

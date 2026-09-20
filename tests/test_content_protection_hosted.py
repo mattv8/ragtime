@@ -49,7 +49,14 @@ class _Service:
 
 class _ProtectionError(Exception):
     def public_detail(self):
-        return {"code": "content_denied", "message": "This content is not available under your access profile.", "request_id": "ref-1"}
+        return {
+            "code": "content_denied",
+            "message": "This request conflicts with the access policy. Try rephrasing your question.",
+            "reason": "This request conflicts with the access policy.",
+            "next_step": "Try rephrasing your question.",
+            "request_id": "ref-1",
+            "reason_code": "profile_mismatch",
+        }
 
 
 class _Tool:
@@ -127,6 +134,8 @@ class HostedProtectionTests(unittest.IsolatedAsyncioTestCase):
         error = _ProtectionError("secret source and denied body")
         event = hosted.public_error_event(error)
         self.assertEqual(event["code"], "content_denied")
+        self.assertEqual(event["reason"], "This request conflicts with the access policy.")
+        self.assertEqual(event["next_step"], "Try rephrasing your question.")
         self.assertNotIn("secret source", str(event))
 
     async def test_configured_tool_uses_durable_id_and_child_task_keeps_turn_scope(self) -> None:

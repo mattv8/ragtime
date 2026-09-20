@@ -317,7 +317,8 @@ def _store_allow(key: str, verdict: dict[str, str]) -> None:
     if len(_decision_cache) >= 1024:
         oldest = min(_decision_cache, key=lambda cache_key: _decision_cache[cache_key][0])
         _decision_cache.pop(oldest, None)
-    _decision_cache[key] = (now, verdict)
+    # Reasons are user-facing refusal prose, never reusable allow metadata.
+    _decision_cache[key] = (now, {"verdict": verdict["verdict"], "reason_code": verdict["reason_code"]})
 
 
 async def _classify_with_limits(config: ContentProtectionConfig, envelope: dict[str, object], state: _TurnState) -> dict[str, str]:
@@ -335,7 +336,7 @@ async def _classify_with_limits(config: ContentProtectionConfig, envelope: dict[
         if state.spent >= _TURN_BUDGET:
             raise ContentProtectionError("classifier_unavailable", str(uuid4()))
         started = monotonic()
-        verdict = await asyncio.wait_for(_classify(config, envelope), timeout=min(5.0, _TURN_BUDGET - state.spent))
+        verdict = await asyncio.wait_for(_classify(config, envelope, include_reason=True), timeout=min(5.0, _TURN_BUDGET - state.spent))
         state.spent += monotonic() - started
         return verdict
     finally:
@@ -499,7 +500,12 @@ async def authorize_content(
         if verdict.get("verdict") == "allow":
             _store_allow(key, verdict)
     if verdict.get("verdict") != "allow":
-        error = ContentProtectionError("content_denied" if verdict.get("verdict") == "deny" else "classifier_invalid_response", request_id)
+        error = ContentProtectionError(
+            "content_denied" if verdict.get("verdict") == "deny" else "classifier_invalid_response",
+            request_id,
+            reason=verdict.get("reason"),
+            reason_code=verdict.get("reason_code"),
+        )
         state.terminal = error
         await _audit(
             request_id,

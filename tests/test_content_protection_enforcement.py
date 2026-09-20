@@ -77,16 +77,68 @@ class ContentProtectionEnforcementTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(service, "load_config", mock.AsyncMock(return_value=config)),
             mock.patch.object(service, "resolve_identities", mock.AsyncMock(return_value=({"u"}, {"u": set()}, {"u": None}))),
-            mock.patch.object(service, "classify", mock.AsyncMock(return_value={"verdict": "deny", "reason_code": "restricted_content"})) as classify,
+            mock.patch.object(
+                service,
+                "classify",
+                mock.AsyncMock(return_value={"verdict": "deny", "reason_code": "restricted_content", "reason": "This request is outside the allowed policy."}),
+            ) as classify,
             mock.patch.object(service, "_audit", mock.AsyncMock()),
             mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
             service.protection_context(ProtectionContext(user_id="u")),
         ):
-            with self.assertRaisesRegex(ContentProtectionError, "content_denied"):
+            with self.assertRaisesRegex(ContentProtectionError, "content_denied") as raised:
                 await service.authorize_content("first", direction="inbound")
             with self.assertRaisesRegex(ContentProtectionError, "content_denied"):
                 await service.authorize_content("second", direction="outbound")
         self.assertEqual(classify.await_count, 1)
+        self.assertEqual(raised.exception.public_detail()["reason"], "This request is outside the allowed policy.")
+        classify_call = classify.await_args
+        assert classify_call is not None
+        self.assertTrue(classify_call.kwargs["include_reason"])
+
+    async def test_uncertain_denial_uses_honest_fallback_without_auditing_reason(self) -> None:
+        config = self._config()
+        audit = mock.AsyncMock()
+        with (
+            mock.patch.object(service, "load_config", mock.AsyncMock(return_value=config)),
+            mock.patch.object(service, "resolve_identities", mock.AsyncMock(return_value=({"u"}, {"u": set()}, {"u": None}))),
+            mock.patch.object(service, "classify", mock.AsyncMock(return_value={"verdict": "deny", "reason_code": "uncertain"})) as classify,
+            mock.patch.object(service, "_audit", audit),
+            mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
+        ):
+            with self.assertRaises(ContentProtectionError) as raised:
+                await service.authorize_content("candidate", direction="inbound", context=ProtectionContext(user_id="u"))
+
+        detail = raised.exception.public_detail()
+        self.assertEqual(raised.exception.code, "content_denied")
+        self.assertEqual(detail["reason_code"], "uncertain")
+        self.assertEqual(detail["reason"], "This request could not be safely classified under the access policy.")
+        classify_call = classify.await_args
+        audit_call = audit.await_args
+        assert classify_call is not None and audit_call is not None
+        self.assertTrue(classify_call.kwargs["include_reason"])
+        self.assertNotIn("reason", audit_call.args[1])
+
+    async def test_allow_discards_optional_reason_before_caching_and_audit(self) -> None:
+        service._decision_cache.clear()
+        config = self._config()
+        candidate = {"text": "ordinary"}
+        audit = mock.AsyncMock()
+        with (
+            mock.patch.object(service, "load_config", mock.AsyncMock(return_value=config)),
+            mock.patch.object(service, "resolve_identities", mock.AsyncMock(return_value=({"u"}, {"u": set()}, {"u": None}))),
+            mock.patch.object(service, "classify", mock.AsyncMock(return_value={"verdict": "allow", "reason_code": "permitted", "reason": "Not retained."})),
+            mock.patch.object(service, "_audit", audit),
+            mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
+        ):
+            await service.authorize_content(candidate, direction="inbound", context=ProtectionContext(user_id="u"))
+
+        self.assertEqual(candidate, {"text": "ordinary"})
+        self.assertTrue(service._decision_cache)
+        self.assertTrue(all("reason" not in cached[1] for cached in service._decision_cache.values()))
+        audit_call = audit.await_args
+        assert audit_call is not None
+        self.assertNotIn("reason", audit_call.args[1])
 
     async def test_revision_change_rechecks_once_then_fails_closed_when_it_changes_again(self) -> None:
         first = self._config(revision=1)

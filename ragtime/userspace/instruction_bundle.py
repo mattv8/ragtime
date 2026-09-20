@@ -16,6 +16,7 @@ from ragtime.rag.prompts import (
     build_userspace_turn_reminder_with_env_vars,
     build_workspace_continuity_context,
 )
+from ragtime.userspace.instruction_content import content_protection_refusal_relay_guidance
 from ragtime.userspace.instruction_facts import build_env_var_turn_hint, normalize_facts, translate_internal_tool_references
 
 
@@ -121,6 +122,7 @@ def build_instruction_bundle(context: dict) -> dict:
         diagnostics_reminder_line=str(source.get("diagnostics_reminder_line") or "")
         or build_userspace_diagnostics_turn_reminder_line(source.get("diagnostics"), available_tool_names=available_tool_names),
     )
+    turn += "\n" + content_protection_refusal_relay_guidance()
     turn = translate_internal_tool_references(turn)
     unsupported = [
         {"item": "global catalog discovery", "reason": "only caller-authorized resources supplied in context are exported"},

@@ -1694,6 +1694,7 @@ class BackgroundTaskService:
             except Exception as e:
                 protection_detail = getattr(e, "public_detail", None)
                 is_protection_error = callable(protection_detail)
+                detail: dict[str, str] | None = None
                 if is_protection_error:
                     # Do not include classifier/provider exception text in logs,
                     # persisted state, or SSE.  A denied turn is terminal.
@@ -1742,12 +1743,22 @@ class BackgroundTaskService:
                         # Only classified provider failures get a termination reason;
                         # an unclassified platform error must not be blamed on the provider.
                         termination_reason=termination_reason,
-                        outcome_summary={"activity": activity_summary(tool_calls), "warnings": warnings},
-                        response_content=full_response or None,
+                        outcome_summary={
+                            "activity": activity_summary(tool_calls),
+                            "warnings": warnings,
+                            **({"refusal": detail} if detail else {}),
+                        },
+                        response_content=(f"{full_response}\n\n{error_message}" if full_response else error_message) if detail else full_response or None,
                     )
                     await task_event_bus.publish(
                         task_id,
-                        {"completed": True, "status": "failed", "error": error_message},
+                        {
+                            "completed": True,
+                            "status": "failed",
+                            "error": error_message,
+                            **(detail or {}),
+                            **({"refusal": detail} if detail else {}),
+                        },
                     )
                     await task_event_bus.publish(
                         f"conversation:{conversation_id}",
@@ -1756,6 +1767,8 @@ class BackgroundTaskService:
                             "task_id": task_id,
                             "status": "failed",
                             "error": error_message,
+                            **(detail or {}),
+                            **({"refusal": detail} if detail else {}),
                         },
                     )
                     if usage_attempt_id:
@@ -1919,17 +1932,31 @@ class BackgroundTaskService:
         except Exception as e:
             public_detail = getattr(e, "public_detail", None)
             error_message = str(e)
+            detail: dict[str, str] | None = None
             if callable(public_detail):
                 logger.warning("Compaction task %s stopped by content protection", task_id)
-                error_message = str(
-                    cast(Callable[[], dict[str, str]], public_detail)().get("message") or "This content is not available under your access profile."
-                )
+                detail = cast(Callable[[], dict[str, str]], public_detail)()
+                error_message = str(detail.get("message") or "This content is not available under your access profile.")
             else:
                 logger.warning(f"Compaction task {task_id} failed: {e}")
-            await repository.update_chat_task_status(task_id, ChatTaskStatus.failed, error_message)
+            await repository.update_chat_task_status(
+                task_id,
+                ChatTaskStatus.failed,
+                error_message,
+                response_content=error_message if detail else None,
+                termination_reason=str(detail.get("code") or "content_protection") if detail else None,
+                outcome_summary={"refusal": detail} if detail else None,
+            )
             await task_event_bus.publish(
                 task_id,
-                {"completed": True, "status": "failed", "error": error_message, "task_kind": "compaction"},
+                {
+                    "completed": True,
+                    "status": "failed",
+                    "error": error_message,
+                    "task_kind": "compaction",
+                    **(detail or {}),
+                    **({"refusal": detail} if detail else {}),
+                },
             )
             await task_event_bus.publish(
                 f"conversation:{conversation_id}",
@@ -1940,6 +1967,8 @@ class BackgroundTaskService:
                     "status": "failed",
                     "error": error_message,
                     "task_kind": "compaction",
+                    **(detail or {}),
+                    **({"refusal": detail} if detail else {}),
                 },
             )
         finally:

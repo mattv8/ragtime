@@ -19,6 +19,8 @@ class DevelopmentInstructionFidelityTests(unittest.TestCase):
         self.assertIn("File tool workflow", documents["workspace"])
         self.assertIn("exec_start", documents["runtime"])
         self.assertIn("Finalization sequence", documents["workspace"])
+        self.assertIn("Relay that reason and next step", documents["workspace"])
+        self.assertIn("do not automatically retry", documents["workspace"])
         self.assertIn("Workspace environment variables", documents["workspace"])
         self.assertIn("Theme + CSS rules", documents["ui"])
         self.assertIn("RAGTIME_OBJECT_STORAGE_ENDPOINT", documents["storage"])
@@ -53,6 +55,7 @@ class DevelopmentInstructionFidelityTests(unittest.TestCase):
 
         self.assertIn("No effective runtime entrypoint", bundle["system_instructions"]["entrypoint"])
         self.assertIn("SMOKE_ENV_CANARY(set)", bundle["turn_instructions"])
+        self.assertIn("Relay that reason and next step", bundle["turn_instructions"])
         self.assertIn("/default/public", bundle["system_instructions"]["object_storage"])
         self.assertFalse(bundle["facts"]["entrypoint"]["is_default_static"] is False)
         self.assertEqual(bundle["facts"]["environment_variables"], [{"key": "SMOKE_ENV_CANARY", "has_value": True}])

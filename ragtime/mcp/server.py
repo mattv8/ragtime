@@ -275,6 +275,30 @@ def _development_error(code: str, message: Any) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
 
 
+def _development_refusal_detail(exc: Exception) -> dict[str, str] | None:
+    """Recognize only the complete public refusal contract from an exception."""
+    public_detail = getattr(exc, "public_detail", None)
+    value = public_detail() if callable(public_detail) else getattr(exc, "detail", None)
+    if not isinstance(value, dict):
+        return None
+    required = ("code", "message", "reason", "next_step", "request_id")
+    if any(not isinstance(value.get(key), str) or not value[key].strip() for key in required):
+        return None
+    detail = {key: value[key] for key in required}
+    if isinstance(value.get("reason_code"), str) and value["reason_code"].strip():
+        detail["reason_code"] = value["reason_code"]
+    return detail
+
+
+def _development_refusal_error(detail: dict[str, str]) -> CallToolResult:
+    """Serialize a public refusal unchanged without nesting it as a message."""
+    try:
+        text = serialize_mcp_payload({"error": detail})
+    except Exception:
+        text = serialize_mcp_payload({"error": {"code": "operation_failed", "message": "Error response truncated", "truncated": True}})
+    return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+
+
 async def _development_result(result: Any, *, operation: str) -> CallToolResult:
     """Release development resource/context bundles only after authorization."""
     await authorize_external_content(
@@ -355,6 +379,9 @@ async def _execute_development_tool(name: str, arguments: dict[str, Any]) -> Cal
     except Exception as exc:
         # The shared service remains the authorization boundary. Keep failures
         # structured without returning a traceback through MCP.
+        refusal = _development_refusal_detail(exc)
+        if refusal is not None:
+            return _development_refusal_error(refusal)
         status_code = getattr(exc, "status_code", None)
         detail = getattr(exc, "detail", None)
         message = detail if detail is not None else str(exc)

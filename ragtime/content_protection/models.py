@@ -110,18 +110,53 @@ class ContentProtectionConfig(BaseModel):
 class ContentProtectionError(Exception):
     """Fixed, safe error data for transports to serialize."""
 
-    def __init__(self, code: str, request_id: str) -> None:
+    def __init__(self, code: str, request_id: str, *, reason: str | None = None, reason_code: str | None = None) -> None:
+        if reason is not None:
+            if not isinstance(reason, str):
+                raise TypeError("reason must be text")
+            reason = reason.strip()
+            if len(reason) > 120:
+                raise ValueError("reason exceeds maximum length")
         self.code = code
         self.request_id = request_id
+        self.reason = reason or None
+        self.reason_code = reason_code
         super().__init__(code)
 
     def public_detail(self) -> dict[str, str]:
-        messages = {
-            "content_denied": "This content is not available under your access profile.",
-            "operation_completed_response_withheld": "The operation completed but its response is not available under your access profile.",
-            "classifier_unavailable": "Content protection is currently unavailable.",
-            "classifier_invalid_response": "Content protection is currently unavailable.",
-            "content_unclassifiable": "This content cannot be inspected safely.",
-            "policy_changed": "Content protection policy changed; retry the request.",
+        defaults = {
+            "content_denied": (
+                "This content is not available under your access profile.",
+                "Try rephrasing your question or requesting information within your access profile.",
+            ),
+            "operation_completed_response_withheld": (
+                "The operation completed but its response is not available under your access profile.",
+                "Check the result before retrying so you do not repeat a completed operation.",
+            ),
+            "classifier_unavailable": ("Content protection is currently unavailable.", "Try again later or contact an administrator."),
+            "classifier_invalid_response": (
+                "Content protection could not safely validate this request.",
+                "Try again later or contact an administrator.",
+            ),
+            "content_unclassifiable": ("This content cannot be inspected safely.", "Try a smaller request containing inspectable text."),
+            "policy_changed": (
+                "Content protection policy changed during this request.",
+                "Review the current policy before retrying the request.",
+            ),
         }
-        return {"code": self.code, "message": messages.get(self.code, "Content protection request failed."), "request_id": self.request_id}
+        fallback_reason, next_step = defaults.get(self.code, ("Content protection request failed.", "Try again later or contact an administrator."))
+        reason_defaults = {
+            "restricted_content": "This request is outside the allowed access policy.",
+            "uncertain": "This request could not be safely classified under the access policy.",
+        }
+        reason = self.reason or reason_defaults.get(self.reason_code or "", fallback_reason)
+        detail = {
+            "code": self.code,
+            "message": f"{reason} {next_step}",
+            "reason": reason,
+            "next_step": next_step,
+            "request_id": self.request_id,
+        }
+        if self.reason_code:
+            detail["reason_code"] = self.reason_code
+        return detail

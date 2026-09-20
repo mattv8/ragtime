@@ -30,7 +30,7 @@ class ContentProtectionProviderTests(unittest.IsolatedAsyncioTestCase):
                 provider.parse_verdict(payload)
             self.assertEqual(raised.exception.code, "classifier_invalid_response")
 
-    def test_parse_verdict_keeps_reason_only_for_sample_calls(self) -> None:
+    def test_parse_verdict_keeps_reason_for_reason_enabled_calls(self) -> None:
         payload = '{"verdict":"deny","reason_code":"restricted_content","reason":"Scope does not permit this."}'
         self.assertNotIn("reason", provider.parse_verdict(payload))
         self.assertEqual(provider.parse_verdict(payload, include_reason=True)["reason"], "Scope does not permit this.")
@@ -40,6 +40,12 @@ class ContentProtectionProviderTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ContentProtectionError) as raised:
             provider.parse_verdict(payload, include_reason=True)
         self.assertEqual(raised.exception.code, "classifier_invalid_response")
+
+    def test_parse_verdict_trims_nonempty_reasons_and_uses_blank_as_missing(self) -> None:
+        payload = '{"verdict":"deny","reason_code":"uncertain","reason":"  Access scope is unclear.  "}'
+        self.assertEqual(provider.parse_verdict(payload, include_reason=True)["reason"], "Access scope is unclear.")
+        blank = '{"verdict":"deny","reason_code":"uncertain","reason":"   "}'
+        self.assertNotIn("reason", provider.parse_verdict(blank, include_reason=True))
 
     def test_supported_provider_client_options_are_bounded(self) -> None:
         openai_class = mock.Mock(return_value=object())
@@ -107,6 +113,7 @@ class ContentProtectionProviderTests(unittest.IsolatedAsyncioTestCase):
                         await provider.classify(
                             _config("omlx::Qwen3.5-9B"),
                             {"direction": "inbound", "candidate": "ordinary", "audience_constraints": [{"scope": "ordinary"}]},
+                            include_reason=True,
                         )
                     )["verdict"],
                     "allow",
@@ -128,7 +135,7 @@ class ContentProtectionProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(production_schema["additionalProperties"])
         self.assertEqual(production_schema["properties"]["verdict"]["enum"], ["allow", "deny"])
         self.assertEqual(production_schema["properties"]["reason_code"]["enum"], ["permitted", "restricted_content", "uncertain"])
-        self.assertNotIn("reason", production_schema["properties"])
+        self.assertEqual(production_schema["properties"]["reason"]["maxLength"], 120)
         self.assertEqual(sample_schema["properties"]["reason"]["maxLength"], 120)
         self.assertNotIn("reason", sample_schema["required"])
         self.assertEqual(bound_client.ainvoke.await_args.kwargs["config"], {"callbacks": []})

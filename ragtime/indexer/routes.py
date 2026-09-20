@@ -15463,6 +15463,8 @@ async def send_message_stream(
                     }
                 ],
             }
+            if is_protection_error:
+                error_chunk["error"] = cast(Callable[[], dict[str, str]], public_detail)()
             yield f"data: {json.dumps(error_chunk)}\n\n"
             yield "data: [DONE]\n\n"
 
