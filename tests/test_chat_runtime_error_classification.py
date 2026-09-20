@@ -30,6 +30,7 @@ if _inserted_fake_indexer_service:
         delattr(indexer_package, "service")
 
 from ragtime.userspace.service import UserSpaceService
+from tests.content_protection_support import use_disabled_content_protection
 from tests.hosted_execution_test_support import enabled_hosted_execution_policy
 
 
@@ -304,6 +305,9 @@ class _PaymentFailureLLM:
 
 
 class MultiRoundStreamTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     @staticmethod
     def _request_context() -> dict[str, object]:
         return {

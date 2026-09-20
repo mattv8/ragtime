@@ -21,6 +21,12 @@ NON_GENERATIVE_CALL_EXEMPTIONS = {
     ("ragtime/rag/components.py", "_get_context_from_retrievers_async", "retriever.ainvoke"),
 }
 
+# The classifier has no agent/tools path and only returns the strict verdict schema.
+SECURITY_CLASSIFICATION_PROVIDER_BOUNDARIES = {
+    ("ragtime/content_protection/provider.py", "classify"),
+    ("ragtime/content_protection/provider.py", "_run"),
+}
+
 
 def _function_calls(path: str, function_name: str) -> set[str]:
     """Return qualified call names inside one concrete function implementation."""
@@ -110,11 +116,22 @@ class HostedExecutionGateInventoryTests(unittest.TestCase):
                     _function_calls(path, function_name),
                 )
 
+    def test_security_classifier_is_the_only_provider_gate_exception(self) -> None:
+        self.assertEqual(
+            SECURITY_CLASSIFICATION_PROVIDER_BOUNDARIES,
+            {
+                ("ragtime/content_protection/provider.py", "classify"),
+                ("ragtime/content_protection/provider.py", "_run"),
+            },
+        )
+
     def test_ast_inventory_classifies_every_model_boundary(self) -> None:
         """Every first-party model call is gated or explicitly proven non-generative."""
         calls = _all_first_party_model_calls()
         self.assertGreater(len(calls), 0)
         for path, function_name, expression in calls:
+            if (path, function_name) in SECURITY_CLASSIFICATION_PROVIDER_BOUNDARIES:
+                continue
             if (path, function_name, expression) in NON_GENERATIVE_CALL_EXEMPTIONS:
                 continue
             with self.subTest(path=path, function=function_name, expression=expression):

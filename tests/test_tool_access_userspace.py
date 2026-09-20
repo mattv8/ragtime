@@ -16,6 +16,7 @@ from ragtime.userspace import routes as userspace_routes
 from ragtime.userspace.models import ExecuteComponentRequest, UserSpaceWorkspace
 from ragtime.userspace.routes import list_userspace_tool_groups, list_userspace_tools
 from ragtime.userspace.service import UserSpaceService
+from tests.content_protection_support import use_disabled_content_protection
 
 remove_fake_rag_prompts(inserted_fake_rag_prompts)
 
@@ -218,6 +219,9 @@ class WorkspaceOwnerAclHelperTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkspaceExecutionAclParityTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_execute_component_denied_by_owner_acl_returns_not_selected_403(self) -> None:
         service = UserSpaceService()
         workspace = _workspace()

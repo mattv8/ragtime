@@ -13,6 +13,7 @@ from ragtime.indexer.repository import repository
 from ragtime.indexer.routes import list_conversation_summaries, list_conversations
 from ragtime.userspace.models import UserSpaceRuntimeStatusResponse
 from ragtime.userspace.runtime_service import userspace_runtime_service
+from tests.content_protection_support import use_disabled_content_protection
 
 NOW = datetime(2026, 7, 13, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -50,6 +51,9 @@ class _AccessCase(TypedDict):
 
 
 class ConversationAccessPerfRefactorTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_summary_route_keeps_legacy_array_without_limit(self) -> None:
         user = _user()
         expected = [SimpleNamespace(id="shared-conversation")]

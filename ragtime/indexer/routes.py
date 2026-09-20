@@ -56,6 +56,16 @@ from ragtime.chat_runtime.payloads import (
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS, CHAT_DIAGNOSTIC_COMMAND_TOOL_ID, CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.chat_runtime.service import chat_runtime_service
 from ragtime.config.settings import settings
+from ragtime.content_protection.hosted import (
+    authorize_history,
+    authorize_inbound,
+)
+from ragtime.content_protection.hosted import (
+    bind_context as bind_content_protection_context,
+)
+from ragtime.content_protection.hosted import (
+    hosted_context as content_protection_context,
+)
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.app_settings import _apply_runtime_setting_hooks, invalidate_settings_cache
 from ragtime.core.auth import get_browser_matched_origin
@@ -9105,6 +9115,7 @@ async def _create_background_chat_task_after_user_message(
     disabled_builtin_tool_ids: Optional[set[str]] = None,
     existing_task_id: Optional[str] = None,
     execution_policy: Optional[dict[str, Any]] = None,
+    protection_surface: str = "chat",
 ) -> Any:
     """Create a background chat task, persisting failed-generation state on errors."""
     try:
@@ -9132,6 +9143,7 @@ async def _create_background_chat_task_after_user_message(
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 usage_attempt_id=attempt_id,
                 execution_policy=execution_policy,
+                protection_surface=protection_surface,
             )
         else:
             task_id = await background_task_service.start_task_async(
@@ -9145,6 +9157,7 @@ async def _create_background_chat_task_after_user_message(
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 usage_attempt_id=attempt_id,
                 execution_policy=execution_policy,
+                protection_surface=protection_surface,
             )
         task = await repository.get_chat_task(task_id)
         if not task:
@@ -12128,6 +12141,43 @@ async def _build_chat_history_for_conversation(
     return chat_history
 
 
+def _conversation_protection_context(
+    *,
+    user_id: str | None,
+    owner_user_id: str | None,
+    workspace_id: str | None = None,
+    shared: bool = False,
+) -> Any:
+    """Create the protection scope from the actual conversation endpoint."""
+    return content_protection_context(
+        user_id=user_id,
+        owner_user_id=owner_user_id,
+        surface="shared_chat" if shared else ("workspace_chat" if workspace_id else "chat"),
+        public=shared and user_id is None,
+    )
+
+
+async def _authorize_conversation_release(
+    candidate: Any,
+    *,
+    user: User | None,
+    owner_user_id: str | None,
+    public: bool = False,
+) -> None:
+    """Authorize exactly the transcript/debug/search payload about to leave a route."""
+    dump = getattr(candidate, "model_dump", None)
+    if callable(dump):
+        candidate = dump(mode="python")
+    context = content_protection_context(
+        user_id=getattr(user, "id", None),
+        owner_user_id=owner_user_id,
+        surface="shared_chat" if public else "chat",
+        public=public,
+    )
+    with bind_content_protection_context(context):
+        await authorize_history(candidate, context=context)
+
+
 async def _to_shared_conversation_response(
     conv: Conversation,
     share_record: Any,
@@ -12202,6 +12252,13 @@ async def _to_shared_conversation_response(
                 conv.id,
                 current_user.id,
             )
+
+    await _authorize_conversation_release(
+        conv,
+        user=current_user,
+        owner_user_id=getattr(conv, "user_id", None),
+        public=current_user is None,
+    )
 
     return SharedConversationResponse(
         conversation=_to_conversation_response(conv),
@@ -12397,6 +12454,7 @@ async def _send_message_to_loaded_conversation(
     workspace_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     conversation_id = conv.id
+    protection_surface = "workspace_chat" if workspace_id else "chat"
     if blocked_tool_names is None:
         _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
             conv,
@@ -12409,6 +12467,17 @@ async def _send_message_to_loaded_conversation(
     if not user_message:
         raise HTTPException(status_code=400, detail="Message is required")
 
+    # The HTTP route is the first persistence boundary.  Background-task
+    # checks remain necessary for queued/internal callers, but must not be the
+    # first chance to reject a request accepted here.
+    await authorize_inbound(
+        user_message,
+        context=_conversation_protection_context(
+            user_id=user.id,
+            owner_user_id=conv.user_id,
+            workspace_id=workspace_id,
+        ),
+    )
     updated_conversation = await repository.add_message(
         conversation_id,
         "user",
@@ -12426,7 +12495,7 @@ async def _send_message_to_loaded_conversation(
         workspace_id=conv.workspace_id,
     )
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
-    schedule_title_generation(conversation_id, user_message, user_id=user.id)
+    schedule_title_generation(conversation_id, user_message, user_id=user.id, protection_surface=protection_surface)
 
     chat_history = await _build_chat_history_for_conversation(
         conv.messages[:-1],
@@ -12474,6 +12543,7 @@ async def _send_message_to_loaded_conversation(
             ui_theme_context=ui_theme_context,
             message_index=len(conv.messages),
             disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
+            protection_surface=protection_surface,
         )
         output_est = _estimate_output_tokens(answer)
         await finalize_usage_attempt(
@@ -12519,8 +12589,10 @@ async def _send_background_message_to_loaded_conversation(
     blocked_tool_names: Optional[set[str]] = None,
     workspace_context: Optional[dict[str, Any]] = None,
     execution_policy: Optional[dict[str, Any]] = None,
+    protection_surface: str | None = None,
 ) -> dict[str, Any]:
     conversation_id = conv.id
+    protection_surface = protection_surface or ("workspace_chat" if workspace_id else "chat")
     if blocked_tool_names is None:
         _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
             conv,
@@ -12562,7 +12634,7 @@ async def _send_background_message_to_loaded_conversation(
         workspace_id=conv.workspace_id,
     )
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
-    schedule_title_generation(conversation_id, user_message, user_id=user.id)
+    schedule_title_generation(conversation_id, user_message, user_id=user.id, protection_surface=protection_surface)
     current_time_context = _build_current_time_prompt_context(request)
     ui_theme_context = _build_ui_theme_prompt_context(request)
 
@@ -12577,6 +12649,7 @@ async def _send_background_message_to_loaded_conversation(
         ui_theme_context=ui_theme_context,
         disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
         execution_policy=execution_policy,
+        protection_surface=protection_surface,
     )
 
     return {
@@ -13097,6 +13170,8 @@ async def list_conversations(
         cursor_updated_at=cursor_updated_at_dt,
         cursor_id=cursor_id,
     )
+    for conversation in convs:
+        await _authorize_conversation_release(conversation, user=user, owner_user_id=conversation.user_id)
     return [_to_conversation_response(c) for c in convs]
 
 
@@ -13115,7 +13190,7 @@ async def list_conversation_summaries(
     await _assert_workspace_access(workspace_id, user, "viewer")
     cursor_updated_at_dt = _parse_conversation_time_filter(cursor_updated_at, "cursor_updated_at")
     _validate_conversation_cursor_pair(cursor_updated_at_dt, cursor_id)
-    return await repository.list_conversation_summaries(
+    summaries = await repository.list_conversation_summaries(
         user_id=user.id,
         include_all=user.role == "admin",
         workspace_id=workspace_id,
@@ -13126,6 +13201,8 @@ async def list_conversation_summaries(
         cursor_id=cursor_id,
         owner_scope=owner_scope,
     )
+    await _authorize_conversation_release(summaries, user=user, owner_user_id=None)
+    return summaries
 
 
 @router.get("/conversations/count", response_model=ConversationCountResponse)
@@ -13247,6 +13324,7 @@ async def search_workspaces_conversations(
     matches: list[WorkspaceConversationSearchMatch] = []
     seen: set[tuple[str, str]] = set()
     for row in rows:
+        await _authorize_conversation_release(row, user=user, owner_user_id=str(row.get("user_id") or "") or None)
         workspace_id = str(row.get("workspace_id") or "")
         conversation_id = str(row.get("conversation_id") or "")
         if not workspace_id or not conversation_id or (workspace_id, conversation_id) in seen:
@@ -13295,6 +13373,7 @@ async def search_conversation_branches(
     matches: list[ConversationBranchSearchMatch] = []
     seen: set[tuple[str, str]] = set()
     for row in rows:
+        await _authorize_conversation_release(row, user=user, owner_user_id=str(row.get("user_id") or "") or None)
         conversation_id = str(row.get("conversation_id") or "")
         branch_id = str(row.get("branch_id") or "")
         if not conversation_id or not branch_id or (conversation_id, branch_id) in seen:
@@ -13410,6 +13489,7 @@ async def get_conversation(
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    await _authorize_conversation_release(conv, user=user, owner_user_id=conv.user_id)
     return _to_conversation_response(conv)
 
 
@@ -13436,6 +13516,8 @@ async def get_conversation_latest_exchange(
     window = await repository.get_latest_conversation_exchange(conversation_id)
     if window is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    conv = await repository.get_conversation(conversation_id)
+    await _authorize_conversation_release(window, user=user, owner_user_id=getattr(conv, "user_id", None))
     return window
 
 
@@ -13457,6 +13539,8 @@ async def get_conversation_message_window(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if window is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    conv = await repository.get_conversation(conversation_id)
+    await _authorize_conversation_release(window, user=user, owner_user_id=getattr(conv, "user_id", None))
     return window
 
 
@@ -13478,6 +13562,8 @@ async def get_conversation_window_message(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if entry is None:
         raise HTTPException(status_code=404, detail="Conversation message not found")
+    conv = await repository.get_conversation(conversation_id)
+    await _authorize_conversation_release(entry, user=user, owner_user_id=getattr(conv, "user_id", None))
     return entry
 
 
@@ -13692,26 +13778,46 @@ async def resolve_public_share_target_by_slug(
     )
 
 
-async def _shared_conversation_event_stream(conversation_id: str):
+async def _shared_conversation_event_stream(
+    conversation_id: str,
+    *,
+    user: User | None,
+    owner_user_id: str | None,
+):
     """SSE generator forwarding `conversation:{id}` channel events.
 
     Used by anonymous and authenticated subscribers of a shared conversation
     so the public chat view can react to task lifecycle and progress events
     in real time instead of polling.
     """
-    channel = f"conversation:{conversation_id}"
-    queue = await task_event_bus.subscribe(channel)
-    try:
-        while True:
-            try:
-                data = await asyncio.wait_for(queue.get(), timeout=15.0)
-                yield f"data: {json.dumps(data)}\n\n"
-            except asyncio.TimeoutError:
-                yield ": keep-alive\n\n"
-    except asyncio.CancelledError:
-        pass
-    finally:
-        task_event_bus.unsubscribe(channel, queue)
+    context = content_protection_context(
+        user_id=getattr(user, "id", None),
+        owner_user_id=owner_user_id,
+        surface="shared_chat",
+        public=user is None,
+    )
+    with bind_content_protection_context(context):
+        channel = f"conversation:{conversation_id}"
+        queue = await task_event_bus.subscribe(channel)
+        try:
+            while True:
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    try:
+                        await authorize_history(data, context=context)
+                    except Exception as exc:
+                        detail = getattr(exc, "public_detail", None)
+                        if not callable(detail):
+                            raise
+                        yield f"data: {json.dumps({'event': 'error', **cast(Callable[[], dict[str, str]], detail)()})}\n\n"
+                        return
+                    yield f"data: {json.dumps(data)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            task_event_bus.unsubscribe(channel, queue)
 
 
 # IMPORTANT: The `/events` and `/join` routes must be registered BEFORE the slug-based
@@ -13739,7 +13845,11 @@ async def shared_conversation_events(
     if not conversation_id:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return StreamingResponse(
-        _shared_conversation_event_stream(conversation_id),
+        _shared_conversation_event_stream(
+            conversation_id,
+            user=user,
+            owner_user_id=str(getattr(share_record, "ownerUserId", "") or "") or None,
+        ),
         media_type="text/event-stream",
     )
 
@@ -13768,7 +13878,11 @@ async def shared_conversation_events_by_slug(
     if not conversation_id:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return StreamingResponse(
-        _shared_conversation_event_stream(conversation_id),
+        _shared_conversation_event_stream(
+            conversation_id,
+            user=user,
+            owner_user_id=str(getattr(share_record, "ownerUserId", "") or "") or None,
+        ),
         media_type="text/event-stream",
     )
 
@@ -14043,6 +14157,12 @@ async def list_conversation_provider_debug_prompts(
         limit=limit,
         before=before,
         message_index=message_index,
+    )
+    conversation = await repository.get_conversation(conversation_id)
+    await _authorize_conversation_release(
+        records,
+        user=user,
+        owner_user_id=getattr(conversation, "user_id", None),
     )
 
     def _content_to_text(content: Any) -> str:
@@ -15048,6 +15168,10 @@ async def send_message_stream(
         raise HTTPException(status_code=400, detail="Message is required")
 
     # Add user message
+    await authorize_inbound(
+        user_message,
+        context=_conversation_protection_context(user_id=user.id, owner_user_id=conv.user_id, workspace_id=workspace_id),
+    )
     await repository.add_message(conversation_id, "user", user_message)
 
     # Refresh conversation to get updated messages
@@ -15122,6 +15246,7 @@ async def send_message_stream(
                 ui_theme_context=ui_theme_context,
                 message_index=len(conv.messages),
                 disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
+                protection_surface="workspace_chat" if workspace_id else "chat",
             ):
                 # Handle structured tool events
                 if isinstance(event, dict):
@@ -15267,16 +15392,25 @@ async def send_message_stream(
             yield "data: [DONE]\n\n"
 
         except Exception as e:
-            logger.exception("Error in streaming response")
+            public_detail = getattr(e, "public_detail", None)
+            is_protection_error = callable(public_detail)
+            if is_protection_error:
+                logger.warning("Streaming response stopped by content protection")
+            else:
+                logger.exception("Error in streaming response")
 
             raw_error = str(e)
             friendly_error = "An error occurred while generating the response. Please try again."
+            if is_protection_error:
+                friendly_error = str(
+                    cast(Callable[[], dict[str, str]], public_detail)().get("message") or "This content is not available under your access profile."
+                )
 
             max_iters = None
             if rag and getattr(rag, "agent_executor", None):
                 max_iters = getattr(rag.agent_executor, "max_iterations", None)
 
-            if "iteration" in raw_error.lower() or "max iterations" in raw_error.lower():
+            if not is_protection_error and ("iteration" in raw_error.lower() or "max iterations" in raw_error.lower()):
                 limit_text = f" ({max_iters})" if max_iters else ""
                 friendly_error = f"Stopped after reaching the max_iterations limit{limit_text}. Please narrow the request or retry."
 
@@ -15311,7 +15445,9 @@ async def send_message_stream(
                 stream_attempt_id,
                 status="failed",
                 output_tokens=output_est,
-                failure_reason=raw_error[:500] if raw_error else None,
+                failure_reason=(str(cast(Callable[[], dict[str, str]], public_detail)().get("code")) if is_protection_error else raw_error[:500])
+                if raw_error
+                else None,
             )
 
             error_chunk = {
@@ -15591,6 +15727,7 @@ async def create_conversation_export(
     await _assert_conversation_download_access(conversation_id, user, effective_workspace_id)
 
     source = _build_export_source_from_request(request)
+    await _authorize_conversation_release(source, user=user, owner_user_id=conversation.user_id)
     spec = create_export_spec(
         conversation_id=conversation_id,
         filename=request.filename,
@@ -15646,6 +15783,17 @@ async def download_conversation_export(
     except Exception as exc:
         logger.exception("Failed to render conversation export %s: %s", export_id, exc)
         raise HTTPException(status_code=500, detail="Failed to render export") from exc
+
+    try:
+        export_text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        # Binary document/image export is an explicit unsupported protected
+        # modality; never infer safety from a filename or MIME type.
+        from ragtime.content_protection.service import reject_unsupported_if_required
+
+        await reject_unsupported_if_required(content_protection_context(user_id=user.id, owner_user_id=conversation.user_id))
+    else:
+        await _authorize_conversation_release(export_text, user=user, owner_user_id=conversation.user_id)
 
     return StreamingResponse(
         io.BytesIO(data),

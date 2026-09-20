@@ -1,0 +1,87 @@
+.content-protection-section {
+  display: grid;
+  gap: var(--space-md);
+}
+.content-protection-card {
+  display: grid;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.content-protection-card > .form-group {
+  margin: 0;
+}
+.content-protection-preview-controls {
+  display: grid;
+  gap: var(--space-sm);
+}
+.content-protection-preview-controls label {
+  display: grid;
+  gap: var(--space-xs);
+}
+.content-protection-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  border-bottom: 1px solid var(--color-border);
+}
+.content-protection-tabs button {
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  padding: var(--space-xs) var(--space-sm);
+}
+.content-protection-tabs button.is-active {
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+.content-protection-filter {
+  display: grid;
+  gap: var(--space-xs);
+  max-width: 26rem;
+}
+.content-protection-rows {
+  display: grid;
+  gap: var(--space-xs);
+}
+.content-protection-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(10rem, auto) minmax(10rem, auto);
+  gap: var(--space-sm);
+  align-items: center;
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+}
+.content-protection-row small {
+  display: block;
+  color: var(--color-text-muted);
+}
+.content-protection-profile {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) 5rem minmax(16rem, 3fr) auto;
+  gap: var(--space-sm);
+  margin-block: var(--space-sm);
+  align-items: start;
+}
+.content-protection-profile textarea,
+#content-protection-sample {
+  min-height: 5rem;
+}
+#content-protection-sample {
+  width: 100%;
+  resize: vertical;
+}
+@media (max-width: 680px) {
+  .content-protection-row,
+  .content-protection-profile {
+    grid-template-columns: 1fr;
+  }
+  .content-protection-card {
+    padding: var(--space-sm);
+  }
+}

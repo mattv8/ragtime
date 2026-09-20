@@ -56,6 +56,7 @@ from ragtime.mcp.server import (
     get_custom_route_server,
     get_default_route_filtered_server,
     get_mcp_server,
+    mcp_request_context,
     notify_tools_changed,
     register_tools_changed_callback,
 )
@@ -64,6 +65,18 @@ from ragtime.mcp.user_oauth import is_mcp_access_token_candidate, validate_mcp_t
 from ragtime.userspace.development_access import DevelopmentPrincipal, resolve_development_principal
 
 logger = get_logger(__name__)
+
+
+def _protection_principal(scope: Scope, development_principal: Any | None = None) -> Any | None:
+    """Use only server-verified request identity, never a cached MCP server."""
+    if development_principal is not None:
+        return development_principal
+    user = scope.get("_mcp_oauth_user")
+    if user is not None:
+        return type("McpPrincipal", (), {"user_id": getattr(user, "id", None)})()
+    user_id = scope.get("_mcp_user_id")
+    return type("McpPrincipal", (), {"user_id": user_id})() if user_id else None
+
 
 router = APIRouter(prefix="/mcp-debug", tags=["MCP Debug"])
 
@@ -713,7 +726,7 @@ class MCPTransportEndpoint:
                 # Use filtered server directly (bypasses session manager issue)
                 filtered_server = await get_filtered_server(matching_filter_id)
                 if filtered_server:
-                    with development_principal_context(principal):
+                    with mcp_request_context(_protection_principal(scope, principal), "default"):
                         await handle_filtered_request(filtered_server, scope, receive, send)
                     await _log_mcp(scope, auth_method=resolved_auth_method)
                     return
@@ -723,7 +736,7 @@ class MCPTransportEndpoint:
         session_manager = await get_session_manager()
         send_with_status, response_state = _wrap_send_for_status(send)
         try:
-            with development_principal_context(principal):
+            with mcp_request_context(_protection_principal(scope, principal), "default"):
                 await session_manager.handle_request(scope, receive, send_with_status)
         except Exception:
             await _log_mcp(
@@ -959,7 +972,8 @@ class MCPCustomRouteEndpoint:
         # Handle request directly with the server (bypasses session manager)
         send_with_status, response_state = _wrap_send_for_status(send)
         try:
-            await handle_filtered_request(server, scope, receive, send_with_status)
+            with mcp_request_context(_protection_principal(scope), route_path):
+                await handle_filtered_request(server, scope, receive, send_with_status)
         except Exception:
             await _log_mcp(
                 scope,

@@ -394,6 +394,29 @@ model AppSettings {
   @@map("app_settings")
 }
 
+/// Singleton revisioned document; JSON keeps policy updates atomic.
+model ContentProtectionConfig {
+  id        String   @id @default("default")
+  revision  Int      @default(0)
+  config    Json     @default("{}")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+  updatedBy String?  @map("updated_by")
+
+  @@map("content_protection_config")
+}
+
+/// Body-free classifier decision/audit metadata.
+model ContentProtectionDecision {
+  id        String   @id @default(uuid())
+  requestId String   @map("request_id")
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([requestId])
+  @@map("content_protection_decisions")
+}
+
 // -----------------------------------------------------------------------------
 // Tool Groups (organise tool configs into named folders)
 // -----------------------------------------------------------------------------

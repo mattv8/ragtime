@@ -12,6 +12,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from ragtime.userspace.agent_access import AgentAccessContext
+from tests.content_protection_support import use_disabled_content_protection
 
 
 def _build_request(path: str = "/agent/w/tok-abc") -> Request:
@@ -78,6 +79,9 @@ def _instruction_context(workspace_name: str) -> dict[str, object]:
 
 
 class AgentManifestTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_manifest_documents_api_and_hides_nothing_sensitive(self) -> None:
         from ragtime.userspace import agent_routes as module
         from ragtime.userspace.service import userspace_service
@@ -167,6 +171,9 @@ class AgentManifestTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentTaskRouteTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     def test_reply_request_requires_idempotency_key(self) -> None:
         from ragtime.userspace import agent_routes as module
 
@@ -248,6 +255,9 @@ class AgentTaskRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentReadRouteTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_list_conversations_resolves_token_forwards_args_and_sets_no_store(self) -> None:
         from ragtime.userspace import agent_routes as module
 

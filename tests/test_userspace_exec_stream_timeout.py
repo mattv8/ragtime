@@ -4,6 +4,7 @@ from typing import Any, cast
 from unittest import mock
 
 from ragtime.rag.components import RAGComponents
+from tests.content_protection_support import use_disabled_content_protection
 from tests.hosted_execution_test_support import enabled_hosted_execution_policy
 
 
@@ -37,6 +38,9 @@ class _EventExecutor:
 
 
 class UserSpaceExecStreamTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_omitted_terminal_timeout_survives_admin_shrink_but_post_tool_uses_normal_guard(self) -> None:
         rag = RAGComponents()
         executor = _EventExecutor()

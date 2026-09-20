@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from ragtime.content_protection.external import authorize_external_content, public_error_detail
 from ragtime.core.database import get_db
 from ragtime.core.tool_access import resolve_tool_access
 from ragtime.http_api.models import HttpApiConnectionConfig, HttpApiRequest
@@ -506,6 +507,50 @@ class DevelopmentService:
         return await userspace_runtime_service._runtime_manager_request("GET", f"/sessions/{provider}/{suffix}", allow_list_response=action == "exec_list")
 
     async def execute(self, principal: DevelopmentPrincipal, workspace_id: str, operation: str, arguments: dict[str, Any] | None = None) -> Any:
+        """Guard development inputs before side effects and outputs before release."""
+        candidate = {"workspace_id": workspace_id, "operation": operation, "arguments": arguments or {}}
+        try:
+            await authorize_external_content(
+                candidate,
+                direction="inbound",
+                principal=principal,
+                surface="development",
+                tool_id=operation,
+                resource_id=workspace_id,
+                operation=operation,
+            )
+            result = await self._execute_unprotected(principal, workspace_id, operation, arguments)
+            await authorize_external_content(
+                result,
+                direction="outbound",
+                principal=principal,
+                surface="development",
+                tool_id=operation,
+                resource_id=workspace_id,
+                operation=operation,
+            )
+            return result
+        except Exception as exc:
+            # Existing operational errors remain available only after their
+            # body has passed the same release gate. Protection failures get a
+            # fixed transport-safe detail instead of classifier diagnostics.
+            if hasattr(exc, "public_detail"):
+                raise HTTPException(status_code=403, detail=public_error_detail(exc)) from exc
+            try:
+                await authorize_external_content(
+                    {"error": getattr(exc, "detail", str(exc))},
+                    direction="outbound",
+                    principal=principal,
+                    surface="development",
+                    tool_id=operation,
+                    resource_id=workspace_id,
+                    operation=operation,
+                )
+            except Exception as release_exc:
+                raise HTTPException(status_code=403, detail=public_error_detail(release_exc)) from release_exc
+            raise
+
+    async def _execute_unprotected(self, principal: DevelopmentPrincipal, workspace_id: str, operation: str, arguments: dict[str, Any] | None = None) -> Any:
         args = arguments if arguments is not None else {}
         op = next((item for item in _OPERATIONS if item[0] == operation), None)
         if op is None:

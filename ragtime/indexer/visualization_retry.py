@@ -10,6 +10,18 @@ from typing import Any, Iterable
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ragtime.config import settings
+from ragtime.content_protection.hosted import (
+    authorize_assistant,
+    authorize_auxiliary,
+    authorize_inbound,
+)
+from ragtime.content_protection.hosted import (
+    bind_context as bind_content_protection_context,
+)
+from ragtime.content_protection.hosted import (
+    hosted_context as content_protection_context,
+)
+from ragtime.content_protection.models import ContentProtectionError
 from ragtime.core.hosted_execution_policy import require_hosted_execution
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import TABLE_METADATA_END, TABLE_METADATA_START
@@ -463,13 +475,22 @@ async def _rerun_source_query(
         if tool_config.tool_type not in SOURCE_RERUN_TOOL_TYPES:
             continue
         try:
+            protection_context = content_protection_context(
+                user_id=context.user_id,
+                owner_user_id=context.conversation.user_id,
+            )
             tool = await rag.build_primary_runtime_tool_from_config(tool_config.model_dump())
             if tool is None:
                 continue
-            output = await tool.ainvoke(event.get("input") or {})
+            tool_input = event.get("input") or {}
+            await authorize_inbound(tool_input, context=protection_context)
+            output = await tool.ainvoke(tool_input)
+            await authorize_assistant(output, context=protection_context, supporting_context=tool_input)
             output_text = str(output)
             payload = _extract_table_metadata(output_text) or _extract_visualization_payload(output_text)
             return output_text, payload
+        except ContentProtectionError:
+            raise
         except Exception:
             logger.exception("Visualization source rerun failed for tool %s", tool_config_id)
             continue
@@ -574,9 +595,15 @@ async def _repair_with_ai(
         raise RuntimeError(error_message or "No LLM is available for visualization repair")
 
     system_prompt, user_prompt = _build_repair_prompt(request, rerun_output)
-    await require_hosted_execution(context.user_id, context.conversation.user_id)
-    response = await request_llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-    response_text = _message_content_to_text(getattr(response, "content", response))
+    protection_context = content_protection_context(user_id=context.user_id, owner_user_id=context.conversation.user_id)
+    with bind_content_protection_context(protection_context):
+        await authorize_inbound(user_prompt, context=protection_context, supporting_context=system_prompt)
+        await require_hosted_execution(context.user_id, context.conversation.user_id)
+        response = await request_llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+        response_text = _message_content_to_text(getattr(response, "content", response))
+        # This must happen before the debug record, parser, or returned repair
+        # can make model-generated content observable.
+        await authorize_auxiliary(response_text, context=protection_context, operation="visualization_repair")
     await _persist_repair_debug_record(
         context,
         provider=getattr(llm_resolution, "provider", None) or "unknown",
@@ -615,6 +642,11 @@ async def _persist_repaired_event(
     if request.event_index is None:
         return
     expected_tool = "create_chart" if request.tool_type == "chart" else "create_datatable"
+    await authorize_auxiliary(
+        new_output,
+        context=content_protection_context(user_id=context.user_id, owner_user_id=context.conversation.user_id),
+        operation="visualization_repair_persist",
+    )
     try:
         ok = await repository.update_message_event_output(
             context.conversation.id,
@@ -648,6 +680,8 @@ async def retry_visualization_with_repair(
     request: RetryVisualizationRequest,
     context: VisualizationRetryContext,
 ) -> RetryVisualizationResponse:
+    protection_context = content_protection_context(user_id=context.user_id, owner_user_id=context.conversation.user_id)
+    await authorize_inbound(request.model_dump(mode="python"), context=protection_context)
     deterministic = _find_deterministic_payload(request)
     if deterministic:
         output = await _render_visualization(

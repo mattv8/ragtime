@@ -72,6 +72,23 @@ from ragtime.chat_runtime.presets import (
     CHAT_WEB_SEARCH_TOOL_ID,
 )
 from ragtime.config import settings
+from ragtime.content_protection.hosted import (
+    authorize_assistant,
+    authorize_history,
+    authorize_inbound,
+)
+from ragtime.content_protection.hosted import (
+    bind_context as bind_content_protection_context,
+)
+from ragtime.content_protection.hosted import (
+    buffered_stream as content_protection_buffered_stream,
+)
+from ragtime.content_protection.hosted import (
+    hosted_context as content_protection_context,
+)
+from ragtime.content_protection.hosted import (
+    wrap_tools as wrap_tools_with_content_protection,
+)
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.app_setting_defaults import (
     DEFAULT_CONTEXT_TOKEN_BUDGET,
@@ -8911,11 +8928,22 @@ class RAGComponents:
 
         return ""
 
+    def _content_protection_tool_ids(self) -> dict[str, str]:
+        """Map runtime aliases to durable ToolConfig IDs for policy scopes."""
+        mapped: dict[str, str] = {}
+        for config in self._tool_configs or []:
+            tool_config_id = str(config.get("id") or "").strip()
+            if not tool_config_id:
+                continue
+            for tool_name in self._derive_config_tool_names(config):
+                mapped[tool_name] = tool_config_id
+        return mapped
+
     def _derive_config_tool_names(self, config: dict) -> set[str]:
         """Derive runtime tool names that are generated for a ToolConfig entry."""
         tool_type = config.get("tool_type")
-        raw_name = (config.get("name", "") or "").strip()
-        tool_name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
+        raw_name = config.get("name", "") or ""
+        tool_name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name.strip()).strip("_").lower()
         if not tool_name:
             return set()
 
@@ -8924,7 +8952,7 @@ class RAGComponents:
             names.add(f"query_{tool_name}")
             names.add(f"search_{tool_name}_schema")
         elif tool_type == "influxdb":
-            names.add(f"query_{tool_name}")
+            names.add(f"query_{raw_name.lower().replace(' ', '_').replace('-', '_')}")
         elif tool_type == "http_api":
             names.add(build_http_api_request_tool_name(tool_name))
             catalog = get_http_api_catalog_from_config(config)
@@ -8934,7 +8962,9 @@ class RAGComponents:
             names.add(f"odoo_{tool_name}")
         elif tool_type == "ssh_shell":
             names.add(f"ssh_{tool_name}")
-        elif tool_type in {"filesystem_indexer", "solidworks_pdm"}:
+        elif tool_type == "solidworks_pdm":
+            names.update({f"search_{tool_name}", f"lookup_{tool_name}"})
+        elif tool_type == "filesystem_indexer":
             names.add(f"search_{tool_name}")
         return names
 
@@ -15949,6 +15979,14 @@ class RAGComponents:
         max_iterations: int | None = None,
     ) -> Optional[AgentExecutor]:
         """Build a lightweight executor for request-scoped tool filtering."""
+        # This is the executor boundary, before LangChain invokes a tool and
+        # before its result is placed in the agent scratchpad.  The wrapper
+        # reads the request-local context at invocation time.
+        tools = wrap_tools_with_content_protection(
+            tools,
+            self._clone_structured_tool,
+            tool_ids_by_name=self._content_protection_tool_ids(),
+        )
         runtime_llm = llm or self.llm
         if runtime_llm is None or not tools:
             return None
@@ -17278,6 +17316,52 @@ class RAGComponents:
         message_index: Optional[int] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
         ui_theme_context: Optional[dict[str, Any]] = None,
+        protection_surface: str = "chat",
+    ) -> str:
+        """Protected non-streaming hosted turn with a full caller lifetime."""
+        # Preserve the ordinary hosted-generation gate ahead of all classifier
+        # work.  Content-protection's private classifier exception must not
+        # make a disabled hosted chat request executable.
+        await require_hosted_execution(user_id, owner_user_id)
+        context = content_protection_context(user_id=user_id, owner_user_id=owner_user_id, surface=protection_surface)
+        with bind_content_protection_context(context):
+            await authorize_history(chat_history or [], context=context)
+            await authorize_inbound(user_message, context=context, supporting_context=chat_history or [])
+            answer = await self._process_query_unprotected(
+                user_message,
+                chat_history,
+                blocked_tool_names,
+                workspace_context,
+                conversation_model,
+                conversation_id,
+                user_id,
+                owner_user_id,
+                current_user_context,
+                current_time_context,
+                chat_task_id,
+                message_index,
+                disabled_builtin_tool_ids,
+                ui_theme_context,
+            )
+            await authorize_assistant(answer, context=context, supporting_context=chat_history or [])
+            return answer
+
+    async def _process_query_unprotected(
+        self,
+        user_message: Union[str, Any],
+        chat_history: Optional[List[Any]] = None,
+        blocked_tool_names: Optional[set[str]] = None,
+        workspace_context: Optional[dict[str, Any]] = None,
+        conversation_model: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+        current_user_context: Optional[dict[str, Any]] = None,
+        current_time_context: Optional[dict[str, Any]] = None,
+        chat_task_id: Optional[str] = None,
+        message_index: Optional[int] = None,
+        disabled_builtin_tool_ids: Optional[set[str]] = None,
+        ui_theme_context: Optional[dict[str, Any]] = None,
     ) -> str:
         """
         Process a user query through the RAG pipeline (non-streaming).
@@ -17648,6 +17732,61 @@ class RAGComponents:
             )
 
     async def process_query_stream(
+        self,
+        user_message: Union[str, Any],
+        chat_history: Optional[List[Any]] = None,
+        is_ui: bool = False,
+        blocked_tool_names: Optional[set[str]] = None,
+        workspace_context: Optional[dict[str, Any]] = None,
+        conversation_model: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+        current_user_context: Optional[dict[str, Any]] = None,
+        current_time_context: Optional[dict[str, Any]] = None,
+        chat_task_id: Optional[str] = None,
+        message_index: Optional[int] = None,
+        disabled_builtin_tool_ids: Optional[set[str]] = None,
+        ui_theme_context: Optional[dict[str, Any]] = None,
+        protection_surface: str = "chat",
+    ):
+        """Authorize inbound/history and buffer generated content per turn."""
+        # This public streaming entrypoint is independently inventoried for
+        # hosted execution.  Keep its ordinary gate before classifier calls.
+        await require_hosted_execution(user_id, owner_user_id)
+        context = content_protection_context(user_id=user_id, owner_user_id=owner_user_id, surface=protection_surface)
+        with bind_content_protection_context(context):
+            await authorize_history(chat_history or [], context=context)
+            await authorize_inbound(
+                user_message,
+                context=context,
+                supporting_context=chat_history or [],
+            )
+            stream = self._process_query_stream_unprotected(
+                user_message,
+                chat_history,
+                is_ui,
+                blocked_tool_names,
+                workspace_context,
+                conversation_model,
+                conversation_id,
+                user_id,
+                owner_user_id,
+                current_user_context,
+                current_time_context,
+                chat_task_id,
+                message_index,
+                disabled_builtin_tool_ids,
+                ui_theme_context,
+            )
+            async for event in content_protection_buffered_stream(
+                stream,
+                context=context,
+                tool_ids_by_name=self._content_protection_tool_ids(),
+            ):
+                yield event
+
+    async def _process_query_stream_unprotected(
         self,
         user_message: Union[str, Any],
         chat_history: Optional[List[Any]] = None,

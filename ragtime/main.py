@@ -55,6 +55,8 @@ from ragtime.api.auth import oauth2_revoke as _oauth2_revoke_handler
 from ragtime.api.auth import oauth2_token as _oauth2_token_handler
 from ragtime.api.auth import router as auth_router
 from ragtime.config import settings
+from ragtime.content_protection.routes import router as content_protection_router
+from ragtime.content_protection.service import ContentProtectionError
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.auth import (
     AuthenticationInvalidatedError,
@@ -457,6 +459,19 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
+@app.exception_handler(ContentProtectionError)
+async def content_protection_exception_handler(request: Request, exc: ContentProtectionError):
+    """Translate protection failures without exposing candidate or provider data."""
+    status_code = 503
+    if exc.code in {"content_denied", "operation_completed_response_withheld"}:
+        status_code = 403
+    elif exc.code == "content_unclassifiable":
+        status_code = 422
+    elif exc.code == "policy_changed":
+        status_code = 409
+    return JSONResponse(status_code=status_code, content={"detail": exc.public_detail()})
+
+
 # CORS middleware
 # Note: allow_origins=["*"] with allow_credentials=True is problematic per CORS spec.
 # When ALLOWED_ORIGINS is unset, default to loopback origins plus built-in
@@ -549,6 +564,7 @@ app.include_router(pdm_automation_router)
 
 # Include indexer routes
 app.include_router(indexer_router)
+app.include_router(content_protection_router)
 app.include_router(server_backup_router)
 app.include_router(userspace_router)
 app.include_router(sqlite_history_router)

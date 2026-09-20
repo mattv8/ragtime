@@ -93,6 +93,7 @@ import { SecuritySettingsSection } from './settings/SecuritySettingsSection';
 import { AppearanceSettingsSection } from './settings/AppearanceSettingsSection';
 import { ChatModelsSettingsSection } from './settings/ChatModelsSettingsSection';
 import { AgentBehaviorSettingsSection } from './settings/AgentBehaviorSettingsSection';
+import { ContentProtectionSettingsSection } from './settings/ContentProtectionSettingsSection';
 import { McpSettingsSection } from './settings/McpSettingsSection';
 import { ServerBackupRestoreSettingsSection } from './settings/ServerBackupRestoreSettingsSection';
 import { IndexingResourcesSettings } from './settings/IndexingResourcesSettings';
@@ -679,6 +680,19 @@ export function SettingsPanel({
 
   const handleToggleAccordionSection = useCallback((id: SettingsAccordionSectionId) => {
     setOpenAccordionSections((current) => ({ ...current, [id]: !current[id] }));
+  }, []);
+
+  useEffect(() => {
+    const openContentProtectionGroups = () => {
+      if (window.location.hash === '#content-protection-groups-tab') {
+        setOpenAccordionSections((current) =>
+          openSettingsAccordionSections(current, ['content-protection']),
+        );
+      }
+    };
+    openContentProtectionGroups();
+    window.addEventListener('hashchange', openContentProtectionGroups);
+    return () => window.removeEventListener('hashchange', openContentProtectionGroups);
   }, []);
 
   const savedThemePackRef = useRef<ThemePackId>('default');
@@ -4727,6 +4741,13 @@ export function SettingsPanel({
             onUserspaceExecTimeoutMaxDraftChange={setUserspaceExecTimeoutMaxDraft}
             userspaceExecTimeoutError={isAdmin ? userspaceExecTimeoutError : null}
           />
+
+          {isAdmin && (
+            <ContentProtectionSettingsSection
+              open={openAccordionSections['content-protection']}
+              onToggle={handleToggleAccordionSection}
+            />
+          )}
 
           <McpSettingsSection
             open={openAccordionSections.mcp}

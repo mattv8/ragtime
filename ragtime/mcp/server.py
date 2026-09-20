@@ -28,6 +28,11 @@ from mcp.server import NotificationOptions, Server
 from mcp.server.session import ServerSession
 from mcp.types import CallToolResult, TextContent, Tool
 
+from ragtime.content_protection.external import (
+    authorize_external_content,
+    external_protection_context,
+    public_error_detail,
+)
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import get_logger
@@ -65,6 +70,8 @@ _DOCUMENT_OFFSET_SCHEMA = {
 # context is reset after every HTTP request and inherited only by that request's
 # MCP task.
 _development_principal: contextvars.ContextVar[Any | None] = contextvars.ContextVar("mcp_development_principal", default=None)
+_mcp_route_id: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_route_id", default="default")
+_session_request_contexts: weakref.WeakKeyDictionary[ServerSession, tuple[Any | None, str]] = weakref.WeakKeyDictionary()
 
 
 @contextmanager
@@ -80,6 +87,42 @@ def development_principal_context(principal: Any | None) -> Iterator[None]:
 def get_request_development_principal() -> Any | None:
     """Return the request-local principal; never cache this value."""
     return _development_principal.get()
+
+
+def _bind_session_request_context(server: Server) -> None:
+    """Recover the authenticated request context for stateful MCP callbacks.
+
+    Streamable-HTTP may invoke a later tool callback from the session task,
+    after the ASGI request's ContextVars have been reset.  The server is shared
+    but its session is not, so retain only the verified principal and route on
+    that session and rebind them at callback entry.
+    """
+    try:
+        session = server.request_context.session
+    except LookupError:
+        return
+    principal = _development_principal.get()
+    route_id = _mcp_route_id.get()
+    if principal is not None or route_id != "default":
+        _session_request_contexts[session] = (principal, route_id)
+        return
+    saved = _session_request_contexts.get(session)
+    if saved is not None:
+        _development_principal.set(saved[0])
+        _mcp_route_id.set(saved[1])
+
+
+@contextmanager
+def mcp_request_context(principal: Any | None, route_id: str = "default") -> Iterator[None]:
+    """Bind identity and canonical route for one request, never a cached server."""
+    principal_token = _development_principal.set(principal)
+    route_token = _mcp_route_id.set(route_id or "default")
+    try:
+        with external_protection_context(principal, surface="mcp", mcp_route=route_id or "default"):
+            yield
+    finally:
+        _mcp_route_id.reset(route_token)
+        _development_principal.reset(principal_token)
 
 
 async def _get_development_operations(principal: Any) -> list[dict[str, Any]]:
@@ -232,6 +275,20 @@ def _development_error(code: str, message: Any) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
 
 
+async def _development_result(result: Any, *, operation: str) -> CallToolResult:
+    """Release development resource/context bundles only after authorization."""
+    await authorize_external_content(
+        result,
+        direction="outbound",
+        principal=get_request_development_principal(),
+        surface="development",
+        mcp_route=_mcp_route_id.get(),
+        tool_id=operation,
+        operation=operation,
+    )
+    return CallToolResult(content=[TextContent(type="text", text=serialize_mcp_payload(result, limit=None))])
+
+
 async def _execute_development_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
     """Dispatch a development MCP tool through the shared service layer."""
     principal = get_request_development_principal()
@@ -284,17 +341,17 @@ async def _execute_development_tool(name: str, arguments: dict[str, Any]) -> Cal
                 result = read_context_facts(full_context, arguments.get("revision"), offset=int(arguments.get("offset", 0)))
             else:
                 result = read_resources(full_context, offset=int(arguments.get("offset", 0)), limit=int(arguments.get("limit", 20)))
-            return CallToolResult(content=[TextContent(type="text", text=serialize_mcp_payload(result))])
+            return await _development_result(result, operation=name)
         if operation not in allowed_names:
             return _development_error("operation_not_allowed", "The requested operation is not available for this credential.")
         if operation == "resources":
             full_context = await development_service.execute(principal, workspace_id, "context", {})
             result = read_resources(full_context, offset=0, limit=20)
-            return CallToolResult(content=[TextContent(type="text", text=serialize_mcp_payload(result))])
+            return await _development_result(result, operation=operation)
         result = await development_service.execute(principal, workspace_id, operation, operation_arguments)
         if operation == "context":
             result = build_compact_context(result, operations=await _get_development_operations(principal), workspace_id=workspace_id)
-        return CallToolResult(content=[TextContent(type="text", text=serialize_mcp_payload(result, limit=None))])
+        return await _development_result(result, operation=operation)
     except Exception as exc:
         # The shared service remains the authorization boundary. Keep failures
         # structured without returning a traceback through MCP.
@@ -480,6 +537,7 @@ def _register_handlers(
         Tools are dynamically discovered from the ToolConfig database.
         Only healthy tools (passing heartbeat check) are exposed.
         """
+        _bind_session_request_context(server)
         tools: list[Tool] = []
         _track_active_session(server)
 
@@ -525,11 +583,22 @@ def _register_handlers(
         Returns:
             List containing a single TextContent with the result
         """
+        _bind_session_request_context(server)
         _track_active_session(server)
         logger.info(f"MCP call_tool: {name}")
-        logger.debug(f"MCP call_tool arguments: {arguments}")
+        # Arguments are untrusted content and must not enter ordinary logs.
 
         try:
+            canonical_tool_id = await tool_adapter.resolve_canonical_tool_id(name)
+            await authorize_external_content(
+                arguments,
+                direction="inbound",
+                principal=get_request_development_principal(),
+                surface="mcp",
+                mcp_route=_mcp_route_id.get(),
+                tool_id=canonical_tool_id,
+                operation="tools/call",
+            )
             if name in {
                 "workspace_development",
                 "workspace_development_context",
@@ -559,12 +628,24 @@ def _register_handlers(
                     ]
 
             result = await tool_adapter.execute_tool(name, arguments)
+            await authorize_external_content(
+                result,
+                direction="outbound",
+                principal=get_request_development_principal(),
+                surface="mcp",
+                mcp_route=_mcp_route_id.get(),
+                tool_id=canonical_tool_id,
+                operation="tools/call",
+            )
 
             return [TextContent(type="text", text=result)]
 
         except Exception as e:
-            logger.exception(f"MCP tool execution error: {e}")
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            detail = public_error_detail(e)
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps({"error": detail}, sort_keys=True))],
+                isError=True,
+            )
 
 
 async def get_custom_route_server(

@@ -33,6 +33,7 @@ from ragtime.tools.chart import CreateLiveChartInput, create_chart, create_chart
 from ragtime.tools.datatable import CreateLiveDataTableInput, create_datatable, create_datatable_tool
 from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspace
 from ragtime.userspace.service import UserSpaceService
+from tests.content_protection_support import use_disabled_content_protection
 
 if inserted_fake_rag_prompts:
     sys.modules.pop("ragtime.rag", None)
@@ -118,6 +119,9 @@ def _run_default_workspace_component_execution(
 
 
 class ChatLiveVisualizationRefreshTests(unittest.TestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     def test_live_datatable_schema_rejects_static_payload(self) -> None:
         with self.assertRaises(ValidationError):
             CreateLiveDataTableInput.model_validate(

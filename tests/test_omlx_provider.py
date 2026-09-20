@@ -3,6 +3,8 @@ from contextlib import contextmanager
 from typing import Iterator, Optional
 from unittest.mock import patch
 
+import httpx
+
 from ragtime.core import omlx
 from ragtime.core.model_providers import (
     EMBEDDING_PROVIDER_NAMES,
@@ -282,6 +284,53 @@ class OmlxEmbeddingDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(models), 1)
         self.assertEqual(models[0].id, "embed-a")
         self.assertEqual(models[0].dimensions, 1024)
+
+
+class OmlxContextMetadataTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_metadata_forwards_auth_and_only_accepts_context_window(self) -> None:
+        captured: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(
+                200, json={"models": [{"id": "chat-a", "max_context_window": 8192, "max_tokens": 400000}, {"id": "output-only", "max_tokens": 400000}]}
+            )
+
+        real_async_client = httpx.AsyncClient
+        with patch(
+            "ragtime.core.omlx.httpx.AsyncClient",
+            new=lambda *args, **kwargs: real_async_client(transport=httpx.MockTransport(handler), timeout=kwargs.get("timeout")),
+        ):
+            models = await omlx.list_status_models("http://omlx.test/", api_key="test-key")
+
+        self.assertEqual(str(captured[0].url), "http://omlx.test/v1/models/status")
+        self.assertEqual(captured[0].headers.get("Authorization"), "Bearer test-key")
+        self.assertEqual([(model.id, model.context_limit) for model in models], [("chat-a", 8192), ("output-only", None)])
+
+    async def test_get_context_length_selects_only_the_requested_model(self) -> None:
+        async def fake_list_status_models(base_url: str, api_key: Optional[str] = None) -> list[omlx.OmlxModelInfo]:
+            _ = (base_url, api_key)
+            return [
+                omlx.OmlxModelInfo(id="other", name="other", context_limit=4096),
+                omlx.OmlxModelInfo(id="selected", name="selected", context_limit=8192),
+            ]
+
+        with patch.object(omlx, "list_status_models", fake_list_status_models):
+            context_limit = await omlx.get_model_context_length("selected", "http://omlx.test", api_key="test-key")
+
+        self.assertEqual(context_limit, 8192)
+
+    async def test_get_context_length_returns_none_for_unknown_or_invalid_metadata(self) -> None:
+        async def fake_list_status_models(base_url: str, api_key: Optional[str] = None) -> list[omlx.OmlxModelInfo]:
+            _ = (base_url, api_key)
+            return [omlx.OmlxModelInfo(id="invalid", name="invalid", context_limit=None)]
+
+        with patch.object(omlx, "list_status_models", fake_list_status_models):
+            unknown = await omlx.get_model_context_length("missing", "http://omlx.test")
+            invalid = await omlx.get_model_context_length("invalid", "http://omlx.test")
+
+        self.assertIsNone(unknown)
+        self.assertIsNone(invalid)
 
 
 if __name__ == "__main__":

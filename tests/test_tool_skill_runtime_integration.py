@@ -16,6 +16,7 @@ from ragtime.rag.prompts import (
     build_html_component_theme_prompt,
 )
 from ragtime.rag.tool_skills import ToolSkillBindingState
+from tests.content_protection_support import use_disabled_content_protection
 from tests.test_tool_skill_shared import (
     FakeAction,
     FakeExecutor,
@@ -91,6 +92,8 @@ def _make_request_context(**kwargs: Any) -> dict[str, Any]:
 
 class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
+        use_disabled_content_protection(self)
+
         async def _enabled_users(*, where: dict[str, Any]) -> list[SimpleNamespace]:
             return [SimpleNamespace(id=user_id, hostedChatEnabled=None) for user_id in where["id"]["in"]]
 

@@ -12,6 +12,7 @@ from ragtime.indexer.visualization_retry import (
     VisualizationRetryContext,
     retry_visualization_with_repair,
 )
+from tests.content_protection_support import use_disabled_content_protection
 from tests.hosted_execution_test_support import enabled_hosted_execution_policy
 
 
@@ -58,6 +59,9 @@ def _rag_ready(value: bool = True):
 
 
 class VisualizationRetryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_datatable_retry_uses_deterministic_source_data(self) -> None:
         request = RetryVisualizationRequest(
             tool_type="datatable",

@@ -22578,15 +22578,37 @@ class UserSpaceService:
         tools, loads the tool config, dispatches the query through the
         appropriate database driver, and returns structured rows.
         """
+        from ragtime.content_protection.external import authorize_external_content
+
+        principal = type("ComponentPrincipal", (), {"user_id": user_id})()
+        await authorize_external_content(
+            request.model_dump(mode="json"),
+            direction="inbound",
+            principal=principal,
+            surface="component",
+            tool_id=request.component_id,
+            resource_id=workspace_id,
+            operation="execute_component",
+        )
         workspace = await self._load_workspace_for_component_execution(
             workspace_id,
             user_id=user_id,
         )
-        return await self._execute_component_for_workspace(
+        response = await self._execute_component_for_workspace(
             workspace,
             request,
             error_log_prefix="Component execution failed",
         )
+        await authorize_external_content(
+            response.model_dump(mode="json"),
+            direction="outbound",
+            principal=principal,
+            surface="component",
+            tool_id=request.component_id,
+            resource_id=workspace_id,
+            operation="execute_component",
+        )
+        return response
 
     async def execute_shared_component(
         self,
@@ -22596,14 +22618,38 @@ class UserSpaceService:
         password: str | None = None,
         share_auth_token: str | None = None,
     ) -> ExecuteComponentResponse:
+        from ragtime.content_protection.external import authorize_external_content
+
+        principal = type("SharedComponentPrincipal", (), {"user_id": getattr(current_user, "id", None)})()
+        public = current_user is None
+        await authorize_external_content(
+            request.model_dump(mode="json"),
+            direction="inbound",
+            principal=principal,
+            surface="component",
+            tool_id=request.component_id,
+            operation="execute_shared_component",
+            public=public,
+        )
         workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
-        return await self._execute_shared_component_for_workspace_id(
+        response = await self._execute_shared_component_for_workspace_id(
             workspace_id,
             request,
             current_user=current_user,
             password=password,
             share_auth_token=share_auth_token,
         )
+        await authorize_external_content(
+            response.model_dump(mode="json"),
+            direction="outbound",
+            principal=principal,
+            surface="component",
+            tool_id=request.component_id,
+            resource_id=workspace_id,
+            operation="execute_shared_component",
+            public=public,
+        )
+        return response
 
     async def execute_shared_component_by_slug(
         self,
@@ -22614,30 +22660,75 @@ class UserSpaceService:
         password: str | None = None,
         share_auth_token: str | None = None,
     ) -> ExecuteComponentResponse:
+        from ragtime.content_protection.external import authorize_external_content
+
+        principal = type("SharedComponentPrincipal", (), {"user_id": getattr(current_user, "id", None)})()
+        public = current_user is None
+        await authorize_external_content(
+            request.model_dump(mode="json"),
+            direction="inbound",
+            principal=principal,
+            surface="component",
+            tool_id=request.component_id,
+            operation="execute_shared_component",
+            public=public,
+        )
         workspace_id = await self._resolve_workspace_id_from_share_slug(
             owner_username,
             share_slug,
         )
-        return await self._execute_shared_component_for_workspace_id(
+        response = await self._execute_shared_component_for_workspace_id(
             workspace_id,
             request,
             current_user=current_user,
             password=password,
             share_auth_token=share_auth_token,
         )
+        await authorize_external_content(
+            response.model_dump(mode="json"),
+            direction="outbound",
+            principal=principal,
+            surface="component",
+            tool_id=request.component_id,
+            resource_id=workspace_id,
+            operation="execute_shared_component",
+            public=public,
+        )
+        return response
 
     async def execute_component_from_authorized_shared_preview(
         self,
         workspace_id: str,
         request: ExecuteComponentRequest,
     ) -> ExecuteComponentResponse:
+        from ragtime.content_protection.external import authorize_external_content
+
+        await authorize_external_content(
+            request.model_dump(mode="json"),
+            direction="inbound",
+            surface="component",
+            tool_id=request.component_id,
+            resource_id=workspace_id,
+            operation="shared_preview",
+            public=True,
+        )
         workspace = await self._load_workspace_for_component_execution(workspace_id)
-        return await self._execute_component_for_workspace(
+        response = await self._execute_component_for_workspace(
             workspace,
             request,
             error_log_prefix="Shared component execution failed",
             record_diagnostics=False,
         )
+        await authorize_external_content(
+            response.model_dump(mode="json"),
+            direction="outbound",
+            surface="component",
+            tool_id=request.component_id,
+            resource_id=workspace_id,
+            operation="shared_preview",
+            public=True,
+        )
+        return response
 
     async def execute_component_from_runtime_bridge(
         self,
@@ -22645,6 +22736,17 @@ class UserSpaceService:
         request: ExecuteComponentRequest,
         session_id: str,
     ) -> ExecuteComponentResponse:
+        from ragtime.content_protection.external import authorize_external_content
+
+        await authorize_external_content(
+            request.model_dump(mode="json"),
+            direction="inbound",
+            surface="component",
+            tool_id=request.component_id,
+            resource_id=workspace_id,
+            operation="runtime_bridge",
+            baseline="service",
+        )
         workspace = await self._load_workspace_for_component_execution(workspace_id)
         audit_context = await self._resolve_runtime_bridge_audit_context(workspace, request.component_id)
         query_digest = self._compute_runtime_bridge_query_digest(
@@ -22688,6 +22790,15 @@ class UserSpaceService:
             error=result.response.error,
             access_mode=result.access_mode,
             tool_type=result.tool_type,
+        )
+        await authorize_external_content(
+            result.response.model_dump(mode="json"),
+            direction="outbound",
+            surface="component",
+            tool_id=request.component_id,
+            resource_id=workspace_id,
+            operation="runtime_bridge",
+            baseline="service",
         )
         return result.response
 
@@ -23243,6 +23354,16 @@ class UserSpaceService:
         path used by User Space previews. It intentionally does not read or
         write User Space sidecars/proofs.
         """
+        from ragtime.content_protection.external import authorize_external_content
+
+        await authorize_external_content(
+            request.model_dump(mode="json"),
+            direction="inbound",
+            surface="component",
+            tool_id=request.component_id,
+            operation="execute_component_for_selected_tools",
+            baseline="service",
+        )
         raw_result = await self._execute_component_for_selected_tool_ids(
             selected_tool_ids=list(selected_tool_ids),
             component_id=request.component_id,
@@ -23253,6 +23374,14 @@ class UserSpaceService:
             enforce_result_limit=enforce_result_limit,
         )
         result = _coerce_execute_component_execution_result(raw_result)
+        await authorize_external_content(
+            result.response.model_dump(mode="json"),
+            direction="outbound",
+            surface="component",
+            tool_id=request.component_id,
+            operation="execute_component_for_selected_tools",
+            baseline="service",
+        )
         return result.response
 
     async def _execute_component_for_selected_tool_ids(

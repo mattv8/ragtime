@@ -8,6 +8,15 @@ from typing import Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
+from ragtime.content_protection.hosted import (
+    authorize_auxiliary,
+)
+from ragtime.content_protection.hosted import (
+    bind_context as bind_content_protection_context,
+)
+from ragtime.content_protection.hosted import (
+    hosted_context as content_protection_context,
+)
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.hosted_execution_policy import require_hosted_execution
 from ragtime.core.logging import get_logger
@@ -169,7 +178,9 @@ async def _generate_title(question_text: str, *, user_id: str | None = None) -> 
     return title or None
 
 
-async def update_conversation_title_from_question(conversation_id: str, user_message: str, *, user_id: str | None = None) -> None:
+async def update_conversation_title_from_question(
+    conversation_id: str, user_message: str, *, user_id: str | None = None, protection_surface: str = "chat"
+) -> None:
     """Update the conversation title if it is still the default."""
     conv = await repository.get_conversation(conversation_id)
     if not conv or conv.title != "Untitled Chat":
@@ -180,7 +191,11 @@ async def update_conversation_title_from_question(conversation_id: str, user_mes
         return
 
     try:
-        title = await _generate_title(question_text, user_id=user_id or conv.user_id)
+        context = content_protection_context(user_id=user_id or conv.user_id, owner_user_id=conv.user_id, surface=protection_surface)
+        with bind_content_protection_context(context):
+            title = await _generate_title(question_text, user_id=user_id or conv.user_id)
+            if title:
+                await authorize_auxiliary(title, context=context, operation="title_generation")
     except Exception as exc:
         # Disabled hosted execution must not turn into a deterministic title.
         detail = getattr(exc, "detail", None)
@@ -190,6 +205,7 @@ async def update_conversation_title_from_question(conversation_id: str, user_mes
     if not title:
         # Fallback to truncated question if LLM is unavailable
         title = question_text[:50] + ("..." if len(question_text) > 50 else "")
+        await authorize_auxiliary(title, context=context, operation="title_generation")
 
     try:
         await repository.update_conversation_title(conversation_id, title)
@@ -202,12 +218,12 @@ async def update_conversation_title_from_question(conversation_id: str, user_mes
 _background_tasks: set[asyncio.Task] = set()
 
 
-def schedule_title_generation(conversation_id: str, user_message: str, *, user_id: str | None = None) -> None:
+def schedule_title_generation(conversation_id: str, user_message: str, *, user_id: str | None = None, protection_surface: str = "chat") -> None:
     """Fire-and-forget task to generate a chat title."""
 
     async def _runner() -> None:
         try:
-            await update_conversation_title_from_question(conversation_id, user_message, user_id=user_id)
+            await update_conversation_title_from_question(conversation_id, user_message, user_id=user_id, protection_surface=protection_surface)
         except Exception as exc:  # pragma: no cover - best effort
             logger.warning("Title generation task failed for %s: %s", conversation_id, exc)
 

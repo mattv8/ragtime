@@ -7,6 +7,7 @@ from unittest import mock
 
 import ragtime.indexer.background_tasks as background_tasks
 from ragtime.indexer.task_policy import activity_summary, make_execution_policy, required_action_termination
+from tests.content_protection_support import use_disabled_content_protection
 from tests.hosted_execution_test_support import enabled_hosted_execution_policy
 
 
@@ -47,6 +48,9 @@ class BackgroundTaskOutcomePolicyTests(unittest.TestCase):
 
 
 class BackgroundTaskOutcomeExecutionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     def _dependencies(self, stream):
         conversation = SimpleNamespace(
             messages=[SimpleNamespace(role="user", content="build it", events=None)],

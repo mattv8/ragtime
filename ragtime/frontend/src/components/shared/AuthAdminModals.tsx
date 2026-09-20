@@ -503,6 +503,9 @@ export function AuthAdminModalHost({
               <div className="auth-group-manage-list-panel">
                 <div className="auth-group-panel-header">
                   <h4>Groups</h4>
+                  <a className="btn btn-sm btn-secondary" href="#content-protection-groups-tab">
+                    View content protection mappings
+                  </a>
                   {!newGroupMode && (
                     <button
                       type="button"

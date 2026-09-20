@@ -8,6 +8,7 @@ from typing import Any
 from unittest import mock
 
 import ragtime.indexer.background_tasks as background_tasks
+from tests.content_protection_support import use_disabled_content_protection
 from tests.hosted_execution_test_support import enabled_hosted_execution_policy
 
 
@@ -129,6 +130,9 @@ class _AppendGate:
 
 
 class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     @staticmethod
     def _completed_task_dependencies(add_message: Any, link_assistant_snapshot_tool_calls: Any) -> tuple[Any, Any, Any, Any]:
         fake_conversation = SimpleNamespace(
@@ -431,6 +435,9 @@ class BackgroundTaskStreamActivityTests(unittest.TestCase):
 
 
 class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     """Verify the in-component post-tool inactivity guard cancels stalled streams.
 
     This exercises only the wait_for + aclose pattern that the new

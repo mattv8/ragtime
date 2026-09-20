@@ -4,6 +4,7 @@ from unittest import mock
 
 from mcp.types import TextContent
 
+from ragtime.content_protection.models import ContentProtectionError
 from ragtime.mcp import routes as mcp_routes
 from ragtime.mcp import server as mcp_server
 from ragtime.userspace.development_access import DevelopmentPrincipal
@@ -52,6 +53,7 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(development_service, "list_operations", return_value=operations),
             mock.patch.object(development_service, "execute", new=mock.AsyncMock(return_value={"context_revision": "abc"})) as execute,
+            mock.patch("ragtime.mcp.server.authorize_external_content", new=mock.AsyncMock()),
         ):
             with mcp_server.development_principal_context(principal):
                 result = await mcp_server._execute_development_tool(  # pyright: ignore[reportPrivateUsage]
@@ -71,6 +73,7 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(development_service, "list_operations", return_value=operations),
             mock.patch.object(development_service, "execute", new=mock.AsyncMock(return_value=context)),
+            mock.patch("ragtime.mcp.server.authorize_external_content", new=mock.AsyncMock()),
             mock.patch("ragtime.userspace.development_bootstrap._guidance_documents", return_value={"workspace": "small"}),
         ):
             with mcp_server.development_principal_context(principal):
@@ -92,6 +95,7 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(development_service, "list_operations", return_value=operations),
             mock.patch.object(development_service, "execute", new=execute),
+            mock.patch("ragtime.mcp.server.authorize_external_content", new=mock.AsyncMock()),
         ):
             with mcp_server.development_principal_context(principal):
                 result = await mcp_server._execute_development_tool(
@@ -120,6 +124,7 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(development_service, "list_operations", return_value=operations),
             mock.patch.object(development_service, "execute", new=mock.AsyncMock(return_value=result_body)),
+            mock.patch("ragtime.mcp.server.authorize_external_content", new=mock.AsyncMock()),
         ):
             with mcp_server.development_principal_context(principal):
                 result = await mcp_server._execute_development_tool(
@@ -129,6 +134,27 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
         content = result.content[0]
         assert isinstance(content, TextContent)
         self.assertEqual(json.loads(content.text), result_body)
+
+    async def test_content_protection_denial_blocks_development_result_release(self) -> None:
+        principal = DevelopmentPrincipal(user_id="user-1", is_admin=False, scopes=frozenset({"read"}))
+        operations = [{"name": "file_read", "description": "Read", "scope": "read", "input_schema": {}}]
+        with (
+            mock.patch.object(development_service, "list_operations", return_value=operations),
+            mock.patch.object(development_service, "execute", new=mock.AsyncMock(return_value={"content": "restricted"})),
+            mock.patch(
+                "ragtime.mcp.server.authorize_external_content",
+                new=mock.AsyncMock(side_effect=ContentProtectionError("content_denied", "request-1")),
+            ),
+        ):
+            with mcp_server.development_principal_context(principal):
+                result = await mcp_server._execute_development_tool(
+                    "workspace_development", {"workspace_id": "workspace-1", "operation": "file_read", "arguments": {}}
+                )  # pyright: ignore[reportPrivateUsage]
+
+        self.assertTrue(result.isError)
+        content = result.content[0]
+        assert isinstance(content, TextContent)
+        self.assertEqual(json.loads(content.text)["error"]["message"], "content_denied")
 
     async def test_oauth_user_becomes_request_local_development_principal(self) -> None:
         scope = {"type": "http", "headers": [], "_mcp_oauth_user": mock.Mock(id="user-1", role="admin")}
@@ -147,6 +173,21 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIsNone(principal)
+
+    async def test_stateful_session_callback_recovers_verified_principal_and_route(self) -> None:
+        principal = DevelopmentPrincipal(user_id="user-1", is_admin=False, scopes=frozenset({"read"}))
+        session = mock.MagicMock()
+        server = mock.MagicMock()
+        server.request_context.session = session
+
+        with mcp_server.mcp_request_context(principal, "default"):
+            mcp_server._bind_session_request_context(server)  # pyright: ignore[reportPrivateUsage]
+
+        self.assertIsNone(mcp_server.get_request_development_principal())
+        mcp_server._bind_session_request_context(server)  # pyright: ignore[reportPrivateUsage]
+        self.assertIs(mcp_server.get_request_development_principal(), principal)
+        mcp_server._development_principal.set(None)  # pyright: ignore[reportPrivateUsage]
+        mcp_server._mcp_route_id.set("default")  # pyright: ignore[reportPrivateUsage]
 
 
 if __name__ == "__main__":

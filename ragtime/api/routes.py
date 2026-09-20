@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from ragtime import __version__
 from ragtime.config import settings
+from ragtime.content_protection.external import authorize_external_content, public_error_detail
 from ragtime.core.api_accounting import log_api_request
 from ragtime.core.app_settings import get_app_settings, get_health_llm_settings
 from ragtime.core.hosted_execution_policy import require_hosted_execution
@@ -642,6 +643,16 @@ async def chat_completions(request: ChatCompletionRequest):
     # /v1 has no caller identity (and can be anonymous when API_KEY is unset),
     # so it is deliberately governed by the global policy only.
     await require_hosted_execution()
+    try:
+        await authorize_external_content(
+            request.model_dump(mode="json"),
+            direction="inbound",
+            surface="openai_api",
+            operation="chat/completions",
+            baseline="service",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail=public_error_detail(exc)) from exc
     if not rag.is_ready:
         asyncio.ensure_future(
             log_api_request(
@@ -671,13 +682,6 @@ async def chat_completions(request: ChatCompletionRequest):
             status_code=400,
             detail="No model configured. Set an LLM model in Settings.",
         )
-    tool_output_mode = (
-        request.agent_options.tool_output_mode
-        if request.agent_options and request.agent_options.tool_output_mode is not None
-        else app_settings.get("tool_output_mode", "default")
-    )
-    suppress_tool_output = tool_output_mode == "hide"
-
     # Extract the latest user message (full message, including multimodal content)
     user_message = next(
         (m for m in reversed(request.messages) if m.role == "user"),
@@ -748,12 +752,11 @@ async def chat_completions(request: ChatCompletionRequest):
             )
         )
         return StreamingResponse(
-            _stream_response_tokens(
+            _stream_authorized_response(
                 user_message,
                 chat_history,
                 effective_model,
                 response_model=response_model,
-                suppress_tool_output=suppress_tool_output,
             ),
             media_type="text/event-stream",
         )
@@ -764,6 +767,16 @@ async def chat_completions(request: ChatCompletionRequest):
         chat_history,
         conversation_model=effective_model,
     )
+    try:
+        await authorize_external_content(
+            answer,
+            direction="outbound",
+            surface="openai_api",
+            operation="chat/completions",
+            baseline="service",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail=public_error_detail(exc)) from exc
 
     logger.info(f"Response generated ({len(answer)} chars)")
 
@@ -793,12 +806,49 @@ async def chat_completions(request: ChatCompletionRequest):
     )
 
 
+async def _stream_authorized_response(
+    user_message: Message,
+    chat_history: list[BaseMessage],
+    model: str,
+    response_model: Optional[str] = None,
+):
+    """Buffer a complete /v1 answer before exposing any model-authored bytes."""
+    chunk_id = f"chatcmpl-{int(time.time())}"
+    try:
+        answer = await rag.process_query(user_message, chat_history, conversation_model=model)
+        await authorize_external_content(
+            answer,
+            direction="outbound",
+            surface="openai_api",
+            operation="chat/completions",
+            baseline="service",
+        )
+        payload = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": response_model or model,
+            "choices": [{"index": 0, "delta": {"content": answer}, "finish_reason": "stop"}],
+        }
+        yield f"data: {json.dumps(payload)}\n\n"
+    except Exception as exc:
+        detail = public_error_detail(exc)
+        payload = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": response_model or model,
+            "choices": [{"index": 0, "delta": {"content": json.dumps({"error": detail})}, "finish_reason": "content_filter"}],
+        }
+        yield f"data: {json.dumps(payload)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
 async def _stream_response_tokens(
     user_message,
     chat_history: list,
     model: str,
     response_model: Optional[str] = None,
-    suppress_tool_output: bool = False,
 ):
     """
     Generate true streaming response by yielding tokens from the LLM.
@@ -811,7 +861,6 @@ async def _stream_response_tokens(
         user_message: Message object (can contain multimodal content)
         chat_history: Previous messages
         model: Model name string
-        suppress_tool_output: Whether to hide tool-call/result blocks in stream
     """
     chunk_id = f"chatcmpl-{int(time.time())}"
 
@@ -879,10 +928,6 @@ async def _stream_response_tokens(
                 tool_input_dict = tool_input if isinstance(tool_input, dict) else {}
                 current_tool = tool_name
 
-                # Skip tool output if suppressed
-                if suppress_tool_output:
-                    continue
-
                 # Format tool input for immediate display
                 input_display = ""
                 if tool_input_dict:
@@ -903,10 +948,6 @@ async def _stream_response_tokens(
                 tool_name = event.get("tool", current_tool or "unknown")
                 tool_output = event.get("output", "")
                 current_tool = None
-
-                # Skip tool output if suppressed
-                if suppress_tool_output:
-                    continue
 
                 output_display = _format_tool_output(str(tool_output))
 

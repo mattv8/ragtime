@@ -15,6 +15,7 @@ describe('settingsAccordionState', () => {
       expect(SETTINGS_ACCORDION_SECTION_IDS).toEqual([
         'chat-models',
         'agent-behavior',
+        'content-protection',
         'mcp',
         'userspace',
         'llm-providers',
@@ -61,6 +62,7 @@ describe('settingsAccordionState', () => {
       const current: SettingsAccordionState = {
         'chat-models': false,
         'agent-behavior': false,
+        'content-protection': false,
         mcp: true,
         userspace: false,
         'llm-providers': true,
@@ -75,6 +77,7 @@ describe('settingsAccordionState', () => {
       expect(next).toEqual({
         'chat-models': true,
         'agent-behavior': false,
+        'content-protection': false,
         mcp: true,
         userspace: true,
         'llm-providers': true,
@@ -118,6 +121,7 @@ describe('settingsAccordionState', () => {
       const snapshot: SettingsAccordionState = {
         'chat-models': false,
         'agent-behavior': true,
+        'content-protection': false,
         mcp: false,
         userspace: false,
         'llm-providers': true,
