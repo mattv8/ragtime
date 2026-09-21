@@ -1,14 +1,23 @@
-"""Transactional, hash-only persistence for interactive MCP OAuth grants."""
+"""Transactional, hash-only persistence for interactive MCP OAuth grants.
+
+Deterministic MCP successor values are derived outside this store and passed here
+only as hashes; raw refresh tokens are never persisted or recoverable from DB.
+"""
 
 from __future__ import annotations
 
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ragtime.core.database import get_db
+from ragtime.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+MAX_DUPLICATE_GRACE_SECONDS = 10
 
 
 @dataclass(frozen=True)
@@ -174,8 +183,21 @@ async def rotate_refresh_token(
     client_id: str,
     audience: str | None = None,
     scope: str | None = None,
+    duplicate_grace_seconds: int = 0,
     now: datetime | None = None,
 ) -> OAuthGrantData:
+    """Rotate one refresh token, optionally accepting its exact live successor.
+
+    Grace is a fixed interval from the predecessor's original consumption time;
+    accepted duplicates never extend it or mutate refresh-token records.
+    """
+    if (
+        isinstance(duplicate_grace_seconds, bool)
+        or not isinstance(duplicate_grace_seconds, int)
+        or not 0 <= duplicate_grace_seconds <= MAX_DUPLICATE_GRACE_SECONDS
+    ):
+        raise ValueError(f"duplicate_grace_seconds must be an integer in 0..{MAX_DUPLICATE_GRACE_SECONDS}")
+
     db = await get_db()
     key_rows = await db.query_raw(
         """SELECT g."id" AS "grant_id", g."user_id" AS "user_id"
@@ -187,6 +209,7 @@ async def rotate_refresh_token(
         raise OAuthGrantError("unknown_refresh_token")
 
     replayed = False
+    duplicate_accepted = False
     async with db.tx() as tx:
         current_generation = await lock_user_security_generation(tx, str(key_rows[0]["user_id"]))
         grant = await _find_grant(tx, str(key_rows[0]["grant_id"]), lock=True)
@@ -210,12 +233,25 @@ async def rotate_refresh_token(
         if not refresh_rows:
             raise OAuthGrantError("unknown_refresh_token")
         if refresh_rows[0]["consumed_at"] is not None:
-            await tx.execute_raw(
-                'UPDATE "oauth_grants" SET "revoked_at" = COALESCE("revoked_at", $1::timestamp) WHERE "id" = $2',
-                _timestamp(current_time),
-                grant.id,
-            )
-            replayed = True
+            consumed_at = _aware(refresh_rows[0]["consumed_at"])
+            age = current_time - consumed_at if consumed_at is not None else None
+            successor_rows = []
+            if age is not None and timedelta(0) <= age < timedelta(seconds=duplicate_grace_seconds):
+                successor_rows = await tx.query_raw(
+                    """SELECT "id" FROM "oauth_refresh_tokens"
+                       WHERE "grant_id" = $1 AND "token_hash" = $2 AND "consumed_at" IS NULL FOR UPDATE""",
+                    grant.id,
+                    next_refresh_hash,
+                )
+            if successor_rows:
+                duplicate_accepted = True
+            else:
+                await tx.execute_raw(
+                    'UPDATE "oauth_grants" SET "revoked_at" = COALESCE("revoked_at", $1::timestamp) WHERE "id" = $2',
+                    _timestamp(current_time),
+                    grant.id,
+                )
+                replayed = True
         else:
             await tx.execute_raw(
                 'UPDATE "oauth_refresh_tokens" SET "consumed_at" = $1::timestamp WHERE "id" = $2',
@@ -233,6 +269,8 @@ async def rotate_refresh_token(
     if replayed:
         # Raised after the context exits so the family revocation is committed.
         raise OAuthGrantError("replayed_refresh_token")
+    if duplicate_accepted:
+        logger.info("duplicate_refresh_accepted grant_id=%s", grant.id)
     return grant
 
 
