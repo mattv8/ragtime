@@ -10374,6 +10374,9 @@ async def _fetch_openai_codex_models(settings: Any) -> LLMModelsResponse:
     if not isinstance(raw_models, list):
         return LLMModelsResponse(success=False, message="OpenAI Codex model response did not include a models list.")
 
+    # Load fallback metadata before registering live provider limits so a first
+    # cache load cannot replace the provider-reported values.
+    await ensure_model_metadata_loaded()
     models: list[LLMModel] = []
     for raw_model in raw_models:
         if not isinstance(raw_model, dict):
@@ -10387,8 +10390,12 @@ async def _fetch_openai_codex_models(settings: Any) -> LLMModelsResponse:
             reasoning_supported=True,
             reasoning_effort_supported=True,
         )
-        output_limit = coerce_int_metadata(raw_model.get("max_output_tokens")) or await get_output_limit(model_id)
-        context_limit = coerce_int_metadata(raw_model.get("context_window")) or await get_context_limit(model_id)
+        output_limit = coerce_positive_int_metadata(raw_model.get("max_output_tokens")) or await get_output_limit(model_id)
+        context_limit = (
+            coerce_positive_int_metadata(raw_model.get("max_context_window"))
+            or coerce_positive_int_metadata(raw_model.get("context_window"))
+            or await get_context_limit(model_id)
+        )
         if output_limit is not None:
             update_model_output_limit(model_id, output_limit)
         if context_limit is not None:

@@ -204,6 +204,67 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
         finally:
             model_limits.invalidate_cache()
 
+    async def test_live_codex_model_catalog_uses_maximum_context_override(self) -> None:
+        payload = {
+            "models": [
+                {
+                    "slug": "gpt-6-astra",
+                    "context_window": 272_000,
+                    "max_context_window": 872_000,
+                },
+                {
+                    "slug": "gpt-6-default",
+                    "context_window": 272_000,
+                },
+                {
+                    "slug": "gpt-6-invalid-maximum",
+                    "context_window": 272_000,
+                    "max_context_window": "invalid",
+                },
+            ]
+        }
+        settings = SimpleNamespace(openai_codex_account_id="acct_123")
+
+        async def load_fallback_metadata() -> None:
+            model_limits.update_model_limit("gpt-6-astra", 272_000)
+            model_limits.update_model_output_limit("gpt-6-astra", 128_000)
+
+        with (
+            mock.patch.dict(model_limits._model_limits_cache, clear=True),
+            mock.patch.dict(model_limits._model_output_limits_cache, clear=True),
+            mock.patch.object(model_limits, "_cache_loaded", True),
+            mock.patch(
+                "ragtime.indexer.routes.ensure_openai_codex_token_fresh",
+                new=mock.AsyncMock(return_value="codex-token"),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes.ensure_model_metadata_loaded",
+                new=mock.AsyncMock(side_effect=load_fallback_metadata),
+            ) as ensure_metadata,
+            mock.patch(
+                "ragtime.indexer.routes.httpx.AsyncClient",
+                partial(_CapturingAsyncClient, {}, "backend-api/codex/models", payload),
+            ),
+        ):
+            result = await indexer_routes._fetch_openai_codex_models(settings)
+
+            limits_by_id = {model.id: model.context_limit for model in result.models}
+            output_limits_by_id = {model.id: model.max_output_tokens for model in result.models}
+            self.assertEqual(
+                limits_by_id,
+                {
+                    "gpt-6-astra": 872_000,
+                    "gpt-6-default": 272_000,
+                    "gpt-6-invalid-maximum": 272_000,
+                },
+            )
+            self.assertEqual(output_limits_by_id["gpt-6-astra"], 128_000)
+            self.assertEqual(model_limits._model_limits_cache["gpt-6-astra"], 872_000)
+            self.assertEqual(model_limits._model_limits_cache["gpt-6-default"], 272_000)
+            self.assertEqual(model_limits._model_limits_cache["gpt-6-invalid-maximum"], 272_000)
+            self.assertEqual(model_limits._model_output_limits_cache["gpt-6-astra"], 128_000)
+            ensure_metadata.assert_awaited_once()
+
     async def test_live_codex_model_catalog_compacts_gpt_56_variant_display_names(self) -> None:
         model_limits.invalidate_cache()
         try:
