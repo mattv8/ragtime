@@ -93,6 +93,7 @@ import { SecuritySettingsSection } from './settings/SecuritySettingsSection';
 import { AppearanceSettingsSection } from './settings/AppearanceSettingsSection';
 import { ChatModelsSettingsSection } from './settings/ChatModelsSettingsSection';
 import { AgentBehaviorSettingsSection } from './settings/AgentBehaviorSettingsSection';
+import { HostedExecutionSettingsSection } from './settings/HostedExecutionSettingsSection';
 import { ContentProtectionSettingsSection } from './settings/ContentProtectionSettingsSection';
 import { McpSettingsSection } from './settings/McpSettingsSection';
 import { ServerBackupRestoreSettingsSection } from './settings/ServerBackupRestoreSettingsSection';
@@ -758,6 +759,7 @@ export function SettingsPanel({
   const indexingResources = useIndexResourceStatus(currentUser?.role === 'admin');
   const [llmSaving, setLlmSaving] = useState(false);
   const [agentBehaviorSaving, setAgentBehaviorSaving] = useState(false);
+  const [hostedExecutionSaving, setHostedExecutionSaving] = useState(false);
 
   // Scroll to and highlight setting when highlightSetting changes
   useEffect(() => {
@@ -3087,7 +3089,6 @@ export function SettingsPanel({
         openrouter_credit_monitor_enabled: formData.openrouter_credit_monitor_enabled,
         openrouter_low_credit_threshold_usd: formData.openrouter_low_credit_threshold_usd,
         allowed_chat_models: formData.allowed_chat_models,
-        hosted_chat_enabled: formData.hosted_chat_enabled,
         chat_compaction_threshold_percent: formData.chat_compaction_threshold_percent,
         chat_auto_compaction_threshold_percent: formData.chat_auto_compaction_threshold_percent,
         // OpenAPI model settings
@@ -3227,6 +3228,33 @@ export function SettingsPanel({
       toast.error(err instanceof Error ? err.message : 'Failed to save agent behavior settings');
     } finally {
       setAgentBehaviorSaving(false);
+    }
+  };
+
+  const handleSaveHostedExecution = async () => {
+    setHostedExecutionSaving(true);
+
+    try {
+      const updated = await api.updateSettings({
+        hosted_chat_enabled: formData.hosted_chat_enabled !== false,
+      });
+      const normalizedUpdated = {
+        ...updated,
+        hosted_chat_enabled: updated.hosted_chat_enabled !== false,
+      };
+      setSettings(normalizedUpdated);
+      setFormData((prev) => ({
+        ...prev,
+        hosted_chat_enabled: normalizedUpdated.hosted_chat_enabled,
+      }));
+      await onSettingsSaved?.();
+      toast.success('Hosted execution settings saved');
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : 'Failed to save hosted execution settings',
+      );
+    } finally {
+      setHostedExecutionSaving(false);
     }
   };
 
@@ -4490,30 +4518,6 @@ export function SettingsPanel({
         completionCandidates={settingsFilterCompletionCandidates}
       />
 
-      <section
-        id="settings-hosted-chat-policy"
-        className="settings-accordion-item"
-        data-settings-section="hosted-chat-policy"
-        data-settings-filter-card="true"
-      >
-        <h3>Hosted chat policy</h3>
-        <p className="muted">
-          Disable Ragtime-hosted generation globally. Users with no individual override inherit this
-          setting.
-        </p>
-        <label className="settings-checkbox-row" htmlFor="settings-hosted-chat-enabled">
-          <input
-            id="settings-hosted-chat-enabled"
-            type="checkbox"
-            checked={formData.hosted_chat_enabled ?? settings?.hosted_chat_enabled ?? true}
-            onChange={(event) =>
-              setFormData((current) => ({ ...current, hosted_chat_enabled: event.target.checked }))
-            }
-          />
-          Enable hosted chat
-        </label>
-      </section>
-
       {!settingsFilterHasMatches && settingsFilter.hasActiveFilters && (
         <p className="muted settings-filter-empty">No settings match the current filters.</p>
       )}
@@ -4741,6 +4745,17 @@ export function SettingsPanel({
             onUserspaceExecTimeoutMaxDraftChange={setUserspaceExecTimeoutMaxDraft}
             userspaceExecTimeoutError={isAdmin ? userspaceExecTimeoutError : null}
           />
+
+          {isAdmin && (
+            <HostedExecutionSettingsSection
+              open={openAccordionSections['hosted-execution']}
+              onToggle={handleToggleAccordionSection}
+              formData={formData}
+              setFormData={setFormData}
+              handleSaveHostedExecution={handleSaveHostedExecution}
+              hostedExecutionSaving={hostedExecutionSaving}
+            />
+          )}
 
           {isAdmin && (
             <ContentProtectionSettingsSection

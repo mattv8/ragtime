@@ -1,6 +1,7 @@
 export const SETTINGS_ACCORDION_SECTION_IDS = [
   'chat-models',
   'agent-behavior',
+  'hosted-execution',
   'content-protection',
   'mcp',
   'userspace',

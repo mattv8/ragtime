@@ -39,6 +39,9 @@ const mcpSectionState = vi.hoisted(() => ({
 const agentBehaviorSectionState = vi.hoisted(() => ({
   latestProps: null as null | Record<string, unknown>,
 }));
+const hostedExecutionSectionState = vi.hoisted(() => ({
+  latestProps: null as null | Record<string, unknown>,
+}));
 const searchSectionState = vi.hoisted(() => ({
   latestProps: null as null | Record<string, unknown>,
   run: null as null | ((props: Record<string, unknown>) => void),
@@ -269,6 +272,20 @@ vi.mock('./settings/AgentBehaviorSettingsSection', () => ({
   },
 }));
 
+vi.mock('./settings/HostedExecutionSettingsSection', () => ({
+  HostedExecutionSettingsSection: (props: Record<string, unknown>) => {
+    hostedExecutionSectionState.latestProps = props;
+    sectionRenderOrder.push('hosted-execution');
+    return (
+      <section data-settings-accordion-section="hosted-execution">
+        <button type="button" aria-expanded={Boolean(props.open)}>
+          Hosted Execution
+        </button>
+      </section>
+    );
+  },
+}));
+
 vi.mock('./settings/SearchSettingsSection', () => ({
   SearchSettingsSection: (props: Record<string, unknown>) => {
     searchSectionState.latestProps = props;
@@ -412,6 +429,7 @@ beforeEach(() => {
   mcpSectionState.latestProps = null;
   mcpSectionState.run = null;
   agentBehaviorSectionState.latestProps = null;
+  hostedExecutionSectionState.latestProps = null;
   searchSectionState.latestProps = null;
   searchSectionState.run = null;
   sectionRenderOrder.length = 0;
@@ -1219,6 +1237,114 @@ describe('SettingsPanel', () => {
       scratchpad_window_size: 9,
     });
     expect(toastSuccessSpy).toHaveBeenCalledWith('Agent behavior settings saved');
+  });
+
+  it('renders Hosted Execution only for admins after Agent Behavior and before Content Protection', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+    render(
+      <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
+    );
+
+    const header = await screen.findByRole('button', { name: 'Hosted Execution' });
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+    expect(sectionRenderOrder.indexOf('agent-behavior')).toBeLessThan(
+      sectionRenderOrder.indexOf('hosted-execution'),
+    );
+    const hostedSection = header.closest('[data-settings-accordion-section]');
+    const contentProtectionSection = document.querySelector(
+      '[data-settings-accordion-section="content-protection"]',
+    );
+    expect(hostedSection?.compareDocumentPosition(contentProtectionSection!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(hostedExecutionSectionState.latestProps).toEqual(
+      expect.objectContaining({ open: false, hostedExecutionSaving: false }),
+    );
+
+    cleanup();
+    hostedExecutionSectionState.latestProps = null;
+    render(<SettingsPanel currentUser={{ id: 'user', username: 'user', role: 'user' } as User} />);
+    await screen.findByRole('button', { name: 'Agent Behavior' });
+    expect(screen.queryByRole('button', { name: 'Hosted Execution' })).toBeNull();
+    expect(hostedExecutionSectionState.latestProps).toBeNull();
+  });
+
+  it('saves Hosted Execution with an isolated normalized payload and syncs returned state', async () => {
+    const onSettingsSaved = vi.fn();
+    apiMock.getSettings.mockResolvedValue(buildSettingsResponse({ hosted_chat_enabled: false }));
+    apiMock.updateSettings.mockResolvedValueOnce(
+      buildSettingsResponse({ hosted_chat_enabled: true }).settings,
+    );
+    const { SettingsPanel } = await import('./SettingsPanel');
+    render(
+      <SettingsPanel
+        currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User}
+        onSettingsSaved={onSettingsSaved}
+      />,
+    );
+
+    await waitFor(() => expect(hostedExecutionSectionState.latestProps).toBeTruthy());
+    apiMock.updateSettings.mockClear();
+    (hostedExecutionSectionState.latestProps?.setFormData as (value: unknown) => void)(
+      (prev: Record<string, unknown>) => ({
+        ...prev,
+        hosted_chat_enabled: 'not-a-boolean',
+      }),
+    );
+    await waitFor(() => {
+      expect(hostedExecutionSectionState.latestProps?.formData).toEqual(
+        expect.objectContaining({ hosted_chat_enabled: 'not-a-boolean' }),
+      );
+    });
+    await (
+      hostedExecutionSectionState.latestProps?.handleSaveHostedExecution as
+        | (() => Promise<void>)
+        | undefined
+    )?.();
+
+    await waitFor(() =>
+      expect(apiMock.updateSettings).toHaveBeenCalledWith({ hosted_chat_enabled: true }),
+    );
+    expect(toastSuccessSpy).toHaveBeenCalledWith('Hosted execution settings saved');
+    expect(onSettingsSaved).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(hostedExecutionSectionState.latestProps?.formData).toEqual(
+        expect.objectContaining({ hosted_chat_enabled: true }),
+      );
+    });
+  });
+
+  it('does not include hosted execution in the Chat Models save payload', async () => {
+    apiMock.getSettings.mockResolvedValue(buildSettingsResponse({ hosted_chat_enabled: false }));
+    const { SettingsPanel } = await import('./SettingsPanel');
+    render(<SettingsPanel />);
+
+    await screen.findByRole('button', { name: 'Open chat models' });
+    await (
+      chatModelsSectionState.latestProps?.handleSaveLlm as (() => Promise<void>) | undefined
+    )?.();
+
+    await waitFor(() => expect(apiMock.updateSettings.mock.calls.length).toBeGreaterThan(0));
+    const latestPayload =
+      apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0];
+    expect(latestPayload).not.toHaveProperty('hosted_chat_enabled');
+  });
+
+  it('shows hosted execution-specific failure feedback', async () => {
+    apiMock.updateSettings.mockRejectedValueOnce(new Error('Hosted execution save failed'));
+    const { SettingsPanel } = await import('./SettingsPanel');
+    render(
+      <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
+    );
+
+    await waitFor(() => expect(hostedExecutionSectionState.latestProps).toBeTruthy());
+    await (
+      hostedExecutionSectionState.latestProps?.handleSaveHostedExecution as
+        | (() => Promise<void>)
+        | undefined
+    )?.();
+
+    expect(toastErrorSpy).toHaveBeenCalledWith('Hosted execution save failed');
   });
 
   it('loads workspace timeout defaults, saves an admin pair, and syncs normalized values', async () => {

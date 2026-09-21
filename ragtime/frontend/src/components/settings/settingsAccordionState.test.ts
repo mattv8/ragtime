@@ -15,6 +15,7 @@ describe('settingsAccordionState', () => {
       expect(SETTINGS_ACCORDION_SECTION_IDS).toEqual([
         'chat-models',
         'agent-behavior',
+        'hosted-execution',
         'content-protection',
         'mcp',
         'userspace',
@@ -36,6 +37,10 @@ describe('settingsAccordionState', () => {
 
     it('keeps agent-behavior closed by default', () => {
       expect(DEFAULT_OPEN_SETTINGS_SECTIONS).not.toContain('agent-behavior');
+    });
+
+    it('keeps hosted-execution closed by default', () => {
+      expect(DEFAULT_OPEN_SETTINGS_SECTIONS).not.toContain('hosted-execution');
     });
   });
 
@@ -62,6 +67,7 @@ describe('settingsAccordionState', () => {
       const current: SettingsAccordionState = {
         'chat-models': false,
         'agent-behavior': false,
+        'hosted-execution': false,
         'content-protection': false,
         mcp: true,
         userspace: false,
@@ -77,6 +83,7 @@ describe('settingsAccordionState', () => {
       expect(next).toEqual({
         'chat-models': true,
         'agent-behavior': false,
+        'hosted-execution': false,
         'content-protection': false,
         mcp: true,
         userspace: true,
@@ -121,6 +128,7 @@ describe('settingsAccordionState', () => {
       const snapshot: SettingsAccordionState = {
         'chat-models': false,
         'agent-behavior': true,
+        'hosted-execution': false,
         'content-protection': false,
         mcp: false,
         userspace: false,
