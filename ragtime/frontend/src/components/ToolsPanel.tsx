@@ -47,6 +47,7 @@ import { PasswordRequirementsChecklist } from './shared/PasswordRequirementsChec
 import { Popover } from './Popover';
 import { ToolAccessModal } from './ToolAccessModal';
 import type { ToolAccessPolicy } from '@/types';
+import { contentProtectionApi, type ContentProtectionConfig } from '@/api/contentProtection';
 
 // Inline field being edited
 type EditingField = 'name' | 'description' | null;
@@ -281,6 +282,7 @@ interface ToolCardProps {
     toolId: string,
     updates: { name?: string; description?: string },
   ) => Promise<void>;
+  classified?: boolean;
 }
 
 function ToolCard({
@@ -300,6 +302,7 @@ function ToolCard({
   activeSchemaJob,
   schemaStats,
   onInlineUpdate,
+  classified = false,
 }: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
   const hasSchemaIndexing = hasSchemaIndexingEnabled(tool);
@@ -528,6 +531,11 @@ function ToolCard({
                   </span>
                 </Popover>
               )}
+              {classified && (
+                <span className="tool-badge" data-tool-classified-badge>
+                  Classified
+                </span>
+              )}
               {tool.undecryptable_fields.length > 0 && (
                 <Popover
                   content={`Credential ${tool.undecryptable_fields.length === 1 ? 'field' : 'fields'} ${tool.undecryptable_fields.join(', ')} cannot be decrypted with the current server key.`}
@@ -726,6 +734,20 @@ export function ToolsPanel({
   const [schemaStats, setSchemaStats] = useState<Record<string, SchemaIndexStats>>({});
   const [pdmStats, setPdmStats] = useState<Record<string, PdmIndexStats>>({});
   const [showFooterActions, setShowFooterActions] = useState(false);
+  const [contentProtectionConfig, setContentProtectionConfig] =
+    useState<ContentProtectionConfig | null>(null);
+  const cpEnabled = contentProtectionConfig?.enabled === true;
+  const requiredToolIds = useMemo(
+    () =>
+      new Set(
+        contentProtectionConfig?.requirements
+          .filter(
+            (requirement) => requirement.scope_kind === 'tool' && requirement.mode === 'require',
+          )
+          .map((requirement) => requirement.scope_key),
+      ),
+    [contentProtectionConfig],
+  );
 
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [editingGroupName, setEditingGroupName] = useState('');
@@ -927,11 +949,12 @@ export function ToolsPanel({
   const loadTools = useCallback(async () => {
     try {
       setLoading(true);
-      const [data, groupData, sources, settingsResponse] = await Promise.all([
+      const [data, groupData, sources, settingsResponse, protectionConfig] = await Promise.all([
         api.listToolConfigs(),
         api.listToolGroups(),
         api.listUserspaceMountSources(),
         api.getSettings().catch(() => null),
+        contentProtectionApi.getConfig().catch(() => null),
       ]);
       // Filter out filesystem_indexer tools - they're shown in the Indexer tab
       const connectionTools = data.filter((t) => t.tool_type !== 'filesystem_indexer');
@@ -940,6 +963,7 @@ export function ToolsPanel({
       setMountSources(sources);
       setShowFooterActions(Boolean(settingsResponse?.settings?.show_tool_card_footer_actions));
       setExportPasswordPolicy(getExportPasswordPolicy(settingsResponse?.settings ?? null));
+      setContentProtectionConfig(protectionConfig);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to load tools');
     } finally {
@@ -1220,6 +1244,27 @@ export function ToolsPanel({
       }
     },
     [toast, toolAccessModalTool],
+  );
+
+  const handleContentProtectionModeChange = useCallback(
+    (toolId: string, mode: 'inherit' | 'require') => {
+      setContentProtectionConfig((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          requirements: [
+            ...current.requirements.filter(
+              (requirement) =>
+                requirement.scope_kind !== 'tool' || requirement.scope_key !== toolId,
+            ),
+            ...(mode === 'require'
+              ? [{ scope_kind: 'tool' as const, scope_key: toolId, mode }]
+              : []),
+          ],
+        };
+      });
+    },
+    [],
   );
 
   const patchToolInState = useCallback((toolId: string, updates: Partial<ToolConfig>) => {
@@ -2317,6 +2362,7 @@ export function ToolsPanel({
           activeSchemaJob={activeSchemaJobsByToolId[tool.id] || null}
           schemaStats={schemaStats[tool.id] || null}
           onInlineUpdate={handleInlineUpdate}
+          classified={cpEnabled && requiredToolIds.has(tool.id)}
         />
       </Popover>
     );
@@ -2403,6 +2449,7 @@ export function ToolsPanel({
               globalWriteEnabled={toolAccessModalTool?.allow_write ?? true}
               onChange={(policy) => setToolAccessPolicy(policy)}
               onSave={handleSaveToolAccess}
+              onContentProtectionModeChange={handleContentProtectionModeChange}
               onClose={closeToolAccessModal}
             />
 

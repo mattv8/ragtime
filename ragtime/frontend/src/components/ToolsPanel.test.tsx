@@ -52,6 +52,15 @@ const resetToolFilterState = (): void => {
 };
 
 vi.mock('@/api', () => ({ api: apiMock }));
+const contentProtectionMock = vi.hoisted(() => ({
+  getConfig: vi.fn(),
+  updateContentProtectionConfigSlice: vi.fn(),
+}));
+vi.mock('@/api/contentProtection', async () => ({
+  ...(await vi.importActual<typeof import('@/api/contentProtection')>('@/api/contentProtection')),
+  contentProtectionApi: { getConfig: contentProtectionMock.getConfig },
+  updateContentProtectionConfigSlice: contentProtectionMock.updateContentProtectionConfigSlice,
+}));
 let lastToolWizardExistingTool: ToolConfig | null | undefined = undefined;
 
 vi.mock('./ToolWizard', () => ({
@@ -327,6 +336,7 @@ describe('ToolsPanel', () => {
     });
     apiMock.listUsers.mockResolvedValue([]);
     apiMock.listAuthGroups.mockResolvedValue([]);
+    contentProtectionMock.getConfig.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -584,6 +594,41 @@ describe('ToolsPanel', () => {
 
     await screen.findByText('Write Tool');
     expect(screen.getByText('Write')).toBeTruthy();
+  });
+
+  it('shows a Classified badge only for required tools while protection is enabled', async () => {
+    contentProtectionMock.getConfig.mockResolvedValue({
+      revision: 1,
+      enabled: true,
+      classifier_model: null,
+      coverage_mode: 'selected_scopes',
+      profiles: [],
+      group_profiles: [],
+      requirements: [{ scope_kind: 'tool', scope_key: 'tool-ungrouped', mode: 'require' }],
+      user_overrides: [],
+    });
+
+    render(<ToolsPanel />);
+
+    expect(await screen.findByText('Classified')).toBeTruthy();
+  });
+
+  it('hides the Classified badge while content protection is disabled', async () => {
+    contentProtectionMock.getConfig.mockResolvedValue({
+      revision: 1,
+      enabled: false,
+      classifier_model: null,
+      coverage_mode: 'selected_scopes',
+      profiles: [],
+      group_profiles: [],
+      requirements: [{ scope_kind: 'tool', scope_key: 'tool-ungrouped', mode: 'require' }],
+      user_overrides: [],
+    });
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+    expect(screen.queryByText('Classified')).toBeNull();
   });
 
   it('shows PDM index document stats on SolidWorks PDM cards', async () => {

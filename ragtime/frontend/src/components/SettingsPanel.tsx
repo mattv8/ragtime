@@ -684,16 +684,16 @@ export function SettingsPanel({
   }, []);
 
   useEffect(() => {
-    const openContentProtectionGroups = () => {
-      if (window.location.hash === '#content-protection-groups-tab') {
+    const openContentProtection = () => {
+      if (window.location.hash.startsWith('#content-protection')) {
         setOpenAccordionSections((current) =>
           openSettingsAccordionSections(current, ['content-protection']),
         );
       }
     };
-    openContentProtectionGroups();
-    window.addEventListener('hashchange', openContentProtectionGroups);
-    return () => window.removeEventListener('hashchange', openContentProtectionGroups);
+    openContentProtection();
+    window.addEventListener('hashchange', openContentProtection);
+    return () => window.removeEventListener('hashchange', openContentProtection);
   }, []);
 
   const savedThemePackRef = useRef<ThemePackId>('default');
@@ -3250,9 +3250,7 @@ export function SettingsPanel({
       await onSettingsSaved?.();
       toast.success('Hosted execution settings saved');
     } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : 'Failed to save hosted execution settings',
-      );
+      toast.error(err instanceof Error ? err.message : 'Failed to save hosted execution settings');
     } finally {
       setHostedExecutionSaving(false);
     }

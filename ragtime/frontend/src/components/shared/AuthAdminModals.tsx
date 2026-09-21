@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Eye, EyeOff, Pencil, Plus } from 'lucide-react';
 import { api } from '@/api';
+import {
+  contentProtectionApi,
+  requirementModeFor,
+  updateContentProtectionConfigSlice,
+  withGroupProfile,
+  withRequirement,
+} from '@/api/contentProtection';
+import type { ContentProtectionConfig } from '@/api/contentProtection';
 import { generateCredentialValue } from '@/utils/credentialGenerator';
 import type { AuthGroup, UserRole } from '@/types';
 import { DeleteConfirmButton } from '../DeleteConfirmButton';
@@ -91,6 +99,9 @@ export function AuthAdminModalHost({
   const [newGroupSaving, setNewGroupSaving] = useState(false);
   const [authGroupUpdatingId, setAuthGroupUpdatingId] = useState<string | null>(null);
   const [authGroupDeletingId, setAuthGroupDeletingId] = useState<string | null>(null);
+  const [contentProtectionConfig, setContentProtectionConfig] =
+    useState<ContentProtectionConfig | null>(null);
+  const [contentProtectionSavingId, setContentProtectionSavingId] = useState<string | null>(null);
   const inlineEditInputRef = useRef<HTMLInputElement>(null);
 
   const toastRef = useRef(toast);
@@ -112,6 +123,11 @@ export function AuthAdminModalHost({
   useEffect(() => {
     if (manageGroupsOpen) {
       void refreshAuthGroups();
+      setContentProtectionConfig(null);
+      void contentProtectionApi
+        .getConfig()
+        .then(setContentProtectionConfig)
+        .catch(() => setContentProtectionConfig(null));
     }
   }, [manageGroupsOpen, refreshAuthGroups]);
 
@@ -301,6 +317,45 @@ export function AuthAdminModalHost({
       return;
     }
     await handleToggleAuthGroupAssignment(group, { role: null, is_logon_group: false });
+  };
+
+  const handleContentProtectionRequirementChange = async (
+    group: AuthGroup,
+    mode: 'inherit' | 'require',
+  ) => {
+    if (!contentProtectionConfig) return;
+    setContentProtectionSavingId(`${group.id}:requirement`);
+    try {
+      const savedConfig = await updateContentProtectionConfigSlice((config) =>
+        withRequirement(config, 'group', group.id, mode),
+      );
+      setContentProtectionConfig(savedConfig);
+      toast.success('Content protection classification updated');
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : 'Failed to update content protection classification',
+      );
+    } finally {
+      setContentProtectionSavingId(null);
+    }
+  };
+
+  const handleContentProtectionProfileChange = async (group: AuthGroup, profileId: string) => {
+    if (!contentProtectionConfig) return;
+    setContentProtectionSavingId(`${group.id}:profile`);
+    try {
+      const savedConfig = await updateContentProtectionConfigSlice((config) =>
+        withGroupProfile(config, group.id, profileId),
+      );
+      setContentProtectionConfig(savedConfig);
+      toast.success('Content protection profile updated');
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : 'Failed to update content protection profile',
+      );
+    } finally {
+      setContentProtectionSavingId(null);
+    }
   };
 
   const handleInlineEditKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -503,9 +558,6 @@ export function AuthAdminModalHost({
               <div className="auth-group-manage-list-panel">
                 <div className="auth-group-panel-header">
                   <h4>Groups</h4>
-                  <a className="btn btn-sm btn-secondary" href="#content-protection-groups-tab">
-                    View content protection mappings
-                  </a>
                   {!newGroupMode && (
                     <button
                       type="button"
@@ -581,6 +633,13 @@ export function AuthAdminModalHost({
                               []
                             : [];
                           const accessMode = getAuthGroupAccessMode(group);
+                          const groupProfileId = contentProtectionConfig?.group_profiles.find(
+                            (profile) => profile.group_id === group.id,
+                          )?.profile_id;
+                          const contentProtectionDisabled = !contentProtectionConfig?.enabled;
+                          const requirementSaving =
+                            contentProtectionSavingId === `${group.id}:requirement`;
+                          const profileSaving = contentProtectionSavingId === `${group.id}:profile`;
                           return (
                             <Popover
                               key={group.id}
@@ -775,6 +834,81 @@ export function AuthAdminModalHost({
                                     )}
                                   </div>
                                   <div className="auth-group-row-actions">
+                                    {contentProtectionConfig && (
+                                      <div
+                                        className="form-group"
+                                        data-content-protection-group-controls={group.id}
+                                      >
+                                        <label htmlFor={`auth-group-classification-${group.id}`}>
+                                          Classification
+                                        </label>
+                                        <select
+                                          id={`auth-group-classification-${group.id}`}
+                                          data-content-protection-group-classification={group.id}
+                                          value={requirementModeFor(
+                                            contentProtectionConfig,
+                                            'group',
+                                            group.id,
+                                          )}
+                                          disabled={
+                                            contentProtectionDisabled ||
+                                            requirementSaving ||
+                                            profileSaving
+                                          }
+                                          onChange={(event) =>
+                                            void handleContentProtectionRequirementChange(
+                                              group,
+                                              event.target.value as 'inherit' | 'require',
+                                            )
+                                          }
+                                        >
+                                          <option value="inherit">Inherit</option>
+                                          <option value="require">Require classification</option>
+                                        </select>
+                                        {contentProtectionDisabled && (
+                                          <div className="field-help">
+                                            Content protection is disabled in Settings.
+                                          </div>
+                                        )}
+                                        {contentProtectionConfig.coverage_mode ===
+                                          'all_supported_traffic' && (
+                                          <div className="field-help">
+                                            Coverage is currently All supported traffic; scope
+                                            requirements apply when coverage is Selected scopes.
+                                          </div>
+                                        )}
+                                        <label htmlFor={`auth-group-profile-${group.id}`}>
+                                          Profile
+                                        </label>
+                                        <select
+                                          id={`auth-group-profile-${group.id}`}
+                                          data-content-protection-group-profile={group.id}
+                                          value={groupProfileId || ''}
+                                          disabled={
+                                            contentProtectionDisabled ||
+                                            requirementSaving ||
+                                            profileSaving
+                                          }
+                                          onChange={(event) =>
+                                            void handleContentProtectionProfileChange(
+                                              group,
+                                              event.target.value,
+                                            )
+                                          }
+                                        >
+                                          <option value="">No profile</option>
+                                          {contentProtectionConfig.profiles.map((profile) => (
+                                            <option key={profile.id} value={profile.id}>
+                                              {profile.name}
+                                            </option>
+                                          ))}
+                                        </select>
+                                        <div className="field-help">
+                                          Profile definitions are edited in Settings → Content
+                                          protection.
+                                        </div>
+                                      </div>
+                                    )}
                                     <div
                                       className="auth-group-access-segment"
                                       role="group"

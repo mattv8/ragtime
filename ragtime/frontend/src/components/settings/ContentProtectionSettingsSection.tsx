@@ -1,31 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   contentProtectionApi,
   ContentProtectionApiError,
+  requirementModeFor,
   type ContentProtectionCatalog,
   type ContentProtectionConfig,
-  type ContentProtectionOverrideMode,
   type ContentProtectionProfile,
-  type ContentProtectionRequirement,
   type ContentProtectionRequirementMode,
   type ContentProtectionTestResult,
+  withRequirement,
 } from '@/api/contentProtection';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { ModelSelector } from '../ModelSelector';
 import { SettingsAccordionSection } from './SettingsAccordionSection';
 import type { SettingsAccordionSectionId } from './settingsAccordionState';
 
-type Tab = 'users' | 'groups' | 'tools' | 'mcp-routes' | 'surfaces';
 type PreviewIdentity = `user:${string}` | 'public' | 'service';
-
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'users', label: 'Users' },
-  { id: 'groups', label: 'Groups' },
-  { id: 'tools', label: 'Tools' },
-  { id: 'mcp-routes', label: 'MCP routes' },
-  { id: 'surfaces', label: 'Surfaces' },
-];
 const EMPTY_CATALOG: ContentProtectionCatalog = {
   users: [],
   groups: [],
@@ -36,45 +27,6 @@ const EMPTY_CATALOG: ContentProtectionCatalog = {
 
 function formatLatency(latency: number | undefined): string {
   return latency == null ? '' : ` · ${Math.round(latency * 1000)} ms`;
-}
-
-function requirementMode(
-  config: ContentProtectionConfig,
-  scope_kind: ContentProtectionRequirement['scope_kind'],
-  scope_key: string,
-): ContentProtectionRequirementMode {
-  return (
-    config.requirements.find(
-      (item) => item.scope_kind === scope_kind && item.scope_key === scope_key,
-    )?.mode || 'inherit'
-  );
-}
-
-function setRequirement(
-  config: ContentProtectionConfig,
-  scope_kind: ContentProtectionRequirement['scope_kind'],
-  scope_key: string,
-  mode: ContentProtectionRequirementMode,
-): ContentProtectionConfig {
-  const requirements = config.requirements.filter(
-    (item) => item.scope_kind !== scope_kind || item.scope_key !== scope_key,
-  );
-  if (mode === 'require') requirements.push({ scope_kind, scope_key, mode });
-  return { ...config, requirements };
-}
-
-function userMode(config: ContentProtectionConfig, user_id: string): ContentProtectionOverrideMode {
-  return config.user_overrides.find((item) => item.user_id === user_id)?.mode || 'inherit';
-}
-
-function setUserOverride(
-  config: ContentProtectionConfig,
-  user_id: string,
-  mode: ContentProtectionOverrideMode,
-): ContentProtectionConfig {
-  const user_overrides = config.user_overrides.filter((item) => item.user_id !== user_id);
-  if (mode !== 'inherit') user_overrides.push({ user_id, mode });
-  return { ...config, user_overrides };
 }
 
 function previewIdentityLabel(
@@ -106,8 +58,6 @@ export function ContentProtectionSettingsSection({
   refreshModelsRef.current = refreshModels;
   const [config, setConfig] = useState<ContentProtectionConfig | null>(null);
   const [catalog, setCatalog] = useState<ContentProtectionCatalog>(EMPTY_CATALOG);
-  const [activeTab, setActiveTab] = useState<Tab>('users');
-  const [filter, setFilter] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
@@ -150,30 +100,9 @@ export function ContentProtectionSettingsSection({
   useEffect(() => {
     if (open) refreshModelsRef.current();
   }, [open]);
-  useEffect(() => {
-    if (window.location.hash === '#content-protection-groups-tab') setActiveTab('groups');
-  }, [open]);
-
   const update = (change: Partial<ContentProtectionConfig>) =>
     setConfig((current) => current && { ...current, ...change });
   const selectedModel = config?.classifier_model || '';
-  const rows = useMemo(() => {
-    const query = filter.trim().toLowerCase();
-    const source =
-      activeTab === 'users'
-        ? catalog.users
-        : activeTab === 'groups'
-          ? catalog.groups
-          : activeTab === 'tools'
-            ? catalog.tools
-            : activeTab === 'mcp-routes'
-              ? catalog.mcp_routes
-              : catalog.surfaces;
-    return query
-      ? source.filter((row) => `${row.name} ${row.id}`.toLowerCase().includes(query))
-      : source;
-  }, [activeTab, catalog, filter]);
-
   const save = async () => {
     if (!config) return;
     setSaving(true);
@@ -236,13 +165,6 @@ export function ContentProtectionSettingsSection({
       setError(caught instanceof Error ? caught.message : 'Readiness probe failed');
     }
   };
-  const setGroupProfile = (group_id: string, profile_id: string) =>
-    update({
-      group_profiles: [
-        ...(config?.group_profiles || []).filter((item) => item.group_id !== group_id),
-        ...(profile_id ? [{ group_id, profile_id }] : []),
-      ],
-    });
   const updateProfile = (id: string, change: Partial<ContentProtectionProfile>) =>
     update({
       profiles: (config?.profiles || []).map((profile) =>
@@ -463,146 +385,41 @@ export function ContentProtectionSettingsSection({
                 )}
               </div>
             </div>
-            <div id="content-protection-scope-tabs" className="content-protection-card">
-              <div
-                className="content-protection-tabs"
-                role="tablist"
-                aria-label="Content protection scopes"
-              >
-                {TABS.map((tab) => (
-                  <button
-                    key={tab.id}
-                    id={`content-protection-${tab.id}-tab`}
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === tab.id}
-                    className={activeTab === tab.id ? 'is-active' : ''}
-                    onClick={() => setActiveTab(tab.id)}
+            <div id="content-protection-surface-coverage" className="content-protection-card">
+              <h4>Surface coverage</h4>
+              <p className="field-help">
+                {config.coverage_mode === 'all_supported_traffic'
+                  ? 'Coverage is currently All supported traffic; scope requirements apply when coverage is Selected scopes.'
+                  : 'Require adds coverage; Inherit does not exempt traffic.'}
+              </p>
+              <div className="content-protection-rows">
+                {catalog.surfaces.map((surface) => (
+                  <div
+                    className="content-protection-row"
+                    key={surface.id}
+                    data-surface-id={surface.id}
                   >
-                    {tab.label}
-                  </button>
+                    <strong>{surface.name}</strong>
+                    <select
+                      id={`content-protection-surface-${surface.id}`}
+                      aria-label={`Coverage for ${surface.name}`}
+                      value={requirementModeFor(config, 'surface', surface.id)}
+                      onChange={(event) =>
+                        update({
+                          requirements: withRequirement(
+                            config,
+                            'surface',
+                            surface.id,
+                            event.target.value as ContentProtectionRequirementMode,
+                          ).requirements,
+                        })
+                      }
+                    >
+                      <option value="inherit">Inherit</option>
+                      <option value="require">Require</option>
+                    </select>
+                  </div>
                 ))}
-              </div>
-              <label className="content-protection-filter">
-                Search <input value={filter} onChange={(event) => setFilter(event.target.value)} />
-              </label>
-              <div role="tabpanel" className="content-protection-rows">
-                {activeTab === 'users' ? (
-                  <>
-                    {rows.map((row) => (
-                      <div className="content-protection-row" key={row.id} data-user-id={row.id}>
-                        <span>
-                          <strong>{row.name}</strong>
-                          <small>
-                            {config.enabled
-                              ? 'Override applies at supported boundaries.'
-                              : 'Dormant while master switch is off.'}
-                          </small>
-                        </span>
-                        <select
-                          aria-label={`Override for ${row.name}`}
-                          value={userMode(config, row.id)}
-                          onChange={(event) =>
-                            update({
-                              user_overrides: setUserOverride(
-                                config,
-                                row.id,
-                                event.target.value as ContentProtectionOverrideMode,
-                              ).user_overrides,
-                            })
-                          }
-                        >
-                          <option value="inherit">Inherit</option>
-                          <option value="always_classify">Always classify</option>
-                          <option value="never_classify">Never classify</option>
-                        </select>
-                      </div>
-                    ))}
-                    {(['anonymous', 'service', 'public'] as const).map((baseline) => (
-                      <div
-                        className="content-protection-row"
-                        key={baseline}
-                        data-baseline-identity-type={baseline}
-                      >
-                        <span>
-                          <strong>{baseline}</strong>
-                          <small>
-                            Baseline identities are informational and cannot receive user overrides.
-                          </small>
-                        </span>
-                        <span aria-label={`${baseline} overrides unavailable`}>Inherit only</span>
-                      </div>
-                    ))}
-                  </>
-                ) : (
-                  rows.map((row) => {
-                    const scope_kind =
-                      activeTab === 'groups'
-                        ? 'group'
-                        : activeTab === 'tools'
-                          ? 'tool'
-                          : activeTab === 'mcp-routes'
-                            ? 'mcp_route'
-                            : 'surface';
-                    return (
-                      <div
-                        className="content-protection-row"
-                        key={row.id}
-                        {...(scope_kind === 'group'
-                          ? { 'data-group-id': row.id }
-                          : scope_kind === 'tool'
-                            ? { 'data-tool-id': row.id }
-                            : scope_kind === 'mcp_route'
-                              ? { 'data-mcp-route-key': row.id }
-                              : { 'data-surface-id': row.id })}
-                      >
-                        <span>
-                          <strong>{row.name}</strong>
-                          <small>
-                            {config.coverage_mode === 'all_supported_traffic'
-                              ? 'Covered by global mode; this requirement is dormant.'
-                              : 'Require adds coverage; Inherit does not exempt traffic.'}
-                          </small>
-                        </span>
-                        <select
-                          aria-label={`Coverage for ${row.name}`}
-                          value={requirementMode(config, scope_kind, row.id)}
-                          onChange={(event) =>
-                            update({
-                              requirements: setRequirement(
-                                config,
-                                scope_kind,
-                                row.id,
-                                event.target.value as ContentProtectionRequirementMode,
-                              ).requirements,
-                            })
-                          }
-                          disabled={config.coverage_mode === 'all_supported_traffic'}
-                        >
-                          <option value="inherit">Inherit</option>
-                          <option value="require">Require</option>
-                        </select>
-                        {scope_kind === 'group' && (
-                          <select
-                            aria-label={`Profile for ${row.name}`}
-                            value={
-                              config.group_profiles.find((mapping) => mapping.group_id === row.id)
-                                ?.profile_id || ''
-                            }
-                            onChange={(event) => setGroupProfile(row.id, event.target.value)}
-                          >
-                            <option value="">Standard baseline</option>
-                            {config.profiles.map((profile) => (
-                              <option key={profile.id} value={profile.id}>
-                                {profile.name}
-                              </option>
-                            ))}
-                          </select>
-                        )}
-                      </div>
-                    );
-                  })
-                )}
               </div>
             </div>
             <details id="content-protection-profile-editor" className="content-protection-card">

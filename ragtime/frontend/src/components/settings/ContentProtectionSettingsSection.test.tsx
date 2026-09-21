@@ -49,7 +49,7 @@ describe('ContentProtectionSettingsSection', () => {
     await waitFor(() => expect(refreshModels).toHaveBeenCalledTimes(1));
   });
 
-  it('keeps trusted-user overrides editable in all supported traffic mode', async () => {
+  it('keeps surface requirements editable in all supported traffic mode', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn((url: string) => {
@@ -57,21 +57,26 @@ describe('ContentProtectionSettingsSection', () => {
         if (url.endsWith('/catalog'))
           return Promise.resolve(
             json({
-              users: [{ id: 'u1', name: 'Ada' }],
+              users: [],
               groups: [],
               tools: [],
               mcp_routes: [],
-              surfaces: [],
+              surfaces: [{ id: 'chat', name: 'Chat' }],
             }),
           );
         return Promise.resolve(json({ items: [] }));
       }),
     );
     renderSection();
-    const override = await screen.findByLabelText('Override for Ada');
-    expect((override as HTMLSelectElement).disabled).toBe(false);
-    fireEvent.change(override, { target: { value: 'never_classify' } });
-    expect((override as HTMLSelectElement).value).toBe('never_classify');
+    const requirement = await screen.findByLabelText('Coverage for Chat');
+    expect((requirement as HTMLSelectElement).disabled).toBe(false);
+    fireEvent.change(requirement, { target: { value: 'require' } });
+    expect((requirement as HTMLSelectElement).value).toBe('require');
+    expect(
+      screen.getByText(
+        'Coverage is currently All supported traffic; scope requirements apply when coverage is Selected scopes.',
+      ),
+    ).toBeTruthy();
   });
 
   it('sends the revisioned draft and explains a conflict without overwriting it', async () => {

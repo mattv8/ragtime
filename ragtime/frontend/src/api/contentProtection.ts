@@ -141,3 +141,71 @@ export const contentProtectionApi = {
     }),
   decisions: () => request<{ items: ContentProtectionDecision[] }>('/decisions'),
 };
+
+export async function updateContentProtectionConfigSlice(
+  mutate: (config: ContentProtectionConfig) => ContentProtectionConfig,
+): Promise<ContentProtectionConfig> {
+  const saveSlice = async (): Promise<ContentProtectionConfig> => {
+    const config = await contentProtectionApi.getConfig();
+    return contentProtectionApi.saveConfig(config.revision, mutate(config));
+  };
+
+  try {
+    return await saveSlice();
+  } catch (error) {
+    if (!(error instanceof ContentProtectionApiError) || error.status !== 409) throw error;
+  }
+
+  return saveSlice();
+}
+
+export function userOverrideMode(
+  config: ContentProtectionConfig,
+  userId: string,
+): ContentProtectionOverrideMode {
+  return config.user_overrides.find((item) => item.user_id === userId)?.mode || 'inherit';
+}
+
+export function withUserOverride(
+  config: ContentProtectionConfig,
+  userId: string,
+  mode: ContentProtectionOverrideMode,
+): ContentProtectionConfig {
+  const user_overrides = config.user_overrides.filter((item) => item.user_id !== userId);
+  if (mode !== 'inherit') user_overrides.push({ user_id: userId, mode });
+  return { ...config, user_overrides };
+}
+
+export function requirementModeFor(
+  config: ContentProtectionConfig,
+  scopeKind: ContentProtectionRequirement['scope_kind'],
+  scopeKey: string,
+): ContentProtectionRequirementMode {
+  return (
+    config.requirements.find((item) => item.scope_kind === scopeKind && item.scope_key === scopeKey)
+      ?.mode || 'inherit'
+  );
+}
+
+export function withRequirement(
+  config: ContentProtectionConfig,
+  scopeKind: ContentProtectionRequirement['scope_kind'],
+  scopeKey: string,
+  mode: ContentProtectionRequirementMode,
+): ContentProtectionConfig {
+  const requirements = config.requirements.filter(
+    (item) => item.scope_kind !== scopeKind || item.scope_key !== scopeKey,
+  );
+  if (mode === 'require') requirements.push({ scope_kind: scopeKind, scope_key: scopeKey, mode });
+  return { ...config, requirements };
+}
+
+export function withGroupProfile(
+  config: ContentProtectionConfig,
+  groupId: string,
+  profileId: string,
+): ContentProtectionConfig {
+  const group_profiles = config.group_profiles.filter((item) => item.group_id !== groupId);
+  if (profileId) group_profiles.push({ group_id: groupId, profile_id: profileId });
+  return { ...config, group_profiles };
+}

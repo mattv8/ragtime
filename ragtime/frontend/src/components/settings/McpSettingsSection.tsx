@@ -1,4 +1,12 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
+import {
+  contentProtectionApi,
+  requirementModeFor,
+  type ContentProtectionConfig,
+  type ContentProtectionRequirementMode,
+  updateContentProtectionConfigSlice,
+  withRequirement,
+} from '@/api/contentProtection';
 import { Eye, EyeOff } from 'lucide-react';
 import { InlineCopyButton } from '../shared/InlineCopyButton';
 import { LdapGroupChips, LdapGroupSelect, type LdapGroup } from '../LdapGroupSelect';
@@ -21,7 +29,7 @@ export interface McpSettingsSectionProps {
   mcpSaving: boolean;
   handleSaveMcp: () => void | Promise<void>;
   setShowMcpRoutesPanel: Dispatch<SetStateAction<boolean>>;
-  toast: { success: (message: string) => void };
+  toast: { success: (message: string) => void; error: (message: string) => void };
   generateMcpClientId: () => string;
   generateMcpSecret: () => string;
 }
@@ -46,6 +54,8 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
     generateMcpClientId,
     generateMcpSecret,
   } = props;
+  const [contentProtectionConfig, setContentProtectionConfig] =
+    useState<ContentProtectionConfig | null>(null);
   const authEnabled = formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth ?? false;
   const authMethod =
     formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'oauth2';
@@ -55,6 +65,32 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
     authMethod === 'oauth2' &&
     ((settings?.has_mcp_default_password && formData.mcp_default_route_password !== '') ||
       Boolean(formData.mcp_default_route_password));
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    void contentProtectionApi.getConfig().then(
+      (config) => active && setContentProtectionConfig(config),
+      () => active && setContentProtectionConfig(null),
+    );
+    return () => {
+      active = false;
+    };
+  }, [open]);
+
+  const updateDefaultRouteRequirement = async (mode: ContentProtectionRequirementMode) => {
+    try {
+      const nextConfig = await updateContentProtectionConfigSlice((config) =>
+        withRequirement(config, 'mcp_route', 'default', mode),
+      );
+      setContentProtectionConfig(nextConfig);
+      toast.success('Content protection requirement saved');
+    } catch (caught) {
+      toast.error(
+        caught instanceof Error ? caught.message : 'Failed to save content protection requirement',
+      );
+    }
+  };
 
   return (
     <SettingsAccordionSection id="mcp" title="MCP Configuration" open={open} onToggle={onToggle}>
@@ -113,6 +149,41 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
                       : ' Set a password below to enable password-based authentication.'}
               </p>
             </div>
+
+            {contentProtectionConfig && (
+              <div className="form-group" id="mcp-default-route-content-protection">
+                <label htmlFor="mcp-default-route-require-classification">
+                  Require classification
+                </label>
+                <select
+                  id="mcp-default-route-require-classification"
+                  value={requirementModeFor(contentProtectionConfig, 'mcp_route', 'default')}
+                  onChange={(event) =>
+                    void updateDefaultRouteRequirement(
+                      event.target.value as ContentProtectionRequirementMode,
+                    )
+                  }
+                  disabled={!contentProtectionConfig.enabled}
+                  title={
+                    contentProtectionConfig.enabled
+                      ? undefined
+                      : 'Content protection is disabled in Settings.'
+                  }
+                >
+                  <option value="inherit">Inherit</option>
+                  <option value="require">Require</option>
+                </select>
+                {!contentProtectionConfig.enabled && (
+                  <p className="field-help">Content protection is disabled in Settings.</p>
+                )}
+                {contentProtectionConfig.coverage_mode === 'all_supported_traffic' && (
+                  <p className="field-help">
+                    Coverage is currently All supported traffic; scope requirements apply when
+                    coverage is Selected scopes.
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Auth method selection - always show when auth is enabled. LDAP-only OAuth2 is conditional. */}
             {authEnabled && (
