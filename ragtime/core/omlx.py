@@ -144,6 +144,7 @@ def _parse_model_row(row: dict[str, Any]) -> OmlxModelInfo | None:
     return OmlxModelInfo(
         id=model_id,
         name=str(row.get("name") or model_id),
+        context_limit=_coerce_positive_int(row.get("max_model_len")),
         model_type=str(row.get("model_type") or "").strip().lower(),
         engine_type=str(row.get("engine_type") or "").strip().lower(),
         loaded=bool(row.get("loaded")),
@@ -155,7 +156,7 @@ def _parse_status_model_row(row: dict[str, Any]) -> OmlxModelInfo | None:
     model = _parse_model_row(row)
     if model is None:
         return None
-    model.context_limit = _coerce_positive_int(row.get("max_context_window") or row.get("max_tokens"))
+    model.context_limit = _coerce_positive_int(row.get("max_context_window")) or model.context_limit or _coerce_positive_int(row.get("model_context_length"))
     return model
 
 
@@ -412,5 +413,23 @@ async def list_embedding_models(
 
 async def get_model_context_length(model: str, base_url: str, api_key: str | None = None) -> int | None:
     """Return context metadata for an oMLX model if discoverable."""
-    _ = (model, base_url, api_key)
+    target = str(model or "").strip()
+    if not target:
+        return None
+
+    try:
+        status_models = await list_status_models(base_url, api_key=api_key)
+    except Exception:
+        status_models = []
+    for info in status_models:
+        if info.id == target and _coerce_positive_int(info.context_limit):
+            return info.context_limit
+
+    try:
+        models = await list_models(base_url, api_key=api_key)
+    except Exception:
+        return None
+    for info in models:
+        if info.id == target:
+            return _coerce_positive_int(info.context_limit)
     return None

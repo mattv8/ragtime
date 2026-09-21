@@ -3740,7 +3740,8 @@ class RAGComponents:
         if normalized_provider == "lmstudio":
             return await lmstudio.get_model_context_length(model, base_url)
         if normalized_provider == "omlx":
-            return await omlx.get_model_context_length(model, base_url)
+            assert self._app_settings is not None
+            return await omlx.get_model_context_length(model, base_url, api_key=self._app_settings.get("omlx_api_key"))
         return None
 
     async def _resolve_llm_max_tokens(self, provider: str, model: str) -> int:

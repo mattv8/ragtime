@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatModelsSettingsSectionProps } from './settings/ChatModelsSettingsSection';
 import type { User } from '@/types';
+import { SettingsPanel } from './SettingsPanel';
 
 const modalRenderSpy = vi.hoisted(() => vi.fn());
 const searchFilterBarSpy = vi.hoisted(() => vi.fn());
@@ -569,7 +570,6 @@ afterEach(() => {
 
 async function renderAuthProvider(provider: 'github_copilot' | 'openai_codex' | 'claude_code') {
   chatModelsSectionState.autoOpenModal = false;
-  const { SettingsPanel } = await import('./SettingsPanel');
   render(<SettingsPanel />);
 
   const accordionToggle = await screen.findByRole('button', { name: /LLM Providers/i });
@@ -587,7 +587,6 @@ async function renderAuthProvider(provider: 'github_copilot' | 'openai_codex' | 
 
 describe('SettingsPanel', () => {
   it('edits authentication lifetimes, restores inherited web policy, and omits the effective value', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
     render(
       <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
     );
@@ -620,7 +619,6 @@ describe('SettingsPanel', () => {
   });
 
   it('rejects invalid authentication lifetime input before saving', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
     render(
       <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
     );
@@ -641,7 +639,6 @@ describe('SettingsPanel', () => {
   });
 
   it('keeps an invalid web override and disabled save state through independent auth edits', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
     render(
       <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
     );
@@ -673,8 +670,6 @@ describe('SettingsPanel', () => {
   });
 
   it('renders and updates the chat attachment token budget slider', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
-
     render(<SettingsPanel />);
 
     const budget = (await screen.findByLabelText(
@@ -695,8 +690,6 @@ describe('SettingsPanel', () => {
   });
 
   it('renders the authentication provider selector as a form field, not an action row', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
-
     render(<SettingsPanel />);
 
     const selector = await screen.findByDisplayValue('Internal Users');
@@ -707,8 +700,6 @@ describe('SettingsPanel', () => {
   });
 
   it('does not render an API-key warning from a stale unauthenticated status', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
-
     render(
       <SettingsPanel
         authStatus={{
@@ -780,8 +771,6 @@ describe('SettingsPanel', () => {
       return Promise.resolve({ success: true, models: [] });
     });
 
-    const { SettingsPanel } = await import('./SettingsPanel');
-
     render(<SettingsPanel />);
     await screen.findByRole('button', { name: 'Open chat models' });
 
@@ -826,7 +815,6 @@ describe('SettingsPanel', () => {
     const onServerBackupJobObserved = vi.fn();
     const onServerRestoreJobObserved = vi.fn();
     const onServerOperationError = vi.fn();
-    const { SettingsPanel } = await import('./SettingsPanel');
 
     render(
       <SettingsPanel
@@ -859,8 +847,6 @@ describe('SettingsPanel', () => {
   });
 
   it('passes deduplicated rendered settings search candidates into the shared search bar', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
-
     render(<SettingsPanel />);
     await screen.findByRole('button', { name: 'Open chat models' });
 
@@ -893,7 +879,6 @@ describe('SettingsPanel', () => {
   });
 
   it('includes the OAuth2 fallback password in the MCP save payload when it is set', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
     let stage: 'wait-settings' | 'set-password' | 'save' | 'done' = 'wait-settings';
 
     mcpSectionState.run = (props) => {
@@ -942,8 +927,6 @@ describe('SettingsPanel', () => {
   }, 10000);
 
   it('retains an existing OAuth2 fallback password when the admin saves without changing it', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
-
     mcpSectionState.run = (props) => {
       if (!props.settings || apiMock.updateSettings.mock.calls.length > 0) {
         return;
@@ -966,7 +949,6 @@ describe('SettingsPanel', () => {
   }, 10000);
 
   it('clears an existing OAuth2 fallback password when the admin removes it and saves', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
     let stage: 'wait-settings' | 'clear-password' | 'save' | 'done' = 'wait-settings';
 
     mcpSectionState.run = (props) => {
@@ -1015,7 +997,6 @@ describe('SettingsPanel', () => {
   }, 10000);
 
   it('hydrates and saves the FAISS concurrency mode through the search configuration flow', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
     let stage: 'wait-settings' | 'toggle' | 'save' | 'done' = 'wait-settings';
 
     searchSectionState.run = (props) => {
@@ -1109,8 +1090,6 @@ describe('SettingsPanel', () => {
       ],
     });
 
-    const { SettingsPanel } = await import('./SettingsPanel');
-
     render(<SettingsPanel />);
     await screen.findByRole('button', { name: 'Open chat models' });
 
@@ -1125,8 +1104,6 @@ describe('SettingsPanel', () => {
       buildSettingsResponse({}, { omitToolSkillsEnabled: true }),
     );
 
-    const { SettingsPanel } = await import('./SettingsPanel');
-
     render(<SettingsPanel />);
 
     const checkbox = (await screen.findByLabelText('Load tools on demand')) as HTMLInputElement;
@@ -1136,8 +1113,6 @@ describe('SettingsPanel', () => {
   it('renders the load-tools-on-demand toggle as unchecked when the API returns false', async () => {
     apiMock.getSettings.mockResolvedValue(buildSettingsResponse({ tool_skills_enabled: false }));
 
-    const { SettingsPanel } = await import('./SettingsPanel');
-
     render(<SettingsPanel />);
 
     await screen.findByRole('button', { name: 'Open chat models' });
@@ -1146,8 +1121,6 @@ describe('SettingsPanel', () => {
   });
 
   it('updates the load-tools-on-demand toggle state when clicked', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
-
     render(<SettingsPanel />);
 
     const checkbox = (await screen.findByLabelText('Load tools on demand')) as HTMLInputElement;
@@ -1161,8 +1134,6 @@ describe('SettingsPanel', () => {
   });
 
   it('renders the load-tools-on-demand toggle in its own row with one clear label association', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
-
     render(<SettingsPanel />);
 
     const checkbox = (await screen.findByLabelText('Load tools on demand')) as HTMLInputElement;
@@ -1179,8 +1150,6 @@ describe('SettingsPanel', () => {
   });
 
   it('renders Agent Behavior after Chat Models and before MCP, closed by default, with the expected wiring', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
-
     render(<SettingsPanel />);
 
     await waitFor(() => {
@@ -1203,8 +1172,6 @@ describe('SettingsPanel', () => {
 
   it('saves Agent Behavior with exactly the isolated four-field payload and success feedback', async () => {
     apiMock.getSettings.mockResolvedValue(buildSettingsResponse({ tool_skills_enabled: false }));
-
-    const { SettingsPanel } = await import('./SettingsPanel');
 
     render(<SettingsPanel />);
 
@@ -1262,7 +1229,6 @@ describe('SettingsPanel', () => {
         userspace_exec_timeout_max_seconds: 900,
       }).settings,
     );
-    const { SettingsPanel } = await import('./SettingsPanel');
 
     render(
       <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
@@ -1296,7 +1262,6 @@ describe('SettingsPanel', () => {
   });
 
   it('blocks blank and inverted admin timeout drafts without issuing a save', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
     render(
       <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
     );
@@ -1329,7 +1294,6 @@ describe('SettingsPanel', () => {
   });
 
   it('does not expose workspace timeout controls to non-admin users', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
     render(<SettingsPanel currentUser={{ id: 'user', username: 'user', role: 'user' } as User} />);
 
     await screen.findByRole('button', { name: 'Agent Behavior' });
@@ -1345,8 +1309,6 @@ describe('SettingsPanel', () => {
         scratchpad_window_size: 4,
       }),
     );
-
-    const { SettingsPanel } = await import('./SettingsPanel');
 
     render(<SettingsPanel />);
 
@@ -1368,7 +1330,6 @@ describe('SettingsPanel', () => {
   });
 
   it('preserves, replaces, and explicitly clears the OpenRouter management secret', async () => {
-    const { SettingsPanel } = await import('./SettingsPanel');
     render(
       <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
     );
@@ -1517,7 +1478,6 @@ describe('SettingsPanel', () => {
   it('keeps passive Copilot status refresh failures quiet during settings load', async () => {
     chatModelsSectionState.autoOpenModal = false;
     apiMock.getCopilotAuthStatus.mockRejectedValueOnce(new Error('copilot status failed'));
-    const { SettingsPanel } = await import('./SettingsPanel');
 
     render(<SettingsPanel />);
 

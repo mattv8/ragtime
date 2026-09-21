@@ -1506,6 +1506,101 @@ class ConversationCreationPreferenceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_openai_model_discovery_uses_live_token_limits(self) -> None:
+        payload = {
+            "data": [
+                {
+                    "id": "gpt-astra",
+                    "object": "model",
+                    "created": 1_790_000_000,
+                    "owned_by": "openai",
+                    "context_window": 1_000_000,
+                    "max_output_tokens": 128_000,
+                }
+            ]
+        }
+
+        with (
+            mock.patch(
+                "ragtime.indexer.routes.httpx.AsyncClient",
+                return_value=FakeAsyncClient(payload),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes.supports_function_calling",
+                new=mock.AsyncMock(return_value=True),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes.supports_reasoning",
+                new=mock.AsyncMock(return_value=False),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes.supports_reasoning_effort",
+                new=mock.AsyncMock(return_value=False),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes.get_output_limit",
+                new=mock.AsyncMock(return_value=64_000),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes.get_context_limit",
+                new=mock.AsyncMock(return_value=200_000),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes.ensure_model_metadata_loaded",
+                new=mock.AsyncMock(),
+            ),
+            mock.patch("ragtime.indexer.routes.update_model_limit"),
+            mock.patch("ragtime.indexer.routes.update_model_output_limit"),
+        ):
+            result = await indexer_routes._fetch_openai_models("openai-key")
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(result.models), 1)
+        self.assertEqual(result.models[0].context_limit, 1_000_000)
+        self.assertEqual(result.models[0].max_output_tokens, 128_000)
+
+    async def test_anthropic_model_discovery_uses_live_token_limits(self) -> None:
+        payload = {
+            "data": [
+                {
+                    "type": "model",
+                    "id": "claude-fable-5-1",
+                    "display_name": "Claude Fable 5.1",
+                    "created_at": "2026-09-01T00:00:00Z",
+                    "max_input_tokens": 1_000_000,
+                    "max_tokens": 128_000,
+                }
+            ],
+            "first_id": "claude-fable-5-1",
+            "has_more": False,
+            "last_id": "claude-fable-5-1",
+        }
+
+        with (
+            mock.patch(
+                "ragtime.indexer.routes.get_output_limit",
+                new=mock.AsyncMock(return_value=64_000),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes.get_context_limit",
+                new=mock.AsyncMock(return_value=200_000),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes.ensure_model_metadata_loaded",
+                new=mock.AsyncMock(),
+            ),
+            mock.patch("ragtime.indexer.routes.update_model_limit"),
+            mock.patch("ragtime.indexer.routes.update_model_output_limit"),
+        ):
+            models = await indexer_routes._build_anthropic_models_from_payload(
+                payload,
+                "anthropic",
+            )
+
+        self.assertEqual(len(models), 1)
+        self.assertEqual(models[0].context_limit, 1_000_000)
+        self.assertEqual(models[0].max_output_tokens, 128_000)
+
     async def test_openai_model_discovery_skips_completions_only_rows(self) -> None:
         payload = {
             "data": [
