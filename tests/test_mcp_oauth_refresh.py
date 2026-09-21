@@ -6,36 +6,72 @@ Prisma client are current:
     RAGTIME_AUTH_INTEGRATION=1 python -m pytest tests/test_mcp_oauth_refresh.py -q
 """
 
+import asyncio
 import base64
 import hashlib
+import hmac
 import os
 import re
 import unittest
 from datetime import timedelta
+from typing import Any
 from unittest import mock
 from uuid import uuid4
 
 from prisma import Prisma
 from prisma.enums import AuthProvider, McpAuthMethod
+from prisma.types import AuthProviderConfigCreateInput, AuthProviderConfigUpsertInput, McpRouteConfigCreateInput, UserCreateInput
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from ragtime.api import auth as api_auth
+from ragtime.config.settings import settings
 from ragtime.core.auth import AuthResult, decode_jwt_payload, encode_jwt_payload, hash_token, validate_session
 from ragtime.core.database import _manager
 from ragtime.core.datetimes import utc_now
 from ragtime.core.oauth_grants import (
     create_grant,
     get_active_grant,
+    revoke_grant,
     revoke_user_auth,
 )
 from ragtime.mcp.user_oauth import (
     McpOAuthError,
+    derive_mcp_refresh_successor,
     issue_mcp_token_pair,
     refresh_mcp_token_pair,
     revoke_mcp_token,
     validate_mcp_token_and_fetch_user,
 )
+
+
+class McpRefreshSuccessorTests(unittest.TestCase):
+    def test_successor_has_frozen_known_answer(self) -> None:
+        with mock.patch.object(settings, "encryption_key", "test-encryption-key"):
+            successor = derive_mcp_refresh_successor("refresh-token")
+
+        self.assertEqual(successor, "VOJVggUXt6Yrf-eJevewmgccVT8jFIA4KN8hLRYke1o")
+
+    def test_successor_changes_with_key_and_domain(self) -> None:
+        refresh_token = "refresh-token"
+        with mock.patch.object(settings, "encryption_key", "test-encryption-key"):
+            successor = derive_mcp_refresh_successor(refresh_token)
+        with mock.patch.object(settings, "encryption_key", "another-encryption-key"):
+            changed_key_successor = derive_mcp_refresh_successor(refresh_token)
+
+        old_domain_successor = (
+            base64.urlsafe_b64encode(
+                hmac.new(
+                    b"test-encryption-key",
+                    f"ragtime.mcp.refresh:{refresh_token}".encode("utf-8"),
+                    hashlib.sha256,
+                ).digest()
+            )
+            .rstrip(b"=")
+            .decode("ascii")
+        )
+        self.assertNotEqual(successor, changed_key_successor)
+        self.assertNotEqual(successor, old_domain_successor)
 
 
 @unittest.skipUnless(
@@ -59,23 +95,21 @@ class McpOAuthRefreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.previous_auth_config = await self.db.authproviderconfig.find_unique(where={"id": "default"})
         self.user_id = str(uuid4())
         self.username = f"oauth-refresh-{self.user_id}"
-        await self.db.user.create(
-            data={
-                "id": self.user_id,
-                "username": self.username,
-                "authProvider": AuthProvider.local,
-            }
+        user_data = UserCreateInput(
+            id=self.user_id,
+            username=self.username,
+            authProvider=AuthProvider.local,
         )
+        await self.db.user.create(data=user_data)
         self.route_path = f"refresh-route-{uuid4().hex}"
-        await self.db.mcprouteconfig.create(
-            data={
-                "name": self.route_path,
-                "routePath": self.route_path,
-                "enabled": True,
-                "requireAuth": True,
-                "authMethod": McpAuthMethod.oauth2,
-            }
+        route_data = McpRouteConfigCreateInput(
+            name=self.route_path,
+            routePath=self.route_path,
+            enabled=True,
+            requireAuth=True,
+            authMethod=McpAuthMethod.oauth2,
         )
+        await self.db.mcprouteconfig.create(data=route_data)
         self.audience = f"{self.issuer}/mcp/{self.route_path}"
         self.mcp_settings = {
             "mcp_enabled": True,
@@ -148,12 +182,13 @@ class McpOAuthRefreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
 
         for override_hours in (48, 12):
+            auth_config_data = AuthProviderConfigUpsertInput(
+                create=AuthProviderConfigCreateInput(id="default", webSessionHours=override_hours),
+                update={"webSessionHours": override_hours},
+            )
             await self.db.authproviderconfig.upsert(
                 where={"id": "default"},
-                data={
-                    "create": {"id": "default", "webSessionHours": override_hours},
-                    "update": {"webSessionHours": override_hours},
-                },
+                data=auth_config_data,
             )
             response = Response()
             with (
@@ -198,7 +233,7 @@ class McpOAuthRefreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(int(max_age_match.group(1)), expected_lifetime)
             self.assertAlmostEqual(result.expires_in, token_payload["exp"] - utc_now().timestamp(), delta=1)
 
-    async def test_refresh_rotates_persisted_token_and_replay_revokes_access(self) -> None:
+    async def test_refresh_replay_inside_overlap_returns_same_active_successor_after_client_restart(self) -> None:
         pair = await issue_mcp_token_pair(
             user_id=self.user_id,
             client_id=self.client_id,
@@ -209,11 +244,6 @@ class McpOAuthRefreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
             auth_methods=["password"],
             issuer=self.issuer,
         )
-        original_access = pair["access_token"]
-
-        # A new Prisma client represents a process/client restart: refresh is
-        # resolved exclusively from persisted grant and refresh-token records.
-        _manager._db = self.restarted_db
         refreshed = await refresh_mcp_token_pair(
             refresh_token=pair["refresh_token"],
             client_id=self.client_id,
@@ -224,6 +254,84 @@ class McpOAuthRefreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(refreshed["refresh_token"], pair["refresh_token"])
         self.assertGreater(refreshed["expires_in"], 0)
 
+        # A new Prisma client represents a process/client restart: duplicate
+        # resolution must depend only on persisted grant and refresh records.
+        _manager._db = self.restarted_db
+        replayed = await refresh_mcp_token_pair(
+            refresh_token=pair["refresh_token"],
+            client_id=self.client_id,
+            resource=None,
+            scope=None,
+            issuer=self.issuer,
+        )
+        self.assertEqual(replayed["refresh_token"], refreshed["refresh_token"])
+        payload = decode_jwt_payload(refreshed["access_token"], audience=self.audience)
+        assert payload is not None
+        self.assertEqual(await self.restarted_db.oauthrefreshtoken.count(where={"grantId": payload["grant_id"]}), 2)
+
+        for result in (refreshed, replayed):
+            token_data, user = await validate_mcp_token_and_fetch_user(
+                result["access_token"],
+                resource=self.audience,
+                issuer=self.issuer,
+            )
+            self.assertIsNotNone(token_data)
+            self.assertIsNotNone(user)
+
+        successor = await refresh_mcp_token_pair(
+            refresh_token=refreshed["refresh_token"],
+            client_id=self.client_id,
+            resource=None,
+            scope=None,
+            issuer=self.issuer,
+        )
+        self.assertNotEqual(successor["refresh_token"], refreshed["refresh_token"])
+
+    async def test_refresh_replay_after_fixed_overlap_revokes_winner_access(self) -> None:
+        pair = await issue_mcp_token_pair(
+            user_id=self.user_id,
+            client_id=self.client_id,
+            audience=self.audience,
+            scope="",
+            security_generation=0,
+            mfa_verified=True,
+            auth_methods=["password"],
+            issuer=self.issuer,
+        )
+        refreshed = await refresh_mcp_token_pair(
+            refresh_token=pair["refresh_token"],
+            client_id=self.client_id,
+            resource=None,
+            scope=None,
+            issuer=self.issuer,
+        )
+
+        # Do not sleep: first model an in-window retry, then move the original
+        # consumption outside the fixed (and non-sliding) overlap interval.
+        consumed_at = utc_now().replace(microsecond=0, tzinfo=None) - timedelta(seconds=5)
+        await self.db.execute_raw(
+            'UPDATE "oauth_refresh_tokens" SET "consumed_at" = $1::timestamp WHERE "token_hash" = $2',
+            consumed_at,
+            hash_token(pair["refresh_token"]),
+        )
+        replayed = await refresh_mcp_token_pair(
+            refresh_token=pair["refresh_token"],
+            client_id=self.client_id,
+            resource=None,
+            scope=None,
+            issuer=self.issuer,
+        )
+        self.assertEqual(replayed["refresh_token"], refreshed["refresh_token"])
+        original_record = await self.db.oauthrefreshtoken.find_unique(where={"tokenHash": hash_token(pair["refresh_token"])})
+        assert original_record is not None
+        assert original_record.consumedAt is not None
+        self.assertEqual(original_record.consumedAt.replace(tzinfo=None), consumed_at)
+
+        await self.db.execute_raw(
+            'UPDATE "oauth_refresh_tokens" SET "consumed_at" = $1::timestamp WHERE "token_hash" = $2',
+            (utc_now() - timedelta(seconds=11)).replace(tzinfo=None),
+            hash_token(pair["refresh_token"]),
+        )
         with self.assertRaises(McpOAuthError) as replay:
             await refresh_mcp_token_pair(
                 refresh_token=pair["refresh_token"],
@@ -235,12 +343,105 @@ class McpOAuthRefreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replay.exception.error, "invalid_grant")
 
         token_data, user = await validate_mcp_token_and_fetch_user(
-            original_access,
+            refreshed["access_token"],
             resource=self.audience,
             issuer=self.issuer,
         )
         self.assertIsNone(token_data)
         self.assertIsNone(user)
+
+    async def test_revoked_grant_is_rejected_before_successor_derivation_or_refresh_mutation(self) -> None:
+        pair = await issue_mcp_token_pair(
+            user_id=self.user_id,
+            client_id=self.client_id,
+            audience=self.audience,
+            scope="",
+            security_generation=0,
+            mfa_verified=True,
+            auth_methods=["password"],
+            issuer=self.issuer,
+        )
+        payload = decode_jwt_payload(pair["access_token"], audience=self.audience)
+        assert payload is not None
+        await revoke_grant(payload["grant_id"])
+        before = await self.db.oauthrefreshtoken.find_unique(where={"tokenHash": hash_token(pair["refresh_token"])})
+        assert before is not None
+        self.assertIsNone(before.consumedAt)
+
+        with mock.patch(
+            "ragtime.mcp.user_oauth.derive_mcp_refresh_successor",
+            side_effect=AssertionError("revoked grants must not derive successors"),
+        ) as derive:
+            with self.assertRaises(McpOAuthError) as rejected:
+                await refresh_mcp_token_pair(
+                    refresh_token=pair["refresh_token"],
+                    client_id=self.client_id,
+                    resource=None,
+                    scope=None,
+                    issuer=self.issuer,
+                )
+        self.assertEqual(rejected.exception.error, "invalid_grant")
+        derive.assert_not_called()
+
+        after = await self.db.oauthrefreshtoken.find_unique(where={"tokenHash": hash_token(pair["refresh_token"])})
+        assert after is not None
+        self.assertIsNone(after.consumedAt)
+        self.assertEqual(await self.db.oauthrefreshtoken.count(where={"grantId": payload["grant_id"]}), 1)
+
+    async def test_concurrent_refreshes_share_successor_and_leave_grant_active(self) -> None:
+        pair = await issue_mcp_token_pair(
+            user_id=self.user_id,
+            client_id=self.client_id,
+            audience=self.audience,
+            scope="tools.read",
+            security_generation=0,
+            mfa_verified=True,
+            auth_methods=["password"],
+            issuer=self.issuer,
+        )
+
+        async def refresh() -> dict[str, Any]:
+            return await refresh_mcp_token_pair(
+                refresh_token=pair["refresh_token"],
+                client_id=self.client_id,
+                resource=None,
+                scope=None,
+                issuer=self.issuer,
+            )
+
+        results = await asyncio.gather(refresh(), refresh(), return_exceptions=True)
+        self.assertTrue(all(not isinstance(result, Exception) for result in results), [type(result).__name__ for result in results])
+        first, second = results
+        assert isinstance(first, dict)
+        assert isinstance(second, dict)
+        first_access_token = first["access_token"]
+        first_refresh_token = first["refresh_token"]
+        second_access_token = second["access_token"]
+        second_refresh_token = second["refresh_token"]
+        assert isinstance(first_access_token, str)
+        assert isinstance(first_refresh_token, str)
+        assert isinstance(second_access_token, str)
+        assert isinstance(second_refresh_token, str)
+        self.assertEqual(first_refresh_token, second_refresh_token)
+
+        payload = decode_jwt_payload(first_access_token, audience=self.audience)
+        assert payload is not None
+        self.assertEqual(await self.db.oauthrefreshtoken.count(where={"grantId": payload["grant_id"]}), 2)
+        for result in (first, second):
+            access_token = result["access_token"]
+            assert isinstance(access_token, str)
+            token_data, user = await validate_mcp_token_and_fetch_user(access_token, resource=self.audience, issuer=self.issuer)
+            self.assertIsNotNone(token_data)
+            self.assertIsNotNone(user)
+
+        successor = await refresh_mcp_token_pair(
+            refresh_token=first_refresh_token,
+            client_id=self.client_id,
+            resource=None,
+            scope=None,
+            issuer=self.issuer,
+        )
+        self.assertNotEqual(successor["refresh_token"], first_refresh_token)
 
     async def test_authorization_code_http_response_has_no_cookie_and_no_store(self) -> None:
         verifier = "refresh-integration-verifier"
@@ -340,7 +541,7 @@ class McpOAuthRefreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("access_token", refreshed)
 
     async def test_refresh_lifetime_is_capped_at_absolute_grant_expiry(self) -> None:
-        expires_at = utc_now() + timedelta(seconds=2)
+        expires_at = utc_now() + timedelta(seconds=30)
         refresh_token = f"fixture-refresh-{uuid4()}"
         grant = await create_grant(
             user_id=self.user_id,
@@ -361,10 +562,19 @@ class McpOAuthRefreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
             scope=None,
             issuer=self.issuer,
         )
-        payload = decode_jwt_payload(pair["access_token"], audience=self.audience)
-        assert payload is not None
-        self.assertLessEqual(payload["exp"], int(expires_at.timestamp()))
-        self.assertLessEqual(pair["expires_in"], 2)
+        replayed = await refresh_mcp_token_pair(
+            refresh_token=refresh_token,
+            client_id=self.client_id,
+            resource=None,
+            scope=None,
+            issuer=self.issuer,
+        )
+        self.assertEqual(replayed["refresh_token"], pair["refresh_token"])
+        for result in (pair, replayed):
+            payload = decode_jwt_payload(result["access_token"], audience=self.audience)
+            assert payload is not None
+            self.assertLessEqual(payload["exp"], int(expires_at.timestamp()))
+            self.assertLessEqual(result["expires_in"], 30)
         self.assertIsNotNone(await get_active_grant(grant.id))
 
     async def test_wrong_issuer_or_route_rejects_valid_access_token(self) -> None:

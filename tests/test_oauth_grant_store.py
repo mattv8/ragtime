@@ -9,6 +9,7 @@ from unittest import mock
 
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.oauth_grants import (
+    MAX_DUPLICATE_GRACE_SECONDS,
     OAuthGrantError,
     cleanup_expired_grants,
     create_grant,
@@ -111,6 +112,264 @@ class OAuthGrantStoreIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("rotated", results)
         self.assertIn("replayed_refresh_token", results)
         self.assertIsNone(await get_active_grant(grant.id))
+
+    async def test_opt_in_duplicate_grace_returns_existing_successor_before_fixed_boundary(self) -> None:
+        grant = await self._create()
+        consumed_at = datetime.now(timezone.utc).replace(microsecond=0)
+
+        await rotate_refresh_token(
+            refresh_hash="refresh-1",
+            next_refresh_hash="refresh-2",
+            client_id="public-client",
+            duplicate_grace_seconds=10,
+            now=consumed_at,
+        )
+        duplicate = await rotate_refresh_token(
+            refresh_hash="refresh-1",
+            next_refresh_hash="refresh-2",
+            client_id="public-client",
+            duplicate_grace_seconds=10,
+            now=consumed_at + timedelta(seconds=9, milliseconds=999),
+        )
+
+        self.assertEqual(duplicate.id, grant.id)
+        rows = await self.db.query_raw(
+            'SELECT "token_hash", "consumed_at" FROM "oauth_refresh_tokens" WHERE "grant_id" = $1 ORDER BY "token_hash"',
+            grant.id,
+        )
+        self.assertEqual([row["token_hash"] for row in rows], ["refresh-1", "refresh-2"])
+        self.assertIsNotNone(rows[0]["consumed_at"])
+        self.assertIsNone(rows[1]["consumed_at"])
+        self.assertIsNotNone(await get_active_grant(grant.id))
+
+    async def test_duplicate_grace_at_exact_ten_seconds_revokes_the_family(self) -> None:
+        grant = await self._create()
+        consumed_at = datetime.now(timezone.utc).replace(microsecond=0)
+        await rotate_refresh_token(
+            refresh_hash="refresh-1",
+            next_refresh_hash="refresh-2",
+            client_id="public-client",
+            duplicate_grace_seconds=10,
+            now=consumed_at,
+        )
+
+        with self.assertRaisesRegex(OAuthGrantError, "replayed_refresh_token"):
+            await rotate_refresh_token(
+                refresh_hash="refresh-1",
+                next_refresh_hash="refresh-2",
+                client_id="public-client",
+                duplicate_grace_seconds=10,
+                now=consumed_at + timedelta(seconds=10),
+            )
+        self.assertIsNone(await get_active_grant(grant.id))
+
+    async def test_duplicate_grace_is_non_sliding_and_rejects_negative_age(self) -> None:
+        grant = await self._create()
+        consumed_at = datetime.now(timezone.utc).replace(microsecond=0)
+        await rotate_refresh_token(
+            refresh_hash="refresh-1",
+            next_refresh_hash="refresh-2",
+            client_id="public-client",
+            duplicate_grace_seconds=10,
+            now=consumed_at,
+        )
+        await rotate_refresh_token(
+            refresh_hash="refresh-1",
+            next_refresh_hash="refresh-2",
+            client_id="public-client",
+            duplicate_grace_seconds=10,
+            now=consumed_at + timedelta(seconds=9),
+        )
+
+        with self.assertRaisesRegex(OAuthGrantError, "replayed_refresh_token"):
+            await rotate_refresh_token(
+                refresh_hash="refresh-1",
+                next_refresh_hash="refresh-2",
+                client_id="public-client",
+                duplicate_grace_seconds=10,
+                now=consumed_at + timedelta(seconds=10, milliseconds=1),
+            )
+        self.assertIsNone(await get_active_grant(grant.id))
+
+        negative_age_grant = await self._create(refresh_hash="negative-age-refresh")
+        await rotate_refresh_token(
+            refresh_hash="negative-age-refresh",
+            next_refresh_hash="negative-age-successor",
+            client_id="public-client",
+            duplicate_grace_seconds=10,
+            now=consumed_at,
+        )
+        with self.assertRaisesRegex(OAuthGrantError, "replayed_refresh_token"):
+            await rotate_refresh_token(
+                refresh_hash="negative-age-refresh",
+                next_refresh_hash="negative-age-successor",
+                client_id="public-client",
+                duplicate_grace_seconds=10,
+                now=consumed_at - timedelta(milliseconds=1),
+            )
+        self.assertIsNone(await get_active_grant(negative_age_grant.id))
+
+    async def test_duplicate_grace_rejects_wrong_or_consumed_successor(self) -> None:
+        consumed_at = datetime.now(timezone.utc).replace(microsecond=0)
+        wrong_successor_grant = await self._create(refresh_hash="wrong-successor-refresh")
+        await rotate_refresh_token(
+            refresh_hash="wrong-successor-refresh",
+            next_refresh_hash="expected-successor",
+            client_id="public-client",
+            duplicate_grace_seconds=10,
+            now=consumed_at,
+        )
+        with self.assertRaisesRegex(OAuthGrantError, "replayed_refresh_token"):
+            await rotate_refresh_token(
+                refresh_hash="wrong-successor-refresh",
+                next_refresh_hash="different-successor",
+                client_id="public-client",
+                duplicate_grace_seconds=10,
+                now=consumed_at + timedelta(seconds=1),
+            )
+        self.assertIsNone(await get_active_grant(wrong_successor_grant.id))
+
+        consumed_successor_grant = await self._create(refresh_hash="consumed-successor-refresh")
+        await rotate_refresh_token(
+            refresh_hash="consumed-successor-refresh",
+            next_refresh_hash="already-consumed-successor",
+            client_id="public-client",
+            duplicate_grace_seconds=10,
+            now=consumed_at,
+        )
+        await self.db.execute_raw(
+            'UPDATE "oauth_refresh_tokens" SET "consumed_at" = $1::timestamp WHERE "token_hash" = $2',
+            (consumed_at + timedelta(milliseconds=1)).replace(tzinfo=None),
+            "already-consumed-successor",
+        )
+        with self.assertRaisesRegex(OAuthGrantError, "replayed_refresh_token"):
+            await rotate_refresh_token(
+                refresh_hash="consumed-successor-refresh",
+                next_refresh_hash="already-consumed-successor",
+                client_id="public-client",
+                duplicate_grace_seconds=10,
+                now=consumed_at + timedelta(seconds=1),
+            )
+        self.assertIsNone(await get_active_grant(consumed_successor_grant.id))
+
+    async def test_duplicate_grace_binding_failures_leave_grant_active(self) -> None:
+        grant = await self._create()
+        consumed_at = datetime.now(timezone.utc).replace(microsecond=0)
+        await rotate_refresh_token(
+            refresh_hash="refresh-1",
+            next_refresh_hash="refresh-2",
+            client_id="public-client",
+            duplicate_grace_seconds=10,
+            now=consumed_at,
+        )
+
+        for client_id, audience, scope in (
+            ("other-client", None, None),
+            ("public-client", "https://ragtime.test/mcp/other", None),
+            ("public-client", None, "write"),
+        ):
+            with self.assertRaises(OAuthGrantError):
+                await rotate_refresh_token(
+                    refresh_hash="refresh-1",
+                    next_refresh_hash="refresh-2",
+                    client_id=client_id,
+                    audience=audience,
+                    scope=scope,
+                    duplicate_grace_seconds=10,
+                    now=consumed_at + timedelta(seconds=1),
+                )
+            self.assertIsNotNone(await get_active_grant(grant.id))
+
+    async def test_duplicate_grace_rechecks_expiry_revocation_and_security_generation(self) -> None:
+        consumed_at = datetime.now(timezone.utc).replace(microsecond=0)
+        expired = await self._create(refresh_hash="expired-duplicate-refresh")
+        await rotate_refresh_token(
+            refresh_hash="expired-duplicate-refresh",
+            next_refresh_hash="expired-duplicate-successor",
+            client_id="public-client",
+            duplicate_grace_seconds=10,
+            now=consumed_at,
+        )
+        await self.db.execute_raw(
+            'UPDATE "oauth_grants" SET "expires_at" = $1::timestamp WHERE "id" = $2',
+            (consumed_at - timedelta(seconds=1)).replace(tzinfo=None),
+            expired.id,
+        )
+        with self.assertRaisesRegex(OAuthGrantError, "expired_grant"):
+            await rotate_refresh_token(
+                refresh_hash="expired-duplicate-refresh",
+                next_refresh_hash="expired-duplicate-successor",
+                client_id="public-client",
+                duplicate_grace_seconds=10,
+                now=consumed_at + timedelta(seconds=1),
+            )
+
+        revoked = await self._create(refresh_hash="revoked-duplicate-refresh")
+        await rotate_refresh_token(
+            refresh_hash="revoked-duplicate-refresh",
+            next_refresh_hash="revoked-duplicate-successor",
+            client_id="public-client",
+            duplicate_grace_seconds=10,
+            now=consumed_at,
+        )
+        await self.db.execute_raw(
+            'UPDATE "oauth_grants" SET "revoked_at" = $1::timestamp WHERE "id" = $2',
+            (consumed_at + timedelta(milliseconds=1)).replace(tzinfo=None),
+            revoked.id,
+        )
+        with self.assertRaisesRegex(OAuthGrantError, "revoked_grant"):
+            await rotate_refresh_token(
+                refresh_hash="revoked-duplicate-refresh",
+                next_refresh_hash="revoked-duplicate-successor",
+                client_id="public-client",
+                duplicate_grace_seconds=10,
+                now=consumed_at + timedelta(seconds=1),
+            )
+
+        security_invalid = await self._create(refresh_hash="security-duplicate-refresh")
+        await rotate_refresh_token(
+            refresh_hash="security-duplicate-refresh",
+            next_refresh_hash="security-duplicate-successor",
+            client_id="public-client",
+            duplicate_grace_seconds=10,
+            now=consumed_at,
+        )
+        await self.db.execute_raw('UPDATE "users" SET "security_generation" = 1 WHERE "id" = $1', self.user_id)
+        with self.assertRaisesRegex(OAuthGrantError, "security_generation_mismatch"):
+            await rotate_refresh_token(
+                refresh_hash="security-duplicate-refresh",
+                next_refresh_hash="security-duplicate-successor",
+                client_id="public-client",
+                duplicate_grace_seconds=10,
+                now=consumed_at + timedelta(seconds=1),
+            )
+        self.assertIsNone(await get_active_grant(security_invalid.id))
+
+    async def test_duplicate_grace_defaults_to_strict_and_rejects_invalid_values(self) -> None:
+        self.assertEqual(MAX_DUPLICATE_GRACE_SECONDS, 10)
+        strict_grant = await self._create(refresh_hash="strict-duplicate-refresh")
+        await rotate_refresh_token(
+            refresh_hash="strict-duplicate-refresh",
+            next_refresh_hash="strict-duplicate-successor",
+            client_id="public-client",
+        )
+        with self.assertRaisesRegex(OAuthGrantError, "replayed_refresh_token"):
+            await rotate_refresh_token(
+                refresh_hash="strict-duplicate-refresh",
+                next_refresh_hash="strict-duplicate-successor",
+                client_id="public-client",
+            )
+        self.assertIsNone(await get_active_grant(strict_grant.id))
+
+        for invalid_grace in (True, -1, 11, 1.5, "10"):
+            with self.subTest(invalid_grace=invalid_grace):
+                with self.assertRaises(ValueError):
+                    await rotate_refresh_token(
+                        refresh_hash="unknown-refresh",
+                        next_refresh_hash="unused-successor",
+                        client_id="public-client",
+                        duplicate_grace_seconds=invalid_grace,  # type: ignore[arg-type]
+                    )
 
     async def test_security_reset_serializes_with_grant_creation_and_cleans_sessions(self) -> None:
         await self.db.execute_raw(
