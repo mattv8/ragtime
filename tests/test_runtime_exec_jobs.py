@@ -113,6 +113,73 @@ class RuntimeExecJobTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(error.exception.status_code, 409)
 
+    async def test_active_sqlite_maintenance_lease_rejects_job_before_creation(self) -> None:
+        service = worker_service.WorkerService()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "files").mkdir()
+            session = self._session(root)
+            service._sessions[session.id] = session
+            service._workspace_maintenance[session.workspace_id] = {"maintenance": (True, session.sandbox_spec)}
+            spawn = mock.AsyncMock()
+
+            with (
+                mock.patch.object(worker_service, "spawn_sandboxed", new=spawn),
+                self.assertRaises(HTTPException) as error,
+            ):
+                await service.start_exec_job(session.id, "echo test")
+
+        self.assertEqual(error.exception.status_code, 423)
+        self.assertEqual(service._exec_jobs, {})
+        spawn.assert_not_awaited()
+
+    async def test_durable_sqlite_maintenance_marker_rejects_job_before_creation(self) -> None:
+        service = worker_service.WorkerService()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "files").mkdir()
+            session = self._session(root)
+            service._sessions[session.id] = session
+            service._root = root
+            marker = root / "workspaces" / session.workspace_id / "sqlite_backups" / "sqlite-maintenance-intent.json"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("{}", encoding="utf-8")
+            spawn = mock.AsyncMock()
+
+            with (
+                mock.patch.object(worker_service, "spawn_sandboxed", new=spawn),
+                self.assertRaises(HTTPException) as error,
+            ):
+                await service.start_exec_job(session.id, "echo test")
+
+        self.assertEqual(error.exception.status_code, 423)
+        self.assertEqual(service._exec_jobs, {})
+        spawn.assert_not_awaited()
+
+    async def test_queued_job_fenced_before_spawn_fails_and_persists_without_reservation(self) -> None:
+        service = worker_service.WorkerService()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "files").mkdir()
+            session = self._session(root)
+            service._sessions[session.id] = session
+            spawn = mock.AsyncMock()
+
+            with mock.patch.object(worker_service, "spawn_sandboxed", new=spawn):
+                started = await service.start_exec_job(session.id, "echo test")
+                service._workspace_maintenance[session.workspace_id] = {"maintenance": (True, session.sandbox_spec)}
+                await service._exec_job_tasks[started.id]
+
+            result = await service.get_exec_job(session.id, started.id)
+            ledger = (root / ".runtime-exec-jobs.json").read_text(encoding="utf-8")
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.exit_code, -1)
+        self.assertIsNotNone(result.finished_at)
+        self.assertIn('"status":"failed"', ledger)
+        self.assertNotIn(session.id, service._active_execs)
+        spawn.assert_not_awaited()
+
     async def test_workspace_running_quota_is_two_jobs(self) -> None:
         service = worker_service.WorkerService()
         with tempfile.TemporaryDirectory() as directory:

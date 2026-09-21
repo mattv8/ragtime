@@ -3465,6 +3465,7 @@ class WorkerService:
                 raise HTTPException(status_code=404, detail="Worker session not found")
             if session.state != "running":
                 raise HTTPException(status_code=409, detail="Worker session is still starting or is not active")
+            self._ensure_workspace_available_locked(session.workspace_id)
             self._load_exec_jobs_locked(session)
             workspace_running = sum(job.status == "running" and job.workspace_id == session.workspace_id for job in self._exec_jobs.values())
             global_running = sum(job.status == "running" for job in self._exec_jobs.values())
@@ -3512,11 +3513,25 @@ class WorkerService:
                 job.status, job.finished_at = "interrupted", utc_now()
                 return
             redaction_session = session
+            workspace_root = session.workspace_root
+            try:
+                # Admission can race a SQLite maintenance lease acquired before
+                # this queued job reaches its spawn reservation.
+                self._ensure_workspace_available_locked(session.workspace_id)
+            except HTTPException as exc:
+                job.status, job.exit_code, job.finished_at = "failed", -1, utc_now()
+                self._append_exec_job_output_locked(
+                    job,
+                    session,
+                    f"Failed to execute command: {exc.detail}".encode(),
+                )
+                self._prune_exec_jobs_locked(job.workspace_id)
+                self._persist_exec_jobs_locked(workspace_root, job.workspace_id)
+                return
             reservation = object()
             self._active_execs.setdefault(session.id, {})[id(reservation)] = reservation
             sandbox_cwd = f"{SANDBOX_WORKSPACE_MOUNT}/{Path(job.cwd).as_posix()}" if job.cwd else SANDBOX_WORKSPACE_MOUNT
             sandbox_spec, environment = session.sandbox_spec, self.build_agent_process_environment(session)
-            workspace_root = session.workspace_root
             deadline = asyncio.get_running_loop().time() + job.timeout_seconds
         try:
             remaining = deadline - asyncio.get_running_loop().time()
