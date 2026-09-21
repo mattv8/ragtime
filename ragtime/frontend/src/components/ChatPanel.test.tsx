@@ -1838,16 +1838,22 @@ describe('ChatPanel standalone first-paint loading', () => {
 
     await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(1));
     expect(apiMock.getConversationWindowMessage.mock.calls[0]?.[1]).toBe(2);
-    expect(screen.getAllByText('Loading details')).toHaveLength(3);
+    await waitFor(() => expect(screen.getAllByText('Loading details')).toHaveLength(3));
     expect(screen.queryByRole('button', { name: /details/i })).toBeNull();
-    expect(document.querySelectorAll('.chat-message-deferred[aria-busy="true"]')).toHaveLength(3);
-    resolveNewest?.({ ...makeWindow(conversation).entries[2], index: 2 });
+    await waitFor(() =>
+      expect(document.querySelectorAll('.chat-message-deferred[aria-busy="true"]')).toHaveLength(3),
+    );
+    await act(async () => {
+      resolveNewest?.({ ...makeWindow(conversation).entries[2], index: 2 });
+    });
     await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2));
     expect(apiMock.getConversationWindowMessage.mock.calls.map(([, index]) => index)).toEqual([
       2, 1,
     ]);
-    expect(screen.getAllByText('Loading details')).toHaveLength(2);
-    resolveMiddle?.({ ...makeWindow(conversation).entries[1], index: 1 });
+    await waitFor(() => expect(screen.getAllByText('Loading details')).toHaveLength(2));
+    await act(async () => {
+      resolveMiddle?.({ ...makeWindow(conversation).entries[1], index: 1 });
+    });
     await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(3));
     expect(apiMock.getConversationWindowMessage.mock.calls.map(([, index]) => index)).toEqual([
       2, 1, 0,
@@ -3240,7 +3246,9 @@ describe('ChatPanel bounded-window operation boundaries', () => {
         2,
       ]),
     );
-    rejectNewest?.(new Error('newest failed'));
+    await act(async () => {
+      rejectNewest?.(new Error('newest failed'));
+    });
     await waitFor(() =>
       expect(apiMock.getConversationWindowMessage.mock.calls.map(([, index]) => index)).toEqual([
         2, 1,
@@ -3250,11 +3258,13 @@ describe('ChatPanel bounded-window operation boundaries', () => {
     expect(retryDetails.hasAttribute('disabled')).toBe(true);
     await userEvent.setup().click(retryDetails);
     expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2);
-    resolveMiddle?.({
-      ...entries[1],
-      state: 'ready',
-      message: conversation.messages[1],
-      preview: null,
+    await act(async () => {
+      resolveMiddle?.({
+        ...entries[1],
+        state: 'ready',
+        message: conversation.messages[1],
+        preview: null,
+      });
     });
     await waitFor(() => expect(retryDetails.hasAttribute('disabled')).toBe(false));
     await userEvent.setup().click(retryDetails);
