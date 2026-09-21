@@ -85,6 +85,114 @@ class OmlxProviderTests(unittest.TestCase):
         self.assertIn("omlx", LOCAL_EMBEDDING_PROVIDER_NAMES)
 
 
+class OmlxContextMetadataTests(unittest.IsolatedAsyncioTestCase):
+    def test_parse_model_row_uses_positive_max_model_len(self) -> None:
+        parsed = omlx._parse_model_row({"id": "gpt-oss", "max_model_len": 131072, "max_tokens": 400000})
+
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.context_limit, 131072)
+
+    def test_parse_status_model_row_prefers_effective_context_override(self) -> None:
+        parsed = omlx._parse_status_model_row(
+            {
+                "id": "qwen",
+                "max_context_window": 262144,
+                "max_model_len": 131072,
+                "model_context_length": 1048576,
+                "max_tokens": 400000,
+            }
+        )
+
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.context_limit, 262144)
+
+    def test_parse_status_model_row_uses_model_and_native_context_fallbacks(self) -> None:
+        from_models = omlx._parse_status_model_row({"id": "from-models", "max_model_len": 131072})
+        from_native = omlx._parse_status_model_row({"id": "from-native", "model_context_length": 1048576})
+
+        self.assertIsNotNone(from_models)
+        self.assertIsNotNone(from_native)
+        assert from_models is not None
+        assert from_native is not None
+        self.assertEqual(from_models.context_limit, 131072)
+        self.assertEqual(from_native.context_limit, 1048576)
+
+    def test_parsers_ignore_max_tokens_and_invalid_context_values(self) -> None:
+        only_generation_default = omlx._parse_status_model_row({"id": "default", "max_tokens": 400000})
+        invalid_model = omlx._parse_model_row({"id": "invalid", "max_model_len": "zero"})
+        invalid_status = omlx._parse_status_model_row(
+            {
+                "id": "invalid-status",
+                "max_context_window": 0,
+                "max_model_len": -1,
+                "model_context_length": "not-a-number",
+            }
+        )
+
+        self.assertIsNotNone(only_generation_default)
+        self.assertIsNotNone(invalid_model)
+        self.assertIsNotNone(invalid_status)
+        assert only_generation_default is not None
+        assert invalid_model is not None
+        assert invalid_status is not None
+        self.assertIsNone(only_generation_default.context_limit)
+        self.assertIsNone(invalid_model.context_limit)
+        self.assertIsNone(invalid_status.context_limit)
+
+    async def test_get_model_context_length_prefers_matching_status_model(self) -> None:
+        async def fake_list_status_models(base_url: str, api_key: Optional[str] = None):
+            _ = (base_url, api_key)
+            return [omlx.OmlxModelInfo(id="target", name="target", context_limit=262144)]
+
+        async def fail_list_models(base_url: str, api_key: Optional[str] = None):
+            _ = (base_url, api_key)
+            self.fail("models fallback should not run when status metadata is usable")
+
+        with (
+            patch.object(omlx, "list_status_models", fake_list_status_models),
+            patch.object(omlx, "list_models", fail_list_models),
+        ):
+            result = await omlx.get_model_context_length("target", "http://example.test")
+
+        self.assertEqual(result, 262144)
+
+    async def test_get_model_context_length_falls_back_to_matching_models_row(self) -> None:
+        async def fake_list_status_models(base_url: str, api_key: Optional[str] = None):
+            _ = (base_url, api_key)
+            return [omlx.OmlxModelInfo(id="target", name="target", context_limit=None)]
+
+        async def fake_list_models(base_url: str, api_key: Optional[str] = None):
+            _ = (base_url, api_key)
+            return [omlx.OmlxModelInfo(id="target", name="target", context_limit=131072)]
+
+        with (
+            patch.object(omlx, "list_status_models", fake_list_status_models),
+            patch.object(omlx, "list_models", fake_list_models),
+        ):
+            result = await omlx.get_model_context_length("target", "http://example.test")
+
+        self.assertEqual(result, 131072)
+
+    async def test_get_model_context_length_returns_none_for_unknown_target(self) -> None:
+        async def fake_list_status_models(base_url: str, api_key: Optional[str] = None):
+            _ = (base_url, api_key)
+            return [omlx.OmlxModelInfo(id="other", name="other", context_limit=262144)]
+
+        async def fake_list_models(base_url: str, api_key: Optional[str] = None):
+            _ = (base_url, api_key)
+            return [omlx.OmlxModelInfo(id="another", name="another", context_limit=131072)]
+
+        with (
+            patch.object(omlx, "list_status_models", fake_list_status_models),
+            patch.object(omlx, "list_models", fake_list_models),
+        ):
+            result = await omlx.get_model_context_length("target", "http://example.test")
+
+        self.assertIsNone(result)
+
+
 class OmlxEmbeddingDiscoveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         omlx._CAPABILITY_CACHE.clear()
