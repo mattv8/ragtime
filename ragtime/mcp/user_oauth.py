@@ -8,6 +8,8 @@ refresh tokens.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -24,6 +26,7 @@ from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.core.mfa import mfa_needed_for_user
 from ragtime.core.oauth_grants import (
+    MAX_DUPLICATE_GRACE_SECONDS,
     OAuthGrantError,
     create_grant,
     get_active_grant,
@@ -36,6 +39,13 @@ from ragtime.core.oauth_grants import (
 _MCP_SERVICE_AUDIENCE = "mcp-service"
 _MCP_TOKEN_USE = "mcp_access"
 logger = get_logger(__name__)
+
+
+def derive_mcp_refresh_successor(refresh_token: str) -> str:
+    """Derive the stable successor for a valid interactive MCP refresh token."""
+    message = ("ragtime.mcp.refresh.v1:" + refresh_token).encode("utf-8")
+    digest = hmac.new(settings.encryption_key.encode("utf-8"), message, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
 class McpOAuthError(Exception):
@@ -217,6 +227,9 @@ async def refresh_mcp_token_pair(*, refresh_token: str, client_id: str, resource
     if not grant or grant.client_id != client_id:
         logger.info("MCP OAuth refresh rejected: unknown_refresh_token")
         raise McpOAuthError("invalid_grant", "Invalid refresh token")
+    if grant.revoked_at is not None:
+        logger.info("MCP OAuth refresh rejected: revoked_grant")
+        raise McpOAuthError("invalid_grant", "The authorization is no longer valid")
     if grant.expires_at <= datetime.now(timezone.utc):
         logger.info("MCP OAuth refresh rejected: expired_grant")
         raise McpOAuthError("invalid_grant", "The authorization has expired")
@@ -229,7 +242,7 @@ async def refresh_mcp_token_pair(*, refresh_token: str, client_id: str, resource
     if int(getattr(user, "securityGeneration", 0)) != grant.security_generation:
         raise McpOAuthError("invalid_grant", "The authorization is no longer valid")
     await _require_current_mfa(user, grant.mfa_verified_at is not None)
-    next_refresh = secrets.token_urlsafe(48)
+    next_refresh = derive_mcp_refresh_successor(refresh_token)
     try:
         rotated = await rotate_refresh_token(
             refresh_hash=refresh_hash,
@@ -237,6 +250,7 @@ async def refresh_mcp_token_pair(*, refresh_token: str, client_id: str, resource
             client_id=client_id,
             audience=canonical_resource,
             scope=scope,
+            duplicate_grace_seconds=MAX_DUPLICATE_GRACE_SECONDS,
         )
     except OAuthGrantError as exc:
         logger.info("MCP OAuth refresh rejected: %s", exc.reason)
