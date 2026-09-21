@@ -110,6 +110,7 @@ def write_override(path: Path, primary: Path, target: Path, *, storage: bool) ->
     """
     data = primary / ".data"
     env = primary / ".env"
+    storage_key_mount = "      - object-storage-key:/run/ragtime-storage-key\n" if storage else ""
     content = (
         "services:\n"
         "  ragtime:\n"
@@ -120,7 +121,9 @@ def write_override(path: Path, primary: Path, target: Path, *, storage: bool) ->
         f"      - {yaml_quote(str(target / 'scripts') + ':/ragtime/scripts:ro')}\n"
         "      - ragtime-node-modules:/ragtime/ragtime/frontend/node_modules\n"
         f"      - {yaml_quote(str(target / 'prisma') + ':/ragtime/prisma:ro')}\n"
+        f"      - {yaml_quote(str(target / 'runtime') + ':/ragtime/runtime')}\n"
         f"      - {yaml_quote(str(data) + ':/data')}\n"
+        f"{storage_key_mount}"
         "      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock\n"
         "      - ~/.ssh:/root/.ssh:ro\n"
         "      - ./scripts:/docker-scripts:ro\n"
@@ -129,7 +132,9 @@ def write_override(path: Path, primary: Path, target: Path, *, storage: bool) ->
         f"      - {yaml_quote(str(data) + ':/data')}\n"
     )
     if storage:
-        content += f"  runtime-s3:\n    volumes: !override\n      - {yaml_quote(str(data) + ':/data')}\n"
+        content += (
+            f"  runtime-s3:\n    volumes: !override\n      - {yaml_quote(str(data) + ':/data')}\n      - object-storage-key:/run/ragtime-storage-key:ro\n"
+        )
     path.write_text(content, encoding="utf-8")
 
 

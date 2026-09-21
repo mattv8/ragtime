@@ -247,8 +247,22 @@ class SwitchTests(unittest.TestCase):
         runner, switch, patcher = self.switch(primary, target, dry_run=True, storage=False)
         with patcher:
             switch.run()
-        self.assertNotIn("runtime-s3:", switch.override.read_text())
+        override = switch.override.read_text()
+        self.assertNotIn("runtime-s3:", override)
+        self.assertNotIn("object-storage-key", override)
         self.assertNotIn("runtime-s3", switch.services)
+
+    def test_override_mounts_target_runtime_and_shared_storage_key(self):
+        temp, primary, target = self.make_tree()
+        self.addCleanup(temp.cleanup)
+        override = primary / "compose.override.yml"
+
+        write_override(override, primary, target, storage=True)
+
+        content = override.read_text()
+        self.assertIn(json.dumps(f"{target / 'runtime'}:/ragtime/runtime"), content)
+        self.assertIn("      - object-storage-key:/run/ragtime-storage-key\n", content)
+        self.assertIn("      - object-storage-key:/run/ragtime-storage-key:ro\n", content)
 
     def test_dry_run_never_builds_stops_or_applies(self):
         temp, primary, target = self.make_tree()
