@@ -122,7 +122,17 @@ class ContentProtectionProviderTests(unittest.IsolatedAsyncioTestCase):
                     (
                         await provider.classify(
                             _config("omlx::Qwen3.5-9B"),
-                            {"direction": "sample", "candidate": "ordinary", "audience_constraints": [{"scope": "ordinary"}]},
+                            {"direction": "sample", "candidate": "ordinary"},
+                            include_reason=True,
+                        )
+                    )["verdict"],
+                    "allow",
+                )
+                self.assertEqual(
+                    (
+                        await provider.classify(
+                            _config("omlx::Qwen3.5-9B"),
+                            {"direction": "probe", "candidate": "ordinary"},
                             include_reason=True,
                         )
                     )["verdict"],
@@ -131,6 +141,7 @@ class ContentProtectionProviderTests(unittest.IsolatedAsyncioTestCase):
 
         production_schema = client.bind.call_args_list[0].kwargs["response_format"]["json_schema"]["schema"]
         sample_schema = client.bind.call_args_list[1].kwargs["response_format"]["json_schema"]["schema"]
+        probe_schema = client.bind.call_args_list[2].kwargs["response_format"]["json_schema"]["schema"]
         self.assertEqual(production_schema["required"], ["verdict", "reason_code"])
         self.assertFalse(production_schema["additionalProperties"])
         self.assertEqual(production_schema["properties"]["verdict"]["enum"], ["allow", "deny"])
@@ -138,6 +149,8 @@ class ContentProtectionProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(production_schema["properties"]["reason"]["maxLength"], 120)
         self.assertEqual(sample_schema["properties"]["reason"]["maxLength"], 120)
         self.assertNotIn("reason", sample_schema["required"])
+        self.assertEqual(probe_schema["properties"]["reason"]["maxLength"], 120)
+        self.assertNotIn("reason", probe_schema["required"])
         self.assertEqual(bound_client.ainvoke.await_args.kwargs["config"], {"callbacks": []})
 
     def test_omlx_response_format_leaves_other_provider_requests_unchanged(self) -> None:
@@ -168,13 +181,45 @@ class ContentProtectionProviderTests(unittest.IsolatedAsyncioTestCase):
                 await provider.classify(_config(), envelope)
 
         messages = client.ainvoke.await_args.args[0]
-        self.assertEqual(json.loads(messages[1].content)["data_envelope"], envelope)
+        sent_envelope = json.loads(messages[1].content)["data_envelope"]
+        self.assertNotIn("audience_constraints", sent_envelope)
+        self.assertEqual(sent_envelope["candidate"], envelope["candidate"])
+        self.assertEqual(envelope["audience_constraints"], [{"scope": "ordinary"}])
         policy = messages[0].content.lower()
+        self.assertIn('server audience constraints: [{"scope":"ordinary"}]', policy)
         self.assertIn("opaque filename/path tokens are not credentials", policy)
         self.assertIn("do not infer sensitivity from a filename's spelling, entropy, or token pattern", policy)
         self.assertIn("inbound/proposed-operation boundaries", policy)
         self.assertIn("explicit submitted credentials or restricted content remain evidence", policy)
         self.assertNotIn("ignore candidate", policy)
+
+    async def test_reason_enabled_messages_request_reasons_only_for_denials(self) -> None:
+        client = SimpleNamespace(
+            ainvoke=mock.AsyncMock(return_value=SimpleNamespace(content='{"verdict":"allow","reason_code":"permitted"}', response_metadata={}))
+        )
+        envelope: dict[str, object] = {
+            "direction": "inbound",
+            "candidate": {"text": "ordinary", "metadata": {"source": "exact"}},
+            "audience_constraints": [{"scope": "ordinary"}],
+        }
+        with (
+            mock.patch("ragtime.core.app_settings.get_app_settings", mock.AsyncMock(return_value={"openai_api_key": "secret"})),
+            mock.patch.object(provider, "_client_for", return_value=client),
+            mock.patch.object(provider, "_preflight_context", mock.AsyncMock(return_value=(8192, False))),
+        ):
+            with provider.security_classification_context():
+                result = await provider.classify(_config(), envelope, include_reason=True)
+
+        messages = client.ainvoke.await_args.args[0]
+        self.assertEqual(result, {"verdict": "allow", "reason_code": "permitted"})
+        self.assertIn("for deny only, include reason", messages[0].content.lower())
+        self.assertIn("omit reason for allow", messages[0].content.lower())
+        self.assertIn("at most 120 characters", messages[0].content.lower())
+        self.assertEqual(
+            json.loads(messages[1].content),
+            {"data_envelope": {"direction": "inbound", "candidate": {"text": "ordinary", "metadata": {"source": "exact"}}}},
+        )
+        self.assertEqual(envelope["audience_constraints"], [{"scope": "ordinary"}])
 
     async def test_classify_uses_messages_disables_callbacks_and_reuses_client(self) -> None:
         client = SimpleNamespace(

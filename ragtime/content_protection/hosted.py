@@ -73,6 +73,19 @@ def _service() -> Any:
     return service
 
 
+def _ensure_active_attempt() -> None:
+    """Stop work owned by an attempt which became terminal while awaiting."""
+    guard = getattr(_service(), "ensure_active_attempt", None)
+    if callable(guard):
+        guard()
+
+
+def _terminal_error() -> ContentProtectionError | None:
+    """Return a swallowed protection failure, without trusting framework events."""
+    getter = getattr(_service(), "terminal_error", None)
+    return cast(ContentProtectionError | None, getter()) if callable(getter) else None
+
+
 def hosted_context(
     *,
     user_id: str | None,
@@ -211,6 +224,7 @@ def wrap_tools(tools: list[Any], clone: Any, *, tool_ids_by_name: dict[str, str]
                 tool_id=_tool_id,
                 operation="tool_call",
             )
+            _ensure_active_attempt()
             result = await _original(*args, **kwargs)
             await service.authorize_content(
                 result,
@@ -220,6 +234,7 @@ def wrap_tools(tools: list[Any], clone: Any, *, tool_ids_by_name: dict[str, str]
                 operation="tool_result",
                 supporting_context=arguments,
             )
+            _ensure_active_attempt()
             return result
 
         def guarded_func(*args: Any, _original_func: Any = original_func, _tool_id: str = canonical_tool_id, **kwargs: Any) -> Any:
@@ -234,10 +249,12 @@ def wrap_tools(tools: list[Any], clone: Any, *, tool_ids_by_name: dict[str, str]
                 tool_context, _ = await _tool_context(context, _tool_id)
                 arguments: Any = kwargs if kwargs else (args[0] if args else {})
                 await service.authorize_content(arguments, direction="proposed_operation", context=tool_context, tool_id=_tool_id, operation="tool_call")
+                _ensure_active_attempt()
                 result = await asyncio.to_thread(_original_func, *args, **kwargs)
                 await service.authorize_content(
                     result, direction="tool_result", context=tool_context, tool_id=_tool_id, operation="tool_result", supporting_context=arguments
                 )
+                _ensure_active_attempt()
                 return result
 
             return _run_async_from_sync(invoke())
@@ -302,6 +319,9 @@ async def buffered_stream(
         pending_bytes = 0
 
     async for event in stream:
+        terminal = _terminal_error()
+        if terminal is not None:
+            raise terminal
         if isinstance(event, str):
             if active_protection:
                 append_fragment(pending, event)
@@ -315,6 +335,7 @@ async def buffered_stream(
                 yield event
             continue
         async for released in flush():
+            _ensure_active_attempt()
             yield released
         if isinstance(event, dict) and event.get("type") == "tool_start":
             tool_name = str(event.get("tool") or "")
@@ -327,11 +348,17 @@ async def buffered_stream(
                 tool_id=tool_id,
                 operation="tool_call",
             )
+            _ensure_active_attempt()
             active_protection = active_protection or tool_required
         elif isinstance(event, dict) and active_protection:
             # Never send raw observer payloads (including on_tool_error output)
             # through the transport without an authorization boundary.
             await authorize_assistant(event, context=context)
+            _ensure_active_attempt()
+        terminal = _terminal_error()
+        if terminal is not None:
+            raise terminal
         yield event
     async for released in flush():
+        _ensure_active_attempt()
         yield released

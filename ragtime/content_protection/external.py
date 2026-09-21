@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any, Iterator, cast
 
 from ragtime.content_protection import service
+from ragtime.content_protection.models import ContentProtectionError
 
 
 def _core() -> Any:
@@ -70,8 +71,14 @@ async def authorize_external_content(
     public: bool = False,
     baseline: str | None = None,
     supporting_context: Any = None,
+    execution_completed: bool = False,
 ) -> None:
-    """Authorize an unmodified external candidate at one concrete boundary."""
+    """Authorize an unmodified external candidate at one concrete boundary.
+
+    ``execution_completed`` is trusted adapter state, never client input.  It
+    is set only after a successful operation has produced its result, so a
+    denied release can honestly tell an external harness not to replay it.
+    """
     core = _core()
     effective_context = context or context_for_principal(
         principal,
@@ -82,19 +89,33 @@ async def authorize_external_content(
         public=public,
         baseline=baseline,
     )
-    await core.authorize_content(
-        candidate,
-        direction=direction,
-        context=effective_context,
-        tool_id=tool_id,
-        operation=operation,
-        supporting_context=supporting_context,
-    )
+    try:
+        await core.authorize_content(
+            candidate,
+            direction=direction,
+            context=effective_context,
+            tool_id=tool_id,
+            operation=operation,
+            supporting_context=supporting_context,
+        )
+    except ContentProtectionError as exc:
+        if execution_completed and direction == "outbound" and exc.code == "content_denied":
+            raise ContentProtectionError(
+                exc.code,
+                exc.request_id,
+                reason=exc.reason,
+                reason_code=exc.reason_code,
+                recovery_eligible=True,
+                execution_status="completed_response_withheld",
+            ) from exc
+        raise
 
 
 def public_error_detail(exc: Exception) -> dict[str, str]:
     """Return the core fixed error envelope without exposing candidate data."""
     detail = getattr(exc, "public_detail", None)
     if callable(detail):
-        return dict(cast(Callable[[], Mapping[str, str]], detail)())
+        # BYO callers own their logical-turn state across requests, so never
+        # expose a hosted server's attempt counter through these transports.
+        return {key: value for key, value in dict(cast(Callable[[], Mapping[str, str]], detail)()).items() if key != "attempts_remaining"}
     return {"code": "content_unavailable", "message": "This content is not available under your access profile."}

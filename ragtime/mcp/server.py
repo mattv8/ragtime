@@ -287,6 +287,9 @@ def _development_refusal_detail(exc: Exception) -> dict[str, str] | None:
     detail = {key: value[key] for key in required}
     if isinstance(value.get("reason_code"), str) and value["reason_code"].strip():
         detail["reason_code"] = value["reason_code"]
+    for key in ("recovery_action", "execution_status"):
+        if isinstance(value.get(key), str) and value[key].strip():
+            detail[key] = value[key]
     return detail
 
 
@@ -309,6 +312,7 @@ async def _development_result(result: Any, *, operation: str) -> CallToolResult:
         mcp_route=_mcp_route_id.get(),
         tool_id=operation,
         operation=operation,
+        execution_completed=True,
     )
     return CallToolResult(content=[TextContent(type="text", text=serialize_mcp_payload(result, limit=None))])
 
@@ -663,6 +667,7 @@ def _register_handlers(
                 mcp_route=_mcp_route_id.get(),
                 tool_id=canonical_tool_id,
                 operation="tools/call",
+                execution_completed=True,
             )
 
             return [TextContent(type="text", text=result)]

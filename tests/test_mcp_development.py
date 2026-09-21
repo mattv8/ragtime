@@ -141,7 +141,7 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
         operations = [{"name": "file_read", "description": "Read", "scope": "read", "input_schema": {}}]
         with (
             mock.patch.object(development_service, "list_operations", return_value=operations),
-            mock.patch.object(development_service, "execute", new=mock.AsyncMock(return_value={"content": "restricted"})),
+            mock.patch.object(development_service, "execute", new=mock.AsyncMock(return_value={"content": "restricted"})) as execute,
             mock.patch(
                 "ragtime.mcp.server.authorize_external_content",
                 new=mock.AsyncMock(
@@ -165,6 +165,7 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
         detail = json.loads(content.text)["error"]
         self.assertEqual(detail["reason"], "This request conflicts with the access policy.")
         self.assertIn("next_step", detail)
+        execute.assert_awaited_once_with(principal, "workspace-1", "file_read", {})
 
     async def test_wrapped_content_protection_detail_is_flattened_for_mcp(self) -> None:
         principal = DevelopmentPrincipal(user_id="user-1", is_admin=False, scopes=frozenset({"read"}))

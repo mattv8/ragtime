@@ -24,6 +24,8 @@ import types
 import uuid
 import zipfile
 from collections import defaultdict
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Coroutine, Dict, List, Literal, Optional, cast
@@ -15189,7 +15191,7 @@ async def send_message_stream(
     current_time_context = _build_current_time_prompt_context(request)
     ui_theme_context = _build_ui_theme_prompt_context(request)
 
-    async def stream_response() -> AsyncIterator[str]:
+    async def _stream_response() -> AsyncGenerator[str, None]:
         """Generate streaming response tokens."""
         chunk_id = f"chatcmpl-{int(time.time())}"
         full_response = ""
@@ -15198,25 +15200,34 @@ async def send_message_stream(
         reasoning_block_started_at: datetime | None = None
         current_user_context = _build_current_user_prompt_context(user)
 
+        async def response_events() -> AsyncGenerator[Any, None]:
+            """Close the upstream generator when the SSE client disconnects."""
+            async with aclosing(
+                rag.process_query_stream(
+                    current_user_message,
+                    chat_history,
+                    is_ui=True,
+                    blocked_tool_names=blocked_tool_names,
+                    workspace_context=workspace_context,
+                    conversation_model=conv.model,
+                    conversation_id=conversation_id,
+                    user_id=user.id,
+                    owner_user_id=conv.user_id,
+                    current_user_context=current_user_context,
+                    current_time_context=current_time_context,
+                    ui_theme_context=ui_theme_context,
+                    message_index=len(conv.messages),
+                    disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
+                    protection_surface="workspace_chat" if workspace_id else "chat",
+                )
+            ) as stream:
+                async for event in stream:
+                    yield event
+
+        event_stream = response_events()
         try:
             # Use UI agent (with chart tool and enhanced prompt)
-            async for event in rag.process_query_stream(
-                current_user_message,
-                chat_history,
-                is_ui=True,
-                blocked_tool_names=blocked_tool_names,
-                workspace_context=workspace_context,
-                conversation_model=conv.model,
-                conversation_id=conversation_id,
-                user_id=user.id,
-                owner_user_id=conv.user_id,
-                current_user_context=current_user_context,
-                current_time_context=current_time_context,
-                ui_theme_context=ui_theme_context,
-                message_index=len(conv.messages),
-                disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
-                protection_surface="workspace_chat" if workspace_id else "chat",
-            ):
+            async for event in event_stream:
                 # Handle structured tool events
                 if isinstance(event, dict):
                     event_type = event.get("type")
@@ -15436,6 +15447,19 @@ async def send_message_stream(
                 error_chunk["error"] = cast(Callable[[], dict[str, str]], public_detail)()
             yield f"data: {json.dumps(error_chunk)}\n\n"
             yield "data: [DONE]\n\n"
+        finally:
+            await event_stream.aclose()
+
+    async def stream_response() -> AsyncGenerator[str, None]:
+        protection_context = _conversation_protection_context(
+            user_id=user.id,
+            owner_user_id=conv.user_id,
+            workspace_id=workspace_id,
+        )
+        with bind_content_protection_context(protection_context):
+            async with aclosing(_stream_response()) as stream:
+                async for chunk in stream:
+                    yield chunk
 
     return StreamingResponse(stream_response(), media_type="text/event-stream")
 

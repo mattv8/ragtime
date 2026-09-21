@@ -528,6 +528,7 @@ class DevelopmentService:
                 tool_id=operation,
                 resource_id=workspace_id,
                 operation=operation,
+                execution_completed=True,
             )
             return result
         except Exception as exc:

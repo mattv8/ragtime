@@ -110,7 +110,17 @@ class ContentProtectionConfig(BaseModel):
 class ContentProtectionError(Exception):
     """Fixed, safe error data for transports to serialize."""
 
-    def __init__(self, code: str, request_id: str, *, reason: str | None = None, reason_code: str | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        request_id: str,
+        *,
+        reason: str | None = None,
+        reason_code: str | None = None,
+        recovery_eligible: bool = False,
+        execution_status: Literal["not_started", "completed_response_withheld"] | None = None,
+        attempts_remaining: int | None = None,
+    ) -> None:
         if reason is not None:
             if not isinstance(reason, str):
                 raise TypeError("reason must be text")
@@ -121,6 +131,9 @@ class ContentProtectionError(Exception):
         self.request_id = request_id
         self.reason = reason or None
         self.reason_code = reason_code
+        self.recovery_eligible = recovery_eligible
+        self.execution_status = execution_status
+        self.attempts_remaining = attempts_remaining
         super().__init__(code)
 
     def public_detail(self) -> dict[str, str]:
@@ -159,4 +172,10 @@ class ContentProtectionError(Exception):
         }
         if self.reason_code:
             detail["reason_code"] = self.reason_code
+        if self.recovery_eligible:
+            detail["recovery_action"] = "produce_allowed_alternative"
+        if self.execution_status is not None:
+            detail["execution_status"] = self.execution_status
+        if self.attempts_remaining is not None:
+            detail["attempts_remaining"] = str(self.attempts_remaining)
         return detail

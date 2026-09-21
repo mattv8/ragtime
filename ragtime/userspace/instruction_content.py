@@ -19,7 +19,7 @@ from ragtime.userspace.instruction_facts import translate_internal_tool_referenc
 _CONTENT_PROTECTION_REFUSAL_RELAY_GUIDANCE = """
 ## Content-protection refusals
 
-If a platform tool returns a content-protection refusal, it includes a displayable `reason` and `next_step` alongside its code and request ID. Relay that reason and next step to the end user, stop the blocked operation, and do not automatically retry it. Parent agents must preserve this information when reporting a child-agent refusal. This is guidance for harness behavior; unrelated third-party UIs may not obey it.
+If a platform tool returns a content-protection refusal, it includes a displayable `reason` and `next_step` alongside its code and request ID. Relay that reason and next step unchanged to the end user; do not automatically retry the blocked operation. A `recovery_action=produce_allowed_alternative` permits exactly one alternative for the logical turn, shared by parent agents and all subagents; the external harness owns that counter across requests. The alternative may use only permitted information: never reconstruct or paraphrase withheld material, change permissions, credentials, or audience to evade the refusal, or replay an operation marked `execution_status=completed_response_withheld`. On a second denial, stop and relay the refusal. Every request remains independently authenticated, authorized, and classified; no client counter grants access. Operational and inbound refusals do not grant a recovery attempt. This is guidance for harness behavior; unrelated third-party UIs may not obey it.
 """
 
 
