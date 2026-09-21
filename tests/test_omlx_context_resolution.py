@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import unittest
 from unittest import mock
 
@@ -29,10 +30,10 @@ class OmlxContextResolutionTests(unittest.TestCase):
             )
 
         original_async_client = httpx.AsyncClient
-
-        def mock_async_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
-            kwargs["transport"] = httpx.MockTransport(handler)
-            return original_async_client(*args, **kwargs)
+        mock_async_client = functools.partial(
+            original_async_client,
+            transport=httpx.MockTransport(handler),
+        )
 
         rag = RAGComponents()
         rag._app_settings = {
