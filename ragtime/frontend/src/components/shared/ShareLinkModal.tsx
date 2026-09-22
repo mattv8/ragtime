@@ -683,6 +683,7 @@ export function ShareLinkModal({
           {hasTabs ? (
             <ModalTabs
               idPrefix="share-workspace"
+              label={title}
               tabs={shareTabs}
               activeTabId={activeTab}
               onChange={setActiveTab}

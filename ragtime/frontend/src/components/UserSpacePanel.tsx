@@ -12057,6 +12057,7 @@ export function UserSpacePanel({
 
       {showAgentAccessModal && activeWorkspace && (
         <AgentAccessModal
+          key={`agent-access-${activeWorkspace.id}`}
           isOpen={showAgentAccessModal}
           onClose={() => setShowAgentAccessModal(false)}
           sourceWorkspace={activeWorkspace}
@@ -12071,6 +12072,15 @@ export function UserSpacePanel({
           loading={agentGrantsLoading}
           savingTargetId={savingAgentGrantTargetId}
           revokingTargetId={revokingAgentGrantTargetId}
+          agentCollaborationSection={
+            isOwner ? <AgentAccessSection workspaceId={activeWorkspace.id} /> : undefined
+          }
+          connectAgentSection={
+            <ConnectYourAgentPanel
+              workspaceId={activeWorkspace.id}
+              canManage={isOwner || currentUser.role === 'admin'}
+            />
+          }
         />
       )}
 
@@ -12104,19 +12114,6 @@ export function UserSpacePanel({
         creatingShareLink={sharingWorkspace}
         updatingShareLabel={savingShareLabel}
         deletingSelectedShareLink={deletingSelectedShareLink}
-        agentAccessSection={
-          isOwner && activeWorkspace ? (
-            <AgentAccessSection workspaceId={activeWorkspace.id} />
-          ) : undefined
-        }
-        connectAgentSection={
-          activeWorkspace ? (
-            <ConnectYourAgentPanel
-              workspaceId={activeWorkspace.id}
-              canManage={isOwner || currentUser.role === 'admin'}
-            />
-          ) : undefined
-        }
         apiAccessSection={
           isOwner && activeWorkspace ? (
             <ExternalApiAccessSection

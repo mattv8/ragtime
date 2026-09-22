@@ -38,6 +38,7 @@ const {
   diffHoverTimersMock,
   workspaceChatSearchMock,
   workspaceScmActivityMock,
+  shareLinkModalPropsMock,
 } = vi.hoisted(() => ({
   previewApiMock: {
     listUserSpaceWorkspaces: vi.fn(),
@@ -62,6 +63,7 @@ const {
     getLdapConfig: vi.fn(),
     discoverLdapWithStoredCredentials: vi.fn(),
     listUserSpaceWorkspaceShareLinks: vi.fn(),
+    listUserSpaceWorkspaceAgentGrants: vi.fn(),
     createUserSpaceWorkspaceShareLink: vi.fn(),
     deleteUserSpaceWorkspaceShareLink: vi.fn(),
     getUserSpaceWorkspacePreviewEntryUrl: vi.fn(),
@@ -86,6 +88,7 @@ const {
     clear: vi.fn(),
   },
   workspaceScmActivityMock: { hasActivity: false, syncState: null },
+  shareLinkModalPropsMock: vi.fn(),
 }));
 
 let latestSqliteInspectorModalProps: unknown = null;
@@ -166,36 +169,32 @@ vi.mock('./shared/ConnectYourAgentPanel', () => ({
   ),
 }));
 vi.mock('./shared/ShareLinkModal', () => ({
-  ShareLinkModal: ({
-    isOpen,
-    loadingShareStatus,
-    shareLinks,
-    agentAccessSection,
-    connectAgentSection,
-    apiAccessSection,
-    onCreateShareLink,
-    onOpenFullPreview,
-    onSaveShareAccess,
-    onDeleteSelectedShareLink,
-  }: {
+  ShareLinkModal: (props: {
     isOpen: boolean;
     loadingShareStatus: boolean;
     shareLinks: Array<{ id: string; label: string | null }>;
-    agentAccessSection?: React.ReactNode;
-    connectAgentSection?: React.ReactNode;
     apiAccessSection?: React.ReactNode;
     onCreateShareLink?: () => void;
     onOpenFullPreview?: () => void;
     onSaveShareAccess?: () => void;
     onDeleteSelectedShareLink: (shareId: string) => void;
-  }) =>
-    isOpen ? (
+  }) => {
+    const {
+      isOpen,
+      loadingShareStatus,
+      shareLinks,
+      apiAccessSection,
+      onCreateShareLink,
+      onOpenFullPreview,
+      onSaveShareAccess,
+      onDeleteSelectedShareLink,
+    } = props;
+    shareLinkModalPropsMock(props);
+    return isOpen ? (
       <div data-testid="share-link-modal">
         {shareLinks.map((link) => (
           <div key={link.id}>{link.label}</div>
         ))}
-        <div data-testid="share-link-modal-agent-access">{agentAccessSection}</div>
-        <div data-testid="share-link-modal-connect-agent">{connectAgentSection}</div>
         <div data-testid="share-link-modal-api-access">{apiAccessSection}</div>
         <button type="button" onClick={() => onCreateShareLink?.()}>
           New Link
@@ -217,7 +216,8 @@ vi.mock('./shared/ShareLinkModal', () => ({
           Delete first share
         </button>
       </div>
-    ) : null,
+    ) : null;
+  },
 }));
 vi.mock('./WorkspaceScmWizard', () => ({
   useWorkspaceScmWizardActivity: () => workspaceScmActivityMock,
@@ -234,8 +234,30 @@ vi.mock('./WorkspaceScmWizard', () => ({
   ),
 }));
 vi.mock('./shared/AdminWorkspaceModal', () => ({ default: () => null }));
-vi.mock('./shared/AgentAccessButton', () => ({ AgentAccessButton: () => null }));
-vi.mock('./shared/AgentAccessModal', () => ({ AgentAccessModal: () => null }));
+vi.mock('./shared/AgentAccessButton', () => ({
+  AgentAccessButton: ({ onClick, title }: { onClick: () => void; title: string }) => (
+    <button type="button" title={title} onClick={onClick}>
+      Agent Access
+    </button>
+  ),
+}));
+vi.mock('./shared/AgentAccessModal', () => ({
+  AgentAccessModal: ({
+    isOpen,
+    agentCollaborationSection,
+    connectAgentSection,
+  }: {
+    isOpen: boolean;
+    agentCollaborationSection?: React.ReactNode;
+    connectAgentSection?: React.ReactNode;
+  }) =>
+    isOpen ? (
+      <div data-testid="agent-access-modal">
+        <div data-testid="agent-access-modal-collaboration">{agentCollaborationSection}</div>
+        <div data-testid="agent-access-modal-connect-agent">{connectAgentSection}</div>
+      </div>
+    ) : null,
+}));
 vi.mock('./shared/MemberManagementButton', () => ({ MemberManagementButton: () => null }));
 vi.mock('./shared/MemberManagementModal', () => ({ MemberManagementModal: () => null }));
 vi.mock('./shared/MiniLoadingSpinner', () => ({
@@ -609,6 +631,7 @@ beforeEach(() => {
     owner_username: SHARE_LINKS_RESPONSE.owner_username,
     links: SHARE_LINKS_RESPONSE.links.map((link) => ({ ...link })),
   });
+  previewApiMock.listUserSpaceWorkspaceAgentGrants.mockResolvedValue([]);
   previewApiMock.getUserSpaceWorkspacePreviewEntryUrl.mockImplementation(
     (workspaceId: string, options?: { path?: string; autoStart?: boolean }) => {
       const params = new URLSearchParams();
@@ -631,6 +654,7 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.clearAllMocks();
+  shareLinkModalPropsMock.mockClear();
   latestSqliteInspectorModalProps = null;
   sqliteInspectorModalRender = () => null;
 });
@@ -990,15 +1014,17 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     expect(previewApiMock.createUserSpaceWorkspaceShareLink).not.toHaveBeenCalled();
   });
 
-  it('mounts Coding Agent Setup only through the Share Workspace modal for the active workspace', async () => {
+  it('mounts Coding Agent Setup through Agent Access for the active workspace', async () => {
     await renderPanelWithRuntimeOverlay(false);
 
     expect(screen.queryByTestId('connect-your-agent')).toBeNull();
 
-    const manageShareButton = document.querySelector('[title="Manage share link"]');
-    expect(manageShareButton).not.toBeNull();
+    const manageAgentAccessButton = document.querySelector(
+      '[title="Manage cross-workspace agent access"]',
+    );
+    expect(manageAgentAccessButton).not.toBeNull();
     await act(async () => {
-      (manageShareButton as HTMLButtonElement).click();
+      (manageAgentAccessButton as HTMLButtonElement).click();
     });
 
     await waitFor(() => {
@@ -1008,7 +1034,7 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     expect(screen.getByTestId('connect-your-agent').dataset.canManage).toBe('true');
   });
 
-  it('passes read-only credential management to editors in the Share Workspace modal', async () => {
+  it('passes read-only credential management to editors in Agent Access', async () => {
     const editorWorkspace = buildWorkspaceForMember(EDITOR_USER.id, 'editor');
     previewApiMock.listUserSpaceWorkspaces.mockResolvedValue({
       items: [editorWorkspace],
@@ -1018,15 +1044,20 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     render(<UserSpacePanel currentUser={{ ...EDITOR_USER }} />);
 
     await waitFor(() => {
-      expect(document.querySelector('[title="Manage share link"]')).not.toBeNull();
+      expect(
+        document.querySelector('[title="Manage cross-workspace agent access"]'),
+      ).not.toBeNull();
     });
     await act(async () => {
-      (document.querySelector('[title="Manage share link"]') as HTMLButtonElement).click();
+      (
+        document.querySelector('[title="Manage cross-workspace agent access"]') as HTMLButtonElement
+      ).click();
     });
 
     await waitFor(() => {
       expect(screen.getByTestId('connect-your-agent').dataset.canManage).toBe('false');
     });
+    expect(screen.getByTestId('agent-access-modal-collaboration').textContent).toBe('');
   });
 
   it('disables public preview and save actions while share status loads', async () => {
@@ -1142,22 +1173,33 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     expect(previewApiMock.listUserSpaceWorkspaceShareLinks).toHaveBeenCalledTimes(1);
   });
 
-  it('passes owner agent access and external api access to separate share modal props', async () => {
+  it('passes agent access sections to Agent Access and API access to Share Workspace', async () => {
     await renderPanelWithRuntimeOverlay(false);
 
+    const manageAgentAccessButton = document.querySelector(
+      '[title="Manage cross-workspace agent access"]',
+    );
     const manageShareButton = document.querySelector('[title="Manage share link"]');
+    expect(manageAgentAccessButton).not.toBeNull();
     expect(manageShareButton).not.toBeNull();
 
     await act(async () => {
+      (manageAgentAccessButton as HTMLButtonElement).click();
       (manageShareButton as HTMLButtonElement).click();
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId('share-link-modal-agent-access').textContent).toContain(
+      expect(screen.getAllByTestId('agent-access-modal-collaboration')[0].textContent).toContain(
         'agent:ws-1',
       );
+      expect(screen.getAllByTestId('agent-access-modal-connect-agent')[0]).toBeTruthy();
       expect(screen.getByTestId('share-link-modal-api-access').textContent).toContain('api:ws-1:');
     });
+    const shareModalProps = shareLinkModalPropsMock.mock.calls[
+      shareLinkModalPropsMock.mock.calls.length - 1
+    ]?.[0] as Record<string, unknown>;
+    expect(shareModalProps).not.toHaveProperty('agentAccessSection');
+    expect(shareModalProps).not.toHaveProperty('connectAgentSection');
   });
 
   it('treats linked databases with tables as activating the SQLite inspector toolbar state', async () => {

@@ -206,23 +206,23 @@ describe('Workbench shell styles contract', () => {
     const adminCss = readSource('src/styles/workbench-admin.css');
     const broadSelectedRuleIndex = adminCss.lastIndexOf("[data-theme-pack='modern'] :is(");
     const shareTabOverrideIndex = adminCss.indexOf(
-      "[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-share-tab[aria-selected='true']",
+      "[data-theme-pack='modern'] .modal-with-tabs .modal-tab[aria-selected='true']",
     );
 
-    expect(componentsCss).toMatch(/\.userspace-share-tabs\s*\{[\s\S]*gap:\s*0;/);
+    expect(componentsCss).toMatch(/\.modal-tabs\s*\{[\s\S]*gap:\s*0;/);
     expect(componentsCss).toMatch(
-      /\.userspace-share-tab\s*\{[\s\S]*padding:\s*var\(--space-sm\)\s+var\(--space-md\);/,
+      /\.modal-tab\s*\{[\s\S]*padding:\s*var\(--space-sm\)\s+var\(--space-md\);/,
     );
     expect(broadSelectedRuleIndex).toBeGreaterThan(-1);
     expect(shareTabOverrideIndex).toBeGreaterThan(broadSelectedRuleIndex);
     expect(adminCss).toMatch(
-      /\[data-theme-pack='modern'\]\s+\.userspace-share-modal-with-tabs\s+\.userspace-share-tab\[aria-selected='true'\]\s*\{[\s\S]*background:\s*transparent;[\s\S]*border-bottom-color:\s*var\(--color-accent\);[\s\S]*color:\s*var\(--color-text-primary\);/,
+      /\[data-theme-pack='modern'\]\s+\.modal-with-tabs\s+\.modal-tab\[aria-selected='true'\]\s*\{[\s\S]*background:\s*transparent;[\s\S]*border-bottom-color:\s*var\(--color-accent\);[\s\S]*color:\s*var\(--color-text-primary\);/,
     );
     expect(adminCss).toMatch(
-      /\[data-theme-pack='modern'\]\s+\.userspace-share-modal-with-tabs\s+\.userspace-share-tab\[aria-selected='true'\]:hover:not\(:disabled\)\s*\{[\s\S]*background:\s*transparent;[\s\S]*border-bottom-color:\s*var\(--color-accent\);[\s\S]*color:\s*var\(--color-text-primary\);/,
+      /\[data-theme-pack='modern'\]\s+\.modal-with-tabs\s+\.modal-tab\[aria-selected='true'\]:hover:not\(:disabled\)\s*\{[\s\S]*background:\s*transparent;[\s\S]*border-bottom-color:\s*var\(--color-accent\);[\s\S]*color:\s*var\(--color-text-primary\);/,
     );
     expect(adminCss).toMatch(
-      /\[data-theme-pack='modern'\]\s+\.userspace-share-modal-with-tabs\s+\.userspace-share-tab:hover:not\(:disabled\)\s*\{[\s\S]*background:\s*transparent;/,
+      /\[data-theme-pack='modern'\]\s+\.modal-with-tabs\s+\.modal-tab:hover:not\(:disabled\)\s*\{[\s\S]*background:\s*transparent;/,
     );
   });
 
