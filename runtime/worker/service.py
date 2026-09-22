@@ -370,6 +370,7 @@ class WorkerService:
         self._workspace_cleanup_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_maintenance: dict[str, dict[str, tuple[bool, SandboxSpec]]] = {}
         self._background_cleanup_tasks: set[asyncio.Task[None]] = set()
+        self._operation_monotonic_starts: dict[tuple[str, str], float] = {}
         self._startup_semaphore = asyncio.Semaphore(
             get_positive_int_env(
                 "RUNTIME_STARTUP_CONCURRENCY",
@@ -1182,10 +1183,32 @@ class WorkerService:
         session.runtime_operation_phase = phase
         session.runtime_operation_started_at = now
         session.runtime_operation_updated_at = now
+        self._operation_monotonic_starts[(session.id, session.runtime_operation_id)] = time.monotonic()
+        logger.info(
+            "runtime_startup_phase workspace_id=%s operation_id=%s phase=%s elapsed_ms=%.1f",
+            session.workspace_id,
+            session.runtime_operation_id,
+            phase,
+            0.0,
+        )
 
     def _set_operation_phase(self, session: WorkerSession, phase: str) -> None:
         session.runtime_operation_phase = phase
         session.runtime_operation_updated_at = utc_now()
+        operation_id = session.runtime_operation_id
+        if operation_id:
+            key = (session.id, operation_id)
+            started_at = self._operation_monotonic_starts.get(key)
+            elapsed_ms = (time.monotonic() - started_at) * 1000 if started_at is not None else 0.0
+            logger.info(
+                "runtime_startup_phase workspace_id=%s operation_id=%s phase=%s elapsed_ms=%.1f",
+                session.workspace_id,
+                operation_id,
+                phase,
+                elapsed_ms,
+            )
+            if phase in {"ready", "failed", "stopped"}:
+                self._operation_monotonic_starts.pop(key, None)
 
     def _runtime_file_response(
         self,
@@ -1593,8 +1616,8 @@ class WorkerService:
                     stderr=asyncio.subprocess.PIPE,
                     ensure_ready=False,
                 )
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    process.communicate(),
+                stdout_bytes, stderr_bytes = await self._communicate_or_terminate(
+                    process,
                     timeout=self._runtime_bootstrap_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -1667,8 +1690,8 @@ class WorkerService:
                 stderr=asyncio.subprocess.PIPE,
                 ensure_ready=False,
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(),
+            stdout_bytes, stderr_bytes = await self._communicate_or_terminate(
+                process,
                 timeout=self._runtime_bootstrap_timeout_seconds,
             )
         except asyncio.TimeoutError:
@@ -1683,6 +1706,29 @@ class WorkerService:
             output = stderr_text or stdout_text or "unknown error"
             return f"Auto-install of {framework} dependencies failed with code {returncode}: {output[:300]}"
         return None
+
+    async def _communicate_or_terminate(
+        self,
+        process: asyncio.subprocess.Process,
+        *,
+        timeout: float,
+    ) -> tuple[bytes, bytes]:
+        """Drain a bootstrap/dependency child on timeout or task cancellation."""
+        try:
+            return await asyncio.wait_for(process.communicate(), timeout=timeout)
+        except BaseException:
+            cleanup = asyncio.create_task(terminate_process_group(process))
+            cancelled = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    cancelled = True
+            # Observe a cleanup failure before propagating the original abort.
+            await cleanup
+            if cancelled:
+                raise asyncio.CancelledError
+            raise
 
     def _extract_explicit_port(self, command: str) -> int | None:
         for pattern in _PORT_PATTERNS:
@@ -2173,19 +2219,27 @@ class WorkerService:
             ),
         )
 
-    async def _wait_devserver_ready(self, port: int) -> bool:
+    async def _wait_devserver_ready(
+        self,
+        port: int,
+        process: asyncio.subprocess.Process | None = None,
+    ) -> bool:
         deadline = asyncio.get_event_loop().time() + self._devserver_start_timeout_seconds
         probe_url = f"http://127.0.0.1:{port}/"
         timeout = httpx.Timeout(connect=0.5, read=1.0, write=1.0, pool=0.5)
         sleep_seconds = 0.1
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             while asyncio.get_event_loop().time() < deadline:
+                if process is not None and process.returncode is not None:
+                    return False
                 try:
                     response = await client.get(probe_url)
                     if response.status_code < 500:
                         return True
                 except Exception:
                     pass
+                if process is not None and process.returncode is not None:
+                    return False
                 await asyncio.sleep(sleep_seconds)
                 sleep_seconds = min(0.75, sleep_seconds * 1.5)
         return False
@@ -2215,12 +2269,21 @@ class WorkerService:
                 except Exception:
                     pass
             return
-        await self._terminate_devserver_process(process)
+        termination = asyncio.create_task(self._terminate_devserver_process(process))
+        cancelled = False
+        while not termination.done():
+            try:
+                await asyncio.shield(termination)
+            except asyncio.CancelledError:
+                cancelled = True
+        await termination
         if log_handle:
             try:
                 log_handle.close()
             except Exception:
                 pass
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _terminate_devserver_process(
         self,
@@ -2290,7 +2353,7 @@ class WorkerService:
             self._set_operation_phase(session, "failed")
             session.updated_at = utc_now()
 
-    async def _run_startup_pipeline(
+    async def _run_startup_pipeline_inner(
         self,
         session_id: str,
         operation_id: str,
@@ -2386,6 +2449,8 @@ class WorkerService:
                 # shutil.copytree(), which can block for 10+ seconds on large
                 # workspaces and starve every other coroutine waiting for
                 # self._lock (including the 10 s manager timeout).
+                old_process: asyncio.subprocess.Process | None = None
+                old_log_handle: Any | None = None
                 async with self._lock:
                     session = self._sessions.get(session_id)
                     if not session or session.runtime_operation_id != operation_id:
@@ -2408,7 +2473,17 @@ class WorkerService:
                         return
 
                     session.devserver_port = resolution.port or port
-                    await self._terminate_devserver_locked(session.id)
+                    # Detach under the state lock, but never hold that global
+                    # lock while waiting for a process group to drain.
+                    old_process, old_log_handle = self._take_devserver_resources_locked(session.id)
+
+                # Replacement must not spawn until the prior workload is gone.
+                await self._terminate_devserver_resources(old_process, old_log_handle)
+
+                async with self._lock:
+                    session = self._sessions.get(session_id)
+                    if not session or session.runtime_operation_id != operation_id:
+                        return
                     log_path = self._resolve_devserver_log_path(session.id)
                     try:
                         log_handle = open(log_path, "wb", buffering=0)
@@ -2464,33 +2539,33 @@ class WorkerService:
                         _spawn_error = f"Failed to launch dev server: {exc}"
 
                     # --- Part 3: commit spawn result (inside lock) ---
+                    invalidated = False
                     async with self._lock:
                         session = self._sessions.get(session_id)
                         if not session or session.runtime_operation_id != operation_id:
                             # Session was invalidated while we were spawning.
-                            if _process is not None:
-                                await self._terminate_devserver_process(_process)
                             tracked_log_handle = self._devserver_log_handles.get(session_id)
                             if tracked_log_handle is log_handle:
                                 self._devserver_log_handles.pop(session_id, None)
-                                try:
-                                    log_handle.close()
-                                except Exception:
-                                    pass
-                            return
-                        if _spawn_error or _process is None:
+                            invalidated = True
+                        elif _spawn_error or _process is None:
                             self._devserver_log_handles.pop(session.id, None)
                             session.state = "running"
                             session.devserver_running = False
                             session.last_error = _spawn_error or "Failed to launch dev server"
                             self._set_operation_phase(session, "failed")
                             session.updated_at = utc_now()
-                            return
-                        self._devserver_processes[session.id] = _process
-                        session.devserver_command = _spawn_command
-                        self._set_operation_phase(session, "probing")
-                        session.updated_at = utc_now()
-                        target_port = session.devserver_port
+                        else:
+                            self._devserver_processes[session.id] = _process
+                            session.devserver_command = _spawn_command
+                            self._set_operation_phase(session, "probing")
+                            session.updated_at = utc_now()
+                            target_port = session.devserver_port
+                    if invalidated:
+                        await self._terminate_devserver_resources(_process, log_handle)
+                        return
+                    if _spawn_error or _process is None:
+                        return
                 except asyncio.CancelledError:
                     if _process is not None:
                         await self._terminate_devserver_process(_process)
@@ -2510,14 +2585,16 @@ class WorkerService:
                             pass
                     raise
 
-                ready = await self._wait_devserver_ready(target_port or 0)
+                ready = await self._wait_devserver_ready(target_port or 0, _process)
                 if not ready:
+                    failed_process: asyncio.subprocess.Process | None = None
+                    failed_log_handle: Any | None = None
                     async with self._lock:
                         session = self._sessions.get(session_id)
                         if not session or session.runtime_operation_id != operation_id:
                             return
                         await self._sync_devserver_state_locked(session)
-                        await self._terminate_devserver_locked(session.id)
+                        failed_process, failed_log_handle = self._take_devserver_resources_locked(session.id)
                         session.state = "running"
                         session.devserver_running = False
                         if not session.last_error:
@@ -2529,6 +2606,7 @@ class WorkerService:
                             )
                         self._set_operation_phase(session, "failed")
                         session.updated_at = utc_now()
+                    await self._terminate_devserver_resources(failed_process, failed_log_handle)
                     return
 
                 async with self._lock:
@@ -2541,6 +2619,17 @@ class WorkerService:
                     self._bootstrap_retry_flags.pop(session.id, None)
                     self._set_operation_phase(session, "ready")
                     session.updated_at = utc_now()
+
+    async def _run_startup_pipeline(
+        self,
+        session_id: str,
+        operation_id: str,
+    ) -> None:
+        """Run one operation while guaranteeing diagnostic timing cleanup."""
+        try:
+            await self._run_startup_pipeline_inner(session_id, operation_id)
+        finally:
+            self._operation_monotonic_starts.pop((session_id, operation_id), None)
 
     def _schedule_startup_locked(
         self,
@@ -2681,7 +2770,10 @@ class WorkerService:
             # Fence the operation before cancelling it. A startup pipeline can
             # be between its off-lock spawn and its guarded commit; clearing
             # the operation id makes that commit terminate its new process.
+            previous_operation_id = session.runtime_operation_id
             session.runtime_operation_id = None
+            if previous_operation_id:
+                self._operation_monotonic_starts.pop((session.id, previous_operation_id), None)
             session.runtime_operation_updated_at = utc_now()
             startup_task = self._startup_tasks.pop(session.id, None)
             if startup_task and not startup_task.done():
@@ -2706,7 +2798,15 @@ class WorkerService:
             # queued start observes it before it can provision this workspace.
             self._workspace_cleanup_tasks[workspace_id] = cleanup_task
 
-        await asyncio.shield(cleanup_task)
+        cancelled = False
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        await cleanup_task
+        if cancelled:
+            raise asyncio.CancelledError
         async with self._lock:
             session = self._sessions.get(worker_session_id)
             if not session:

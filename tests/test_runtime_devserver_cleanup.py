@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import io
 import signal
 import tempfile
 import threading
@@ -281,6 +282,63 @@ class RuntimeDevserverCleanupTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(provision_started.wait(), timeout=1)
                 await start_task
 
+    async def test_removed_session_during_spawn_cleans_old_process_without_touching_replacement_resources(self) -> None:
+        """A paused stale spawn cannot publish over a replacement's maps."""
+        assert worker_service is not None
+        service = worker_service.WorkerService()
+        spawn_started = asyncio.Event()
+        release_spawn = asyncio.Event()
+        old_process = SimpleNamespace(returncode=None)
+        replacement_process = SimpleNamespace(returncode=None)
+        replacement_log = io.BytesIO()
+        terminated = asyncio.Event()
+
+        async def paused_spawn(*_args: Any, **_kwargs: Any) -> Any:
+            spawn_started.set()
+            await release_spawn.wait()
+            return old_process
+
+        async def terminate_resources(process: Any, log_handle: Any) -> None:
+            self.assertFalse(service._lock.locked())
+            if process is None:
+                self.assertIsNone(log_handle)
+                return
+            self.assertIs(process, old_process)
+            self.assertFalse(log_handle.closed)
+            log_handle.close()
+            terminated.set()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session = self._build_session(Path(tmpdir))
+            session.runtime_operation_id = "op-1"
+            service._sessions[session.id] = session
+            with (
+                mock.patch("runtime.worker.service.ensure_sandbox_ready"),
+                mock.patch.object(service, "_materialize_workspace_mounts", new=mock.AsyncMock()),
+                mock.patch.object(service, "_run_workspace_bootstrap_if_needed", new=mock.AsyncMock(return_value=None)),
+                mock.patch.object(service, "_ensure_entrypoint_dependencies", new=mock.AsyncMock(return_value=None)),
+                mock.patch.object(
+                    service,
+                    "_resolve_devserver_command",
+                    return_value=worker_service.DevserverResolution(command=["sh", "-lc", "sleep 30"], port=50481),
+                ),
+                mock.patch.object(service, "_resolve_devserver_log_path", return_value=Path(tmpdir) / "old.log"),
+                mock.patch.object(worker_service, "spawn_sandboxed", side_effect=paused_spawn),
+                mock.patch.object(service, "_terminate_devserver_resources", side_effect=terminate_resources),
+            ):
+                startup = asyncio.create_task(service._run_startup_pipeline(session.id, "op-1"))
+                await asyncio.wait_for(spawn_started.wait(), timeout=1)
+                async with service._lock:
+                    del service._sessions[session.id]
+                    service._devserver_processes[session.id] = replacement_process
+                    service._devserver_log_handles[session.id] = replacement_log
+                release_spawn.set()
+                await asyncio.wait_for(startup, timeout=1)
+
+        self.assertTrue(terminated.is_set())
+        self.assertIs(service._devserver_processes[session.id], replacement_process)
+        self.assertIs(service._devserver_log_handles[session.id], replacement_log)
+
     async def test_same_workspace_start_waits_for_registered_stop_barrier(self) -> None:
         """A start queued while stop drains its startup task cannot overtake cleanup."""
         assert worker_service is not None
@@ -349,12 +407,14 @@ class RuntimeDevserverCleanupTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     await asyncio.wait_for(asyncio.to_thread(cleanup_started.wait), timeout=1)
                     stop_task.cancel()
-                    with self.assertRaises(asyncio.CancelledError):
-                        await stop_task
+                    await asyncio.sleep(0)
+                    self.assertFalse(stop_task.done())
                     self.assertIn(session.workspace_id, service._workspace_cleanup_tasks)
                 finally:
                     allow_cleanup.set()
-                await asyncio.wait_for(service._workspace_cleanup_tasks[session.workspace_id], timeout=1)
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(stop_task, timeout=1)
+                self.assertNotIn(session.workspace_id, service._workspace_cleanup_tasks)
 
     async def test_shutdown_drains_tracked_background_cleanup(self) -> None:
         """Shutdown waits for tracked cleanup that runs outside the state lock."""

@@ -111,6 +111,24 @@ class RuntimePtyCleanupTests(unittest.IsolatedAsyncioTestCase):
             timeout=0.01,
         )
 
+    async def test_inherited_group_uses_individual_process_termination(self) -> None:
+        """An unverified inherited PGID must never be signalled as a group."""
+        assert worker_api is not None
+        process = SimpleNamespace(
+            pid=1234,
+            returncode=None,
+            terminate=mock.Mock(),
+            kill=mock.Mock(),
+            wait=mock.AsyncMock(return_value=None),
+        )
+        with (
+            mock.patch("runtime.worker.sandbox.os.getpgid", return_value=4321),
+            mock.patch("runtime.worker.sandbox.os.killpg") as killpg,
+        ):
+            await worker_api._terminate_pty_process(process)
+        killpg.assert_not_called()
+        process.terminate.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

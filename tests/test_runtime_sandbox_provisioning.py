@@ -531,6 +531,7 @@ class SandboxProvisioningTests(unittest.TestCase):
                 (case.rootfs / "workspace" / "mounted").symlink_to(outside, target_is_directory=True)
 
                 with (
+                    mock.patch.object(sandbox, "detect_capabilities", return_value=case.caps),
                     mock.patch.object(sandbox, "mount_sync_available", return_value=sync_available),
                     mock.patch.object(sandbox, "sync_copied_mount") as sync_copied_mount,
                 ):

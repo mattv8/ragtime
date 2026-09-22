@@ -514,22 +514,65 @@ def _write_launch_status_to_fd(fd: int, status: SandboxLaunchStatus) -> None:
     _write_all_fd(fd, _encode_launch_record(status.to_record()))
 
 
+def _capture_process_group_ownership(process: asyncio.subprocess.Process) -> bool:
+    """Remember a launcher group while its leader is known to be alive.
+
+    Ownership requires a live process that is also its group's leader.  A
+    recorded PGID is never used after that leader has exited because it can be
+    reused; later procfs membership is not treated as identity proof.
+    """
+    if process.returncode is not None:
+        return False
+    try:
+        pgid = os.getpgid(process.pid)
+    except OSError:
+        return False
+    if pgid != process.pid:
+        return False
+    try:
+        setattr(process, "_ragtime_owned_process_group", pgid)
+    except Exception:
+        return False
+    return True
+
+
 async def terminate_process_group(
     process: asyncio.subprocess.Process,
     *,
     timeout: float = 2.0,
 ) -> None:
-    if process.returncode is not None:
+    owned_pgid = getattr(process, "_ragtime_owned_process_group", None)
+    leader_live = process.returncode is None
+    group_cleanup_safe = getattr(process, "_ragtime_group_cleanup_safe", True)
+    if owned_pgid is None and leader_live and group_cleanup_safe:
+        _capture_process_group_ownership(process)
+        owned_pgid = getattr(process, "_ragtime_owned_process_group", None)
+
+    # A dead leader can leave children running, but a PGID alone is not an
+    # identity proof after the original group becomes empty and gets reused.
+    # Do not signal an unverified group: callers still reap live leaders and
+    # cgroup cleanup covers sandboxed workloads where available.
+    if not leader_live:
         return
 
     def _signal_process_group(signum: signal.Signals) -> bool:
         try:
-            os.killpg(os.getpgid(process.pid), signum)
+            if group_cleanup_safe and isinstance(owned_pgid, int):
+                os.killpg(owned_pgid, signum)
+            else:
+                signal_process = getattr(process, "terminate" if signum == signal.SIGTERM else "kill", None)
+                if signal_process is None:
+                    return False
+                signal_process()
             return True
         except ProcessLookupError:
             return False
         except OSError:
-            signal_process = process.terminate if signum == signal.SIGTERM else process.kill
+            if not leader_live:
+                return False
+            signal_process = getattr(process, "terminate" if signum == signal.SIGTERM else "kill", None)
+            if signal_process is None:
+                return False
             try:
                 signal_process()
                 return True
@@ -559,6 +602,35 @@ async def terminate_process_group(
 async def _cleanup_failed_launcher_process(process: asyncio.subprocess.Process) -> None:
     with contextlib.suppress(Exception):
         await terminate_process_group(process, timeout=1.0)
+
+
+async def _drain_failed_launcher(
+    process: asyncio.subprocess.Process,
+    reader_task: asyncio.Task[SandboxLaunchStatus | None] | None = None,
+) -> bool:
+    """Kill a launcher and join its reader despite repeated cancellation.
+
+    Returns whether cancellation arrived while draining.  The caller decides
+    which original launch error to preserve after the cleanup fence is closed.
+    """
+
+    async def cleanup() -> None:
+        await _cleanup_failed_launcher_process(process)
+        if reader_task is not None:
+            try:
+                await reader_task
+            except (OSError, ValueError):
+                pass
+
+    task = asyncio.create_task(cleanup())
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    await task
+    return cancelled
 
 
 _capabilities_cache: dict[str, SandboxCapabilities] = {}
@@ -2340,6 +2412,12 @@ async def spawn_sandboxed(
             pass_fds=(spec_read_fd, status_write_fd),
             start_new_session=not pty,
         )
+        # PTY launchers deliberately share the worker's process group; never
+        # record it as owned or group cleanup could signal the worker itself.
+        if not pty:
+            _capture_process_group_ownership(process)
+        else:
+            setattr(process, "_ragtime_group_cleanup_safe", False)
         try:
             os.close(spec_read_fd)
         except OSError:
@@ -2356,21 +2434,30 @@ async def spawn_sandboxed(
             os.close(spec_write_fd)
             spec_write_fd = -1
         except OSError as exc:
-            await _cleanup_failed_launcher_process(process)
+            cancelled_during_drain = await _drain_failed_launcher(process)
+            if cancelled_during_drain:
+                raise asyncio.CancelledError
             raise SandboxLaunchError(SandboxLaunchStatus(stage="write_spec", errno=exc.errno, message=str(exc))) from exc
 
+        reader_task = asyncio.create_task(asyncio.to_thread(_read_launch_status_from_fd, status_read_fd))
         try:
             status = await asyncio.wait_for(
-                asyncio.to_thread(_read_launch_status_from_fd, status_read_fd),
+                asyncio.shield(reader_task),
                 timeout=_SANDBOX_LAUNCH_STARTUP_TIMEOUT_SECONDS,
             )
-        except asyncio.TimeoutError as exc:
-            await _cleanup_failed_launcher_process(process)
-            raise SandboxLaunchError(
-                SandboxLaunchStatus(stage="startup_timeout", errno=None, message=str(exc) or "sandbox launcher startup timed out")
-            ) from exc
-        except ValueError as exc:
-            await _cleanup_failed_launcher_process(process)
+        except (asyncio.TimeoutError, asyncio.CancelledError, ValueError) as exc:
+            # Closing a descriptor cannot stop a thread blocked in os.read and
+            # risks it reading a recycled FD.  The shielded task kills the
+            # writer then joins the reader before finally closes our FD below.
+            cancelled_during_drain = await _drain_failed_launcher(process, reader_task)
+            if cancelled_during_drain and not isinstance(exc, asyncio.CancelledError):
+                raise asyncio.CancelledError
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            if isinstance(exc, asyncio.TimeoutError):
+                raise SandboxLaunchError(
+                    SandboxLaunchStatus(stage="startup_timeout", errno=None, message=str(exc) or "sandbox launcher startup timed out")
+                ) from exc
             raise SandboxLaunchError(SandboxLaunchStatus(stage="read_status", errno=None, message=str(exc))) from exc
 
         if status is None:
@@ -2383,6 +2470,11 @@ async def spawn_sandboxed(
                         message=f"launcher exited unexpectedly with code {process.returncode}",
                     )
                 )
+            # A PTY launcher shares the worker group until the launcher has
+            # successfully completed its own setsid handshake.  Only then may
+            # we record its verified, leader-owned group for normal cleanup.
+            if pty and _capture_process_group_ownership(process):
+                setattr(process, "_ragtime_group_cleanup_safe", True)
             return process
 
         await process.wait()
