@@ -31,9 +31,17 @@ export interface User {
   mfa_enabled?: boolean;
   mfa_required?: boolean;
   recovery_codes_remaining?: number;
-  /** Null inherits the server-wide hosted chat policy. */
-  hosted_chat_enabled?: boolean | null;
-  hosted_chat_enabled_effective?: boolean;
+  /** Null inherits the server-wide Chat generation policy. */
+  chat_enabled?: boolean | null;
+  chat_enabled_effective?: boolean;
+  /** Null inherits the server-wide User Space generation policy. */
+  userspace_generation_enabled?: boolean | null;
+  userspace_generation_enabled_effective?: boolean;
+}
+
+export interface UpdateUserGenerationPolicyRequest {
+  chat_enabled?: boolean | null;
+  userspace_generation_enabled?: boolean | null;
 }
 
 export type TotpPolicy = 'optional' | 'required_all' | 'required_admins_groups';
@@ -293,8 +301,10 @@ export interface AuthStatus {
   authenticated_webgl_background_enabled?: boolean;
   chat_compaction_threshold_percent?: number;
   chat_auto_compaction_threshold_percent?: number;
-  /** Effective current-user hosted generation capability. */
-  hosted_chat_enabled?: boolean;
+  /** Effective current-user Chat generation capability. */
+  chat_enabled: boolean;
+  /** Effective current-user User Space generation capability. */
+  userspace_generation_enabled: boolean;
 }
 
 // =============================================================================
@@ -977,7 +987,8 @@ export interface AppSettings {
   server_name: string;
   default_theme_pack: string;
   authenticated_webgl_background_enabled: boolean;
-  hosted_chat_enabled?: boolean;
+  chat_enabled: boolean;
+  userspace_generation_enabled: boolean;
   openapi_model_prefix_enabled: boolean;
   show_tool_card_footer_actions: boolean;
   export_password_min_length?: number;
@@ -1152,7 +1163,8 @@ export interface UpdateSettingsRequest {
   server_name?: string;
   default_theme_pack?: string;
   authenticated_webgl_background_enabled?: boolean;
-  hosted_chat_enabled?: boolean;
+  chat_enabled?: boolean;
+  userspace_generation_enabled?: boolean;
   openapi_model_prefix_enabled?: boolean;
   show_tool_card_footer_actions?: boolean;
   export_password_min_length?: number;
@@ -4191,12 +4203,6 @@ export interface OpenRouterCreditStatus {
   checked_at: string | null;
   stale: boolean;
   warning: string | null;
-}
-
-export interface UserSpaceBridgeCredentialMode {
-  mode: 'env' | 'worker_file';
-  requires_restart: boolean;
-  supported: boolean;
 }
 
 export type WorkspaceExternalApiMethod = 'GET' | 'HEAD';

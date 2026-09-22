@@ -13,9 +13,8 @@ describe('settingsAccordionState', () => {
   describe('SETTINGS_ACCORDION_SECTION_IDS', () => {
     it('lists all accordion section ids in order', () => {
       expect(SETTINGS_ACCORDION_SECTION_IDS).toEqual([
-        'chat-models',
+        'chat',
         'agent-behavior',
-        'hosted-execution',
         'content-protection',
         'mcp',
         'userspace',
@@ -31,16 +30,12 @@ describe('settingsAccordionState', () => {
   });
 
   describe('DEFAULT_OPEN_SETTINGS_SECTIONS', () => {
-    it('defaults to chat-models, mcp, and userspace', () => {
-      expect(DEFAULT_OPEN_SETTINGS_SECTIONS).toEqual(['chat-models', 'mcp', 'userspace']);
+    it('defaults to chat, mcp, and userspace', () => {
+      expect(DEFAULT_OPEN_SETTINGS_SECTIONS).toEqual(['chat', 'mcp', 'userspace']);
     });
 
     it('keeps agent-behavior closed by default', () => {
       expect(DEFAULT_OPEN_SETTINGS_SECTIONS).not.toContain('agent-behavior');
-    });
-
-    it('keeps hosted-execution closed by default', () => {
-      expect(DEFAULT_OPEN_SETTINGS_SECTIONS).not.toContain('hosted-execution');
     });
   });
 
@@ -65,9 +60,8 @@ describe('settingsAccordionState', () => {
   describe('openSettingsAccordionSections', () => {
     it('opens the requested sections while preserving the rest', () => {
       const current: SettingsAccordionState = {
-        'chat-models': false,
+        chat: false,
         'agent-behavior': false,
-        'hosted-execution': false,
         'content-protection': false,
         mcp: true,
         userspace: false,
@@ -79,11 +73,10 @@ describe('settingsAccordionState', () => {
         'server-backup-restore': false,
         security: false,
       };
-      const next = openSettingsAccordionSections(current, ['chat-models', 'userspace']);
+      const next = openSettingsAccordionSections(current, ['chat', 'userspace']);
       expect(next).toEqual({
-        'chat-models': true,
+        chat: true,
         'agent-behavior': false,
-        'hosted-execution': false,
         'content-protection': false,
         mcp: true,
         userspace: true,
@@ -126,9 +119,8 @@ describe('settingsAccordionState', () => {
   describe('restoreSettingsAccordionState', () => {
     it('returns a copy of the provided snapshot when present', () => {
       const snapshot: SettingsAccordionState = {
-        'chat-models': false,
+        chat: false,
         'agent-behavior': true,
-        'hosted-execution': false,
         'content-protection': false,
         mcp: false,
         userspace: false,
@@ -150,6 +142,14 @@ describe('settingsAccordionState', () => {
       { label: 'undefined', snapshot: undefined },
     ])('returns the default state when given $label', ({ snapshot }) => {
       expect(restoreSettingsAccordionState(snapshot)).toEqual(getDefaultSettingsAccordionState());
+    });
+
+    it('adds defaults for newly introduced sections when restoring an older snapshot', () => {
+      const restored = restoreSettingsAccordionState({
+        userspace: false,
+      } as SettingsAccordionState);
+      expect(restored.chat).toBe(true);
+      expect(restored.userspace).toBe(false);
     });
   });
 });

@@ -1130,34 +1130,6 @@ describe('workspace bridge credential client requests', () => {
     expect(result.state).toBe('healthy');
     expect(result.token_session_id).toBe('session-new');
   });
-
-  it('reads and updates the bridge credential delivery mode with an encoded workspace id', async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse({ mode: 'env', requires_restart: false, supported: true }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({ mode: 'worker_file', requires_restart: true, supported: true }),
-      );
-
-    await api.getUserSpaceBridgeCredentialMode('workspace/123');
-    await api.updateUserSpaceBridgeCredentialMode('workspace/123', 'worker_file');
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      '/indexes/userspace/runtime/workspaces/workspace%2F123/bridge-credential-mode',
-      expect.objectContaining({ credentials: 'include' }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      '/indexes/userspace/runtime/workspaces/workspace%2F123/bridge-credential-mode',
-      expect.objectContaining({
-        method: 'PUT',
-        body: JSON.stringify({ mode: 'worker_file' }),
-        credentials: 'include',
-      }),
-    );
-  });
 });
 
 describe('OpenRouter credit monitor client requests', () => {

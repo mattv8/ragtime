@@ -1029,8 +1029,10 @@ export function ToolsPanel({
 
   // Scroll to and highlight section when navigated from another view
   useEffect(() => {
-    if (highlightSection && !loading) {
-      const element = document.getElementById(resolveHighlightTargetId(highlightSection));
+    const requestedSection =
+      highlightSection || (window.location.hash === '#tools-connections' ? 'connections' : null);
+    if (requestedSection && !loading) {
+      const element = document.getElementById(resolveHighlightTargetId(requestedSection));
       if (element) {
         element.classList.add('highlight-setting');
         element.scrollIntoView?.({ behavior: 'smooth', block: 'center' });

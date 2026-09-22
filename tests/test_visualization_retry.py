@@ -13,7 +13,7 @@ from ragtime.indexer.visualization_retry import (
     retry_visualization_with_repair,
 )
 from tests.content_protection_support import use_disabled_content_protection
-from tests.hosted_execution_test_support import enabled_hosted_execution_policy
+from tests.generation_policy_test_support import enabled_generation_policy
 
 
 def _context(selected_tool_ids: set[str] | None = None) -> VisualizationRetryContext:
@@ -113,7 +113,7 @@ class VisualizationRetryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            enabled_hosted_execution_policy("user-1"),
+            enabled_generation_policy("user-1"),
             _rag_ready(),
             mock.patch.object(
                 visualization_retry.rag,
@@ -208,7 +208,7 @@ class VisualizationRetryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            enabled_hosted_execution_policy("user-1"),
+            enabled_generation_policy("user-1"),
             _rag_ready(),
             mock.patch.object(
                 visualization_retry.rag,

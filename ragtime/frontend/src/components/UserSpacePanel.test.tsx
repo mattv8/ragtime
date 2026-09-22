@@ -151,7 +151,19 @@ vi.mock('./shared/ExternalApiAccessSection', () => ({
   ),
 }));
 vi.mock('./shared/ConnectYourAgentPanel', () => ({
-  ConnectYourAgentPanel: () => <div data-testid="connect-your-agent" />,
+  ConnectYourAgentPanel: ({
+    workspaceId,
+    canManage,
+  }: {
+    workspaceId: string;
+    canManage: boolean;
+  }) => (
+    <div
+      data-testid="connect-your-agent"
+      data-workspace-id={workspaceId}
+      data-can-manage={canManage}
+    />
+  ),
 }));
 vi.mock('./shared/ShareLinkModal', () => ({
   ShareLinkModal: ({
@@ -159,6 +171,7 @@ vi.mock('./shared/ShareLinkModal', () => ({
     loadingShareStatus,
     shareLinks,
     agentAccessSection,
+    connectAgentSection,
     apiAccessSection,
     onCreateShareLink,
     onOpenFullPreview,
@@ -169,6 +182,7 @@ vi.mock('./shared/ShareLinkModal', () => ({
     loadingShareStatus: boolean;
     shareLinks: Array<{ id: string; label: string | null }>;
     agentAccessSection?: React.ReactNode;
+    connectAgentSection?: React.ReactNode;
     apiAccessSection?: React.ReactNode;
     onCreateShareLink?: () => void;
     onOpenFullPreview?: () => void;
@@ -181,6 +195,7 @@ vi.mock('./shared/ShareLinkModal', () => ({
           <div key={link.id}>{link.label}</div>
         ))}
         <div data-testid="share-link-modal-agent-access">{agentAccessSection}</div>
+        <div data-testid="share-link-modal-connect-agent">{connectAgentSection}</div>
         <div data-testid="share-link-modal-api-access">{apiAccessSection}</div>
         <button type="button" onClick={() => onCreateShareLink?.()}>
           New Link
@@ -714,6 +729,60 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     expect(previewSection?.querySelector('.userspace-status-overlay')).toBeNull();
   });
 
+  it('fills the editor when User Space generation is disabled', async () => {
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await waitFor(() => {
+      const editorSection = document.querySelector('.userspace-editor-section') as HTMLElement;
+      expect(editorSection).not.toBeNull();
+      expect(editorSection.style.flex).toBe('1 1 0%');
+      expect(editorSection.style.display).not.toBe('none');
+    });
+  });
+
+  it('ignores a saved editor-collapsed preference when User Space generation is disabled', async () => {
+    document.cookie = `userspace_layout_${encodeURIComponent(CURRENT_USER.id)}=${encodeURIComponent(
+      JSON.stringify({
+        sidebarWidth: 180,
+        sidebarCollapsed: false,
+        leftPaneFraction: 0.5,
+        rightPaneCollapsed: false,
+        editorFraction: 0.6,
+        editorChatCollapsedSide: 'before',
+      }),
+    )}; path=/`;
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await waitFor(() => {
+      const editorSection = document.querySelector('.userspace-editor-section') as HTMLElement;
+      expect(editorSection).not.toBeNull();
+      expect(editorSection.style.flex).toBe('1 1 0%');
+      expect(editorSection.style.display).not.toBe('none');
+    });
+  });
+
+  it('preserves saved editor sizing when User Space generation is enabled', async () => {
+    document.cookie = `userspace_layout_${encodeURIComponent(CURRENT_USER.id)}=${encodeURIComponent(
+      JSON.stringify({
+        sidebarWidth: 180,
+        sidebarCollapsed: false,
+        leftPaneFraction: 0.5,
+        rightPaneCollapsed: false,
+        editorFraction: 0.4,
+        editorChatCollapsedSide: null,
+      }),
+    )}; path=/`;
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} userspaceGenerationEnabled />);
+
+    await waitFor(() => {
+      const editorSection = document.querySelector('.userspace-editor-section') as HTMLElement;
+      expect(editorSection).not.toBeNull();
+      expect(editorSection.style.flex).toBe('0.4 1 0%');
+    });
+  });
+
   it('removes the deleted share locally without reloading the share list', async () => {
     await renderPanelWithRuntimeOverlay(false);
 
@@ -919,6 +988,45 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       expect(screen.getByText('Create a share link first')).toBeTruthy();
     });
     expect(previewApiMock.createUserSpaceWorkspaceShareLink).not.toHaveBeenCalled();
+  });
+
+  it('mounts Coding Agent Setup only through the Share Workspace modal for the active workspace', async () => {
+    await renderPanelWithRuntimeOverlay(false);
+
+    expect(screen.queryByTestId('connect-your-agent')).toBeNull();
+
+    const manageShareButton = document.querySelector('[title="Manage share link"]');
+    expect(manageShareButton).not.toBeNull();
+    await act(async () => {
+      (manageShareButton as HTMLButtonElement).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connect-your-agent')).toBeTruthy();
+    });
+    expect(screen.getByTestId('connect-your-agent').dataset.workspaceId).toBe(WORKSPACE.id);
+    expect(screen.getByTestId('connect-your-agent').dataset.canManage).toBe('true');
+  });
+
+  it('passes read-only credential management to editors in the Share Workspace modal', async () => {
+    const editorWorkspace = buildWorkspaceForMember(EDITOR_USER.id, 'editor');
+    previewApiMock.listUserSpaceWorkspaces.mockResolvedValue({
+      items: [editorWorkspace],
+      total: 1,
+    });
+    previewApiMock.getUserSpaceWorkspace.mockResolvedValue(editorWorkspace);
+    render(<UserSpacePanel currentUser={{ ...EDITOR_USER }} />);
+
+    await waitFor(() => {
+      expect(document.querySelector('[title="Manage share link"]')).not.toBeNull();
+    });
+    await act(async () => {
+      (document.querySelector('[title="Manage share link"]') as HTMLButtonElement).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connect-your-agent').dataset.canManage).toBe('false');
+    });
   });
 
   it('disables public preview and save actions while share status loads', async () => {

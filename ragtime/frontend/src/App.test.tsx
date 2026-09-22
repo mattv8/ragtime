@@ -165,8 +165,11 @@ vi.mock('./components/ChatPage', () => ({
 }));
 
 vi.mock('./components/UserSpacePanel', () => ({
-  UserSpacePanel: ({ hostedChatEnabled }: { hostedChatEnabled?: boolean }) => (
-    <div data-testid="userspace-panel" data-hosted-chat={String(hostedChatEnabled)} />
+  UserSpacePanel: ({ userspaceGenerationEnabled }: { userspaceGenerationEnabled?: boolean }) => (
+    <div
+      data-testid="userspace-panel"
+      data-userspace-generation={String(userspaceGenerationEnabled)}
+    />
   ),
 }));
 
@@ -202,6 +205,10 @@ vi.mock('./components/SettingsPanel', async () => {
         props && typeof props === 'object' && 'onServerOperationError' in props
           ? (props as { onServerOperationError?: (message: string) => void }).onServerOperationError
           : undefined;
+      const onSettingsSaved =
+        props && typeof props === 'object' && 'onSettingsSaved' in props
+          ? (props as { onSettingsSaved?: () => Promise<void> | void }).onSettingsSaved
+          : undefined;
       const highlightSetting =
         props && typeof props === 'object' && 'highlightSetting' in props
           ? (props as { highlightSetting?: string | null }).highlightSetting
@@ -231,6 +238,9 @@ vi.mock('./components/SettingsPanel', async () => {
           </button>
           <button type="button" onClick={() => onServerOperationError?.('Section action exploded')}>
             Report operation error
+          </button>
+          <button type="button" onClick={() => void onSettingsSaved?.()}>
+            Save settings
           </button>
         </div>
       );
@@ -281,6 +291,8 @@ function mockAuthenticatedAdmin(configurationWarnings: ConfigurationWarning[] = 
     allowed_origins_open: false,
     authenticated_webgl_background_enabled: false,
     server_name: 'Ragtime',
+    chat_enabled: true,
+    userspace_generation_enabled: true,
   });
   apiMock.getCurrentUser.mockResolvedValue({
     id: 'user-1',
@@ -308,6 +320,8 @@ function mockAuthenticatedNonAdmin(): void {
     allowed_origins_open: false,
     authenticated_webgl_background_enabled: false,
     server_name: 'Ragtime',
+    chat_enabled: true,
+    userspace_generation_enabled: true,
   });
   apiMock.getCurrentUser.mockResolvedValue({
     id: 'user-2',
@@ -324,7 +338,10 @@ function mockAuthenticatedNonAdmin(): void {
   });
 }
 
-function mockHostedChatDisabledNonAdmin(): void {
+function mockGenerationPolicyNonAdmin(
+  chatEnabled: boolean,
+  userspaceGenerationEnabled: boolean,
+): void {
   mockAuthenticatedNonAdmin();
   apiMock.getAuthStatus.mockResolvedValue({
     authenticated: true,
@@ -334,7 +351,8 @@ function mockHostedChatDisabledNonAdmin(): void {
     api_key_configured: true,
     session_cookie_secure: false,
     allowed_origins_open: false,
-    hosted_chat_enabled: false,
+    chat_enabled: chatEnabled,
+    userspace_generation_enabled: userspaceGenerationEnabled,
   });
 }
 
@@ -345,17 +363,40 @@ async function flushMicrotasks(): Promise<void> {
   });
 }
 
-describe('hosted chat capability', () => {
-  it('redirects a disabled user from a chat URL, hides Chat, and does not mount ChatPage', async () => {
+describe('generation capabilities', () => {
+  it('redirects a user without Chat from a chat URL while preserving User Space generation', async () => {
     window.history.replaceState({}, '', '/?view=chat');
-    mockHostedChatDisabledNonAdmin();
+    mockGenerationPolicyNonAdmin(false, true);
     render(<App />);
     await screen.findByTestId('userspace-panel');
     expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Enter chat fullscreen' })).toBeNull();
-    expect(screen.getByTestId('userspace-panel').getAttribute('data-hosted-chat')).toBe('false');
+    expect(screen.getByTestId('userspace-panel').getAttribute('data-userspace-generation')).toBe(
+      'true',
+    );
     await waitFor(() => expect(window.location.search).toContain('view=userspace'));
   });
+
+  it.each([
+    [true, true, true],
+    [true, false, true],
+    [false, true, false],
+    [false, false, false],
+  ])(
+    'gates Chat and User Space independently (chat=%s, userspace=%s)',
+    async (chatEnabled, userspaceGenerationEnabled, chatVisible) => {
+      mockGenerationPolicyNonAdmin(chatEnabled, userspaceGenerationEnabled);
+      render(<App />);
+
+      await screen.findByRole('button', { name: 'Workspace' });
+      fireEvent.click(screen.getByRole('button', { name: 'Workspace' }));
+      await screen.findByTestId('userspace-panel');
+      expect(screen.queryByRole('button', { name: 'Chat' }) !== null).toBe(chatVisible);
+      expect(screen.getByTestId('userspace-panel').getAttribute('data-userspace-generation')).toBe(
+        String(userspaceGenerationEnabled),
+      );
+    },
+  );
 });
 
 describe('OpenRouter credit alerts', () => {
@@ -531,6 +572,74 @@ describe('App chat fullscreen layout', () => {
     await waitFor(() => {
       expect(screen.getByTestId('settings-highlight').textContent).toBe('none');
     });
+  });
+
+  it('refreshes Chat and User Space effective policies after settings saves', async () => {
+    mockAuthenticatedAdmin();
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce({
+        authenticated: true,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        chat_enabled: true,
+        userspace_generation_enabled: true,
+      })
+      .mockResolvedValueOnce({
+        authenticated: true,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        // The response is already the effective value: a global disable wins over a user enable.
+        chat_enabled: false,
+        userspace_generation_enabled: true,
+      })
+      .mockResolvedValueOnce({
+        authenticated: true,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        // A user-level override can restore effective access after the global policy is enabled.
+        chat_enabled: true,
+        userspace_generation_enabled: false,
+      });
+
+    render(<App />);
+
+    await screen.findByRole('button', { name: 'Chat' });
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save settings' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Workspace' }));
+    await screen.findByTestId('userspace-panel');
+    expect(screen.getByTestId('userspace-panel').getAttribute('data-userspace-generation')).toBe(
+      'true',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save settings' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Chat' })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Workspace' }));
+    await screen.findByTestId('userspace-panel');
+    expect(screen.getByTestId('userspace-panel').getAttribute('data-userspace-generation')).toBe(
+      'false',
+    );
+    expect(apiMock.getAuthStatus).toHaveBeenCalledTimes(3);
   });
 
   it('applies fullscreen state to the outer chat page container', async () => {

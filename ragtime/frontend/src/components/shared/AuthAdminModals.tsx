@@ -636,7 +636,6 @@ export function AuthAdminModalHost({
                           const groupProfileId = contentProtectionConfig?.group_profiles.find(
                             (profile) => profile.group_id === group.id,
                           )?.profile_id;
-                          const contentProtectionDisabled = !contentProtectionConfig?.enabled;
                           const requirementSaving =
                             contentProtectionSavingId === `${group.id}:requirement`;
                           const profileSaving = contentProtectionSavingId === `${group.id}:profile`;
@@ -834,7 +833,7 @@ export function AuthAdminModalHost({
                                     )}
                                   </div>
                                   <div className="auth-group-row-actions">
-                                    {contentProtectionConfig && (
+                                    {contentProtectionConfig?.enabled && (
                                       <div
                                         className="form-group"
                                         data-content-protection-group-controls={group.id}
@@ -850,11 +849,7 @@ export function AuthAdminModalHost({
                                             'group',
                                             group.id,
                                           )}
-                                          disabled={
-                                            contentProtectionDisabled ||
-                                            requirementSaving ||
-                                            profileSaving
-                                          }
+                                          disabled={requirementSaving || profileSaving}
                                           onChange={(event) =>
                                             void handleContentProtectionRequirementChange(
                                               group,
@@ -865,11 +860,6 @@ export function AuthAdminModalHost({
                                           <option value="inherit">Inherit</option>
                                           <option value="require">Require classification</option>
                                         </select>
-                                        {contentProtectionDisabled && (
-                                          <div className="field-help">
-                                            Content protection is disabled in Settings.
-                                          </div>
-                                        )}
                                         {contentProtectionConfig.coverage_mode ===
                                           'all_supported_traffic' && (
                                           <div className="field-help">
@@ -884,11 +874,7 @@ export function AuthAdminModalHost({
                                           id={`auth-group-profile-${group.id}`}
                                           data-content-protection-group-profile={group.id}
                                           value={groupProfileId || ''}
-                                          disabled={
-                                            contentProtectionDisabled ||
-                                            requirementSaving ||
-                                            profileSaving
-                                          }
+                                          disabled={requirementSaving || profileSaving}
                                           onChange={(event) =>
                                             void handleContentProtectionProfileChange(
                                               group,

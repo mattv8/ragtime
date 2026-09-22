@@ -210,7 +210,7 @@ import { applyTerminalTheme, readTerminalTheme } from '@/theme/terminalTheme';
 
 interface UserSpacePanelProps {
   currentUser: User;
-  hostedChatEnabled?: boolean;
+  userspaceGenerationEnabled?: boolean;
   debugMode?: boolean;
   openWorkspaceRequest?: { workspaceId: string; requestId: number } | null;
   onFullscreenChange?: (fullscreen: boolean) => void;
@@ -944,7 +944,7 @@ export function getWorkspaceToolReadOnlyDescription(
 
 export function UserSpacePanel({
   currentUser,
-  hostedChatEnabled = true,
+  userspaceGenerationEnabled = false,
   debugMode = false,
   openWorkspaceRequest = null,
   onFullscreenChange,
@@ -4683,7 +4683,7 @@ export function UserSpacePanel({
 
   const handleAskAgentToPrepareWorkspace = useCallback(
     async (prompt: string) => {
-      if (!hostedChatEnabled || !activeWorkspaceId) return;
+      if (!userspaceGenerationEnabled || !activeWorkspaceId) return;
       expandChat();
       setError(null);
 
@@ -4721,7 +4721,7 @@ export function UserSpacePanel({
       activeWorkspaceId,
       awaitAvailableModelsReady,
       expandChat,
-      hostedChatEnabled,
+      userspaceGenerationEnabled,
       refreshAvailableModels,
       updateActiveWorkspaceConversationId,
     ],
@@ -8944,7 +8944,7 @@ export function UserSpacePanel({
               )}
             </button>
           )}
-          {hostedChatEnabled && activeWorkspaceId && (
+          {activeWorkspaceId && (
             <AgentAccessButton
               onClick={handleOpenAgentAccessModal}
               title="Manage cross-workspace agent access"
@@ -9274,13 +9274,6 @@ export function UserSpacePanel({
 
       {rightPaneCollapsed ? renderUserspaceOverlay(' userspace-status-overlay-root') : null}
 
-      {activeWorkspaceId && (
-        <ConnectYourAgentPanel
-          workspaceId={activeWorkspaceId}
-          canManage={isOwner || currentUser.role === 'admin'}
-        />
-      )}
-
       {/* === Main content: left pane (editor+chat) | right pane (preview+snapshots) === */}
       <div
         className="userspace-content"
@@ -9303,8 +9296,11 @@ export function UserSpacePanel({
             className="userspace-editor-section"
             ref={editorSectionRef}
             style={{
-              display: editorChatCollapsedSide === 'before' ? 'none' : undefined,
-              flex: editorFractionLiveRef.current,
+              display:
+                userspaceGenerationEnabled && editorChatCollapsedSide === 'before'
+                  ? 'none'
+                  : undefined,
+              flex: userspaceGenerationEnabled ? editorFractionLiveRef.current : 1,
             }}
           >
             {/* File sidebar */}
@@ -9454,7 +9450,7 @@ export function UserSpacePanel({
             </div>
           </div>
 
-          {hostedChatEnabled && (
+          {userspaceGenerationEnabled && (
             <ResizeHandle
               direction="vertical"
               ariaLabel="Resize workspace editor and chat"
@@ -9475,8 +9471,8 @@ export function UserSpacePanel({
             />
           )}
 
-          {/* Chat section is omitted entirely for BYO-harness users. */}
-          {hostedChatEnabled && (
+          {/* Chat section is omitted when User Space generation is unavailable. */}
+          {userspaceGenerationEnabled && (
             <div
               className="userspace-chat-section"
               ref={chatSectionRef}
@@ -10185,7 +10181,7 @@ export function UserSpacePanel({
           workspace={activeWorkspace}
           onClose={() => setShowScmWizard(false)}
           onSyncComplete={handleWorkspaceScmSyncComplete}
-          onAskAgent={hostedChatEnabled ? handleAskAgentToPrepareWorkspace : undefined}
+          onAskAgent={userspaceGenerationEnabled ? handleAskAgentToPrepareWorkspace : undefined}
           onWorkspaceChanged={async () => {
             const refreshedWorkspace = await api.getUserSpaceWorkspace(activeWorkspace.id);
             setWorkspaces((current) =>
@@ -12079,6 +12075,7 @@ export function UserSpacePanel({
       )}
 
       <ShareLinkModal
+        key={activeWorkspaceId}
         isOpen={showShareModal && Boolean(activeWorkspace)}
         loadingShareStatus={loadingShareStatus}
         shareLinkType={shareLinkType}
@@ -12108,8 +12105,16 @@ export function UserSpacePanel({
         updatingShareLabel={savingShareLabel}
         deletingSelectedShareLink={deletingSelectedShareLink}
         agentAccessSection={
-          hostedChatEnabled && isOwner && activeWorkspace ? (
+          isOwner && activeWorkspace ? (
             <AgentAccessSection workspaceId={activeWorkspace.id} />
+          ) : undefined
+        }
+        connectAgentSection={
+          activeWorkspace ? (
+            <ConnectYourAgentPanel
+              workspaceId={activeWorkspace.id}
+              canManage={isOwner || currentUser.role === 'admin'}
+            />
           ) : undefined
         }
         apiAccessSection={

@@ -73,6 +73,7 @@ import type {
   ModelPreferenceResponse,
   AuthStatus,
   User,
+  UpdateUserGenerationPolicyRequest,
   WorkspaceDevelopmentCredential,
   WorkspaceDevelopmentCredentialSecretResponse,
   LdapConfig,
@@ -1039,16 +1040,16 @@ export const api = {
     return Array.isArray(data) ? data : ((data as { users: User[] }).users ?? []);
   },
 
-  async updateUserHostedChatEnabled(
+  async updateUserGenerationPolicy(
     userId: string,
-    hosted_chat_enabled: boolean | null,
+    request: UpdateUserGenerationPolicyRequest,
   ): Promise<User> {
     const response = await apiFetch(
-      `${AUTH_BASE}/users/${encodeURIComponent(userId)}/hosted-chat`,
+      `${AUTH_BASE}/users/${encodeURIComponent(userId)}/generation-policy`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hosted_chat_enabled }),
+        body: JSON.stringify(request),
       },
     );
     return handleResponse<User>(response);
@@ -6562,31 +6563,6 @@ export const api = {
       `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/bridge-credentials/status`,
     );
     return handleResponse<UserSpaceBridgeStatus>(response);
-  },
-
-  async getUserSpaceBridgeCredentialMode(
-    workspaceId: string,
-  ): Promise<import('@/types').UserSpaceBridgeCredentialMode> {
-    const response = await apiFetch(
-      `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/bridge-credential-mode`,
-      { cache: 'no-store' },
-    );
-    return handleResponse<import('@/types').UserSpaceBridgeCredentialMode>(response);
-  },
-
-  async updateUserSpaceBridgeCredentialMode(
-    workspaceId: string,
-    mode: 'env' | 'worker_file',
-  ): Promise<import('@/types').UserSpaceBridgeCredentialMode> {
-    const response = await apiFetch(
-      `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/bridge-credential-mode`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode }),
-      },
-    );
-    return handleResponse<import('@/types').UserSpaceBridgeCredentialMode>(response);
   },
 
   async refreshUserSpaceBridgeCredentials(workspaceId: string): Promise<UserSpaceBridgeStatus> {

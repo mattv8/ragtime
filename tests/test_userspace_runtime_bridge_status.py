@@ -66,6 +66,7 @@ def _bridge_status(
         bridge_url="https://ragtime.example/indexes/userspace/runtime-bridge",
         expires_at=expires_at,
         detail=detail,
+        mode="worker_file",
     )
 
 
@@ -91,6 +92,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
                 mock.AsyncMock(
                     return_value={
                         "bridge_credential": {
+                            "mode": "worker_file",
                             "bridge_url": "https://ragtime.example/indexes/userspace/runtime-bridge",
                             "token_kind": "userspace_runtime_bridge",
                             "workspace_id": "ws-1",
@@ -201,6 +203,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
                 session,
                 {
                     "bridge_credential": {
+                        "mode": "worker_file",
                         "bridge_url": "https://ragtime.example/indexes/userspace/runtime-bridge",
                         "token_kind": "userspace_runtime_bridge",
                         "workspace_id": "ws-1",
@@ -219,6 +222,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
                 session,
                 {
                     "bridge_credential": {
+                        "mode": "worker_file",
                         "bridge_url": "",
                         "token_kind": "wrong-kind",
                         "workspace_id": "ws-2",
@@ -227,6 +231,26 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
                 },
             )
         self.assertEqual(status.state, "invalid")
+
+    async def test_runtime_bridge_status_rejects_legacy_env_metadata_without_validation_error(self) -> None:
+        session = self.service._to_runtime_session(_session_row(session_id="sess-1"))
+        with mock.patch.object(self.service, "_get_latest_runtime_bridge_success_at", mock.AsyncMock(return_value=None)):
+            status = await self.service._get_runtime_bridge_status_for_session(
+                session,
+                {
+                    "bridge_credential": {
+                        "mode": "env",
+                        "bridge_url": "https://ragtime.example/indexes/userspace/runtime-bridge",
+                        "token_kind": "userspace_runtime_bridge",
+                        "workspace_id": "ws-1",
+                        "session_id": "sess-1",
+                    }
+                },
+            )
+
+        self.assertEqual(status.state, "invalid")
+        self.assertIsNone(status.mode)
+        self.assertIn("full runtime-session restart", status.detail or "")
 
     async def test_refresh_runtime_bridge_credentials_waits_then_fetches_status(self) -> None:
         expected = UserSpaceRuntimeBridgeStatus(state="healthy")
@@ -282,7 +306,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             ) as get_status,
             mock.patch.object(
                 self.service,
-                "restart_runtime_env_vars_and_wait",
+                "_refresh_file_bridge_credential",
                 mock.AsyncMock(),
             ) as restart_wait,
         ):
@@ -294,6 +318,32 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
         ensure_ready.assert_awaited_once_with(session)
         get_status.assert_awaited_once_with("ws-1", "user-1")
         restart_wait.assert_not_awaited()
+
+    async def test_env_refresh_reobserves_and_cas_refreshes_expired_file_credential(self) -> None:
+        session = self.service._to_runtime_session(_session_row(session_id="sess-1"))
+        expired = _bridge_status(
+            state="expired",
+            expires_at=datetime.now(UTC) - timedelta(seconds=1),
+        )
+        with (
+            mock.patch.object(
+                self.service,
+                "_runtime_provider_get_status",
+                mock.AsyncMock(return_value={"bridge_credential": {"mode": "worker_file"}}),
+            ) as get_provider_status,
+            mock.patch.object(
+                self.service,
+                "_get_runtime_bridge_status_for_session",
+                mock.AsyncMock(return_value=expired),
+            ),
+            mock.patch.object(self.service, "_refresh_file_bridge_credential", mock.AsyncMock()) as refresh,
+            mock.patch.object(self.service, "restart_runtime_env_vars_and_wait", mock.AsyncMock()) as restart,
+        ):
+            await self.service._refresh_bridge_after_env_refresh(session)
+
+        get_provider_status.assert_awaited_once_with("provider-1", max_age_seconds=0, allow_stale_on_error=False)
+        refresh.assert_awaited_once_with(session, expired)
+        restart.assert_not_awaited()
 
     async def test_preview_bridge_readiness_skips_restart_when_healthy_and_not_near_expiry(self) -> None:
         session = self.service._to_runtime_session(_session_row(session_id="sess-1"))
@@ -312,7 +362,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             ) as get_bridge_status,
             mock.patch.object(
                 self.service,
-                "restart_runtime_env_vars_and_wait",
+                "_refresh_file_bridge_credential",
                 mock.AsyncMock(),
             ) as restart_wait,
         ):
@@ -341,7 +391,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(
                 self.service,
-                "restart_runtime_env_vars_and_wait",
+                "_refresh_file_bridge_credential",
                 mock.AsyncMock(),
             ) as restart_wait,
         ):
@@ -444,7 +494,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             ) as get_bridge_status,
             mock.patch.object(
                 self.service,
-                "restart_runtime_env_vars_and_wait",
+                "_refresh_file_bridge_credential",
                 mock.AsyncMock(),
             ) as restart_wait,
             mock.patch.object(
@@ -455,7 +505,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
         ):
             await self.service._ensure_workspace_preview_bridge_ready(session)
 
-        restart_wait.assert_awaited_once_with("ws-1", timeout_seconds=60.0)
+        restart_wait.assert_awaited_once()
         self.assertEqual(get_bridge_status.await_count, 3)
 
     async def test_preview_bridge_readiness_raises_when_refresh_does_not_restore_health(self) -> None:
@@ -476,7 +526,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(
                 self.service,
-                "restart_runtime_env_vars_and_wait",
+                "_refresh_file_bridge_credential",
                 mock.AsyncMock(),
             ) as restart_wait,
             mock.patch.object(
@@ -488,7 +538,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException) as exc_info:
                 await self.service._ensure_workspace_preview_bridge_ready(session)
 
-        restart_wait.assert_awaited_once_with("ws-1", timeout_seconds=60.0)
+        restart_wait.assert_awaited_once()
         self.assertEqual(exc_info.exception.status_code, 502)
         self.assertIn("metadata unavailable", str(exc_info.exception.detail))
 
@@ -509,7 +559,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(
                 self.service,
-                "restart_runtime_env_vars_and_wait",
+                "_refresh_file_bridge_credential",
                 mock.AsyncMock(),
             ),
             mock.patch.object(
@@ -541,7 +591,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(
                 self.service,
-                "restart_runtime_env_vars_and_wait",
+                "_refresh_file_bridge_credential",
                 mock.AsyncMock(),
             ),
             mock.patch.object(
@@ -582,7 +632,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(
                 self.service,
-                "restart_runtime_env_vars_and_wait",
+                "_refresh_file_bridge_credential",
                 mock.AsyncMock(),
             ) as restart_wait,
             mock.patch.object(
@@ -600,7 +650,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_exc.exception.status_code, 502)
         self.assertEqual(second_exc.exception.status_code, 503)
         self.assertEqual(second_exc.exception.headers, {"Retry-After": "80"})
-        restart_wait.assert_awaited_once_with("ws-1", timeout_seconds=60.0)
+        restart_wait.assert_awaited_once()
 
     async def test_preview_bridge_readiness_can_retry_after_cooldown_expires(self) -> None:
         session = self.service._to_runtime_session(_session_row(session_id="sess-1"))
@@ -629,7 +679,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(
                 self.service,
-                "restart_runtime_env_vars_and_wait",
+                "_refresh_file_bridge_credential",
                 mock.AsyncMock(),
             ) as restart_wait,
             mock.patch.object(
@@ -682,7 +732,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(
                 self.service,
-                "restart_runtime_env_vars_and_wait",
+                "_refresh_file_bridge_credential",
                 mock.AsyncMock(side_effect=restart),
             ) as restart_wait,
             mock.patch.object(
@@ -746,7 +796,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             ),
             mock.patch.object(
                 self.service,
-                "restart_runtime_env_vars_and_wait",
+                "_refresh_file_bridge_credential",
                 mock.AsyncMock(side_effect=restart),
             ) as restart_wait,
             mock.patch.object(
@@ -762,7 +812,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
             allow_restart_finish.set()
             await asyncio.gather(first, second)
 
-        restart_wait.assert_awaited_once_with("ws-1", timeout_seconds=60.0)
+        restart_wait.assert_awaited_once()
         self.assertTrue(second_inlock_seen.is_set())
 
     async def test_issue_workspace_preview_launch_waits_for_readiness_before_building_response(self) -> None:

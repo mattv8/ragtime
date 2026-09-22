@@ -155,14 +155,14 @@ export function ToolAccessModal({
               onChange={onChange}
             />
           )}
-          {policy != null && contentProtectionConfig != null && (
+          {policy != null && contentProtectionConfig?.enabled && (
             <section id="tool-content-protection" data-tool-content-protection>
               <label htmlFor="tool-content-protection-mode">Content protection</label>
               <select
                 id="tool-content-protection-mode"
                 data-tool-content-protection-mode
                 value={contentProtectionMode}
-                disabled={disabled || contentProtectionSaving || !contentProtectionConfig.enabled}
+                disabled={disabled || contentProtectionSaving}
                 onChange={(event) =>
                   void handleContentProtectionModeChange(
                     event.target.value as ContentProtectionRequirementMode,
@@ -172,9 +172,6 @@ export function ToolAccessModal({
                 <option value="inherit">Inherit</option>
                 <option value="require">Require classification</option>
               </select>
-              {!contentProtectionConfig.enabled && (
-                <p className="field-help">Content protection is disabled in Settings.</p>
-              )}
               {contentProtectionConfig.coverage_mode === 'all_supported_traffic' && (
                 <p className="field-help">
                   Coverage is currently All supported traffic; scope requirements apply when

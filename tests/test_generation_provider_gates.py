@@ -15,10 +15,10 @@ from ragtime.userspace.development_credentials_routes import router as developme
 
 
 def _disabled() -> HTTPException:
-    return HTTPException(status_code=403, detail={"code": "hosted_execution_disabled"})
+    return HTTPException(status_code=403, detail={"code": "chat_generation_disabled"})
 
 
-class HostedExecutionProviderGateTests(unittest.IsolatedAsyncioTestCase):
+class GenerationProviderGateTests(unittest.IsolatedAsyncioTestCase):
     async def test_verify_api_key_rejects_rtdev_bearer_when_api_key_is_unset(self) -> None:
         with mock.patch.object(api_routes, "settings", SimpleNamespace(api_key="")):
             with self.assertRaises(HTTPException) as raised:
@@ -30,7 +30,7 @@ class HostedExecutionProviderGateTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(title_generation.rag, "llm", provider),
             mock.patch.object(type(title_generation.rag), "is_ready", new_callable=mock.PropertyMock, return_value=True),
-            mock.patch.object(title_generation, "require_hosted_execution", mock.AsyncMock(side_effect=_disabled())),
+            mock.patch.object(title_generation, "require_generation", mock.AsyncMock(side_effect=_disabled())),
         ):
             with self.assertRaises(HTTPException):
                 await title_generation._generate_title("summarize this", user_id="disabled-user")
@@ -48,12 +48,13 @@ class HostedExecutionProviderGateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stream_callback_rechecks_policy_after_first_model_invocation(self) -> None:
         gate = mock.AsyncMock(side_effect=[None, _disabled()])
-        with mock.patch.object(components, "require_hosted_execution", gate):
-            callback = components._HostedExecutionGateCallback("caller", "owner")
+        with mock.patch.object(components, "require_generation", gate):
+            callback = components._GenerationPolicyGateCallback("chat", "caller", "owner")
             await callback.on_chat_model_start()
             with self.assertRaises(HTTPException):
                 await callback.on_chat_model_start()
         self.assertEqual(gate.await_args_list[0].args, ("caller", "owner"))
+        self.assertEqual(gate.await_args_list[0].kwargs, {"surface": "chat"})
 
     async def test_rtdev_bearer_is_rejected_by_session_only_surfaces(self) -> None:
         app = FastAPI()

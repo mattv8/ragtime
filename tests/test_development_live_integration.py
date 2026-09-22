@@ -56,7 +56,8 @@ class DevelopmentLiveIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     "id": user_id,
                     "username": f"local:byo-live-{label}-{user_id}",
                     "authProvider": AuthProvider.local,
-                    "hostedChatEnabled": False,
+                    "chatEnabled": False,
+                    "userspaceGenerationEnabled": False,
                 }
             )
         for workspace_id, owner_id, name in (

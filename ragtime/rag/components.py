@@ -101,6 +101,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_MAX_TOOL_OUTPUT_CHARS,
     DEFAULT_SCRATCHPAD_WINDOW_SIZE,
     DEFAULT_SEARCH_RESULTS_K,
+    DEFAULT_TOOL_SKILLS_ENABLED,
 )
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
@@ -116,7 +117,7 @@ from ragtime.core.file_constants import (
     USERSPACE_THEME_AUDIT_EXTENSIONS,
     USERSPACE_TYPESCRIPT_EXTENSIONS,
 )
-from ragtime.core.hosted_execution_policy import require_hosted_execution
+from ragtime.core.generation_policy import GenerationSurface, current_generation_surface, require_generation
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
     get_context_limit,
@@ -323,23 +324,24 @@ class _RecoveryRequestScope:
 _recovery_request_scope: ContextVar[_RecoveryRequestScope | None] = ContextVar("content_protection_recovery_request_scope", default=None)
 
 
-class _HostedExecutionGateCallback(AsyncCallbackHandler):
+class _GenerationPolicyGateCallback(AsyncCallbackHandler):
     """Recheck policy immediately before every LangChain model sub-run."""
 
     raise_error = True
 
-    def __init__(self, *user_ids: str | None) -> None:
+    def __init__(self, surface: GenerationSurface | None, *user_ids: str | None) -> None:
+        self._generation_surface: GenerationSurface | None = surface
         self._user_ids = user_ids
 
     async def on_chat_model_start(self, *args: Any, **kwargs: Any) -> None:
-        await require_hosted_execution(*self._user_ids)
+        await require_generation(*self._user_ids, surface=self._generation_surface)
 
     async def on_llm_start(self, *args: Any, **kwargs: Any) -> None:
-        await require_hosted_execution(*self._user_ids)
+        await require_generation(*self._user_ids, surface=self._generation_surface)
 
 
-def _hosted_execution_callback_config(*user_ids: str | None) -> RunnableConfig:
-    return {"callbacks": [_HostedExecutionGateCallback(*user_ids)]}
+def _generation_policy_callback_config(*user_ids: str | None) -> RunnableConfig:
+    return {"callbacks": [_GenerationPolicyGateCallback(current_generation_surface(), *user_ids)]}
 
 
 _TOOL_SKILL_CONTROL_TOOL_NAMES = {"search_tool_skills", "load_tool_skills", "unload_tool_skills"}
@@ -2543,19 +2545,19 @@ class _CopilotChatOpenAI(ChatOpenAI):
         self._refresh_copilot_request_headers()
         request_targets_responses = self._request_targets_responses_api(**kwargs)
         try:
-            await require_hosted_execution()
+            await require_generation()
             async for chunk in super()._astream(*args, **kwargs):
                 yield chunk
         except Exception as exc:
             if request_targets_responses and self._is_chat_completions_only_error(exc):
                 self._switch_to_chat_completions_api()
-                await require_hosted_execution()
+                await require_generation()
                 async for chunk in super()._astream(*args, **kwargs):
                     yield chunk
                 return
 
             if self._downgrade_reasoning_parameters(exc):
-                await require_hosted_execution()
+                await require_generation()
                 async for chunk in super()._astream(*args, **kwargs):
                     yield chunk
                 return
@@ -2565,12 +2567,12 @@ class _CopilotChatOpenAI(ChatOpenAI):
             if not request_targets_responses and (unsupported_api or probe_responses):
                 self._switch_to_responses_api(cache_result=unsupported_api)
                 try:
-                    await require_hosted_execution()
+                    await require_generation()
                     async for chunk in super()._astream(*args, **kwargs):
                         yield chunk
                 except Exception as retry_exc:
                     if self.use_responses_api and self._downgrade_reasoning_parameters(retry_exc):
-                        await require_hosted_execution()
+                        await require_generation()
                         async for chunk in super()._astream(*args, **kwargs):
                             yield chunk
                     else:
@@ -2578,7 +2580,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
             elif self._is_token_expired_auth_error(exc):
                 refreshed = await self._refresh_expired_copilot_token()
                 if refreshed:
-                    await require_hosted_execution()
+                    await require_generation()
                     async for chunk in super()._astream(*args, **kwargs):
                         yield chunk
                     return
@@ -7588,7 +7590,8 @@ class RAGComponents:
         """Expand chat attachment parts into text chunks before provider serialization."""
         # Attachment expansion can invoke provider-backed image/OCR helpers.
         hosted_principals = (user_id, owner_user_id)
-        await require_hosted_execution(*hosted_principals)
+        surface: GenerationSurface = "userspace" if workspace_id else "chat"
+        await require_generation(*hosted_principals, surface=surface)
         return await preprocess_chat_attachment_content_parts(
             content,
             conversation_id=conversation_id,
@@ -9074,7 +9077,7 @@ class RAGComponents:
         allowed_tool_config_ids: list[str] | None = None,
         binding_state_override: ToolSkillBindingState | None = None,
     ) -> dict[str, Any]:
-        if not bool((self._app_settings or {}).get("tool_skills_enabled", True)):
+        if not bool((self._app_settings or {}).get("tool_skills_enabled", DEFAULT_TOOL_SKILLS_ENABLED)):
             return {
                 "runtime_tools": runtime_tools,
                 "tool_skill_binding_state": None,
@@ -9489,14 +9492,14 @@ class RAGComponents:
 
         while True:
             try:
-                await require_hosted_execution(user_id)
+                await require_generation(user_id)
                 result = await current_executor.ainvoke(
                     {
                         "input": current_user_input,
                         "user_input": [HumanMessage(content=current_user_input)],
                         "chat_history": current_chat_history,
                     },
-                    config=_hosted_execution_callback_config(user_id),
+                    config=_generation_policy_callback_config(user_id),
                 )
             except Exception as invoke_err:
                 retry_content = None
@@ -16459,7 +16462,7 @@ class RAGComponents:
         for attempt in range(LLM_TRANSIENT_STREAM_RETRY_ATTEMPTS + 1):
             emitted_chunk = False
             try:
-                await require_hosted_execution(*user_ids)
+                await require_generation(*user_ids)
                 async for chunk in llm.astream(messages):
                     emitted_chunk = True
                     yield chunk
@@ -16761,7 +16764,7 @@ class RAGComponents:
 
         if request_llm is not None:
             try:
-                await require_hosted_execution()
+                await require_generation()
                 normalized_part = await self._normalize_image_part_async(part)
                 response = await request_llm.ainvoke(
                     [
@@ -16788,7 +16791,7 @@ class RAGComponents:
                     return f"[Image attachment analyzed for compaction; image data omitted.]\n{text}"
             except Exception as exc:
                 detail = getattr(exc, "detail", None)
-                if isinstance(detail, dict) and detail.get("code") == "hosted_execution_disabled":
+                if isinstance(detail, dict) and detail.get("code") in {"chat_generation_disabled", "userspace_generation_disabled"}:
                     raise
                 logger.info("Could not analyze image attachment for compaction; trying OCR fallback: %s", exc)
 
@@ -16877,7 +16880,7 @@ class RAGComponents:
 
     async def summarize_for_compaction(self, messages: list[Any], conversation_model: Optional[str]) -> str:
         """Summarize older conversation history for transparent context compaction."""
-        await require_hosted_execution()
+        await require_generation()
         if not messages:
             raise ValueError("No messages were provided for compaction")
 
@@ -16937,7 +16940,7 @@ class RAGComponents:
         request_llm = request_resolution.llm
         if request_llm is None:
             raise RuntimeError(self._no_llm_configured_message(request_resolution))
-        await require_hosted_execution()
+        await require_generation()
         response = await request_llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
         summary = self._extract_text_from_chat_model_output(response)
         summary = summary.strip()
@@ -17337,7 +17340,7 @@ class RAGComponents:
         # Preserve the ordinary hosted-generation gate ahead of all classifier
         # work.  Content-protection's private classifier exception must not
         # make a disabled hosted chat request executable.
-        await require_hosted_execution(user_id, owner_user_id)
+        await require_generation(user_id, owner_user_id)
         context = content_protection_context(user_id=user_id, owner_user_id=owner_user_id, surface=protection_surface)
         recovery_scope_token = _recovery_request_scope.set(None)
         try:
@@ -17401,7 +17404,7 @@ class RAGComponents:
         request_scope = _recovery_request_scope.get()
         safe_history = self._recovery_history_messages(request_scope.chat_history if request_scope else chat_history)
         with content_protection_service.recovery_attempt(error):
-            await require_hosted_execution(user_id, owner_user_id)
+            await require_generation(user_id, owner_user_id)
             approved_user_message = await self._convert_message_to_langchain_async(
                 user_message,
                 user_id=user_id,
@@ -17436,7 +17439,7 @@ class RAGComponents:
             messages.append(HumanMessage(content=approved_user_message))
             response = await resolution.llm.ainvoke(
                 messages,
-                config=_hosted_execution_callback_config(user_id, owner_user_id),
+                config=_generation_policy_callback_config(user_id, owner_user_id),
             )
             if getattr(response, "tool_calls", None):
                 raise error
@@ -17495,7 +17498,7 @@ class RAGComponents:
             The assistant's response.
         """
         hosted_principals = (user_id, owner_user_id)
-        await require_hosted_execution(*hosted_principals)
+        await require_generation(*hosted_principals)
         if chat_history is None:
             chat_history = []
 
@@ -17713,14 +17716,14 @@ class RAGComponents:
                         )
                         result = {"output": output}
                     else:
-                        await require_hosted_execution(*hosted_principals)
+                        await require_generation(*hosted_principals)
                         result = await executor.ainvoke(
                             {
                                 "input": agent_content,
                                 "user_input": [HumanMessage(content=agent_content)],
                                 "chat_history": chat_history,
                             },
-                            config=_hosted_execution_callback_config(*hosted_principals),
+                            config=_generation_policy_callback_config(*hosted_principals),
                         )
                 except Exception as invoke_err:
                     if request_context.get("tool_skill_mode") == "enabled":
@@ -17738,14 +17741,14 @@ class RAGComponents:
                     request_tool_state["image_input_ocr_retry"] = True
                     agent_content = retry_content
                     provider_messages[-1]["content"] = self._serialize_prompt_content(agent_content)
-                    await require_hosted_execution(*hosted_principals)
+                    await require_generation(*hosted_principals)
                     result = await executor.ainvoke(
                         {
                             "input": agent_content,
                             "user_input": [HumanMessage(content=agent_content)],
                             "chat_history": chat_history,
                         },
-                        config=_hosted_execution_callback_config(*hosted_principals),
+                        config=_generation_policy_callback_config(*hosted_principals),
                     )
                 output = result.get("output", "I couldn't generate a response.")
                 # Handle Anthropic-style content blocks (list of dicts with 'text' key)
@@ -17805,7 +17808,7 @@ class RAGComponents:
                 provider_name = llm_resolution.provider or str((self._app_settings or {}).get("llm_provider", "openai")).lower()
                 effective_model = request_model_id
                 try:
-                    await require_hosted_execution(*hosted_principals)
+                    await require_generation(*hosted_principals)
                     response = await request_llm.ainvoke(messages)
                 except Exception as invoke_err:
                     retry_content = None
@@ -17821,7 +17824,7 @@ class RAGComponents:
                     request_tool_state["image_input_ocr_retry"] = True
                     direct_content = retry_content
                     messages[-1] = HumanMessage(content=direct_content)
-                    await require_hosted_execution(*hosted_principals)
+                    await require_generation(*hosted_principals)
                     response = await request_llm.ainvoke(messages)
                 content = response.content
                 debug_metadata = self._build_request_debug_metadata(
@@ -17858,7 +17861,7 @@ class RAGComponents:
             if isinstance(e, ContentProtectionError):
                 raise
             detail = getattr(e, "detail", None)
-            if isinstance(detail, dict) and detail.get("code") == "hosted_execution_disabled":
+            if isinstance(detail, dict) and detail.get("code") in {"chat_generation_disabled", "userspace_generation_disabled"}:
                 raise
             logger.exception("Error processing query")
             return self._chat_runtime_error_message(
@@ -17888,7 +17891,7 @@ class RAGComponents:
         """Authorize inbound/history and buffer generated content per turn."""
         # This public streaming entrypoint is independently inventoried for
         # hosted execution.  Keep its ordinary gate before classifier calls.
-        await require_hosted_execution(user_id, owner_user_id)
+        await require_generation(user_id, owner_user_id)
         context = content_protection_context(user_id=user_id, owner_user_id=owner_user_id, surface=protection_surface)
         recovery_scope_token = _recovery_request_scope.set(None)
         try:
@@ -17983,7 +17986,7 @@ class RAGComponents:
             - Max iterations: {"type": "max_iterations_reached"}
         """
         hosted_principals = (user_id, owner_user_id)
-        await require_hosted_execution(*hosted_principals)
+        await require_generation(*hosted_principals)
         if chat_history is None:
             chat_history = []
 
@@ -18349,7 +18352,7 @@ class RAGComponents:
                                 )
                             return AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS
 
-                        await require_hosted_execution(*hosted_principals)
+                        await require_generation(*hosted_principals)
                         agent_stream = executor.astream_events(
                             {
                                 "input": attempt_input,
@@ -18357,7 +18360,7 @@ class RAGComponents:
                                 "chat_history": attempt_chat_history,
                             },
                             version="v2",
-                            config=_hosted_execution_callback_config(*hosted_principals),
+                            config=_generation_policy_callback_config(*hosted_principals),
                         )
                         agent_stream_iter = agent_stream.__aiter__()
                         while True:
@@ -19013,7 +19016,7 @@ class RAGComponents:
                                 attempt_emitted_content,
                             )
                             if not attempt_emitted_content:
-                                await require_hosted_execution(*hosted_principals)
+                                await require_generation(*hosted_principals)
                                 synthesis_response = await request_llm.ainvoke(synthesis_messages)
                                 final_reasoning = self._extract_reasoning_from_chat_model_output(synthesis_response)
                                 reasoning_suffix = self._compute_missing_suffix(

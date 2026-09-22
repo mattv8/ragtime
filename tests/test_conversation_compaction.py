@@ -17,7 +17,7 @@ from ragtime.indexer.routes import (
     _find_compaction_split_index,
 )
 from ragtime.rag.components import RAGComponents
-from tests.hosted_execution_test_support import enabled_hosted_execution_policy
+from tests.generation_policy_test_support import enabled_generation_policy
 
 
 def _message(role: str, content: str) -> ChatMessage:
@@ -91,7 +91,7 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
         messages = [_message("user", "Need a summary"), _message("assistant", "Working on it")]
 
         with (
-            enabled_hosted_execution_policy(),
+            enabled_generation_policy(),
             mock.patch.object(components, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=resolution)),
             mock.patch.object(components, "_cap_request_llm_output_tokens", new=mock.AsyncMock(return_value=resolution)),
         ):
@@ -296,7 +296,7 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
             '[{"type":"text","text":"please inspect this"},{"type":"image_url","image_url":{"url":"' + image_payload + '","detail":"auto"}}]',
         )
 
-        with enabled_hosted_execution_policy():
+        with enabled_generation_policy():
             formatted = await components._format_message_for_compaction(message, 0, None, "test-model")
 
         self.assertIn("please inspect this", formatted)
@@ -317,7 +317,7 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
             '[{"type":"image_url","image_url":{"url":"data:image/png;base64,abc123","detail":"auto"}}]',
         )
 
-        with enabled_hosted_execution_policy():
+        with enabled_generation_policy():
             formatted = await components._format_message_for_compaction(message, 0, FakeVisionModel(), "test-model")
 
         self.assertIn("Image description: screenshot of settings", formatted)

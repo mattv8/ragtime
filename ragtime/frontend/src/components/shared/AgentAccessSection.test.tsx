@@ -6,8 +6,6 @@ import { AgentAccessSection } from './AgentAccessSection';
 
 const apiMock = vi.hoisted(() => ({
   getWorkspaceAgentAccess: vi.fn(),
-  getUserSpaceBridgeCredentialMode: vi.fn(),
-  updateUserSpaceBridgeCredentialMode: vi.fn(),
   enableWorkspaceAgentAccess: vi.fn(),
   disableWorkspaceAgentAccess: vi.fn(),
   rotateWorkspaceAgentAccess: vi.fn(),
@@ -51,7 +49,6 @@ function createEnabledStatus(workspaceId: string, token: string) {
 
 const DISABLED_STATUS = createDisabledStatus('ws-1');
 const ENABLED_STATUS = createEnabledStatus('ws-1', 'tok-abc');
-const ENV_CREDENTIAL_MODE = { mode: 'env' as const, requires_restart: false, supported: true };
 
 afterEach(() => {
   cleanup();
@@ -63,10 +60,10 @@ describe('AgentAccessSection', () => {
     const user = userEvent.setup();
     apiMock.getWorkspaceAgentAccess.mockResolvedValue(DISABLED_STATUS);
     apiMock.enableWorkspaceAgentAccess.mockResolvedValue(ENABLED_STATUS);
-    apiMock.getUserSpaceBridgeCredentialMode.mockResolvedValue(ENV_CREDENTIAL_MODE);
 
     render(<AgentAccessSection workspaceId="ws-1" />);
 
+    expect(screen.getByRole('region', { name: 'Agent Collaboration' })).toBeTruthy();
     const enableButton = await screen.findByRole('button', { name: 'Enable Agent Access' });
     await user.click(enableButton);
 
@@ -83,7 +80,6 @@ describe('AgentAccessSection', () => {
     apiMock.getWorkspaceAgentAccess
       .mockRejectedValueOnce(new Error('Failed to load agent access'))
       .mockResolvedValueOnce(ENABLED_STATUS);
-    apiMock.getUserSpaceBridgeCredentialMode.mockResolvedValue(ENV_CREDENTIAL_MODE);
 
     render(<AgentAccessSection workspaceId="ws-1" />);
 
@@ -110,7 +106,6 @@ describe('AgentAccessSection', () => {
   it('updates task permission, rotates the token, and disables the active token', async () => {
     const user = userEvent.setup();
     apiMock.getWorkspaceAgentAccess.mockResolvedValue(ENABLED_STATUS);
-    apiMock.getUserSpaceBridgeCredentialMode.mockResolvedValue(ENV_CREDENTIAL_MODE);
     apiMock.enableWorkspaceAgentAccess.mockResolvedValue({
       ...ENABLED_STATUS,
       allow_task_submission: false,
@@ -148,70 +143,6 @@ describe('AgentAccessSection', () => {
     });
   });
 
-  it('updates supported file delivery mode and shows the restart consequence', async () => {
-    const user = userEvent.setup();
-    apiMock.getWorkspaceAgentAccess.mockResolvedValue(ENABLED_STATUS);
-    apiMock.getUserSpaceBridgeCredentialMode.mockResolvedValue(ENV_CREDENTIAL_MODE);
-    apiMock.updateUserSpaceBridgeCredentialMode.mockResolvedValue({
-      mode: 'worker_file',
-      requires_restart: true,
-      supported: true,
-    });
-
-    render(<AgentAccessSection workspaceId="ws-1" />);
-    await user.selectOptions(
-      await screen.findByLabelText('Bridge credential delivery'),
-      'worker_file',
-    );
-
-    expect(apiMock.updateUserSpaceBridgeCredentialMode).toHaveBeenCalledWith('ws-1', 'worker_file');
-    expect(
-      await screen.findByText(
-        /takes effect the next time the workspace runtime session is restarted/i,
-      ),
-    ).toBeTruthy();
-  });
-
-  it('keeps the mode control visible when disabled and disables unsupported file delivery', async () => {
-    apiMock.getWorkspaceAgentAccess.mockResolvedValue(DISABLED_STATUS);
-    apiMock.getUserSpaceBridgeCredentialMode.mockResolvedValue({
-      mode: 'env',
-      requires_restart: false,
-      supported: false,
-    });
-
-    render(<AgentAccessSection workspaceId="ws-1" />);
-
-    const modeControl = await screen.findByLabelText('Bridge credential delivery');
-    expect(modeControl).toBeTruthy();
-    expect(
-      (screen.getByRole('option', { name: 'Worker-managed file' }) as HTMLOptionElement).disabled,
-    ).toBe(true);
-    expect(screen.getByText(/unavailable on this runtime worker/i)).toBeTruthy();
-  });
-
-  it('preserves branch-specific credential control hooks and reports mode loading errors', async () => {
-    apiMock.getWorkspaceAgentAccess.mockResolvedValue(DISABLED_STATUS);
-    apiMock.getUserSpaceBridgeCredentialMode.mockRejectedValue(
-      new Error('Mode service unavailable'),
-    );
-
-    const { rerender } = render(<AgentAccessSection workspaceId="ws-1" />);
-
-    const disabledControl = await screen.findByLabelText('Bridge credential delivery');
-    expect(disabledControl.id).toBe('userspace-bridge-credential-mode-disabled');
-    expect((disabledControl as HTMLSelectElement).disabled).toBe(true);
-    expect(await screen.findByText(/Bridge credential mode is unavailable/i)).toBeTruthy();
-
-    apiMock.getWorkspaceAgentAccess.mockResolvedValue(ENABLED_STATUS);
-    apiMock.getUserSpaceBridgeCredentialMode.mockResolvedValue(ENV_CREDENTIAL_MODE);
-    rerender(<AgentAccessSection workspaceId="ws-2" />);
-    rerender(<AgentAccessSection workspaceId="ws-1" />);
-
-    const enabledControl = await screen.findByLabelText('Bridge credential delivery');
-    expect(enabledControl.id).toBe('userspace-bridge-credential-mode');
-  });
-
   it('ignores stale workspace action success and failure after switching workspaces', async () => {
     const user = userEvent.setup();
     const rotateDeferred = createDeferred<ReturnType<typeof createEnabledStatus>>();
@@ -223,7 +154,6 @@ describe('AgentAccessSection', () => {
       .mockImplementationOnce(() => workspaceBLoad.promise)
       .mockResolvedValueOnce(createEnabledStatus('ws-a', 'tok-a'))
       .mockResolvedValueOnce(createDisabledStatus('ws-b'));
-    apiMock.getUserSpaceBridgeCredentialMode.mockResolvedValue(ENV_CREDENTIAL_MODE);
     apiMock.rotateWorkspaceAgentAccess
       .mockImplementationOnce(() => rotateDeferred.promise)
       .mockImplementationOnce(() => failingRotateDeferred.promise);

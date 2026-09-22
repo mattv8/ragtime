@@ -431,11 +431,10 @@ class SessionManager:
         request: StartSessionRequest,
     ) -> RuntimeSessionResponse:
         await self._cleanup_expired_sessions(utc_now())
-        if request.bridge_credential_mode == "worker_file":
-            health = await self._worker_service.health()
-            capabilities = dict((health.metadata or {}).get("runtime_capabilities") or {})
-            if not bool(capabilities.get("bridge_credential_file")):
-                raise HTTPException(status_code=409, detail="Runtime worker does not support file bridge credentials")
+        health = await self._worker_service.health()
+        capabilities = dict((health.metadata or {}).get("runtime_capabilities") or {})
+        if not bool(capabilities.get("bridge_credential_file")):
+            raise HTTPException(status_code=409, detail="Runtime worker does not support file bridge credentials")
 
         async with self._workspace_start_lock(request.workspace_id):
             existing_provider_id: str | None = None

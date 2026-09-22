@@ -18,7 +18,7 @@ from ragtime.content_protection.hosted import (
     hosted_context as content_protection_context,
 )
 from ragtime.core.event_bus import task_event_bus
-from ragtime.core.hosted_execution_policy import require_hosted_execution
+from ragtime.core.generation_policy import GenerationSurface, generation_context, require_generation
 from ragtime.core.logging import get_logger
 from ragtime.core.ollama import KEEP_ALIVE, NUM_GPU
 from ragtime.indexer.repository import repository
@@ -105,11 +105,11 @@ def _is_ollama_llm(llm: object) -> bool:
         return False
 
 
-async def _generate_title(question_text: str, *, user_id: str | None = None) -> Optional[str]:
+async def _generate_title(question_text: str, *, user_id: str | None = None, surface: GenerationSurface = "chat") -> Optional[str]:
     if not question_text.strip():
         return None
 
-    await require_hosted_execution(user_id)
+    await require_generation(user_id, surface="userspace" if surface == "userspace" else "chat")
     llm = getattr(rag, "llm", None)
     if not llm or not getattr(rag, "is_ready", False):
         logger.debug("LLM not ready for title generation")
@@ -192,14 +192,19 @@ async def update_conversation_title_from_question(
 
     try:
         context = content_protection_context(user_id=user_id or conv.user_id, owner_user_id=conv.user_id, surface=protection_surface)
-        with bind_content_protection_context(context):
-            title = await _generate_title(question_text, user_id=user_id or conv.user_id)
+        surface: GenerationSurface = "userspace" if getattr(conv, "workspace_id", None) else "chat"
+        with generation_context(surface, user_id or conv.user_id, conv.user_id), bind_content_protection_context(context):
+            title = await _generate_title(
+                question_text,
+                user_id=user_id or conv.user_id,
+                surface=surface,
+            )
             if title:
                 await authorize_auxiliary(title, context=context, operation="title_generation")
     except Exception as exc:
         # Disabled hosted execution must not turn into a deterministic title.
         detail = getattr(exc, "detail", None)
-        if isinstance(detail, dict) and detail.get("code") == "hosted_execution_disabled":
+        if isinstance(detail, dict) and detail.get("code") in {"chat_generation_disabled", "userspace_generation_disabled"}:
             return
         raise
     if not title:

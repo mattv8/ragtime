@@ -558,6 +558,12 @@
   padding: var(--space-md);
 }
 
+/* Make secondary buttons and model selectors visible against dark surfaces in Modern */
+[data-theme-pack='modern'] #workbench-settings-route .btn-secondary,
+[data-theme-pack='modern'] #workbench-settings-route .model-selector-trigger {
+  border-color: var(--color-text-muted);
+}
+
 [data-theme-pack='modern'] fieldset {
   padding: 0;
   border: 0;

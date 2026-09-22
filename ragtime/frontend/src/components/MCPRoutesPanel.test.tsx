@@ -132,9 +132,11 @@ function makeRoute(overrides: Partial<McpRouteConfig> = {}): McpRouteConfig {
 async function renderPanel({
   routes = [],
   ldapConfigured = false,
+  contentProtectionConfig = CONTENT_PROTECTION_CONFIG,
 }: {
   routes?: McpRouteConfig[];
   ldapConfigured?: boolean;
+  contentProtectionConfig?: typeof CONTENT_PROTECTION_CONFIG;
 } = {}) {
   apiMock.listMcpRoutes.mockResolvedValue({ routes, count: routes.length });
   apiMock.listMcpDefaultFilters.mockResolvedValue({ filters: [], count: 0 });
@@ -147,7 +149,7 @@ async function renderPanel({
       mcp_default_route_auth_method: 'password',
     },
   });
-  contentProtectionMock.getConfig.mockResolvedValue(CONTENT_PROTECTION_CONFIG);
+  contentProtectionMock.getConfig.mockResolvedValue(contentProtectionConfig);
   contentProtectionMock.updateContentProtectionConfigSlice.mockImplementation(async (mutate) =>
     mutate(CONTENT_PROTECTION_CONFIG),
   );
@@ -310,5 +312,24 @@ describe('MCPRoutesPanel', () => {
       screen.getByText('Save the route first, then edit it to require classification.'),
     ).toBeTruthy();
     expect(screen.queryByLabelText('Require classification')).toBeNull();
+  });
+
+  it('hides route classification controls and the new-route hint when protection is disabled', async () => {
+    const user = userEvent.setup();
+    await renderPanel({
+      routes: [makeRoute()],
+      contentProtectionConfig: { ...CONTENT_PROTECTION_CONFIG, enabled: false },
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    await waitFor(() => expect(contentProtectionMock.getConfig).toHaveBeenCalled());
+    expect(screen.queryByLabelText('Require classification')).toBeNull();
+    expect(screen.queryByText(/Save the route first/)).toBeNull();
+    expect(contentProtectionMock.updateContentProtectionConfigSlice).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await user.click(screen.getByRole('button', { name: /add custom route/i }));
+    await waitFor(() => expect(contentProtectionMock.getConfig).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/Save the route first/)).toBeNull();
   });
 });

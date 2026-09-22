@@ -204,8 +204,9 @@ model AppSettings {
   openapiModelPrefixEnabled           Boolean @default(true) @map("openapi_model_prefix_enabled")
   availableModelsCacheEnabled         Boolean @default(true) @map("available_models_cache_enabled")
   showToolCardFooterActions           Boolean @default(false) @map("show_tool_card_footer_actions")
-  toolSkillsEnabled                   Boolean @default(true) @map("tool_skills_enabled")
-  hostedChatEnabled                   Boolean @default(true) @map("hosted_chat_enabled")
+  toolSkillsEnabled                   Boolean @default(false) @map("tool_skills_enabled")
+  chatEnabled                         Boolean @default(true) @map("chat_enabled")
+  userspaceGenerationEnabled          Boolean @default(true) @map("userspace_generation_enabled")
   userspaceBuildModel                 String? @map("userspace_build_model")
   openrouterCreditMonitorEnabled      Boolean @default(false) @map("openrouter_credit_monitor_enabled")
   openrouterLowCreditThresholdUsd     Float   @default(5) @map("openrouter_low_credit_threshold_usd")
@@ -1085,7 +1086,8 @@ model User {
   role               UserRole      @default(user)
   roleManuallySet    Boolean       @default(false) @map("role_manually_set") // True when admin manually changed role; cleared on LDAP login
   themePack          String?       @map("theme_pack") // Per-user app theme pack; null means inherit the global default
-  hostedChatEnabled  Boolean?      @map("hosted_chat_enabled") // Null inherits the instance hosted-execution policy
+  chatEnabled                Boolean? @map("chat_enabled") // Null inherits the instance Chat policy
+  userspaceGenerationEnabled Boolean? @map("userspace_generation_enabled") // Null inherits the instance User Space policy
   defaultChatModel   String?       @map("default_chat_model")
   mfaPreferredMethod String?       @map("mfa_preferred_method") // Preferred 2FA method presented first at login; null means inherit the global default
   lastLoginAt        DateTime?     @map("last_login_at")
@@ -1617,7 +1619,6 @@ model Workspace {
   nameNormalized             String?                     @map("name_normalized")
   description                String?                     @default("")
   sqlitePersistenceMode      SqlitePersistenceMode       @default(include) @map("sqlite_persistence_mode")
-  bridgeCredentialMode       String                      @default("env") @map("bridge_credential_mode")
   toolSelectionMode          String                      @default("custom") @map("tool_selection_mode")
   currentSnapshotId          String?                     @map("current_snapshot_id")
   currentSnapshotBranchId    String?                     @map("current_snapshot_branch_id")

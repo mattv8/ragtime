@@ -334,11 +334,10 @@ flowchart LR
          RUNTIME_AUTH_TOKEN: ${RUNTIME_AUTH_TOKEN:-}
          OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-http://runtime-s3:9000}
          OBJECT_STORAGE_CONTROL_URL: ${OBJECT_STORAGE_CONTROL_URL:-http://runtime-s3:9001}
-         OBJECT_STORAGE_KEY_EXPORT_PATH: /run/ragtime-storage-key/.encryption_key
        volumes:
          # Data persistence (indexes, SSL certs, etc.)
          - ./data:/data
-         - object-storage-key:/run/ragtime-storage-key
+         - keystore:/run/ragtime-keystore
          # Optional: mount docker.sock only if you need Docker tool execution.
          # The Docker API can control the host even when the socket is mounted read-only.
          # - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -370,14 +369,9 @@ flowchart LR
        image: hub.docker.visnovsky.us/library/ragtime-storage:main
        container_name: runtime-s3
        restart: unless-stopped
-       environment:
-         S3_PORT: "9000"
-         STORAGE_CONTROL_PORT: "9001"
-         STORAGE_ROOT: /data/_userspace/_object_storage
-         STORAGE_KEY_FILE: /run/ragtime-storage-key/.encryption_key
        volumes:
          - ./data/_userspace/_object_storage:/data/_userspace/_object_storage
-         - object-storage-key:/run/ragtime-storage-key:ro
+         - keystore:/run/ragtime-keystore:ro
        networks:
          - ragtime-network
        depends_on:
@@ -435,7 +429,7 @@ flowchart LR
    volumes:
      ragtime-db-data:
      searxng-cache:
-     object-storage-key:
+     keystore:
    ```
 
     > **Note:** Ragtime configuration variables are loaded from the `.env` file via `env_file`. The `ragtime.environment` section only overrides values that should use the internal container network.
@@ -443,6 +437,9 @@ flowchart LR
     > **Runtime mode compatibility:** `pivot_root` with `CAP_SYS_ADMIN` is the preferred steady-state runtime mode. If the runtime starts without mount authority, Ragtime falls back to a `chroot` compatibility mode that mirrors workspace files into the sandbox. Switching an existing workspace fleet from chroot fallback to full isolation is supported, but should be treated as a one-time migration event. Transitioning between `chroot` and `pivot_root` can cause loss of snapshot history! It is recommended to take a full backup before transitioning.
 
    </details>
+
+   Upgrading an existing deployment to the file-only bridge credential and
+   keystore layout? Follow the [safe cutover guide](docker/bridge-credential-cutover.md).
 
 4. **Start the application:**
    ```bash
@@ -521,18 +518,25 @@ Core concepts that affect how Ragtime is deployed and used.
 - Password-protected shares are handled server-side with a full-page prompt.
 - When the runtime lacks `CAP_SYS_ADMIN`, previews run in a `chroot` compatibility mode instead of full `pivot_root` isolation. Transitioning between `chroot` and `pivot_root` can cause loss of snapshot history! It is recommended to take a full backup before transitioning.
 
-#### External Agent Collaboration
+#### Agent Collaboration
 
-Workspace owners and admins can open **Share Workspace**, enable **External Agent Access**, and copy the generated instructions into Claude Cowork, Codex, ChatGPT, or another compatible agent to collaborate on the workspace.
+Workspace owners and admins can open **Share Workspace > Agent Collaboration**, enable agent access, and copy the generated instructions into Claude Cowork, Codex, ChatGPT, or another compatible agent to collaborate on the workspace.
 
-#### Bring Your Own Development Harness
+#### Use Your Own Coding Agent
 
-Ragtime can provide the workspace control plane while an external agent harness (Claude Desktop, Codex, OpenCode, etc.) supplies reasoning. An admin can disable hosted chat for the instance in **Settings**, and can set a per-user hosted-chat override in **Users**. The global setting always wins. When hosted chat is disabled for a user, Ragtime does not make hosted generative calls for that user's development work; retrieval and provider-backed embeddings for indexing remain available.
+Ragtime can provide the workspace control plane while an external agent harness (Claude Desktop, Codex, OpenCode, etc.) supplies reasoning.
 
-##### Connect a native agent
+**Chat** and **User Space AI generation** are independently controlled:
+
+- **Settings > Chat > Enable chat**: Global switch for Chat UI generation (titles, responses, background inference). Default: on. Overridable per user in **Users**; global off disables all users regardless of override.
+- **Settings > User Space > Enable User Space AI generation**: Global switch for workspace generation and build tasks. Default: on. Overridable per user; global off disables all users.
+- **External API** (`/v1/chat/completions`): Always available independently of both switches. All existing auth, content-protection policies, and credential restrictions remain in place.
+- **External harness scope**: When User Space AI generation is off, Ragtime does not generate workspace content or handle build tasks; however, file access, runtime execution, index retrieval, and provider-backed embeddings for indexing remain available to the harness and external tools.
+
+##### Connect a coding agent
 
 1. Enable MCP in **Settings** when using the MCP connection.
-2. As a workspace owner or admin, open **Connect your agent**, name and create a development credential, then click **Copy Instructions**. Rotate an existing credential if its original token is no longer available.
+2. As a workspace owner or admin, open **Share Workspace > Coding Agent Setup**, name and create a development credential, then click **Copy Instructions**. Rotate an existing credential if its original token is no longer available.
 3. Paste the instructions into your trusted external agent. It authenticates to the bootstrap API, selects its client profile, downloads and verifies the required files, and merges the local configuration while preserving user rules and provider settings.
 4. Start a new client session if requested. The agent verifies its MCP connection and retrieves the workspace context before working.
 
@@ -548,7 +552,7 @@ The copied setup instructions point to `GET /indexes/userspace/development/works
 
 The `/mcp` connection exposes compact context, resource discovery, paged instructions/contracts, and development operations. The existing full HTTP `/context` and `/operations` endpoints under the same workspace prefix remain available for downloads and programmatic clients. Credential creation, rotation, and revocation require an owner/admin session; development credentials authorize only their scoped workspace-development HTTP and MCP access.
 
-File writes and patches require the current content hash. Exec jobs have bounded concurrency and output retention. The hidden workspace code index is available by default; other indexes require an owner grant and retain backing-tool access checks. Development credentials are rejected by hosted-chat and credential-management surfaces.
+File writes and patches require the current content hash. Exec jobs have bounded concurrency and output retention. The hidden workspace code index is available by default; other indexes require an owner grant and retain backing-tool access checks. Development credentials are rejected from Chat generation, User Space generation, built-in API key management, and other credential-surface operations; they are exclusively scoped to workspace development access.
 
 ### Vector Store Abstraction
 

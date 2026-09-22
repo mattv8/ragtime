@@ -21,6 +21,7 @@ VALID_SESSION_STATES: set[str] = {"starting", "running", "stopping", "stopped", 
 
 RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 RUNTIME_BOOTSTRAP_STAMP_PATH = ".ragtime/.runtime-bootstrap.done"
+RUNTIME_BRIDGE_TOKEN_FILE_PATH = "/run/.ragtime-bridge/token"
 RUNTIME_ENTRYPOINT_CONFIG_PATH = ".ragtime/runtime-entrypoint.json"
 SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
 SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})

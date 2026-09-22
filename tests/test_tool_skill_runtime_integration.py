@@ -17,6 +17,7 @@ from ragtime.rag.prompts import (
 )
 from ragtime.rag.tool_skills import ToolSkillBindingState
 from tests.content_protection_support import use_disabled_content_protection
+from tests.generation_policy_test_support import enabled_generation_policy
 from tests.test_tool_skill_shared import (
     FakeAction,
     FakeExecutor,
@@ -95,14 +96,14 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         use_disabled_content_protection(self)
 
         async def _enabled_users(*, where: dict[str, Any]) -> list[SimpleNamespace]:
-            return [SimpleNamespace(id=user_id, hostedChatEnabled=None) for user_id in where["id"]["in"]]
+            return [SimpleNamespace(id=user_id, chatEnabled=None, userspaceGenerationEnabled=None) for user_id in where["id"]["in"]]
 
         policy_db = SimpleNamespace(
-            appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(hostedChatEnabled=True))),
+            appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(chatEnabled=True, userspaceGenerationEnabled=True))),
             user=SimpleNamespace(find_many=mock.AsyncMock(side_effect=_enabled_users)),
         )
         patcher = mock.patch(
-            "ragtime.core.hosted_execution_policy.get_db",
+            "ragtime.core.generation_policy.get_db",
             new=mock.AsyncMock(return_value=policy_db),
         )
         patcher.start()
@@ -566,6 +567,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
 
         with (
+            enabled_generation_policy(),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_rebuild_stage)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
@@ -721,6 +723,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             stage_records.append({"stage_index": stage_index, "input": stage_input})
 
         with (
+            enabled_generation_policy(),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_rebuild_stage)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
@@ -844,6 +847,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             stage_records.append({"stage_index": stage_index})
 
         with (
+            enabled_generation_policy(),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_rebuild_stage)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
@@ -1040,7 +1044,8 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()) as persist_debug,
         ):
-            events = [event async for event in rag.process_query_stream("hello", chat_history=[])]
+            with enabled_generation_policy():
+                events = [event async for event in rag.process_query_stream("hello", chat_history=[])]
 
         self.assertIn("done", "".join(event for event in events if isinstance(event, str)))
         self.assertEqual(
@@ -1212,7 +1217,8 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()) as persist_debug,
         ):
-            events = [event async for event in rag.process_query_stream("hello", chat_history=[])]
+            with enabled_generation_policy():
+                events = [event async for event in rag.process_query_stream("hello", chat_history=[])]
 
         self.assertIn("done", "".join(event for event in events if isinstance(event, str)))
         self.assertEqual(

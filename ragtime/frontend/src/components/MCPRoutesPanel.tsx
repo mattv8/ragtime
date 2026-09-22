@@ -295,9 +295,7 @@ function RouteWizard({
     useState<ContentProtectionConfig | null>(null);
 
   useEffect(() => {
-    if (!editingRoute) return;
-    // Blank any previously edited route's snapshot so the select never shows
-    // another route's requirement while this fetch is in flight.
+    // Blank the previous snapshot so this form never shows stale policy data.
     setContentProtectionConfig(null);
     let active = true;
     void contentProtectionApi.getConfig().then(
@@ -564,7 +562,7 @@ function RouteWizard({
         </div>
 
         {editingRoute ? (
-          contentProtectionConfig && (
+          contentProtectionConfig?.enabled && (
             <div className="form-group" id="mcp-route-content-protection">
               <label htmlFor={`mcp-route-require-classification-${editingRoute.id}`}>
                 Require classification
@@ -577,19 +575,10 @@ function RouteWizard({
                     event.target.value as ContentProtectionRequirementMode,
                   )
                 }
-                disabled={!contentProtectionConfig.enabled}
-                title={
-                  contentProtectionConfig.enabled
-                    ? undefined
-                    : 'Content protection is disabled in Settings.'
-                }
               >
                 <option value="inherit">Inherit</option>
                 <option value="require">Require</option>
               </select>
-              {!contentProtectionConfig.enabled && (
-                <p className="field-help">Content protection is disabled in Settings.</p>
-              )}
               {contentProtectionConfig.coverage_mode === 'all_supported_traffic' && (
                 <p className="field-help">
                   Coverage is currently All supported traffic; scope requirements apply when
@@ -598,11 +587,11 @@ function RouteWizard({
               )}
             </div>
           )
-        ) : (
+        ) : contentProtectionConfig?.enabled ? (
           <p className="field-help">
             Save the route first, then edit it to require classification.
           </p>
-        )}
+        ) : null}
 
         <fieldset>
           <legend>Authentication</legend>

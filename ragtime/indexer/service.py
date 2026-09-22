@@ -139,11 +139,8 @@ async def generate_index_description(
         logger.info("Skipping optional index description generation without initiating-user attribution")
         return ""
     try:
-        # Index jobs do not retain a user principal.  Preserve non-generative
-        # indexing while skipping this optional global hosted-generation helper.
-        from ragtime.core.hosted_execution_policy import require_hosted_execution
-
-        await require_hosted_execution(user_id)
+        # This optional indexing helper is not governed by either interactive
+        # generation surface; preserve the existing attributed-user skip only.
         app_settings = await get_app_settings()
         provider = app_settings.get("llm_provider", "openai").lower()
 

@@ -15,6 +15,8 @@ interface ExecJob {
   exit_code?: number | null;
 }
 
+type SetupStep = 'create' | 'connect' | 'start';
+
 function getErrorMessage(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback;
 }
@@ -25,15 +27,15 @@ function buildSetupInstructions(
   token: string,
   credentialName: string,
 ): string {
-  const lines = [
+  return [
     '# Set up native development client',
     '',
-    `Authenticate with this workspace's development credential. Use the manifest URL to discover and install required skills, configuration, and rules.`,
+    `Authenticate with this workspace's development credential. It grants the agent read access to workspace context plus authorized edit and run operations. Use the manifest URL to discover and install required skills, configuration, and rules.`,
     '',
-    `**Manifest URL:**`,
+    '**Manifest URL:**',
     bootstrapManifestUrl,
     '',
-    `**Workspace ID:**`,
+    '**Workspace ID:**',
     workspaceId,
     '',
     `**Credential (${credentialName}):**`,
@@ -56,27 +58,86 @@ function buildSetupInstructions(
     'Keep the credential in the private store or launch environment from step 4. Do not repeat it in outputs, application files, managed configuration, summaries, or logs.',
     '',
     'If this credential has been revoked or rotated, create or rotate a new credential instead of re-using it.',
-  ];
+  ].join('\n');
+}
 
-  return lines.join('\n');
+function getCredentialStatus(
+  credential: WorkspaceDevelopmentCredential,
+): 'Active' | 'Expired' | 'Revoked' {
+  if (credential.revoked_at) return 'Revoked';
+  if (credential.expires_at && new Date(credential.expires_at).getTime() <= Date.now())
+    return 'Expired';
+  return 'Active';
+}
+
+function getScopeDescription(credential: WorkspaceDevelopmentCredential): string {
+  return credential.scopes.length > 0
+    ? `Authorized scopes: ${credential.scopes.join(', ')}`
+    : 'Authorized workspace development access';
+}
+
+function SetupSteps({ step }: { step: SetupStep }) {
+  return (
+    <ol className="userspace-connect-agent-steps" aria-label="Coding agent setup steps">
+      <li
+        className={step !== 'create' ? 'is-complete' : ''}
+        aria-current={step === 'create' ? 'step' : undefined}
+      >
+        <span>1</span> Create access{step !== 'create' ? ' complete' : ''}
+      </li>
+      <li aria-current={step === 'connect' ? 'step' : undefined}>
+        <span>2</span> Connect agent
+      </li>
+      <li aria-current={step === 'start' ? 'step' : undefined}>
+        <span>3</span> Start working
+      </li>
+    </ol>
+  );
 }
 
 export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAgentPanelProps) {
-  const [open, setOpen] = useState(false);
   const [credentials, setCredentials] = useState<WorkspaceDevelopmentCredential[]>([]);
   const [token, setToken] = useState<string | null>(null);
   const [tokenCredentialId, setTokenCredentialId] = useState<string | null>(null);
+  const [activeCredentialId, setActiveCredentialId] = useState<string | null>(null);
+  const [step, setStep] = useState<SetupStep>('create');
+  const [showCreateForm, setShowCreateForm] = useState(true);
+  const [pendingRotationId, setPendingRotationId] = useState<string | null>(null);
   const [name, setName] = useState('External agent');
   const [command, setCommand] = useState('');
   const [jobs, setJobs] = useState<ExecJob[]>([]);
+  const [activityOpen, setActivityOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const workspaceRef = useRef(workspaceId);
+  const canManageRef = useRef(canManage);
   workspaceRef.current = workspaceId;
+  canManageRef.current = canManage;
 
-  const isCurrentWorkspace = useCallback(
-    (requestedWorkspaceId: string) => workspaceRef.current === requestedWorkspaceId,
+  const isCurrentContext = useCallback(
+    (requestedWorkspaceId: string) =>
+      workspaceRef.current === requestedWorkspaceId && canManageRef.current,
     [],
+  );
+
+  const runWorkspaceAction = useCallback(
+    async (action: (requestedWorkspaceId: string) => Promise<void>, fallback: string) => {
+      const requestedWorkspaceId = workspaceId;
+      setLoading(true);
+      setError(null);
+      try {
+        await action(requestedWorkspaceId);
+      } catch (reason) {
+        if (isCurrentContext(requestedWorkspaceId)) {
+          setError(getErrorMessage(reason, fallback));
+        }
+      } finally {
+        if (isCurrentContext(requestedWorkspaceId)) {
+          setLoading(false);
+        }
+      }
+    },
+    [isCurrentContext, workspaceId],
   );
 
   const loadJobs = useCallback(
@@ -88,96 +149,78 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
       if (!Array.isArray(result)) {
         throw new Error('Development activity returned an invalid job list.');
       }
-      if (isCurrentWorkspace(requestedWorkspaceId)) {
-        setJobs(result as ExecJob[]);
-      }
+      if (isCurrentContext(requestedWorkspaceId)) setJobs(result as ExecJob[]);
     },
-    [isCurrentWorkspace],
+    [isCurrentContext],
   );
-
-  const runWorkspaceAction = useCallback(
-    async (action: (requestedWorkspaceId: string) => Promise<void>, fallback: string) => {
-      const requestedWorkspaceId = workspaceId;
-      setLoading(true);
-      setError(null);
-
-      try {
-        await action(requestedWorkspaceId);
-      } catch (reason) {
-        if (isCurrentWorkspace(requestedWorkspaceId)) {
-          setError(getErrorMessage(reason, fallback));
-        }
-      } finally {
-        if (isCurrentWorkspace(requestedWorkspaceId)) {
-          setLoading(false);
-        }
-      }
-    },
-    [isCurrentWorkspace, workspaceId],
-  );
-
-  const refreshJobs = useCallback(() => {
-    void runWorkspaceAction(loadJobs, 'Failed to load development activity');
-  }, [loadJobs, runWorkspaceAction]);
 
   useEffect(() => {
     let cancelled = false;
     setCredentials([]);
     setToken(null);
     setTokenCredentialId(null);
+    setActiveCredentialId(null);
+    setStep('create');
+    setShowCreateForm(true);
+    setPendingRotationId(null);
     setJobs([]);
+    setActivityOpen(false);
     setError(null);
-    setOpen(false);
-
     if (!canManage) return;
 
     setLoading(true);
     void api
       .listWorkspaceDevelopmentCredentials(workspaceId)
       .then((items) => {
-        if (!cancelled && isCurrentWorkspace(workspaceId)) {
+        if (!cancelled && isCurrentContext(workspaceId)) {
           setCredentials(items);
+          setShowCreateForm(items.length === 0);
         }
       })
       .catch((reason) => {
-        if (!cancelled && isCurrentWorkspace(workspaceId)) {
+        if (!cancelled && isCurrentContext(workspaceId)) {
           setError(getErrorMessage(reason, 'Failed to load credentials'));
         }
       })
       .finally(() => {
-        if (!cancelled && isCurrentWorkspace(workspaceId)) {
-          setLoading(false);
-        }
+        if (!cancelled && isCurrentContext(workspaceId)) setLoading(false);
       });
-
     return () => {
       cancelled = true;
     };
-  }, [canManage, isCurrentWorkspace, workspaceId]);
+  }, [canManage, isCurrentContext, workspaceId]);
 
   const createCredential = () => {
     void runWorkspaceAction(async (requestedWorkspaceId) => {
       const created = await api.createWorkspaceDevelopmentCredential(requestedWorkspaceId, {
         name: name.trim() || 'External agent',
       });
-      if (isCurrentWorkspace(requestedWorkspaceId)) {
+      if (isCurrentContext(requestedWorkspaceId)) {
+        setCredentials((items) => [...items, created]);
         setToken(created.token);
         setTokenCredentialId(created.id);
-        setCredentials((items) => [...items, created]);
+        setActiveCredentialId(created.id);
+        setStep('connect');
+        setShowCreateForm(false);
       }
     }, 'Failed to create credential');
   };
 
-  const rotateCredential = (credentialId: string) => {
+  const rotateCredential = () => {
+    if (!pendingRotationId) return;
+    const credentialId = pendingRotationId;
     void runWorkspaceAction(async (requestedWorkspaceId) => {
       const rotated = await api.rotateWorkspaceDevelopmentCredential(
         requestedWorkspaceId,
         credentialId,
       );
-      if (isCurrentWorkspace(requestedWorkspaceId)) {
+      if (isCurrentContext(requestedWorkspaceId)) {
+        setCredentials((items) => items.map((item) => (item.id === rotated.id ? rotated : item)));
         setToken(rotated.token);
         setTokenCredentialId(rotated.id);
-        setCredentials((items) => items.map((item) => (item.id === rotated.id ? rotated : item)));
+        setActiveCredentialId(rotated.id);
+        setStep('connect');
+        setPendingRotationId(null);
       }
     }, 'Failed to rotate credential');
   };
@@ -188,11 +231,15 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
         requestedWorkspaceId,
         credentialId,
       );
-      if (isCurrentWorkspace(requestedWorkspaceId)) {
+      if (isCurrentContext(requestedWorkspaceId)) {
         setCredentials((items) => items.map((item) => (item.id === revoked.id ? revoked : item)));
         if (tokenCredentialId === credentialId) {
           setToken(null);
           setTokenCredentialId(null);
+        }
+        if (activeCredentialId === credentialId) {
+          setActiveCredentialId(null);
+          setStep('create');
         }
       }
     }, 'Failed to revoke credential');
@@ -201,14 +248,11 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
   const startJob = () => {
     const trimmedCommand = command.trim();
     if (!trimmedCommand) return;
-
     void runWorkspaceAction(async (requestedWorkspaceId) => {
       await api.executeWorkspaceDevelopmentOperation(requestedWorkspaceId, 'exec_start', {
         command: trimmedCommand,
       });
-      if (isCurrentWorkspace(requestedWorkspaceId)) {
-        setCommand('');
-      }
+      if (isCurrentContext(requestedWorkspaceId)) setCommand('');
       await loadJobs(requestedWorkspaceId);
     }, 'Failed to start command');
   };
@@ -222,168 +266,405 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
     }, 'Failed to cancel command');
   };
 
-  const contentId = `workspace-connect-agent-content-${workspaceId}`;
-  const tokenId = `workspace-agent-token-${workspaceId}`;
+  const bootstrapManifestUrl = `${window.location.origin}/indexes/userspace/development/workspaces/${workspaceId}/bootstrap`;
   const mcpUrl = `${window.location.origin}/mcp`;
   const operationsUrl = `${window.location.origin}/indexes/userspace/development/workspaces/${workspaceId}/operations`;
-  const bootstrapManifestUrl = `${window.location.origin}/indexes/userspace/development/workspaces/${workspaceId}/bootstrap`;
 
   return (
     <section
       id={`workspace-connect-agent-${workspaceId}`}
       className="userspace-connect-agent"
       data-userspace-panel="connect-your-agent"
+      role="region"
+      aria-label="Coding Agent Setup"
     >
-      <button
-        type="button"
-        className="btn btn-secondary btn-sm"
-        aria-expanded={open}
-        aria-controls={contentId}
-        onClick={() => setOpen((value) => !value)}
+      <div
+        className="userspace-connect-agent-body"
+        data-userspace-panel="connect-your-agent-content"
       >
-        Connect your agent
-      </button>
-
-      {open && (
-        <div id={contentId} className="card" data-userspace-panel="connect-your-agent-content">
-          <h3>Connect your agent</h3>
-          <p className="muted">
-            Authenticate with <code>Authorization: Bearer &lt;credential&gt;</code>. Start with{' '}
-            <code>workspace_development_context</code>, then use <code>workspace_development</code>{' '}
-            for authorized operations.
-          </p>
-          <p className="muted">
-            MCP endpoint: <code>{mcpUrl}</code>
-          </p>
-          <p className="muted">
-            HTTP operations endpoint: <code>{operationsUrl}</code>
-          </p>
-
-          {!canManage ? (
+        <header className="userspace-connect-agent-header">
+          <div>
+            <h3>Coding Agent Setup</h3>
             <p className="muted">
-              Only workspace owners and admins can manage development credentials.
+              Create access, connect your trusted coding agent, then start working.
             </p>
-          ) : (
-            <>
-              <label htmlFor={`workspace-agent-name-${workspaceId}`}>Credential name</label>
-              <div className="form-row">
-                <input
-                  id={`workspace-agent-name-${workspaceId}`}
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                />
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  disabled={loading}
-                  onClick={createCredential}
-                >
-                  Create credential
-                </button>
+          </div>
+        </header>
+
+        {!canManage ? (
+          <p className="muted">
+            Only workspace owners and admins can manage development credentials.
+          </p>
+        ) : (
+          <>
+            <section
+              className="userspace-connect-agent-section"
+              aria-label="Development credentials"
+            >
+              <div className="userspace-connect-agent-section-header">
+                <h4>Development credentials</h4>
+                {credentials.length > 0 && !showCreateForm && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={loading}
+                    onClick={() => {
+                      setError(null);
+                      setShowCreateForm(true);
+                      setActiveCredentialId(null);
+                      setStep('create');
+                    }}
+                  >
+                    New agent
+                  </button>
+                )}
               </div>
 
-              {token && tokenCredentialId && (
-                <>
-                  <div id={tokenId} className="api-key-display">
-                    <code>{token}</code>
-                    <InlineCopyButton
-                      copyText={token}
-                      className="btn btn-secondary btn-sm"
-                      title="Copy development credential"
-                      ariaLabel="Copy development credential"
-                      label="Copy token"
+              {showCreateForm && (
+                <div
+                  id={`workspace-agent-create-${workspaceId}`}
+                  className="userspace-connect-agent-create"
+                  data-userspace-step="create"
+                >
+                  <SetupSteps step="create" />
+                  <p className="muted">
+                    Create a credential for one trusted agent. You will copy its setup instructions
+                    next.
+                  </p>
+                  <label
+                    className="userspace-connect-agent-field-label"
+                    htmlFor={`workspace-agent-name-${workspaceId}`}
+                  >
+                    Credential name
+                  </label>
+                  <div className="userspace-connect-agent-input-row">
+                    <input
+                      id={`workspace-agent-name-${workspaceId}`}
+                      type="text"
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
                     />
-                  </div>
-
-                  <section
-                    id={`workspace-setup-instructions-${workspaceId}`}
-                    data-userspace-panel="setup-instructions"
-                  >
-                    <h4>Copy setup instructions</h4>
-                    <p className="muted">
-                      Share these instructions with your trusted receiving agent.
-                    </p>
-                    <div
-                      id={`workspace-setup-instructions-content-${workspaceId}`}
-                      className="code-block"
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      disabled={loading}
+                      onClick={createCredential}
                     >
-                      <pre>
-                        {buildSetupInstructions(
-                          bootstrapManifestUrl,
-                          workspaceId,
-                          token,
-                          credentials.find((c) => c.id === tokenCredentialId)?.name || 'credential',
-                        )}
-                      </pre>
-                      <InlineCopyButton
-                        copyText={() =>
-                          buildSetupInstructions(
-                            bootstrapManifestUrl,
-                            workspaceId,
-                            token,
-                            credentials.find((c) => c.id === tokenCredentialId)?.name ||
-                              'credential',
-                          )
-                        }
+                      Create credential and continue
+                    </button>
+                    {credentials.length > 0 && (
+                      <button
+                        type="button"
                         className="btn btn-secondary btn-sm"
-                        title="Copy setup instructions"
-                        ariaLabel="Copy setup instructions"
-                        label="Copy instructions"
-                      />
-                    </div>
-                  </section>
-                </>
-              )}
-
-              {error && (
-                <p role="alert" className="error-message">
-                  {error}
-                </p>
-              )}
-
-              <div data-userspace-list="development-credentials">
-                {credentials.map((credential) => (
-                  <div
-                    key={credential.id}
-                    id={`workspace-development-credential-${credential.id}`}
-                    className="card"
-                  >
-                    <strong>{credential.name}</strong>{' '}
-                    <span className="muted">
-                      {credential.revoked_at ? 'revoked' : credential.scopes.join(', ')}
-                    </span>
-                    {!credential.revoked_at && (
-                      <div className="form-row">
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          disabled={loading}
-                          onClick={() => rotateCredential(credential.id)}
-                        >
-                          Rotate
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          disabled={loading}
-                          onClick={() => revokeCredential(credential.id)}
-                        >
-                          Revoke
-                        </button>
-                      </div>
+                        disabled={loading}
+                        onClick={() => setShowCreateForm(false)}
+                      >
+                        Cancel creation
+                      </button>
                     )}
                   </div>
-                ))}
-              </div>
+                </div>
+              )}
 
-              <section
-                id={`workspace-development-activity-${workspaceId}`}
-                data-userspace-panel="development-activity"
-              >
-                <h4>Development activity</h4>
-                <div className="form-row">
+              {credentials.length === 0 && !loading ? (
+                <p className="userspace-muted">No development credentials yet.</p>
+              ) : (
+                <div
+                  className="userspace-external-api-list userspace-external-api-credential-list"
+                  data-userspace-list="development-credentials"
+                >
+                  {credentials.map((credential) => {
+                    const status = getCredentialStatus(credential);
+                    const isActive = activeCredentialId === credential.id;
+                    const hasSecret = tokenCredentialId === credential.id && token;
+                    return (
+                      <article
+                        key={credential.id}
+                        id={`workspace-development-credential-${credential.id}`}
+                        className={`userspace-external-api-row userspace-external-api-credential-row${status === 'Revoked' ? ' is-revoked' : ''}`}
+                        data-credential-id={credential.id}
+                        aria-label={`${credential.name} credential`}
+                      >
+                        <div className="userspace-external-api-row-main">
+                          <div className="userspace-external-api-row-header">
+                            <div className="userspace-external-api-row-copy">
+                              <strong className="userspace-external-api-row-title">
+                                {credential.name}
+                              </strong>
+                              <div className="userspace-external-api-item-meta">
+                                <span>{getScopeDescription(credential)}</span>
+                              </div>
+                            </div>
+                            <span
+                              className={`userspace-external-api-status${status === 'Revoked' ? ' is-revoked' : ''}`}
+                            >
+                              {status}
+                            </span>
+                          </div>
+
+                          {isActive && status !== 'Revoked' && (
+                            <div
+                              id={`workspace-agent-setup-${credential.id}`}
+                              className="userspace-connect-agent-setup"
+                              data-userspace-setup={credential.id}
+                            >
+                              <SetupSteps step={step} />
+                              {step === 'connect' && (
+                                <section
+                                  id={`workspace-setup-instructions-${credential.id}`}
+                                  data-userspace-panel="setup-instructions"
+                                >
+                                  <h5>Connect agent</h5>
+                                  {hasSecret ? (
+                                    <>
+                                      <p>
+                                        Copy these instructions and paste them into a new
+                                        conversation with your trusted coding agent. They include
+                                        this credential and explain the read, edit, and run access
+                                        it grants.
+                                      </p>
+                                      <InlineCopyButton
+                                        copyText={() =>
+                                          buildSetupInstructions(
+                                            bootstrapManifestUrl,
+                                            workspaceId,
+                                            token,
+                                            credential.name,
+                                          )
+                                        }
+                                        className="btn btn-primary btn-sm"
+                                        title="Copy setup instructions"
+                                        ariaLabel="Copy setup instructions"
+                                        label="Copy setup instructions"
+                                      />
+                                      <details className="userspace-connect-agent-preview">
+                                        <summary>Preview setup instructions</summary>
+                                        <pre>
+                                          {buildSetupInstructions(
+                                            bootstrapManifestUrl,
+                                            workspaceId,
+                                            token,
+                                            credential.name,
+                                          )}
+                                        </pre>
+                                      </details>
+                                    </>
+                                  ) : (
+                                    <div className="userspace-connect-agent-recovery">
+                                      <p>
+                                        Your secret is only shown when created or rotated. To
+                                        recover setup instructions, rotate this credential or create
+                                        a new one.
+                                      </p>
+                                      <button
+                                        type="button"
+                                        className="btn btn-secondary btn-sm"
+                                        disabled={loading}
+                                        aria-label="Rotate credential to recover setup"
+                                        onClick={() => setPendingRotationId(credential.id)}
+                                      >
+                                        Rotate credential
+                                      </button>
+                                    </div>
+                                  )}
+                                  <details
+                                    id={`workspace-agent-manual-details-${credential.id}`}
+                                    className="userspace-connect-agent-manual-details"
+                                    data-userspace-disclosure="manual-connection-details"
+                                  >
+                                    <summary>Manual connection details</summary>
+                                    <p>
+                                      Authenticate with{' '}
+                                      <code>Authorization: Bearer &lt;credential&gt;</code>.{' '}
+                                      <code>/mcp</code> is the default endpoint for coding-agent
+                                      workspace credentials; HTTP operations are an advanced
+                                      alternative.
+                                    </p>
+                                    <div className="userspace-connect-agent-endpoint">
+                                      <span className="userspace-connect-agent-endpoint-label">
+                                        MCP endpoint
+                                      </span>
+                                      <code>{mcpUrl}</code>
+                                      <InlineCopyButton
+                                        copyText={mcpUrl}
+                                        className="userspace-connect-agent-copy"
+                                        title="Copy MCP endpoint"
+                                        ariaLabel="Copy MCP endpoint"
+                                        iconSize={13}
+                                      />
+                                    </div>
+                                    <div className="userspace-connect-agent-endpoint">
+                                      <span className="userspace-connect-agent-endpoint-label">
+                                        HTTP operations endpoint
+                                      </span>
+                                      <code>{operationsUrl}</code>
+                                      <InlineCopyButton
+                                        copyText={operationsUrl}
+                                        className="userspace-connect-agent-copy"
+                                        title="Copy HTTP operations endpoint"
+                                        ariaLabel="Copy HTTP operations endpoint"
+                                        iconSize={13}
+                                      />
+                                    </div>
+                                    {hasSecret && (
+                                      <div className="api-key-display userspace-connect-agent-token">
+                                        <span className="userspace-connect-agent-endpoint-label">
+                                          Development credential
+                                        </span>
+                                        <code>{token}</code>
+                                        <InlineCopyButton
+                                          copyText={token}
+                                          className="btn btn-secondary btn-sm"
+                                          title="Copy development credential"
+                                          ariaLabel="Copy development credential"
+                                          label="Copy token"
+                                        />
+                                      </div>
+                                    )}
+                                  </details>
+                                  <footer
+                                    id={`workspace-agent-connect-footer-${credential.id}`}
+                                    className="userspace-connect-agent-footer-actions"
+                                    data-userspace-footer="connect"
+                                  >
+                                    <button
+                                      type="button"
+                                      className="btn btn-primary btn-sm"
+                                      onClick={() => setStep('start')}
+                                    >
+                                      Next: Start working
+                                    </button>
+                                  </footer>
+                                </section>
+                              )}
+                              {step === 'start' && (
+                                <section
+                                  id={`workspace-agent-start-${credential.id}`}
+                                  className="userspace-connect-agent-start"
+                                  aria-label="Start working"
+                                  data-userspace-step="start"
+                                >
+                                  <h5>Start working</h5>
+                                  <p>
+                                    Ask your agent to load the workspace context. It may need a
+                                    restart or a new session after setup.
+                                  </p>
+                                  <p>
+                                    <strong>Suggested first request:</strong> “Inspect this
+                                    workspace and summarize the current project state before making
+                                    changes.”
+                                  </p>
+                                  <div
+                                    id={`workspace-agent-start-footer-${credential.id}`}
+                                    className="userspace-connect-agent-footer-actions"
+                                    data-userspace-footer="start"
+                                  >
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary btn-sm"
+                                      onClick={() => setStep('connect')}
+                                    >
+                                      Back to Connect agent
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn btn-primary btn-sm"
+                                      onClick={() => setActiveCredentialId(null)}
+                                    >
+                                      Done
+                                    </button>
+                                  </div>
+                                </section>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        {status !== 'Revoked' && (
+                          <div className="userspace-external-api-row-actions userspace-external-api-credential-actions">
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              disabled={loading}
+                              onClick={() => {
+                                setShowCreateForm(false);
+                                setActiveCredentialId(credential.id);
+                                setStep('connect');
+                              }}
+                            >
+                              Setup instructions
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              disabled={loading}
+                              onClick={() => setPendingRotationId(credential.id)}
+                            >
+                              Rotate credential
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              disabled={loading}
+                              onClick={() => revokeCredential(credential.id)}
+                            >
+                              Revoke credential
+                            </button>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            {pendingRotationId && (
+              <section className="userspace-connect-agent-rotation-warning" role="alert">
+                <strong>Rotate this credential?</strong>
+                <p>
+                  The old token stops working immediately. Update the trusted agent with the new
+                  setup instructions.
+                </p>
+                <div className="userspace-connect-agent-footer-actions">
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={loading}
+                    onClick={() => setPendingRotationId(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={loading}
+                    onClick={rotateCredential}
+                  >
+                    Rotate and continue
+                  </button>
+                </div>
+              </section>
+            )}
+
+            {error && (
+              <p role="alert" className="error-message">
+                {error}
+              </p>
+            )}
+
+            <details
+              id={`workspace-development-activity-${workspaceId}`}
+              className="userspace-connect-agent-activity"
+              data-userspace-disclosure="development-activity"
+              open={activityOpen}
+              onToggle={(event) => setActivityOpen(event.currentTarget.open)}
+            >
+              <summary>Development activity</summary>
+              <div className="userspace-connect-agent-activity-content">
+                <div className="userspace-connect-agent-input-row">
                   <input
                     aria-label="Sandbox command"
+                    type="text"
                     value={command}
                     onChange={(event) => setCommand(event.target.value)}
                     placeholder="Run a sandbox command"
@@ -400,37 +681,54 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
                     type="button"
                     className="btn btn-secondary btn-sm"
                     disabled={loading}
-                    onClick={refreshJobs}
+                    onClick={() =>
+                      void runWorkspaceAction(loadJobs, 'Failed to load development activity')
+                    }
                   >
                     Refresh
                   </button>
                 </div>
-                <div data-userspace-list="development-jobs">
-                  {jobs.map((job) => (
-                    <div key={job.id} id={`workspace-development-job-${job.id}`} className="card">
-                      <strong>{job.status}</strong>{' '}
-                      {job.exit_code !== undefined && job.exit_code !== null && (
-                        <span className="muted">exit {job.exit_code}</span>
-                      )}
-                      {job.output && <pre>{job.output}</pre>}
-                      {!['completed', 'failed', 'cancelled'].includes(job.status) && (
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          disabled={loading}
-                          onClick={() => cancelJob(job.id)}
-                        >
-                          Cancel
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </section>
-            </>
-          )}
-        </div>
-      )}
+                {jobs.length > 0 && (
+                  <ul
+                    className="userspace-connect-agent-list"
+                    data-userspace-list="development-jobs"
+                  >
+                    {jobs.map((job) => (
+                      <li
+                        key={job.id}
+                        id={`workspace-development-job-${job.id}`}
+                        className="userspace-connect-agent-row userspace-connect-agent-job"
+                      >
+                        <div className="userspace-connect-agent-row-main">
+                          <strong>{job.status}</strong>
+                          {job.exit_code !== undefined && job.exit_code !== null && (
+                            <span className="muted">exit {job.exit_code}</span>
+                          )}
+                        </div>
+                        {!['completed', 'failed', 'cancelled'].includes(job.status) && (
+                          <div className="userspace-connect-agent-row-actions">
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              disabled={loading}
+                              onClick={() => cancelJob(job.id)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        )}
+                        {job.output && (
+                          <pre className="userspace-connect-agent-job-output">{job.output}</pre>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </details>
+          </>
+        )}
+      </div>
     </section>
   );
 }

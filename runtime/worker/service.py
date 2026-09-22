@@ -79,6 +79,7 @@ from ..core.secure_files import write_text as secure_write_text
 from ..core.shared import (
     RUNTIME_BOOTSTRAP_CONFIG_PATH,
     RUNTIME_BOOTSTRAP_STAMP_PATH,
+    RUNTIME_BRIDGE_TOKEN_FILE_PATH,
     RUNTIME_EXEC_TIMEOUT_HARD_CAP_SECONDS,
     EntrypointStatus,
     RuntimeSessionState,
@@ -340,7 +341,7 @@ class WorkerSession:
     runtime_operation_started_at: datetime | None
     runtime_operation_updated_at: datetime | None
     updated_at: datetime
-    bridge_credential_mode: str = "env"
+    bridge_credential_mode: str = "worker_file"
     bridge_session_id: str | None = None
     bridge_credential_revision: int = 0
     bridge_refresh_requests: dict[str, tuple[str, RuntimeBridgeCredentialMetadata]] = field(default_factory=dict)
@@ -621,6 +622,26 @@ class WorkerService:
         return {str(key): str(value) for key, value in (raw_env or {}).items() if str(key).strip()}
 
     @staticmethod
+    def _prepare_file_bridge_workspace_env(
+        raw_env: dict[str, Any] | None,
+        *,
+        reject_raw_token: bool = True,
+    ) -> dict[str, str]:
+        """Apply the worker-owned bridge environment contract.
+
+        A startup carrying a raw token is rejected rather than silently
+        converting a legacy session. Restarts defensively remove reserved
+        values before restoring the sole public file path.
+        """
+        workspace_env = WorkerService._normalize_workspace_env(raw_env)
+        if reject_raw_token and "RAGTIME_BRIDGE_TOKEN" in workspace_env:
+            raise HTTPException(status_code=400, detail="Raw bridge tokens are not accepted in workspace environment")
+        workspace_env.pop("RAGTIME_BRIDGE_TOKEN", None)
+        workspace_env.pop("RAGTIME_BRIDGE_TOKEN_FILE", None)
+        workspace_env["RAGTIME_BRIDGE_TOKEN_FILE"] = RUNTIME_BRIDGE_TOKEN_FILE_PATH
+        return workspace_env
+
+    @staticmethod
     def _normalize_workspace_env_visibility(
         raw_visibility: dict[str, Any] | None,
         workspace_env: dict[str, str],
@@ -880,12 +901,10 @@ class WorkerService:
         session: WorkerSession,
     ) -> RuntimeBridgeCredentialMetadata | None:
         bridge_url = str(session.workspace_env.get("RAGTIME_BRIDGE_URL") or "").strip()
-        token = str(session.workspace_env.get("RAGTIME_BRIDGE_TOKEN") or "").strip()
-        if session.bridge_credential_mode == "worker_file":
-            try:
-                token = self._read_bridge_token_file(session) or ""
-            except HTTPException:
-                return None
+        try:
+            token = self._read_bridge_token_file(session) or ""
+        except HTTPException:
+            return None
         if not bridge_url or not token:
             return None
         payload = self._decode_jwt_payload_metadata(token)
@@ -905,7 +924,7 @@ class WorkerService:
             session_id=session_id,
             issued_at=issued_at,
             expires_at=expires_at,
-            mode=session.bridge_credential_mode,
+            mode="worker_file",
             revision=session.bridge_credential_revision,
         )
 
@@ -2468,12 +2487,11 @@ class WorkerService:
                     # intentionally runs after releasing the file lock.
                     async with self._workspace_file_lock(workspace_id):
                         await asyncio.to_thread(ensure_sandbox_ready, session.sandbox_spec)
-                        if session.bridge_credential_mode == "worker_file":
-                            token = str(session.bridge_token_file_initial_token or "")
-                            if not token:
-                                raise HTTPException(status_code=400, detail="Missing worker file bridge credential")
-                            self._write_bridge_token_file(session, token)
-                            session.bridge_recent_tokens = [token]
+                        token = str(session.bridge_token_file_initial_token or "")
+                        if not token:
+                            raise HTTPException(status_code=400, detail="Missing worker file bridge credential")
+                        self._write_bridge_token_file(session, token)
+                        session.bridge_recent_tokens = [token]
                         await self._materialize_workspace_mounts(session)
                 except Exception as exc:
                     await self._mark_operation_failed(
@@ -2755,19 +2773,16 @@ class WorkerService:
                         status_code=409,
                         detail="Worker session workspace does not match requested workspace",
                     )
+                workspace_env = self._prepare_file_bridge_workspace_env(request.workspace_env)
+                token = str(request.bridge_token_file_initial_token or "").strip()
+                if not token:
+                    raise HTTPException(status_code=400, detail="worker_file mode requires separate bridge token")
                 session.pty_access_token = request.pty_access_token
-                session.workspace_env = self._normalize_workspace_env(request.workspace_env)
-                session.bridge_credential_mode = request.bridge_credential_mode
-                if request.bridge_credential_mode == "worker_file":
-                    token = str(request.bridge_token_file_initial_token or "").strip()
-                    if not token or "RAGTIME_BRIDGE_TOKEN" in session.workspace_env:
-                        raise HTTPException(status_code=400, detail="worker_file mode requires separate bridge token")
-                    session.workspace_env["RAGTIME_BRIDGE_TOKEN_FILE"] = "/run/.ragtime-bridge/token"
-                    session.bridge_token_file_initial_token = token
-                    session.bridge_recent_tokens = ([token] + session.bridge_recent_tokens)[:2]
-                    session.bridge_session_id = str((self._decode_jwt_payload_metadata(token) or {}).get("session_id") or "") or None
-                else:
-                    session.bridge_token_file_initial_token = None
+                session.workspace_env = workspace_env
+                session.bridge_credential_mode = "worker_file"
+                session.bridge_token_file_initial_token = token
+                session.bridge_recent_tokens = ([token] + session.bridge_recent_tokens)[:2]
+                session.bridge_session_id = str((self._decode_jwt_payload_metadata(token) or {}).get("session_id") or "") or None
                 session.workspace_env_visibility = self._normalize_workspace_env_visibility(
                     request.workspace_env_visibility,
                     session.workspace_env,
@@ -2781,12 +2796,10 @@ class WorkerService:
 
             session_id = f"wkr-{request.workspace_id[:8]}-{os.urandom(4).hex()}"
             workspace_root, workspace_files, sandbox_spec = self._resolve_workspace_root(request.workspace_id)
-            workspace_env = self._normalize_workspace_env(request.workspace_env)
-            if request.bridge_credential_mode == "worker_file":
-                token = str(request.bridge_token_file_initial_token or "").strip()
-                if not token or "RAGTIME_BRIDGE_TOKEN" in workspace_env:
-                    raise HTTPException(status_code=400, detail="worker_file mode requires separate bridge token")
-                workspace_env["RAGTIME_BRIDGE_TOKEN_FILE"] = "/run/.ragtime-bridge/token"
+            workspace_env = self._prepare_file_bridge_workspace_env(request.workspace_env)
+            token = str(request.bridge_token_file_initial_token or "").strip()
+            if not token:
+                raise HTTPException(status_code=400, detail="worker_file mode requires separate bridge token")
             session = WorkerSession(
                 id=session_id,
                 workspace_id=request.workspace_id,
@@ -2814,18 +2827,9 @@ class WorkerService:
                 runtime_operation_started_at=None,
                 runtime_operation_updated_at=None,
                 updated_at=utc_now(),
-                bridge_credential_mode=request.bridge_credential_mode,
-                bridge_session_id=str(
-                    (
-                        self._decode_jwt_payload_metadata(
-                            token if request.bridge_credential_mode == "worker_file" else workspace_env.get("RAGTIME_BRIDGE_TOKEN", "")
-                        )
-                        or {}
-                    ).get("session_id")
-                    or ""
-                )
-                or None,
-                bridge_token_file_initial_token=(token if request.bridge_credential_mode == "worker_file" else None),
+                bridge_credential_mode="worker_file",
+                bridge_session_id=str((self._decode_jwt_payload_metadata(token) or {}).get("session_id") or "") or None,
+                bridge_token_file_initial_token=token,
             )
             self._sessions[session_id] = session
             self._provider_to_session[request.provider_session_id] = session_id
@@ -2967,13 +2971,12 @@ class WorkerService:
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
             if workspace_env is not None:
-                session.workspace_env = self._normalize_workspace_env(workspace_env)
-                if session.bridge_credential_mode == "worker_file":
-                    # File-mode invariants survive env replacement: the raw token
-                    # never enters the process env, and the app keeps the
-                    # platform-fixed token-file path.
-                    session.workspace_env.pop("RAGTIME_BRIDGE_TOKEN", None)
-                    session.workspace_env["RAGTIME_BRIDGE_TOKEN_FILE"] = "/run/.ragtime-bridge/token"
+                # Restart callers may carry stale reserved fields. Strip them
+                # defensively while retaining the worker-managed token file.
+                session.workspace_env = self._prepare_file_bridge_workspace_env(
+                    workspace_env,
+                    reject_raw_token=False,
+                )
             if workspace_env is not None or workspace_env_visibility is not None:
                 session.workspace_env_visibility = self._normalize_workspace_env_visibility(
                     workspace_env_visibility,
@@ -3105,6 +3108,9 @@ class WorkerService:
                 if previous[0] != fingerprint:
                     raise HTTPException(status_code=409, detail="Credential request id payload conflict")
                 return previous[1]
+            # Do not treat a pre-cutover session as healthy merely because a
+            # refresh request arrived; its already-running child could still
+            # retain a legacy raw-token environment.
             if session.bridge_credential_mode != "worker_file":
                 raise HTTPException(status_code=409, detail="Worker file credential mode is not active")
             if session.bridge_session_id != expected_session_id or session.bridge_credential_revision != expected_revision:

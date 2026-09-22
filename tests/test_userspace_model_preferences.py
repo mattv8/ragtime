@@ -20,7 +20,7 @@ if "ragtime.rag.prompts" not in sys.modules:
 from ragtime.userspace.build_task_service import build_task_service
 from ragtime.userspace.models import CreateWorkspaceRequest, DuplicateWorkspaceRequest, UserSpaceWorkspace
 from ragtime.userspace.service import UserSpaceService
-from tests.hosted_execution_test_support import enabled_hosted_execution_policy
+from tests.generation_policy_test_support import enabled_generation_policy
 
 _NOW = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
@@ -189,7 +189,7 @@ class BuildTaskModelPreferenceTests(unittest.IsolatedAsyncioTestCase):
         task = SimpleNamespace(id="task-1", status="pending")
 
         with (
-            enabled_hosted_execution_policy("user-1"),
+            enabled_generation_policy("user-1", surface="userspace"),
             _fake_model_preferences_module(workspace_model="workspace-preference-model") as preferences,
             mock.patch.object(type(build_task_service), "_load_prisma_user", mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user"))),
             mock.patch.object(type(build_task_service), "_enforce_editor", mock.AsyncMock(return_value=workspace)),

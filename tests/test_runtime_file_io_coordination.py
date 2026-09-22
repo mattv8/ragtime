@@ -27,8 +27,11 @@ class RuntimeFileCoordinationTests(unittest.IsolatedAsyncioTestCase):
             workspace_files_path=files,
             sandbox_spec=worker_service.SandboxSpec(workspace_id=workspace_id, workspace_files_path=files, rootfs_path=root / "rootfs"),
             pty_access_token="token",
-            workspace_env={},
+            workspace_env={
+                "RAGTIME_BRIDGE_TOKEN_FILE": worker_service.RUNTIME_BRIDGE_TOKEN_FILE_PATH,
+            },
             workspace_env_visibility={},
+            bridge_token_file_initial_token="test-bridge-token",
             workspace_mounts=[],
             mount_targets_to_clear=set(),
             state="running",
@@ -298,10 +301,13 @@ class RuntimeFileCoordinationTests(unittest.IsolatedAsyncioTestCase):
             followup_started.set()
             return "expected follow-up stop"
 
+        def provision_sandbox(spec: Any) -> None:
+            spec.rootfs_path.mkdir(parents=True, exist_ok=True)
+
         with tempfile.TemporaryDirectory() as tmp:
             session = self._install(service, Path(tmp), "one", "workspace-one")
             with (
-                mock.patch("runtime.worker.service.ensure_sandbox_ready"),
+                mock.patch("runtime.worker.service.ensure_sandbox_ready", side_effect=provision_sandbox),
                 mock.patch.object(service, "_materialize_workspace_mounts", new=mock.AsyncMock()),
                 mock.patch.object(service, "_run_workspace_bootstrap_if_needed", side_effect=blocked_bootstrap),
             ):
@@ -315,7 +321,7 @@ class RuntimeFileCoordinationTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(session.workspace_id, service._workspace_cleanup_tasks)
 
             with (
-                mock.patch("runtime.worker.service.ensure_sandbox_ready"),
+                mock.patch("runtime.worker.service.ensure_sandbox_ready", side_effect=provision_sandbox),
                 mock.patch.object(service, "_materialize_workspace_mounts", new=mock.AsyncMock()),
                 mock.patch.object(service, "_run_workspace_bootstrap_if_needed", side_effect=followup_bootstrap),
             ):

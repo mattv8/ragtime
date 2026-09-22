@@ -102,7 +102,7 @@ describe('AuthAdminModalHost content protection controls', () => {
     expect(toast.success).toHaveBeenCalledTimes(2);
   });
 
-  it('disables controls with the master-off hint', async () => {
+  it('hides controls when protection is disabled', async () => {
     getConfig.mockResolvedValue({
       ...CONFIG,
       enabled: false,
@@ -110,12 +110,10 @@ describe('AuthAdminModalHost content protection controls', () => {
 
     renderModal();
 
-    expect((await screen.findByLabelText('Classification')) as HTMLSelectElement).toHaveProperty(
-      'disabled',
-      true,
-    );
-    expect(screen.getByLabelText('Profile') as HTMLSelectElement).toHaveProperty('disabled', true);
-    expect(screen.getByText('Content protection is disabled in Settings.')).toBeTruthy();
+    await screen.findByText('Engineering');
+    expect(screen.queryByLabelText('Classification')).toBeNull();
+    expect(screen.queryByLabelText('Profile')).toBeNull();
+    expect(updateContentProtectionConfigSlice).not.toHaveBeenCalled();
   });
 
   it('keeps classification editable and annotates all-traffic coverage', async () => {

@@ -70,7 +70,7 @@ class HostedRecoveryActualFlowTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(protection_service, "_audit", new=mock.AsyncMock()),
             mock.patch.object(components, "_process_query_unprotected", new=MethodType(unprotected, components)),
             mock.patch.object(components, "_get_request_scoped_llm", new=MethodType(get_llm, components)),
-            mock.patch("ragtime.rag.components.require_hosted_execution", new=mock.AsyncMock()),
+            mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()),
         ):
             answer = await components.process_query("safe", user_id="caller", owner_user_id="owner")
 
@@ -88,7 +88,7 @@ class HostedRecoveryActualFlowTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             mock.patch.object(components, "_process_query_unprotected", new=MethodType(unprotected, components)),
-            mock.patch("ragtime.rag.components.require_hosted_execution", new=mock.AsyncMock()),
+            mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_history", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_inbound", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_assistant", new=mock.AsyncMock()),

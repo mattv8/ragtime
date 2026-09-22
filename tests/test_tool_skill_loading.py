@@ -12,6 +12,7 @@ from langchain_core.tools import StructuredTool
 from ragtime.rag import components as rag_components
 from ragtime.rag.tool_skills import ToolSkillBindingState, ToolSkillDefinition, build_tool_skill_control_tools
 from tests.content_protection_support import use_disabled_content_protection
+from tests.generation_policy_test_support import enabled_generation_policy
 from tests.test_tool_skill_shared import (
     FakeAction,
     FakeExecutor,
@@ -54,14 +55,14 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         use_disabled_content_protection(self)
 
         async def _enabled_users(*, where: dict[str, Any]) -> list[SimpleNamespace]:
-            return [SimpleNamespace(id=user_id, hostedChatEnabled=None) for user_id in where["id"]["in"]]
+            return [SimpleNamespace(id=user_id, chatEnabled=None, userspaceGenerationEnabled=None) for user_id in where["id"]["in"]]
 
         policy_db = SimpleNamespace(
-            appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(hostedChatEnabled=True))),
+            appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(chatEnabled=True, userspaceGenerationEnabled=True))),
             user=SimpleNamespace(find_many=mock.AsyncMock(side_effect=_enabled_users)),
         )
         patcher = mock.patch(
-            "ragtime.core.hosted_execution_policy.get_db",
+            "ragtime.core.generation_policy.get_db",
             new=mock.AsyncMock(return_value=policy_db),
         )
         patcher.start()
@@ -93,6 +94,20 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
     async def test_feature_off_preserves_eager_runtime_tools_without_controls(self) -> None:
         rag = self._make_rag()
         cast(dict[str, Any], rag._app_settings)["tool_skills_enabled"] = False
+        query_tool = _make_tool("query_demo_sql")
+
+        binding = await rag._resolve_request_tool_skill_bindings(
+            runtime_tools=[query_tool],
+            mode="chat",
+            conversation_id="conversation-1",
+        )
+
+        self.assertEqual([tool.name for tool in binding["runtime_tools"]], ["query_demo_sql"])
+        self.assertEqual(binding["tool_skill_mode"], "disabled")
+
+    async def test_missing_setting_defaults_tool_skills_off(self) -> None:
+        rag = self._make_rag()
+        cast(dict[str, Any], rag._app_settings).pop("tool_skills_enabled", None)
         query_tool = _make_tool("query_demo_sql")
 
         binding = await rag._resolve_request_tool_skill_bindings(
@@ -250,6 +265,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         binding_state.effective_ids = ["tool_config:tool-1"]
 
         with (
+            enabled_generation_policy(),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_rebuild_stage)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
@@ -368,6 +384,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             return SimpleNamespace(llm=None, provider="openai", model="gpt-test"), kwargs["chat_history"], kwargs["turn_system_content"]
 
         with (
+            enabled_generation_policy(),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_rebuild_stage)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
@@ -461,6 +478,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             }
 
         with (
+            enabled_generation_policy(),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_rebuild_stage)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
@@ -570,6 +588,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             return SimpleNamespace(llm=None, provider="openai", model="gpt-test"), kwargs["chat_history"], kwargs["turn_system_content"]
 
         with (
+            enabled_generation_policy(),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_rebuild_stage)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
@@ -672,6 +691,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         )
         second_executor = _FakeExecutor([_make_tool("query_demo_sql")], [{"output": "recovered guidance", "intermediate_steps": []}])
         with (
+            enabled_generation_policy(),
             mock.patch.object(
                 rag,
                 "_build_request_runtime_context",
@@ -903,7 +923,8 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()),
         ):
-            events = [event async for event in rag.process_query_stream("hello", chat_history=[])]
+            with enabled_generation_policy():
+                events = [event async for event in rag.process_query_stream("hello", chat_history=[])]
 
         tool_end_names = [event["tool"] for event in events if isinstance(event, dict) and event.get("type") == "tool_end"]
         self.assertEqual(tool_end_names, ["load_tool_skills", "query_demo_sql"])
@@ -1064,7 +1085,8 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()),
         ):
-            events = [event async for event in rag.process_query_stream("hello", chat_history=[])]
+            with enabled_generation_policy():
+                events = [event async for event in rag.process_query_stream("hello", chat_history=[])]
 
         self.assertIn("done", "".join(event for event in events if isinstance(event, str)))
         last_history = prepared_histories[-1]
@@ -1145,7 +1167,8 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()) as persist_debug,
         ):
-            _ = [event async for event in rag.process_query_stream("hello", chat_history=[])]
+            with enabled_generation_policy():
+                _ = [event async for event in rag.process_query_stream("hello", chat_history=[])]
 
         persist_debug.assert_awaited_once()
         await_args = persist_debug.await_args
@@ -1215,7 +1238,8 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_ocr_images_after_no_image_support_error", new=mock.AsyncMock(return_value="hello ocr")) as ocr_retry,
             mock.patch.object(rag, "_chat_runtime_error_message", return_value="runtime-error"),
         ):
-            output = await rag.process_query("hello", chat_history=[])
+            with enabled_generation_policy():
+                output = await rag.process_query("hello", chat_history=[])
 
         self.assertEqual(output, "runtime-error")
         stage_loop.assert_awaited_once()
@@ -1293,7 +1317,8 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_ocr_images_after_no_image_support_error", new=mock.AsyncMock(return_value="hello ocr")) as ocr_retry,
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()) as persist_debug,
         ):
-            output = await rag.process_query("hello", chat_history=[])
+            with enabled_generation_policy():
+                output = await rag.process_query("hello", chat_history=[])
 
         self.assertEqual(output, "plain")
         self.assertEqual(getattr(executor, "ainvoke").await_count, 2)
@@ -1502,7 +1527,8 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()),
             mock.patch.object(rag, "_build_runtime_executor", side_effect=_build_executor),
         ):
-            output = await rag.process_query("hello", chat_history=[])
+            with enabled_generation_policy():
+                output = await rag.process_query("hello", chat_history=[])
 
         self.assertEqual(output, "done")
         self.assertTrue({"search_tool_skills", "load_tool_skills", "unload_tool_skills"}.issubset(set(built_tool_names[0])))
@@ -1833,7 +1859,8 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()) as persist_debug,
         ):
-            await rag.process_query("hello", chat_history=[], conversation_id="conversation-1")
+            with enabled_generation_policy():
+                await rag.process_query("hello", chat_history=[], conversation_id="conversation-1")
 
         self.assertEqual(persist_debug.await_count, 2)
         first_stage_kwargs = persist_debug.await_args_list[0].kwargs

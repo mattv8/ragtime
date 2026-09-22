@@ -51,7 +51,7 @@ class HostedRecoveryIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             mock.patch.object(components, "_process_query_unprotected", new=unprotected),
-            mock.patch("ragtime.rag.components.require_hosted_execution", new=mock.AsyncMock()),
+            mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_history", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_inbound", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_assistant", new=mock.AsyncMock()),
@@ -89,7 +89,7 @@ class HostedRecoveryIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             mock.patch.object(components, "_process_query_stream_unprotected", new=unprotected),
-            mock.patch("ragtime.rag.components.require_hosted_execution", new=mock.AsyncMock()),
+            mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_history", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_inbound", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_assistant", new=mock.AsyncMock()),
@@ -111,7 +111,7 @@ class HostedRecoveryIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await self._deny_replacement(error)
 
         with (
-            mock.patch("ragtime.rag.components.require_hosted_execution", new=mock.AsyncMock()),
+            mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_assistant", new=mock.AsyncMock(side_effect=deny)),
         ):
             with protection_service.protection_context(protection_service.ProtectionContext(user_id="caller")):
@@ -142,7 +142,7 @@ class HostedRecoveryIntegrationTests(unittest.IsolatedAsyncioTestCase):
         components = self._components(AIMessage(content="", tool_calls=[{"name": "tool", "args": {}, "id": "call-1"}]), calls)
         error = _eligible_error()
 
-        with mock.patch("ragtime.rag.components.require_hosted_execution", new=mock.AsyncMock()):
+        with mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()):
             with protection_service.protection_context(protection_service.ProtectionContext(user_id="caller")):
                 state = protection_service._turn.get()
                 assert state is not None
@@ -160,17 +160,17 @@ class HostedRecoveryIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(calls), 1)
 
-    async def test_hosted_execution_gate_blocks_recovery_before_generation(self) -> None:
+    async def test_generation_gate_blocks_recovery_before_generation(self) -> None:
         calls: list[list[BaseMessage]] = []
         components = self._components(AIMessage(content="must not generate"), calls)
         error = _eligible_error()
 
-        with mock.patch("ragtime.rag.components.require_hosted_execution", side_effect=RuntimeError("hosted disabled")):
+        with mock.patch("ragtime.rag.components.require_generation", side_effect=RuntimeError("generation disabled")):
             with protection_service.protection_context(protection_service.ProtectionContext(user_id="caller")):
                 state = protection_service._turn.get()
                 assert state is not None
                 state.terminal = error
-                with self.assertRaisesRegex(RuntimeError, "hosted disabled"):
+                with self.assertRaisesRegex(RuntimeError, "generation disabled"):
                     await components._recover_content_protection_denial(
                         error,
                         user_message="safe request",
@@ -196,7 +196,7 @@ class HostedRecoveryIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             mock.patch.object(components, "_process_query_unprotected", new=unprotected),
-            mock.patch("ragtime.rag.components.require_hosted_execution", new=mock.AsyncMock()),
+            mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_history", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_inbound", new=mock.AsyncMock()),
         ):
@@ -225,7 +225,7 @@ class HostedRecoveryIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             mock.patch.object(components, "_process_query_stream_unprotected", new=unprotected),
-            mock.patch("ragtime.rag.components.require_hosted_execution", new=mock.AsyncMock()),
+            mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_history", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.authorize_inbound", new=mock.AsyncMock()),
             mock.patch("ragtime.rag.components.content_protection_buffered_stream", side_effect=passthrough),
@@ -258,7 +258,7 @@ class HostedRecoveryIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             with (
-                mock.patch("ragtime.rag.components.require_hosted_execution", new=mock.AsyncMock()),
+                mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()),
                 mock.patch("ragtime.rag.components.authorize_assistant", new=mock.AsyncMock()),
             ):
                 with protection_service.protection_context(protection_service.ProtectionContext(user_id="caller")):

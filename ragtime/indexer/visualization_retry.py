@@ -22,7 +22,7 @@ from ragtime.content_protection.hosted import (
     hosted_context as content_protection_context,
 )
 from ragtime.content_protection.models import ContentProtectionError
-from ragtime.core.hosted_execution_policy import require_hosted_execution
+from ragtime.core.generation_policy import GenerationSurface, generation_context, require_generation
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import TABLE_METADATA_END, TABLE_METADATA_START
 from ragtime.indexer.models import (
@@ -584,7 +584,8 @@ async def _repair_with_ai(
 ) -> _ValidatedPayload | None:
     if not request.allow_ai_repair:
         return None
-    await require_hosted_execution(context.user_id, context.conversation.user_id)
+    surface: GenerationSurface = "userspace" if getattr(context.conversation, "workspace_id", None) else "chat"
+    await require_generation(context.user_id, context.conversation.user_id, surface=surface)
     if not rag.is_ready:
         raise RuntimeError("RAG service initializing, please retry")
 
@@ -596,9 +597,9 @@ async def _repair_with_ai(
 
     system_prompt, user_prompt = _build_repair_prompt(request, rerun_output)
     protection_context = content_protection_context(user_id=context.user_id, owner_user_id=context.conversation.user_id)
-    with bind_content_protection_context(protection_context):
+    with generation_context(surface, context.user_id, context.conversation.user_id), bind_content_protection_context(protection_context):
         await authorize_inbound(user_prompt, context=protection_context, supporting_context=system_prompt)
-        await require_hosted_execution(context.user_id, context.conversation.user_id)
+        await require_generation(context.user_id, context.conversation.user_id)
         response = await request_llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
         response_text = _message_content_to_text(getattr(response, "content", response))
         # This must happen before the debug record, parser, or returned repair

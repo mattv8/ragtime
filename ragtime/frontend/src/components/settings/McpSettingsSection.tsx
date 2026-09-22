@@ -11,6 +11,7 @@ import { Eye, EyeOff } from 'lucide-react';
 import { InlineCopyButton } from '../shared/InlineCopyButton';
 import { LdapGroupChips, LdapGroupSelect, type LdapGroup } from '../LdapGroupSelect';
 import { SettingsAccordionSection } from './SettingsAccordionSection';
+import { MasterToggle } from './MasterToggle';
 import type { AppSettings, UpdateSettingsRequest } from '@/types';
 import type { SettingsAccordionSectionId } from './settingsAccordionState';
 
@@ -100,26 +101,19 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
           Configure Model Context Protocol (MCP) access and authentication settings.
         </p>
 
-        <div className="form-group">
-          <label
-            className="chat-toggle-control"
-            style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
-          >
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={formData.mcp_enabled ?? settings?.mcp_enabled ?? false}
-                onChange={(e) => setFormData({ ...formData, mcp_enabled: e.target.checked })}
-              />
-              <span className="toggle-slider"></span>
-            </label>
-            <span>Enable MCP Server</span>
-          </label>
-          <p className="field-help">
-            When enabled, the MCP server endpoints (<code>/mcp</code> and custom routes) will be
-            active. Disable to prevent all MCP access.
-          </p>
-        </div>
+        <MasterToggle
+          settingId="setting-mcp_enabled"
+          inputId="mcp-enabled"
+          label="Enable MCP Server"
+          checked={formData.mcp_enabled ?? settings?.mcp_enabled ?? false}
+          onChange={(checked) => setFormData({ ...formData, mcp_enabled: checked })}
+          help={
+            <>
+              When enabled, the MCP server endpoints (<code>/mcp</code> and custom routes) will be
+              active. Disable to prevent all MCP access.
+            </>
+          }
+        />
 
         {/* Only show other MCP settings when enabled */}
         {(formData.mcp_enabled ?? settings?.mcp_enabled ?? false) && (
@@ -150,7 +144,7 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
               </p>
             </div>
 
-            {contentProtectionConfig && (
+            {contentProtectionConfig?.enabled && (
               <div className="form-group" id="mcp-default-route-content-protection">
                 <label htmlFor="mcp-default-route-require-classification">
                   Require classification
@@ -163,19 +157,10 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
                       event.target.value as ContentProtectionRequirementMode,
                     )
                   }
-                  disabled={!contentProtectionConfig.enabled}
-                  title={
-                    contentProtectionConfig.enabled
-                      ? undefined
-                      : 'Content protection is disabled in Settings.'
-                  }
                 >
                   <option value="inherit">Inherit</option>
                   <option value="require">Require</option>
                 </select>
-                {!contentProtectionConfig.enabled && (
-                  <p className="field-help">Content protection is disabled in Settings.</p>
-                )}
                 {contentProtectionConfig.coverage_mode === 'all_supported_traffic' && (
                   <p className="field-help">
                     Coverage is currently All supported traffic; scope requirements apply when

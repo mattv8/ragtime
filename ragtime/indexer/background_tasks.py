@@ -42,7 +42,7 @@ from ragtime.content_protection.hosted import (
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.datetimes import coerce_utc_datetime, utc_now
 from ragtime.core.event_bus import task_event_bus
-from ragtime.core.hosted_execution_policy import hosted_execution_context, require_hosted_execution
+from ragtime.core.generation_policy import GenerationSurface, generation_context, require_generation
 from ragtime.core.logging import get_logger
 from ragtime.core.scheduling import is_anchored_schedule_due
 from ragtime.core.sql_utils import strip_table_metadata
@@ -910,7 +910,8 @@ class BackgroundTaskService:
             caller_user_id = str(current_user_context.get("user_id") or "").strip() if current_user_context else None
             owner_user_id = getattr(conversation, "user_id", None)
             protection_context = content_protection_context(user_id=caller_user_id, owner_user_id=owner_user_id, surface=protection_surface)
-            with hosted_execution_context(caller_user_id, owner_user_id), bind_content_protection_context(protection_context):
+            surface: GenerationSurface = "userspace" if getattr(conversation, "workspace_id", None) else "chat"
+            with generation_context(surface, caller_user_id, owner_user_id), bind_content_protection_context(protection_context):
                 await run()
 
         async def run() -> None:
@@ -973,7 +974,7 @@ class BackgroundTaskService:
 
                 # A queued task can outlive the request that created it. Resolve
                 # policy afresh before it prepares or starts any model work.
-                await require_hosted_execution(
+                await require_generation(
                     str(current_user_context.get("user_id") or "") if current_user_context else None,
                     conv.user_id,
                 )
@@ -1865,7 +1866,8 @@ class BackgroundTaskService:
         try:
             conv = await repository.get_conversation(conversation_id)
             protection_context = content_protection_context(user_id=caller_user_id, owner_user_id=getattr(conv, "user_id", None))
-            await require_hosted_execution(caller_user_id, getattr(conv, "user_id", None))
+            surface: GenerationSurface = "userspace" if getattr(conv, "workspace_id", None) else "chat"
+            await require_generation(caller_user_id, getattr(conv, "user_id", None), surface=surface)
             await authorize_history(messages_to_summarize, context=protection_context)
             await repository.update_chat_task_status(task_id, ChatTaskStatus.running)
             await task_event_bus.publish(
@@ -1878,7 +1880,10 @@ class BackgroundTaskService:
                 },
             )
 
-            with hosted_execution_context(caller_user_id, getattr(conv, "user_id", None)), bind_content_protection_context(protection_context):
+            with (
+                generation_context(surface, caller_user_id, getattr(conv, "user_id", None)),
+                bind_content_protection_context(protection_context),
+            ):
                 summary = await rag.summarize_for_compaction(messages_to_summarize, model)
                 await authorize_auxiliary(summary, context=protection_context, operation="compaction")
             compacted = await repository.compact_conversation(

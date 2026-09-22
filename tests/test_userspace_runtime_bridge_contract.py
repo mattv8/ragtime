@@ -31,10 +31,11 @@ from ragtime.userspace.service import userspace_service
 
 SERVER_SRC = """
 const BRIDGE = process.env.RAGTIME_BRIDGE_URL;
+const bridgeToken = fs.readFileSync(process.env.RAGTIME_BRIDGE_TOKEN_FILE, "utf8").trim();
 app.get("/api/cash", async (req, res) => {
   const r = await fetch(`${BRIDGE}/execute-component`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${process.env.RAGTIME_BRIDGE_TOKEN}`,
+    headers: { Authorization: `Bearer ${bridgeToken}`,
                "Content-Type": "application/json" },
     body: JSON.stringify({ component_id: "comp-1", request: { query: "SELECT 1 LIMIT 1" } }),
   });
@@ -44,10 +45,11 @@ app.get("/api/cash", async (req, res) => {
 
 SERVER_HTTP_API_SRC = """
 const BRIDGE = process.env.RAGTIME_BRIDGE_URL;
+const bridgeToken = fs.readFileSync(process.env.RAGTIME_BRIDGE_TOKEN_FILE, "utf8").trim();
 app.get("/api/items", async (_req, res) => {
   const r = await fetch(`${BRIDGE}/execute-component`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${process.env.RAGTIME_BRIDGE_TOKEN}`,
+    headers: { Authorization: `Bearer ${bridgeToken}`,
                "Content-Type": "application/json" },
     body: JSON.stringify({ component_id: "comp-1", request: { method: "GET", path: "/items", headers: { "X-Trace": "1" } } }),
   });

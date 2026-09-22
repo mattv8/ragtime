@@ -8,7 +8,7 @@ from unittest import mock
 import ragtime.indexer.background_tasks as background_tasks
 from ragtime.indexer.task_policy import activity_summary, make_execution_policy, required_action_termination
 from tests.content_protection_support import use_disabled_content_protection
-from tests.hosted_execution_test_support import enabled_hosted_execution_policy
+from tests.generation_policy_test_support import enabled_generation_policy
 
 
 class BackgroundTaskOutcomePolicyTests(unittest.TestCase):
@@ -77,7 +77,7 @@ class BackgroundTaskOutcomeExecutionTests(unittest.IsolatedAsyncioTestCase):
         repository, rag, settings = self._dependencies(stream)
         bus = SimpleNamespace(publish=mock.AsyncMock())
         with (
-            enabled_hosted_execution_policy("user-1"),
+            enabled_generation_policy("user-1"),
             mock.patch.object(background_tasks, "repository", repository),
             mock.patch.object(background_tasks, "rag", rag),
             mock.patch.object(background_tasks, "task_event_bus", bus),

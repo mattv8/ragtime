@@ -55,8 +55,11 @@ class RuntimeWorkerStartupOverlapTests(unittest.IsolatedAsyncioTestCase):
                 rootfs_path=workspace_root / "rootfs",
             ),
             pty_access_token="token",
-            workspace_env={},
+            workspace_env={
+                "RAGTIME_BRIDGE_TOKEN_FILE": worker_service.RUNTIME_BRIDGE_TOKEN_FILE_PATH,
+            },
             workspace_env_visibility={},
+            bridge_token_file_initial_token="test-bridge-token",
             workspace_mounts=[],
             mount_targets_to_clear=set(),
             state="starting",
@@ -79,6 +82,9 @@ class RuntimeWorkerStartupOverlapTests(unittest.IsolatedAsyncioTestCase):
         service = self._service()
         failed = mock.AsyncMock()
 
+        def provision_sandbox(spec: Any) -> None:
+            spec.rootfs_path.mkdir(parents=True, exist_ok=True)
+
         with tempfile.TemporaryDirectory() as tmpdir:
             self._install_session(service, Path(tmpdir))
             with (
@@ -86,7 +92,7 @@ class RuntimeWorkerStartupOverlapTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(service, "_ensure_entrypoint_dependencies", new=mock.AsyncMock(return_value="npm ci failed")),
                 mock.patch.object(service, "_materialize_workspace_mounts", new=mock.AsyncMock()),
                 mock.patch.object(service, "_mark_operation_failed", new=failed),
-                mock.patch("runtime.worker.service.ensure_sandbox_ready"),
+                mock.patch("runtime.worker.service.ensure_sandbox_ready", side_effect=provision_sandbox),
             ):
                 await service._run_startup_pipeline("sess-1", "op-1")
 

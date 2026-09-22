@@ -4,9 +4,10 @@ import type { AvailableModel, OpenRouterCreditStatus, UpdateSettingsRequest } fr
 import { ModelSelector } from '../ModelSelector';
 import { MiniLoadingSpinner } from '../shared/MiniLoadingSpinner';
 import { SettingsAccordionSection } from './SettingsAccordionSection';
+import { MasterToggle } from './MasterToggle';
 import type { SettingsAccordionSectionId } from './settingsAccordionState';
 
-export interface ChatModelsSettingsSectionProps {
+export interface ChatSettingsSectionProps {
   open: boolean;
   onToggle: (id: SettingsAccordionSectionId) => void;
   formData: UpdateSettingsRequest;
@@ -18,8 +19,8 @@ export interface ChatModelsSettingsSectionProps {
   toScopedModelIdentifier: (model: AvailableModel) => string;
   openModelFilterModal: () => void;
   openOpenapiModelModal: () => void;
-  handleSaveLlm: () => void | Promise<void>;
-  llmSaving: boolean;
+  handleSaveChat: () => void | Promise<void>;
+  chatSaving: boolean;
   isAdmin: boolean;
   hasManagementApiKey: boolean;
 }
@@ -28,7 +29,7 @@ function OpenRouterCreditMonitor({
   formData,
   setFormData,
   hasManagementApiKey,
-}: Pick<ChatModelsSettingsSectionProps, 'formData' | 'setFormData'> & {
+}: Pick<ChatSettingsSectionProps, 'formData' | 'setFormData'> & {
   hasManagementApiKey: boolean;
 }): JSX.Element {
   const [status, setStatus] = useState<OpenRouterCreditStatus | null>(null);
@@ -36,17 +37,17 @@ function OpenRouterCreditMonitor({
 
   useEffect(() => {
     let cancelled = false;
-    void api
-      .getOpenRouterCreditStatus()
-      .then((nextStatus) => {
+    void api.getOpenRouterCreditStatus().then(
+      (nextStatus) => {
         if (!cancelled) {
           setStatus(nextStatus);
           setStatusError(null);
         }
-      })
-      .catch(() => {
+      },
+      () => {
         if (!cancelled) setStatusError('Credit status is currently unavailable.');
-      });
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -135,7 +136,7 @@ function OpenRouterCreditMonitor({
   );
 }
 
-export function ChatModelsSettingsSection(props: ChatModelsSettingsSectionProps): JSX.Element {
+export function ChatSettingsSection(props: ChatSettingsSectionProps): JSX.Element {
   const {
     open,
     onToggle,
@@ -148,24 +149,84 @@ export function ChatModelsSettingsSection(props: ChatModelsSettingsSectionProps)
     toScopedModelIdentifier,
     openModelFilterModal,
     openOpenapiModelModal,
-    handleSaveLlm,
-    llmSaving,
+    handleSaveChat,
+    chatSaving,
     isAdmin,
     hasManagementApiKey,
   } = props;
-
+  const chatEnabled = formData.chat_enabled !== false;
   return (
-    <SettingsAccordionSection id="chat-models" title="Chat Models" open={open} onToggle={onToggle}>
-      <fieldset id="setting-chat_models">
-        <legend>Chat Models</legend>
-        <p className="fieldset-help">
-          Choose which models appear in chat and which model is selected by default.
-        </p>
-
-        <div className="form-row-3">
-          {/* Chat Model Filter */}
-          <div className="form-group">
-            <label>Chat Models</label>
+    <SettingsAccordionSection id="chat" title="Chat" open={open} onToggle={onToggle}>
+      <fieldset id="setting-chat">
+        <legend>Chat</legend>
+        {isAdmin && (
+          <MasterToggle
+            settingId="setting-chat_enabled"
+            inputId="chat-enabled"
+            label="Enable chat"
+            checked={chatEnabled}
+            onChange={(checked) =>
+              setFormData((current) => ({ ...current, chat_enabled: checked }))
+            }
+            help={
+              chatEnabled
+                ? 'Enabled by default. Admins can disable access for individual users.'
+                : 'Disabled for all users. Individual user overrides cannot re-enable it.'
+            }
+          />
+        )}
+        {chatEnabled && (
+          <>
+            <p className="fieldset-help">
+              Choose which models appear in chat and which model is selected by default.
+            </p>
+            <div className="form-row-3">
+              <div className="form-group">
+                <label>
+                  Default Chat Model{' '}
+                  {chatModelsLoading && (
+                    <MiniLoadingSpinner variant="icon" size={12} title="Loading models..." />
+                  )}
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)' }}>
+                  <div style={{ flex: 1 }}>
+                    <ModelSelector
+                      models={filteredChatModels}
+                      selectedModelId={manualDefaultChatModel ?? automaticDefaultChatModel ?? ''}
+                      onModelChange={(selectedValue) =>
+                        setFormData({ ...formData, default_chat_model: selectedValue || null })
+                      }
+                      getModelSelectionKey={toScopedModelIdentifier}
+                      disabled={chatModelsLoading || filteredChatModels.length === 0}
+                      loading={chatModelsLoading}
+                      placeholder="Select default chat model"
+                      variant="full"
+                      triggerClassName="settings-control-height"
+                    />
+                  </div>
+                  {manualDefaultChatModel && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary settings-control-height"
+                      onClick={() => setFormData({ ...formData, default_chat_model: null })}
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+                <p className="field-help">
+                  {manualDefaultChatModel
+                    ? 'Manually selected. Click Reset to use the default.'
+                    : 'Using the default model. Select a different model to override.'}
+                </p>
+              </div>
+            </div>
+          </>
+        )}
+        <details id="setting-chat_advanced">
+          <summary className="settings-advanced-summary">Advanced</summary>
+          <div className="form-group" id="setting-available-models">
+            <label>Available Models</label>
             <button
               type="button"
               className="btn btn-secondary settings-control-height"
@@ -174,103 +235,21 @@ export function ChatModelsSettingsSection(props: ChatModelsSettingsSectionProps)
               Configure Chat Models
             </button>
             <p className="field-help">
-              Limit which models appear in the Chat view dropdown. Includes all configured providers
-              (OpenAI, Anthropic, OpenRouter, Ollama, llama.cpp, GitHub Copilot, OpenAI Codex).
+              Limit the shared model catalog used by Chat, User Space builder tasks, and /v1 model
+              configuration.
             </p>
           </div>
-
-          <div className="form-group" id="setting-userspace-build-model">
-            <label>Builder Model</label>
-            <ModelSelector
-              models={filteredChatModels}
-              selectedModelId={formData.userspace_build_model ?? ''}
-              onModelChange={(selectedValue) =>
-                setFormData({ ...formData, userspace_build_model: selectedValue || null })
-              }
-              getModelSelectionKey={toScopedModelIdentifier}
-              disabled={chatModelsLoading || filteredChatModels.length === 0}
-              loading={chatModelsLoading}
-              placeholder="Use normal model defaults"
-              variant="full"
-              triggerClassName="settings-control-height"
-            />
-            <p className="field-help">
-              Optional model for new User Space build tasks. It uses the live allowed model catalog
-              and changes take effect only after saving below.
-            </p>
-          </div>
-
-          {/* Default Chat Model configuration */}
-          <div className="form-group">
-            <label>
-              Default Chat Model
-              {chatModelsLoading && (
-                <>
-                  {' '}
-                  <MiniLoadingSpinner variant="icon" size={12} title="Loading models..." />
-                </>
-              )}
-            </label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)' }}>
-              <div style={{ flex: 1 }}>
-                <ModelSelector
-                  models={filteredChatModels}
-                  selectedModelId={manualDefaultChatModel ?? automaticDefaultChatModel ?? ''}
-                  onModelChange={(selectedValue) =>
-                    setFormData({
-                      ...formData,
-                      default_chat_model: selectedValue || null,
-                    })
-                  }
-                  getModelSelectionKey={toScopedModelIdentifier}
-                  disabled={chatModelsLoading || filteredChatModels.length === 0}
-                  loading={chatModelsLoading}
-                  placeholder="Select default chat model"
-                  variant="full"
-                  triggerClassName="settings-control-height"
-                />
-              </div>
-              {manualDefaultChatModel && (
-                <button
-                  type="button"
-                  className="btn btn-secondary settings-control-height"
-                  style={{ padding: '0 0.5rem', fontSize: '0.85em', whiteSpace: 'nowrap' }}
-                  title="Reset to default model"
-                  onClick={() => setFormData({ ...formData, default_chat_model: null })}
-                >
-                  Reset
-                </button>
-              )}
-            </div>
-            <p className="field-help">
-              {manualDefaultChatModel
-                ? 'Manually selected. Click Reset to use the default.'
-                : 'Using the default model. Select a different model to override.'}
-            </p>
-          </div>
-
-          {/* OpenAPI Models configuration */}
           <div className="form-group">
             <label>OpenAPI Models</label>
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-md)' }}>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.4rem',
-                  cursor: 'pointer',
-                  fontSize: '0.9em',
-                  margin: 0,
-                  whiteSpace: 'nowrap',
-                }}
-              >
+              <label>
                 <input
                   type="checkbox"
                   checked={formData.openapi_sync_chat_models !== false}
-                  onChange={(e) =>
-                    setFormData({ ...formData, openapi_sync_chat_models: e.target.checked })
+                  onChange={(event) =>
+                    setFormData({ ...formData, openapi_sync_chat_models: event.target.checked })
                   }
-                />
+                />{' '}
                 Mirror Chat Models
               </label>
               {formData.openapi_sync_chat_models === false && (
@@ -289,48 +268,34 @@ export function ChatModelsSettingsSection(props: ChatModelsSettingsSectionProps)
                 : 'Configure a separate list of models exposed via the /v1/models endpoint for external clients.'}
             </p>
           </div>
-        </div>
-
-        <div className="form-group" id="setting-available_models_cache_enabled">
-          <label
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.4rem',
-              cursor: 'pointer',
-              fontSize: '0.9em',
-              margin: 0,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={formData.available_models_cache_enabled !== false}
-              onChange={(e) =>
-                setFormData({ ...formData, available_models_cache_enabled: e.target.checked })
-              }
+          <div className="form-group" id="setting-available_models_cache_enabled">
+            <label>
+              <input
+                type="checkbox"
+                checked={formData.available_models_cache_enabled !== false}
+                onChange={(event) =>
+                  setFormData({ ...formData, available_models_cache_enabled: event.target.checked })
+                }
+              />{' '}
+              Cache Model Discovery
+            </label>
+            <p className="field-help">
+              Model lists from providers are cached briefly so repeated page loads stay fast.
+            </p>
+          </div>
+          {isAdmin && (
+            <OpenRouterCreditMonitor
+              formData={formData}
+              setFormData={setFormData}
+              hasManagementApiKey={hasManagementApiKey}
             />
-            Cache Model Discovery
-          </label>
-          <p className="field-help">
-            {formData.available_models_cache_enabled !== false
-              ? 'Model lists from providers are cached briefly (default 30s) so repeated page loads stay fast. Saved settings changes always refresh immediately.'
-              : 'Caching disabled: every request performs live provider discovery. Model pickers may load noticeably slower.'}
-          </p>
-        </div>
-
+          )}
+        </details>
         <div className="form-actions">
-          <button type="button" className="btn" onClick={handleSaveLlm} disabled={llmSaving}>
-            {llmSaving ? 'Saving...' : 'Save Chat Model Settings'}
+          <button type="button" className="btn" onClick={handleSaveChat} disabled={chatSaving}>
+            {chatSaving ? 'Saving...' : 'Save Chat Settings'}
           </button>
         </div>
-        {isAdmin && (
-          <OpenRouterCreditMonitor
-            formData={formData}
-            setFormData={setFormData}
-            hasManagementApiKey={hasManagementApiKey}
-          />
-        )}
       </fieldset>
     </SettingsAccordionSection>
   );

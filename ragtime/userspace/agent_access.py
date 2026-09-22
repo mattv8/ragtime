@@ -17,7 +17,6 @@ from typing import Any
 from fastapi import HTTPException
 
 from ragtime.core.database import get_db
-from ragtime.core.hosted_execution_policy import require_hosted_execution
 from ragtime.core.logging import get_logger
 from ragtime.userspace.service import userspace_service
 
@@ -200,9 +199,6 @@ async def resolve_agent_access_token(token: str) -> AgentAccessContext:
     user = await db.user.find_unique(where={"id": record.createdByUserId})
     if user is None:
         raise HTTPException(status_code=404, detail="Unknown agent access token")
-    # The legacy token family is an internal hosted-agent surface, not a BYO
-    # credential. Re-evaluate its minting user's effective policy on every use.
-    await require_hosted_execution(str(record.createdByUserId))
     try:
         await db.workspaceagentaccess.update(
             where={"id": record.id},

@@ -106,9 +106,9 @@ from ragtime.core.encryption import (
 )
 from ragtime.core.encryption_health import recheck_encryption_key_health
 from ragtime.core.event_bus import task_event_bus
+from ragtime.core.generation_policy import GenerationSurface, generation_context, require_chat_generation, require_userspace_generation
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
-from ragtime.core.hosted_execution_policy import require_hosted_execution
 from ragtime.core.http_timeouts import get_http_proxy_safe_timeout_seconds
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
@@ -9046,7 +9046,8 @@ async def _validate_generation_ready_after_user_message(
 ) -> str:
     """Validate generation readiness after the submitted user message is saved."""
     try:
-        await require_hosted_execution(caller_user_id, user_id)
+        require_generation = require_userspace_generation if workspace_id else require_chat_generation
+        await require_generation(caller_user_id, user_id)
         if not rag.is_ready:
             raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
         return await _validate_conversation_model_before_send(
@@ -12468,69 +12469,71 @@ async def _send_message_to_loaded_conversation(
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
     schedule_title_generation(conversation_id, user_message, user_id=user.id, protection_surface=protection_surface)
 
-    chat_history = await _build_chat_history_for_conversation(
-        conv.messages[:-1],
-        conversation_id=conversation_id,
-        user_id=user.id,
-        workspace_id=workspace_id,
-        model_id=conv.model,
-    )
-
-    current_user_message = parse_message_content(user_message)
-    if not isinstance(current_user_message, str):
-        current_user_message, _ = await rag.preprocess_message_content_async(
-            current_user_message,
+    generation_surface: GenerationSurface = "userspace" if conv.workspace_id else "chat"
+    with generation_context(generation_surface, user.id, conv.user_id):
+        chat_history = await _build_chat_history_for_conversation(
+            conv.messages[:-1],
             conversation_id=conversation_id,
             user_id=user.id,
-            owner_user_id=conv.user_id,
-            workspace_id=workspace_id,
+            workspace_id=conv.workspace_id,
             model_id=conv.model,
         )
 
-    input_est = _estimate_input_tokens(user_message, chat_history)
-    attempt_id = await create_usage_attempt(
-        user_id=user.id,
-        request_source="ui",
-        provider=conv.model or "",
-        model=conv.model or "",
-        conversation_id=conversation_id,
-        input_tokens=input_est,
-    )
-    current_time_context = _build_current_time_prompt_context(request)
-    ui_theme_context = _build_ui_theme_prompt_context(request)
-    try:
-        current_user_context = _build_current_user_prompt_context(user)
-        answer = await rag.process_query(
-            current_user_message,
-            chat_history,
-            blocked_tool_names=blocked_tool_names,
-            workspace_context=workspace_context,
-            conversation_model=conv.model,
-            conversation_id=conversation_id,
+        current_user_message = parse_message_content(user_message)
+        if not isinstance(current_user_message, str):
+            current_user_message, _ = await rag.preprocess_message_content_async(
+                current_user_message,
+                conversation_id=conversation_id,
+                user_id=user.id,
+                owner_user_id=conv.user_id,
+                workspace_id=conv.workspace_id,
+                model_id=conv.model,
+            )
+
+        input_est = _estimate_input_tokens(user_message, chat_history)
+        attempt_id = await create_usage_attempt(
             user_id=user.id,
-            owner_user_id=conv.user_id,
-            current_user_context=current_user_context,
-            current_time_context=current_time_context,
-            ui_theme_context=ui_theme_context,
-            message_index=len(conv.messages),
-            disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
-            protection_surface=protection_surface,
-        )
-        output_est = _estimate_output_tokens(answer)
-        await finalize_usage_attempt(
-            attempt_id,
-            status="completed",
-            output_tokens=output_est,
+            request_source="ui",
+            provider=conv.model or "",
+            model=conv.model or "",
+            conversation_id=conversation_id,
             input_tokens=input_est,
         )
-    except Exception as e:
-        logger.exception("Error processing message")
-        await finalize_usage_attempt(
-            attempt_id,
-            status="failed",
-            failure_reason=str(e),
-        )
-        answer = f"Error: {str(e)}"
+        current_time_context = _build_current_time_prompt_context(request)
+        ui_theme_context = _build_ui_theme_prompt_context(request)
+        try:
+            current_user_context = _build_current_user_prompt_context(user)
+            answer = await rag.process_query(
+                current_user_message,
+                chat_history,
+                blocked_tool_names=blocked_tool_names,
+                workspace_context=workspace_context,
+                conversation_model=conv.model,
+                conversation_id=conversation_id,
+                user_id=user.id,
+                owner_user_id=conv.user_id,
+                current_user_context=current_user_context,
+                current_time_context=current_time_context,
+                ui_theme_context=ui_theme_context,
+                message_index=len(conv.messages),
+                disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
+                protection_surface=protection_surface,
+            )
+            output_est = _estimate_output_tokens(answer)
+            await finalize_usage_attempt(
+                attempt_id,
+                status="completed",
+                output_tokens=output_est,
+                input_tokens=input_est,
+            )
+        except Exception as e:
+            logger.exception("Error processing message")
+            await finalize_usage_attempt(
+                attempt_id,
+                status="failed",
+                failure_reason=str(e),
+            )
+            answer = f"Error: {str(e)}"
 
     updated_conversation = await repository.add_message(
         conversation_id,
@@ -15160,24 +15163,28 @@ async def send_message_stream(
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
     schedule_title_generation(conversation_id, user_message, user_id=user.id)
 
-    # Build chat history for RAG
-    chat_history = await _build_chat_history_for_conversation(
-        conv.messages[:-1],
-        conversation_id=conversation_id,
-        user_id=user.id,
-        workspace_id=workspace_id,
-        model_id=conv.model,
-    )
-
-    current_user_message = parse_message_content(user_message)
-    if not isinstance(current_user_message, str):
-        current_user_message, _ = await rag.preprocess_message_content_async(
-            current_user_message,
+    generation_surface: GenerationSurface = "userspace" if conv.workspace_id else "chat"
+    # History expansion can invoke the configured model for attachments, so it
+    # must use the same persisted-conversation scope as the main turn.
+    with generation_context(generation_surface, user.id, conv.user_id):
+        chat_history = await _build_chat_history_for_conversation(
+            conv.messages[:-1],
             conversation_id=conversation_id,
             user_id=user.id,
-            workspace_id=workspace_id,
+            workspace_id=conv.workspace_id,
             model_id=conv.model,
         )
+
+        current_user_message = parse_message_content(user_message)
+        if not isinstance(current_user_message, str):
+            current_user_message, _ = await rag.preprocess_message_content_async(
+                current_user_message,
+                conversation_id=conversation_id,
+                user_id=user.id,
+                owner_user_id=conv.user_id,
+                workspace_id=conv.workspace_id,
+                model_id=conv.model,
+            )
 
     input_est = _estimate_input_tokens(user_message, chat_history)
     stream_attempt_id = await create_usage_attempt(
@@ -15456,7 +15463,9 @@ async def send_message_stream(
             owner_user_id=conv.user_id,
             workspace_id=workspace_id,
         )
-        with bind_content_protection_context(protection_context):
+        # StreamingResponse consumes this generator after the route returns.
+        # Bind generation policy for the iterator lifetime, not response setup.
+        with generation_context(generation_surface, user.id, conv.user_id), bind_content_protection_context(protection_context):
             async with aclosing(_stream_response()) as stream:
                 async for chunk in stream:
                     yield chunk

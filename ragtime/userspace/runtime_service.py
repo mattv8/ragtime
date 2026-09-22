@@ -97,6 +97,8 @@ _RUNTIME_BRIDGE_ACTIVE_SESSION_STATES = {"starting", "running"}
 # Full mounted base path for the runtime-bridge execute route in
 # ragtime/userspace/runtime_routes.py.
 _RUNTIME_BRIDGE_ROUTE_BASE = "/indexes/userspace/runtime-bridge"
+_RUNTIME_BRIDGE_TOKEN_FILE = "/run/.ragtime-bridge/token"
+_RUNTIME_BRIDGE_RESERVED_ENV_KEYS = frozenset({"RAGTIME_BRIDGE_URL", "RAGTIME_BRIDGE_TOKEN", "RAGTIME_BRIDGE_TOKEN_FILE"})
 _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN = "userspace-preview.lvh.me"
 _RUNTIME_PREVIEW_UPSTREAM_CACHE_TTL_SECONDS = 300
 _RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS = 2.0
@@ -601,7 +603,7 @@ class UserSpaceRuntimeService:
         origin = self._runtime_bridge_control_plane_origin().rstrip("/")
         return {
             "RAGTIME_BRIDGE_URL": f"{origin}{_RUNTIME_BRIDGE_ROUTE_BASE}",
-            "RAGTIME_BRIDGE_TOKEN": self.build_runtime_bridge_token(workspace_id, session_id),
+            "RAGTIME_BRIDGE_TOKEN_FILE": _RUNTIME_BRIDGE_TOKEN_FILE,
         }
 
     def _decode_signed_token(self, token: str, *, invalid_detail: str) -> dict[str, Any]:
@@ -706,23 +708,16 @@ class UserSpaceRuntimeService:
         workspace_id: str,
         session_id: str,
         base_env: dict[str, str],
-        *,
-        bridge_credential_mode: str = "env",
     ) -> dict[str, str]:
-        bridge_env = self._build_runtime_bridge_env(workspace_id, session_id)
-        if bridge_credential_mode == "worker_file":
-            bridge_env.pop("RAGTIME_BRIDGE_TOKEN", None)
-        return {**base_env, **bridge_env}
+        return {
+            **{key: value for key, value in base_env.items() if key not in _RUNTIME_BRIDGE_RESERVED_ENV_KEYS},
+            **self._build_runtime_bridge_env(workspace_id, session_id),
+        }
 
-    async def _workspace_bridge_credential_mode(self, workspace_id: str) -> str:
-        """Read platform mode, retaining env compatibility before DB startup in unit paths."""
-        try:
-            db = await get_db()
-            workspace = await db.workspace.find_unique(where={"id": workspace_id})
-        except RuntimeError:
-            return "env"
-        mode = str(getattr(workspace, "bridgeCredentialMode", "env") or "env")
-        return mode if mode in {"env", "worker_file"} else "env"
+    @staticmethod
+    def _strip_runtime_bridge_reserved_env(base_env: dict[str, Any]) -> dict[str, Any]:
+        """Keep caller-owned environment metadata from overriding platform identity."""
+        return {key: value for key, value in base_env.items() if key not in _RUNTIME_BRIDGE_RESERVED_ENV_KEYS}
 
     def verify_preview_token(self, token: str, *, expected_kind: str) -> dict[str, Any]:
         claims = self._decode_signed_token(token, invalid_detail="Invalid preview token")
@@ -847,10 +842,8 @@ class UserSpaceRuntimeService:
         token_session_id = str(raw_credential.get("session_id") or "").strip() or None
         issued_at = self._parse_runtime_bridge_datetime(raw_credential.get("issued_at"))
         expires_at = self._parse_runtime_bridge_datetime(raw_credential.get("expires_at"))
-        mode = str(raw_credential.get("mode") or "env")
+        mode = str(raw_credential.get("mode") or "").strip()
         revision = raw_credential.get("revision", 0)
-        if mode not in {"env", "worker_file"}:
-            mode = "env"
         if not isinstance(revision, int) or revision < 0:
             revision = 0
         last_success_at = await self._get_latest_runtime_bridge_success_at(session.workspace_id, session.id) if include_last_success else None
@@ -864,11 +857,10 @@ class UserSpaceRuntimeService:
             "last_success_at": last_success_at,
         }
 
-        if token_kind != _RUNTIME_BRIDGE_TOKEN_KIND or workspace_id != session.workspace_id or not bridge_url or not token_session_id:
+        if mode != "worker_file" or token_kind != _RUNTIME_BRIDGE_TOKEN_KIND or workspace_id != session.workspace_id or not bridge_url or not token_session_id:
             return UserSpaceRuntimeBridgeStatus(
                 state="invalid",
-                detail="Runtime bridge credential metadata is invalid",
-                mode=cast(Any, mode),
+                detail="Runtime bridge credential metadata is invalid; perform a full runtime-session restart",
                 revision=revision,
                 **base_kwargs,
             )
@@ -876,7 +868,7 @@ class UserSpaceRuntimeService:
             return UserSpaceRuntimeBridgeStatus(
                 state="expired",
                 detail="Runtime bridge credential has expired",
-                mode=cast(Any, mode),
+                mode="worker_file",
                 revision=revision,
                 **base_kwargs,
             )
@@ -884,11 +876,11 @@ class UserSpaceRuntimeService:
             return UserSpaceRuntimeBridgeStatus(
                 state="session_mismatch",
                 detail="Runtime bridge credential is bound to a different session",
-                mode=cast(Any, mode),
+                mode="worker_file",
                 revision=revision,
                 **base_kwargs,
             )
-        return UserSpaceRuntimeBridgeStatus(state="healthy", mode=cast(Any, mode), revision=revision, **base_kwargs)
+        return UserSpaceRuntimeBridgeStatus(state="healthy", mode="worker_file", revision=revision, **base_kwargs)
 
     async def _get_workspace_preview_bridge_readiness_lock(
         self,
@@ -1069,10 +1061,14 @@ class UserSpaceRuntimeService:
 
             self._workspace_preview_bridge_last_recovery_attempt_ts[session.workspace_id] = now_ts
 
-            if status.mode == "worker_file":
-                await self._refresh_file_bridge_credential(session, status)
-            else:
-                await self.restart_runtime_env_vars_and_wait(session.workspace_id, timeout_seconds=60.0)
+            if status.state == "unavailable":
+                raise HTTPException(status_code=503, detail="Runtime bridge provider status is unavailable; retry shortly")
+            if status.state in {"missing", "invalid", "session_mismatch"}:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Runtime bridge metadata cannot be refreshed; perform a full runtime-session restart",
+                )
+            await self._refresh_file_bridge_credential(session, status)
 
             active = await self._get_active_session_row(session.workspace_id)
             if active is None:
@@ -1103,7 +1099,7 @@ class UserSpaceRuntimeService:
             raise HTTPException(status_code=409, detail="Runtime bridge session changed during refresh")
         provider_status = await self._runtime_provider_get_status(session.provider_session_id, max_age_seconds=0)
         raw = (provider_status or {}).get("bridge_credential")
-        if not isinstance(raw, dict) or str(raw.get("mode") or "env") != "worker_file":
+        if not isinstance(raw, dict) or str(raw.get("mode") or "").strip() != "worker_file":
             raise HTTPException(status_code=409, detail="Runtime worker does not support file bridge credentials")
         revision = raw.get("revision", 0)
         if not isinstance(revision, int) or revision < 0:
@@ -1151,30 +1147,6 @@ class UserSpaceRuntimeService:
             except HTTPException:
                 provider_status = None
         return await self._get_runtime_bridge_status_for_session(session, provider_status)
-
-    async def get_bridge_credential_mode(self, workspace_id: str, user_id: str, *, is_admin: bool = False) -> dict[str, Any]:
-        await userspace_service.enforce_workspace_role(workspace_id, user_id, "owner", is_admin=is_admin)
-        db = await get_db()
-        workspace = await db.workspace.find_unique(where={"id": workspace_id})
-        if workspace is None:
-            raise HTTPException(status_code=404, detail="Workspace not found")
-        mode = str(getattr(workspace, "bridgeCredentialMode", "env") or "env")
-        return {"mode": mode if mode in {"env", "worker_file"} else "env", "requires_restart": True, "supported": True}
-
-    async def set_bridge_credential_mode(self, workspace_id: str, user_id: str, mode: str, *, is_admin: bool = False) -> dict[str, Any]:
-        await userspace_service.enforce_workspace_role(workspace_id, user_id, "owner", is_admin=is_admin)
-        if mode not in {"env", "worker_file"}:
-            raise HTTPException(status_code=400, detail="Unsupported bridge credential mode")
-        if mode == "worker_file":
-            active = await self._get_active_session_row(workspace_id)
-            if active is not None:
-                status = await self._runtime_provider_get_status(getattr(active, "providerSessionId", None), max_age_seconds=0)
-                capabilities = (status or {}).get("runtime_capabilities") or (status or {}).get("capabilities") or {}
-                if not isinstance(capabilities, dict) or capabilities.get("bridge_credential_file") is not True:
-                    raise HTTPException(status_code=409, detail="Active runtime worker does not support file bridge credentials")
-        db = await get_db()
-        await db.workspace.update(where={"id": workspace_id}, data={"bridgeCredentialMode": mode})
-        return {"mode": mode, "requires_restart": True, "supported": True}
 
     async def refresh_runtime_bridge_credentials(
         self,
@@ -1984,26 +1956,20 @@ class UserSpaceRuntimeService:
             userspace_service.get_workspace_runtime_environment_visibility(workspace_id),
             userspace_service.resolve_workspace_mounts_for_runtime(workspace_id),
         )
-        credential_mode = await self._workspace_bridge_credential_mode(workspace_id)
-        if credential_mode not in {"env", "worker_file"}:
-            credential_mode = "env"
-        bridge_env = self._build_runtime_bridge_env(workspace_id, session_id)
-        bridge_token = bridge_env.pop("RAGTIME_BRIDGE_TOKEN")
-        if credential_mode == "env":
-            workspace_env = {**workspace_env, **bridge_env, "RAGTIME_BRIDGE_TOKEN": bridge_token}
-        else:
-            workspace_env = {key: value for key, value in workspace_env.items() if key != "RAGTIME_BRIDGE_TOKEN"}
-            workspace_env = {**workspace_env, **bridge_env}
+        workspace_env = self._finalize_workspace_env(workspace_id, session_id, workspace_env)
+        workspace_env_visibility = self._strip_runtime_bridge_reserved_env(workspace_env_visibility)
+        bridge_token = self.build_runtime_bridge_token(workspace_id, session_id)
         payload: dict[str, Any] = {
             "workspace_id": workspace_id,
             "leased_by_user_id": leased_by_user_id,
             "workspace_env": workspace_env,
             "workspace_env_visibility": workspace_env_visibility,
             "workspace_mounts": workspace_mounts,
-            "bridge_credential_mode": credential_mode,
+            "bridge_credential_mode": "worker_file",
+            # The manager->worker handoff is private and this field is excluded
+            # from wire serialization/logging by the runtime manager models.
+            "bridge_token_file_initial_token": bridge_token,
         }
-        if credential_mode == "worker_file":
-            payload["bridge_token_file_initial_token"] = bridge_token
         if existing_provider_session_id:
             payload["provider_session_id"] = existing_provider_session_id
 
@@ -2077,7 +2043,6 @@ class UserSpaceRuntimeService:
         workspace_env: dict[str, str] | None = None,
         workspace_env_visibility: dict[str, bool] | None = None,
         workspace_mounts: list[dict[str, Any]] | None = None,
-        bridge_credential_mode: str | None = None,
     ) -> dict[str, Any] | None:
         if not provider_session_id:
             return None
@@ -2091,8 +2056,6 @@ class UserSpaceRuntimeService:
                 json_payload["workspace_env_visibility"] = workspace_env_visibility
             if workspace_mounts is not None:
                 json_payload["workspace_mounts"] = workspace_mounts
-            if bridge_credential_mode is not None:
-                json_payload["bridge_credential_mode"] = bridge_credential_mode
         return await self._runtime_manager_request(
             "POST",
             f"/sessions/{provider_session_id}/restart",
@@ -3255,38 +3218,36 @@ class UserSpaceRuntimeService:
             userspace_service.get_workspace_runtime_environment(workspace_id),
             userspace_service.get_workspace_runtime_environment_visibility(workspace_id),
         )
-        # An env refresh must follow the SESSION's active delivery mode, not the
-        # workspace's configured mode: a mode change only activates when a new
-        # runtime session starts. Finalizing with a flipped-but-inactive
-        # worker_file mode would strip the env token from an env-mode session
-        # and break its bridge until a full session restart.
-        mode = await self._active_session_bridge_credential_mode(session)
-        workspace_env = self._finalize_workspace_env(workspace_id, session.id, workspace_env, bridge_credential_mode=mode)
+        workspace_env = self._finalize_workspace_env(workspace_id, session.id, workspace_env)
+        workspace_env_visibility = self._strip_runtime_bridge_reserved_env(workspace_env_visibility)
         await self._runtime_provider_restart_devserver(
             session.provider_session_id,
             workspace_env=workspace_env,
             workspace_env_visibility=workspace_env_visibility,
-            bridge_credential_mode=mode,
         )
+        await self._refresh_bridge_after_env_refresh(session)
 
-    async def _active_session_bridge_credential_mode(self, session: UserSpaceRuntimeSession) -> str:
-        """Return the delivery mode the running session actually uses.
-
-        Falls back to ``env`` when the provider does not report credential
-        metadata; the worker independently refuses a raw env token for a
-        ``worker_file`` session, so an env fallback cannot re-expose it.
-        """
-        try:
-            provider_status = await self._runtime_provider_get_status(
-                session.provider_session_id,
-                max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
-                allow_stale_on_error=True,
+    async def _refresh_bridge_after_env_refresh(self, session: UserSpaceRuntimeSession) -> None:
+        """Reobserve after an app env refresh without guessing legacy delivery."""
+        provider_status = await self._runtime_provider_get_status(
+            session.provider_session_id,
+            max_age_seconds=0,
+            allow_stale_on_error=False,
+        )
+        status = await self._get_runtime_bridge_status_for_session(
+            session,
+            provider_status,
+            include_last_success=False,
+        )
+        if status.state == "unavailable":
+            raise HTTPException(status_code=503, detail="Runtime bridge provider status is unavailable; retry shortly")
+        if status.state in {"missing", "invalid", "session_mismatch"}:
+            raise HTTPException(
+                status_code=409,
+                detail="Runtime bridge metadata cannot be refreshed; perform a full runtime-session restart",
             )
-        except HTTPException:
-            return "env"
-        credential = (provider_status or {}).get("bridge_credential")
-        mode = str((credential or {}).get("mode") or "env") if isinstance(credential, dict) else "env"
-        return mode if mode in {"env", "worker_file"} else "env"
+        if self._workspace_preview_bridge_status_needs_recovery(status):
+            await self._refresh_file_bridge_credential(session, status)
 
     async def refresh_runtime_env_vars_for_all_active_workspaces(self) -> None:
         """Best-effort env-var refresh for all active runtime sessions."""

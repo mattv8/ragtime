@@ -264,6 +264,7 @@ class SwitchTests(unittest.TestCase):
             switch.run()
         override = switch.override.read_text()
         self.assertNotIn("runtime-s3:", override)
+        self.assertNotIn("keystore:", override)
         self.assertNotIn("object-storage-key", override)
         self.assertNotIn("runtime-s3", switch.services)
 

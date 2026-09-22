@@ -5,7 +5,7 @@ from unittest import mock
 
 from ragtime.rag.components import RAGComponents
 from tests.content_protection_support import use_disabled_content_protection
-from tests.hosted_execution_test_support import enabled_hosted_execution_policy
+from tests.generation_policy_test_support import enabled_generation_policy
 
 
 class _EventExecutor:
@@ -68,7 +68,7 @@ class UserSpaceExecStreamTimeoutTests(unittest.IsolatedAsyncioTestCase):
             return await original_wait_for(awaitable, timeout=timeout)
 
         with (
-            enabled_hosted_execution_policy(),
+            enabled_generation_policy(surface="userspace"),
             mock.patch.object(rag, "agent_executor", executor),
             # The terminal began when 1800 was allowed, then the administrator
             # lowered the maximum before the event-stream watchdog armed.
@@ -147,7 +147,7 @@ class UserSpaceExecStreamTimeoutTests(unittest.IsolatedAsyncioTestCase):
             return await original_wait_for(awaitable, timeout=timeout)
 
         with (
-            enabled_hosted_execution_policy(),
+            enabled_generation_policy(surface="userspace"),
             executor_patch,
             mock.patch(
                 "ragtime.rag.components.get_app_settings",

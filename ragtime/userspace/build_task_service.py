@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from ragtime.core.database import get_db
-from ragtime.core.hosted_execution_policy import require_hosted_execution
+from ragtime.core.generation_policy import require_userspace_generation
 from ragtime.core.logging import get_logger
 from ragtime.indexer.repository import repository
 from ragtime.indexer.task_policy import make_execution_policy
@@ -231,7 +231,7 @@ class WorkspaceBuildTaskService:
         acting_user_id: str,
         brief: BuildBriefInput,
     ) -> dict[str, Any]:
-        await require_hosted_execution(acting_user_id)
+        await require_userspace_generation(acting_user_id)
         user = await self._load_prisma_user(acting_user_id)
         workspace = await self._enforce_editor(workspace_id, user)
         await self._validate_brief(workspace, brief, user)
@@ -473,7 +473,7 @@ class WorkspaceBuildTaskService:
         from ragtime.indexer.routes import _send_background_message_to_loaded_conversation
 
         try:
-            await require_hosted_execution(acting_user_id, getattr(conversation, "user_id", None))
+            await require_userspace_generation(acting_user_id, getattr(conversation, "user_id", None))
             result = await _send_background_message_to_loaded_conversation(
                 conversation,
                 SendMessageRequest(message=cleaned),

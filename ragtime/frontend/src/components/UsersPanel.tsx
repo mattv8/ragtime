@@ -571,18 +571,21 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   const [usageLoading, setUsageLoading] = useState(false);
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const handleHostedChatPolicyChange = useCallback(
-    async (userId: string, value: string) => {
-      setActionLoading(`hosted-chat-${userId}`);
+  const handleGenerationPolicyChange = useCallback(
+    async (
+      userId: string,
+      policy: 'chat_enabled' | 'userspace_generation_enabled',
+      value: string,
+    ) => {
+      setActionLoading(`generation-policy-${userId}`);
       try {
-        const updated = await api.updateUserHostedChatEnabled(
-          userId,
-          value === 'inherit' ? null : value === 'enabled',
-        );
+        const updated = await api.updateUserGenerationPolicy(userId, {
+          [policy]: value === 'inherit' ? null : value === 'enabled',
+        });
         setUsers((current) => current.map((user) => (user.id === updated.id ? updated : user)));
-        toast.success('Hosted chat policy updated');
+        toast.success('Generation policy updated');
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : 'Failed to update hosted chat policy');
+        toast.error(error instanceof Error ? error.message : 'Failed to update generation policy');
       } finally {
         setActionLoading(null);
       }
@@ -590,7 +593,9 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     [toast],
   );
   const [showCreateLocalUserModal, setShowCreateLocalUserModal] = useState(false);
-  const [showManageAuthGroupsModal, setShowManageAuthGroupsModal] = useState(false);
+  const [showManageAuthGroupsModal, setShowManageAuthGroupsModal] = useState(
+    () => window.location.hash === '#manage-groups',
+  );
 
   const [trendTab, setTrendTab] = useState<TrendTab>('reliability');
   const [mcpUsageTab, setMcpUsageTab] = useState<McpUsageTab>('chart');
@@ -748,6 +753,19 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       setLoading(false);
     }
   }, [loadAuthGroups, loadUsers, loadWorkspaces, toast]);
+
+  const policyLinkFocused = useRef(false);
+  useEffect(() => {
+    if (loading || policyLinkFocused.current || window.location.hash !== '#user-policies') {
+      return;
+    }
+
+    const policyColumn = document.getElementById('user-policies');
+    if (!policyColumn) return;
+    policyLinkFocused.current = true;
+    policyColumn?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    policyColumn?.focus();
+  }, [loading]);
 
   const loadUsageData = useCallback(
     async (d: number) => {
@@ -2163,6 +2181,8 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
 
   const isSelf = (userId: string) => currentUser?.id === userId;
   const contentProtectionEnabled = contentProtectionConfig?.enabled ?? false;
+  const contentProtectionKnownDisabled =
+    contentProtectionConfig !== null && !contentProtectionEnabled;
   const contentProtectionModeForUser = (userId: string): ContentProtectionOverrideMode =>
     contentProtectionConfig ? userOverrideMode(contentProtectionConfig, userId) : 'inherit';
 
@@ -2332,7 +2352,11 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       { key: 'role', label: 'Role' },
       {
         key: 'actions',
-        label: 'Actions',
+        label: (
+          <span id="user-policies" tabIndex={-1}>
+            Actions
+          </span>
+        ),
         headerClassName: 'num',
         cellClassName: 'num',
         sortable: false,
@@ -2673,27 +2697,40 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                 >
                                   <span className="users-subnum">
                                     Chat:{' '}
-                                    {user.hosted_chat_enabled === null ||
-                                    user.hosted_chat_enabled === undefined
+                                    {user.chat_enabled === null || user.chat_enabled === undefined
                                       ? 'inherit'
-                                      : user.hosted_chat_enabled
+                                      : user.chat_enabled
                                         ? 'enabled'
-                                        : 'disabled'}{' '}
-                                    ·{' '}
-                                    {contentProtectionLoadFailed
-                                      ? 'Protection: —'
-                                      : `Protection: ${contentProtectionModeForUser(user.id).replace('_classify', '')}`}
+                                        : 'disabled'}
+                                    {' · User Space: '}
+                                    {user.userspace_generation_enabled === null ||
+                                    user.userspace_generation_enabled === undefined
+                                      ? 'inherit'
+                                      : user.userspace_generation_enabled
+                                        ? 'enabled'
+                                        : 'disabled'}
+                                    {!contentProtectionKnownDisabled && (
+                                      <>
+                                        {' '}
+                                        ·{' '}
+                                        {contentProtectionLoadFailed
+                                          ? 'Protection: —'
+                                          : `Protection: ${contentProtectionModeForUser(user.id).replace('_classify', '')}`}
+                                      </>
+                                    )}
                                   </span>
-                                  <button
-                                    id={`user-policies-button-${user.id}`}
-                                    type="button"
-                                    className="btn btn-sm btn-secondary users-btn-inline"
-                                    data-user-policies-button={user.id}
-                                    title="User policies"
-                                    onClick={() => setPoliciesUserId(user.id)}
-                                  >
-                                    <Shield size={13} /> User policies
-                                  </button>
+                                  {(!isRowSelf || contentProtectionEnabled) && (
+                                    <button
+                                      id={`user-policies-button-${user.id}`}
+                                      type="button"
+                                      className="btn btn-sm btn-secondary users-btn-inline"
+                                      data-user-policies-button={user.id}
+                                      title="User policies"
+                                      onClick={() => setPoliciesUserId(user.id)}
+                                    >
+                                      <Shield size={13} /> User policies
+                                    </button>
+                                  )}
                                   {!isRowSelf && (
                                     <>
                                       <button
@@ -3273,12 +3310,12 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
             <UserPoliciesModal
               user={policyUser}
               isSelf={isSelf(policyUser.id)}
-              actionLoading={actionLoading === `hosted-chat-${policyUser.id}`}
+              actionLoading={actionLoading === `generation-policy-${policyUser.id}`}
               contentProtectionAvailable={contentProtectionConfig !== null}
               contentProtectionEnabled={contentProtectionEnabled}
               contentProtectionMode={contentProtectionModeForUser(policyUser.id)}
               onClose={() => setPoliciesUserId(null)}
-              onHostedChatPolicyChange={handleHostedChatPolicyChange}
+              onGenerationPolicyChange={handleGenerationPolicyChange}
               onContentProtectionConfigChange={setContentProtectionConfig}
               onSuccess={toast.success}
               onError={toast.error}

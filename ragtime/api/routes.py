@@ -19,7 +19,7 @@ from ragtime.config import settings
 from ragtime.content_protection.external import authorize_external_content, public_error_detail
 from ragtime.core.api_accounting import log_api_request
 from ragtime.core.app_settings import get_app_settings, get_health_llm_settings
-from ragtime.core.hosted_execution_policy import require_hosted_execution
+from ragtime.core.generation_policy import generation_context
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
     compose_model_display_label,
@@ -640,9 +640,6 @@ async def chat_completions(request: ChatCompletionRequest):
     Main chat endpoint with RAG and tool calling.
     OpenAI API compatible for use with OpenWebUI and similar tools.
     """
-    # /v1 has no caller identity (and can be anonymous when API_KEY is unset),
-    # so it is deliberately governed by the global policy only.
-    await require_hosted_execution()
     try:
         await authorize_external_content(
             request.model_dump(mode="json"),
@@ -762,11 +759,12 @@ async def chat_completions(request: ChatCompletionRequest):
         )
 
     # Non-streaming: process the query normally
-    answer = await rag.process_query(
-        user_message,
-        chat_history,
-        conversation_model=effective_model,
-    )
+    with generation_context("v1"):
+        answer = await rag.process_query(
+            user_message,
+            chat_history,
+            conversation_model=effective_model,
+        )
     try:
         await authorize_external_content(
             answer,
@@ -815,7 +813,10 @@ async def _stream_authorized_response(
     """Buffer a complete /v1 answer before exposing any model-authored bytes."""
     chunk_id = f"chatcmpl-{int(time.time())}"
     try:
-        answer = await rag.process_query(user_message, chat_history, conversation_model=model)
+        # Streaming generators execute after the route has returned, so bind
+        # the trusted /v1 surface here rather than relying on route context.
+        with generation_context("v1"):
+            answer = await rag.process_query(user_message, chat_history, conversation_model=model)
         await authorize_external_content(
             answer,
             direction="outbound",

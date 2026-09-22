@@ -18,7 +18,7 @@ public final class Main {
   private Main() { }
   public static void main(String[] args) throws Exception {
     Path root=Path.of(env("STORAGE_ROOT","/data/_userspace/_object_storage"));
-    Path keyFile=Path.of(env("STORAGE_KEY_FILE","/data/.encryption_key"));
+    Path keyFile=Path.of(env("STORAGE_KEY_FILE","/run/ragtime-keystore/.encryption_key"));
     String key=waitForEncryptionKey(keyFile);
     Registry registry=new Registry(root,key); StorageEngine engine=new StorageEngine(registry,root,key);
     BlobStore denyAll=new DenyAllBlobStore(engine.physicalStore("local"));

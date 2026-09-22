@@ -67,7 +67,11 @@ from ragtime.core.auth import (
 from ragtime.core.auth_methods import build_auth_method_statuses
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.hosted_execution_policy import effective_hosted_execution_enabled, hosted_execution_enabled
+from ragtime.core.generation_policy import (
+    chat_generation_enabled,
+    effective_generation_enabled,
+    userspace_generation_enabled,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.mcp_accounting import (
     get_mcp_daily_trend,
@@ -399,8 +403,10 @@ class UserResponse(BaseModel):
     mfa_enabled: bool = False
     mfa_required: bool = False
     recovery_codes_remaining: int = 0
-    hosted_chat_enabled: Optional[bool] = None
-    hosted_chat_enabled_effective: bool = True
+    chat_enabled: Optional[bool] = None
+    userspace_generation_enabled: Optional[bool] = None
+    chat_enabled_effective: bool = False
+    userspace_generation_enabled_effective: bool = False
 
 
 class UserListResponse(BaseModel):
@@ -435,10 +441,14 @@ class UpdateUserRoleRequest(BaseModel):
     )
 
 
-class UpdateUserHostedChatRequest(BaseModel):
-    hosted_chat_enabled: Optional[bool] = Field(
+class UpdateUserGenerationPolicyRequest(BaseModel):
+    chat_enabled: Optional[bool] = Field(
         default=None,
-        description="Per-user hosted execution override; null inherits the global policy.",
+        description="Per-user Chat generation override; null inherits the global policy.",
+    )
+    userspace_generation_enabled: Optional[bool] = Field(
+        default=None,
+        description="Per-user User Space generation override; null inherits the global policy.",
     )
 
 
@@ -810,7 +820,8 @@ class AuthStatusResponse(BaseModel):
         default=DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT,
         description="Automatically compact the conversation once effective context usage reaches this percentage. Set to 100 to disable auto-compaction.",
     )
-    hosted_chat_enabled: bool = Field(default=True, description="Effective current-user hosted execution capability.")
+    chat_enabled: bool = Field(default=False, description="Effective current-user Chat generation capability.")
+    userspace_generation_enabled: bool = Field(default=False, description="Effective current-user User Space generation capability.")
 
 
 class DebugTotpCodeResponse(BaseModel):
@@ -864,8 +875,10 @@ async def _user_response(user: User) -> UserResponse:
         mfa_enabled=mfa_enabled,
         mfa_required=mfa_required,
         recovery_codes_remaining=recovery_codes_remaining,
-        hosted_chat_enabled=getattr(user, "hostedChatEnabled", None),
-        hosted_chat_enabled_effective=await hosted_execution_enabled(user.id),
+        chat_enabled=getattr(user, "chatEnabled", None),
+        userspace_generation_enabled=getattr(user, "userspaceGenerationEnabled", None),
+        chat_enabled_effective=await chat_generation_enabled(user.id),
+        userspace_generation_enabled_effective=await userspace_generation_enabled(user.id),
     )
 
 
@@ -921,8 +934,9 @@ async def _bulk_user_responses(users: list[User]) -> list[UserResponse]:
     db = await get_db()
     auth_config = await get_auth_provider_config()
     user_ids = [user.id for user in users]
-    hosted_settings = await db.appsettings.find_unique(where={"id": "default"})
-    hosted_globally_enabled = bool(hosted_settings and getattr(hosted_settings, "hostedChatEnabled", False))
+    generation_settings = await db.appsettings.find_unique(where={"id": "default"})
+    chat_globally_enabled = bool(generation_settings and getattr(generation_settings, "chatEnabled", False))
+    userspace_globally_enabled = bool(generation_settings and getattr(generation_settings, "userspaceGenerationEnabled", False))
 
     memberships = await db.authgroupmembership.find_many(where={"userId": {"in": user_ids}})
     memberships_by_user_id: dict[str, list[Any]] = {}
@@ -974,10 +988,11 @@ async def _bulk_user_responses(users: list[User]) -> list[UserResponse]:
                     webauthn_enabled_user_ids,
                 ),
                 recovery_codes_remaining=recovery_code_counts.get(user.id, 0),
-                hosted_chat_enabled=getattr(user, "hostedChatEnabled", None),
-                hosted_chat_enabled_effective=effective_hosted_execution_enabled(
-                    hosted_globally_enabled,
-                    getattr(user, "hostedChatEnabled", None),
+                chat_enabled=getattr(user, "chatEnabled", None),
+                userspace_generation_enabled=getattr(user, "userspaceGenerationEnabled", None),
+                chat_enabled_effective=effective_generation_enabled(chat_globally_enabled, getattr(user, "chatEnabled", None)),
+                userspace_generation_enabled_effective=effective_generation_enabled(
+                    userspace_globally_enabled, getattr(user, "userspaceGenerationEnabled", None)
                 ),
             )
         )
@@ -1409,7 +1424,8 @@ async def get_auth_status(
     authenticated_webgl_background_enabled = DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED
     chat_compaction_threshold_percent = DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT
     chat_auto_compaction_threshold_percent = DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT
-    hosted_chat_enabled = True
+    chat_enabled = False
+    userspace_generation_enabled_value = False
 
     try:
         # Invalidate the settings cache before reading to ensure fresh values.
@@ -1451,7 +1467,8 @@ async def get_auth_status(
                 ),
             ),
         )
-        hosted_chat_enabled = bool(app_settings.get("hosted_chat_enabled", True))
+        chat_enabled = bool(app_settings.get("chat_enabled", False))
+        userspace_generation_enabled_value = bool(app_settings.get("userspace_generation_enabled", False))
     except Exception as exc:
         logger.debug("Failed to load server branding for auth status: %s", exc)
 
@@ -1477,7 +1494,8 @@ async def get_auth_status(
         authenticated_webgl_background_enabled=authenticated_webgl_background_enabled,
         chat_compaction_threshold_percent=chat_compaction_threshold_percent,
         chat_auto_compaction_threshold_percent=chat_auto_compaction_threshold_percent,
-        hosted_chat_enabled=(await hosted_execution_enabled(current_user.id) if current_user else hosted_chat_enabled),
+        chat_enabled=(await chat_generation_enabled(current_user.id) if current_user else chat_enabled),
+        userspace_generation_enabled=(await userspace_generation_enabled(current_user.id) if current_user else userspace_generation_enabled_value),
     )
 
 
@@ -3131,18 +3149,26 @@ async def update_user_role(
     return {"success": True, "role": resolved_role}
 
 
-@router.patch("/users/{user_id}/hosted-chat", response_model=UserResponse)
-async def update_user_hosted_chat(
+@router.patch("/users/{user_id}/generation-policy", response_model=UserResponse)
+async def update_user_generation_policy(
     user_id: str,
-    request: UpdateUserHostedChatRequest,
+    request: UpdateUserGenerationPolicyRequest,
     current_user: User = Depends(require_admin),
 ):
-    """Set or clear a user's hosted execution override."""
+    """Set or clear independent per-user generation overrides."""
     db = await get_db()
-    user = await db.user.update(where={"id": user_id}, data={"hostedChatEnabled": request.hosted_chat_enabled})
+    data: dict[str, Any] = {}
+    if "chat_enabled" in request.model_fields_set:
+        data["chatEnabled"] = request.chat_enabled
+    if "userspace_generation_enabled" in request.model_fields_set:
+        data["userspaceGenerationEnabled"] = request.userspace_generation_enabled
+    if not data:
+        user = await db.user.find_unique(where={"id": user_id})
+    else:
+        user = await db.user.update(where={"id": user_id}, data=cast(Any, data))
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    logger.info("Hosted chat override updated for user '%s' by admin '%s'", user.username, current_user.username)
+    logger.info("Generation policy updated for user '%s' by admin '%s'", user.username, current_user.username)
     return await _user_response(user)
 
 

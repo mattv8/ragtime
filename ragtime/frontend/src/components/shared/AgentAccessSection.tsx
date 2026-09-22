@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { api } from '@/api';
-import type { UserSpaceBridgeCredentialMode, WorkspaceAgentAccessStatus } from '@/types';
+import type { WorkspaceAgentAccessStatus } from '@/types';
 
 import { InlineCopyButton } from './InlineCopyButton';
 
@@ -22,51 +22,6 @@ function buildAgentInstructions(agentUrl: string): string {
   ].join('\n');
 }
 
-interface CredentialModeControlProps {
-  id: string;
-  credentialMode: UserSpaceBridgeCredentialMode | null;
-  credentialModeError: string | null;
-  savingCredentialMode: boolean;
-  onChange: (mode: 'env' | 'worker_file') => void;
-}
-
-function CredentialModeControl({
-  id,
-  credentialMode,
-  credentialModeError,
-  savingCredentialMode,
-  onChange,
-}: CredentialModeControlProps) {
-  return (
-    <div className="form-group" data-userspace-bridge-credential-mode="true">
-      <label htmlFor={id}>Bridge credential delivery</label>
-      <select
-        id={id}
-        value={credentialMode?.mode ?? 'env'}
-        disabled={!credentialMode || savingCredentialMode}
-        onChange={(event) => onChange(event.target.value as 'env' | 'worker_file')}
-      >
-        <option value="env">Environment variable (legacy)</option>
-        <option value="worker_file" disabled={credentialMode?.supported === false}>
-          Worker-managed file
-        </option>
-      </select>
-      <p className="field-help">
-        {credentialMode?.supported === false
-          ? 'Worker-managed file delivery is unavailable on this runtime worker. Environment mode remains active.'
-          : credentialMode?.requires_restart
-            ? 'This change takes effect the next time the workspace runtime session is restarted (a full runtime restart, not the session-preserving app restart). Update the app to read the configured delivery mode first.'
-            : 'Worker-managed file delivery keeps the bridge token out of the app process environment. Existing apps must be updated before switching.'}
-      </p>
-      {credentialModeError && (
-        <p className="userspace-error" role="alert">
-          {credentialModeError}
-        </p>
-      )}
-    </div>
-  );
-}
-
 export function AgentAccessSection({ workspaceId }: AgentAccessSectionProps) {
   const [state, setState] = useState<{
     workspaceId: string;
@@ -75,13 +30,9 @@ export function AgentAccessSection({ workspaceId }: AgentAccessSectionProps) {
     saving: boolean;
     error: string | null;
   }>({ workspaceId, status: null, loading: true, saving: false, error: null });
-  const [credentialMode, setCredentialMode] = useState<UserSpaceBridgeCredentialMode | null>(null);
-  const [credentialModeError, setCredentialModeError] = useState<string | null>(null);
-  const [savingCredentialMode, setSavingCredentialMode] = useState(false);
   const currentWorkspaceIdRef = useRef(workspaceId);
   const loadGenerationRef = useRef(0);
   const actionGenerationRef = useRef(0);
-  const credentialModeGenerationRef = useRef(0);
 
   currentWorkspaceIdRef.current = workspaceId;
 
@@ -94,41 +45,23 @@ export function AgentAccessSection({ workspaceId }: AgentAccessSectionProps) {
     currentWorkspaceIdRef.current = workspaceId;
     loadGenerationRef.current += 1;
     actionGenerationRef.current += 1;
-    credentialModeGenerationRef.current += 1;
     const loadGeneration = loadGenerationRef.current;
 
     setState({ workspaceId, status: null, loading: true, saving: false, error: null });
-    setCredentialMode(null);
-    setCredentialModeError(null);
-    setSavingCredentialMode(false);
 
-    void Promise.allSettled([
-      api.getWorkspaceAgentAccess(workspaceId),
-      api.getUserSpaceBridgeCredentialMode(workspaceId),
-    ])
-      .then(([agentAccessResult, credentialModeResult]) => {
+    void api
+      .getWorkspaceAgentAccess(workspaceId)
+      .then((agentAccessStatus) => {
         if (
           currentWorkspaceIdRef.current === workspaceId &&
           loadGenerationRef.current === loadGeneration
         ) {
-          if (agentAccessResult.status === 'rejected') {
-            throw agentAccessResult.reason;
-          }
           setState((currentState) => ({
             ...currentState,
             workspaceId,
-            status: agentAccessResult.value,
+            status: agentAccessStatus,
             error: null,
           }));
-          if (credentialModeResult.status === 'fulfilled') {
-            setCredentialMode(credentialModeResult.value);
-            setCredentialModeError(null);
-          } else {
-            setCredentialMode(null);
-            setCredentialModeError(
-              'Bridge credential mode is unavailable. Refresh after the runtime worker is updated.',
-            );
-          }
         }
       })
       .catch((loadError: unknown) => {
@@ -211,49 +144,14 @@ export function AgentAccessSection({ workspaceId }: AgentAccessSectionProps) {
 
   const enabled = status?.enabled === true && Boolean(status.agent_url);
 
-  const saveCredentialMode = async (mode: 'env' | 'worker_file') => {
-    const modeWorkspaceId = workspaceId;
-    credentialModeGenerationRef.current += 1;
-    const modeGeneration = credentialModeGenerationRef.current;
-    setSavingCredentialMode(true);
-    setCredentialModeError(null);
-    try {
-      const nextMode = await api.updateUserSpaceBridgeCredentialMode(modeWorkspaceId, mode);
-      if (
-        currentWorkspaceIdRef.current === modeWorkspaceId &&
-        credentialModeGenerationRef.current === modeGeneration
-      ) {
-        setCredentialMode(nextMode);
-      }
-    } catch (modeError) {
-      if (
-        currentWorkspaceIdRef.current === modeWorkspaceId &&
-        credentialModeGenerationRef.current === modeGeneration
-      ) {
-        setCredentialModeError(
-          modeError instanceof Error
-            ? modeError.message
-            : 'Failed to update bridge credential mode',
-        );
-      }
-    } finally {
-      if (
-        currentWorkspaceIdRef.current === modeWorkspaceId &&
-        credentialModeGenerationRef.current === modeGeneration
-      ) {
-        setSavingCredentialMode(false);
-      }
-    }
-  };
-
   return (
     <section
       id="userspace-external-agent-access"
       className="userspace-share-controls"
       data-userspace-external-agent-access="true"
-      aria-label="External agent access"
+      aria-label="Agent Collaboration"
     >
-      <h4>External Agent Access</h4>
+      <h4>Agent Collaboration</h4>
       <p className="userspace-muted">
         Allow a trusted external agent chat to collaborate in this workspace, review workspace
         context and files, and interact with Ragtime&apos;s builder chat on your behalf. Treat the
@@ -347,14 +245,6 @@ export function AgentAccessSection({ workspaceId }: AgentAccessSectionProps) {
             session-preserving app restart, but cannot control the host or container.
           </p>
 
-          <CredentialModeControl
-            id="userspace-bridge-credential-mode"
-            credentialMode={credentialMode}
-            credentialModeError={credentialModeError}
-            savingCredentialMode={savingCredentialMode}
-            onChange={(mode) => void saveCredentialMode(mode)}
-          />
-
           <p className="userspace-muted">
             Copy the instructions below, then paste them into the trusted external agent chat you
             want to connect to this workspace.
@@ -417,13 +307,6 @@ export function AgentAccessSection({ workspaceId }: AgentAccessSectionProps) {
           >
             {saving ? 'Enabling...' : 'Enable Agent Access'}
           </button>
-          <CredentialModeControl
-            id="userspace-bridge-credential-mode-disabled"
-            credentialMode={credentialMode}
-            credentialModeError={credentialModeError}
-            savingCredentialMode={savingCredentialMode}
-            onChange={(mode) => void saveCredentialMode(mode)}
-          />
         </>
       )}
     </section>

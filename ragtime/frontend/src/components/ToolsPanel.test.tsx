@@ -673,6 +673,20 @@ describe('ToolsPanel', () => {
     await waitFor(() => expect(toolCard?.classList.contains('highlight-setting')).toBe(true));
   });
 
+  it('highlights tool connections when opened with its hash', async () => {
+    const originalHash = window.location.hash;
+    window.location.hash = '#tools-connections';
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+    await waitFor(() =>
+      expect(
+        document.getElementById('tools-connections')?.classList.contains('highlight-setting'),
+      ).toBe(true),
+    );
+    window.location.hash = originalHash;
+  });
+
   it('uses the next copy suffix when duplicating a tool with an existing copy', async () => {
     const user = userEvent.setup();
     const existingCopy: ToolConfig = {

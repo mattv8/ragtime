@@ -12,6 +12,8 @@ const baseStatus: AuthStatus = {
   session_cookie_secure: true,
   allowed_origins_open: false,
   runtime_auth_token_warning: false,
+  chat_enabled: true,
+  userspace_generation_enabled: true,
 };
 
 describe('SecurityBanner', () => {

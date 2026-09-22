@@ -620,9 +620,13 @@ class AppSettings(BaseModel):
         default=DEFAULT_TOOL_SKILLS_ENABLED,
         description="If True, allow conversations to persist requested on-demand tool skills.",
     )
-    hosted_chat_enabled: bool = Field(
+    chat_enabled: bool = Field(
         default=True,
-        description="Allow Ragtime-hosted generative chat execution globally.",
+        description="Allow Chat generation globally.",
+    )
+    userspace_generation_enabled: bool = Field(
+        default=True,
+        description="Allow User Space generation globally.",
     )
     userspace_build_model: Optional[str] = Field(
         default=None,
@@ -1482,6 +1486,8 @@ class UpdateSettingsRequest(BaseModel):
     available_models_cache_enabled: Optional[bool] = None
     show_tool_card_footer_actions: Optional[bool] = None
     tool_skills_enabled: Optional[bool] = None
+    chat_enabled: Optional[bool] = None
+    userspace_generation_enabled: Optional[bool] = None
     userspace_build_model: Optional[str] = None
     openrouter_credit_monitor_enabled: Optional[bool] = None
     openrouter_low_credit_threshold_usd: Optional[float] = Field(default=None, ge=0)

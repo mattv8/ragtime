@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -58,7 +58,7 @@ class StartSessionRequest(BaseModel):
             "source_type, mount_backend, read_only, and optional runtime_mount_mode."
         ),
     )
-    bridge_credential_mode: str = Field(default="env", pattern="^(env|worker_file)$")
+    bridge_credential_mode: Literal["worker_file"] = "worker_file"
     bridge_token_file_initial_token: str | None = Field(default=None, exclude=True)
 
 
@@ -69,7 +69,7 @@ class RuntimeBridgeCredentialMetadata(BaseModel):
     session_id: str = Field(description="Workspace session ID bound to the bridge token")
     issued_at: datetime = Field(description="Token issued-at timestamp")
     expires_at: datetime = Field(description="Token expiration timestamp")
-    mode: str = Field(default="env", pattern="^(env|worker_file)$")
+    mode: Literal["worker_file"] = "worker_file"
     revision: int = Field(default=0, ge=0)
 
 
@@ -155,7 +155,7 @@ class WorkerStartSessionRequest(BaseModel):
         default_factory=list,
         description="Workspace mount specs for sandbox materialization or live bind mounting",
     )
-    bridge_credential_mode: str = Field(default="env", pattern="^(env|worker_file)$")
+    bridge_credential_mode: Literal["worker_file"] = "worker_file"
     bridge_token_file_initial_token: str | None = Field(default=None, exclude=True)
 
 

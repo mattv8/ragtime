@@ -19,18 +19,17 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.service = UserSpaceRuntimeService()
 
-    def test_bridge_env_contains_url_and_token(self) -> None:
+    def test_bridge_env_contains_url_and_token_file(self) -> None:
         env = self.service._build_runtime_bridge_env("ws-1", "sess-1")
         self.assertIn("RAGTIME_BRIDGE_URL", env)
         self.assertTrue(env["RAGTIME_BRIDGE_URL"].startswith("http"))
         self.assertIn("/runtime-bridge", env["RAGTIME_BRIDGE_URL"])
-        claims = _decode(env["RAGTIME_BRIDGE_TOKEN"])
-        self.assertEqual(claims["workspace_id"], "ws-1")
-        self.assertEqual(claims["session_id"], "sess-1")
+        self.assertEqual(env["RAGTIME_BRIDGE_TOKEN_FILE"], "/run/.ragtime-bridge/token")
+        self.assertNotIn("RAGTIME_BRIDGE_TOKEN", env)
 
-    def test_bridge_env_exposes_only_bridge_url_and_token(self) -> None:
+    def test_bridge_env_exposes_only_bridge_url_and_token_file(self) -> None:
         env = self.service._build_runtime_bridge_env("ws-1", "sess-1")
-        self.assertEqual(set(env.keys()), {"RAGTIME_BRIDGE_URL", "RAGTIME_BRIDGE_TOKEN"})
+        self.assertEqual(set(env.keys()), {"RAGTIME_BRIDGE_URL", "RAGTIME_BRIDGE_TOKEN_FILE"})
         dumped = str(env)
         self.assertNotIn("bearer_token", dumped)
         self.assertNotIn("api_key", dumped)
@@ -322,9 +321,12 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["workspace_env"]["MY_VAR"], "x")
         self.assertIn("RAGTIME_BRIDGE_URL", payload["workspace_env"])
         self.assertNotEqual(payload["workspace_env"]["RAGTIME_BRIDGE_URL"], "https://user.invalid/bridge")
-        claims = _decode(payload["workspace_env"]["RAGTIME_BRIDGE_TOKEN"])
+        self.assertNotIn("RAGTIME_BRIDGE_TOKEN", payload["workspace_env"])
+        self.assertEqual(payload["workspace_env"]["RAGTIME_BRIDGE_TOKEN_FILE"], "/run/.ragtime-bridge/token")
+        claims = _decode(payload["bridge_token_file_initial_token"])
         self.assertEqual(claims["workspace_id"], "ws-1")
         self.assertEqual(claims["session_id"], "sess-1")
+        self.assertEqual(payload["bridge_credential_mode"], "worker_file")
 
     async def test_bridge_token_excluded_from_env_visibility_listing(self) -> None:
         with (
@@ -405,11 +407,7 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
                 "ragtime.userspace.runtime_service.userspace_service.get_workspace_runtime_environment_visibility",
                 mock.AsyncMock(return_value={"MY_VAR": True}),
             ),
-            mock.patch.object(
-                self.service,
-                "_runtime_provider_get_status",
-                mock.AsyncMock(return_value={"bridge_credential": None}),
-            ),
+            mock.patch.object(self.service, "_refresh_bridge_after_env_refresh", mock.AsyncMock()),
             mock.patch.object(
                 self.service,
                 "_runtime_provider_restart_devserver",
@@ -427,9 +425,8 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
             restart_kwargs["workspace_env"]["RAGTIME_BRIDGE_URL"],
             "https://user.invalid/bridge",
         )
-        claims = _decode(restart_kwargs["workspace_env"]["RAGTIME_BRIDGE_TOKEN"])
-        self.assertEqual(claims["workspace_id"], "ws-1")
-        self.assertEqual(claims["session_id"], "sess-1")
+        self.assertNotIn("RAGTIME_BRIDGE_TOKEN", restart_kwargs["workspace_env"])
+        self.assertEqual(restart_kwargs["workspace_env"]["RAGTIME_BRIDGE_TOKEN_FILE"], "/run/.ragtime-bridge/token")
 
     async def _refresh_env_with_provider_credential(
         self,
@@ -469,34 +466,16 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
                 "ragtime.userspace.runtime_service.userspace_service.get_workspace_runtime_environment_visibility",
                 mock.AsyncMock(return_value={"MY_VAR": True}),
             ),
-            mock.patch.object(
-                self.service,
-                "_runtime_provider_get_status",
-                mock.AsyncMock(return_value={"bridge_credential": credential}),
-            ),
             mock.patch.object(self.service, "_runtime_provider_restart_devserver", mock.AsyncMock()) as restart_devserver,
+            mock.patch.object(self.service, "_refresh_bridge_after_env_refresh", mock.AsyncMock()),
         ):
             await self.service.refresh_runtime_env_vars("ws-1")
         return restart_devserver
 
-    async def test_refresh_env_keeps_env_token_when_session_still_runs_env_mode(self) -> None:
-        """A flipped workspace mode must not strip the token from an env-mode session."""
-        with mock.patch.object(
-            self.service,
-            "_workspace_bridge_credential_mode",
-            mock.AsyncMock(return_value="worker_file"),
-        ):
-            restart_devserver = await self._refresh_env_with_provider_credential({"mode": "env"})
-        restart_args = restart_devserver.await_args
-        assert restart_args is not None
-        restart_kwargs = restart_args.kwargs
-        self.assertIn("RAGTIME_BRIDGE_TOKEN", restart_kwargs["workspace_env"])
-        self.assertEqual(restart_kwargs["bridge_credential_mode"], "env")
-
-    async def test_refresh_env_strips_token_for_active_worker_file_session(self) -> None:
+    async def test_refresh_env_strips_token_for_every_active_session(self) -> None:
         restart_devserver = await self._refresh_env_with_provider_credential({"mode": "worker_file", "revision": 3})
         restart_args = restart_devserver.await_args
         assert restart_args is not None
         restart_kwargs = restart_args.kwargs
         self.assertNotIn("RAGTIME_BRIDGE_TOKEN", restart_kwargs["workspace_env"])
-        self.assertEqual(restart_kwargs["bridge_credential_mode"], "worker_file")
+        self.assertNotIn("bridge_credential_mode", restart_kwargs)

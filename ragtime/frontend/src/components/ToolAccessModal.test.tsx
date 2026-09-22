@@ -101,7 +101,7 @@ describe('ToolAccessModal', () => {
     expect(onContentProtectionModeChange).toHaveBeenCalledWith('tool-1', 'require');
   });
 
-  it('shows the frozen disabled and all-traffic hints', async () => {
+  it('hides content protection controls when protection is disabled', async () => {
     contentProtectionMock.getConfig.mockResolvedValue({
       revision: 1,
       enabled: false,
@@ -126,14 +126,8 @@ describe('ToolAccessModal', () => {
       />,
     );
 
-    expect((await screen.findByLabelText('Content protection')).hasAttribute('disabled')).toBe(
-      true,
-    );
-    expect(screen.getByText('Content protection is disabled in Settings.')).toBeTruthy();
-    expect(
-      screen.getByText(
-        'Coverage is currently All supported traffic; scope requirements apply when coverage is Selected scopes.',
-      ),
-    ).toBeTruthy();
+    await screen.findByText('Tool Access - Example Tool');
+    expect(screen.queryByLabelText('Content protection')).toBeNull();
+    expect(contentProtectionMock.updateContentProtectionConfigSlice).not.toHaveBeenCalled();
   });
 });

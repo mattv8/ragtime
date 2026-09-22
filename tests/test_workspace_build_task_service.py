@@ -46,9 +46,9 @@ def _brief(**overrides: Unpack[_BriefOverrides]) -> BuildBriefInput:
     return BuildBriefInput(**base)
 
 
-def _enabled_hosted_execution_patch(module):
-    """Keep unit tests on the enabled hosted-execution precondition."""
-    return mock.patch.object(module, "require_hosted_execution", mock.AsyncMock())
+def _enabled_userspace_generation_patch(module):
+    """Keep unit tests on the enabled User Space generation precondition."""
+    return mock.patch.object(module, "require_userspace_generation", mock.AsyncMock())
 
 
 class BriefRenderingTests(unittest.TestCase):
@@ -93,7 +93,7 @@ class StartBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             selected_tool_group_ids=[],
         )
         return [
-            _enabled_hosted_execution_patch(self.module),
+            _enabled_userspace_generation_patch(self.module),
             mock.patch.object(
                 type(self.service),
                 "_load_prisma_user",
@@ -117,11 +117,11 @@ class StartBuildTaskTests(unittest.IsolatedAsyncioTestCase):
         ]
 
     async def test_disabled_policy_rejects_before_build_state_is_read(self) -> None:
-        blocked = HTTPException(status_code=403, detail={"code": "hosted_execution_disabled"})
+        blocked = HTTPException(status_code=403, detail={"code": "userspace_generation_disabled"})
         load_user = mock.AsyncMock()
 
         with (
-            mock.patch.object(self.module, "require_hosted_execution", mock.AsyncMock(side_effect=blocked)),
+            mock.patch.object(self.module, "require_userspace_generation", mock.AsyncMock(side_effect=blocked)),
             mock.patch.object(type(self.service), "_load_prisma_user", load_user),
         ):
             with self.assertRaises(HTTPException) as ctx:
@@ -585,7 +585,7 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             return_value=task if task_side_effect is None else None,
         )
         patches = [
-            _enabled_hosted_execution_patch(module),
+            _enabled_userspace_generation_patch(module),
             mock.patch.object(
                 type(service),
                 "_load_prisma_user",
@@ -636,7 +636,7 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
         conversation = SimpleNamespace(id="conv-1", workspace_id="ws-1", parent_conversation_id=None)
         reply_ledger = SimpleNamespace(id="reply-ebr-1")
         with (
-            _enabled_hosted_execution_patch(module),
+            _enabled_userspace_generation_patch(module),
             mock.patch.object(
                 type(service),
                 "_load_prisma_user",
@@ -921,7 +921,7 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             selected_tool_group_ids=[],
         )
         patches = [
-            _enabled_hosted_execution_patch(module),
+            _enabled_userspace_generation_patch(module),
             mock.patch.object(
                 type(service),
                 "_load_prisma_user",

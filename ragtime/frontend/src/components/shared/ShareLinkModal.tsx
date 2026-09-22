@@ -52,6 +52,7 @@ interface ShareLinkModalProps {
   openActionLabel?: string;
   extraAccessControls?: ReactNode;
   agentAccessSection?: ReactNode;
+  connectAgentSection?: ReactNode;
   apiAccessSection?: ReactNode;
   onClose: () => void;
   onSelectShare?: (shareId: string) => void;
@@ -72,7 +73,7 @@ interface ShareLinkModalProps {
   formatUserLabel: (user: UserDirectoryEntry, fallback: string) => string;
 }
 
-type ShareModalTab = 'links' | 'api';
+type ShareModalTab = 'links' | 'agent' | 'connect' | 'api';
 
 const SHARE_ACCESS_MODE_LABELS: Record<ShareAccessMode, string> = {
   token: 'Public link',
@@ -146,6 +147,7 @@ export function ShareLinkModal({
   openActionLabel = 'Open Preview',
   extraAccessControls,
   agentAccessSection,
+  connectAgentSection,
   apiAccessSection,
   onClose,
   onSelectShare,
@@ -167,6 +169,8 @@ export function ShareLinkModal({
 }: ShareLinkModalProps) {
   const [view, setView] = useState<'list' | 'edit'>('list');
   const [activeTab, setActiveTab] = useState<ShareModalTab>('links');
+  const [hasMountedAgentAccessSection, setHasMountedAgentAccessSection] = useState(false);
+  const [hasMountedConnectAgentSection, setHasMountedConnectAgentSection] = useState(false);
   const [hasMountedApiAccessSection, setHasMountedApiAccessSection] = useState(false);
   const [deleteConfirmShareId, setDeleteConfirmShareId] = useState<string | null>(null);
   const [shareLabelDraft, setShareLabelDraft] = useState('');
@@ -175,6 +179,8 @@ export function ShareLinkModal({
   const previousSelectedShareIdRef = useRef<string | null>(null);
   const previousCreatingShareLinkRef = useRef(creatingShareLink);
   const shareLinksTabRef = useRef<HTMLButtonElement | null>(null);
+  const agentAccessTabRef = useRef<HTMLButtonElement | null>(null);
+  const connectAgentTabRef = useRef<HTMLButtonElement | null>(null);
   const apiAccessTabRef = useRef<HTMLButtonElement | null>(null);
 
   const availableShareLinks = useMemo(
@@ -189,10 +195,15 @@ export function ShareLinkModal({
     return availableShareLinks.find((link) => link.id === selectedShareId) ?? shareStatus;
   }, [availableShareLinks, selectedShareId, shareStatus]);
 
+  const hasAgentTab = Boolean(agentAccessSection);
+  const hasConnectAgentTab = Boolean(connectAgentSection);
   const hasApiAccessTab = Boolean(apiAccessSection);
+  const hasTabs = hasAgentTab || hasConnectAgentTab || hasApiAccessTab;
 
   useEffect(() => {
     setActiveTab('links');
+    setHasMountedAgentAccessSection(false);
+    setHasMountedConnectAgentSection(false);
     setHasMountedApiAccessSection(false);
 
     if (!isOpen) {
@@ -208,9 +219,17 @@ export function ShareLinkModal({
   useEffect(() => {
     if (!hasApiAccessTab) {
       setHasMountedApiAccessSection(false);
-      setActiveTab('links');
+      if (activeTab === 'api') setActiveTab('links');
     }
-  }, [hasApiAccessTab]);
+    if (!hasAgentTab) {
+      setHasMountedAgentAccessSection(false);
+      if (activeTab === 'agent') setActiveTab('links');
+    }
+    if (!hasConnectAgentTab) {
+      setHasMountedConnectAgentSection(false);
+      if (activeTab === 'connect') setActiveTab('links');
+    }
+  }, [hasApiAccessTab, hasAgentTab, hasConnectAgentTab, activeTab]);
 
   useEffect(() => {
     if (
@@ -263,9 +282,13 @@ export function ShareLinkModal({
   const linkIdentityLocked = Boolean(selectedShare?.has_share_link);
 
   const selectTab = (tab: ShareModalTab) => {
+    if (tab === 'agent' && !hasAgentTab) return;
+    if (tab === 'connect' && !hasConnectAgentTab) return;
     if (tab === 'api' && !hasApiAccessTab) {
       return;
     }
+    if (tab === 'agent') setHasMountedAgentAccessSection(true);
+    if (tab === 'connect') setHasMountedConnectAgentSection(true);
     if (tab === 'api') {
       setHasMountedApiAccessSection(true);
     }
@@ -278,17 +301,35 @@ export function ShareLinkModal({
       shareLinksTabRef.current?.focus();
       return;
     }
+    if (tab === 'agent') {
+      agentAccessTabRef.current?.focus();
+      return;
+    }
+    if (tab === 'connect') {
+      connectAgentTabRef.current?.focus();
+      return;
+    }
     apiAccessTabRef.current?.focus();
   };
 
   const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, tab: ShareModalTab) => {
-    if (!hasApiAccessTab) {
+    if (!hasTabs) return;
+
+    const visibleTabs: ShareModalTab[] = ['links'];
+    if (hasAgentTab) visibleTabs.push('agent');
+    if (hasConnectAgentTab) visibleTabs.push('connect');
+    if (hasApiAccessTab) visibleTabs.push('api');
+
+    const idx = visibleTabs.indexOf(tab);
+
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      moveTabSelection(visibleTabs[(idx + 1) % visibleTabs.length]);
       return;
     }
-
-    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+    if (event.key === 'ArrowLeft') {
       event.preventDefault();
-      moveTabSelection(tab === 'links' ? 'api' : 'links');
+      moveTabSelection(visibleTabs[(idx - 1 + visibleTabs.length) % visibleTabs.length]);
       return;
     }
 
@@ -300,7 +341,7 @@ export function ShareLinkModal({
 
     if (event.key === 'End') {
       event.preventDefault();
-      moveTabSelection('api');
+      moveTabSelection(visibleTabs[visibleTabs.length - 1]);
     }
   };
 
@@ -698,14 +739,13 @@ export function ShareLinkModal({
           <span>{creatingShareLink ? 'Creating...' : 'New Link'}</span>
         </button>
       </div>
-      {agentAccessSection}
     </>
   );
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div
-        className={`modal-content userspace-share-modal${hasApiAccessTab ? ' userspace-share-modal-with-tabs' : ''}`}
+        className={`modal-content userspace-share-modal${hasTabs ? ' userspace-share-modal-with-tabs' : ''}`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-header">
@@ -728,7 +768,7 @@ export function ShareLinkModal({
           </button>
         </div>
         <div className="modal-body">
-          {hasApiAccessTab ? (
+          {hasTabs ? (
             <>
               <div className="userspace-share-tabs" id="share-workspace-tabs" role="tablist">
                 <button
@@ -745,20 +785,54 @@ export function ShareLinkModal({
                 >
                   Share Links
                 </button>
-                <button
-                  ref={apiAccessTabRef}
-                  type="button"
-                  id="share-workspace-tab-api"
-                  role="tab"
-                  className="userspace-share-tab"
-                  aria-selected={activeTab === 'api'}
-                  aria-controls="share-workspace-panel-api"
-                  tabIndex={activeTab === 'api' ? 0 : -1}
-                  onClick={() => selectTab('api')}
-                  onKeyDown={(event) => handleTabKeyDown(event, 'api')}
-                >
-                  API Access
-                </button>
+                {hasAgentTab && (
+                  <button
+                    ref={agentAccessTabRef}
+                    type="button"
+                    id="share-workspace-tab-agent"
+                    role="tab"
+                    className="userspace-share-tab"
+                    aria-selected={activeTab === 'agent'}
+                    aria-controls="share-workspace-panel-agent"
+                    tabIndex={activeTab === 'agent' ? 0 : -1}
+                    onClick={() => selectTab('agent')}
+                    onKeyDown={(event) => handleTabKeyDown(event, 'agent')}
+                  >
+                    Agent Collaboration
+                  </button>
+                )}
+                {hasConnectAgentTab && (
+                  <button
+                    ref={connectAgentTabRef}
+                    type="button"
+                    id="share-workspace-tab-connect"
+                    role="tab"
+                    className="userspace-share-tab"
+                    aria-selected={activeTab === 'connect'}
+                    aria-controls="share-workspace-panel-connect"
+                    tabIndex={activeTab === 'connect' ? 0 : -1}
+                    onClick={() => selectTab('connect')}
+                    onKeyDown={(event) => handleTabKeyDown(event, 'connect')}
+                  >
+                    Coding Agent Setup
+                  </button>
+                )}
+                {hasApiAccessTab && (
+                  <button
+                    ref={apiAccessTabRef}
+                    type="button"
+                    id="share-workspace-tab-api"
+                    role="tab"
+                    className="userspace-share-tab"
+                    aria-selected={activeTab === 'api'}
+                    aria-controls="share-workspace-panel-api"
+                    tabIndex={activeTab === 'api' ? 0 : -1}
+                    onClick={() => selectTab('api')}
+                    onKeyDown={(event) => handleTabKeyDown(event, 'api')}
+                  >
+                    API Access
+                  </button>
+                )}
               </div>
               <div
                 id="share-workspace-panel-links"
@@ -769,15 +843,39 @@ export function ShareLinkModal({
               >
                 {linksPanel}
               </div>
-              <div
-                id="share-workspace-panel-api"
-                role="tabpanel"
-                className="userspace-share-tab-panel"
-                aria-labelledby="share-workspace-tab-api"
-                hidden={activeTab !== 'api'}
-              >
-                {hasMountedApiAccessSection ? apiAccessSection : null}
-              </div>
+              {hasAgentTab && (
+                <div
+                  id="share-workspace-panel-agent"
+                  role="tabpanel"
+                  className="userspace-share-tab-panel"
+                  aria-labelledby="share-workspace-tab-agent"
+                  hidden={activeTab !== 'agent'}
+                >
+                  {hasMountedAgentAccessSection ? agentAccessSection : null}
+                </div>
+              )}
+              {hasConnectAgentTab && (
+                <div
+                  id="share-workspace-panel-connect"
+                  role="tabpanel"
+                  className="userspace-share-tab-panel userspace-share-connect-agent-panel"
+                  aria-labelledby="share-workspace-tab-connect"
+                  hidden={activeTab !== 'connect'}
+                >
+                  {hasMountedConnectAgentSection ? connectAgentSection : null}
+                </div>
+              )}
+              {hasApiAccessTab && (
+                <div
+                  id="share-workspace-panel-api"
+                  role="tabpanel"
+                  className="userspace-share-tab-panel"
+                  aria-labelledby="share-workspace-tab-api"
+                  hidden={activeTab !== 'api'}
+                >
+                  {hasMountedApiAccessSection ? apiAccessSection : null}
+                </div>
+              )}
             </>
           ) : (
             linksPanel

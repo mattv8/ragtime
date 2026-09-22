@@ -259,7 +259,8 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
                 sourceSyncedAt=None,
                 sourceExpiresAt=None,
                 cachedGroups=["cn=admins,dc=example,dc=com"],
-                hostedChatEnabled=True,
+                chatEnabled=True,
+                userspaceGenerationEnabled=False,
             ),
             SimpleNamespace(
                 id="user-2",
@@ -274,7 +275,8 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
                 sourceSyncedAt=None,
                 sourceExpiresAt=None,
                 cachedGroups=[],
-                hostedChatEnabled=False,
+                chatEnabled=False,
+                userspaceGenerationEnabled=True,
             ),
         ]
         memberships = [
@@ -363,7 +365,7 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
         recovery_delegate = RecoveryCodeDelegate()
         webauthn_delegate = WebauthnCredentialDelegate()
         db = SimpleNamespace(
-            appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(hostedChatEnabled=True))),
+            appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(chatEnabled=True, userspaceGenerationEnabled=True))),
             user=UserDelegate(),
             authgroupmembership=membership_delegate,
             authgroup=group_delegate,
@@ -404,8 +406,10 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response.users[1].mfa_enabled)
         self.assertFalse(response.users[1].mfa_required)
         self.assertEqual(response.users[1].recovery_codes_remaining, 1)
-        self.assertTrue(response.users[0].hosted_chat_enabled_effective)
-        self.assertFalse(response.users[1].hosted_chat_enabled_effective)
+        self.assertTrue(response.users[0].chat_enabled_effective)
+        self.assertFalse(response.users[0].userspace_generation_enabled_effective)
+        self.assertFalse(response.users[1].chat_enabled_effective)
+        self.assertTrue(response.users[1].userspace_generation_enabled_effective)
         self.assertEqual(len(membership_delegate.calls), 1)
         self.assertEqual(len(group_delegate.calls), 1)
         self.assertEqual(len(factor_delegate.calls), 1)
@@ -426,7 +430,8 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
             sourceSyncedAt=None,
             sourceExpiresAt=None,
             cachedGroups=[],
-            hostedChatEnabled=False,
+            chatEnabled=False,
+            userspaceGenerationEnabled=None,
         )
 
         class UserDelegate:
@@ -449,7 +454,7 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
                 return []
 
         db = SimpleNamespace(
-            appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(hostedChatEnabled=True))),
+            appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(chatEnabled=True, userspaceGenerationEnabled=False))),
             user=UserDelegate(),
             authgroupmembership=MembershipDelegate(),
             authgroup=EmptyFindManyDelegate(),
@@ -472,7 +477,56 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
             response = await api_auth.list_users(skip=0, take=50, _user=cast(api_auth.User, SimpleNamespace(id="admin-1")))
 
         self.assertFalse(response.users[0].mfa_enabled)
-        self.assertFalse(response.users[0].hosted_chat_enabled_effective)
+        self.assertFalse(response.users[0].chat_enabled_effective)
+        self.assertFalse(response.users[0].userspace_generation_enabled_effective)
+
+
+class UserGenerationPolicyPatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_omitted_fields_preserve_both_user_generation_overrides(self) -> None:
+        user = SimpleNamespace(id="user-1", username="alice", chatEnabled=False, userspaceGenerationEnabled=True)
+        db = SimpleNamespace(
+            user=SimpleNamespace(
+                find_unique=mock.AsyncMock(return_value=user),
+                update=mock.AsyncMock(),
+            )
+        )
+        response = SimpleNamespace(id="user-1")
+
+        with (
+            mock.patch.object(api_auth, "get_db", new=mock.AsyncMock(return_value=db)),
+            mock.patch.object(api_auth, "_user_response", new=mock.AsyncMock(return_value=response)),
+        ):
+            result = await api_auth.update_user_generation_policy(
+                "user-1",
+                api_auth.UpdateUserGenerationPolicyRequest.model_validate({}),
+                current_user=cast(api_auth.User, SimpleNamespace(username="admin")),
+            )
+
+        self.assertIs(result, response)
+        db.user.find_unique.assert_awaited_once_with(where={"id": "user-1"})
+        db.user.update.assert_not_awaited()
+
+    async def test_explicit_null_resets_only_the_requested_generation_override(self) -> None:
+        user = SimpleNamespace(id="user-1", username="alice", chatEnabled=None, userspaceGenerationEnabled=False)
+        db = SimpleNamespace(
+            user=SimpleNamespace(
+                find_unique=mock.AsyncMock(),
+                update=mock.AsyncMock(return_value=user),
+            )
+        )
+
+        with (
+            mock.patch.object(api_auth, "get_db", new=mock.AsyncMock(return_value=db)),
+            mock.patch.object(api_auth, "_user_response", new=mock.AsyncMock(return_value=SimpleNamespace(id="user-1"))),
+        ):
+            await api_auth.update_user_generation_policy(
+                "user-1",
+                api_auth.UpdateUserGenerationPolicyRequest.model_validate({"chat_enabled": None}),
+                current_user=cast(api_auth.User, SimpleNamespace(username="admin")),
+            )
+
+        db.user.update.assert_awaited_once_with(where={"id": "user-1"}, data={"chatEnabled": None})
+        db.user.find_unique.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

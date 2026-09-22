@@ -54,6 +54,8 @@ function buildSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     server_name: 'Ragtime',
     default_theme_pack: 'default',
     authenticated_webgl_background_enabled: true,
+    chat_enabled: true,
+    userspace_generation_enabled: true,
     openapi_model_prefix_enabled: true,
     show_tool_card_footer_actions: false,
     embedding_provider: 'openai',
@@ -226,6 +228,20 @@ describe('McpSettingsSection', () => {
         CONTENT_PROTECTION_CONFIG,
       ).requirements,
     ).toEqual([{ scope_kind: 'mcp_route', scope_key: 'default', mode: 'require' }]);
+  });
+
+  it('hides the default route classification requirement when protection is disabled', async () => {
+    contentProtectionMock.getConfig.mockResolvedValue({
+      ...CONTENT_PROTECTION_CONFIG,
+      enabled: false,
+    });
+
+    renderSection({});
+
+    const masterToggle = await screen.findByRole('switch', { name: /enable mcp server/i });
+    expect(masterToggle.getAttribute('aria-describedby')).toBe('mcp-enabled-help');
+    expect(screen.queryByLabelText('Require classification')).toBeNull();
+    expect(contentProtectionMock.updateContentProtectionConfigSlice).not.toHaveBeenCalled();
   });
 
   it('shows OAuth2 as the default selectable auth method without LDAP', () => {

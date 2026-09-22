@@ -40,6 +40,8 @@ function debugAuthStatus(overrides: Partial<AuthStatus> = {}): AuthStatus {
     api_key_configured: false,
     session_cookie_secure: false,
     allowed_origins_open: false,
+    chat_enabled: true,
+    userspace_generation_enabled: true,
     ...overrides,
   };
 }

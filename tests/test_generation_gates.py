@@ -1,4 +1,4 @@
-"""Regression inventory for hosted-generation policy choke points."""
+"""Regression inventory for trusted generation-policy choke points."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ NON_GENERATIVE_CALL_EXEMPTIONS = {
     ("ragtime/userspace/service.py", "_invoke_runtime_bridge_tool", "runtime_tool.ainvoke"),  # runtime bridge tool dispatch
     ("ragtime/rag/components.py", "invoke", "self.ainvoke"),
     ("ragtime/rag/components.py", "_get_context_from_retrievers_async", "retriever.ainvoke"),
+    # Index-description generation belongs to indexing, not Chat or User Space.
+    ("ragtime/indexer/service.py", "generate_index_description", "llm.ainvoke"),
 }
 
 # The classifier has no agent/tools path and only returns the strict verdict schema.
@@ -87,20 +89,18 @@ def _all_first_party_model_calls() -> list[tuple[str, str, str]]:
     return calls
 
 
-class HostedExecutionGateInventoryTests(unittest.TestCase):
+class GenerationGateInventoryTests(unittest.TestCase):
     def test_user_message_and_queued_task_gates_are_explicit(self) -> None:
         self.assertIn(
-            "require_hosted_execution",
+            "require_generation",
             _function_calls("ragtime/indexer/routes.py", "_validate_generation_ready_after_user_message"),
         )
-        self.assertIn("require_hosted_execution", _function_calls("ragtime/indexer/background_tasks.py", "run"))
-        self.assertIn("hosted_execution_context", _function_calls("ragtime/indexer/background_tasks.py", "run_with_policy_context"))
+        self.assertIn("require_generation", _function_calls("ragtime/indexer/background_tasks.py", "run"))
+        self.assertIn("generation_context", _function_calls("ragtime/indexer/background_tasks.py", "run_with_policy_context"))
 
     def test_provider_and_auxiliary_generation_boundaries_are_gated(self) -> None:
         inventory = {
-            ("ragtime/api/routes.py", "chat_completions"),
             ("ragtime/indexer/title_generation.py", "_generate_title"),
-            ("ragtime/indexer/service.py", "generate_index_description"),
             ("ragtime/indexer/visualization_retry.py", "_repair_with_ai"),
             ("ragtime/rag/components.py", "process_query"),
             ("ragtime/rag/components.py", "process_query_stream"),
@@ -112,9 +112,12 @@ class HostedExecutionGateInventoryTests(unittest.TestCase):
         for path, function_name in inventory:
             with self.subTest(path=path, function=function_name):
                 self.assertIn(
-                    "require_hosted_execution",
+                    "require_generation",
                     _function_calls(path, function_name),
                 )
+
+    def test_v1_binds_its_trusted_independent_surface_before_provider_execution(self) -> None:
+        self.assertIn("generation_context", _function_calls("ragtime/api/routes.py", "chat_completions"))
 
     def test_security_classifier_is_the_only_provider_gate_exception(self) -> None:
         self.assertEqual(
@@ -136,7 +139,7 @@ class HostedExecutionGateInventoryTests(unittest.TestCase):
                 continue
             with self.subTest(path=path, function=function_name, expression=expression):
                 self.assertIn(
-                    "require_hosted_execution",
+                    "require_generation",
                     _function_calls(path, function_name),
                     msg=f"Unclassified model boundary: {path}:{function_name}:{expression}",
                 )
@@ -146,6 +149,6 @@ class HostedExecutionGateInventoryTests(unittest.TestCase):
         visitor.visit(ast.parse("async def generate():\n    await llm.ainvoke([])\n"))
         self.assertEqual(visitor.calls, [("generate", "llm.ainvoke")])
 
-    def test_legacy_agent_and_build_entrypoints_are_gated(self) -> None:
-        self.assertIn("require_hosted_execution", _function_calls("ragtime/userspace/agent_access.py", "resolve_agent_access_token"))
-        self.assertIn("require_hosted_execution", _function_calls("ragtime/userspace/build_task_service.py", "start_build_task"))
+    def test_external_agent_access_stays_available_but_build_entrypoint_is_userspace_gated(self) -> None:
+        self.assertNotIn("require_userspace_generation", _function_calls("ragtime/userspace/agent_access.py", "resolve_agent_access_token"))
+        self.assertIn("require_userspace_generation", _function_calls("ragtime/userspace/build_task_service.py", "start_build_task"))

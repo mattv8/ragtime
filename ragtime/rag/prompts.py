@@ -1326,10 +1326,10 @@ _USERSPACE_RUNTIME_BRIDGE_BLOCK = """
 This workspace runs a real server entrypoint, so fetch live tool data from your
 SERVER code via the runtime bridge instead of wiring context.components[...] in
 browser modules:
-- Env vars available to the server process: `RAGTIME_BRIDGE_URL` plus either `RAGTIME_BRIDGE_TOKEN_FILE` or the legacy `RAGTIME_BRIDGE_TOKEN`.
-- Read the token for every bridge request: Node uses `fs.readFileSync(process.env.RAGTIME_BRIDGE_TOKEN_FILE, "utf8").trim()` when the file variable is set, otherwise `process.env.RAGTIME_BRIDGE_TOKEN`; Python uses `Path(os.environ["RAGTIME_BRIDGE_TOKEN_FILE"]).read_text().strip()` when set, otherwise `os.environ.get("RAGTIME_BRIDGE_TOKEN")`. Do not cache the token at app startup.
+- Env vars available to the server process: `RAGTIME_BRIDGE_URL` and `RAGTIME_BRIDGE_TOKEN_FILE`. The raw bridge token is never in the environment.
+- Read the token file for every bridge request: Node uses `fs.readFileSync(process.env.RAGTIME_BRIDGE_TOKEN_FILE, "utf8").trim()`; Python uses `Path(os.environ["RAGTIME_BRIDGE_TOKEN_FILE"]).read_text().strip()`. Do not cache the token at app startup.
 - Contract: POST `{RAGTIME_BRIDGE_URL}/execute-component` with header
-  `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN` and JSON body
+  `Authorization: Bearer <token read from RAGTIME_BRIDGE_TOKEN_FILE>` and JSON body
   `{"component_id": "<selected component id>", "request": {"query": "SELECT ... LIMIT 100"}}`.
 - For HTTP API-backed components, the same JSON body can instead be
   `{"component_id": "<selected component id>", "request": {"method": "GET", "path": "/customers"}}` (plus optional `query`, approved
@@ -1391,7 +1391,7 @@ def build_shared_sqlite_prompt_fragment(accessible_databases: list[dict[str, str
         "\n##### Shared SQLite target workspaces\n"
         "- Shared SQLite is not a third persistence lane and never substitutes for selected live-tool data.\n"
         "- `/sqlite/query` and `/sqlite/mutate` are only for cross-workspace access. Browser code must call an app-owned server route, and must never call bridge endpoints directly or receive `RAGTIME_BRIDGE_TOKEN`.\n"
-        "- Use Shared SQLite from server code only. Call `POST {RAGTIME_BRIDGE_URL}/sqlite/query` or `POST {RAGTIME_BRIDGE_URL}/sqlite/mutate` with `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN`. Never send the bridge token, raw credentials, or server bridge calls to browser code.\n"
+        "- Use Shared SQLite from server code only. Call `POST {RAGTIME_BRIDGE_URL}/sqlite/query` or `POST {RAGTIME_BRIDGE_URL}/sqlite/mutate` with `Authorization: Bearer <token read from RAGTIME_BRIDGE_TOKEN_FILE>`. Never send the bridge token, raw credentials, or server bridge calls to browser code.\n"
         "- A server-backed entrypoint is required for this access. Static or missing entrypoints cannot execute these server bridge calls until you add backend/server code.\n"
         '- Query contract: `POST {RAGTIME_BRIDGE_URL}/sqlite/query` with `target_workspace_id`, fixed `database_name: "app.sqlite3"`, parameterized SQL, positional-list or named-dict `parameters`, and `max_rows` up to 500. Responses include `columns`, `rows`, `row_count`, and `truncated`.\n'
         '- Example query: `{"target_workspace_id": "ws_target", "database_name": "app.sqlite3", "sql": "SELECT * FROM orders WHERE customer_id = :customer_id LIMIT 100", "parameters": {"customer_id": "<customer_id>"}, "max_rows": 100}`.\n'

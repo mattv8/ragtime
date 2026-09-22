@@ -315,7 +315,7 @@ class HostedProtectionTests(unittest.IsolatedAsyncioTestCase):
             calls.append(("assistant", candidate))
 
         with (
-            mock.patch("ragtime.rag.components.require_hosted_execution", new=mock.AsyncMock()) as hosted_gate,
+            mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()) as generation_gate,
             mock.patch("ragtime.rag.components.content_protection_context", return_value=context) as make_context,
             mock.patch("ragtime.rag.components.bind_content_protection_context", return_value=nullcontext()),
             mock.patch("ragtime.rag.components.authorize_history", side_effect=authorize_history),
@@ -331,11 +331,11 @@ class HostedProtectionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(answer, "approved answer")
-        hosted_gate.assert_awaited_once_with("caller", "owner")
+        generation_gate.assert_awaited_once_with("caller", "owner")
         make_context.assert_called_once_with(user_id="caller", owner_user_id="owner", surface="chat")
         self.assertEqual(calls, [("history", ["prior"]), ("inbound", "request"), ("model", None), ("assistant", "approved answer")])
 
-    async def test_process_query_stream_checks_hosted_gate_before_classification(self) -> None:
+    async def test_process_query_stream_checks_generation_gate_before_classification(self) -> None:
         class FakeComponents:
             def _content_protection_tool_ids(self):
                 return {}
@@ -350,7 +350,7 @@ class HostedProtectionTests(unittest.IsolatedAsyncioTestCase):
                 yield event
 
         with (
-            mock.patch("ragtime.rag.components.require_hosted_execution", new=mock.AsyncMock()) as hosted_gate,
+            mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()) as generation_gate,
             mock.patch("ragtime.rag.components.content_protection_context", return_value=context),
             mock.patch("ragtime.rag.components.bind_content_protection_context", return_value=nullcontext()),
             mock.patch("ragtime.rag.components.authorize_history", new=mock.AsyncMock()),
@@ -369,4 +369,4 @@ class HostedProtectionTests(unittest.IsolatedAsyncioTestCase):
             ]
 
         self.assertEqual(events, ["answer"])
-        hosted_gate.assert_awaited_once_with("caller", "owner")
+        generation_gate.assert_awaited_once_with("caller", "owner")

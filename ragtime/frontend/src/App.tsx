@@ -339,8 +339,9 @@ export function App() {
     null,
   );
   const [chatOpenRequest, setChatOpenRequest] = useState<ChatOpenRequest | null>(null);
-  // Auth loading blocks all authenticated routes, so this fallback is never used before resolution.
-  const hostedChatEnabled = authStatus?.hosted_chat_enabled !== false;
+  // Missing effective flags are unavailable until the server supplies the current policy.
+  const chatEnabled = authStatus?.chat_enabled === true;
+  const userspaceGenerationEnabled = authStatus?.userspace_generation_enabled === true;
 
   const handleOpenWorkspaceFromUsers = useCallback((workspaceId: string) => {
     setWorkspaceOpenRequest((prev) => ({
@@ -352,14 +353,14 @@ export function App() {
 
   const handleOpenChatFromUsers = useCallback(
     (conversationId: string) => {
-      if (!hostedChatEnabled) return;
+      if (!chatEnabled) return;
       setChatOpenRequest((prev) => ({
         conversationId,
         requestId: (prev?.requestId ?? 0) + 1,
       }));
       setActiveView('chat');
     },
-    [hostedChatEnabled],
+    [chatEnabled],
   );
 
   const forceLoginScreen = useCallback(() => {
@@ -386,6 +387,8 @@ export function App() {
         authenticated_webgl_background_enabled: authenticatedWebglBackgroundEnabled,
         chat_compaction_threshold_percent: 80,
         chat_auto_compaction_threshold_percent: 99,
+        chat_enabled: false,
+        userspace_generation_enabled: false,
       };
     });
   }, [authenticatedWebglBackgroundEnabled, serverName]);
@@ -398,10 +401,10 @@ export function App() {
   }, [forceLoginScreen]);
 
   useEffect(() => {
-    if (currentUser && !hostedChatEnabled && activeView === 'chat') {
+    if (currentUser && !chatEnabled && activeView === 'chat') {
       setActiveView('userspace');
     }
-  }, [activeView, currentUser, hostedChatEnabled]);
+  }, [activeView, currentUser, chatEnabled]);
 
   const refreshConfigurationWarnings = useCallback(async () => {
     try {
@@ -429,6 +432,15 @@ export function App() {
       console.error('Failed to refresh configuration warnings', error);
     }
   }, []);
+
+  const handleSettingsSaved = useCallback(async () => {
+    await refreshConfigurationWarnings();
+    try {
+      setAuthStatus(await api.getAuthStatus());
+    } catch (error) {
+      console.error('Failed to refresh auth status after saving settings', error);
+    }
+  }, [refreshConfigurationWarnings]);
 
   useEffect(() => {
     void refreshConfigurationWarnings();
@@ -570,6 +582,8 @@ export function App() {
           allowed_origins_open: true,
           server_name: serverName,
           authenticated_webgl_background_enabled: authenticatedWebglBackgroundEnabled,
+          chat_enabled: false,
+          userspace_generation_enabled: false,
         });
       } finally {
         setAuthLoading(false);
@@ -790,10 +804,10 @@ export function App() {
     if (activeView !== 'chat') {
       setChatFullscreen(false);
     }
-  }, [currentUser, isAdmin, activeView, hostedChatEnabled]);
+  }, [currentUser, isAdmin, activeView]);
 
   const isChatView =
-    hostedChatEnabled && (activeView === 'chat' || (!isAdmin && activeView !== 'userspace'));
+    chatEnabled && (activeView === 'chat' || (!isAdmin && activeView !== 'userspace'));
   const isUserspaceView = activeView === 'userspace';
   const isIndexerView = activeView === 'indexer';
   const lockViewportLayout = isChatView || isUserspaceView;
@@ -824,7 +838,7 @@ export function App() {
     const viewToSync =
       !isAdmin && activeView !== 'chat' && activeView !== 'userspace'
         ? 'userspace'
-        : activeView === 'chat' && !hostedChatEnabled
+        : activeView === 'chat' && !chatEnabled
           ? 'userspace'
           : activeView;
     params.set('view', viewToSync);
@@ -841,7 +855,7 @@ export function App() {
     }
     const newUrl = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({}, '', newUrl);
-  }, [activeView, highlightSetting, oauthParams, isAdmin, userspaceSharedRoute, hostedChatEnabled]);
+  }, [activeView, highlightSetting, oauthParams, isAdmin, userspaceSharedRoute, chatEnabled]);
 
   const loadJobs = useCallback(async () => {
     try {
@@ -1184,6 +1198,8 @@ export function App() {
             api_key_configured: false,
             session_cookie_secure: false,
             allowed_origins_open: true,
+            chat_enabled: false,
+            userspace_generation_enabled: false,
           }
         }
         onLoginSuccess={handleLoginSuccess}
@@ -1266,7 +1282,7 @@ export function App() {
               id="workbench-topnav-links"
               className={`topnav-links${isNavOverflowOpen ? ' is-open' : ''}`}
             >
-              {hostedChatEnabled && (
+              {chatEnabled && (
                 <button
                   type="button"
                   className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
@@ -1407,7 +1423,7 @@ export function App() {
                 <Suspense fallback={<RouteViewFallback />}>
                   <LazyUserSpacePanel
                     currentUser={currentUser}
-                    hostedChatEnabled={hostedChatEnabled}
+                    userspaceGenerationEnabled={userspaceGenerationEnabled}
                     debugMode={Boolean(authStatus?.debug_mode)}
                     openWorkspaceRequest={workspaceOpenRequest}
                     onFullscreenChange={setUserspaceFullscreen}
@@ -1450,7 +1466,7 @@ export function App() {
                     onAuthenticatedWebglBackgroundChange={setAuthenticatedWebglBackgroundEnabled}
                     onChatCompactionThresholdChange={handleChatCompactionThresholdChange}
                     onChatAutoCompactionThresholdChange={handleChatAutoCompactionThresholdChange}
-                    onSettingsSaved={refreshConfigurationWarnings}
+                    onSettingsSaved={handleSettingsSaved}
                     highlightSetting={highlightSetting}
                     onHighlightComplete={() => setHighlightSetting(null)}
                     authStatus={authStatus}
@@ -1478,7 +1494,7 @@ export function App() {
                   <LazyUsersPanel
                     currentUser={currentUser}
                     onOpenWorkspace={handleOpenWorkspaceFromUsers}
-                    onOpenChat={hostedChatEnabled ? handleOpenChatFromUsers : undefined}
+                    onOpenChat={chatEnabled ? handleOpenChatFromUsers : undefined}
                   />
                 </Suspense>
               </div>

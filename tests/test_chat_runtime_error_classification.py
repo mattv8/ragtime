@@ -31,7 +31,7 @@ if _inserted_fake_indexer_service:
 
 from ragtime.userspace.service import UserSpaceService
 from tests.content_protection_support import use_disabled_content_protection
-from tests.hosted_execution_test_support import enabled_hosted_execution_policy
+from tests.generation_policy_test_support import enabled_generation_policy
 
 
 class ChatRuntimeErrorClassificationTests(unittest.TestCase):
@@ -337,7 +337,7 @@ class MultiRoundStreamTests(unittest.IsolatedAsyncioTestCase):
         request_context = self._request_context()
 
         with (
-            enabled_hosted_execution_policy(),
+            enabled_generation_policy(),
             mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=resolution)),
             mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(return_value=request_context)),
@@ -364,7 +364,7 @@ class MultiRoundStreamTests(unittest.IsolatedAsyncioTestCase):
         resolution = RequestLLMResolution(llm=llm, provider="openrouter", model="model")
 
         with (
-            enabled_hosted_execution_policy(),
+            enabled_generation_policy(),
             mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=resolution)),
             mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(return_value=self._request_context())),

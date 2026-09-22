@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -88,7 +88,9 @@ function renderModal(overrides: Partial<React.ComponentProps<typeof ShareLinkMod
   return render(<ShareLinkModal {...buildProps(overrides)} />);
 }
 
-function getTab(name: 'Share Links' | 'API Access'): HTMLElement {
+function getTab(
+  name: 'Share Links' | 'Agent Collaboration' | 'Coding Agent Setup' | 'API Access',
+): HTMLElement {
   return screen.getByRole('tab', { name });
 }
 
@@ -97,7 +99,7 @@ afterEach(() => {
 });
 
 describe('ShareLinkModal', () => {
-  it('shows tabs only when api access content exists and selects Share Links by default', () => {
+  it('shows supplied tabs and selects Share Links by default', () => {
     const { rerender } = renderModal();
 
     expect(screen.queryByRole('tablist')).toBeNull();
@@ -115,6 +117,9 @@ describe('ShareLinkModal', () => {
     expect(screen.getByRole('tab', { name: 'Share Links' }).getAttribute('aria-selected')).toBe(
       'true',
     );
+    expect(
+      screen.getByRole('tab', { name: 'Agent Collaboration' }).getAttribute('aria-selected'),
+    ).toBe('false');
     expect(screen.getByRole('tab', { name: 'API Access' }).getAttribute('aria-selected')).toBe(
       'false',
     );
@@ -165,13 +170,14 @@ describe('ShareLinkModal', () => {
     );
   });
 
-  it('keeps the modal untabbed when api access content is omitted', () => {
+  it('omits API Access and defers Agent Collaboration content until selection', () => {
     renderModal({
       agentAccessSection: <div>Agent access</div>,
     });
 
-    expect(screen.queryByRole('tablist')).toBeNull();
-    expect(screen.getByText('Agent access')).toBeDefined();
+    expect(screen.getByRole('tablist')).toBeDefined();
+    expect(screen.queryByRole('tab', { name: 'API Access' })).toBeNull();
+    expect(screen.queryByText('Agent access')).toBeNull();
   });
 
   it('uses ArrowRight and Home to move focus and selection between tabs', async () => {
@@ -238,8 +244,56 @@ describe('ShareLinkModal', () => {
       />,
     );
 
-    expect(screen.queryByRole('tablist')).toBeNull();
+    expect(screen.getByRole('tablist')).toBeDefined();
     expect(screen.queryByRole('tab', { name: 'API Access' })).toBeNull();
-    expect(screen.getByText('Agent access')).toBeDefined();
+    expect(screen.getByRole('tab', { name: 'Agent Collaboration' })).toBeDefined();
+  });
+
+  it('lazy mounts Coding Agent Setup, preserves it across tabs, and unmounts it on close', async () => {
+    const user = userEvent.setup();
+    let unmounts = 0;
+
+    function StatefulConnectSection() {
+      const [value, setValue] = useState('');
+      useEffect(() => () => void (unmounts += 1), []);
+      return (
+        <input
+          aria-label="Agent name"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
+      );
+    }
+
+    const { rerender } = renderModal({ connectAgentSection: <StatefulConnectSection /> });
+    expect(screen.queryByRole('textbox', { name: 'Agent name' })).toBeNull();
+
+    await user.click(getTab('Coding Agent Setup'));
+    await user.type(screen.getByRole('textbox', { name: 'Agent name' }), 'persist me');
+    await user.click(getTab('Share Links'));
+    await user.click(getTab('Coding Agent Setup'));
+
+    expect((screen.getByRole('textbox', { name: 'Agent name' }) as HTMLInputElement).value).toBe(
+      'persist me',
+    );
+
+    rerender(
+      <ShareLinkModal
+        {...buildProps({ isOpen: false, connectAgentSection: <StatefulConnectSection /> })}
+      />,
+    );
+    expect(unmounts).toBe(1);
+  });
+
+  it('uses Coding Agent Setup as a keyboard tab without rendering API Access', async () => {
+    const user = userEvent.setup();
+    renderModal({ connectAgentSection: <div>Connect content</div> });
+
+    const linksTab = getTab('Share Links');
+    linksTab.focus();
+    await user.keyboard('{End}');
+
+    expect(document.activeElement).toBe(getTab('Coding Agent Setup'));
+    expect(screen.queryByRole('tab', { name: 'API Access' })).toBeNull();
   });
 });

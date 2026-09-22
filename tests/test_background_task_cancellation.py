@@ -9,7 +9,7 @@ from unittest import mock
 
 import ragtime.indexer.background_tasks as background_tasks
 from tests.content_protection_support import use_disabled_content_protection
-from tests.hosted_execution_test_support import enabled_hosted_execution_policy
+from tests.generation_policy_test_support import enabled_generation_policy
 
 
 class _HangingAsyncStream:
@@ -167,7 +167,7 @@ class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            enabled_hosted_execution_policy("user-1"),
+            enabled_generation_policy("user-1"),
             mock.patch.object(background_tasks, "repository", fake_repository),
             mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
             mock.patch.object(background_tasks, "rag", fake_rag),
@@ -199,7 +199,7 @@ class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            enabled_hosted_execution_policy("user-1"),
+            enabled_generation_policy("user-1"),
             mock.patch.object(background_tasks, "repository", fake_repository),
             mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
             mock.patch.object(background_tasks, "rag", fake_rag),
@@ -232,7 +232,7 @@ class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
         fake_event_bus = SimpleNamespace(publish=mock.AsyncMock(side_effect=fail_completed_event))
 
         with (
-            enabled_hosted_execution_policy("user-1"),
+            enabled_generation_policy("user-1"),
             mock.patch.object(background_tasks, "repository", fake_repository),
             mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
             mock.patch.object(background_tasks, "rag", fake_rag),
@@ -282,7 +282,7 @@ class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
         fake_settings_cache = SimpleNamespace(get_settings=mock.AsyncMock(return_value={"max_tool_output_chars": 5000}))
 
         with (
-            enabled_hosted_execution_policy("user-1"),
+            enabled_generation_policy("user-1"),
             mock.patch.object(background_tasks, "repository", fake_repository),
             mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
             mock.patch.object(background_tasks, "rag", fake_rag),
@@ -353,7 +353,7 @@ class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
         fake_settings_cache = SimpleNamespace(get_settings=mock.AsyncMock(return_value={"max_tool_output_chars": 5000}))
 
         with (
-            enabled_hosted_execution_policy("admin-1", "conversation-owner-1"),
+            enabled_generation_policy("admin-1", "conversation-owner-1"),
             mock.patch.object(background_tasks, "repository", fake_repository),
             mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
             mock.patch.object(background_tasks, "rag", fake_rag),
@@ -499,7 +499,7 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
             return outputs
 
         with ExitStack() as stack:
-            stack.enter_context(enabled_hosted_execution_policy())
+            stack.enter_context(enabled_generation_policy())
             stack.enter_context(mock.patch.object(rag_components, "_convert_message_to_langchain_async", mock.AsyncMock(return_value="hello")))
             stack.enter_context(mock.patch.object(rag_components, "_get_request_scoped_llm", mock.AsyncMock(return_value=llm_resolution)))
             stack.enter_context(mock.patch.object(rag_components, "_build_request_runtime_context", mock.AsyncMock(return_value=request_context)))
