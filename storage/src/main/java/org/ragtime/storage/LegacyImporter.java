@@ -10,8 +10,10 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.channels.FileChannel;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
@@ -48,8 +50,9 @@ final class LegacyImporter {
         JsonNode manifest = JSON.readTree(manifestBytes);
         validateManifest(manifest, workspaceId, generation);
         Path buckets = generationRoot.resolve("buckets");
-        if (!Files.isDirectory(buckets, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(generationRoot) || Files.isSymbolicLink(buckets)) throw new IOException("invalid staged buckets directory");
-        Map<String, Entry> entries = validateFiles(generationRoot, manifest.get("files"));
+        if (Files.isSymbolicLink(generationRoot)) throw new IOException("invalid staged buckets directory");
+        boolean bucketsAbsent = bucketsAreDefinitelyAbsent(buckets, manifest.get("files"));
+        Map<String, Entry> entries = validateFiles(generationRoot, manifest.get("files"), bucketsAbsent);
         ObjectNode workspace = registry.workspace(workspaceId);
         if (workspace == null || "revoked".equals(workspace.path("state").asText())) throw new IOException("workspace unavailable");
         List<String> verified = new ArrayList<>();
@@ -105,7 +108,19 @@ final class LegacyImporter {
             throw new IOException("invalid staged manifest");
         }
     }
-    private static Map<String, Entry> validateFiles(Path root, JsonNode files) throws Exception {
+    private static boolean bucketsAreDefinitelyAbsent(Path buckets, JsonNode files) throws IOException {
+        try {
+            BasicFileAttributes attributes = Files.readAttributes(buckets, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (attributes.isSymbolicLink() || !attributes.isDirectory()) throw new IOException("invalid staged buckets directory");
+            return false;
+        } catch (NoSuchFileException error) {
+            if (files != null && files.isArray() && files.isEmpty()) return true;
+            throw new IOException("invalid staged buckets directory");
+        } catch (IOException error) {
+            throw new IOException("invalid staged buckets directory");
+        }
+    }
+    private static Map<String, Entry> validateFiles(Path root, JsonNode files, boolean bucketsAbsent) throws Exception {
         Map<String, Entry> result = new HashMap<>();
         if (files == null || !files.isArray()) throw new IOException("invalid staged manifest files");
         for (JsonNode item : files) {
@@ -123,6 +138,7 @@ final class LegacyImporter {
                 throw new IOException("invalid staged manifest file");
             }
         }
+        if (bucketsAbsent) return result;
         Set<String> actual = new HashSet<>();
         try (var paths = Files.walk(root.resolve("buckets"))) {
             for (Path path : (Iterable<Path>) paths::iterator) {

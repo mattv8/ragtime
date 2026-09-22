@@ -460,6 +460,11 @@ class LegacyObjectStorageMigrator:
             _fsync(receipt_fd)
             try:
                 with _open_relative_dir(receipt_fd, (tmp_name,), create=False) as tmp_fd:
+                    # The gateway validates the immutable buckets root even when the
+                    # source is empty.  Publish it explicitly rather than relying on
+                    # file-copy parents to create it.
+                    with _open_relative_dir(tmp_fd, ("buckets",), create=True) as buckets_fd:
+                        _fsync(buckets_fd)
                     manifest_files: list[dict[str, Any]] = []
                     source_files: dict[str, dict[str, Any]] = {}
                     for relative, expected in files:

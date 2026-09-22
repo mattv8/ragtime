@@ -2,9 +2,12 @@ package org.ragtime.storage;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Durable state transitions for staged legacy imports. */
 final class LegacyImportService {
+    private static final Logger LOG = LoggerFactory.getLogger(LegacyImportService.class);
     private final Registry registry;
     private final LegacyImporter importer;
 
@@ -16,15 +19,27 @@ final class LegacyImportService {
     void run(String workspaceId) {
         ObjectNode job = job(workspaceId);
         if (job == null || !active(job)) return;
+        String generation = job.path("generation").asText();
+        String phase = "transition-copying";
         try {
             transition(workspaceId, "copying", false, null);
             ObjectNode current = job(workspaceId);
+            generation = current.path("generation").asText();
+            phase = "import-staged";
             LegacyImporter.Result result = importer.importStaged(
                     workspaceId, current.path("generation").asText(), current.path("manifest_sha256").asText());
+            phase = "transition-completed";
             transition(workspaceId, "completed", true, result);
         } catch (Exception error) {
+            LOG.warn("Legacy import failed: workspace_id={} generation={} phase={} reason={}", workspaceId, generation, phase, failureReason(error));
             failOrCancel(workspaceId);
         }
+    }
+
+    private static String failureReason(Exception error) {
+        if (error instanceof java.io.IOException) return "validation-or-storage-io";
+        if (error instanceof IllegalStateException) return "state-transition";
+        return error.getClass().getSimpleName();
     }
 
     private void failOrCancel(String workspaceId) {

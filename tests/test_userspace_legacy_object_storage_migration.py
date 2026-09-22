@@ -36,6 +36,12 @@ class LegacyObjectStorageMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hashlib.sha256(manifest_path.read_bytes()).hexdigest(), receipt["manifest_sha256"])
         self.assertTrue((self.storage / "_legacy_imports" / "ws" / f"receipt-{generation}.json").is_file())
 
+    def test_stage_publishes_empty_buckets_directory_for_empty_source(self) -> None:
+        receipt = self.migrator.stage("ws")
+        generation_root = self.storage / "_legacy_imports" / "ws" / receipt["generation"]
+        self.assertEqual([], receipt["manifest"]["files"])
+        self.assertTrue((generation_root / "buckets").is_dir())
+
     def test_missing_source_is_not_an_empty_import(self) -> None:
         self.source.rmdir()
         (self.workspace / "s3" / "buckets").rmdir()

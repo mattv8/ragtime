@@ -25,7 +25,7 @@ from starlette.websockets import WebSocket
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
-from ragtime.core.datetimes import utc_now
+from ragtime.core.datetimes import coerce_utc_datetime, utc_now
 from ragtime.core.logging import get_logger
 from ragtime.core.runtime_manager_client import (
     RuntimeManagerRequestConfig as _RuntimeManagerRequestConfig,
@@ -101,6 +101,8 @@ _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN = "userspace-preview.lvh.me"
 _RUNTIME_PREVIEW_UPSTREAM_CACHE_TTL_SECONDS = 300
 _RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS = 2.0
 _RUNTIME_PROVIDER_STATUS_STALE_FALLBACK_SECONDS = 8.0
+_RUNTIME_GC_SESSION_LIVENESS_GRACE_SECONDS = 120.0
+_RUNTIME_GC_SESSION_STATUS_TIMEOUT_SECONDS = 5.0
 _RUNTIME_BRIDGE_AUTH_FAILURE_AUDIT_WINDOW_SECONDS = 30.0
 _RUNTIME_BRIDGE_AUTH_FAILURE_AUDIT_CACHE_MAX = 1024
 _RUNTIME_BRIDGE_AUDIT_SUCCESS_SCAN_LIMIT = 10
@@ -3268,10 +3270,49 @@ class UserSpaceRuntimeService:
         """Whether legacy storage source cleanup must defer for a workspace."""
         db = await get_db()
         model = self._runtime_session_model(db)
-        row = await model.find_first(
+        rows = await model.find_many(
             where={"workspaceId": workspace_id, "state": {"in": ["starting", "running", "stopping"]}},
         )
-        return row is not None
+        if not rows:
+            return False
+
+        now = utc_now()
+        provider_name = self._runtime_provider_name()
+        active = False
+        for row in rows:
+            runtime_provider = str(getattr(row, "runtimeProvider", "") or "").strip()
+            provider_session_id = str(getattr(row, "providerSessionId", "") or "").strip()
+            timestamps = [
+                value
+                for value in (
+                    getattr(row, "updatedAt", None),
+                    getattr(row, "lastHeartbeatAt", None),
+                )
+                if isinstance(value, datetime)
+            ]
+            if len(timestamps) != 2:
+                active = True
+            elif (now - max(coerce_utc_datetime(value) for value in timestamps)).total_seconds() < _RUNTIME_GC_SESSION_LIVENESS_GRACE_SECONDS:
+                active = True
+
+            if runtime_provider != provider_name or not provider_session_id:
+                active = True
+                continue
+            try:
+                provider_status = await asyncio.wait_for(
+                    self._runtime_provider_get_status(
+                        provider_session_id,
+                        max_age_seconds=0,
+                        allow_stale_on_error=False,
+                    ),
+                    timeout=_RUNTIME_GC_SESSION_STATUS_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                active = True
+                continue
+            if provider_status is not None:
+                active = True
+        return active
 
     async def restart_runtime_env_vars_and_wait(
         self,

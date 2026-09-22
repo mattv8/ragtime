@@ -49,6 +49,36 @@ class LegacyImporterTest {
             assertThrows(java.io.IOException.class,()->new LegacyImporter(registry,engine).importStaged("ws",generation,sha(manifest)));
         }
     }
+    @Test void importsPreviouslyPublishedEmptyGenerationWithoutBucketsDirectory() throws Exception {
+        var root=Files.createTempDirectory("legacy-import"); String generation="0123456789abcdef0123456789abcdef";
+        String manifest="{\"version\":1,\"workspace_id\":\"ws\",\"generation\":\""+generation+"\",\"files\":[]}";
+        var generationRoot=Files.createDirectories(root.resolve("_legacy_imports/ws").resolve(generation));
+        Files.writeString(generationRoot.resolve("manifest.json"),manifest);
+        try(var registry=new Registry(root,"fixture-key"); var engine=new StorageEngine(registry,root,"fixture-key")) {
+            importingWorkspace(registry, generation, sha(manifest));
+            var result=new LegacyImporter(registry,engine).importStaged("ws",generation,sha(manifest));
+            assertEquals(java.util.List.of(), result.verifiedFiles());
+            assertTrue(Files.isRegularFile(generationRoot.resolve("verification.json")));
+        }
+    }
+    @Test void rejectsEmptyManifestWithStagedArtifactsOrBucketsSymlink() throws Exception {
+        var root=Files.createTempDirectory("legacy-import"); String generation="0123456789abcdef0123456789abcdef";
+        String manifest="{\"version\":1,\"workspace_id\":\"ws\",\"generation\":\""+generation+"\",\"files\":[]}";
+        var generationRoot=Files.createDirectories(root.resolve("_legacy_imports/ws").resolve(generation));
+        Files.writeString(generationRoot.resolve("manifest.json"),manifest);
+        var buckets=Files.createDirectories(generationRoot.resolve("buckets/uploads"));
+        Files.writeString(buckets.resolve("unexpected.txt"),"unexpected");
+        try(var registry=new Registry(root,"fixture-key"); var engine=new StorageEngine(registry,root,"fixture-key")) {
+            importingWorkspace(registry, generation, sha(manifest));
+            assertThrows(java.io.IOException.class,()->new LegacyImporter(registry,engine).importStaged("ws",generation,sha(manifest)));
+        }
+        Files.delete(buckets.resolve("unexpected.txt")); Files.delete(buckets); Files.delete(generationRoot.resolve("buckets"));
+        Files.createSymbolicLink(generationRoot.resolve("buckets"), root.resolve("missing-buckets"));
+        try(var registry=new Registry(root,"fixture-key"); var engine=new StorageEngine(registry,root,"fixture-key")) {
+            importingWorkspace(registry, generation, sha(manifest));
+            assertThrows(java.io.IOException.class,()->new LegacyImporter(registry,engine).importStaged("ws",generation,sha(manifest)));
+        }
+    }
     @Test void acceptsAPreviouslyBoundUnsortedNestedManifest() throws Exception {
         var root=Files.createTempDirectory("legacy-import"); String generation="0123456789abcdef0123456789abcdef";
         var bucket=Files.createDirectories(root.resolve("_legacy_imports/ws").resolve(generation).resolve("buckets/uploads/dir"));

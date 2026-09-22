@@ -129,6 +129,15 @@ class SSHConfig:
             raise ValueError("SSH authentication required: provide password, key_path, or key_content")
 
 
+class _RagtimeTransport(paramiko.Transport):
+    """Keep Paramiko traceback logs together for Ragtime-created connections."""
+
+    def _log(self, level: int, msg: Any, *args: Any) -> None:
+        if isinstance(msg, list):
+            msg = "\n".join(str(line) for line in msg)
+        super()._log(level, msg, *args)
+
+
 def _load_private_key(
     key_content: Optional[str] = None,
     key_path: Optional[str] = None,
@@ -164,11 +173,16 @@ def _load_private_key(
 
 def _build_connect_kwargs(config: SSHConfig) -> dict:
     """Build paramiko connect kwargs from SSHConfig."""
+    timeout = config.timeout if config.timeout > 0 else 30
     kwargs = {
         "hostname": config.host,
         "port": config.port,
         "username": config.user,
-        "timeout": config.timeout if config.timeout > 0 else 30,
+        "timeout": timeout,
+        "banner_timeout": min(15, timeout * 0.8),
+        "auth_timeout": timeout,
+        "channel_timeout": timeout,
+        "transport_factory": _RagtimeTransport,
         "allow_agent": False,
         "look_for_keys": False,
     }
@@ -192,7 +206,14 @@ def _create_ssh_client(config: SSHConfig) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     logger.debug(f"SSH connecting to {config.user}@{config.host}:{config.port} using {config.auth_method.value}")
-    client.connect(**_build_connect_kwargs(config))
+    try:
+        client.connect(**_build_connect_kwargs(config))
+    except Exception:
+        try:
+            client.close()
+        except Exception:
+            pass
+        raise
     return client
 
 
