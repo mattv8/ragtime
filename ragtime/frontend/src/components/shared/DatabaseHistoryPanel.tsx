@@ -671,10 +671,14 @@ export function DatabaseHistoryPanel({
         data-history-activity-status={job.status}
       >
         <div>
-          <strong>{title}</strong>
-          <span>{scope}</span>
-          <span>{outcome}</span>
-          <span>{new Date(job.finished_at ?? job.updated_at).toLocaleString()}</span>
+          <div className="database-history-backup-meta">
+            <span className="database-history-backup-time">{title}</span>
+            <span className="database-history-backup-secondary">{scope}</span>
+            <span className="database-history-backup-secondary">
+              {new Date(job.finished_at ?? job.updated_at).toLocaleString()}
+            </span>
+          </div>
+          <span className="database-history-backup-secondary">{outcome}</span>
         </div>
         <div className="database-history-actions">
           <span
