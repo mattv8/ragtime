@@ -15,7 +15,8 @@ async def assert_process_group_termination(
     timeout: float | None = None,
 ) -> None:
     process = SimpleNamespace(
-        pid=1234,
+        # Sandbox launchers own a fresh session, so their PID is the PGID.
+        pid=4321,
         returncode=None,
         terminate=mock.Mock(),
         kill=mock.Mock(),
