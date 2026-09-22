@@ -1003,17 +1003,15 @@ export function DatabaseHistoryPanel({
                                       Restore
                                     </button>
                                   )}
-                                  {backup.can_delete && (
-                                    <button
-                                      type="button"
-                                      className="btn btn-secondary btn-sm"
-                                      disabled={busy || deletingBackupIds.has(backup.id)}
-                                      onClick={() => void remove(backup.id)}
-                                      aria-label={`Delete ${backup.database_name} backup`}
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
-                                  )}
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary btn-sm"
+                                    disabled={!backup.can_delete || busy || deletingBackupIds.has(backup.id)}
+                                    onClick={() => void remove(backup.id)}
+                                    aria-label={`Delete ${backup.database_name} backup`}
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
                                 </div>
                               </article>
                             ))}
