@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from prisma.models import User
 from pydantic import BaseModel, Field
 
 from ragtime.core.database import get_db
@@ -13,6 +14,7 @@ from ragtime.core.security import get_current_user
 from ragtime.userspace.development_access import (
     DEVELOPMENT_SCOPES,
     create_workspace_development_credential,
+    delete_workspace_development_credential,
     development_credential_response,
     revoke_workspace_development_credential,
     rotate_workspace_development_credential,
@@ -60,3 +62,9 @@ async def rotate_workspace_development_credential_route(workspace_id: str, crede
 async def revoke_workspace_development_credential_route(workspace_id: str, credential_id: str, user: Any = Depends(get_current_user)) -> dict[str, Any]:
     await _require_workspace_owner_or_admin(workspace_id, user)
     return await revoke_workspace_development_credential(workspace_id=workspace_id, credential_id=credential_id)
+
+
+@router.delete("/{credential_id}/record", status_code=204)
+async def delete_credential(workspace_id: str, credential_id: str, current_user: User = Depends(get_current_user)):
+    await _require_workspace_owner_or_admin(workspace_id, current_user)
+    await delete_workspace_development_credential(workspace_id, credential_id, current_user)

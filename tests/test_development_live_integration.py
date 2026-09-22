@@ -12,7 +12,7 @@ from unittest import mock
 from uuid import uuid4
 
 import httpx
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from mcp.types import TextContent
 from prisma.enums import AuthProvider, UserRole, WorkspaceRole
 from starlette.requests import Request
@@ -93,6 +93,19 @@ class DevelopmentLiveIntegrationTests(unittest.IsolatedAsyncioTestCase):
         response: _CredentialResponse = {"id": credential_id, "token": token, "scopes": credential_scopes}
         return response, await resolve_development_principal(_request(response["token"]))
 
+    async def _delete_credential_record(self, workspace_id: str, credential_id: str) -> httpx.Response:
+        app = FastAPI()
+        app.include_router(development_credentials_routes.router)
+        app.dependency_overrides[development_credentials_routes.get_current_user] = lambda: SimpleNamespace(id=self.owner_id, role="user")
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="https://ragtime.example") as client:
+                return await client.delete(
+                    f"/indexes/userspace/development/workspaces/{workspace_id}/credentials/{credential_id}/record"
+                )
+        finally:
+            app.dependency_overrides.clear()
+
     async def test_credential_http_operations_snapshot_context_and_mcp_share_the_real_dispatcher(self) -> None:
         created, principal = await self._credential()
         self.assertTrue(created["token"].startswith("rtdev_"))
@@ -167,6 +180,30 @@ class DevelopmentLiveIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as rejected_expiry:
             await resolve_development_principal(_request(expired["token"]))
         self.assertEqual(rejected_expiry.exception.status_code, 401)
+
+    async def test_deleting_a_revoked_credential_removes_it_from_the_workspace_list(self) -> None:
+        created, _ = await self._credential()
+        await revoke_workspace_development_credential(workspace_id=self.workspace_id, credential_id=created["id"])
+
+        response = await self._delete_credential_record(self.workspace_id, created["id"])
+        self.assertEqual(response.status_code, 204)
+        listed = await development_credentials_routes.list_workspace_development_credentials(
+            self.workspace_id, SimpleNamespace(id=self.owner_id, role="user")
+        )
+        self.assertNotIn(created["id"], {item["id"] for item in listed["items"]})
+
+    async def test_deleting_an_active_credential_is_rejected(self) -> None:
+        created, _ = await self._credential()
+
+        response = await self._delete_credential_record(self.workspace_id, created["id"])
+        self.assertEqual(response.status_code, 400)
+
+    async def test_deleting_a_credential_from_another_workspace_returns_not_found(self) -> None:
+        created, _ = await self._credential()
+        await revoke_workspace_development_credential(workspace_id=self.workspace_id, credential_id=created["id"])
+
+        response = await self._delete_credential_record(self.other_workspace_id, created["id"])
+        self.assertEqual(response.status_code, 404)
 
     async def test_development_bearer_is_rejected_by_anonymous_v1_auth_dependency(self) -> None:
         created, _ = await self._credential()

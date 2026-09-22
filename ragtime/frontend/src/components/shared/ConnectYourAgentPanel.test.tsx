@@ -8,6 +8,7 @@ const apiMock = vi.hoisted(() => ({
   createWorkspaceDevelopmentCredential: vi.fn(),
   rotateWorkspaceDevelopmentCredential: vi.fn(),
   revokeWorkspaceDevelopmentCredential: vi.fn(),
+  deleteWorkspaceDevelopmentCredential: vi.fn(),
   executeWorkspaceDevelopmentOperation: vi.fn(),
 }));
 
@@ -103,19 +104,23 @@ describe('ConnectYourAgentPanel', () => {
     expect(apiMock.rotateWorkspaceDevelopmentCredential).not.toHaveBeenCalled();
   });
 
-  it('keeps existing cards visible and cancels explicit new-agent creation', async () => {
+  it('hides existing cards while the new-agent form is open and restores them on dismiss', async () => {
     const user = userEvent.setup();
     apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
-    const card = await screen.findByRole('article', { name: 'External agent credential' });
+    await screen.findByRole('article', { name: 'External agent credential' });
     await user.click(screen.getByRole('button', { name: /^new agent$/i }));
-    expect(screen.getByLabelText('Credential name')).toBeTruthy();
-    expect(screen.getByRole('article', { name: 'External agent credential' })).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: /^cancel creation$/i }));
 
+    // Create form is visible; existing card is hidden
+    expect(screen.getByLabelText('Credential name')).toBeTruthy();
+    expect(screen.queryByRole('article', { name: 'External agent credential' })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: /^dismiss new agent form$/i }));
+
+    // Form dismissed; card reappears; no credential was created
     expect(screen.queryByLabelText('Credential name')).toBeNull();
-    expect(card).toBeTruthy();
+    expect(screen.getByRole('article', { name: 'External agent credential' })).toBeTruthy();
     expect(apiMock.createWorkspaceDevelopmentCredential).not.toHaveBeenCalled();
   });
 
@@ -154,9 +159,71 @@ describe('ConnectYourAgentPanel', () => {
     await user.click(screen.getByRole('button', { name: /^copy setup instructions$/i }));
     expect(await navigator.clipboard.readText()).toContain('rotated-token');
 
+    // Advance to start step then dismiss so card actions become accessible
+    await user.click(within(card).getByRole('button', { name: /^next: start working$/i }));
+    await user.click(within(card).getByRole('button', { name: /^done$/i }));
+
     await user.click(within(card).getByRole('button', { name: /revoke credential/i }));
     expect(await within(card).findByText('Revoked')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^copy setup instructions$/i })).toBeNull();
+  });
+
+  it('shows Delete button only on revoked credentials and confirms before deleting', async () => {
+    const user = userEvent.setup();
+    const revokedCred = credential({ revoked_at: '2026-09-19T00:00:01Z' });
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([revokedCred]);
+    apiMock.deleteWorkspaceDevelopmentCredential.mockResolvedValue(undefined);
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    const card = await screen.findByRole('article', { name: 'External agent credential' });
+    expect(within(card).getByRole('button', { name: /^delete$/i })).toBeTruthy();
+
+    await user.click(within(card).getByRole('button', { name: /^delete$/i }));
+    expect(screen.getByText(/permanently delete this credential/i)).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: /delete permanently/i }));
+    await waitFor(() => {
+      expect(apiMock.deleteWorkspaceDevelopmentCredential).toHaveBeenCalledWith(
+        'workspace-1',
+        revokedCred.id,
+      );
+    });
+    expect(screen.queryByRole('article', { name: 'External agent credential' })).toBeNull();
+  });
+
+  it('cancels delete without removing the credential', async () => {
+    const user = userEvent.setup();
+    const revokedCred = credential({ revoked_at: '2026-09-19T00:00:01Z' });
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([revokedCred]);
+    apiMock.deleteWorkspaceDevelopmentCredential.mockResolvedValue(undefined);
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    const card = await screen.findByRole('article', { name: 'External agent credential' });
+    await user.click(within(card).getByRole('button', { name: /^delete$/i }));
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(screen.queryByText(/permanently delete this credential/i)).toBeNull();
+    expect(screen.getByRole('article', { name: 'External agent credential' })).toBeTruthy();
+    expect(apiMock.deleteWorkspaceDevelopmentCredential).not.toHaveBeenCalled();
+  });
+
+  it('shows error and keeps card when delete fails', async () => {
+    const user = userEvent.setup();
+    const revokedCred = credential({ revoked_at: '2026-09-19T00:00:01Z' });
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([revokedCred]);
+    apiMock.deleteWorkspaceDevelopmentCredential.mockRejectedValue(new Error('Delete failed'));
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    const card = await screen.findByRole('article', { name: 'External agent credential' });
+    await user.click(within(card).getByRole('button', { name: /^delete$/i }));
+    await user.click(screen.getByRole('button', { name: /delete permanently/i }));
+
+    // Confirmation closes immediately; error shown; card preserved
+    await waitFor(() => {
+      expect(screen.queryByText(/permanently delete this credential/i)).toBeNull();
+      expect((screen.getByRole('alert') as HTMLElement).textContent).toContain('Delete failed');
+    });
+    expect(screen.getByRole('article', { name: 'External agent credential' })).toBeTruthy();
   });
 
   it('clears setup state when workspace or permission changes', async () => {
@@ -179,35 +246,35 @@ describe('ConnectYourAgentPanel', () => {
     expect(screen.queryByRole('article')).toBeNull();
   });
 
-  it('keeps activity collapsed until requested and copies setup instructions', async () => {
+  it('hides development activity during setup and keeps it collapsed otherwise', async () => {
     const user = userEvent.setup();
-    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
-      ...credential(),
-      token: 'fresh-token-value',
-    });
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
+    await screen.findByRole('article', { name: 'External agent credential' });
     expect(
       (screen.getByText('Development activity').closest('details') as HTMLDetailsElement).open,
     ).toBe(false);
-    await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
-    await screen.findByRole('button', { name: /copy setup instructions/i });
-    await user.click(screen.getByRole('button', { name: /copy setup instructions/i }));
-    expect(await navigator.clipboard.readText()).toContain('fresh-token-value');
     await user.click(screen.getByText('Development activity'));
     expect(
       (screen.getByText('Development activity').closest('details') as HTMLDetailsElement).open,
     ).toBe(true);
+
+    // Opening the new-agent wizard hides development activity entirely
+    await user.click(screen.getByRole('button', { name: /^new agent$/i }));
+    expect(screen.queryByText('Development activity')).toBeNull();
   });
 
   it('cancels a running development job and refreshes activity', async () => {
     const user = userEvent.setup();
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
     apiMock.executeWorkspaceDevelopmentOperation
       .mockResolvedValueOnce([{ id: 'job-1', status: 'running' }])
       .mockResolvedValueOnce({ id: 'job-1' })
       .mockResolvedValueOnce([{ id: 'job-1', status: 'cancelled' }]);
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
+    await screen.findByRole('article', { name: 'External agent credential' });
     await user.click(screen.getByText('Development activity'));
     await user.click(screen.getByRole('button', { name: /^refresh$/i }));
     await screen.findByText('running');

@@ -15,6 +15,7 @@ type ShareStatus = UserSpaceWorkspaceShareLinkStatus | ConversationShareLinkStat
 
 import { LdapGroupChips, LdapGroupSelect, type LdapGroup } from '../LdapGroupSelect';
 import { InlineCopyButton } from './InlineCopyButton';
+import { ModalTabs, type ModalTab } from './ModalTabs';
 import type { ShareLinkStyle } from '@/types';
 
 interface ShareLinkModalProps {
@@ -51,8 +52,6 @@ interface ShareLinkModalProps {
   shareTargetLabel?: string;
   openActionLabel?: string;
   extraAccessControls?: ReactNode;
-  agentAccessSection?: ReactNode;
-  connectAgentSection?: ReactNode;
   apiAccessSection?: ReactNode;
   onClose: () => void;
   onSelectShare?: (shareId: string) => void;
@@ -72,8 +71,6 @@ interface ShareLinkModalProps {
   onShareUrlInlineCopyError?: (error: Error) => void;
   formatUserLabel: (user: UserDirectoryEntry, fallback: string) => string;
 }
-
-type ShareModalTab = 'links' | 'agent' | 'connect' | 'api';
 
 const SHARE_ACCESS_MODE_LABELS: Record<ShareAccessMode, string> = {
   token: 'Public link',
@@ -146,8 +143,6 @@ export function ShareLinkModal({
   shareTargetLabel = 'workspace',
   openActionLabel = 'Open Preview',
   extraAccessControls,
-  agentAccessSection,
-  connectAgentSection,
   apiAccessSection,
   onClose,
   onSelectShare,
@@ -168,20 +163,13 @@ export function ShareLinkModal({
   formatUserLabel,
 }: ShareLinkModalProps) {
   const [view, setView] = useState<'list' | 'edit'>('list');
-  const [activeTab, setActiveTab] = useState<ShareModalTab>('links');
-  const [hasMountedAgentAccessSection, setHasMountedAgentAccessSection] = useState(false);
-  const [hasMountedConnectAgentSection, setHasMountedConnectAgentSection] = useState(false);
-  const [hasMountedApiAccessSection, setHasMountedApiAccessSection] = useState(false);
+  const [activeTab, setActiveTab] = useState('links');
   const [deleteConfirmShareId, setDeleteConfirmShareId] = useState<string | null>(null);
   const [shareLabelDraft, setShareLabelDraft] = useState('');
   const [isEditingShareTitle, setIsEditingShareTitle] = useState(false);
   const pendingEditAfterCreateRef = useRef(false);
   const previousSelectedShareIdRef = useRef<string | null>(null);
   const previousCreatingShareLinkRef = useRef(creatingShareLink);
-  const shareLinksTabRef = useRef<HTMLButtonElement | null>(null);
-  const agentAccessTabRef = useRef<HTMLButtonElement | null>(null);
-  const connectAgentTabRef = useRef<HTMLButtonElement | null>(null);
-  const apiAccessTabRef = useRef<HTMLButtonElement | null>(null);
 
   const availableShareLinks = useMemo(
     () => (shareLinks.length > 0 ? shareLinks : shareStatus?.id ? [shareStatus] : []),
@@ -195,16 +183,11 @@ export function ShareLinkModal({
     return availableShareLinks.find((link) => link.id === selectedShareId) ?? shareStatus;
   }, [availableShareLinks, selectedShareId, shareStatus]);
 
-  const hasAgentTab = Boolean(agentAccessSection);
-  const hasConnectAgentTab = Boolean(connectAgentSection);
   const hasApiAccessTab = Boolean(apiAccessSection);
-  const hasTabs = hasAgentTab || hasConnectAgentTab || hasApiAccessTab;
+  const hasTabs = hasApiAccessTab;
 
   useEffect(() => {
     setActiveTab('links');
-    setHasMountedAgentAccessSection(false);
-    setHasMountedConnectAgentSection(false);
-    setHasMountedApiAccessSection(false);
 
     if (!isOpen) {
       setView('list');
@@ -217,19 +200,8 @@ export function ShareLinkModal({
   }, [isOpen]);
 
   useEffect(() => {
-    if (!hasApiAccessTab) {
-      setHasMountedApiAccessSection(false);
-      if (activeTab === 'api') setActiveTab('links');
-    }
-    if (!hasAgentTab) {
-      setHasMountedAgentAccessSection(false);
-      if (activeTab === 'agent') setActiveTab('links');
-    }
-    if (!hasConnectAgentTab) {
-      setHasMountedConnectAgentSection(false);
-      if (activeTab === 'connect') setActiveTab('links');
-    }
-  }, [hasApiAccessTab, hasAgentTab, hasConnectAgentTab, activeTab]);
+    if (!hasApiAccessTab && activeTab === 'api') setActiveTab('links');
+  }, [hasApiAccessTab, activeTab]);
 
   useEffect(() => {
     if (
@@ -280,70 +252,6 @@ export function ShareLinkModal({
   const listBusy = creatingShareLink || deletingSelectedShareLink || updatingShareLabel;
   const isEditView = view === 'edit' && Boolean(selectedShare);
   const linkIdentityLocked = Boolean(selectedShare?.has_share_link);
-
-  const selectTab = (tab: ShareModalTab) => {
-    if (tab === 'agent' && !hasAgentTab) return;
-    if (tab === 'connect' && !hasConnectAgentTab) return;
-    if (tab === 'api' && !hasApiAccessTab) {
-      return;
-    }
-    if (tab === 'agent') setHasMountedAgentAccessSection(true);
-    if (tab === 'connect') setHasMountedConnectAgentSection(true);
-    if (tab === 'api') {
-      setHasMountedApiAccessSection(true);
-    }
-    setActiveTab(tab);
-  };
-
-  const moveTabSelection = (tab: ShareModalTab) => {
-    selectTab(tab);
-    if (tab === 'links') {
-      shareLinksTabRef.current?.focus();
-      return;
-    }
-    if (tab === 'agent') {
-      agentAccessTabRef.current?.focus();
-      return;
-    }
-    if (tab === 'connect') {
-      connectAgentTabRef.current?.focus();
-      return;
-    }
-    apiAccessTabRef.current?.focus();
-  };
-
-  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, tab: ShareModalTab) => {
-    if (!hasTabs) return;
-
-    const visibleTabs: ShareModalTab[] = ['links'];
-    if (hasAgentTab) visibleTabs.push('agent');
-    if (hasConnectAgentTab) visibleTabs.push('connect');
-    if (hasApiAccessTab) visibleTabs.push('api');
-
-    const idx = visibleTabs.indexOf(tab);
-
-    if (event.key === 'ArrowRight') {
-      event.preventDefault();
-      moveTabSelection(visibleTabs[(idx + 1) % visibleTabs.length]);
-      return;
-    }
-    if (event.key === 'ArrowLeft') {
-      event.preventDefault();
-      moveTabSelection(visibleTabs[(idx - 1 + visibleTabs.length) % visibleTabs.length]);
-      return;
-    }
-
-    if (event.key === 'Home') {
-      event.preventDefault();
-      moveTabSelection('links');
-      return;
-    }
-
-    if (event.key === 'End') {
-      event.preventDefault();
-      moveTabSelection(visibleTabs[visibleTabs.length - 1]);
-    }
-  };
 
   const handleSaveShareLabel = () => {
     if (!canSaveShareLabel || updatingShareLabel) {
@@ -741,11 +649,15 @@ export function ShareLinkModal({
       </div>
     </>
   );
+  const shareTabs: ModalTab[] = [
+    { id: 'links', label: 'Share Links', content: linksPanel },
+    ...(apiAccessSection ? [{ id: 'api', label: 'API Access', content: apiAccessSection }] : []),
+  ];
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div
-        className={`modal-content userspace-share-modal${hasTabs ? ' userspace-share-modal-with-tabs' : ''}`}
+        className={`modal-content userspace-share-modal${hasTabs ? ' modal-with-tabs' : ''}`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-header">
@@ -769,114 +681,12 @@ export function ShareLinkModal({
         </div>
         <div className="modal-body">
           {hasTabs ? (
-            <>
-              <div className="userspace-share-tabs" id="share-workspace-tabs" role="tablist">
-                <button
-                  ref={shareLinksTabRef}
-                  type="button"
-                  id="share-workspace-tab-links"
-                  role="tab"
-                  className="userspace-share-tab"
-                  aria-selected={activeTab === 'links'}
-                  aria-controls="share-workspace-panel-links"
-                  tabIndex={activeTab === 'links' ? 0 : -1}
-                  onClick={() => selectTab('links')}
-                  onKeyDown={(event) => handleTabKeyDown(event, 'links')}
-                >
-                  Share Links
-                </button>
-                {hasAgentTab && (
-                  <button
-                    ref={agentAccessTabRef}
-                    type="button"
-                    id="share-workspace-tab-agent"
-                    role="tab"
-                    className="userspace-share-tab"
-                    aria-selected={activeTab === 'agent'}
-                    aria-controls="share-workspace-panel-agent"
-                    tabIndex={activeTab === 'agent' ? 0 : -1}
-                    onClick={() => selectTab('agent')}
-                    onKeyDown={(event) => handleTabKeyDown(event, 'agent')}
-                  >
-                    Agent Collaboration
-                  </button>
-                )}
-                {hasConnectAgentTab && (
-                  <button
-                    ref={connectAgentTabRef}
-                    type="button"
-                    id="share-workspace-tab-connect"
-                    role="tab"
-                    className="userspace-share-tab"
-                    aria-selected={activeTab === 'connect'}
-                    aria-controls="share-workspace-panel-connect"
-                    tabIndex={activeTab === 'connect' ? 0 : -1}
-                    onClick={() => selectTab('connect')}
-                    onKeyDown={(event) => handleTabKeyDown(event, 'connect')}
-                  >
-                    Coding Agent Setup
-                  </button>
-                )}
-                {hasApiAccessTab && (
-                  <button
-                    ref={apiAccessTabRef}
-                    type="button"
-                    id="share-workspace-tab-api"
-                    role="tab"
-                    className="userspace-share-tab"
-                    aria-selected={activeTab === 'api'}
-                    aria-controls="share-workspace-panel-api"
-                    tabIndex={activeTab === 'api' ? 0 : -1}
-                    onClick={() => selectTab('api')}
-                    onKeyDown={(event) => handleTabKeyDown(event, 'api')}
-                  >
-                    API Access
-                  </button>
-                )}
-              </div>
-              <div
-                id="share-workspace-panel-links"
-                role="tabpanel"
-                className="userspace-share-tab-panel"
-                aria-labelledby="share-workspace-tab-links"
-                hidden={activeTab !== 'links'}
-              >
-                {linksPanel}
-              </div>
-              {hasAgentTab && (
-                <div
-                  id="share-workspace-panel-agent"
-                  role="tabpanel"
-                  className="userspace-share-tab-panel"
-                  aria-labelledby="share-workspace-tab-agent"
-                  hidden={activeTab !== 'agent'}
-                >
-                  {hasMountedAgentAccessSection ? agentAccessSection : null}
-                </div>
-              )}
-              {hasConnectAgentTab && (
-                <div
-                  id="share-workspace-panel-connect"
-                  role="tabpanel"
-                  className="userspace-share-tab-panel userspace-share-connect-agent-panel"
-                  aria-labelledby="share-workspace-tab-connect"
-                  hidden={activeTab !== 'connect'}
-                >
-                  {hasMountedConnectAgentSection ? connectAgentSection : null}
-                </div>
-              )}
-              {hasApiAccessTab && (
-                <div
-                  id="share-workspace-panel-api"
-                  role="tabpanel"
-                  className="userspace-share-tab-panel"
-                  aria-labelledby="share-workspace-tab-api"
-                  hidden={activeTab !== 'api'}
-                >
-                  {hasMountedApiAccessSection ? apiAccessSection : null}
-                </div>
-              )}
-            </>
+            <ModalTabs
+              idPrefix="share-workspace"
+              tabs={shareTabs}
+              activeTabId={activeTab}
+              onChange={setActiveTab}
+            />
           ) : (
             linksPanel
           )}

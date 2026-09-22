@@ -10777,10 +10777,6 @@ fieldset legend.legend-with-status .legend-divider {
   gap: var(--space-md);
 }
 
-.userspace-connect-agent .userspace-external-api-credential-list {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 .userspace-connect-agent-header,
 .userspace-connect-agent-section-header,
 .userspace-connect-agent-footer-actions,
@@ -10788,6 +10784,10 @@ fieldset legend.legend-with-status .legend-divider {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
+}
+
+.userspace-connect-agent-footer-actions {
+  justify-content: flex-end;
 }
 
 .userspace-connect-agent-header,
@@ -10808,8 +10808,62 @@ fieldset legend.legend-with-status .legend-divider {
   margin: 0;
 }
 
-.userspace-connect-agent-steps {
+.userspace-connect-agent-card-list {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.userspace-connect-agent-card {
+  display: grid;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.userspace-connect-agent-card-header {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.userspace-connect-agent-card-copy {
+  display: grid;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.userspace-connect-agent-card-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.userspace-connect-agent-card-title strong {
+  color: var(--color-text-primary);
+}
+
+.userspace-connect-agent-card-meta {
+  font-size: var(--text-xs);
+}
+
+.userspace-connect-agent-card-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.userspace-connect-agent-create-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.userspace-connect-agent-steps.wizard-progress {
   flex-wrap: wrap;
   gap: var(--space-xs);
   margin: 0;
@@ -10817,38 +10871,30 @@ fieldset legend.legend-with-status .legend-divider {
   list-style: none;
 }
 
-.userspace-connect-agent-steps li,
-.userspace-connect-agent-steps button {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-full);
-  background: var(--color-bg-secondary);
-  color: var(--color-text-secondary);
-  font: inherit;
-  font-size: var(--text-xs);
+.userspace-connect-agent-steps .wizard-step {
   padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  cursor: default;
 }
 
-.userspace-connect-agent-steps li span {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.userspace-connect-agent-steps .wizard-step.completed {
+  opacity: 1;
+}
+
+.userspace-connect-agent-steps .step-number {
   width: 1.25rem;
   height: 1.25rem;
-  margin-right: var(--space-xs);
-  border-radius: 50%;
-  background: var(--color-bg-tertiary);
-  font-size: var(--text-xs);
+  flex-shrink: 0;
 }
 
-.userspace-connect-agent-steps li.is-complete span {
-  background: var(--color-success-light);
-  color: var(--color-success);
+.userspace-connect-agent-setup > section {
+  display: grid;
+  gap: var(--space-sm);
 }
 
-.userspace-connect-agent-steps [aria-current='step'] {
-  border-color: var(--color-primary-border);
-  background: var(--color-primary-soft);
-  color: var(--color-primary);
+.userspace-connect-agent-setup > section > .btn {
+  justify-self: start;
 }
 
 .userspace-connect-agent-input-row input {
@@ -10861,8 +10907,13 @@ fieldset legend.legend-with-status .legend-divider {
 .userspace-connect-agent-activity {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  background: var(--color-bg-secondary);
+  background: var(--color-bg-tertiary);
   padding: var(--space-sm) var(--space-md);
+}
+
+.userspace-connect-agent-activity-help {
+  margin: 0;
+  font-size: var(--text-xs);
 }
 
 .userspace-connect-agent-preview summary,

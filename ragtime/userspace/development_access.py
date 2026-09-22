@@ -12,6 +12,7 @@ from typing import Any, FrozenSet
 
 from fastapi import HTTPException, Request, status
 from prisma import Json
+from prisma.models import User
 
 from ragtime.core.database import get_db
 from ragtime.core.datetimes import utc_now
@@ -165,3 +166,18 @@ async def revoke_workspace_development_credential(*, workspace_id: str, credenti
         raise HTTPException(status_code=404, detail="Development credential not found")
     updated = await db.workspacedevelopmentcredential.update(where={"id": credential_id}, data={"revokedAt": utc_now()})
     return development_credential_response(updated)
+
+
+async def delete_workspace_development_credential(
+    workspace_id: str,
+    credential_id: str,
+    current_user: User,
+) -> None:
+    """Permanently delete a revoked workspace development credential."""
+    db = await get_db()
+    credential = await db.workspacedevelopmentcredential.find_first(where={"id": credential_id, "workspaceId": workspace_id})
+    if not credential:
+        raise HTTPException(status_code=404, detail="Credential not found")
+    if not credential.revokedAt:
+        raise HTTPException(status_code=400, detail="Only revoked credentials can be permanently deleted")
+    await db.workspacedevelopmentcredential.delete(where={"id": credential_id})

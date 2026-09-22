@@ -1103,6 +1103,20 @@ export const api = {
     return handleResponse<WorkspaceDevelopmentCredential>(response);
   },
 
+  async deleteWorkspaceDevelopmentCredential(
+    workspaceId: string,
+    credentialId: string,
+  ): Promise<void> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/development/workspaces/${encodeURIComponent(workspaceId)}/credentials/${encodeURIComponent(credentialId)}/record`,
+      { method: 'DELETE' },
+    );
+    if (response.status !== 204) {
+      if (!response.ok) await handleResponse<never>(response);
+      throw new ApiError(`Request failed with status ${response.status}`, response.status);
+    }
+  },
+
   async executeWorkspaceDevelopmentOperation<T>(
     workspaceId: string,
     operation: string,
