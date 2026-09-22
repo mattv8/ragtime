@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 import fs from 'fs';
+import type { Plugin } from 'vite';
 
 const apiPort = parseInt(process.env.API_PORT || '8001', 10);
 const backendPort = parseInt(process.env.PORT || '8000', 10);
@@ -20,8 +21,53 @@ const httpsConfig =
 
 const backendProtocol = enableHttps ? 'https' : 'http';
 
+const proxiedPathPattern =
+  /^\/(?:indexes|auth|authorize|token|health|docs|redoc|openapi\.json|v1|mcp-routes|mcp-debug|mcp)(?:\/|$)/;
+
+function hasHost(host: string | undefined, hostname: string, port: number): boolean {
+  const normalizedHost = host?.toLowerCase();
+  return normalizedHost === hostname || normalizedHost === `${hostname}:${port}`;
+}
+
+const localPreviewOriginPlugin: Plugin = {
+  name: 'local-preview-origin-redirect',
+  apply: 'serve',
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      const requestPath = req.url || '/';
+      if (!requestPath.startsWith('/') || requestPath.startsWith('//')) {
+        next();
+        return;
+      }
+      const pathname = new URL(requestPath, 'http://vite.local').pathname;
+      const accept = req.headers.accept || '';
+      const fetchDestination = req.headers['sec-fetch-dest'];
+      const isLoopbackHost =
+        hasHost(req.headers.host, 'localhost', apiPort) ||
+        hasHost(req.headers.host, '127.0.0.1', apiPort) ||
+        hasHost(req.headers.host, '[::1]', apiPort);
+
+      if (
+        req.method !== 'GET' ||
+        !isLoopbackHost ||
+        !accept.includes('text/html') ||
+        (fetchDestination && fetchDestination !== 'document') ||
+        proxiedPathPattern.test(pathname)
+      ) {
+        next();
+        return;
+      }
+
+      const protocol = httpsConfig ? 'https' : 'http';
+      const redirectUrl = new URL(`${protocol}://app.lvh.me:${apiPort}${requestPath}`);
+      res.writeHead(307, { Location: redirectUrl.toString() });
+      res.end();
+    });
+  },
+};
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), localPreviewOriginPlugin],
   base: '/',
   appType: 'spa',
   cacheDir: resolve(__dirname, '.vite'),
@@ -65,6 +111,7 @@ export default defineConfig({
     host: '0.0.0.0',
     port: apiPort,
     strictPort: true,
+    allowedHosts: ['app.lvh.me'],
     https: httpsConfig,
     // Bind-mounted source on Docker/macOS does not deliver native FS events
     // reliably; enable polling so HMR detects edits made from the host.
@@ -81,6 +128,11 @@ export default defineConfig({
           ws: true,
           secure: false, // Allow self-signed certs
           configure: (proxy) => {
+            proxy.on('proxyReq', (proxyReq, req) => {
+              if (hasHost(req.headers.host, 'app.lvh.me', apiPort)) {
+                proxyReq.setHeader('host', `app.lvh.me:${backendPort}`);
+              }
+            });
             // Suppress noisy WebSocket proxy errors (socket hang up, timeouts)
             // that occur during normal runtime startup/shutdown cycles
             proxy.on('error', (err, _req, res) => {
