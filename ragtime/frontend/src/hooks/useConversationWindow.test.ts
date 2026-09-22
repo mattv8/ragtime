@@ -98,6 +98,31 @@ describe('useConversationWindow', () => {
     expect(result.current.entries[0]?.key).toBe('two-2');
   });
 
+  it('keeps newer metadata when a pending page returns older conversation metadata', async () => {
+    api.getConversationLatestExchange.mockResolvedValueOnce(window('one'));
+    let resolvePage!: (value: ConversationMessageWindow) => void;
+    api.getConversationMessageWindow.mockImplementationOnce(
+      () => new Promise<ConversationMessageWindow>((resolve) => (resolvePage = resolve)),
+    );
+    const { result } = renderHook(() =>
+      useConversationWindow({ conversationId: 'one', enabled: true }),
+    );
+
+    await waitFor(() => expect(api.getConversationMessageWindow).toHaveBeenCalledTimes(1));
+    const { messages: _messages, ...metadata } = conversation('one');
+    act(() =>
+      result.current.updateMetadata({
+        ...metadata,
+        model: 'saved-model',
+        updated_at: '2026-01-01T00:01:00Z',
+      }),
+    );
+    await act(async () => resolvePage({ ...window('one', null), entries: [] }));
+
+    expect(result.current.metadata?.model).toBe('saved-model');
+    expect(result.current.entries[0]?.key).toBe('one-2');
+  });
+
   it('clears state and ignores an abort-ignoring response when disabled', async () => {
     let resolveLatest!: (value: ConversationMessageWindow) => void;
     api.getConversationLatestExchange.mockImplementationOnce(

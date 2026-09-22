@@ -520,8 +520,7 @@ class Switcher:
             if check.get("status") != "ready":
                 raise SwitchRefusal(
                     f"migration check refused (active code: {code_label(self.outgoing)}; "
-                    f"target code: {code_label(self.target)}): "
-                    + "; ".join(check.get("reasons", []))
+                    f"target code: {code_label(self.target)}): " + "; ".join(check.get("reasons", []))
                 )
             self.assert_unchanged()
             if self.dry_run:

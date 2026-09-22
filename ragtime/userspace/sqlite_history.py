@@ -27,6 +27,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.userspace.sqlite_capture_admission import capture_request_admission, run_admitted_subprocess
 from ragtime.userspace.sqlite_runtime import (
@@ -366,11 +367,22 @@ class SqliteHistoryService:
         """Run a bounded, fair maintenance pass; cleanup is not capture-gated."""
         from ragtime.userspace.service import userspace_service
 
-        workspaces = (
-            sorted(path.name for path in (userspace_service.root_path / "workspaces").iterdir() if path.is_dir() and not path.is_symlink())
-            if (userspace_service.root_path / "workspaces").is_dir()
-            else []
-        )
+        # The database is authoritative for workspace membership.  Filesystem
+        # directories can outlive a deleted workspace (for diagnostics or
+        # operator recovery) and must never cause a queue row with a missing FK.
+        db = await get_db()
+        rows = await db.query_raw("SELECT id FROM workspaces")
+        workspace_root = userspace_service.root_path / "workspaces"
+        workspaces = []
+        if workspace_root.is_dir():
+            for row in rows:
+                workspace_id = row.get("id")
+                if not isinstance(workspace_id, str):
+                    continue
+                path = workspace_root / workspace_id
+                if path.name == workspace_id and path.is_dir() and not path.is_symlink():
+                    workspaces.append(workspace_id)
+            workspaces.sort()
         active = set(workspaces)
         self._next_due_cache = {workspace_id: due for workspace_id, due in self._next_due_cache.items() if workspace_id in active}
         self._next_cleanup_cache = {workspace_id: due for workspace_id, due in self._next_cleanup_cache.items() if workspace_id in active}

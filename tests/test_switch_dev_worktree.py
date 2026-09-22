@@ -465,9 +465,7 @@ class SwitchTests(unittest.TestCase):
         switch.validate = mock.Mock()
         switch.acquire_lock = mock.Mock()
         switch.release_lock = mock.Mock()
-        switch.helper = mock.Mock(
-            return_value=json.dumps({"status": "refused", "reasons": ["missing required down migration"], "warnings": []})
-        )
+        switch.helper = mock.Mock(return_value=json.dumps({"status": "refused", "reasons": ["missing required down migration"], "warnings": []}))
 
         with self.assertRaisesRegex(
             SwitchRefusal,

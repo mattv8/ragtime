@@ -29,21 +29,23 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
         from ragtime.userspace import sqlite_runtime
 
         with tempfile.TemporaryDirectory() as temporary:
-            context = multiprocessing.get_context("fork")
+            context = multiprocessing.get_context("spawn")
             ready = context.Event()
             release = context.Event()
             lock_path = Path(temporary) / "sqlite_backups" / "sqlite-operation.lock"
             process = context.Process(target=_hold_shared_sqlite_operation_lock, args=(str(lock_path), ready, release))
             process.start()
             try:
-                await asyncio.to_thread(ready.wait)
+                self.assertTrue(await asyncio.to_thread(ready.wait, 5), "child never acquired the shared lock")
                 with self.assertRaises(BlockingIOError):
                     sqlite_runtime._acquire_operation_lock(lock_path, exclusive=True, nonblocking=True)
             finally:
                 release.set()
-                await asyncio.to_thread(process.join)
+                await asyncio.to_thread(process.join, 5)
                 if process.is_alive():
                     process.kill()
+                    await asyncio.to_thread(process.join, 5)
+                self.assertFalse(process.is_alive(), "child did not exit after lock release")
             self.assertEqual(process.exitcode, 0)
 
     async def test_offline_shared_access_cannot_upgrade_to_maintenance(self) -> None:

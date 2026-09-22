@@ -15373,7 +15373,7 @@ export function ChatPanel({
       if (checkInProgress) return;
       checkInProgress = true;
       // If we are switching conversations, ensure we stop any previous stream
-      if (!activeConversation) {
+      if (!activeConversationId) {
         stopTaskStreaming();
         setActiveTask(null);
         setInterruptedTask(null);
@@ -15387,7 +15387,7 @@ export function ChatPanel({
       // We should check API to be sure.
 
       try {
-        const taskState = await api.getConversationTaskState(activeConversation.id, workspaceId);
+        const taskState = await api.getConversationTaskState(activeConversationId, workspaceId);
         if (cancelled) return;
 
         const activeT = taskState.active_task;
@@ -15397,17 +15397,17 @@ export function ChatPanel({
         if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
           setActiveTask(activeT);
           setInterruptedTask(null);
-          syncConversationActiveTaskId(activeConversation.id, activeT.id);
+          syncConversationActiveTaskId(activeConversationId, activeT.id);
 
           if (isCompactionTask(activeT)) {
             setIsCompacting(true);
-            setCompactingConversationId(activeConversation.id);
-            watchCompactionTaskRef.current?.(activeT.id, activeConversation.id);
+            setCompactingConversationId(activeConversationId);
+            watchCompactionTaskRef.current?.(activeT.id, activeConversationId);
             return;
           }
 
           // Connect to stream if not already processing this task
-          connectTaskStreamRef.current?.(activeT.id, activeConversation.id);
+          connectTaskStreamRef.current?.(activeT.id, activeConversationId);
         } else {
           // No active task for this conversation.
           // If we are streaming something that is NOT this task, we should stop?
@@ -15417,12 +15417,12 @@ export function ChatPanel({
           // If we were processing a task that just finished, connectTaskStream finally block clears it.
           if (!activeT) {
             setActiveTask(null);
-            if (compactingConversationIdRef.current === activeConversation.id) {
+            if (compactingConversationIdRef.current === activeConversationId) {
               setIsCompacting(false);
               setCompactingConversationId(null);
             }
             setInterruptedTask(interruptedT ?? null);
-            syncConversationActiveTaskId(activeConversation.id, null);
+            syncConversationActiveTaskId(activeConversationId, null);
           }
         }
       } catch (err) {
@@ -15446,9 +15446,8 @@ export function ChatPanel({
       // Stop streaming when conversation ID changes (unmounting this effect instance)
       stopTaskStreaming();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on activeConversation.id, not the full conversation object
   }, [
-    activeConversation?.id,
+    activeConversationId,
     stopTaskStreaming,
     syncConversationActiveTaskId,
     workspaceChatState,
@@ -15649,6 +15648,11 @@ export function ChatPanel({
         workspaceId,
         selected?.provider || requestedProviderForApi,
       );
+      standaloneWindow.updateMetadata({
+        ...conversation,
+        model: updated.model,
+        updated_at: updated.updated_at,
+      });
       setActiveConversation((prev) =>
         prev?.id === updated.id
           ? { ...prev, model: updated.model, updated_at: updated.updated_at }
@@ -15657,6 +15661,13 @@ export function ChatPanel({
       setConversations((prev) =>
         prev.map((c) =>
           c.id === updated.id ? { ...c, model: updated.model, updated_at: updated.updated_at } : c,
+        ),
+      );
+      setConversationSummaries((prev) =>
+        prev.map((summary) =>
+          summary.id === updated.id
+            ? { ...summary, model: updated.model, updated_at: updated.updated_at }
+            : summary,
         ),
       );
     } catch (err) {

@@ -73,6 +73,7 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
         module = ModuleType("ragtime.userspace.service")
         setattr(module, "userspace_service", SimpleNamespace(root_path=workspace_root.parent.parent))
         queue = SimpleNamespace(enqueue=mock.AsyncMock(return_value={"id": "scheduled-job", "status": "pending"}))
+        db = SimpleNamespace(query_raw=mock.AsyncMock(return_value=[{"id": "workspace"}]))
         queue_module = ModuleType("ragtime.userspace.sqlite_backup_queue")
         setattr(queue_module, "get_sqlite_backup_queue_service", lambda: queue)
         with (
@@ -83,6 +84,7 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
                     "ragtime.userspace.sqlite_backup_queue": queue_module,
                 },
             ),
+            mock.patch("ragtime.userspace.sqlite_history.get_db", return_value=db),
             mock.patch.object(service, "capture_workspace_databases", new_callable=mock.AsyncMock) as capture,
         ):
             asyncio.run(service.run_maintenance_once())
@@ -93,6 +95,50 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
         _, kwargs = queue.enqueue.await_args
         self.assertEqual("scheduled", kwargs["trigger"])
         self.assertEqual("scheduled:workspace:", kwargs["request_key"][:20])
+
+    def test_maintenance_only_schedules_catalog_workspaces(self) -> None:
+        workspace_root = Path(self.temp.name) / "scheduled" / "workspaces"
+        valid_files = workspace_root / "valid" / "files"
+        orphan_files = workspace_root / "chat-diag" / "files"
+        valid_files.mkdir(parents=True)
+        orphan_files.mkdir(parents=True)
+        service = SqliteHistoryService(lambda workspace_id: workspace_root / workspace_id / "files")
+        valid_root = valid_files.parent / "sqlite_backups"
+        orphan_root = orphan_files.parent / "sqlite_backups"
+        for workspace_id, root in (("valid", valid_root), ("chat-diag", orphan_root)):
+            service._cleanup_and_due_sync(root, workspace_id)
+            manifest = service._load(root, workspace_id)
+            manifest["next_scheduled_at"] = (_now() - timedelta(seconds=1)).isoformat()
+            service._save(root, manifest)
+        orphan_due = service._load(orphan_root, "chat-diag")["next_scheduled_at"]
+
+        module = ModuleType("ragtime.userspace.service")
+        setattr(module, "userspace_service", SimpleNamespace(root_path=workspace_root.parent))
+        queue = SimpleNamespace(enqueue=mock.AsyncMock(return_value={"id": "scheduled-job", "status": "pending"}))
+        queue_module = ModuleType("ragtime.userspace.sqlite_backup_queue")
+        setattr(queue_module, "get_sqlite_backup_queue_service", lambda: queue)
+        db = SimpleNamespace(query_raw=mock.AsyncMock(return_value=[{"id": "valid"}]))
+        with (
+            mock.patch.dict(sys.modules, {"ragtime.userspace.service": module, "ragtime.userspace.sqlite_backup_queue": queue_module}),
+            mock.patch("ragtime.userspace.sqlite_history.get_db", return_value=db),
+        ):
+            asyncio.run(service.run_maintenance_once())
+
+        queue.enqueue.assert_awaited_once()
+        self.assertEqual("valid", queue.enqueue.await_args.args[0])
+        self.assertEqual([], service._load(orphan_root, "chat-diag")["backups"])
+        self.assertEqual(orphan_due, service._load(orphan_root, "chat-diag")["next_scheduled_at"])
+
+    def test_maintenance_does_not_mask_catalog_lookup_failure_when_workspace_root_is_missing(self) -> None:
+        module = ModuleType("ragtime.userspace.service")
+        setattr(module, "userspace_service", SimpleNamespace(root_path=Path(self.temp.name) / "missing"))
+        db = SimpleNamespace(query_raw=mock.AsyncMock(side_effect=RuntimeError("database unavailable")))
+        with (
+            mock.patch.dict(sys.modules, {"ragtime.userspace.service": module}),
+            mock.patch("ragtime.userspace.sqlite_history.get_db", return_value=db),
+            self.assertRaisesRegex(RuntimeError, "database unavailable"),
+        ):
+            asyncio.run(self.service.run_maintenance_once())
 
     def test_cancelled_liveness_acquisition_drains_and_releases_handle(self) -> None:
         entered = threading.Event()

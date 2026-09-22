@@ -184,12 +184,14 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         outside_workspace = Path(self.temp.name) / "outside-workspace"
         outside_workspace.mkdir()
         (workspace_root / "linked-workspace").symlink_to(outside_workspace, target_is_directory=True)
+        database = SimpleNamespace(query_raw=mock.AsyncMock(return_value=[{"id": "linked-workspace"}]))
 
         with (
             mock.patch(
                 "ragtime.userspace.service.userspace_service",
                 SimpleNamespace(root_path=Path(self.temp.name) / "scheduled-root"),
             ),
+            mock.patch("ragtime.userspace.sqlite_history.get_db", new=mock.AsyncMock(return_value=database)),
             mock.patch.object(self.history, "capture_workspace_databases", new_callable=mock.AsyncMock) as capture,
         ):
             (Path(self.temp.name) / "scheduled-root" / "workspaces").parent.mkdir(parents=True, exist_ok=True)
@@ -197,16 +199,19 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
             await self.history.run_maintenance_once()
 
         capture.assert_not_awaited()
+        database.query_raw.assert_awaited_once_with("SELECT id FROM workspaces")
 
     async def test_scheduled_maintenance_warns_with_workspace_and_exception_type(self) -> None:
         workspace_root = Path(self.temp.name) / "scheduled-root" / "workspaces"
         (workspace_root / "workspace").mkdir(parents=True)
+        database = SimpleNamespace(query_raw=mock.AsyncMock(return_value=[{"id": "workspace"}]))
 
         with (
             mock.patch(
                 "ragtime.userspace.service.userspace_service",
                 SimpleNamespace(root_path=workspace_root.parent),
             ),
+            mock.patch("ragtime.userspace.sqlite_history.get_db", new=mock.AsyncMock(return_value=database)),
             mock.patch.object(self.history, "_root", side_effect=OSError("storage unavailable")),
             mock.patch("ragtime.userspace.sqlite_history.logger.warning") as warning,
         ):

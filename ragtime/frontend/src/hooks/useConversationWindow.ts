@@ -36,11 +36,17 @@ export interface ConversationWindowState {
     conversation: Conversation,
     options?: { pendingSelection?: boolean },
   ) => void;
+  updateMetadata: (metadata: ConversationWindowMetadata) => void;
 }
 
 type WindowData = Omit<
   ConversationWindowState,
-  'reload' | 'loadOlder' | 'loadMessage' | 'ensureFullConversation' | 'adoptFullConversation'
+  | 'reload'
+  | 'loadOlder'
+  | 'loadMessage'
+  | 'ensureFullConversation'
+  | 'adoptFullConversation'
+  | 'updateMetadata'
 >;
 
 const emptyState = (): WindowData => ({
@@ -179,7 +185,12 @@ export function useConversationWindow({
     }
     setState((previous) => ({
       ...previous,
-      metadata: window.conversation,
+      metadata:
+        previous.metadata?.id === window.conversation.id &&
+        Date.parse(previous.metadata.updated_at || '') >
+          Date.parse(window.conversation.updated_at || '')
+          ? previous.metadata
+          : window.conversation,
       entries: replace
         ? mergeEntries([], window.entries)
         : mergeEntries(previous.entries, window.entries),
@@ -426,6 +437,14 @@ export function useConversationWindow({
     [abortRequests],
   );
 
+  const updateMetadata = useCallback((metadata: ConversationWindowMetadata): void => {
+    const snapshot = current.current;
+    if (!snapshot.enabled || snapshot.conversationId !== metadata.id) return;
+    setState((previous) =>
+      previous.metadata?.id === metadata.id ? { ...previous, metadata } : previous,
+    );
+  }, []);
+
   const ensureFullConversation = useCallback(async (): Promise<Conversation> => {
     if (state.fullConversation) return state.fullConversation;
     if (fullPromise.current) return fullPromise.current;
@@ -469,5 +488,6 @@ export function useConversationWindow({
     loadMessage,
     ensureFullConversation,
     adoptFullConversation,
+    updateMetadata,
   };
 }

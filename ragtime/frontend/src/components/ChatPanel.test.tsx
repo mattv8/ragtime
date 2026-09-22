@@ -51,6 +51,7 @@ const apiMock = vi.hoisted(() => {
     createConversation: vi.fn(),
     deleteConversation: vi.fn().mockResolvedValue(undefined),
     updateConversationTitle: vi.fn(),
+    updateConversationModel: vi.fn(),
     getConversationBranchPoints: vi.fn().mockResolvedValue([]),
     switchConversationBranch: vi.fn(),
     releaseConversationBranch: vi.fn(),
@@ -1142,6 +1143,42 @@ describe('ChatPanel standalone first-paint loading', () => {
     expect(apiMock.createConversation).toHaveBeenCalledWith(undefined, undefined);
   });
 
+  it('updates the standalone window selector after a successful model change without full hydration', async () => {
+    const current = makeConversation('window-only-model', 'Window-only reply', {
+      model: 'old-model',
+    });
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(current));
+    apiMock.updateConversationModel.mockResolvedValue({
+      ...current,
+      model: 'sol-model',
+      updated_at: '2026-09-11T12:01:00.000Z',
+    });
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        models: [
+          { id: 'old-model', name: 'Old', selector_label: 'Old', provider: 'openai' },
+          { id: 'sol-model', name: 'Sol', selector_label: 'Sol', provider: 'openai' },
+        ],
+        default_model: 'old-model',
+        current_model: 'old-model',
+        allowed_models: ['old-model', 'sol-model'],
+        allowed_openapi_models: [],
+      }),
+    } as Response);
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={current.id} />);
+
+    expect(await screen.findByTitle('Old')).toBeDefined();
+    await userEvent.setup().click(screen.getByTitle('Old'));
+    await userEvent.setup().type(screen.getByLabelText('Filter models'), 'Sol');
+    await userEvent.setup().click(screen.getByTitle('sol-model'));
+
+    await waitFor(() => expect(apiMock.updateConversationModel).toHaveBeenCalledTimes(1));
+    expect(await screen.findByTitle('Sol')).toBeDefined();
+    expect(apiMock.getConversation).not.toHaveBeenCalled();
+  });
+
   it('defers workspace new-chat model selection to the server', async () => {
     const current = makeConversation('workspace-current', 'Workspace reply', {
       model: 'openai::gpt-test',
@@ -1954,6 +1991,62 @@ describe('ChatPanel standalone first-paint loading', () => {
       await act(async () => {
         releaseStream?.();
       });
+    }
+  });
+
+  it('keeps a standalone partial-window stream connected when the task safety interval runs', async () => {
+    const conversation = makeConversation('partial-stream-interval', 'Prior assistant reply');
+    let streamSignal: AbortSignal | undefined;
+    let releaseSecondState: (() => void) | undefined;
+    let releaseCompletion: (() => void) | undefined;
+    const secondState = new Promise<void>((resolve) => (releaseSecondState = resolve));
+    const completion = new Promise<void>((resolve) => (releaseCompletion = resolve));
+    const setIntervalSpy = vi.spyOn(window, 'setInterval');
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, { entries: [], nextCursor: null, hasMore: false }),
+    );
+    apiMock.streamChatTask.mockImplementation(
+      (_taskId: string, _version: number, signal: AbortSignal) => {
+        streamSignal = signal;
+        return (async function* () {
+          yield { type: 'state', content: 'First streamed state', version: 1, events: [] };
+          await secondState;
+          yield { type: 'state', content: 'Second streamed state', version: 2, events: [] };
+          await completion;
+          yield { type: 'completion', completed: true, status: 'completed' };
+        })();
+      },
+    );
+
+    try {
+      renderChatPanel(
+        <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+      );
+      const composer = await screen.findByLabelText('Message');
+      await userEvent.setup().type(composer, 'Keep streaming');
+      await userEvent.setup().click(await screen.findByTitle('Send message'));
+      expect(await screen.findByText('First streamed state')).toBeDefined();
+      const taskCheck = setIntervalSpy.mock.calls.find(([, delay]) => delay === 30000)?.[0] as
+        | (() => void)
+        | undefined;
+      expect(taskCheck).toBeDefined();
+
+      await act(async () => {
+        taskCheck?.();
+        await Promise.resolve();
+      });
+      expect(streamSignal?.aborted).toBe(false);
+
+      await act(async () => releaseSecondState?.());
+      expect(await screen.findByText('Second streamed state')).toBeDefined();
+      await act(async () => releaseCompletion?.());
+      await waitFor(() => expect(apiMock.getConversationLatestExchange).toHaveBeenCalledTimes(2));
+      expect(apiMock.getConversation).not.toHaveBeenCalled();
+    } finally {
+      releaseSecondState?.();
+      releaseCompletion?.();
+      setIntervalSpy.mockRestore();
     }
   });
 
