@@ -685,6 +685,11 @@ export function DatabaseHistoryPanel({
             <span className="database-history-backup-secondary">
               {new Date(job.finished_at ?? job.updated_at).toLocaleString()}
             </span>
+            {job.snapshot_id && (
+              <span className="badge database-history-trigger-badge database-history-trigger-badge--checkpoint">
+                Snapshot
+              </span>
+            )}
           </div>
           {hasRestorePoints && (
             <span className="database-history-backup-secondary">
@@ -701,13 +706,6 @@ export function DatabaseHistoryPanel({
                   </button>
                 </>
               )}
-            </span>
-          )}
-        </div>
-        <div className="database-history-actions">
-          {job.snapshot_id && (
-            <span className="badge database-history-trigger-badge database-history-trigger-badge--checkpoint">
-              Snapshot
             </span>
           )}
         </div>
