@@ -37,14 +37,26 @@ def _token_field(name: str, value: str, *, secret: bool) -> HttpApiTokenField:
 
 
 class _TrackedAsyncByteStream(httpx.AsyncByteStream):
-    def __init__(self, chunks: list[bytes], closed_flags: list[bool]) -> None:
+    def __init__(
+        self,
+        chunks: list[bytes],
+        closed_flags: list[bool],
+        failure: BaseException | None = None,
+        yielded_chunks: list[bytes] | None = None,
+    ) -> None:
         self._chunks = chunks
         self._closed_flags = closed_flags
         self._closed = False
+        self._failure = failure
+        self._yielded_chunks = yielded_chunks
 
     async def __aiter__(self):
         for chunk in self._chunks:
+            if self._yielded_chunks is not None:
+                self._yielded_chunks.append(chunk)
             yield chunk
+        if self._failure:
+            raise self._failure
 
     async def aclose(self) -> None:
         self._closed = True
@@ -1284,7 +1296,7 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, stream=stream)
 
         broker = HttpApiBroker(resolver=lambda _host: ["8.8.8.8"], base_transport=httpx.MockTransport(handler))
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "HTTP API response exceeds limit"):
             await broker.execute(
                 "tool-1",
                 HttpApiConnectionConfig(base_url="https://api.example.com"),
@@ -1293,6 +1305,70 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
                 timeout_seconds=5,
                 max_results=10,
             )
+        self.assertEqual(closed_flags, [True])
+
+    async def test_oauth_request_json_accepts_exact_response_limit_and_closes_response(self) -> None:
+        closed_flags: list[bool] = []
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=_TrackedAsyncByteStream([b"{}"], closed_flags))
+
+        broker = self._broker(handler)
+        with mock.patch("ragtime.http_api.service._RESPONSE_BODY_LIMIT", 2):
+            status, body = await broker.oauth_request_json("https://auth.example.com/token")
+
+        self.assertEqual((status, body), (200, {}))
+        self.assertEqual(closed_flags, [True])
+
+    async def test_oauth_request_json_rejects_overflow_with_distinct_message_and_closes_response(self) -> None:
+        closed_flags: list[bool] = []
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=_TrackedAsyncByteStream([b"{}", b"x"], closed_flags))
+
+        broker = self._broker(handler)
+        with mock.patch("ragtime.http_api.service._RESPONSE_BODY_LIMIT", 2):
+            with self.assertRaisesRegex(ValueError, "OAuth provider response exceeds limit"):
+                await broker.oauth_request_json("https://auth.example.com/token")
+
+        self.assertEqual(closed_flags, [True])
+
+    async def test_request_bytes_rejects_overflow_and_closes_response(self) -> None:
+        closed_flags: list[bool] = []
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=_TrackedAsyncByteStream([b"ab", b"c"], closed_flags))
+
+        broker = self._broker(handler)
+        target = await broker._resolve_target("https://api.example.com")
+        async with broker._build_client(target, timeout_seconds=5) as client:
+            with self.assertRaisesRegex(ValueError, "HTTP API response exceeds limit"):
+                await broker._request_bytes(client, "GET", target, "/items", {}, None, None, response_limit=2)
+
+        self.assertEqual(closed_flags, [True])
+
+    async def test_execute_closes_response_when_stream_fails(self) -> None:
+        closed_flags: list[bool] = []
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=_TrackedAsyncByteStream([], closed_flags, RuntimeError("stream failed")))
+
+        broker = self._broker(handler)
+        with self.assertRaisesRegex(RuntimeError, "stream failed"):
+            await self._execute(broker, HttpApiConnectionConfig(base_url="https://api.example.com"))
+
+        self.assertEqual(closed_flags, [True])
+
+    async def test_execute_closes_response_when_stream_is_cancelled(self) -> None:
+        closed_flags: list[bool] = []
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=_TrackedAsyncByteStream([], closed_flags, asyncio.CancelledError()))
+
+        broker = self._broker(handler)
+        with self.assertRaises(asyncio.CancelledError):
+            await self._execute(broker, HttpApiConnectionConfig(base_url="https://api.example.com"))
+
         self.assertEqual(closed_flags, [True])
 
     async def test_execute_closes_401_response_before_retry(self) -> None:
@@ -1363,6 +1439,21 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"openapi":"3.1.0"', document)
         self.assertEqual(resolver_calls, ["api.example.com"])
         self.assertEqual(seen_hosts, ["8.8.8.8"])
+
+    async def test_fetch_openapi_document_enforces_its_own_response_cap_and_closes_response(self) -> None:
+        closed_flags: list[bool] = []
+        yielded_chunks: list[bytes] = []
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=_TrackedAsyncByteStream([b"ab", b"c"], closed_flags, yielded_chunks=yielded_chunks))
+
+        broker = self._broker(handler)
+        with mock.patch.multiple("ragtime.http_api.service", _OPENAPI_RESPONSE_LIMIT=2, _RESPONSE_BODY_LIMIT=1):
+            with self.assertRaisesRegex(ValueError, "HTTP API response exceeds limit"):
+                await broker.fetch_openapi_document("https://api.example.com/openapi.json")
+
+        self.assertEqual(closed_flags, [True])
+        self.assertEqual(yielded_chunks, [b"ab", b"c"])
 
     async def test_fetch_openapi_document_rejects_non_https_in_production(self) -> None:
         broker = HttpApiBroker(resolver=lambda _host: ["8.8.8.8"], base_transport=httpx.MockTransport(lambda _request: httpx.Response(200, text="{}")))

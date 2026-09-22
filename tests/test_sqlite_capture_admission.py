@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from multiprocessing.queues import Queue
 from multiprocessing.synchronize import Barrier
@@ -24,27 +25,40 @@ from ragtime.userspace.sqlite_runtime import run_sqlite_blocking
 _BLOCKING_CHILD = "import os, sys; os.write(int(sys.argv[1]), b'1'); os.read(int(sys.argv[2]), 1)"
 
 
-def _run_blocking_child(ready_fd: int, release_fd: int, result_queue: Queue[str]) -> None:
-    try:
-        admission.run_admitted_subprocess(
-            [sys.executable, "-c", _BLOCKING_CHILD, str(ready_fd), str(release_fd)],
-            pass_fds=(ready_fd, release_fd),
-            check=True,
-        )
-    except HTTPException as exc:
-        result_queue.put(f"http-{exc.status_code}")
-    else:
-        result_queue.put("completed")
+def _run_blocking_child(
+    index_root: str,
+    wait_seconds: float,
+    ready: Connection,
+    release: Connection,
+    result_queue: Queue[str],
+) -> None:
+    ready_fd = ready.fileno()
+    release_fd = release.fileno()
+    with (
+        mock.patch.object(admission.settings, "index_data_path", index_root),
+        mock.patch.object(admission, "CAPTURE_SLOT_WAIT_SECONDS", wait_seconds),
+    ):
+        try:
+            admission.run_admitted_subprocess(
+                [sys.executable, "-c", _BLOCKING_CHILD, str(ready_fd), str(release_fd)],
+                pass_fds=(ready_fd, release_fd),
+                check=True,
+            )
+        except HTTPException as exc:
+            result_queue.put(f"http-{exc.status_code}")
+        else:
+            result_queue.put("completed")
 
 
-def _initialize_slot_directory(start: Barrier, result_queue: Queue[str]) -> None:
+def _initialize_slot_directory(index_root: str, start: Barrier, result_queue: Queue[str]) -> None:
     start.wait()
-    try:
-        admission.run_admitted_subprocess([sys.executable, "-c", ""], check=True)
-    except HTTPException as exc:
-        result_queue.put(f"http-{exc.status_code}")
-    else:
-        result_queue.put("completed")
+    with mock.patch.object(admission.settings, "index_data_path", index_root):
+        try:
+            admission.run_admitted_subprocess([sys.executable, "-c", ""], check=True)
+        except HTTPException as exc:
+            result_queue.put(f"http-{exc.status_code}")
+        else:
+            result_queue.put("completed")
 
 
 class SqliteCaptureAdmissionTests(unittest.TestCase):
@@ -69,12 +83,12 @@ class SqliteCaptureAdmissionTests(unittest.TestCase):
         self.assertEqual(["capture-0.lock"], sorted(item.name for item in slots.iterdir()))
         self.assertTrue(stat.S_ISREG((slots / "capture-0.lock").lstat().st_mode))
 
-    @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork inheritance")
+    @unittest.skipUnless(os.name == "posix", "requires POSIX file descriptor semantics")
     def test_concurrent_processes_initialize_missing_slot_directories(self) -> None:
-        context = multiprocessing.get_context("fork")
+        context = multiprocessing.get_context("spawn")
         start = context.Barrier(4)
         results: Queue[str] = context.Queue()
-        processes = [context.Process(target=_initialize_slot_directory, args=(start, results)) for _ in range(4)]
+        processes = [context.Process(target=_initialize_slot_directory, args=(str(self.index_root), start, results)) for _ in range(4)]
         for process in processes:
             process.start()
         try:
@@ -87,6 +101,8 @@ class SqliteCaptureAdmissionTests(unittest.TestCase):
                 if process.is_alive():
                     process.terminate()
                     process.join(timeout=5)
+            results.close()
+            results.join_thread()
 
     def test_symlinked_slot_fails_closed(self) -> None:
         slots = self.index_root / "_userspace" / "sqlite_capture_slots"
@@ -104,30 +120,37 @@ class SqliteCaptureAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(HTTPException, "admission storage is unavailable"):
             admission.run_admitted_subprocess([sys.executable, "-c", ""], check=True)
 
-    @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork inheritance")
+    @unittest.skipUnless(os.name == "posix", "requires POSIX file descriptor semantics")
     def test_two_processes_hold_slots_and_third_is_rejected_until_children_exit(self) -> None:
-        context = multiprocessing.get_context("fork")
-        ready_read, ready_write = os.pipe()
-        release_read, release_write = os.pipe()
+        context = multiprocessing.get_context("spawn")
+        ready_read, ready_write = context.Pipe(duplex=False)
+        release_read, release_write = context.Pipe(duplex=False)
         results: Queue[str] = context.Queue()
-        original_wait = admission.CAPTURE_SLOT_WAIT_SECONDS
-        admission.CAPTURE_SLOT_WAIT_SECONDS = 0.2
         holders: list[BaseProcess] = []
         rejected: BaseProcess | None = None
         try:
-            holders = [context.Process(target=_run_blocking_child, args=(ready_write, release_read, results)) for _ in range(2)]
+            holders = [
+                context.Process(
+                    target=_run_blocking_child,
+                    args=(str(self.index_root), 0.2, ready_write, release_read, results),
+                )
+                for _ in range(2)
+            ]
             for holder in holders:
                 holder.start()
             for _ in holders:
-                self.assertTrue(select.select([ready_read], [], [], 5)[0], "child never acquired its slot")
-                self.assertEqual(b"1", os.read(ready_read, 1))
+                self.assertTrue(select.select([ready_read.fileno()], [], [], 5)[0], "child never acquired its slot")
+                self.assertEqual(b"1", os.read(ready_read.fileno(), 1))
 
-            rejected_process = context.Process(target=_run_blocking_child, args=(ready_write, release_read, results))
+            rejected_process = context.Process(
+                target=_run_blocking_child,
+                args=(str(self.index_root), 0.2, ready_write, release_read, results),
+            )
             rejected_process.start()
             rejected = rejected_process
             self.assertEqual("http-503", results.get(timeout=5))
 
-            os.write(release_write, b"12")
+            os.write(release_write.fileno(), b"12")
             self.assertEqual("completed", results.get(timeout=5))
             self.assertEqual("completed", results.get(timeout=5))
             assert rejected is not None
@@ -135,9 +158,8 @@ class SqliteCaptureAdmissionTests(unittest.TestCase):
                 process.join(timeout=5)
                 self.assertEqual(0, process.exitcode)
         finally:
-            admission.CAPTURE_SLOT_WAIT_SECONDS = original_wait
             try:
-                os.write(release_write, b"12")
+                os.write(release_write.fileno(), b"12")
             except OSError:
                 pass
             for process in [*holders, *([rejected] if rejected is not None else [])]:
@@ -145,10 +167,12 @@ class SqliteCaptureAdmissionTests(unittest.TestCase):
                 if process.is_alive():
                     process.terminate()
                     process.join(timeout=5)
-            os.close(ready_read)
-            os.close(ready_write)
-            os.close(release_read)
-            os.close(release_write)
+            ready_read.close()
+            ready_write.close()
+            release_read.close()
+            release_write.close()
+            results.close()
+            results.join_thread()
 
     def test_subprocess_timeout_releases_slot(self) -> None:
         ready_read, ready_write = os.pipe()

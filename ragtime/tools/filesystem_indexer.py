@@ -21,14 +21,10 @@ from ragtime.indexer.vector_utils import get_embeddings_model
 logger = get_logger(__name__)
 
 
-class FilesystemSearchInput(BaseModel):
-    """Input schema for filesystem search tool."""
+class _FilesystemSearchOptions(BaseModel):
+    """Common input options for filesystem search tools."""
 
     query: str = Field(description="Natural language search query to find relevant documents/files")
-    index_name: Optional[str] = Field(
-        default=None,
-        description="Optional: specific index name to search (searches all if not specified)",
-    )
     max_results: int = Field(
         default=10,
         ge=1,
@@ -40,6 +36,15 @@ class FilesystemSearchInput(BaseModel):
         ge=0,
         le=10000,
         description="Maximum characters per result (default: 500). Use 0 for full content when you need complete file content. Increase when results are truncated.",
+    )
+
+
+class FilesystemSearchInput(_FilesystemSearchOptions):
+    """Input schema for filesystem search tool."""
+
+    index_name: Optional[str] = Field(
+        default=None,
+        description="Optional: specific index name to search (searches all if not specified)",
     )
 
 
@@ -164,20 +169,8 @@ def create_filesystem_search_tool(
         )
 
     # Create a specific input schema for this instance
-    class SearchInput(BaseModel):
-        query: str = Field(description="Natural language search query to find relevant documents/files")
-        max_results: int = Field(
-            default=10,
-            ge=1,
-            le=50,
-            description="Maximum number of results to return (1-50, default 10)",
-        )
-        max_chars_per_result: int = Field(
-            default=500,
-            ge=0,
-            le=10000,
-            description="Maximum characters per result (default: 500). Use 0 for full content when you need complete file content. Increase when results are truncated.",
-        )
+    class SearchInput(_FilesystemSearchOptions):
+        pass
 
     return StructuredTool.from_function(
         coroutine=_search,

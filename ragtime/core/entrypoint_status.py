@@ -10,12 +10,13 @@ ragtime-app side:
   that don't have installable package requirements.
 
 The runtime container (``runtime/core/shared.py``) keeps a **copy** of
-``KNOWN_FRAMEWORKS`` because the two containers cannot cross-import.
-When adding or removing a framework here, mirror ``KNOWN_FRAMEWORKS``
-in ``runtime/core/shared.py``.
+``KNOWN_FRAMEWORKS`` because the standalone runtime worker must remain
+runnable without the Ragtime application package. When adding or removing a
+framework here, mirror ``KNOWN_FRAMEWORKS`` in ``runtime/core/shared.py``.
 
 Keep changes to ``EntrypointStatus`` and ``parse_entrypoint_config``
-mirrored in both files as well.
+mirrored in both files as well; parser and registry duplication remain
+intentional compatibility contracts.
 """
 
 from __future__ import annotations
