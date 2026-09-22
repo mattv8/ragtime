@@ -29,7 +29,7 @@ class SqliteRuntimeCoordinationTests(unittest.IsolatedAsyncioTestCase):
         from ragtime.userspace import sqlite_runtime
 
         with tempfile.TemporaryDirectory() as temporary:
-            context = multiprocessing.get_context("fork")
+            context = multiprocessing.get_context("spawn")
             ready = context.Event()
             release = context.Event()
             lock_path = Path(temporary) / "sqlite_backups" / "sqlite-operation.lock"
