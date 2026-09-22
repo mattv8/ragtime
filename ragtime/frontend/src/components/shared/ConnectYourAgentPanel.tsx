@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { api } from '@/api';
 import type { WorkspaceDevelopmentCredential } from '@/types';
+import { DeleteConfirmButton } from '../DeleteConfirmButton';
 import { InlineCopyButton } from './InlineCopyButton';
 
 interface ConnectYourAgentPanelProps {
@@ -111,7 +112,6 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
   const [step, setStep] = useState<SetupStep>('create');
   const [showCreateForm, setShowCreateForm] = useState(true);
   const [pendingRotationId, setPendingRotationId] = useState<string | null>(null);
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [name, setName] = useState('External agent');
   const [command, setCommand] = useState('');
   const [jobs, setJobs] = useState<ExecJob[]>([]);
@@ -172,7 +172,6 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
     setStep('create');
     setShowCreateForm(true);
     setPendingRotationId(null);
-    setPendingDeleteId(null);
     setJobs([]);
     setActivityOpen(false);
     setError(null);
@@ -253,18 +252,6 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
         }
       }
     }, 'Failed to revoke credential');
-  };
-
-  const deleteCredential = () => {
-    if (!pendingDeleteId) return;
-    const credentialId = pendingDeleteId;
-    setPendingDeleteId(null); // close confirmation regardless of outcome
-    void runWorkspaceAction(async (requestedWorkspaceId) => {
-      await api.deleteWorkspaceDevelopmentCredential(requestedWorkspaceId, credentialId);
-      if (isCurrentContext(requestedWorkspaceId)) {
-        setCredentials((items) => items.filter((item) => item.id !== credentialId));
-      }
-    }, 'Failed to delete credential');
   };
 
   const startJob = () => {
@@ -458,14 +445,26 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
                           )}
                           {!isActive && status === 'Revoked' && (
                             <div className="userspace-connect-agent-card-actions">
-                              <button
-                                type="button"
-                                className="btn btn-danger btn-sm"
+                              <DeleteConfirmButton
                                 disabled={loading}
-                                onClick={() => setPendingDeleteId(credential.id)}
-                              >
-                                Delete
-                              </button>
+                                deleting={loading}
+                                buttonText="Delete"
+                                title="Permanently delete this revoked credential"
+                                onDelete={() => {
+                                  const credentialId = credential.id;
+                                  void runWorkspaceAction(async (requestedWorkspaceId) => {
+                                    await api.deleteWorkspaceDevelopmentCredential(
+                                      requestedWorkspaceId,
+                                      credentialId,
+                                    );
+                                    if (isCurrentContext(requestedWorkspaceId)) {
+                                      setCredentials((items) =>
+                                        items.filter((item) => item.id !== credentialId),
+                                      );
+                                    }
+                                  }, 'Failed to delete credential');
+                                }}
+                              />
                             </div>
                           )}
                         </div>
@@ -674,31 +673,6 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
                     onClick={rotateCredential}
                   >
                     Rotate and continue
-                  </button>
-                </div>
-              </section>
-            )}
-
-            {pendingDeleteId && (
-              <section className="userspace-connect-agent-rotation-warning" role="alert">
-                <strong>Permanently delete this credential?</strong>
-                <p>This cannot be undone. The credential record will be removed entirely.</p>
-                <div className="userspace-connect-agent-footer-actions">
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    disabled={loading}
-                    onClick={() => setPendingDeleteId(null)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-danger btn-sm"
-                    disabled={loading}
-                    onClick={deleteCredential}
-                  >
-                    Delete permanently
                   </button>
                 </div>
               </section>

@@ -3,6 +3,14 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConnectYourAgentPanel } from './ConnectYourAgentPanel';
 
+vi.mock('../DeleteConfirmButton', () => ({
+  DeleteConfirmButton: ({ onDelete, buttonText }: { onDelete: () => void; buttonText: string }) => (
+    <button type="button" onClick={onDelete}>
+      {buttonText}
+    </button>
+  ),
+}));
+
 const apiMock = vi.hoisted(() => ({
   listWorkspaceDevelopmentCredentials: vi.fn(),
   createWorkspaceDevelopmentCredential: vi.fn(),
@@ -168,7 +176,7 @@ describe('ConnectYourAgentPanel', () => {
     expect(screen.queryByRole('button', { name: /^copy setup instructions$/i })).toBeNull();
   });
 
-  it('shows Delete button only on revoked credentials and confirms before deleting', async () => {
+  it('shows Delete button on revoked credentials and deletes via callback', async () => {
     const user = userEvent.setup();
     const revokedCred = credential({ revoked_at: '2026-09-19T00:00:01Z' });
     apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([revokedCred]);
@@ -179,9 +187,7 @@ describe('ConnectYourAgentPanel', () => {
     expect(within(card).getByRole('button', { name: /^delete$/i })).toBeTruthy();
 
     await user.click(within(card).getByRole('button', { name: /^delete$/i }));
-    expect(screen.getByText(/permanently delete this credential/i)).toBeTruthy();
 
-    await user.click(screen.getByRole('button', { name: /delete permanently/i }));
     await waitFor(() => {
       expect(apiMock.deleteWorkspaceDevelopmentCredential).toHaveBeenCalledWith(
         'workspace-1',
@@ -191,23 +197,7 @@ describe('ConnectYourAgentPanel', () => {
     expect(screen.queryByRole('article', { name: 'External agent credential' })).toBeNull();
   });
 
-  it('cancels delete without removing the credential', async () => {
-    const user = userEvent.setup();
-    const revokedCred = credential({ revoked_at: '2026-09-19T00:00:01Z' });
-    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([revokedCred]);
-    apiMock.deleteWorkspaceDevelopmentCredential.mockResolvedValue(undefined);
-    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
-
-    const card = await screen.findByRole('article', { name: 'External agent credential' });
-    await user.click(within(card).getByRole('button', { name: /^delete$/i }));
-    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
-
-    expect(screen.queryByText(/permanently delete this credential/i)).toBeNull();
-    expect(screen.getByRole('article', { name: 'External agent credential' })).toBeTruthy();
-    expect(apiMock.deleteWorkspaceDevelopmentCredential).not.toHaveBeenCalled();
-  });
-
-  it('shows error and keeps card when delete fails', async () => {
+  it('shows error and keeps card when delete call fails', async () => {
     const user = userEvent.setup();
     const revokedCred = credential({ revoked_at: '2026-09-19T00:00:01Z' });
     apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([revokedCred]);
@@ -216,11 +206,8 @@ describe('ConnectYourAgentPanel', () => {
 
     const card = await screen.findByRole('article', { name: 'External agent credential' });
     await user.click(within(card).getByRole('button', { name: /^delete$/i }));
-    await user.click(screen.getByRole('button', { name: /delete permanently/i }));
 
-    // Confirmation closes immediately; error shown; card preserved
     await waitFor(() => {
-      expect(screen.queryByText(/permanently delete this credential/i)).toBeNull();
       expect((screen.getByRole('alert') as HTMLElement).textContent).toContain('Delete failed');
     });
     expect(screen.getByRole('article', { name: 'External agent credential' })).toBeTruthy();
