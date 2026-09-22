@@ -1,9 +1,4 @@
 /* SQLite recovery history is intentionally a first-class workbench surface. */
-.database-history-snapshot-host {
-  padding: var(--space-sm);
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface);
-}
 
 .database-history-panel {
   border: 1px solid var(--color-border);
@@ -14,7 +9,6 @@
 
 .database-history-body,
 .database-history-capture-jobs,
-.database-history-capture-job-list,
 .database-history-backup,
 .database-history-recovery,
 .database-history-wizard,
@@ -36,21 +30,10 @@
   background: var(--color-bg-secondary);
 }
 
-.database-history-capture-jobs,
-.database-history-capture-job-list {
+.database-history-capture-jobs {
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
-}
-
-.database-history-capture-jobs details {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-}
-
-.database-history-capture-jobs summary {
-  cursor: pointer;
 }
 
 .database-history-backup,
@@ -100,17 +83,7 @@
   font-size: var(--text-xs);
 }
 
-.database-history-group {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-}
-
-.database-history-group + .database-history-group {
-  margin-top: var(--space-md);
-}
-
-.database-history-group-heading {
+.database-history-band-heading {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
@@ -120,6 +93,64 @@
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.database-history-band,
+.database-history-database-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.database-history-band + .database-history-band {
+  margin-top: var(--space-md);
+}
+
+.database-history-band-header,
+.database-history-database-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.database-history-band-count,
+.database-history-database-count {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: var(--leading-tight);
+}
+
+.database-history-database-heading {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.database-history-database-latest {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+button[data-history-show-older] {
+  align-self: flex-start;
+  margin-top: var(--space-xs);
+}
+
+.database-history-band[data-history-band='activity'] details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.database-history-band[data-history-band='activity'] summary {
+  cursor: pointer;
 }
 
 .database-history-trigger-badge {
