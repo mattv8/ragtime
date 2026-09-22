@@ -248,7 +248,9 @@ describe('DatabaseHistoryPanel', () => {
     render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
     await user.click(screen.getByRole('button', { name: 'Database history' }));
     await waitFor(() =>
-      expect(screen.getByRole('dialog').querySelector('[data-history-capture-job="job-1"]')).toBeTruthy(),
+      expect(
+        screen.getByRole('dialog').querySelector('[data-history-capture-job="job-1"]'),
+      ).toBeTruthy(),
     );
     resolveHistory({ workspace_id: 'ws-1', backups: [], can_manage: true });
   });
@@ -393,7 +395,9 @@ describe('DatabaseHistoryPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Database history' }));
     await within(screen.getByRole('dialog')).findByRole('heading', { name: 'app.sqlite3' });
     listeners.get('history_changed')?.(new Event('history_changed'));
-    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'app.sqlite3' })).toBeTruthy();
+    expect(
+      within(screen.getByRole('dialog')).getByRole('heading', { name: 'app.sqlite3' }),
+    ).toBeTruthy();
     expect(screen.queryByText('Loading database history…')).toBeNull();
 
     resolveRefresh({ workspace_id: 'ws-1', backups: [secondBackup], can_manage: true });
@@ -583,9 +587,7 @@ describe('DatabaseHistoryPanel', () => {
       'snapshot-tie-y.sqlite3',
       'snapshot-tie-z.sqlite3',
     ]);
-    expect(groups[0]?.getAttribute('aria-labelledby')).toMatch(
-      /^db-hist-db-hourly-new-sqlite3-/,
-    );
+    expect(groups[0]?.getAttribute('aria-labelledby')).toMatch(/^db-hist-db-hourly-new-sqlite3-/);
     expect(
       Array.from(dialog.querySelectorAll<HTMLElement>('[data-history-backup]')).map(
         (item) => item.dataset.historyBackup,
@@ -606,9 +608,8 @@ describe('DatabaseHistoryPanel', () => {
     ).toBe('snapshot');
     for (const id of ['snapshot-old', 'snapshot-tie-a', 'snapshot-tie-y', 'snapshot-tie-z']) {
       expect(
-        dialog.querySelector(
-          `[data-history-backup="${id}"] .database-history-trigger-badge`,
-        )?.textContent,
+        dialog.querySelector(`[data-history-backup="${id}"] .database-history-trigger-badge`)
+          ?.textContent,
       ).toBe('Code snapshot');
     }
     expect(
@@ -697,7 +698,9 @@ describe('DatabaseHistoryPanel', () => {
     const details = activity.querySelector('details');
     expect(details?.open).toBe(false);
     expect(within(activity).getByText('Capture activity (1 run)')).toBeTruthy();
-    const row = activity.querySelector<HTMLElement>('[data-history-activity-job="scheduled-no-change"]');
+    const row = activity.querySelector<HTMLElement>(
+      '[data-history-activity-job="scheduled-no-change"]',
+    );
     expect(row).toBeTruthy();
     expect(within(row as HTMLElement).getByText('Hourly backup check')).toBeTruthy();
     expect(within(row as HTMLElement).getByText('All workspace databases')).toBeTruthy();
@@ -726,16 +729,12 @@ describe('DatabaseHistoryPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Database history' }));
 
     const dialog = screen.getByRole('dialog');
-    await waitFor(() =>
-      expect(dialog.querySelectorAll('[data-history-backup]').length).toBe(5),
-    );
+    await waitFor(() => expect(dialog.querySelectorAll('[data-history-backup]').length).toBe(5));
     const showOlder = within(dialog).getByRole('button', { name: 'Show 1 older restore point' });
     expect(showOlder.getAttribute('data-history-show-older')).toBe('app.sqlite3');
     await user.click(showOlder);
     expect(dialog.querySelectorAll('[data-history-backup]')).toHaveLength(6);
-    expect(
-      within(dialog).getByRole('button', { name: 'Show fewer restore points' }),
-    ).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Show fewer restore points' })).toBeTruthy();
   });
 
   it('surfaces capture-job errors even when there are no active jobs', async () => {
@@ -884,7 +883,9 @@ describe('DatabaseHistoryPanel', () => {
     await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
     resolveEnqueue({ job: captureJob });
     await waitFor(() =>
-      expect(screen.getByRole('dialog').querySelector('[data-history-capture-job="job-1"]')).toBeTruthy(),
+      expect(
+        screen.getByRole('dialog').querySelector('[data-history-capture-job="job-1"]'),
+      ).toBeTruthy(),
     );
     expect(
       (screen.getByRole('button', { name: 'Capture now' }) as HTMLButtonElement).disabled,
@@ -912,11 +913,15 @@ describe('DatabaseHistoryPanel', () => {
     await waitFor(() => expect(apiMock.listUserSpaceSqliteBackupJobs).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole('button', { name: 'Capture now' }));
     await waitFor(() =>
-      expect(screen.getByRole('dialog').querySelector('[data-history-capture-job="job-1"]')).toBeTruthy(),
+      expect(
+        screen.getByRole('dialog').querySelector('[data-history-capture-job="job-1"]'),
+      ).toBeTruthy(),
     );
     resolveJobs({ jobs: [] });
     await Promise.resolve();
-    expect(screen.getByRole('dialog').querySelector('[data-history-capture-job="job-1"]')).toBeTruthy();
+    expect(
+      screen.getByRole('dialog').querySelector('[data-history-capture-job="job-1"]'),
+    ).toBeTruthy();
   });
 
   it('shows scoped capture jobs and keeps cancel busy per job', async () => {
@@ -971,7 +976,9 @@ describe('DatabaseHistoryPanel', () => {
 
     await user.click(screen.getByRole('button', { name: 'Database history' }));
     await waitFor(() => expect(apiMock.listUserSpaceSqliteBackupJobs).toHaveBeenCalledTimes(2));
-    expect(screen.getByRole('dialog').querySelector('[data-history-capture-job="job-1"]')).toBeNull();
+    expect(
+      screen.getByRole('dialog').querySelector('[data-history-capture-job="job-1"]'),
+    ).toBeNull();
   });
 
   it('prevents duplicate delete requests with local busy state', async () => {

@@ -4,12 +4,13 @@ import asyncio
 import json
 import os
 import sqlite3
+import sys
 import tempfile
 import unittest
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import cast
 from unittest import mock
 
@@ -55,6 +56,11 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
                     marker.unlink(missing_ok=True)
 
         return access
+
+    def _userspace_service_module(self, root_path: Path) -> ModuleType:
+        module = ModuleType("ragtime.userspace.service")
+        setattr(module, "userspace_service", SimpleNamespace(root_path=root_path))
+        return module
 
     async def test_capture_records_exact_snapshot_association_and_lists_after_live_delete(self) -> None:
         with mock.patch("ragtime.userspace.sqlite_history.sqlite_workspace_access", self._runtime_boundary()):
@@ -187,9 +193,9 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         database = SimpleNamespace(query_raw=mock.AsyncMock(return_value=[{"id": "linked-workspace"}]))
 
         with (
-            mock.patch(
-                "ragtime.userspace.service.userspace_service",
-                SimpleNamespace(root_path=Path(self.temp.name) / "scheduled-root"),
+            mock.patch.dict(
+                sys.modules,
+                {"ragtime.userspace.service": self._userspace_service_module(Path(self.temp.name) / "scheduled-root")},
             ),
             mock.patch("ragtime.userspace.sqlite_history.get_db", new=mock.AsyncMock(return_value=database)),
             mock.patch.object(self.history, "capture_workspace_databases", new_callable=mock.AsyncMock) as capture,
@@ -207,9 +213,9 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
         database = SimpleNamespace(query_raw=mock.AsyncMock(return_value=[{"id": "workspace"}]))
 
         with (
-            mock.patch(
-                "ragtime.userspace.service.userspace_service",
-                SimpleNamespace(root_path=workspace_root.parent),
+            mock.patch.dict(
+                sys.modules,
+                {"ragtime.userspace.service": self._userspace_service_module(workspace_root.parent)},
             ),
             mock.patch("ragtime.userspace.sqlite_history.get_db", new=mock.AsyncMock(return_value=database)),
             mock.patch.object(self.history, "_root", side_effect=OSError("storage unavailable")),

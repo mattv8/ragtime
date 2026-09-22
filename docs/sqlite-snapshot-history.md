@@ -63,6 +63,19 @@ Ordinary captures omit logical row fingerprinting and the redundant first
 integrity scan; restore preview and drift validation retain their logical
 fingerprint checks.
 
+### Restore preparation work
+
+Restore preview and drift preparation create lightweight private copies when
+their copy result is used only for later validation. Each path computes one
+explicit logical fingerprint of the current private copy. Merge preparation
+then reuses that inspected private current copy as its writable candidate
+instead of making another copy of the live database. These reductions do not
+change the inline, verified pre-restore safety capture.
+
+Logical fingerprints still read source database state and can require SQLite
+sorting or temporary disk. Merge and overwrite comparisons remain streamed and
+keyed: they do not materialize a whole database in Python memory.
+
 ## Confinement and platform requirement
 
 Capture, restore-preview preparation, and live drift fingerprinting run in a
@@ -140,6 +153,13 @@ blobs are removed, so a subsequent capture failure cannot leave a ready record
 pointing to an evicted blob. Shared backup files count once toward the quota;
 removing an alias frees no file space until its last reference is removed.
 
+Maintenance computes catalog bookkeeping and blob reference counts without
+repeated candidate scans. A cleanup that leaves the catalog's canonical
+semantic content unchanged does not rewrite the catalog or issue the associated
+durability write; saves for claims, intents, completions, and publications are
+still required. Catalog updates and cleanup continue to run under their
+existing lock scopes.
+
 ### Scheduling, queueing, and admission limits
 
 The durable queue runs one ordinary capture globally and one per workspace.
@@ -191,6 +211,14 @@ than launching unlimited children. A cancelled caller drains its running worker
 before releasing admission. Processes with independent storage roots have
 independent budgets.
 
+When no job is available, a queue worker backs off its durable claim waits at
+one, two, four, and then five seconds. A local enqueue or cancellation wakes
+the worker promptly and resets that idle backoff. Another process's enqueue is
+observed by the periodic durable claim, with up to approximately five seconds
+of idle detection delay. This changes idle polling only: job state remains in
+the durable store, and normal job waiting and error recovery retain their
+one-second polling cadence.
+
 Logs record admission wait and subprocess duration, capture/reuse/skip outcome,
 logical backup size, and new retained blob bytes where applicable. Retained
 bytes are not physical device IOPS: deduplicating after a changed-state capture
@@ -224,9 +252,12 @@ outside its fenced operation.
 
 The catalog lock remains held during capture and probing, so history listing
 or deletion can wait for those operations. Continuously changing databases and
-checkpoint-heavy workloads may get fewer skips. Capture is still awaited by
-code-snapshot creation, so it contributes to response latency. Quotas and
-retention bound retained history, not cumulative source reads or write traffic.
+checkpoint-heavy workloads may get fewer skips. Code-snapshot creation awaits
+durable queue acceptance; database capture executes later and records its own
+outcome. Quotas and
+retention bound retained history, not cumulative source hashing, reads, or
+write traffic. Fixed queue admission and confined-child capacities remain in
+force; no optimization increases them.
 
 Focused automated tests and lint checks are recorded in the SQLite-history
 hardening lane reports. A live authenticated smoke result is not recorded here;

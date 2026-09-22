@@ -43,6 +43,13 @@ class SqliteCaptureLightweightTests(unittest.TestCase):
             capture_database(self.source, self.root / "one-check.sqlite3", include_fingerprint=False)
         self.assertEqual(check.call_count, 1)
 
+    def test_internal_copy_requests_lightweight_capture(self) -> None:
+        """Restore-private copies discard logical fingerprints and must not compute them."""
+        destination = self.root / "internal-copy.sqlite3"
+        with mock.patch("runtime.core.sqlite_recovery.capture_database") as capture:
+            sqlite_recovery._copy_input(self.source, destination)
+        capture.assert_called_once_with(self.source, destination, include_fingerprint=False)
+
     def test_caller_owned_source_connection_remains_open_without_a_transaction(self) -> None:
         """Warmed capture callers retain their connection for post-capture source validation."""
         source_connection = sqlite_recovery._connect_readonly(self.source)

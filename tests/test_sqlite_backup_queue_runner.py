@@ -43,6 +43,29 @@ class _History:
         return [{"id": "ready-backup", "status": "ready"}]
 
 
+class _RunnerStore:
+    def __init__(self) -> None:
+        self.cancelled: list[tuple[str, str]] = []
+        self.enqueued: list[str] = []
+
+    async def stale_running(self, **kwargs):
+        return []
+
+    async def prune_terminal(self, **kwargs):
+        return []
+
+    async def claim_next(self, owner_token: str):
+        return None
+
+    async def cancel(self, workspace_id: str, job_id: str):
+        self.cancelled.append((workspace_id, job_id))
+        return {"id": job_id}
+
+    async def enqueue(self, workspace_id: str, **kwargs):
+        self.enqueued.append(workspace_id)
+        return {"id": "enqueued"}
+
+
 class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
     def _job(self) -> dict:
         return {
@@ -177,3 +200,142 @@ class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
             await service._run_claimed(job)
         capture.assert_not_awaited()
         self.assertEqual("cancelled", store.finished[0]["status"])
+
+    async def test_idle_claim_waits_back_off_to_capped_interval(self) -> None:
+        service = SqliteBackupQueueService(_RunnerStore())
+        timeouts: list[float] = []
+
+        async def timeout_wait(awaitable, *, timeout: float):
+            awaitable.close()
+            timeouts.append(timeout)
+            if len(timeouts) == 5:
+                service._stopping = True
+            raise TimeoutError
+
+        with (
+            mock.patch.object(service._store, "claim_next", new=mock.AsyncMock(return_value=None)),
+            mock.patch.object(queue.asyncio, "wait_for", new=timeout_wait),
+        ):
+            await service._run()
+
+        self.assertEqual([1.0, 2.0, 4.0, 5.0, 5.0], timeouts)
+
+    async def test_cancellation_wake_during_claim_is_not_lost_and_resets_idle_backoff(self) -> None:
+        store = _RunnerStore()
+        service = SqliteBackupQueueService(store)
+        timeouts: list[float] = []
+        claim_count = 0
+
+        async def claim_next(_owner_token: str):
+            nonlocal claim_count
+            claim_count += 1
+            if claim_count == 2:
+                await service.cancel("workspace-a", "job-a")
+            return None
+
+        async def wait_for_wake(awaitable, *, timeout: float):
+            awaitable.close()
+            timeouts.append(timeout)
+            if len(timeouts) == 1:
+                raise TimeoutError
+            if len(timeouts) == 2:
+                self.assertTrue(service._wake.is_set())
+                return None
+            service._stopping = True
+            raise TimeoutError
+
+        with (
+            mock.patch.object(service._store, "claim_next", new=claim_next),
+            mock.patch.object(queue.asyncio, "wait_for", new=wait_for_wake),
+        ):
+            await service._run()
+
+        self.assertEqual([1.0, 2.0, 1.0], timeouts)
+        self.assertEqual([("workspace-a", "job-a")], store.cancelled)
+
+    async def test_enqueue_wake_during_claim_is_not_lost(self) -> None:
+        store = _RunnerStore()
+        service = SqliteBackupQueueService(store)
+
+        async def enqueue_during_claim(_owner_token: str):
+            await service.enqueue("workspace-a", trigger="manual")
+            return None
+
+        async def wait_for_wake(awaitable, *, timeout: float):
+            awaitable.close()
+            self.assertEqual(1.0, timeout)
+            self.assertTrue(service._wake.is_set())
+            service._stopping = True
+
+        with (
+            mock.patch.object(service._store, "claim_next", new=enqueue_during_claim),
+            mock.patch.object(queue.asyncio, "wait_for", new=wait_for_wake),
+        ):
+            await service._run()
+
+        self.assertEqual(["workspace-a"], store.enqueued)
+
+    async def test_successful_claim_resets_idle_backoff(self) -> None:
+        service = SqliteBackupQueueService(_RunnerStore())
+        job = {"id": "claimed"}
+        claims = iter((None, job, None))
+        timeouts: list[float] = []
+
+        async def timeout_wait(awaitable, *, timeout: float):
+            awaitable.close()
+            timeouts.append(timeout)
+            if len(timeouts) == 2:
+                service._stopping = True
+            raise TimeoutError
+
+        with (
+            mock.patch.object(service._store, "claim_next", new=mock.AsyncMock(side_effect=claims)),
+            mock.patch.object(service, "_run_claimed", new=mock.AsyncMock()),
+            mock.patch.object(queue.asyncio, "wait_for", new=timeout_wait),
+        ):
+            await service._run()
+
+        self.assertEqual([1.0, 1.0], timeouts)
+
+    async def test_error_iteration_resets_idle_backoff_and_uses_legacy_poll_delay(self) -> None:
+        service = SqliteBackupQueueService(_RunnerStore())
+        claims = iter((None, RuntimeError("store unavailable"), None))
+        timeouts: list[float] = []
+        sleeps: list[float] = []
+
+        async def timeout_wait(awaitable, *, timeout: float):
+            awaitable.close()
+            timeouts.append(timeout)
+            if len(timeouts) == 2:
+                service._stopping = True
+            raise TimeoutError
+
+        async def record_sleep(delay: float):
+            sleeps.append(delay)
+
+        with (
+            mock.patch.object(service._store, "claim_next", new=mock.AsyncMock(side_effect=claims)),
+            mock.patch.object(queue.asyncio, "wait_for", new=timeout_wait),
+            mock.patch.object(queue.asyncio, "sleep", new=record_sleep),
+        ):
+            await service._run()
+
+        self.assertEqual([1.0, 1.0], timeouts)
+        self.assertEqual([queue._POLL_SECONDS], sleeps)
+
+    async def test_stop_wake_during_claim_exits_without_another_wait(self) -> None:
+        service = SqliteBackupQueueService(_RunnerStore())
+
+        async def stop_during_claim(_owner_token: str):
+            service._stopping = True
+            service._wake.set()
+            return None
+
+        wait_for = mock.AsyncMock()
+        with (
+            mock.patch.object(service._store, "claim_next", new=stop_during_claim),
+            mock.patch.object(queue.asyncio, "wait_for", new=wait_for),
+        ):
+            await service._run()
+
+        wait_for.assert_not_awaited()

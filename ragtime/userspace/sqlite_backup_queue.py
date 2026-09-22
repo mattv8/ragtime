@@ -17,6 +17,7 @@ from ragtime.userspace.sqlite_capture_admission import _directory_flags, _open_d
 
 logger = get_logger(__name__)
 _POLL_SECONDS = 1.0
+_IDLE_BACKOFF_SECONDS = (1.0, 2.0, 4.0, 5.0)
 _HEARTBEAT_SECONDS = 10.0
 _TERMINAL = frozenset({"completed", "failed", "cancelled", "interrupted"})
 
@@ -173,6 +174,7 @@ class SqliteBackupQueueService:
             await asyncio.sleep(_POLL_SECONDS)
 
     async def _run(self) -> None:
+        idle_backoff_index = 0
         while not self._stopping:
             try:
                 now = asyncio.get_running_loop().time()
@@ -180,19 +182,30 @@ class SqliteBackupQueueService:
                     await self.recover_stale()
                     await self.prune_terminal()
                     self._next_maintenance = now + 60.0
+                if self._stopping:
+                    break
+                # Clear before claiming so an enqueue, cancellation, or stop
+                # that completes while the store await is in flight remains a
+                # wake for the subsequent local wait.
+                self._wake.clear()
                 claimed = await self._store.claim_next(self._owner_token)
                 if claimed is not None:
+                    idle_backoff_index = 0
                     await self._run_claimed(claimed)
                     continue
-                self._wake.clear()
+                if self._stopping:
+                    break
                 try:
-                    await asyncio.wait_for(self._wake.wait(), timeout=_POLL_SECONDS)
+                    await asyncio.wait_for(self._wake.wait(), timeout=_IDLE_BACKOFF_SECONDS[idle_backoff_index])
                 except TimeoutError:
-                    pass
+                    idle_backoff_index = min(idle_backoff_index + 1, len(_IDLE_BACKOFF_SECONDS) - 1)
+                else:
+                    idle_backoff_index = 0
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("SQLite backup queue worker failed")
+                idle_backoff_index = 0
                 await asyncio.sleep(_POLL_SECONDS)
 
     async def _run_claimed(self, job: dict[str, Any]) -> None:

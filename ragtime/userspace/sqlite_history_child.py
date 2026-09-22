@@ -162,7 +162,7 @@ def main() -> None:
                 except FileNotFoundError:
                     current_fingerprint = None
                 else:
-                    capture_database(Path(os.path.join(source_root, current_name)), current_copy)
+                    capture_database(Path(os.path.join(source_root, current_name)), current_copy, include_fingerprint=False)
                     current_fingerprint = database_fingerprint(current_copy)
                 migrations = _freeze_migrations(args.source_fd, scratch)
                 print(json.dumps({"current_fingerprint": current_fingerprint, "migration_fingerprint": migration_fingerprint(migrations)}, sort_keys=True))
@@ -187,7 +187,7 @@ def main() -> None:
                 except FileNotFoundError:
                     pass
                 else:
-                    capture_database(current, current_copy)
+                    capture_database(current, current_copy, include_fingerprint=False)
                     current_fingerprint = database_fingerprint(current_copy)
                 migrations = _freeze_migrations(args.source_fd, scratch)
                 result = prepare_restore(

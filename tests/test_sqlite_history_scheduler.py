@@ -228,3 +228,11 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
                 self.service._cleanup_and_due_sync(self.root, "workspace")
         self.assertTrue(candidate.exists())
         self.assertIn("expired", self.service._load(self.root, "workspace")["previews"])
+
+    def test_unchanged_cleanup_does_not_save_catalog_again(self) -> None:
+        self.service._cleanup_and_due_sync(self.root, "workspace")
+
+        with mock.patch.object(self.service, "_save", wraps=self.service._save) as save:
+            self.service._cleanup_and_due_sync(self.root, "workspace")
+
+        save.assert_not_called()

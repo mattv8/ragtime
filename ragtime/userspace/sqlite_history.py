@@ -256,10 +256,17 @@ class SqliteHistoryService:
         for operation in manifest.get("operations", {}).values():
             if operation.get("status") == "intent":
                 protected.update(str(operation.get(key)) for key in ("safety_backup_id", "backup_id") if operation.get(key))
-        ready = [row for row in manifest.get("backups", []) if row.get("status") == "ready"]
-        for name in {str(row.get("database_name")) for row in ready}:
-            newest = max((row for row in ready if row.get("database_name") == name), key=lambda row: str(row.get("created_at")))
-            protected.add(str(newest["id"]))
+        ready: list[dict[str, Any]] = []
+        newest_by_database: dict[str, dict[str, Any]] = {}
+        for row in manifest.get("backups", []):
+            if row.get("status") != "ready":
+                continue
+            ready.append(row)
+            name = str(row.get("database_name"))
+            newest = newest_by_database.get(name)
+            if newest is None or str(row.get("created_at")) > str(newest.get("created_at")):
+                newest_by_database[name] = row
+        protected.update(str(row["id"]) for row in newest_by_database.values())
         cutoff = _now() - _PRE_RESTORE_MINIMUM
         protected.update(str(row["id"]) for row in ready if row.get("trigger") == "pre_restore" and datetime.fromisoformat(row["created_at"]) >= cutoff)
         return protected
@@ -561,27 +568,29 @@ class SqliteHistoryService:
     def _cleanup_and_due_sync(self, root: Path, workspace_id: str, try_lock: bool = False) -> bool:
         with _catalog_lock(root, blocking=not try_lock):
             manifest = self._load(root, workspace_id)
+            before = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
             now = _now()
             referenced = {str(row.get("blob")) for row in manifest["backups"] if row.get("blob")}
             previews = manifest["previews"]
             operations = manifest["operations"]
+            active_preview_ids = {str(row.get("preview_id")) for row in operations.values() if row.get("status") == "intent" and row.get("preview_id")}
             expired_candidates: set[str] = set()
             for preview_id, preview in list(previews.items()):
                 if datetime.fromisoformat(preview["expires_at"]) <= now:
-                    if any(row.get("preview_id") == preview_id and row.get("status") == "intent" for row in operations.values()):
+                    if preview_id in active_preview_ids:
                         continue
                     expired_candidates.add(str(preview["candidate"]))
                     previews.pop(preview_id)
+            candidate_refs = (
+                referenced
+                | expired_candidates
+                | {str(row.get("candidate")) for row in previews.values()}
+                | {str(row.get("candidate")) for row in operations.values() if row.get("status") == "intent"}
+            )
             for directory in (root / "blobs", root / "candidates"):
                 if directory.is_dir() and not directory.is_symlink():
                     for entry in directory.iterdir():
                         rel = entry.relative_to(root).as_posix()
-                        candidate_refs = (
-                            referenced
-                            | expired_candidates
-                            | {str(row.get("candidate")) for row in previews.values()}
-                            | {str(row.get("candidate")) for row in operations.values() if row.get("status") == "intent"}
-                        )
                         if entry.is_file() and not entry.is_symlink() and rel not in candidate_refs:
                             entry.unlink()
             download_dir = root / "downloads"
@@ -598,7 +607,8 @@ class SqliteHistoryService:
                 due = False
             else:
                 due = datetime.fromisoformat(next_due) <= now
-            self._save(root, manifest)
+            if json.dumps(manifest, sort_keys=True, separators=(",", ":")) != before:
+                self._save(root, manifest)
             for candidate in expired_candidates:
                 self._protected_path(root, candidate, "candidates").unlink(missing_ok=True)
             self._unlink_unreferenced(root, manifest, removed)
@@ -853,6 +863,7 @@ class SqliteHistoryService:
             key=lambda row: str(row.get("created_at")),
             reverse=True,
         )
+        validation_cache: dict[tuple[str, Any, int], bool] = {}
         for row in rows:
             if token is not None and row.get("source_token") != token:
                 continue
@@ -860,7 +871,13 @@ class SqliteHistoryService:
                 continue
             try:
                 blob = self._protected_path(root, str(row.get("blob") or ""), "blobs")
-                if not blob.is_file() or blob.stat().st_size != int(row.get("size_bytes") or -1) or _sha256(blob) != row.get("sha256"):
+                expected_size = int(row.get("size_bytes") or -1)
+                key = (str(row.get("blob") or ""), row.get("sha256"), expected_size)
+                valid = validation_cache.get(key)
+                if valid is None:
+                    valid = blob.is_file() and blob.stat().st_size == expected_size and _sha256(blob) == row.get("sha256")
+                    validation_cache[key] = valid
+                if not valid:
                     continue
             except HTTPException:
                 continue
@@ -1041,6 +1058,7 @@ class SqliteHistoryService:
         leaves an orphan which the ordinary sweep can safely collect.
         """
         used = self._history_disk_usage(root)
+        credited_planned_blobs: set[str] = set()
         if planned_removed:
             # Pruning has already removed these rows from the in-memory plan but
             # cannot unlink until that plan is persisted.  Credit only blobs
@@ -1050,6 +1068,7 @@ class SqliteHistoryService:
             for relative in planned_removed - surviving:
                 try:
                     used -= self._protected_path(root, relative, "blobs").stat().st_size
+                    credited_planned_blobs.add(relative)
                 except FileNotFoundError:
                     pass
         if used + incoming > _MAX_WORKSPACE_BYTES:
@@ -1058,17 +1077,22 @@ class SqliteHistoryService:
                 (row for row in manifest["backups"] if row.get("status") == "ready" and row["id"] not in protected),
                 key=lambda row: row["created_at"],
             )
-            evictions: list[dict[str, Any]] = []
-            remaining = list(manifest["backups"])
+            blob_references: dict[str, int] = {}
+            for row in manifest["backups"]:
+                blob_name = str(row.get("blob") or "")
+                if blob_name:
+                    blob_references[blob_name] = blob_references.get(blob_name, 0) + 1
+            eviction_ids: set[str] = set()
             for row in candidates:
                 if used + incoming <= _MAX_WORKSPACE_BYTES:
                     break
-                remaining.remove(row)
-                evictions.append(row)
+                eviction_ids.add(str(row["id"]))
                 # An alias only frees capacity after its final surviving
                 # reference is evicted.  Logical row sizes are never summed.
                 blob_name = str(row.get("blob") or "")
-                if blob_name and not any(other.get("blob") == blob_name for other in remaining):
+                if blob_name:
+                    blob_references[blob_name] -= 1
+                if blob_name and blob_references[blob_name] == 0 and blob_name not in credited_planned_blobs:
                     blob = self._protected_path(root, blob_name, "blobs")
                     try:
                         used -= blob.stat().st_size
@@ -1076,10 +1100,9 @@ class SqliteHistoryService:
                         pass
             if used + incoming > _MAX_WORKSPACE_BYTES:
                 raise HTTPException(status_code=409, detail="SQLite history quota would be exceeded")
-            for row in evictions:
-                manifest["backups"].remove(row)
+            manifest["backups"] = [row for row in manifest["backups"] if str(row["id"]) not in eviction_ids]
             self._save(root, manifest)
-            self._unlink_unreferenced(root, manifest, {str(row.get("blob") or "") for row in evictions})
+            self._unlink_unreferenced(root, manifest, {str(row.get("blob") or "") for row in candidates if str(row["id"]) in eviction_ids})
 
     @staticmethod
     def _history_disk_usage(root: Path) -> int:

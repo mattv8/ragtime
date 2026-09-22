@@ -527,7 +527,7 @@ def _preview_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _copy_input(source: Path, destination: Path) -> None:
-    capture_database(source, destination)
+    capture_database(source, destination, include_fingerprint=False)
 
 
 def prepare_restore(
@@ -558,6 +558,7 @@ def prepare_restore(
         return result
     temp_dir = Path(tempfile.mkdtemp(prefix="sqlite-restore-", dir=output_path.parent))
     candidate = temp_dir / "candidate.sqlite3"
+    current_copy = temp_dir / "current.sqlite3"
     try:
         _copy_input(backup_path, candidate)
         files = _migration_files(migrations_dir)
@@ -567,8 +568,12 @@ def prepare_restore(
         current_schema = None
         current_ledger = None
         if current_path is not None and current_path.is_file():
-            current_copy = temp_dir / "current.sqlite3"
-            _copy_input(current_path, current_copy)
+            try:
+                _copy_input(current_path, current_copy)
+            except (sqlite3.Error, OSError, SqliteRecoveryError) as exc:
+                if not current_copy.is_file():
+                    raise SqliteRecoveryError(f"Required private current copy was not created: {exc}") from exc
+                raise
             with _connect_readonly(current_copy) as current_conn:
                 current_schema = _schema_hash(current_conn)
                 current_ledger = _ledger(current_conn)
@@ -586,7 +591,9 @@ def prepare_restore(
             assert current_path is not None
             backup_copy = temp_dir / "backup.sqlite3"
             os.replace(candidate, backup_copy)
-            _copy_input(current_path, candidate)
+            if not current_copy.is_file():
+                raise SqliteRecoveryError("Required private current copy was not created before merge")
+            os.replace(current_copy, candidate)
             _merge(candidate, backup_copy, result, conflict_policy, table_policies)
         else:
             if current_path is not None and current_path.is_file():
@@ -627,10 +634,14 @@ def _overwrite_report(current: Path, candidate: Path, result: dict[str, Any]) ->
             _assert_unambiguous_primary_keys(old, table, pk)
             _assert_unambiguous_primary_keys(new, table, pk)
             where = " AND ".join(f"{_quote(column)}=?" for column in pk)
-            for backup_row in new.execute(_row_query(table, columns)):
+            backup_query = _row_query(table, columns)
+            current_query = _row_query(table, columns, where=where)
+            column_positions = {column: index for index, column in enumerate(columns)}
+            pk_positions = tuple(column_positions[column] for column in pk)
+            for backup_row in new.execute(backup_query):
                 values = tuple(backup_row)
-                key = tuple(values[columns.index(column)] for column in pk)
-                current_row = old.execute(_row_query(table, columns, where=where), key).fetchone()
+                key = tuple(values[index] for index in pk_positions)
+                current_row = old.execute(current_query, key).fetchone()
                 if current_row is None:
                     report["inserted"] += 1
                 elif tuple(current_row) == values:
@@ -650,6 +661,7 @@ def _merge(candidate: Path, backup: Path, result: dict[str, Any], default_policy
             raise SqliteRecoveryError("Merge requires matching semantic schemas")
         shapes = _schema_shape(current_conn)
         plans: list[tuple[str, list[str], list[str], str]] = []
+        write_plans: list[tuple[str, tuple[int, ...], tuple[int, ...], tuple[int, ...], str, str, str, str, str]] = []
         for table in current_tables:
             report = _report(table)
             result["tables"].append(report)
@@ -665,10 +677,14 @@ def _merge(candidate: Path, backup: Path, result: dict[str, Any], default_policy
             _assert_unambiguous_primary_keys(backup_conn, table, pk)
             policy = policies.get(table, default_policy)
             where = " AND ".join(f"{_quote(column)}=?" for column in pk)
-            for backup_row in backup_conn.execute(_row_query(table, columns)):
+            backup_query = _row_query(table, columns)
+            current_query = _row_query(table, columns, where=where)
+            column_positions = {column: index for index, column in enumerate(columns)}
+            pk_positions = tuple(column_positions[column] for column in pk)
+            for backup_row in backup_conn.execute(backup_query):
                 backup_values = tuple(backup_row)
-                key = tuple(backup_values[columns.index(column)] for column in pk)
-                current_row = current_conn.execute(_row_query(table, columns, where=where), key).fetchone()
+                key = tuple(backup_values[index] for index in pk_positions)
+                current_row = current_conn.execute(current_query, key).fetchone()
                 if current_row is None:
                     report["inserted"] += 1
                 elif tuple(current_row) == backup_values:
@@ -692,31 +708,27 @@ def _merge(candidate: Path, backup: Path, result: dict[str, Any], default_policy
             if writes and shape["triggers"]:
                 raise SqliteRecoveryError(f"Merge blocked: trigger-bearing table {table} would receive writes")
             writable = [row[1] for row in current_conn.execute(f"PRAGMA table_xinfo({_quote(table)})") if row[6] == 0]
+            writable_positions = tuple(column_positions[column] for column in writable)
+            changed = [column for column in writable if column not in pk]
+            changed_positions = tuple(column_positions[column] for column in changed)
+            insert_sql = f"INSERT INTO {_quote(table)} ({', '.join(_quote(column) for column in writable)}) VALUES ({', '.join('?' for _ in writable)})"
+            update_sql = f"UPDATE {_quote(table)} SET {', '.join(f'{_quote(column)}=?' for column in changed)} WHERE {where}" if changed else ""
             plans.append((table, writable, pk, policy))
+            write_plans.append((table, pk_positions, writable_positions, changed_positions, policy, backup_query, current_query, insert_sql, update_sql))
         result["warnings"].append("Merge keeps current-only rows; backup-only rows may revive deliberate deletions.")
         try:
             current_conn.execute("BEGIN")
             current_conn.execute("PRAGMA defer_foreign_keys=ON")
-            for table, writable, pk, policy in plans:
-                columns = _columns(backup_conn, table)
-                where = " AND ".join(f"{_quote(column)}=?" for column in pk)
-                for backup_row in backup_conn.execute(_row_query(table, columns)):
+            for table, pk_positions, writable_positions, changed_positions, policy, backup_query, current_query, insert_sql, update_sql in write_plans:
+                for backup_row in backup_conn.execute(backup_query):
                     backup_values = tuple(backup_row)
-                    values_by_column = dict(zip(columns, backup_values))
-                    key = tuple(values_by_column[column] for column in pk)
-                    current_row = current_conn.execute(_row_query(table, columns, where=where), key).fetchone()
+                    key = tuple(backup_values[index] for index in pk_positions)
+                    current_row = current_conn.execute(current_query, key).fetchone()
                     if current_row is None:
-                        current_conn.execute(
-                            f"INSERT INTO {_quote(table)} ({', '.join(_quote(col) for col in writable)}) VALUES ({', '.join('?' for _ in writable)})",
-                            tuple(values_by_column[col] for col in writable),
-                        )
+                        current_conn.execute(insert_sql, tuple(backup_values[index] for index in writable_positions))
                     elif tuple(current_row) != backup_values and policy == "use_backup":
-                        changed = [col for col in writable if col not in pk]
-                        if changed:
-                            current_conn.execute(
-                                f"UPDATE {_quote(table)} SET {', '.join(f'{_quote(col)}=?' for col in changed)} WHERE {' AND '.join(f'{_quote(col)}=?' for col in pk)}",
-                                tuple(values_by_column[col] for col in changed) + key,
-                            )
+                        if changed_positions:
+                            current_conn.execute(update_sql, tuple(backup_values[index] for index in changed_positions) + key)
             _repair_sequences(current_conn, backup_conn, plans)
             _check_database(current_conn)
             current_conn.commit()

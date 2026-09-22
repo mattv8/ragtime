@@ -146,3 +146,18 @@ class SqliteHistoryDedupTests(unittest.TestCase):
         backups = cast(list[dict[str, object]], manifest["backups"])
         self.assertEqual(["only"], [row["id"] for row in backups])
         self.assertTrue(blob.exists())
+
+    def test_protected_newest_preserves_first_row_when_timestamps_tie(self) -> None:
+        manifest = {
+            "backups": [
+                {"id": "first", "database_name": "app.sqlite3", "created_at": "2026-01-01T00:00:00+00:00", "status": "ready"},
+                {"id": "second", "database_name": "app.sqlite3", "created_at": "2026-01-01T00:00:00+00:00", "status": "ready"},
+            ],
+            "previews": {},
+            "operations": {},
+        }
+
+        protected = self.service._protected_backup_ids(manifest)
+
+        self.assertIn("first", protected)
+        self.assertNotIn("second", protected)

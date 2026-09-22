@@ -81,9 +81,7 @@ class SqliteHistoryEventRouteTests(unittest.IsolatedAsyncioTestCase):
         self.manage.stop()
 
     async def _stream(self):
-        response = await routes.stream_sqlite_history_events(
-            "workspace-1", self.request, "app.sqlite3", "snapshot-1", self.user
-        )
+        response = await routes.stream_sqlite_history_events("workspace-1", self.request, "app.sqlite3", "snapshot-1", self.user)
         return response, response.body_iterator
 
     async def test_streams_initial_notification_with_no_cache_headers(self) -> None:
