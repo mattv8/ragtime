@@ -298,6 +298,16 @@ class WorktreeMigrationUnitTests(unittest.TestCase):
         self.assertEqual(item["migration_sha256"], "def13c6ad0d78cc8f588007fc13c6c99501e93ba19f9a3ecf82d0abdb5b2e25b")
         self.assertEqual(item["down_sha256"], sha(item["down_sql"]))
 
+    def test_registry_resolves_pinned_historical_tool_skills_identity_only(self):
+        registry = wm.load_registry(Path(__file__).parents[1] / "scripts" / "worktree_down_migrations.json")
+        identity = ("20260921000000_tool_skills_default_off", "1f98f548851c071b8ae334b5da59389dba3271ee13f329869c6db4cccce017e3")
+        with tempfile.TemporaryDirectory() as directory:
+            resolved = wm._down_for(identity, Path(directory), {}, registry)
+            self.assertIsNotNone(resolved)
+            self.assertEqual(resolved[1], sha(resolved[0]))
+            self.assertNotIn("bridge_credential_mode", resolved[0])
+            self.assertIsNone(wm._down_for((identity[0], "a" * 64), Path(directory), {}, registry))
+
 
 @unittest.skipUnless(os.getenv("RUN_WORKTREE_MIGRATION_INTEGRATION") == "1", "set RUN_WORKTREE_MIGRATION_INTEGRATION=1")
 class WorktreeMigrationPostgresTests(unittest.TestCase):

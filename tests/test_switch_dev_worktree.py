@@ -1,4 +1,6 @@
+import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -13,6 +15,8 @@ from scripts.switch_dev_worktree import (
     Worktree,
     choose,
     fingerprint_target,
+    main,
+    print_error,
     repository_root,
     select_worktree,
     write_override,
@@ -450,3 +454,81 @@ class SwitchTests(unittest.TestCase):
         runner = mock.Mock()
         runner.run.return_value.stdout = "/tmp/primary/.git\n"
         self.assertEqual(repository_root(runner, Path("/tmp/linked/scripts/tool.py")), Path("/tmp/primary").resolve())
+
+    def test_migration_refusal_labels_active_and_target_code(self):
+        temp, primary, target = self.make_tree()
+        self.addCleanup(temp.cleanup)
+        runner = FakeRunner(primary, target)
+        outgoing = Worktree(primary, "outgoing-head", "outgoing-branch", False, True)
+        selected = Worktree(target, "target-head", "target-branch", False, False)
+        switch = Switcher(runner, primary, selected, True, outgoing=outgoing)
+        switch.validate = mock.Mock()
+        switch.acquire_lock = mock.Mock()
+        switch.release_lock = mock.Mock()
+        switch.helper = mock.Mock(
+            return_value=json.dumps({"status": "refused", "reasons": ["missing required down migration"], "warnings": []})
+        )
+
+        with self.assertRaisesRegex(
+            SwitchRefusal,
+            r"active code: outgoing-branch; target code: target-branch.*missing required down migration",
+        ):
+            switch.run()
+
+    def test_main_passes_observed_active_worktree_to_switcher(self):
+        primary = Path("/tmp/primary")
+        active = Worktree(primary, "active-head", "active", False, True)
+        target = Worktree(Path("/tmp/target"), "target-head", "target", False, False)
+        runner = mock.Mock()
+        runner.run.return_value.stdout = str(primary / "ragtime")
+        switcher = mock.Mock()
+        with (
+            mock.patch("scripts.switch_dev_worktree.Runner", return_value=runner),
+            mock.patch("scripts.switch_dev_worktree.repository_root", return_value=primary),
+            mock.patch("scripts.switch_dev_worktree.worktrees", return_value=[active, target]),
+            mock.patch("scripts.switch_dev_worktree.Switcher", return_value=switcher) as switcher_class,
+        ):
+            self.assertEqual(main(["target"]), 0)
+        switcher_class.assert_called_once_with(runner, primary, target, False, outgoing=active)
+        switcher.run.assert_called_once_with()
+
+    def test_migration_refusal_uses_detached_and_unknown_code_labels(self):
+        temp, primary, target = self.make_tree()
+        self.addCleanup(temp.cleanup)
+        selected = Worktree(target, "target-head", "target", False, False)
+        switch = Switcher(FakeRunner(primary, target), primary, selected, True, outgoing=Worktree(primary, "abcdef1234567890", "detached", False, True))
+        switch.validate = mock.Mock()
+        switch.acquire_lock = mock.Mock()
+        switch.release_lock = mock.Mock()
+        switch.helper = mock.Mock(return_value=json.dumps({"status": "refused", "reasons": [], "warnings": []}))
+        with self.assertRaisesRegex(SwitchRefusal, r"active code: detached@abcdef123456; target code: target"):
+            switch.run()
+
+        unknown = Switcher(FakeRunner(primary, target), primary, selected, True)
+        unknown.validate = mock.Mock()
+        unknown.acquire_lock = mock.Mock()
+        unknown.release_lock = mock.Mock()
+        unknown.helper = mock.Mock(return_value=json.dumps({"status": "refused", "reasons": [], "warnings": []}))
+        with self.assertRaisesRegex(SwitchRefusal, r"active code: unknown; target code: target"):
+            unknown.run()
+
+    def test_print_error_uses_color_only_for_supported_terminal_stderr(self):
+        class Stderr(io.StringIO):
+            def __init__(self, tty: bool):
+                super().__init__()
+                self.tty = tty
+
+            def isatty(self):
+                return self.tty
+
+        for tty, environment, expected in (
+            (True, {"TERM": "xterm"}, "\033[1;31merror\033[0m\n"),
+            (False, {"TERM": "xterm"}, "error\n"),
+            (True, {"TERM": "xterm", "NO_COLOR": "1"}, "error\n"),
+            (True, {"TERM": "dumb"}, "error\n"),
+        ):
+            with self.subTest(tty=tty, environment=environment):
+                stderr = Stderr(tty)
+                with mock.patch("sys.stderr", stderr), mock.patch.dict(os.environ, environment, clear=True):
+                    print_error("error")
+                self.assertEqual(stderr.getvalue(), expected)

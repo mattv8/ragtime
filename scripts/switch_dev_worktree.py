@@ -47,6 +47,22 @@ def worktree_labels(item: Worktree) -> tuple[str, str]:
     return "dirty" if item.dirty else "clean", "active" if item.active else "inactive"
 
 
+def code_label(item: Worktree | None) -> str:
+    if item is None:
+        return "unknown"
+    if item.branch == "detached":
+        return f"detached@{item.head[:12]}"
+    return item.branch
+
+
+def print_error(message: str) -> None:
+    """Print a host-side error with terminal-only emphasis."""
+    color_enabled = sys.stderr.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
+    if color_enabled:
+        message = f"\033[1;31m{message}\033[0m"
+    print(message, file=sys.stderr)
+
+
 def git(runner: Runner, root: Path, *args: str) -> str:
     return runner.run(["git", "-C", str(root), *args], capture=True).stdout.strip()
 
@@ -139,8 +155,9 @@ def write_override(path: Path, primary: Path, target: Path, *, storage: bool) ->
 
 
 class Switcher:
-    def __init__(self, runner: Runner, primary: Path, target: Worktree, dry_run: bool) -> None:
+    def __init__(self, runner: Runner, primary: Path, target: Worktree, dry_run: bool, *, outgoing: Worktree | None = None) -> None:
         self.runner, self.primary, self.target, self.dry_run = runner, primary, target, dry_run
+        self.outgoing = outgoing
         self.state_root = primary / ".data/worktree-switch"
         self.run_root = self.state_root / "runs" / str(uuid.uuid4())
         self.override = self.run_root / "compose.override.yml"
@@ -501,7 +518,11 @@ class Switcher:
                 if values:
                     print(f"Migration {key} ({len(values)}): {', '.join(values)}", file=sys.stderr)
             if check.get("status") != "ready":
-                raise SwitchRefusal("migration check refused: " + "; ".join(check.get("reasons", [])))
+                raise SwitchRefusal(
+                    f"migration check refused (active code: {code_label(self.outgoing)}; "
+                    f"target code: {code_label(self.target)}): "
+                    + "; ".join(check.get("reasons", []))
+                )
             self.assert_unchanged()
             if self.dry_run:
                 print(
@@ -527,7 +548,7 @@ class Switcher:
                     self.runner.run(["docker", "stop", *[CONTAINERS[service] for service in self.stop_services]], check=False)
                 except Exception:
                     pass
-                print("Switch crossed migration boundary; code writers remain stopped. Retry the full switch command.", file=sys.stderr)
+                print_error("Switch crossed migration boundary; code writers remain stopped. Retry the full switch command.")
             elif self.stopped:
                 self.runner.run(["docker", "start", *[container_id for _, container_id in self.stopped]], check=False)
             raise
@@ -604,7 +625,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
     if recorded_target and not any(str(item.path) == recorded_target and item.active for item in candidates):
         print(f"Warning: state.json records {recorded_target}, but observed Ragtime mounts do not match it.", file=sys.stderr)
-    Switcher(runner, primary, target, args.dry_run).run()
+    outgoing = next((item for item in candidates if item.active), None)
+    Switcher(runner, primary, target, args.dry_run, outgoing=outgoing).run()
     return 0
 
 
@@ -618,11 +640,11 @@ if __name__ == "__main__":
         signal.signal(signal.SIGHUP, _raise_keyboard_interrupt)
         raise SystemExit(main())
     except SwitchRefusal as error:
-        print(f"Refused: {error}", file=sys.stderr)
+        print_error(f"Refused: {error}")
         raise SystemExit(2)
     except KeyboardInterrupt:
-        print("Interrupted.", file=sys.stderr)
+        print_error("Interrupted.")
         raise SystemExit(130)
     except Exception as error:
-        print(f"Switch failed: {error}", file=sys.stderr)
+        print_error(f"Switch failed: {error}")
         raise SystemExit(1)

@@ -49,6 +49,12 @@
       "migration_sha256": "def13c6ad0d78cc8f588007fc13c6c99501e93ba19f9a3ecf82d0abdb5b2e25b",
       "down_sha256": "91df611d31f5b117a472714b1c9f91e89123be7f09eb00fb842d4aa80a9b64a7",
       "down_sql": "DROP TABLE IF EXISTS \"workspace_runtime_operations\";\nALTER TABLE \"chat_tasks\" DROP COLUMN IF EXISTS \"outcome_summary\";\nALTER TABLE \"chat_tasks\" DROP COLUMN IF EXISTS \"termination_reason\";\nALTER TABLE \"chat_tasks\" DROP COLUMN IF EXISTS \"execution_policy\";\nALTER TABLE \"workspace_agent_access\" DROP COLUMN IF EXISTS \"allow_runtime_restart\";\nALTER TABLE \"workspaces\" DROP COLUMN IF EXISTS \"bridge_credential_mode\";\nALTER TABLE \"app_settings\" DROP COLUMN IF EXISTS \"openrouter_management_api_key\";\nALTER TABLE \"app_settings\" DROP COLUMN IF EXISTS \"openrouter_low_credit_threshold_usd\";\nALTER TABLE \"app_settings\" DROP COLUMN IF EXISTS \"openrouter_credit_monitor_enabled\";\nALTER TABLE \"app_settings\" DROP COLUMN IF EXISTS \"userspace_build_model\";\n"
+    },
+    {
+      "name": "20260921000000_tool_skills_default_off",
+      "migration_sha256": "1f98f548851c071b8ae334b5da59389dba3271ee13f329869c6db4cccce017e3",
+      "down_sha256": "5bcf91ef6a343eba0bd67bcaac4ae76b996c326622f31014280103750faa173b",
+      "down_sql": "ALTER TABLE \"app_settings\" ALTER COLUMN \"tool_skills_enabled\" SET DEFAULT true;\nALTER TABLE \"users\" DROP COLUMN IF EXISTS \"chat_enabled\";\nALTER TABLE \"app_settings\" DROP COLUMN IF EXISTS \"chat_enabled\";\nALTER TABLE \"users\" RENAME COLUMN \"userspace_generation_enabled\" TO \"hosted_chat_enabled\";\nALTER TABLE \"app_settings\" RENAME COLUMN \"userspace_generation_enabled\" TO \"hosted_chat_enabled\";\n"
     }
   ]
 }
