@@ -2798,6 +2798,11 @@ class UserSpaceRuntimeService:
             user_id,
             auto_start=True,
         )
+        provider_status = await self._runtime_provider_get_status(
+            session.provider_session_id,
+            max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
+            allow_stale_on_error=True,
+        )
         await self._invalidate_workspace_runtime_caches(
             workspace_id,
             invalidate_preview_host=True,
@@ -2811,11 +2816,6 @@ class UserSpaceRuntimeService:
             payload={"provider_session_id": session.provider_session_id},
         )
 
-        provider_status = await self._runtime_provider_get_status(
-            session.provider_session_id,
-            max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
-            allow_stale_on_error=True,
-        )
         operation_id = None
         operation_phase = None
         operation_started_at = None
