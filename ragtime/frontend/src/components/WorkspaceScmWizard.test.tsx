@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { GitWebhookConfig, GitWebhookEnableResponse, UserSpaceWorkspace } from '@/types';
 import { deferred } from '@/testHelpers/deferred';
+import {
+  createGitWebhookConfig,
+  createGitWebhookEnableResponse,
+} from '@/testHelpers/gitWebhookFixtures';
 
 import { WorkspaceScmWizard } from './WorkspaceScmWizard';
 
@@ -155,28 +159,18 @@ const baseWorkspace: UserSpaceWorkspace = {
   updated_at: '2026-07-16T00:00:00Z',
 };
 
-const disabledWebhookConfig: GitWebhookConfig = {
-  enabled: false,
-  paused: false,
-  webhook_url: null,
-  provider: 'github',
-  branch: 'main',
-  created_at: null,
-};
-
-const enabledWebhookConfig: GitWebhookConfig = {
-  enabled: true,
-  paused: false,
-  webhook_url: 'https://ragtime.example/webhooks/git/workspace-1',
-  provider: 'github',
-  branch: 'main',
-  created_at: '2026-07-16T12:00:00Z',
-};
-
-const enabledWebhookWithSecret: GitWebhookEnableResponse = {
-  ...enabledWebhookConfig,
-  secret: 'secret-once',
-};
+const disabledWebhookConfig = () => createGitWebhookConfig();
+const enabledWebhookConfig = () =>
+  createGitWebhookConfig({
+    enabled: true,
+    webhook_url: 'https://ragtime.example/webhooks/git/workspace-1',
+    created_at: '2026-07-16T12:00:00Z',
+  });
+const enabledWebhookWithSecret = () =>
+  createGitWebhookEnableResponse({
+    webhook_url: 'https://ragtime.example/webhooks/git/workspace-1',
+    created_at: '2026-07-16T12:00:00Z',
+  });
 
 function upstreamWorkspace(
   overrides?: Partial<NonNullable<UserSpaceWorkspace['scm']>>,
@@ -259,17 +253,21 @@ beforeEach(() => {
   });
   apiMock.fetchUserSpaceWorkspaceScmBranches.mockResolvedValue({ branches: ['main'], error: null });
   apiMock.updateUserSpaceWorkspaceScmSettings.mockResolvedValue(scmSettingsResponse());
-  apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(disabledWebhookConfig);
-  apiMock.enableUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookWithSecret);
-  apiMock.pauseUserSpaceWorkspaceScmWebhook.mockResolvedValue({
-    ...enabledWebhookConfig,
-    paused: true,
-  });
-  apiMock.resumeUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig);
-  apiMock.rotateUserSpaceWorkspaceScmWebhookSecret.mockResolvedValue({
-    ...enabledWebhookConfig,
-    secret: 'rotated-secret',
-  });
+  apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(disabledWebhookConfig());
+  apiMock.enableUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookWithSecret());
+  apiMock.pauseUserSpaceWorkspaceScmWebhook.mockResolvedValue(
+    createGitWebhookConfig({
+      ...enabledWebhookConfig(),
+      paused: true,
+    }),
+  );
+  apiMock.resumeUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig());
+  apiMock.rotateUserSpaceWorkspaceScmWebhookSecret.mockResolvedValue(
+    createGitWebhookEnableResponse({
+      ...enabledWebhookConfig(),
+      secret: 'rotated-secret',
+    }),
+  );
   apiMock.disableUserSpaceWorkspaceScmWebhook.mockResolvedValue(undefined);
   apiMock.queueUserSpaceWorkspaceScmPreviewImport.mockResolvedValue({
     task_id: 'preview-task-1',
@@ -346,7 +344,7 @@ describe('WorkspaceScmWizard webhook integration', () => {
     expect(loadingMessage.textContent).toBe('Loading webhook settings…');
     expect(loadingMessage.className).toContain('userspace-muted');
 
-    webhookConfigRequest.resolve(disabledWebhookConfig);
+    webhookConfigRequest.resolve(disabledWebhookConfig());
     await waitFor(() => {
       expect(screen.queryByRole('status')).toBeNull();
     });
@@ -385,7 +383,7 @@ describe('WorkspaceScmWizard webhook integration', () => {
   });
 
   it('requires confirmation before leaving webhook delivery for a scheduled pull', async () => {
-    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig);
+    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig());
     renderWizard(upstreamWorkspace({ auto_pull_enabled: false }));
 
     await openGitSourceTab();
@@ -452,7 +450,7 @@ describe('WorkspaceScmWizard webhook integration', () => {
   });
 
   it('pauses and resumes the webhook while keeping webhook cadence selected', async () => {
-    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig);
+    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig());
     const onWorkspaceChanged = vi.fn();
     renderWizard(upstreamWorkspace(), { onWorkspaceChanged });
 
@@ -491,16 +489,18 @@ describe('WorkspaceScmWizard webhook integration', () => {
     expect(screen.getByRole('button', { name: 'Pull now' })).toBeTruthy();
 
     cleanup();
-    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig);
+    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig());
     renderWizard(upstreamWorkspace());
     await openGitSourceTab();
     expect(await screen.findByRole('button', { name: 'Pull now' })).toBeTruthy();
 
     cleanup();
-    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue({
-      ...enabledWebhookConfig,
-      paused: true,
-    });
+    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(
+      createGitWebhookConfig({
+        ...enabledWebhookConfig(),
+        paused: true,
+      }),
+    );
     renderWizard(upstreamWorkspace());
     await openGitSourceTab();
     expect(await screen.findByRole('button', { name: 'Pull now' })).toBeTruthy();
@@ -523,8 +523,10 @@ describe('WorkspaceScmWizard webhook integration', () => {
   it('rejects stale webhook mutation responses after switching workspaces', async () => {
     const enableWebhook = deferred<GitWebhookEnableResponse>();
     apiMock.getUserSpaceWorkspaceScmWebhook
-      .mockResolvedValueOnce(disabledWebhookConfig)
-      .mockResolvedValueOnce({ ...disabledWebhookConfig, branch: 'develop' });
+      .mockResolvedValueOnce(disabledWebhookConfig())
+      .mockResolvedValueOnce(
+        createGitWebhookConfig({ ...disabledWebhookConfig(), branch: 'develop' }),
+      );
     apiMock.enableUserSpaceWorkspaceScmWebhook.mockImplementationOnce(() => enableWebhook.promise);
 
     const { rerender } = renderWizard(upstreamWorkspace());
@@ -544,7 +546,7 @@ describe('WorkspaceScmWizard webhook integration', () => {
       expect(apiMock.getUserSpaceWorkspaceScmWebhook).toHaveBeenCalledWith('workspace-2');
     });
 
-    enableWebhook.resolve(enabledWebhookWithSecret);
+    enableWebhook.resolve(enabledWebhookWithSecret());
     await act(async () => {
       await Promise.resolve();
     });
@@ -556,7 +558,7 @@ describe('WorkspaceScmWizard webhook integration', () => {
   });
 
   it('clears the one-time secret when the workspace disconnects', async () => {
-    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig);
+    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig());
     const { rerender } = renderWizard(upstreamWorkspace());
 
     await openGitSourceTab();

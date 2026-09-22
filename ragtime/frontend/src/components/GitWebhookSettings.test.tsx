@@ -4,43 +4,32 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { GitWebhookConfig } from '@/types';
+import { createGitWebhookConfig } from '@/testHelpers/gitWebhookFixtures';
 
 import { GitWebhookSettings } from './GitWebhookSettings';
 
-const githubConfig: GitWebhookConfig = {
-  enabled: true,
-  paused: false,
-  webhook_url: 'https://ragtime.example/webhooks/git/webhook-123',
-  provider: 'github',
-  branch: 'main',
-  created_at: '2026-07-16T12:00:00Z',
-};
-
-const gitlabConfig: GitWebhookConfig = {
-  enabled: true,
-  paused: false,
-  webhook_url: 'https://ragtime.example/webhooks/git/webhook-456',
-  provider: 'gitlab',
-  branch: 'release/2026.07',
-  created_at: '2026-07-16T12:00:00Z',
-};
-
-const disabledConfig: GitWebhookConfig = {
-  enabled: false,
-  paused: false,
-  webhook_url: null,
-  provider: 'generic',
-  branch: 'main',
-  created_at: null,
-};
+const githubConfig = () =>
+  createGitWebhookConfig({
+    enabled: true,
+    webhook_url: 'https://ragtime.example/webhooks/git/webhook-123',
+    created_at: '2026-07-16T12:00:00Z',
+  });
+const gitlabConfig = () =>
+  createGitWebhookConfig({
+    enabled: true,
+    webhook_url: 'https://ragtime.example/webhooks/git/webhook-456',
+    provider: 'gitlab',
+    branch: 'release/2026.07',
+    created_at: '2026-07-16T12:00:00Z',
+  });
+const disabledConfig = () => createGitWebhookConfig({ provider: 'generic' });
 
 let writeTextMock: ReturnType<typeof vi.fn>;
 
 function renderComponent(overrides: Partial<ComponentProps<typeof GitWebhookSettings>> = {}) {
   return render(
     <GitWebhookSettings
-      config={githubConfig}
+      config={githubConfig()}
       revealedSecret={null}
       disabled={false}
       onRotate={vi.fn()}
@@ -71,7 +60,7 @@ describe('GitWebhookSettings', () => {
   it('renders the one-time secret flat with an inline warning and share-link copy field', async () => {
     const user = userEvent.setup();
     renderComponent({
-      config: githubConfig,
+      config: githubConfig(),
       revealedSecret: 'secret-once',
     });
 
@@ -108,7 +97,7 @@ describe('GitWebhookSettings', () => {
     const urlInput = screen.getByLabelText('Selected webhook URL');
     expect(urlInput.getAttribute('type')).toBe('text');
     expect((urlInput as HTMLInputElement).readOnly).toBe(true);
-    expect((urlInput as HTMLInputElement).value).toBe(githubConfig.webhook_url);
+    expect((urlInput as HTMLInputElement).value).toBe(githubConfig().webhook_url);
     expect(urlInput.closest('.userspace-share-url-copy-wrap')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Copy selected webhook URL' }).className).toContain(
       'userspace-share-inline-copy',
@@ -117,7 +106,7 @@ describe('GitWebhookSettings', () => {
 
   it('keeps recent deliveries hidden for GitLab webhooks', () => {
     renderComponent({
-      config: gitlabConfig,
+      config: gitlabConfig(),
       revealedSecret: null,
     });
 
@@ -131,7 +120,7 @@ describe('GitWebhookSettings', () => {
     });
 
     expect((screen.getByLabelText('Selected webhook URL') as HTMLInputElement).value).toBe(
-      githubConfig.webhook_url,
+      githubConfig().webhook_url,
     );
     expect(screen.queryByText(/\?token=secret%20value/)).toBeNull();
 
@@ -146,7 +135,7 @@ describe('GitWebhookSettings', () => {
 
     rerender(
       <GitWebhookSettings
-        config={githubConfig}
+        config={githubConfig()}
         revealedSecret={null}
         disabled={false}
         onRotate={vi.fn()}
@@ -157,7 +146,7 @@ describe('GitWebhookSettings', () => {
 
     expect(screen.queryByRole('radio', { name: 'URL with query token (less secure)' })).toBeNull();
     expect((screen.getByLabelText('Selected webhook URL') as HTMLInputElement).value).toBe(
-      githubConfig.webhook_url,
+      githubConfig().webhook_url,
     );
   });
 
@@ -170,14 +159,14 @@ describe('GitWebhookSettings', () => {
   });
 
   it('shows an active status badge when the webhook is running', () => {
-    renderComponent({ config: githubConfig });
+    renderComponent({ config: githubConfig() });
 
     expect(screen.getByText('Active')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Pause webhook' })).toBeTruthy();
   });
 
   it('shows a paused status badge with a resume action', () => {
-    const pausedConfig: GitWebhookConfig = { ...githubConfig, paused: true };
+    const pausedConfig = createGitWebhookConfig({ ...githubConfig(), paused: true });
 
     renderComponent({ config: pausedConfig });
 
@@ -191,7 +180,7 @@ describe('GitWebhookSettings', () => {
 
   it('disables action and copy controls when disabled', () => {
     renderComponent({
-      config: githubConfig,
+      config: githubConfig(),
       revealedSecret: 'disabled-secret',
       disabled: true,
     });
@@ -213,7 +202,7 @@ describe('GitWebhookSettings', () => {
 
   it('omits enable, secret, and query-token controls for disabled configs', () => {
     renderComponent({
-      config: disabledConfig,
+      config: disabledConfig(),
     });
 
     expect(screen.queryByText('Webhook delivery is disabled.')).toBeNull();
