@@ -3,12 +3,30 @@ from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 from fastapi import HTTPException
 
-from ragtime.chat_runtime.service import ChatRuntimeService, _ChatDiagSession
+from ragtime.chat_runtime.service import (
+    _TAVILY_SEARCH_ENDPOINT,
+    ChatRuntimeService,
+    _ChatDiagSession,
+)
 
 
 class ChatRuntimeWebSearchPdfTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _search_client_factory(
+        responses: list[dict[str, Any]],
+        client_class: type[httpx.AsyncClient],
+    ):
+        def create_client(**kwargs: Any) -> httpx.AsyncClient:
+            def handle(request: httpx.Request) -> httpx.Response:
+                return httpx.Response(200, json=responses.pop(0), request=request)
+
+            return client_class(transport=httpx.MockTransport(handle), **kwargs)
+
+        return create_client
+
     def test_detects_likely_pdf_results(self):
         self.assertTrue(
             ChatRuntimeService._is_likely_pdf_result(
@@ -63,6 +81,116 @@ class ChatRuntimeWebSearchPdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results[0]["pdf"]["read_tool"], "web_read_pdf")
         self.assertNotIn("text", results[0]["pdf"])
         self.assertNotIn("pdf", results[1])
+
+    async def test_searxng_search_preserves_result_preparation_and_provider_fields(self) -> None:
+        service = ChatRuntimeService()
+        responses: list[dict[str, Any]] = [
+            {
+                "results": [
+                    {"title": "[PDF] First", "url": "https://example.com/first.pdf"},
+                    {"title": "Missing URL"},
+                    "malformed result",
+                    {"title": "After malformed", "url": "https://example.com/after"},
+                ],
+                "answers": ["  SearXNG    answer  "],
+                "search_time": 0.42,
+                "suggestions": ["suggestion"],
+                "unresponsive_engines": ["engine"],
+            },
+            {
+                "results": [
+                    {"title": "First", "url": "https://example.com/first.pdf"},
+                    {"url": "https://example.com/missing-title"},
+                    {"title": "Second", "url": "https://example.com/second"},
+                    {"title": "Over cap", "url": "https://example.com/over-cap"},
+                ]
+            },
+        ]
+        client_class = httpx.AsyncClient
+        with patch(
+            "ragtime.chat_runtime.service.httpx.AsyncClient",
+            side_effect=self._search_client_factory(responses, client_class),
+        ):
+            pdf_result = await service._search_web_searxng(
+                query="pdf query",
+                max_results=2,
+                include_pdf_metadata=True,
+            )
+            capped_result = await service._search_web_searxng(
+                query="cap query",
+                max_results=2,
+                include_pdf_metadata=False,
+            )
+
+        self.assertEqual([result["title"] for result in pdf_result["results"]], ["[PDF] First"])
+        self.assertEqual(pdf_result["pdf_result_count"], 1)
+        self.assertEqual(pdf_result["results"][0]["pdf"]["status"], "available")
+        self.assertEqual(pdf_result["results"][0]["source_provider"], "searxng")
+        self.assertEqual(pdf_result["answer"], "SearXNG answer")
+        self.assertEqual(pdf_result["response_time"], 0.42)
+        self.assertEqual(pdf_result["suggestions"], ["suggestion"])
+        self.assertEqual(pdf_result["unresponsive_engines"], ["engine"])
+        self.assertEqual(
+            pdf_result["engine_url"],
+            "http://searxng:8080/search?q=pdf+query&format=json&categories=general&language=en",
+        )
+        self.assertEqual([result["title"] for result in capped_result["results"]], ["First", "Second"])
+        self.assertEqual(capped_result["pdf_result_count"], 0)
+        self.assertNotIn("pdf", capped_result["results"][0])
+
+    async def test_tavily_search_preserves_result_preparation_and_provider_fields(self) -> None:
+        service = ChatRuntimeService()
+        responses: list[dict[str, Any]] = [
+            {
+                "results": [
+                    {"title": "[PDF] First", "url": "https://example.com/first.pdf"},
+                    {"title": "Missing URL"},
+                    "malformed result",
+                    {"title": "After malformed", "url": "https://example.com/after"},
+                ],
+                "answer": "  Tavily answer  ",
+                "response_time": 0.13,
+                "request_id": " request-1 ",
+            },
+            {
+                "results": [
+                    {"title": "First", "url": "https://example.com/first.pdf"},
+                    {"url": "https://example.com/missing-title"},
+                    {"title": "Second", "url": "https://example.com/second"},
+                    {"title": "Over cap", "url": "https://example.com/over-cap"},
+                ]
+            },
+        ]
+        client_class = httpx.AsyncClient
+        with (
+            patch.object(service, "_tavily_api_key", return_value="test-key"),
+            patch(
+                "ragtime.chat_runtime.service.httpx.AsyncClient",
+                side_effect=self._search_client_factory(responses, client_class),
+            ),
+        ):
+            pdf_result = await service._search_web_tavily(
+                query="pdf query",
+                max_results=2,
+                include_pdf_metadata=True,
+            )
+            capped_result = await service._search_web_tavily(
+                query="cap query",
+                max_results=2,
+                include_pdf_metadata=False,
+            )
+
+        self.assertEqual([result["title"] for result in pdf_result["results"]], ["[PDF] First"])
+        self.assertEqual(pdf_result["pdf_result_count"], 1)
+        self.assertEqual(pdf_result["results"][0]["pdf"]["status"], "available")
+        self.assertEqual(pdf_result["results"][0]["source_provider"], "tavily")
+        self.assertEqual(pdf_result["answer"], "Tavily answer")
+        self.assertEqual(pdf_result["response_time"], 0.13)
+        self.assertEqual(pdf_result["request_id"], "request-1")
+        self.assertEqual(pdf_result["engine_url"], _TAVILY_SEARCH_ENDPOINT)
+        self.assertEqual([result["title"] for result in capped_result["results"]], ["First", "Second"])
+        self.assertEqual(capped_result["pdf_result_count"], 0)
+        self.assertNotIn("pdf", capped_result["results"][0])
 
     async def test_browse_url_retries_after_stale_runtime_session(self) -> None:
         service = ChatRuntimeService()
