@@ -954,17 +954,24 @@ export function DatabaseHistoryPanel({
                                 data-history-trigger={backup.trigger}
                               >
                                 <div>
-                                  <strong>{new Date(backup.created_at).toLocaleString()}</strong>
-                                  <span className="database-history-backup-name">
-                                    {backup.database_name}
-                                  </span>
-                                  <span
-                                    className={`badge database-history-trigger-badge database-history-trigger-badge--${TRIGGER_GROUP[backup.trigger]}`}
-                                  >
-                                    {TRIGGER_LABEL[backup.trigger]}
-                                  </span>
-                                  <span>{formatBytes(backup.size_bytes)}</span>
-                                  {backup.snapshot_id && <span>Snapshot {backup.snapshot_id}</span>}
+                                  <div className="database-history-backup-meta">
+                                    <span className="database-history-backup-time">
+                                      {new Date(backup.created_at).toLocaleString()}
+                                    </span>
+                                    <span
+                                      className={`badge database-history-trigger-badge database-history-trigger-badge--${TRIGGER_GROUP[backup.trigger]}`}
+                                    >
+                                      {TRIGGER_LABEL[backup.trigger]}
+                                    </span>
+                                    <span className="database-history-backup-size">
+                                      {formatBytes(backup.size_bytes)}
+                                    </span>
+                                  </div>
+                                  {backup.snapshot_id && (
+                                    <span className="database-history-backup-secondary">
+                                      Snapshot {backup.snapshot_id}
+                                    </span>
+                                  )}
                                   {backup.status === 'failed' && (
                                     <span className="database-history-error">
                                       Capture failed:{' '}

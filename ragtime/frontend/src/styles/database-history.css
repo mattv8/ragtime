@@ -41,6 +41,8 @@
   flex-direction: row;
   align-items: center;
   justify-content: space-between;
+  /* Tighter top/bottom padding — restore-point rows are compact single-line items. */
+  padding: var(--space-xs) var(--space-sm);
 }
 
 .database-history-backup > div:first-child {
@@ -48,6 +50,29 @@
   min-width: 0;
   flex-direction: column;
   gap: var(--space-xs);
+}
+
+/* Inline metadata: timestamp · source badge · size on one line. */
+.database-history-backup-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.database-history-backup-time {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.database-history-backup-size {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.database-history-backup-secondary {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
 }
 
 .database-history-actions {
