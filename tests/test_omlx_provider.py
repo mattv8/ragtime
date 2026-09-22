@@ -286,7 +286,7 @@ class OmlxEmbeddingDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(models[0].dimensions, 1024)
 
 
-class OmlxContextMetadataTests(unittest.IsolatedAsyncioTestCase):
+class OmlxContextMetadataApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_metadata_forwards_auth_and_only_accepts_context_window(self) -> None:
         captured: list[httpx.Request] = []
 

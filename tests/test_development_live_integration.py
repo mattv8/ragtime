@@ -100,9 +100,7 @@ class DevelopmentLiveIntegrationTests(unittest.IsolatedAsyncioTestCase):
         try:
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="https://ragtime.example") as client:
-                return await client.delete(
-                    f"/indexes/userspace/development/workspaces/{workspace_id}/credentials/{credential_id}/record"
-                )
+                return await client.delete(f"/indexes/userspace/development/workspaces/{workspace_id}/credentials/{credential_id}/record")
         finally:
             app.dependency_overrides.clear()
 
@@ -187,9 +185,7 @@ class DevelopmentLiveIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         response = await self._delete_credential_record(self.workspace_id, created["id"])
         self.assertEqual(response.status_code, 204)
-        listed = await development_credentials_routes.list_workspace_development_credentials(
-            self.workspace_id, SimpleNamespace(id=self.owner_id, role="user")
-        )
+        listed = await development_credentials_routes.list_workspace_development_credentials(self.workspace_id, SimpleNamespace(id=self.owner_id, role="user"))
         self.assertNotIn(created["id"], {item["id"] for item in listed["items"]})
 
     async def test_deleting_an_active_credential_is_rejected(self) -> None:
