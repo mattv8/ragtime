@@ -3320,11 +3320,7 @@ textarea:focus {
 }
 
 .userspace-snapshot-lane-line.active {
-  background: color-mix(
-    in srgb,
-    var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 58%,
-    transparent
-  );
+  background: var(--userspace-branch-color, var(--color-accent, var(--color-primary)));
 }
 
 .userspace-snapshot-lane-line.start {
@@ -3362,11 +3358,7 @@ textarea:focus {
   top: 50%;
   height: 2px;
   transform: translateY(-50%);
-  background: color-mix(
-    in srgb,
-    var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 64%,
-    transparent
-  );
+  background: var(--userspace-branch-color, var(--color-accent, var(--color-primary)));
   pointer-events: none;
   border-radius: var(--radius-full);
 }
