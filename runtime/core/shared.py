@@ -1,9 +1,9 @@
 """Shared types and constants used across runtime manager, worker, and ragtime userspace.
 
 The ``EntrypointStatus`` dataclass and ``parse_entrypoint_config`` function
-are duplicated in ``ragtime/core/entrypoint_status.py`` for use by the
-ragtime app container (which cannot import from the ``runtime`` package).
-Keep the two copies in sync when modifying the entrypoint parsing contract.
+are duplicated in ``ragtime/core/entrypoint_status.py``. The standalone
+runtime worker must stay runnable without the Ragtime application package, so
+keep the two copies in sync when modifying the entrypoint parsing contract.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
 SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
 
 # This is intentionally duplicated from the Ragtime app package because the
-# runtime worker image cannot import from it.
+# standalone runtime worker must not depend on that application package.
 RUNTIME_EXEC_TIMEOUT_HARD_CAP_SECONDS = 3600
 
 # ---------------------------------------------------------------------------
@@ -40,9 +40,10 @@ EntrypointState = Literal["missing", "invalid", "valid"]
 # layers. Keep alphabetically sorted.
 #
 # This is a COPY of KNOWN_FRAMEWORKS from ragtime/core/entrypoint_status.py
-# (the canonical source). The two containers cannot cross-import, so this
-# must be kept manually in sync. The ragtime-side set is derived from
-# FRAMEWORK_REQUIRED_PACKAGES keys + platform extras (custom, node, static).
+# (the canonical source). The standalone runtime worker must remain independent
+# of the Ragtime application package, so this must be kept manually in sync.
+# The ragtime-side set is derived from FRAMEWORK_REQUIRED_PACKAGES keys +
+# platform extras (custom, node, static).
 KNOWN_FRAMEWORKS: frozenset[str] = frozenset(
     {
         "custom",
