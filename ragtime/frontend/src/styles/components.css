@@ -3097,19 +3097,34 @@ textarea:focus {
   margin-block: 2px;
 }
 
+.userspace-snapshots-header {
+  display: flex;
+  align-items: center;
+  background: var(--color-surface-hover);
+}
+
 .userspace-snapshots-toggle {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: var(--space-xs) var(--space-sm);
-  background: var(--color-surface-hover);
+  background: transparent;
   border: none;
   cursor: pointer;
   color: var(--color-text-secondary);
   font: inherit;
   font-size: var(--text-sm);
   font-weight: 500;
+}
+
+.userspace-snapshots-header-db-history {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: var(--space-xs);
+  border-left: 1px solid var(--color-border);
 }
 
 .userspace-snapshots-toggle:hover {
@@ -3368,6 +3383,17 @@ textarea:focus {
 .userspace-snapshot-row-group {
   display: flex;
   flex-direction: column;
+}
+
+/* Brief highlight when navigated to from the database history panel. */
+@keyframes userspace-snapshot-target-pulse {
+  0%   { background: var(--color-primary-soft); }
+  100% { background: transparent; }
+}
+
+.userspace-snapshot-row-group--targeted {
+  animation: userspace-snapshot-target-pulse 1.5s ease-out forwards;
+  border-radius: var(--radius-sm);
 }
 
 .userspace-snapshot-expand-chevron {
@@ -3996,6 +4022,13 @@ textarea:focus {
 
 .userspace-snapshot-row-actions {
   flex-shrink: 0;
+  margin-left: 4px;
+}
+
+.userspace-snapshot-row-db-history {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
   margin-left: 4px;
 }
 

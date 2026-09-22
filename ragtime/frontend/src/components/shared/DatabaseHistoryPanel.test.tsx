@@ -709,12 +709,62 @@ describe('DatabaseHistoryPanel', () => {
     expect(row).toBeTruthy();
     expect(within(row as HTMLElement).getByText('Hourly backup check')).toBeTruthy();
     expect(within(row as HTMLElement).getByText('All workspace databases')).toBeTruthy();
-    expect(within(row as HTMLElement).getByText('No new restore point created')).toBeTruthy();
-    // Activity rows are terminal and must not add focusable controls inside the
-    // collapsed <details>, otherwise the dialog Tab trap would stall on hidden elements.
+    // No restore points created → no outcome text shown (per spec: silence when nothing happened).
+    expect(within(row as HTMLElement).queryByText(/restore point/i)).toBeNull();
+    // Activity rows with no restore points have no snapshot link → no focusable controls.
     expect(
       (row as HTMLElement).querySelectorAll('button, a, input, select, textarea, [tabindex]'),
     ).toHaveLength(0);
+  });
+
+  it('shows snapshot link in activity row and calls onSnapshotNavigate on click', async () => {
+    const user = userEvent.setup();
+    const onSnapshotNavigate = vi.fn();
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        {
+          ...captureJob,
+          id: 'snapshot-job',
+          trigger: 'snapshot' as const,
+          status: 'completed',
+          database_names: ['app.sqlite3'],
+          snapshot_id: 'snap-abc',
+          snapshot_git_commit_hash: 'abc1234deadbeef',
+          finished_at: '2026-09-17T11:00:00Z',
+          backup_ids: ['backup-1'],
+        },
+      ],
+    });
+    render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        ownerOrAdmin
+        hostId="workspace"
+        onSnapshotNavigate={onSnapshotNavigate}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+
+    const dialog = screen.getByRole('dialog');
+    const row = await waitFor(() => {
+      const el = dialog.querySelector<HTMLElement>('[data-history-activity-job="snapshot-job"]');
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+
+    // Shows outcome text and snapshot link using short commit hash.
+    expect(within(row).getByText(/1 restore point created/)).toBeTruthy();
+    const link = within(row).getByRole('button', { name: /Snapshot abc1234/ });
+    expect(link).toBeTruthy();
+
+    // Shows Snapshot badge, not Completed badge.
+    expect(within(row).queryByText('Completed')).toBeNull();
+    expect(within(row).getByText('Snapshot')).toBeTruthy();
+
+    // Clicking the link fires the callback with the snapshot_id.
+    await user.click(link);
+    expect(onSnapshotNavigate).toHaveBeenCalledWith('snap-abc');
   });
 
   it('shows older restore points per database only after its toggle is expanded', async () => {

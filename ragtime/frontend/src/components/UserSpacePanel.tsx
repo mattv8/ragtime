@@ -9758,40 +9758,64 @@ export function UserSpacePanel({
 
           {/* Snapshots */}
           <div className="userspace-snapshots-section" style={{ marginTop: showSnapshots ? 0 : 8 }}>
-            <button
-              className="userspace-snapshots-toggle"
-              disabled={snapshotUiLocked}
-              onClick={() => {
-                const next = !showSnapshots;
-                setShowSnapshots(next);
-                if (
-                  next &&
-                  activeWorkspaceId &&
-                  snapshotsLoadedForWorkspace !== activeWorkspaceId
-                ) {
-                  void loadSnapshots(activeWorkspaceId);
-                }
-              }}
-            >
-              <History size={14} />
-              <span>
-                Snapshots
-                {snapshotsLoadedForWorkspace === activeWorkspaceId ? ` (${snapshots.length})` : ''}
-              </span>
-              <ChevronDown size={14} className={showSnapshots ? '' : 'rotated'} />
-            </button>
+          <div className="userspace-snapshots-section" style={{ marginTop: showSnapshots ? 0 : 8 }}>
+            <div className="userspace-snapshots-header">
+              <button
+                className="userspace-snapshots-toggle"
+                disabled={snapshotUiLocked}
+                onClick={() => {
+                  const next = !showSnapshots;
+                  setShowSnapshots(next);
+                  if (
+                    next &&
+                    activeWorkspaceId &&
+                    snapshotsLoadedForWorkspace !== activeWorkspaceId
+                  ) {
+                    void loadSnapshots(activeWorkspaceId);
+                  }
+                }}
+              >
+                <History size={14} />
+                <span>
+                  Snapshots
+                  {snapshotsLoadedForWorkspace === activeWorkspaceId
+                    ? ` (${snapshots.length})`
+                    : ''}
+                </span>
+                <ChevronDown size={14} className={showSnapshots ? '' : 'rotated'} />
+              </button>
+              {activeWorkspaceId && (
+                <div
+                  className="userspace-snapshots-header-db-history"
+                  data-history-host="workspace"
+                >
+                  <DatabaseHistoryPanel
+                    workspaceId={activeWorkspaceId}
+                    ownerOrAdmin={isOwner}
+                    triggerLabel="Database history"
+                    hostId="workspace"
+                    onSnapshotNavigate={(snapshotId) => {
+                      setShowSnapshots(true);
+                      setTimeout(() => {
+                        const el = document.querySelector(
+                          `[data-snapshot-id="${snapshotId}"]`,
+                        );
+                        if (el) {
+                          el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                          el.classList.add('userspace-snapshot-row-group--targeted');
+                          setTimeout(
+                            () => el.classList.remove('userspace-snapshot-row-group--targeted'),
+                            1500,
+                          );
+                        }
+                      }, 50);
+                    }}
+                  />
+                </div>
+              )}
+            </div>
             {showSnapshots && (
               <div className="userspace-snapshots-list" style={{ height: snapshotsListHeight }}>
-                {activeWorkspaceId && (
-                  <div className="database-history-snapshot-host" data-history-host="workspace">
-                    <DatabaseHistoryPanel
-                      workspaceId={activeWorkspaceId}
-                      ownerOrAdmin={isOwner}
-                      triggerLabel="Database history"
-                      hostId="workspace"
-                    />
-                  </div>
-                )}
                 {restoringSnapshotId && (
                   <div
                     className="userspace-snapshot-busy-indicator"
@@ -9929,6 +9953,7 @@ export function UserSpacePanel({
                         <div
                           key={snapshot.id}
                           className={`userspace-snapshot-row-group ${isExpanded ? 'expanded' : ''}`}
+                          data-snapshot-id={snapshot.id}
                         >
                           <div
                             className={`userspace-snapshot-graph-row ${isCurrentSnapshot ? 'current' : ''}`}
@@ -10102,13 +10127,6 @@ export function UserSpacePanel({
                             </div>
 
                             <div className="userspace-snapshot-row-actions">
-                              <DatabaseHistoryPanel
-                                workspaceId={activeWorkspaceId ?? ''}
-                                ownerOrAdmin={isOwner}
-                                snapshotId={snapshot.id}
-                                triggerLabel="Database history"
-                                hostId={`snapshot-${snapshot.id}`}
-                              />
                               {isCurrentSnapshot ? (
                                 <span className="userspace-snapshot-current-badge">
                                   You are here
@@ -10127,6 +10145,16 @@ export function UserSpacePanel({
                                   Restore
                                 </button>
                               )}
+                            </div>
+                            <div className="userspace-snapshot-row-db-history">
+                              <DatabaseHistoryPanel
+                                workspaceId={activeWorkspaceId ?? ''}
+                                ownerOrAdmin={isOwner}
+                                snapshotId={snapshot.id}
+                                triggerLabel="Database history"
+                                iconOnly
+                                hostId={`snapshot-${snapshot.id}`}
+                              />
                             </div>
                           </div>
 

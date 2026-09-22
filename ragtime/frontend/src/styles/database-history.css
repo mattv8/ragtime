@@ -101,6 +101,23 @@
   font-size: var(--text-xs);
 }
 
+/* Inline snapshot navigation link inside an activity row. */
+.database-history-snapshot-link {
+  display: inline;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font-size: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.database-history-snapshot-link:hover {
+  color: var(--color-primary-hover);
+}
+
 .database-history-actions {
   display: flex;
   flex-wrap: wrap;

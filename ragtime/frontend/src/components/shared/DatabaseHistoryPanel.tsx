@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 
 import { api, ApiError } from '@/api/client';
+import { SearchHighlightedText } from '@/components/shared/SearchHighlightedText';
 import type {
   SqliteHistoryBackup,
   SqliteHistoryConflictPolicy,
@@ -28,7 +29,11 @@ interface DatabaseHistoryPanelProps {
   databaseName?: string;
   snapshotId?: string;
   triggerLabel?: string;
+  /** Render the trigger as icon-only (no visible label text). */
+  iconOnly?: boolean;
   hostId: string;
+  /** Called when the user clicks a snapshot link in an activity row. Open the snapshot in the snapshots panel. */
+  onSnapshotNavigate?: (snapshotId: string) => void;
 }
 
 type Receipt = { safety_backup_id: string | null; operation_id: string };
@@ -116,7 +121,9 @@ export function DatabaseHistoryPanel({
   databaseName,
   snapshotId,
   triggerLabel = 'Database history',
+  iconOnly = false,
   hostId,
+  onSnapshotNavigate,
 }: DatabaseHistoryPanelProps) {
   const [open, setOpen] = useState(false);
   const [history, setHistory] = useState<SqliteHistoryListResponse | null>(null);
@@ -655,14 +662,15 @@ export function DatabaseHistoryPanel({
       ? job.database_names.join(', ')
       : 'All workspace databases';
     const hasRestorePoints = job.backup_ids.length > 0;
-    const outcome =
+    const outcomeText =
       job.status === 'completed'
-        ? hasRestorePoints
-          ? `${pluralize(job.backup_ids.length, 'restore point')} created`
-          : 'No new restore point created'
-        : hasRestorePoints
-          ? `${pluralize(job.backup_ids.length, 'restore point')} created before cancellation`
-          : 'Cancelled before any restore point';
+        ? `${pluralize(job.backup_ids.length, 'restore point')} created`
+        : `${pluralize(job.backup_ids.length, 'restore point')} created before cancellation`;
+    const snapshotLabel = job.snapshot_git_commit_hash
+      ? `Snapshot ${job.snapshot_git_commit_hash.slice(0, 7)}`
+      : job.snapshot_id
+        ? `Snapshot ${job.snapshot_id}`
+        : null;
     return (
       <article
         key={job.id}
@@ -678,14 +686,30 @@ export function DatabaseHistoryPanel({
               {new Date(job.finished_at ?? job.updated_at).toLocaleString()}
             </span>
           </div>
-          <span className="database-history-backup-secondary">{outcome}</span>
+          {hasRestorePoints && (
+            <span className="database-history-backup-secondary">
+              {outcomeText}
+              {job.snapshot_id && snapshotLabel && (
+                <>
+                  {' · '}
+                  <button
+                    type="button"
+                    className="database-history-snapshot-link"
+                    onClick={() => onSnapshotNavigate?.(job.snapshot_id!)}
+                  >
+                    <SearchHighlightedText text={snapshotLabel} query="" />
+                  </button>
+                </>
+              )}
+            </span>
+          )}
         </div>
         <div className="database-history-actions">
-          <span
-            className={`badge database-history-trigger-badge database-history-job-badge--${job.status}`}
-          >
-            {JOB_STATUS_LABEL[job.status]}
-          </span>
+          {job.snapshot_id && (
+            <span className="badge database-history-trigger-badge database-history-trigger-badge--checkpoint">
+              Snapshot
+            </span>
+          )}
         </div>
       </article>
     );
@@ -748,9 +772,12 @@ export function DatabaseHistoryPanel({
         data-history-database={databaseName ?? 'all'}
         data-history-host={hostId}
         data-history-panel={key}
+        title={iconOnly ? triggerLabel : undefined}
+        aria-label={iconOnly ? triggerLabel : undefined}
         onClick={() => setOpen(true)}
       >
-        <DatabaseBackup size={14} /> {triggerLabel}
+        <DatabaseBackup size={14} />
+        {!iconOnly && triggerLabel}
       </button>
       {open && (
         <div
