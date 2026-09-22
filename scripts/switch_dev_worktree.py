@@ -115,7 +115,46 @@ def yaml_quote(value: str) -> str:
     return json.dumps(value)
 
 
-def write_override(path: Path, primary: Path, target: Path, *, storage: bool) -> None:
+def storage_mounts(config: dict[str, Any]) -> dict[str, tuple[str, str, bool]] | None:
+    """Return the one named credential volume shared by ragtime and runtime-s3."""
+    services = config.get("services")
+    if not isinstance(services, dict):
+        raise SwitchRefusal("target Compose model has no services")
+    runtime_s3 = services.get("runtime-s3")
+    if runtime_s3 is None:
+        return None
+    if not isinstance(runtime_s3, dict) or not isinstance(services.get("ragtime"), dict):
+        raise SwitchRefusal("target Compose has invalid ragtime or runtime-s3 service metadata")
+
+    def named_volumes(service: dict[str, Any], name: str) -> dict[str, list[tuple[str, bool]]]:
+        volumes = service.get("volumes", [])
+        if not isinstance(volumes, list):
+            raise SwitchRefusal(f"target Compose {name} volumes are invalid")
+        result: dict[str, list[tuple[str, bool]]] = {}
+        for mount in volumes:
+            if not isinstance(mount, dict) or mount.get("type") != "volume":
+                continue
+            source, destination, read_only = mount.get("source"), mount.get("target"), mount.get("read_only", False)
+            if not isinstance(source, str) or not source or not isinstance(destination, str) or not destination or not isinstance(read_only, bool):
+                raise SwitchRefusal(f"target Compose {name} named volume metadata is invalid")
+            result.setdefault(source, []).append((destination, read_only))
+        return result
+
+    ragtime = named_volumes(services["ragtime"], "ragtime")
+    runtime_s3_volumes = named_volumes(runtime_s3, "runtime-s3")
+    shared = set(ragtime) & set(runtime_s3_volumes)
+    if len(shared) != 1:
+        raise SwitchRefusal("target Compose runtime-s3 must share exactly one named credential volume with ragtime")
+    source = shared.pop()
+    if len(ragtime[source]) != 1 or len(runtime_s3_volumes[source]) != 1:
+        raise SwitchRefusal("target Compose shared credential volume mounts are ambiguous")
+    return {
+        "ragtime": (source, *ragtime[source][0]),
+        "runtime-s3": (source, *runtime_s3_volumes[source][0]),
+    }
+
+
+def write_override(path: Path, primary: Path, target: Path, *, storage: dict[str, tuple[str, str, bool]] | None) -> None:
     """Replace only bind lists that must stay primary-anchored.
 
     Target Compose remains the project directory so all code/build relative paths
@@ -126,7 +165,10 @@ def write_override(path: Path, primary: Path, target: Path, *, storage: bool) ->
     """
     data = primary / ".data"
     env = primary / ".env"
-    storage_key_mount = "      - object-storage-key:/run/ragtime-storage-key\n" if storage else ""
+    storage_key_mount = ""
+    if storage:
+        source, destination, read_only = storage["ragtime"]
+        storage_key_mount = f"      - {source}:{destination}{':ro' if read_only else ''}\n"
     content = (
         "services:\n"
         "  ragtime:\n"
@@ -148,8 +190,9 @@ def write_override(path: Path, primary: Path, target: Path, *, storage: bool) ->
         f"      - {yaml_quote(str(data) + ':/data')}\n"
     )
     if storage:
+        source, destination, read_only = storage["runtime-s3"]
         content += (
-            f"  runtime-s3:\n    volumes: !override\n      - {yaml_quote(str(data) + ':/data')}\n      - object-storage-key:/run/ragtime-storage-key:ro\n"
+            f"  runtime-s3:\n    volumes: !override\n      - {yaml_quote(str(data) + ':/data')}\n      - {source}:{destination}{':ro' if read_only else ''}\n"
         )
     path.write_text(content, encoding="utf-8")
 
@@ -249,10 +292,13 @@ class Switcher:
         self.state_root.mkdir(parents=True, exist_ok=True)
         self.run_root.mkdir(parents=True)
         try:
-            base_services = set(self.output([*self.compose(override=False), "config", "--services"]).splitlines())
-        except subprocess.CalledProcessError as error:
+            base_config = json.loads(self.output([*self.compose(override=False), "config", "--no-interpolate", "--format", "json"]))
+            if not isinstance(base_config, dict):
+                raise SwitchRefusal("target Compose model is invalid")
+            storage = storage_mounts(base_config)
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as error:
             raise SwitchRefusal("target Compose file is invalid") from error
-        write_override(self.override, self.primary, self.target.path, storage="runtime-s3" in base_services)
+        write_override(self.override, self.primary, self.target.path, storage=storage)
         config = json.loads(self.output([*self.compose(), "config", "--format", "json"]))
         available = config.get("services", {})
         if not {"ragtime", "runtime"}.issubset(available):

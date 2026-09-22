@@ -40,6 +40,10 @@ class FakeRunner(Runner):
             "runtime-s3": "sha256:" + "f" * 64,
         }
         self.actual_container_image_ids = {"runtime-s3": self.image_ids["runtime-s3"]}
+        self.storage_mounts = {
+            "ragtime": {"type": "volume", "source": "object-storage-key", "target": "/run/ragtime-storage-key"},
+            "runtime-s3": {"type": "volume", "source": "object-storage-key", "target": "/run/ragtime-storage-key", "read_only": True},
+        }
 
     def inspect_payload(self, container: str) -> dict[str, object]:
         mounts = [{"Source": str(self.primary / ".data"), "Destination": "/data", "RW": True}]
@@ -80,6 +84,13 @@ class FakeRunner(Runner):
                 text = str(self.primary / ".git")
             elif "worktree list" in joined:
                 text = ""
+        elif " config --no-interpolate --format json" in joined:
+            services: dict[str, dict[str, object]] = {"ragtime": {}, "runtime": {}}
+            if self.storage:
+                services["runtime-s3"] = {}
+                for service, mount in self.storage_mounts.items():
+                    services[service]["volumes"] = [mount]
+            text = json.dumps({"services": services})
         elif " config --format json" in joined:
             services: dict[str, dict[str, object]] = {
                 "ragtime": {"environment": ["DATABASE_URL=postgresql://ragtime:ragtime_dev@ragtime-db:5432/ragtime"]},
@@ -261,12 +272,53 @@ class SwitchTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         override = primary / "compose.override.yml"
 
-        write_override(override, primary, target, storage=True)
+        write_override(
+            override,
+            primary,
+            target,
+            storage={
+                "ragtime": ("object-storage-key", "/run/ragtime-storage-key", False),
+                "runtime-s3": ("object-storage-key", "/run/ragtime-storage-key", True),
+            },
+        )
 
         content = override.read_text()
         self.assertIn(json.dumps(f"{target / 'runtime'}:/ragtime/runtime"), content)
         self.assertIn("      - object-storage-key:/run/ragtime-storage-key\n", content)
         self.assertIn("      - object-storage-key:/run/ragtime-storage-key:ro\n", content)
+
+    def test_dry_run_uses_target_storage_mount_metadata(self):
+        temp, primary, target = self.make_tree()
+        self.addCleanup(temp.cleanup)
+        runner, switch, patcher = self.switch(primary, target, dry_run=True)
+        runner.storage_mounts = {
+            "ragtime": {"type": "volume", "source": "keystore", "target": "/run/ragtime-keystore"},
+            "runtime-s3": {"type": "volume", "source": "keystore", "target": "/run/ragtime-keystore", "read_only": True},
+        }
+
+        with patcher:
+            switch.run()
+
+        override = switch.override.read_text()
+        self.assertIn("      - keystore:/run/ragtime-keystore\n", override)
+        self.assertIn("      - keystore:/run/ragtime-keystore:ro\n", override)
+        self.assertNotIn("object-storage-key", override)
+
+    def test_runtime_s3_without_shared_credential_volume_refuses_before_migrations(self):
+        temp, primary, target = self.make_tree()
+        self.addCleanup(temp.cleanup)
+        runner, switch, patcher = self.switch(primary, target, dry_run=True)
+        runner.storage_mounts["runtime-s3"] = {
+            "type": "volume",
+            "source": "other-keystore",
+            "target": "/run/ragtime-keystore",
+            "read_only": True,
+        }
+
+        with patcher, self.assertRaisesRegex(SwitchRefusal, "share exactly one named credential volume"):
+            switch.run()
+
+        self.assertFalse(any("worktree_migrations.py" in " ".join(call) for call in runner.calls))
 
     def test_dry_run_never_builds_stops_or_applies(self):
         temp, primary, target = self.make_tree()
@@ -396,7 +448,7 @@ class SwitchTests(unittest.TestCase):
         original = runner.run
 
         def broken_compose(args, **kwargs):
-            if " config --services" in " ".join(args):
+            if " config --no-interpolate --format json" in " ".join(args):
                 raise subprocess.CalledProcessError(15, args)
             return original(args, **kwargs)
 
