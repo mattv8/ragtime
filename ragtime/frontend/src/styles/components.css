@@ -4016,20 +4016,15 @@ textarea:focus {
   font-size: 11px;
   white-space: nowrap;
   flex-shrink: 0;
-  margin-left: auto;
   padding-left: 6px;
 }
 
 .userspace-snapshot-row-actions {
-  flex-shrink: 0;
-  margin-left: 4px;
-}
-
-.userspace-snapshot-row-db-history {
-  flex-shrink: 0;
   display: flex;
   align-items: center;
-  margin-left: 4px;
+  flex-shrink: 0;
+  gap: var(--space-xs);
+  margin-inline-start: auto;
 }
 
 .userspace-snapshot-current-badge {
@@ -4059,8 +4054,15 @@ textarea:focus {
   transition: opacity 0.1s;
 }
 
-.userspace-snapshot-graph-row:hover .userspace-snapshot-restore-btn {
+.userspace-snapshot-graph-row:hover .userspace-snapshot-restore-btn,
+.userspace-snapshot-graph-row:focus-within .userspace-snapshot-restore-btn {
   opacity: 1;
+}
+
+@media (hover: none) {
+  .userspace-snapshot-restore-btn {
+    opacity: 1;
+  }
 }
 
 .userspace-snapshot-restore-btn:hover {

@@ -1066,6 +1066,7 @@ class UserSpaceSnapshot(BaseModel):
     message: str | None = None
     created_at: datetime
     file_count: int
+    has_sqlite_history: bool = False  # True when at least one SQLite backup exists for this snapshot
 
 
 class UserSpaceSnapshotDiffFileSummary(BaseModel):

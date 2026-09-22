@@ -48,6 +48,8 @@ interface WorkspaceSqliteInspectorModalProps {
   canManageHistory?: boolean;
   onClose: () => void;
   onPersistencePromoted?: (workspaceId: string) => void;
+  onSnapshotNavigate?: (snapshotId: string) => void;
+  onCodeRestored?: () => void | Promise<void>;
 }
 
 type InspectorDatabaseSummary = SqliteInspectorDatabaseSummary;
@@ -289,6 +291,8 @@ export function WorkspaceSqliteInspectorModal({
   canManageHistory = false,
   onClose,
   onPersistencePromoted,
+  onSnapshotNavigate,
+  onCodeRestored,
 }: WorkspaceSqliteInspectorModalProps) {
   const [toasts, toastActions] = useToast();
   const toastSuccess = toastActions.success;
@@ -1384,6 +1388,15 @@ export function WorkspaceSqliteInspectorModal({
               databaseName={selectedDatabase?.name}
               triggerLabel="History"
               hostId="inspector"
+              onSnapshotNavigate={
+                onSnapshotNavigate
+                  ? (snapshotId) => {
+                      onClose();
+                      onSnapshotNavigate(snapshotId);
+                    }
+                  : undefined
+              }
+              onCodeRestored={onCodeRestored}
             />
           )}
         </div>

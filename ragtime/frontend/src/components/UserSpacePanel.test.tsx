@@ -51,6 +51,8 @@ const {
     getUserSpaceFile: vi.fn(),
     getUserSpaceChangedFileState: vi.fn(),
     getUserSpaceSnapshotTimeline: vi.fn(),
+    listUserSpaceSqliteHistory: vi.fn(),
+    subscribeUserSpaceSqliteHistoryEvents: vi.fn(),
     getUserSpaceWorkspaceCollabPresence: vi.fn(),
     listUserSpaceSqliteDatabases: vi.fn(),
     listUserSpaceAvailableTools: vi.fn(),
@@ -98,6 +100,7 @@ const {
 
 let latestSqliteInspectorModalProps: unknown = null;
 let sqliteInspectorModalRender: (props: unknown) => unknown = () => null;
+let latestSnapshotRestorePanelProps: unknown = null;
 
 vi.mock('@/api', () => ({ api: previewApiMock, ApiError: class ApiError extends Error {} }));
 vi.mock('@/contexts/AvailableModelsContext', () => ({
@@ -135,6 +138,44 @@ vi.mock('./shared/WorkspaceSqliteInspectorModal', () => ({
   WorkspaceSqliteInspectorModal: (props: unknown) => {
     latestSqliteInspectorModalProps = props;
     return sqliteInspectorModalRender(props);
+  },
+}));
+vi.mock('./shared/DatabaseHistoryPanel', () => ({
+  DatabaseHistoryPanel: ({
+    snapshotId,
+    captureWindow,
+    contextLabel,
+    iconOnly,
+    triggerLabel,
+    triggerDisabled,
+    onSnapshotNavigate,
+  }: {
+    snapshotId?: string;
+    captureWindow?: { start: string; end?: string };
+    contextLabel?: string;
+    iconOnly?: boolean;
+    triggerLabel?: string;
+    triggerDisabled?: boolean;
+    onSnapshotNavigate?: (snapshotId: string) => void;
+  }) => (
+    <button
+      type="button"
+      aria-label={triggerLabel}
+      data-history-trigger="true"
+      data-history-snapshot-id={snapshotId}
+      data-history-window-start={captureWindow?.start}
+      data-history-window-end={captureWindow?.end}
+      data-history-context-label={contextLabel}
+      data-history-icon-only={iconOnly ? 'true' : 'false'}
+      disabled={triggerDisabled}
+      onClick={() => snapshotId && onSnapshotNavigate?.(snapshotId)}
+    />
+  ),
+}));
+vi.mock('./shared/SnapshotRestorePanel', () => ({
+  SnapshotRestorePanel: (props: unknown) => {
+    latestSnapshotRestorePanelProps = props;
+    return <div data-testid="snapshot-restore-panel" />;
   },
 }));
 vi.mock('./shared/WorkspaceObjectStorageExplorer', () => ({
@@ -585,6 +626,17 @@ beforeEach(() => {
     current_snapshot_id: null,
     current_branch_id: null,
   });
+  previewApiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+    workspace_id: WORKSPACE.id,
+    backups: [],
+    can_manage: true,
+  });
+  previewApiMock.subscribeUserSpaceSqliteHistoryEvents.mockReturnValue({
+    close: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    onmessage: null,
+  });
   previewApiMock.getUserSpaceWorkspaceCollabPresence.mockResolvedValue({
     version: 0,
     users: [],
@@ -677,6 +729,7 @@ afterEach(() => {
   agentAccessModalPropsMock.mockClear();
   latestSqliteInspectorModalProps = null;
   sqliteInspectorModalRender = () => null;
+  latestSnapshotRestorePanelProps = null;
 });
 
 describe('UserSpacePanel workspace tool descriptions', () => {
@@ -1912,5 +1965,254 @@ describe('UserSpacePanel workspace tool descriptions', () => {
         ([workspaceId]) => workspaceId === 'ws-1',
       ).length,
     ).toBe(ws1LaunchCallsBeforeRetryWindow);
+  });
+
+  it('opens linked restore choices for an associated snapshot instead of restoring immediately', async () => {
+    previewApiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1',
+      can_manage: true,
+      backups: [
+        {
+          id: 'linked-backup',
+          workspace_id: 'ws-1',
+          database_name: 'app.sqlite3',
+          created_at: '2026-07-14T00:00:00Z',
+          trigger: 'snapshot',
+          snapshot_id: 'snapshot-linked',
+          snapshot_git_commit_hash: null,
+          status: 'ready',
+          size_bytes: 1,
+          sha256: null,
+          error: null,
+          can_restore: true,
+          can_delete: true,
+        },
+      ],
+    });
+    previewApiMock.getUserSpaceSnapshotTimeline.mockResolvedValue({
+      snapshots: [
+        {
+          id: 'snapshot-linked',
+          workspace_id: 'ws-1',
+          branch_id: 'branch-main',
+          branch_name: 'Main',
+          is_current: false,
+          can_rename: true,
+          can_delete: true,
+          created_at: '2026-07-14T00:00:00Z',
+          file_count: 1,
+          has_sqlite_history: true,
+        },
+      ],
+      branches: [
+        {
+          id: 'branch-main',
+          workspace_id: 'ws-1',
+          name: 'Main',
+          git_ref_name: 'main',
+          is_active: true,
+          commits_behind: 0,
+          is_stale: false,
+          created_at: '2026-07-14T00:00:00Z',
+        },
+      ],
+      current_snapshot_id: null,
+      current_branch_id: 'branch-main',
+    });
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: /snapshots/i }));
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Restore' }));
+
+    expect(screen.getByTestId('snapshot-restore-panel')).toBeTruthy();
+    expect(latestSnapshotRestorePanelProps).toEqual(
+      expect.objectContaining({
+        workspaceId: 'ws-1',
+        snapshotId: 'snapshot-linked',
+        defaultScope: 'code',
+        allowCodeRestore: true,
+        allowDatabaseRestore: true,
+      }),
+    );
+  });
+
+  it('waits for the timeline before focusing and highlighting only the requested snapshot', async () => {
+    const timeline = createDeferredPromise<{
+      snapshots: Array<Record<string, unknown>>;
+      branches: Array<Record<string, unknown>>;
+      current_snapshot_id: null;
+      current_branch_id: string;
+    }>();
+    previewApiMock.getUserSpaceSnapshotTimeline.mockReturnValue(timeline.promise);
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    await waitFor(() => expect(latestSqliteInspectorModalProps).not.toBeNull());
+    (
+      latestSqliteInspectorModalProps as { onSnapshotNavigate?: (snapshotId: string) => void }
+    ).onSnapshotNavigate?.('snapshot-target');
+
+    await act(async () => {
+      timeline.resolve({
+        snapshots: [
+          {
+            id: 'snapshot-target',
+            workspace_id: 'ws-1',
+            branch_id: 'branch-main',
+            branch_name: 'Main',
+            is_current: false,
+            can_rename: true,
+            can_delete: true,
+            created_at: '2026-07-14T00:00:00Z',
+            file_count: 1,
+          },
+          {
+            id: 'snapshot-other',
+            workspace_id: 'ws-1',
+            branch_id: 'branch-main',
+            branch_name: 'Main',
+            is_current: false,
+            can_rename: true,
+            can_delete: true,
+            created_at: '2026-07-13T00:00:00Z',
+            file_count: 1,
+          },
+        ],
+        branches: [
+          {
+            id: 'branch-main',
+            workspace_id: 'ws-1',
+            name: 'Main',
+            git_ref_name: 'main',
+            is_active: true,
+            commits_behind: 0,
+            is_stale: false,
+            created_at: '2026-07-13T00:00:00Z',
+          },
+        ],
+        current_snapshot_id: null,
+        current_branch_id: 'branch-main',
+      });
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-snapshot-id="snapshot-target"] mark')?.textContent).toBe(
+        'snapshot',
+      );
+    });
+    expect(document.querySelector('[data-snapshot-id="snapshot-other"] mark')).toBeNull();
+  });
+
+  it('shows an explicit notice when the requested snapshot is missing from the loaded timeline', async () => {
+    previewApiMock.getUserSpaceSnapshotTimeline.mockResolvedValue({
+      snapshots: [],
+      branches: [],
+      current_snapshot_id: null,
+      current_branch_id: null,
+    });
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    await waitFor(() => expect(latestSqliteInspectorModalProps).not.toBeNull());
+    (
+      latestSqliteInspectorModalProps as { onSnapshotNavigate?: (snapshotId: string) => void }
+    ).onSnapshotNavigate?.('snapshot-target');
+
+    expect(await screen.findByText('The associated snapshot is no longer available.')).toBeTruthy();
+    expect(document.querySelector('.userspace-snapshot-row-group--targeted')).toBeNull();
+  });
+
+  it('places a chronological database history icon after Restore in the preceding snapshot row', async () => {
+    const hourlyBackup = {
+      id: 'hourly-between',
+      workspace_id: 'ws-1',
+      database_name: 'app.sqlite3',
+      created_at: '2026-07-14T11:00:00Z',
+      trigger: 'scheduled' as const,
+      snapshot_id: null,
+      snapshot_git_commit_hash: null,
+      status: 'ready' as const,
+      size_bytes: 1,
+      sha256: null,
+      error: null,
+      can_restore: true,
+      can_delete: true,
+    };
+    previewApiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1',
+      can_manage: true,
+      backups: [hourlyBackup],
+    });
+    previewApiMock.getUserSpaceSnapshotTimeline.mockResolvedValue({
+      snapshots: [
+        {
+          id: 'later',
+          workspace_id: 'ws-1',
+          branch_id: 'branch-main',
+          branch_name: 'Main',
+          is_current: false,
+          can_rename: true,
+          can_delete: true,
+          created_at: '2026-07-14T12:00:00Z',
+          file_count: 1,
+          has_sqlite_history: false,
+        },
+        {
+          id: 'preceding',
+          workspace_id: 'ws-1',
+          branch_id: 'branch-main',
+          branch_name: 'Main',
+          is_current: false,
+          can_rename: true,
+          can_delete: true,
+          created_at: '2026-07-14T10:00:00Z',
+          file_count: 1,
+          has_sqlite_history: false,
+        },
+      ],
+      branches: [
+        {
+          id: 'branch-main',
+          workspace_id: 'ws-1',
+          name: 'Main',
+          git_ref_name: 'main',
+          is_active: true,
+          commits_behind: 0,
+          is_stale: false,
+          created_at: '2026-07-14T12:00:00Z',
+        },
+      ],
+      current_snapshot_id: null,
+      current_branch_id: 'branch-main',
+    });
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: /snapshots/i }));
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-snapshot-actions="preceding"]')).toBeTruthy();
+    });
+    const precedingActions = document.querySelector('[data-snapshot-actions="preceding"]');
+    expect(precedingActions?.parentElement?.lastElementChild).toBe(precedingActions);
+    expect(precedingActions?.querySelector('.userspace-snapshot-restore-btn')).toBeTruthy();
+    const historyTrigger = precedingActions?.querySelector('[data-history-trigger]');
+    expect(historyTrigger?.getAttribute('data-history-icon-only')).toBe('true');
+    expect(historyTrigger?.getAttribute('data-history-window-start')).toBe('2026-07-14T10:00:00Z');
+    expect(historyTrigger?.getAttribute('data-history-window-end')).toBe('2026-07-14T12:00:00Z');
+    expect(
+      historyTrigger?.previousElementSibling?.classList.contains('userspace-snapshot-restore-btn'),
+    ).toBe(true);
+    expect(
+      document.querySelector('[data-snapshot-actions="later"] [data-history-trigger]'),
+    ).toBeNull();
+    expect(document.querySelector('.userspace-db-checkpoint-row')).toBeNull();
+    expect(previewApiMock.listUserSpaceSqliteHistory).toHaveBeenCalledWith('ws-1');
+    expect(screen.getByRole('button', { name: 'Database history' })).toBeTruthy();
+
+    cleanup();
+    render(<UserSpacePanel currentUser={{ ...EDITOR_USER }} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: /snapshots/i }));
+    await waitFor(() =>
+      expect(document.querySelector('[data-snapshot-actions="preceding"]')).toBeTruthy(),
+    );
+    expect(document.querySelector('[data-history-trigger]')).toBeNull();
   });
 });

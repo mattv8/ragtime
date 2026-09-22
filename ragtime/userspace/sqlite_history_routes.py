@@ -68,11 +68,13 @@ async def _sqlite_history_list_payload(
     snapshot_id: str | None = None,
 ) -> dict[str, Any]:
     service = get_sqlite_history_service()
-    response = SqliteHistoryListResponse(
-        workspace_id=workspace_id,
-        backups=await service.list_backups(workspace_id, database_name=database_name, snapshot_id=snapshot_id),
-        can_manage=True,
-        interrupted_maintenance=await service.interrupted_maintenance(workspace_id),
+    response = SqliteHistoryListResponse.model_validate(
+        {
+            "workspace_id": workspace_id,
+            "backups": await service.list_backups(workspace_id, database_name=database_name, snapshot_id=snapshot_id),
+            "can_manage": True,
+            "interrupted_maintenance": await service.interrupted_maintenance(workspace_id),
+        }
     )
     return response.model_dump(mode="json")
 
@@ -89,7 +91,7 @@ async def _sqlite_history_capture_jobs_payload(
         snapshot_id=snapshot_id,
         limit=50,
     )
-    return SqliteHistoryCaptureJobListResponse(jobs=[_public_capture_job(job) for job in jobs]).model_dump(mode="json")
+    return SqliteHistoryCaptureJobListResponse.model_validate({"jobs": [_public_capture_job(job) for job in jobs]}).model_dump(mode="json")
 
 
 async def _sqlite_history_event_payload(

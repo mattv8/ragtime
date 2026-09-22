@@ -28,6 +28,14 @@ vi.mock('@/api/client', () => ({
   },
 }));
 
+const snapshotRestorePanelMock = vi.hoisted(() => vi.fn());
+vi.mock('@/components/shared/SnapshotRestorePanel', () => ({
+  SnapshotRestorePanel: (props: { snapshotId: string; initialBackupId?: string }) => {
+    snapshotRestorePanelMock(props);
+    return <div data-snapshot-restore-panel={props.snapshotId}>Linked restore panel</div>;
+  },
+}));
+
 import { ApiError } from '@/api/client';
 import { DatabaseHistoryPanel } from './DatabaseHistoryPanel';
 
@@ -37,7 +45,7 @@ const backup = {
   database_name: 'app.sqlite3',
   created_at: '2026-09-17T10:00:00Z',
   trigger: 'snapshot' as const,
-  snapshot_id: 'snap-1',
+  snapshot_id: null,
   snapshot_git_commit_hash: 'abc',
   status: 'ready' as const,
   size_bytes: 1024,
@@ -79,6 +87,7 @@ const captureJob = {
 describe('DatabaseHistoryPanel', () => {
   beforeEach(() => {
     Object.values(apiMock).forEach((mock) => mock.mockReset());
+    snapshotRestorePanelMock.mockReset();
     apiMock.listUserSpaceSqliteHistory.mockResolvedValue({
       workspace_id: 'ws-1',
       backups: [backup],
@@ -147,16 +156,30 @@ describe('DatabaseHistoryPanel', () => {
     expect(screen.getByText('Exact snapshot snap-1')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
     expect(screen.getByText(/Merge can resurrect/)).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'Prepare preview' }));
+    await user.click(
+      within(
+        screen.getByRole('dialog').querySelector('[data-history-backup="backup-1"]')!,
+      ).getByRole('button', { name: 'Prepare preview' }),
+    );
     await screen.findByText(/items: 1 inserted/);
     await user.selectOptions(
       screen.getByLabelText(/Table conflict policy \(items\)/),
       'use_backup',
     );
     expect(screen.queryByText('Actual restore preview')).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Prepare preview' }));
-    await user.click(await screen.findByRole('button', { name: 'Confirm restore' }));
-    await screen.findByText('Database restored');
+    await user.click(
+      within(
+        screen.getByRole('dialog').querySelector('[data-history-backup="backup-1"]')!,
+      ).getByRole('button', { name: 'Prepare preview' }),
+    );
+    await user.click(
+      await within(
+        screen.getByRole('dialog').querySelector('[data-history-backup="backup-1"]')!,
+      ).findByRole('button', { name: 'Confirm restore' }),
+    );
+    await within(
+      screen.getByRole('dialog').querySelector('[data-history-backup="backup-1"]')!,
+    ).findByText('Database restored');
     expect(screen.getByText(/Safety backup: safety-1/)).toBeTruthy();
     expect(screen.getByText(/runtime is stopped/i)).toBeTruthy();
   });
@@ -164,6 +187,181 @@ describe('DatabaseHistoryPanel', () => {
   it('does not expose history to a non-owner host', () => {
     render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin={false} hostId="workspace" />);
     expect(screen.queryByRole('button', { name: 'Database history' })).toBeNull();
+  });
+
+  it('opens an icon-only snapshot trigger with its exact API filter and accessible label', async () => {
+    const user = userEvent.setup();
+    render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        snapshotId="snap-1"
+        ownerOrAdmin
+        hostId="snapshot-snap-1"
+        triggerLabel="Snapshot database history"
+        iconOnly
+      />,
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Snapshot database history' });
+    expect(trigger.title).toBe('Snapshot database history');
+    expect(trigger.textContent).toBe('');
+    await user.click(trigger);
+
+    await waitFor(() =>
+      expect(apiMock.listUserSpaceSqliteHistory).toHaveBeenCalledWith('ws-1', {
+        databaseName: undefined,
+        snapshotId: 'snap-1',
+      }),
+    );
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
+  it('filters a chronological capture window locally without snapshot API scoping', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1',
+      backups: [
+        { ...backup, id: 'at-start', created_at: '2026-09-17T10:00:00Z', snapshot_id: null },
+        { ...backup, id: 'inside', created_at: '2026-09-17T10:30:00Z', snapshot_id: null },
+        { ...backup, id: 'at-end', created_at: '2026-09-17T11:00:00Z', snapshot_id: null },
+      ],
+      can_manage: true,
+    });
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        { ...captureJob, id: 'inside-job', status: 'completed', backup_ids: ['inside'] },
+        { ...captureJob, id: 'outside-job', status: 'completed', backup_ids: [] },
+      ],
+    });
+    render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        ownerOrAdmin
+        hostId="snapshot-row"
+        iconOnly
+        triggerLabel="Database backups in this interval"
+        captureWindow={{ start: '2026-09-17T10:00:00Z', end: '2026-09-17T11:00:00Z' }}
+        contextLabel="Backups captured between snapshots"
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Database backups in this interval' }));
+    await waitFor(() =>
+      expect(apiMock.listUserSpaceSqliteHistory).toHaveBeenCalledWith('ws-1', {
+        databaseName: undefined,
+        snapshotId: undefined,
+      }),
+    );
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Backups captured between snapshots')).toBeTruthy();
+    expect(dialog.querySelector('[data-history-backup="at-start"]')).toBeTruthy();
+    expect(dialog.querySelector('[data-history-backup="inside"]')).toBeTruthy();
+    expect(dialog.querySelector('[data-history-backup="at-end"]')).toBeNull();
+    expect(dialog.querySelector('[data-history-activity-job="inside-job"]')).toBeTruthy();
+    expect(dialog.querySelector('[data-history-activity-job="outside-job"]')).toBeNull();
+  });
+
+  it('preserves selection for equivalent window values and invalidates stale preview on window change', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        ownerOrAdmin
+        hostId="snapshot-row"
+        captureWindow={{ start: '2026-09-17T09:00:00Z', end: '2026-09-17T11:00:00Z' }}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
+    expect(screen.getByLabelText('Mode')).toBeTruthy();
+
+    rerender(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        ownerOrAdmin
+        hostId="snapshot-row"
+        captureWindow={{ start: '2026-09-17T09:00:00Z', end: '2026-09-17T11:00:00Z' }}
+      />,
+    );
+    expect(screen.getByLabelText('Mode')).toBeTruthy();
+
+    rerender(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        ownerOrAdmin
+        hostId="snapshot-row"
+        captureWindow={{ start: '2026-09-17T11:00:00Z' }}
+      />,
+    );
+    await waitFor(() => expect(screen.queryByLabelText('Mode')).toBeNull());
+  });
+
+  it('discards an in-flight preview when its capture window changes', async () => {
+    const user = userEvent.setup();
+    let resolvePreview!: (
+      value: Awaited<ReturnType<typeof apiMock.previewUserSpaceSqliteHistory>>,
+    ) => void;
+    apiMock.previewUserSpaceSqliteHistory.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvePreview = resolve;
+        }),
+    );
+    const { rerender } = render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        ownerOrAdmin
+        hostId="snapshot-row"
+        captureWindow={{ start: '2026-09-17T09:00:00Z', end: '2026-09-17T11:00:00Z' }}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
+    await user.click(screen.getByRole('button', { name: 'Prepare preview' }));
+
+    rerender(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        ownerOrAdmin
+        hostId="snapshot-row"
+        captureWindow={{ start: '2026-09-17T11:00:00Z' }}
+      />,
+    );
+    resolvePreview({
+      preview_id: 'preview-1',
+      backup_id: backup.id,
+      database_name: backup.database_name,
+      mode: 'merge',
+      conflict_policy: 'keep_current',
+      migrations_applied: [],
+      warnings: [],
+      blockers: [],
+      can_apply: true,
+      expires_at: '2026-09-17T10:15:00Z',
+      tables: [],
+    });
+
+    await waitFor(() => expect(screen.queryByText('Actual restore preview')).toBeNull());
+  });
+
+  it('does not open a disabled history trigger', async () => {
+    const user = userEvent.setup();
+    render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        ownerOrAdmin
+        hostId="snapshot-snap-1"
+        triggerLabel="Snapshot database history"
+        iconOnly
+        triggerDisabled
+      />,
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Snapshot database history' });
+    expect((trigger as HTMLButtonElement).disabled).toBe(true);
+    await user.click(trigger);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(apiMock.listUserSpaceSqliteHistory).not.toHaveBeenCalled();
   });
 
   it('starts a fresh restore workflow when another backup is selected after a receipt', async () => {
@@ -177,13 +375,27 @@ describe('DatabaseHistoryPanel', () => {
 
     await user.click(screen.getByRole('button', { name: 'Database history' }));
     await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
-    await user.click(screen.getByRole('button', { name: 'Prepare preview' }));
-    await user.click(await screen.findByRole('button', { name: 'Confirm restore' }));
-    await screen.findByText('Database restored');
+    await user.click(
+      within(
+        screen.getByRole('dialog').querySelector('[data-history-backup="backup-1"]')!,
+      ).getByRole('button', { name: 'Prepare preview' }),
+    );
+    await user.click(
+      await within(
+        screen.getByRole('dialog').querySelector('[data-history-backup="backup-1"]')!,
+      ).findByRole('button', { name: 'Confirm restore' }),
+    );
+    await within(
+      screen.getByRole('dialog').querySelector('[data-history-backup="backup-1"]')!,
+    ).findByText('Database restored');
 
     await user.click(screen.getByRole('button', { name: /Restore orders\.sqlite3 backup/ }));
 
-    expect(screen.queryByText('Database restored')).toBeNull();
+    expect(
+      screen
+        .getByRole('dialog')
+        .querySelector('[data-history-backup="backup-2"] [data-history-receipt]'),
+    ).toBeNull();
     // Wizard now expands inline within the selected backup's row.
     expect(
       screen
@@ -210,7 +422,10 @@ describe('DatabaseHistoryPanel', () => {
 
     await user.click(triggers[0]);
     await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
-    await user.selectOptions(screen.getByLabelText('Mode'), 'overwrite');
+    const firstRow = within(
+      screen.getByRole('dialog').querySelector('[data-history-backup="backup-1"]')!,
+    );
+    await user.selectOptions(firstRow.getByLabelText('Mode'), 'overwrite');
 
     expect(screen.queryByLabelText('Default conflict policy')).toBeNull();
   });
@@ -509,6 +724,7 @@ describe('DatabaseHistoryPanel', () => {
         id: 'snapshot-old',
         database_name: 'snapshot-old.sqlite3',
         created_at: '2026-09-17T08:00:00Z',
+        snapshot_id: 'snap-1',
       },
       {
         ...backup,
@@ -531,18 +747,21 @@ describe('DatabaseHistoryPanel', () => {
         id: 'snapshot-tie-a',
         database_name: 'snapshot-tie-a.sqlite3',
         created_at: '2026-09-17T10:00:00+02:00',
+        snapshot_id: 'snap-1',
       },
       {
         ...backup,
         id: 'snapshot-tie-y',
         database_name: 'snapshot-tie-y.sqlite3',
         created_at: '2026-09-17T09:00:00Z',
+        snapshot_id: 'snap-1',
       },
       {
         ...backup,
         id: 'snapshot-tie-z',
         database_name: 'snapshot-tie-z.sqlite3',
         created_at: '2026-09-17T11:00:00+02:00',
+        snapshot_id: 'snap-1',
       },
     ];
     const originalOrder = mixedBackups.map((item) => item.id);
@@ -675,7 +894,7 @@ describe('DatabaseHistoryPanel', () => {
     expect(within(job).queryByText('All databases')).toBeNull();
   });
 
-  it('keeps completed empty scheduled captures in collapsed activity with their no-change outcome', async () => {
+  it('omits the default all-databases scope from completed activity with no changes', async () => {
     const user = userEvent.setup();
     apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
       jobs: [
@@ -708,7 +927,7 @@ describe('DatabaseHistoryPanel', () => {
     );
     expect(row).toBeTruthy();
     expect(within(row as HTMLElement).getByText('Hourly backup check')).toBeTruthy();
-    expect(within(row as HTMLElement).getByText('All workspace databases')).toBeTruthy();
+    expect(within(row as HTMLElement).queryByText('All workspace databases')).toBeNull();
     // No restore points created → no outcome text shown (per spec: silence when nothing happened).
     expect(within(row as HTMLElement).queryByText(/restore point/i)).toBeNull();
     // Activity rows with no restore points have no snapshot link → no focusable controls.
@@ -717,7 +936,26 @@ describe('DatabaseHistoryPanel', () => {
     ).toHaveLength(0);
   });
 
-  it('shows snapshot link in activity row and calls onSnapshotNavigate on click', async () => {
+  it('retains an explicit database scope in activity', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [{ ...captureJob, id: 'named-scope', status: 'completed', backup_ids: [] }],
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+
+    const row = await waitFor(() => {
+      const item = screen
+        .getByRole('dialog')
+        .querySelector<HTMLElement>('[data-history-activity-job="named-scope"]');
+      expect(item).toBeTruthy();
+      return item as HTMLElement;
+    });
+    expect(within(row).getByText('app.sqlite3')).toBeTruthy();
+  });
+
+  it('shows the ready restore-point badge at the right of an activity row and navigates exactly', async () => {
     const user = userEvent.setup();
     const onSnapshotNavigate = vi.fn();
     apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
@@ -753,18 +991,174 @@ describe('DatabaseHistoryPanel', () => {
       return el as HTMLElement;
     });
 
-    // Shows outcome text and snapshot link using short commit hash.
-    expect(within(row).getByText(/1 restore point created/)).toBeTruthy();
-    const link = within(row).getByRole('button', { name: /Snapshot abc1234/ });
-    expect(link).toBeTruthy();
+    const badge = within(row).getByRole('button', { name: '1 restore point' });
+    expect(badge.getAttribute('data-history-restore-points')).toBe('snapshot-job');
 
     // Shows Snapshot badge, not Completed badge.
     expect(within(row).queryByText('Completed')).toBeNull();
     expect(within(row).getByText('Snapshot')).toBeTruthy();
 
-    // Clicking the link fires the callback with the snapshot_id.
-    await user.click(link);
+    // Clicking closes the overlay before navigating with the exact snapshot ID.
+    await user.click(badge);
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(onSnapshotNavigate).toHaveBeenCalledWith('snap-abc');
+  });
+
+  it('counts only ready backup IDs and keeps zero-result activity silent', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1',
+      backups: [backup, { ...backup, id: 'failed-backup', status: 'failed', can_restore: false }],
+      can_manage: true,
+    });
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        {
+          ...captureJob,
+          id: 'mixed-results',
+          status: 'completed',
+          backup_ids: ['backup-1', 'failed-backup', 'missing-backup'],
+        },
+        {
+          ...captureJob,
+          id: 'no-ready-results',
+          status: 'completed',
+          backup_ids: ['missing-backup'],
+        },
+      ],
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const dialog = screen.getByRole('dialog');
+    const mixed = await waitFor(() => {
+      const row = dialog.querySelector<HTMLElement>('[data-history-activity-job="mixed-results"]');
+      expect(row).toBeTruthy();
+      return row as HTMLElement;
+    });
+    expect(within(mixed).getByText('1 restore point')).toBeTruthy();
+    expect(
+      dialog.querySelector(
+        '[data-history-activity-job="no-ready-results"] [data-history-restore-points]',
+      ),
+    ).toBeNull();
+  });
+
+  it('renders a noninteractive activity badge when snapshot navigation is unavailable', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        {
+          ...captureJob,
+          id: 'no-navigation',
+          status: 'completed',
+          snapshot_id: 'snap-1',
+          backup_ids: ['backup-1'],
+        },
+      ],
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const row = await waitFor(() => {
+      const item = screen
+        .getByRole('dialog')
+        .querySelector<HTMLElement>('[data-history-activity-job="no-navigation"]');
+      expect(item).toBeTruthy();
+      return item as HTMLElement;
+    });
+    expect(within(row).queryByRole('button', { name: '1 restore point' })).toBeNull();
+    expect(within(row).getByText('1 restore point')).toBeTruthy();
+  });
+
+  it('keeps an unassociated ready badge noninteractive', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        {
+          ...captureJob,
+          id: 'database-no-navigation',
+          status: 'completed',
+          snapshot_id: null,
+          backup_ids: ['backup-1'],
+        },
+      ],
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+
+    const row = await waitFor(() => {
+      const item = screen
+        .getByRole('dialog')
+        .querySelector<HTMLElement>('[data-history-activity-job="database-no-navigation"]');
+      expect(item).toBeTruthy();
+      return item as HTMLElement;
+    });
+    expect(within(row).queryByRole('button', { name: '1 restore point' })).toBeNull();
+  });
+
+  it('mounts the linked restore panel only for an associated selected backup and locks the dialog while busy', async () => {
+    const user = userEvent.setup();
+    const associated = { ...backup, snapshot_id: 'snap-linked' };
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1',
+      backups: [associated],
+      can_manage: true,
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
+    expect(await screen.findByText('Linked restore panel')).toBeTruthy();
+    expect(snapshotRestorePanelMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws-1',
+        snapshotId: 'snap-linked',
+        initialBackupId: 'backup-1',
+        defaultScope: 'database',
+        allowCodeRestore: true,
+        allowDatabaseRestore: true,
+        disabled: false,
+      }),
+    );
+    const props = snapshotRestorePanelMock.mock.calls[
+      snapshotRestorePanelMock.mock.calls.length - 1
+    ]?.[0] as {
+      onBusyChange: (busy: boolean) => void;
+    };
+    props.onBusyChange(true);
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Close database history' }).hasAttribute('disabled'),
+      ).toBe(true),
+    );
+  });
+
+  it('does not tab into activity controls inside closed details', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        {
+          ...captureJob,
+          id: 'closed-activity',
+          status: 'completed',
+          snapshot_id: 'snap-1',
+          backup_ids: ['backup-1'],
+        },
+      ],
+    });
+    render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        ownerOrAdmin
+        hostId="workspace"
+        onSnapshotNavigate={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const badge = await screen.findByRole('button', { name: '1 restore point' });
+    badge.focus();
+    await user.tab();
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Close database history' }),
+    );
   });
 
   it('shows older restore points per database only after its toggle is expanded', async () => {
@@ -790,6 +1184,39 @@ describe('DatabaseHistoryPanel', () => {
     await user.click(showOlder);
     expect(dialog.querySelectorAll('[data-history-backup]')).toHaveLength(6);
     expect(within(dialog).getByRole('button', { name: 'Show fewer restore points' })).toBeTruthy();
+  });
+
+  it('keeps an older selected backup in its own database group without duplicating it elsewhere', async () => {
+    const user = userEvent.setup();
+    const appBackups = Array.from({ length: 6 }, (_, index) => ({
+      ...backup,
+      id: `app-${index + 1}`,
+      created_at: `2026-09-${String(10 + index).padStart(2, '0')}T10:00:00Z`,
+    }));
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1',
+      backups: [...appBackups, { ...secondBackup, id: 'orders-1' }],
+      can_manage: true,
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Show 1 older restore point' }));
+    await user.click(
+      within(dialog.querySelector('[data-history-backup="app-1"]')!).getByRole('button', {
+        name: /Restore app\.sqlite3 backup/,
+      }),
+    );
+    await user.click(within(dialog).getByRole('button', { name: 'Show fewer restore points' }));
+
+    const selectedRows = dialog.querySelectorAll('[data-history-backup="app-1"]');
+    expect(selectedRows).toHaveLength(1);
+    expect(selectedRows[0]?.querySelector('[data-history-restore-wizard]')).toBeTruthy();
+    expect(
+      dialog.querySelector(
+        '[data-history-database-group="orders.sqlite3"] [data-history-backup="app-1"]',
+      ),
+    ).toBeNull();
   });
 
   it('surfaces capture-job errors even when there are no active jobs', async () => {
@@ -1128,14 +1555,21 @@ describe('DatabaseHistoryPanel', () => {
     );
     await user.click(screen.getByRole('button', { name: 'Database history' }));
     await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
-    await user.click(screen.getByRole('button', { name: 'Prepare preview' }));
-    await user.selectOptions(screen.getByLabelText('Mode'), 'overwrite');
+    await user.click(
+      within(
+        screen.getByRole('dialog').querySelector('[data-history-backup="backup-1"]')!,
+      ).getByRole('button', { name: 'Prepare preview' }),
+    );
+    const firstRow = within(
+      screen.getByRole('dialog').querySelector('[data-history-backup="backup-1"]')!,
+    );
+    await user.selectOptions(firstRow.getByLabelText('Mode'), 'overwrite');
     delayed.resolve(backupPreview);
     await Promise.resolve();
     expect(screen.queryByText('Actual restore preview')).toBeNull();
 
-    await user.selectOptions(screen.getByLabelText('Mode'), 'merge');
-    await user.selectOptions(screen.getByLabelText('Default conflict policy'), 'use_backup');
+    await user.selectOptions(firstRow.getByLabelText('Mode'), 'merge');
+    await user.selectOptions(firstRow.getByLabelText('Default conflict policy'), 'use_backup');
     await user.click(screen.getByRole('button', { name: /Restore orders\.sqlite3 backup/ }));
     rerender(<DatabaseHistoryPanel workspaceId="ws-2" ownerOrAdmin hostId="workspace" />);
     expect(screen.queryByLabelText('Mode')).toBeNull();
@@ -1167,7 +1601,9 @@ describe('DatabaseHistoryPanel', () => {
     render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
     await user.click(screen.getByRole('button', { name: 'Database history' }));
     await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
-    const firstDelete = screen.getByRole('button', {
+    const firstDelete = within(
+      screen.getByRole('dialog').querySelector('[data-history-backup="backup-1"]')!,
+    ).getByRole('button', {
       name: /Delete app\.sqlite3 backup/,
     }) as HTMLButtonElement;
     const secondDelete = screen.getByRole('button', {
@@ -1177,7 +1613,11 @@ describe('DatabaseHistoryPanel', () => {
     await waitFor(() => expect(firstDelete.disabled).toBe(true));
     expect(secondDelete.disabled).toBe(false);
     await user.click(secondDelete);
-    await user.click(screen.getByRole('button', { name: /Download app\.sqlite3 backup/ }));
+    await user.click(
+      within(
+        screen.getByRole('dialog').querySelector('[data-history-backup="backup-1"]')!,
+      ).getByRole('button', { name: /Download app\.sqlite3 backup/ }),
+    );
     expect(await screen.findByText('download unavailable')).toBeTruthy();
     resolveFirstDelete();
     resolveSecondDelete();

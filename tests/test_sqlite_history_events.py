@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest import mock
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from ragtime.userspace import sqlite_history_routes as routes
 
@@ -72,17 +72,24 @@ class SqliteHistoryEventRouteTests(unittest.IsolatedAsyncioTestCase):
         self.manage.start()
         self.history_service.start()
         self.queue_service.start()
-        self.request = SimpleNamespace(is_disconnected=mock.AsyncMock(return_value=False))
+        self.request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
+        self.request_is_disconnected = mock.patch.object(
+            self.request,
+            "is_disconnected",
+            new=mock.AsyncMock(return_value=False),
+        )
+        self.is_disconnected = self.request_is_disconnected.start()
         self.user = SimpleNamespace(id="owner-1", role="user")
 
     async def asyncTearDown(self) -> None:
+        self.request_is_disconnected.stop()
         self.queue_service.stop()
         self.history_service.stop()
         self.manage.stop()
 
     async def _stream(self):
         response = await routes.stream_sqlite_history_events("workspace-1", self.request, "app.sqlite3", "snapshot-1", self.user)
-        return response, response.body_iterator
+        return response, aiter(response.body_iterator)
 
     async def test_streams_initial_notification_with_no_cache_headers(self) -> None:
         response, events = await self._stream()
@@ -115,15 +122,13 @@ class SqliteHistoryEventRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_denies_before_collecting_the_initial_stream_payload(self) -> None:
         self.manage.stop()
-        self.manage = mock.patch.object(
+        with mock.patch.object(
             routes,
             "_manage",
             new=mock.AsyncMock(side_effect=HTTPException(status_code=403, detail="Forbidden")),
-        )
-        self.manage.start()
-
-        with self.assertRaises(HTTPException) as error:
-            await self._stream()
+        ):
+            with self.assertRaises(HTTPException) as error:
+                await self._stream()
 
         self.assertEqual(403, error.exception.status_code)
         self.history.list_backups.assert_not_awaited()
@@ -131,22 +136,21 @@ class SqliteHistoryEventRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_denies_before_creating_stream_and_revokes_later_access(self) -> None:
         self.manage.stop()
-        self.manage = mock.patch.object(
+        with mock.patch.object(
             routes,
             "_manage",
             new=mock.AsyncMock(side_effect=[None, HTTPException(status_code=403, detail="Forbidden")]),
-        )
-        self.manage.start()
-        response, events = await self._stream()
-        self.assertEqual("event: history_changed\ndata: {}\n\n", await anext(events))
+        ):
+            response, events = await self._stream()
+            self.assertEqual("event: history_changed\ndata: {}\n\n", await anext(events))
 
-        with mock.patch.object(routes.asyncio, "sleep", new_callable=mock.AsyncMock):
-            self.assertEqual("event: access_revoked\ndata: {}\n\n", await anext(events))
-            with self.assertRaises(StopAsyncIteration):
-                await anext(events)
+            with mock.patch.object(routes.asyncio, "sleep", new_callable=mock.AsyncMock):
+                self.assertEqual("event: access_revoked\ndata: {}\n\n", await anext(events))
+                with self.assertRaises(StopAsyncIteration):
+                    await anext(events)
 
     async def test_does_not_observe_after_disconnect(self) -> None:
-        self.request.is_disconnected.return_value = True
+        self.is_disconnected.return_value = True
         response, events = await self._stream()
 
         with self.assertRaises(StopAsyncIteration):

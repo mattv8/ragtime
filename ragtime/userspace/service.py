@@ -21551,6 +21551,17 @@ class UserSpaceService:
         # Compute commits_behind + is_stale for each branch
         self._annotate_branch_staleness(branches, snapshots, current_snapshot_id, current_branch_id)
 
+        # Annotate which snapshots have SQLite history (fail-open: missing storage → False)
+        try:
+            from ragtime.userspace.sqlite_history import get_sqlite_history_service
+
+            snapshot_ids_with_history = await get_sqlite_history_service().get_snapshot_ids_with_backups(workspace_id)
+            if snapshot_ids_with_history:
+                for snapshot in snapshots:
+                    snapshot.has_sqlite_history = snapshot.id in snapshot_ids_with_history
+        except Exception:
+            pass
+
         return UserSpaceSnapshotTimelineResponse(
             workspace_id=workspace_id,
             current_snapshot_id=current_snapshot_id,

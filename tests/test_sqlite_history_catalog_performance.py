@@ -2,6 +2,7 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from fastapi import HTTPException
@@ -38,7 +39,7 @@ class SqliteHistoryCatalogPerformanceTests(unittest.TestCase):
         blob_dir = self.root / "blobs"
         blob_dir.mkdir(parents=True)
         (blob_dir / "shared.sqlite3").write_bytes(b"0123456789")
-        manifest = {
+        manifest: dict[str, Any] = {
             "version": 1,
             "workspace_id": "workspace",
             "previews": {},

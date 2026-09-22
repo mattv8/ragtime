@@ -4062,6 +4062,7 @@ export interface UserSpaceSnapshot {
   message?: string | null;
   created_at: string;
   file_count: number;
+  has_sqlite_history?: boolean; // True when at least one SQLite backup exists for this snapshot
 }
 
 export type UserSpaceSnapshotDiffStatus = 'A' | 'D' | 'M' | 'R';

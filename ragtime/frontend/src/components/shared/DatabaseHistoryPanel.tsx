@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   DatabaseBackup,
@@ -11,7 +11,11 @@ import {
 } from 'lucide-react';
 
 import { api, ApiError } from '@/api/client';
-import { SearchHighlightedText } from '@/components/shared/SearchHighlightedText';
+import { SnapshotRestorePanel } from '@/components/shared/SnapshotRestorePanel';
+import {
+  isInDatabaseCaptureWindow,
+  type DatabaseCaptureWindow,
+} from '@/utils/databaseCaptureWindow';
 import type {
   SqliteHistoryBackup,
   SqliteHistoryConflictPolicy,
@@ -28,12 +32,20 @@ interface DatabaseHistoryPanelProps {
   ownerOrAdmin: boolean;
   databaseName?: string;
   snapshotId?: string;
+  /** Chronological capture interval. The start is inclusive and the end is exclusive. */
+  captureWindow?: DatabaseCaptureWindow;
+  /** Describes a chronological capture interval in the dialog subtitle. */
+  contextLabel?: string;
   triggerLabel?: string;
   /** Render the trigger as icon-only (no visible label text). */
   iconOnly?: boolean;
+  /** Prevent opening the dialog while the surrounding snapshot UI is locked. */
+  triggerDisabled?: boolean;
   hostId: string;
   /** Called when the user clicks a snapshot link in an activity row. Open the snapshot in the snapshots panel. */
   onSnapshotNavigate?: (snapshotId: string) => void;
+  /** Refresh parent workspace state after a linked code restore completes. */
+  onCodeRestored?: () => void | Promise<void>;
 }
 
 type Receipt = { safety_backup_id: string | null; operation_id: string };
@@ -110,9 +122,22 @@ function getFocusableElements(container: HTMLElement | null): HTMLElement[] {
   if (!container) return [];
   return Array.from(
     container.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
     ),
-  );
+  ).filter((element) => {
+    if (element.matches(':disabled')) return false;
+    let ancestor = element.parentElement;
+    while (ancestor) {
+      if (ancestor instanceof HTMLDetailsElement && !ancestor.open) {
+        const summary = Array.from(ancestor.children).find(
+          (child) => child instanceof HTMLElement && child.tagName === 'SUMMARY',
+        );
+        if (element !== summary) return false;
+      }
+      ancestor = ancestor.parentElement;
+    }
+    return true;
+  });
 }
 
 export function DatabaseHistoryPanel({
@@ -120,11 +145,28 @@ export function DatabaseHistoryPanel({
   ownerOrAdmin,
   databaseName,
   snapshotId,
+  captureWindow,
+  contextLabel,
   triggerLabel = 'Database history',
   iconOnly = false,
+  triggerDisabled = false,
   hostId,
   onSnapshotNavigate,
+  onCodeRestored,
 }: DatabaseHistoryPanelProps) {
+  const hasCaptureWindow = captureWindow !== undefined;
+  const captureWindowStart = captureWindow?.start;
+  const captureWindowEnd = captureWindow?.end;
+  const activeCaptureWindow = useMemo(
+    () =>
+      hasCaptureWindow
+        ? {
+            start: captureWindowStart ?? '',
+            ...(captureWindowEnd === undefined ? {} : { end: captureWindowEnd }),
+          }
+        : undefined,
+    [hasCaptureWindow, captureWindowStart, captureWindowEnd],
+  );
   const [open, setOpen] = useState(false);
   const [history, setHistory] = useState<SqliteHistoryListResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -148,6 +190,7 @@ export function DatabaseHistoryPanel({
   const [deletingBackupIds, setDeletingBackupIds] = useState<Set<string>>(() => new Set());
   const [downloadingBackupIds, setDownloadingBackupIds] = useState<Set<string>>(() => new Set());
   const [expandedDatabases, setExpandedDatabases] = useState<Set<string>>(() => new Set());
+  const [pairedBusy, setPairedBusy] = useState(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -161,10 +204,10 @@ export function DatabaseHistoryPanel({
   const previousActiveJobIdsRef = useRef<Set<string>>(new Set());
   const busyRef = useRef(false);
 
-  const key = `${safeId(hostId)}-${safeId(workspaceId)}-${safeId(snapshotId ?? 'workspace')}-${safeId(databaseName ?? 'all')}`;
+  const key = `${safeId(hostId)}-${safeId(workspaceId)}-${safeId(snapshotId ?? 'workspace')}-${safeId(databaseName ?? 'all')}-${safeId(captureWindowStart ?? 'all')}-${safeId(captureWindowEnd ?? 'latest')}`;
   const maintenance = history?.interrupted_maintenance ?? null;
   const maintenanceActive = maintenance?.state === 'active';
-  const busy = confirming || recovering || maintenanceActive;
+  const busy = confirming || recovering || maintenanceActive || pairedBusy;
   useEffect(() => {
     busyRef.current = busy;
   }, [busy]);
@@ -174,6 +217,19 @@ export function DatabaseHistoryPanel({
     setPreparing(false);
     setConfirming(false);
   }, []);
+  const selectBackup = useCallback(
+    (backup: SqliteHistoryBackup) => {
+      if (busyRef.current) return;
+      invalidatePreview();
+      setSelected(backup);
+      setMode('merge');
+      setPolicy('keep_current');
+      setTablePolicies({});
+      setReceipt(null);
+      setError(null);
+    },
+    [invalidatePreview],
+  );
   const close = useCallback(() => {
     invalidatePreview();
     captureJobsGenerationRef.current += 1;
@@ -311,7 +367,15 @@ export function DatabaseHistoryPanel({
     setDeletingBackupIds(new Set());
     setDownloadingBackupIds(new Set());
     setExpandedDatabases(new Set());
-  }, [workspaceId, databaseName, snapshotId, invalidatePreview]);
+    setPairedBusy(false);
+  }, [
+    workspaceId,
+    databaseName,
+    snapshotId,
+    captureWindowStart,
+    captureWindowEnd,
+    invalidatePreview,
+  ]);
 
   useEffect(
     () => () => {
@@ -425,6 +489,29 @@ export function DatabaseHistoryPanel({
     };
   }, [open, close]);
 
+  const visibleBackups = (history?.backups ?? []).filter((backup) =>
+    isInDatabaseCaptureWindow(backup.created_at, activeCaptureWindow),
+  );
+  const visibleBackupIds = new Set(visibleBackups.map((backup) => backup.id));
+  const visibleCaptureJobs = hasCaptureWindow
+    ? captureJobs.filter((job) => job.backup_ids.some((backupId) => visibleBackupIds.has(backupId)))
+    : captureJobs;
+
+  useEffect(() => {
+    if (!selected || !history) return;
+    if (
+      !history.backups.some(
+        (backup) =>
+          backup.id === selected.id &&
+          isInDatabaseCaptureWindow(backup.created_at, activeCaptureWindow),
+      )
+    ) {
+      invalidatePreview();
+      setSelected(null);
+      setReceipt(null);
+    }
+  }, [history, selected, activeCaptureWindow, invalidatePreview]);
+
   if (!ownerOrAdmin) return null;
   const canManage = history?.can_manage === true;
 
@@ -475,17 +562,6 @@ export function DatabaseHistoryPanel({
     } finally {
       if (generation === generationRef.current) setConfirming(false);
     }
-  };
-
-  const selectBackup = (backup: SqliteHistoryBackup) => {
-    if (busy) return;
-    invalidatePreview();
-    setSelected(backup);
-    setMode('merge');
-    setPolicy('keep_current');
-    setTablePolicies({});
-    setReceipt(null);
-    setError(null);
   };
 
   const changeContext = (
@@ -546,7 +622,7 @@ export function DatabaseHistoryPanel({
   };
 
   const cancelCaptureJob = async (jobId: string) => {
-    if (cancellingJobIds.has(jobId)) return;
+    if (busy || cancellingJobIds.has(jobId)) return;
     const generation = captureJobsGenerationRef.current;
     captureJobsRevisionRef.current += 1;
     setCancellingJobIds((ids) => new Set(ids).add(jobId));
@@ -573,12 +649,12 @@ export function DatabaseHistoryPanel({
     }
   };
 
-  const activeCaptureJobs = captureJobs
+  const activeCaptureJobs = visibleCaptureJobs
     .filter(isActiveJob)
     .sort(
       (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.id.localeCompare(b.id),
     );
-  const terminalCaptureJobs = captureJobs
+  const terminalCaptureJobs = visibleCaptureJobs
     .filter((job) => !isActiveJob(job))
     .sort(
       (a, b) =>
@@ -591,7 +667,6 @@ export function DatabaseHistoryPanel({
   const activityCaptureJobs = terminalCaptureJobs.filter(
     (job) => job.status === 'completed' || job.status === 'cancelled',
   );
-
   const renderCaptureJob = (job: SqliteBackupJob) => {
     const requestedDatabases = job.database_names.length
       ? job.database_names.join(', ')
@@ -640,7 +715,7 @@ export function DatabaseHistoryPanel({
             <button
               type="button"
               className="btn btn-secondary btn-sm"
-              disabled={isCancelling}
+              disabled={busy || isCancelling}
               data-history-cancel-job={job.id}
               onClick={() => void cancelCaptureJob(job.id)}
             >
@@ -658,19 +733,15 @@ export function DatabaseHistoryPanel({
 
   const renderActivityRow = (job: SqliteBackupJob) => {
     const title = ACTIVITY_TITLE[job.trigger] ?? TRIGGER_LABEL[job.trigger];
-    const scope = job.database_names.length
-      ? job.database_names.join(', ')
-      : 'All workspace databases';
-    const hasRestorePoints = job.backup_ids.length > 0;
-    const outcomeText =
-      job.status === 'completed'
-        ? `${pluralize(job.backup_ids.length, 'restore point')} created`
-        : `${pluralize(job.backup_ids.length, 'restore point')} created before cancellation`;
-    const snapshotLabel = job.snapshot_git_commit_hash
-      ? `Snapshot ${job.snapshot_git_commit_hash.slice(0, 7)}`
-      : job.snapshot_id
-        ? `Snapshot ${job.snapshot_id}`
-        : null;
+    const scope = job.database_names.length ? job.database_names.join(', ') : null;
+    const readyBackups = visibleBackups
+      .filter((backup) => backup.status === 'ready' && job.backup_ids.includes(backup.id))
+      .sort(
+        (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id.localeCompare(a.id),
+      );
+    const restorePointCount = readyBackups.length;
+    const snapshotTarget = job.snapshot_id && onSnapshotNavigate ? job.snapshot_id : null;
+    const restorePointLabel = pluralize(restorePointCount, 'restore point');
     return (
       <article
         key={job.id}
@@ -678,10 +749,10 @@ export function DatabaseHistoryPanel({
         data-history-activity-job={job.id}
         data-history-activity-status={job.status}
       >
-        <div>
+        <div className="database-history-activity-meta">
           <div className="database-history-backup-meta">
             <span className="database-history-backup-time">{title}</span>
-            <span className="database-history-backup-secondary">{scope}</span>
+            {scope && <span className="database-history-backup-secondary">{scope}</span>}
             <span className="database-history-backup-secondary">
               {new Date(job.finished_at ?? job.updated_at).toLocaleString()}
             </span>
@@ -691,24 +762,30 @@ export function DatabaseHistoryPanel({
               </span>
             )}
           </div>
-          {hasRestorePoints && (
-            <span className="database-history-backup-secondary">
-              {outcomeText}
-              {job.snapshot_id && snapshotLabel && (
-                <>
-                  {' · '}
-                  <button
-                    type="button"
-                    className="database-history-snapshot-link"
-                    onClick={() => onSnapshotNavigate?.(job.snapshot_id!)}
-                  >
-                    <SearchHighlightedText text={snapshotLabel} query="" />
-                  </button>
-                </>
-              )}
-            </span>
-          )}
         </div>
+        {restorePointCount > 0 &&
+          (snapshotTarget ? (
+            <button
+              type="button"
+              className="badge database-history-restore-point-badge"
+              data-history-restore-points={job.id}
+              title={`Show associated snapshot ${snapshotTarget.slice(0, 8)}`}
+              disabled={busy}
+              onClick={() => {
+                close();
+                onSnapshotNavigate!(snapshotTarget);
+              }}
+            >
+              {restorePointLabel}
+            </button>
+          ) : (
+            <span
+              className="badge database-history-restore-point-badge"
+              data-history-restore-points={job.id}
+            >
+              {restorePointLabel}
+            </span>
+          ))}
       </article>
     );
   };
@@ -764,7 +841,7 @@ export function DatabaseHistoryPanel({
     <>
       <button
         type="button"
-        className="btn btn-secondary btn-sm database-history-trigger"
+        className={`btn btn-secondary btn-sm database-history-trigger${iconOnly ? ' btn-icon' : ''}`}
         data-history-workspace={workspaceId}
         data-history-snapshot={snapshotId ?? 'workspace'}
         data-history-database={databaseName ?? 'all'}
@@ -772,6 +849,7 @@ export function DatabaseHistoryPanel({
         data-history-panel={key}
         title={iconOnly ? triggerLabel : undefined}
         aria-label={iconOnly ? triggerLabel : undefined}
+        disabled={triggerDisabled}
         onClick={() => setOpen(true)}
       >
         <DatabaseBackup size={14} />
@@ -796,11 +874,12 @@ export function DatabaseHistoryPanel({
               <div>
                 <h3 id={`database-history-title-${key}`}>Database history</h3>
                 <p className="userspace-muted">
-                  {snapshotId
-                    ? `Exact snapshot ${snapshotId}`
-                    : databaseName
-                      ? `Restore points for ${databaseName}`
-                      : 'Restore points for all workspace databases'}
+                  {contextLabel ??
+                    (snapshotId
+                      ? `Exact snapshot ${snapshotId}`
+                      : databaseName
+                        ? `Restore points for ${databaseName}`
+                        : 'Restore points for all workspace databases')}
                 </p>
               </div>
               <button
@@ -918,10 +997,7 @@ export function DatabaseHistoryPanel({
               {canManage &&
                 history &&
                 (() => {
-                  const databaseGroups = groupBackupsByDatabase(history.backups);
-                  const readyBackups = history.backups.filter(
-                    (backup) => backup.status === 'ready',
-                  ).length;
+                  const databaseGroups = groupBackupsByDatabase(visibleBackups);
                   return (
                     <section
                       className="database-history-band"
@@ -935,9 +1011,6 @@ export function DatabaseHistoryPanel({
                         >
                           Restore points
                         </h4>
-                        <span className="database-history-band-count">
-                          {pluralize(readyBackups, 'restore point')}
-                        </span>
                         {databaseName && (
                           <button
                             type="button"
@@ -951,7 +1024,19 @@ export function DatabaseHistoryPanel({
                       </div>
                       {databaseGroups.map(([name, backups]) => {
                         const isExpanded = expandedDatabases.has(name);
-                        const visibleBackups = isExpanded ? backups : backups.slice(0, 5);
+                        const initialBackups = backups.slice(0, 5);
+                        const selectedBackup =
+                          selected?.database_name === name
+                            ? (backups.find((backup) => backup.id === selected.id) ?? null)
+                            : null;
+                        const visibleBackups =
+                          isExpanded ||
+                          !selectedBackup ||
+                          initialBackups.some((backup) => backup.id === selectedBackup.id)
+                            ? isExpanded
+                              ? backups
+                              : initialBackups
+                            : [...initialBackups, selectedBackup];
                         const olderCount = Math.max(0, backups.length - 5);
                         const headingId = `db-hist-db-${safeId(name)}-${key}`;
                         return (
@@ -970,9 +1055,6 @@ export function DatabaseHistoryPanel({
                                   backups.filter((backup) => backup.status === 'ready').length,
                                   'restore point',
                                 )}
-                              </span>
-                              <span className="database-history-database-latest">
-                                Latest {new Date(backups[0].created_at).toLocaleString()}
                               </span>
                             </div>
                             {visibleBackups.map((backup) => (
@@ -1036,7 +1118,11 @@ export function DatabaseHistoryPanel({
                                     <button
                                       type="button"
                                       className="btn btn-secondary btn-sm"
-                                      disabled={!backup.can_delete || busy || deletingBackupIds.has(backup.id)}
+                                      disabled={
+                                        !backup.can_delete ||
+                                        busy ||
+                                        deletingBackupIds.has(backup.id)
+                                      }
                                       onClick={() => void remove(backup.id)}
                                       aria-label={`Delete ${backup.database_name} backup`}
                                     >
@@ -1044,7 +1130,27 @@ export function DatabaseHistoryPanel({
                                     </button>
                                   </div>
                                 </div>
-                                {selected?.id === backup.id && !receipt && (
+                                {selected?.id === backup.id && backup.snapshot_id && !receipt && (
+                                  <div
+                                    className="database-history-inline-expand"
+                                    data-history-linked-restore={backup.id}
+                                  >
+                                    <SnapshotRestorePanel
+                                      workspaceId={workspaceId}
+                                      snapshotId={backup.snapshot_id}
+                                      initialBackupId={selected.id}
+                                      defaultScope="database"
+                                      allowCodeRestore={ownerOrAdmin}
+                                      allowDatabaseRestore={canManage}
+                                      disabled={maintenanceActive || confirming || recovering}
+                                      onBusyChange={setPairedBusy}
+                                      onCodeRestored={onCodeRestored}
+                                      onDatabaseRestored={() => load({ preserveError: true })}
+                                      onClose={() => setSelected(null)}
+                                    />
+                                  </div>
+                                )}
+                                {selected?.id === backup.id && !backup.snapshot_id && !receipt && (
                                   <div
                                     className="database-history-inline-expand"
                                     aria-label="Restore database backup"
@@ -1056,7 +1162,9 @@ export function DatabaseHistoryPanel({
                                         value={mode}
                                         disabled={busy}
                                         onChange={(event) =>
-                                          changeContext(event.target.value as SqliteHistoryRestoreMode)
+                                          changeContext(
+                                            event.target.value as SqliteHistoryRestoreMode,
+                                          )
                                         }
                                       >
                                         <option value="merge">Merge</option>
@@ -1083,8 +1191,8 @@ export function DatabaseHistoryPanel({
                                     )}
                                     {mode === 'merge' ? (
                                       <p className="database-history-warning">
-                                        Merge can resurrect rows deliberately deleted from the current
-                                        database.
+                                        Merge can resurrect rows deliberately deleted from the
+                                        current database.
                                       </p>
                                     ) : (
                                       <p className="database-history-warning">
@@ -1140,8 +1248,8 @@ export function DatabaseHistoryPanel({
                                                     setError(null);
                                                     setTablePolicies((policies) => ({
                                                       ...policies,
-                                                      [table.name]:
-                                                        event.target.value as SqliteHistoryConflictPolicy,
+                                                      [table.name]: event.target
+                                                        .value as SqliteHistoryConflictPolicy,
                                                     }));
                                                   }}
                                                 >
@@ -1232,7 +1340,8 @@ export function DatabaseHistoryPanel({
                 })()}
               {history &&
                 canManage &&
-                history.backups.length === 0 &&
+                visibleBackups.length === 0 &&
+                !hasCaptureWindow &&
                 (snapshotId && activeCaptureJobs.length > 0 ? (
                   <p className="userspace-muted" data-history-snapshot-queue-notice>
                     A capture for this snapshot is queued. Database state is captured when the
@@ -1264,7 +1373,6 @@ export function DatabaseHistoryPanel({
                   </details>
                 </section>
               )}
-
             </div>
           </section>
         </div>

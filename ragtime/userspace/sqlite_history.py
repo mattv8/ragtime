@@ -271,6 +271,27 @@ class SqliteHistoryService:
         protected.update(str(row["id"]) for row in ready if row.get("trigger") == "pre_restore" and datetime.fromisoformat(row["created_at"]) >= cutoff)
         return protected
 
+    async def get_snapshot_ids_with_backups(self, workspace_id: str) -> set[str]:
+        """Return the set of snapshot IDs that have at least one backup in the manifest.
+
+        Returns an empty set when the SQLite history storage is unavailable or the
+        manifest does not exist yet, so this is safe to call unconditionally.
+        """
+        try:
+            root = self._root(workspace_id)
+        except Exception:
+            return set()
+
+        def read() -> set[str]:
+            try:
+                with _catalog_lock(root):
+                    manifest = self._load(root, workspace_id)
+                    return {str(row["snapshot_id"]) for row in manifest.get("backups", []) if row.get("snapshot_id")}
+            except Exception:
+                return set()
+
+        return await run_sqlite_blocking(read)
+
     async def list_backups(self, workspace_id: str, *, database_name: str | None = None, snapshot_id: str | None = None) -> list[dict[str, Any]]:
         root = self._root(workspace_id)
 

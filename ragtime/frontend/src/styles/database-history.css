@@ -69,15 +69,44 @@
   gap: var(--space-xs);
 }
 
-/* Activity rows are informational-only — no actions, no card box. */
+/* Activity rows are compact, flat list items rather than cards. */
 .database-history-activity.database-history-backup {
-  flex-direction: column;
-  align-items: stretch;
+  flex-direction: row;
+  align-items: center;
   border: none;
   border-bottom: 1px solid var(--color-border);
   border-radius: 0;
   background: transparent;
   padding: var(--space-xs) 0;
+}
+
+.database-history-activity-meta {
+  min-width: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.database-history-activity .database-history-restore-point-badge {
+  flex: 0 0 auto;
+  margin-inline-start: auto;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-full);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: var(--leading-tight);
+}
+
+button.database-history-restore-point-badge {
+  cursor: pointer;
+}
+
+button.database-history-restore-point-badge:hover:not(:disabled) {
+  color: var(--color-primary-hover);
 }
 
 .database-history-activity.database-history-backup:last-child {
@@ -98,6 +127,61 @@
   padding-top: var(--space-sm);
   margin-top: var(--space-xs);
   border-top: 1px solid var(--color-border);
+}
+
+.snapshot-restore-panel,
+.snapshot-restore-scope-options,
+.snapshot-restore-databases,
+.snapshot-restore-controls,
+.snapshot-restore-actions,
+.snapshot-restore-preview,
+.snapshot-restore-receipts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.snapshot-restore-panel,
+.snapshot-restore-preview,
+.snapshot-restore-receipts {
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+}
+
+.snapshot-restore-scope-options {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.snapshot-restore-scope-options,
+.snapshot-restore-databases {
+  margin: 0;
+  min-width: 0;
+}
+
+.snapshot-restore-scope-options label,
+.snapshot-restore-database-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+
+.snapshot-restore-databases {
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+}
+
+.snapshot-restore-controls,
+.snapshot-restore-actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
 }
 
 /* Inline metadata: timestamp · source badge · size on one line. */
@@ -204,7 +288,6 @@
   gap: var(--space-sm);
 }
 
-.database-history-band-count,
 .database-history-database-count {
   padding: var(--space-xs) var(--space-sm);
   border: 1px solid var(--color-border);
@@ -221,11 +304,6 @@
   color: var(--color-text-primary);
   font-size: var(--text-sm);
   font-weight: 600;
-}
-
-.database-history-database-latest {
-  color: var(--color-text-muted);
-  font-size: var(--text-xs);
 }
 
 button[data-history-show-older] {
@@ -303,6 +381,31 @@ button[data-history-show-older] {
 @media (max-width: 768px) {
   .database-history-backup,
   .database-history-recovery {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .database-history-backup-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-sm);
+  }
+
+  .database-history-backup-row > .database-history-actions {
+    justify-content: flex-end;
+  }
+
+  .database-history-activity.database-history-backup {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .database-history-restore-point-badge {
+    margin-inline-start: 0;
+  }
+
+  .snapshot-restore-controls,
+  .snapshot-restore-actions {
     align-items: stretch;
     flex-direction: column;
   }
