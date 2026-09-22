@@ -184,7 +184,12 @@ describe('DatabaseHistoryPanel', () => {
     await user.click(screen.getByRole('button', { name: /Restore orders\.sqlite3 backup/ }));
 
     expect(screen.queryByText('Database restored')).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Restore orders.sqlite3' })).toBeTruthy();
+    // Wizard now expands inline within the selected backup's row.
+    expect(
+      screen
+        .getByRole('dialog')
+        .querySelector('[data-history-backup="backup-2"] [data-history-restore-wizard]'),
+    ).toBeTruthy();
   });
 
   it('uses its host identity to keep history hooks unique and hides merge policies for overwrite', async () => {

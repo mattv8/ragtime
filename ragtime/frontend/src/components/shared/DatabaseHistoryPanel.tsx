@@ -957,66 +957,227 @@ export function DatabaseHistoryPanel({
                                 data-history-backup={backup.id}
                                 data-history-trigger={backup.trigger}
                               >
-                                <div>
-                                  <div className="database-history-backup-meta">
-                                    <span className="database-history-backup-time">
-                                      {new Date(backup.created_at).toLocaleString()}
-                                    </span>
-                                    <span
-                                      className={`badge database-history-trigger-badge database-history-trigger-badge--${TRIGGER_GROUP[backup.trigger]}`}
-                                    >
-                                      {TRIGGER_LABEL[backup.trigger]}
-                                    </span>
-                                    <span className="database-history-backup-size">
-                                      {formatBytes(backup.size_bytes)}
-                                    </span>
+                                <div className="database-history-backup-row">
+                                  <div>
+                                    <div className="database-history-backup-meta">
+                                      <span className="database-history-backup-time">
+                                        {new Date(backup.created_at).toLocaleString()}
+                                      </span>
+                                      <span
+                                        className={`badge database-history-trigger-badge database-history-trigger-badge--${TRIGGER_GROUP[backup.trigger]}`}
+                                      >
+                                        {TRIGGER_LABEL[backup.trigger]}
+                                      </span>
+                                      <span className="database-history-backup-size">
+                                        {formatBytes(backup.size_bytes)}
+                                      </span>
+                                    </div>
+                                    {backup.snapshot_id && (
+                                      <span className="database-history-backup-secondary">
+                                        Snapshot {backup.snapshot_id}
+                                      </span>
+                                    )}
+                                    {backup.status === 'failed' && (
+                                      <span className="database-history-error">
+                                        Capture failed:{' '}
+                                        {backup.error ?? 'No recovery blob was captured.'}
+                                      </span>
+                                    )}
                                   </div>
-                                  {backup.snapshot_id && (
-                                    <span className="database-history-backup-secondary">
-                                      Snapshot {backup.snapshot_id}
-                                    </span>
-                                  )}
-                                  {backup.status === 'failed' && (
-                                    <span className="database-history-error">
-                                      Capture failed:{' '}
-                                      {backup.error ?? 'No recovery blob was captured.'}
-                                    </span>
-                                  )}
-                                </div>
-                                <div
-                                  className="database-history-actions"
-                                  data-history-actions={backup.id}
-                                >
-                                  <button
-                                    type="button"
-                                    className="btn btn-secondary btn-sm"
-                                    disabled={busy || downloadingBackupIds.has(backup.id)}
-                                    onClick={() => void download(backup.id)}
-                                    aria-label={`Download ${backup.database_name} backup`}
+                                  <div
+                                    className="database-history-actions"
+                                    data-history-actions={backup.id}
                                   >
-                                    <Download size={14} />
-                                  </button>
-                                  {backup.can_restore && (
                                     <button
                                       type="button"
-                                      className="btn btn-primary btn-sm"
-                                      disabled={busy}
-                                      onClick={() => selectBackup(backup)}
-                                      aria-label={`Restore ${backup.database_name} backup from ${backup.trigger}${backup.snapshot_id ? ` snapshot ${backup.snapshot_id}` : ''}`}
+                                      className="btn btn-secondary btn-sm"
+                                      disabled={busy || downloadingBackupIds.has(backup.id)}
+                                      onClick={() => void download(backup.id)}
+                                      aria-label={`Download ${backup.database_name} backup`}
                                     >
-                                      Restore
+                                      <Download size={14} />
                                     </button>
-                                  )}
-                                  <button
-                                    type="button"
-                                    className="btn btn-secondary btn-sm"
-                                    disabled={!backup.can_delete || busy || deletingBackupIds.has(backup.id)}
-                                    onClick={() => void remove(backup.id)}
-                                    aria-label={`Delete ${backup.database_name} backup`}
-                                  >
-                                    <Trash2 size={14} />
-                                  </button>
+                                    {backup.can_restore && (
+                                      <button
+                                        type="button"
+                                        className="btn btn-primary btn-sm"
+                                        disabled={busy}
+                                        onClick={() => selectBackup(backup)}
+                                        aria-label={`Restore ${backup.database_name} backup from ${backup.trigger}${backup.snapshot_id ? ` snapshot ${backup.snapshot_id}` : ''}`}
+                                      >
+                                        Restore
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary btn-sm"
+                                      disabled={!backup.can_delete || busy || deletingBackupIds.has(backup.id)}
+                                      onClick={() => void remove(backup.id)}
+                                      aria-label={`Delete ${backup.database_name} backup`}
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
                                 </div>
+                                {selected?.id === backup.id && !receipt && (
+                                  <div
+                                    className="database-history-inline-expand"
+                                    aria-label="Restore database backup"
+                                    data-history-restore-wizard
+                                  >
+                                    <label>
+                                      Mode{' '}
+                                      <select
+                                        value={mode}
+                                        disabled={busy}
+                                        onChange={(event) =>
+                                          changeContext(event.target.value as SqliteHistoryRestoreMode)
+                                        }
+                                      >
+                                        <option value="merge">Merge</option>
+                                        <option value="overwrite">Overwrite</option>
+                                      </select>
+                                    </label>
+                                    {mode === 'merge' && (
+                                      <label>
+                                        Default conflict policy{' '}
+                                        <select
+                                          value={policy}
+                                          disabled={busy}
+                                          onChange={(event) =>
+                                            changeContext(
+                                              undefined,
+                                              event.target.value as SqliteHistoryConflictPolicy,
+                                            )
+                                          }
+                                        >
+                                          <option value="keep_current">Keep current</option>
+                                          <option value="use_backup">Use backup</option>
+                                        </select>
+                                      </label>
+                                    )}
+                                    {mode === 'merge' ? (
+                                      <p className="database-history-warning">
+                                        Merge can resurrect rows deliberately deleted from the current
+                                        database.
+                                      </p>
+                                    ) : (
+                                      <p className="database-history-warning">
+                                        Overwrite removes current-only data.
+                                      </p>
+                                    )}
+                                    <button
+                                      type="button"
+                                      className="btn btn-primary"
+                                      disabled={preparing || busy}
+                                      onClick={() => void prepare()}
+                                    >
+                                      {preparing ? 'Preparing actual preview…' : 'Prepare preview'}
+                                    </button>
+                                    {preview && (
+                                      <div
+                                        className="database-history-preview"
+                                        data-history-preview={preview.preview_id ?? 'unavailable'}
+                                      >
+                                        <h4>Actual restore preview</h4>
+                                        <p>
+                                          Migrations:{' '}
+                                          {preview.migrations_applied.length
+                                            ? preview.migrations_applied.join(', ')
+                                            : 'none'}
+                                        </p>
+                                        {preview.warnings.map((warning) => (
+                                          <p key={warning} className="database-history-warning">
+                                            {warning}
+                                          </p>
+                                        ))}
+                                        {preview.blockers.map((blocker) => (
+                                          <p key={blocker} className="database-history-error">
+                                            {blocker}
+                                          </p>
+                                        ))}
+                                        {preview.tables.map((table) => (
+                                          <details key={table.name}>
+                                            <summary>
+                                              {table.name}: {table.inserted} inserted,{' '}
+                                              {table.updated} updated, {table.deleted} deleted,{' '}
+                                              {table.conflicts} conflicts
+                                            </summary>
+                                            {mode === 'merge' && (
+                                              <label>
+                                                Table conflict policy ({table.name}){' '}
+                                                <select
+                                                  value={tablePolicies[table.name] ?? policy}
+                                                  disabled={busy}
+                                                  onChange={(event) => {
+                                                    if (busy) return;
+                                                    invalidatePreview();
+                                                    setError(null);
+                                                    setTablePolicies((policies) => ({
+                                                      ...policies,
+                                                      [table.name]:
+                                                        event.target.value as SqliteHistoryConflictPolicy,
+                                                    }));
+                                                  }}
+                                                >
+                                                  <option value="keep_current">Keep current</option>
+                                                  <option value="use_backup">Use backup</option>
+                                                </select>
+                                              </label>
+                                            )}
+                                            {table.conflict_samples.slice(0, 20).map((sample) => (
+                                              <pre key={JSON.stringify([table.name, sample.key])}>
+                                                {JSON.stringify(sample, null, 2)}
+                                              </pre>
+                                            ))}
+                                          </details>
+                                        ))}
+                                        {preview.can_apply && preview.preview_id && (
+                                          <button
+                                            type="button"
+                                            className="btn btn-primary"
+                                            disabled={busy}
+                                            onClick={() => void restore()}
+                                          >
+                                            <RotateCcw size={14} />{' '}
+                                            {confirming ? 'Restoring…' : 'Confirm restore'}
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                {selected?.id === backup.id && receipt && (
+                                  <div
+                                    className="database-history-inline-expand"
+                                    role="status"
+                                    data-history-receipt
+                                  >
+                                    <h4>Database restored</h4>
+                                    {receipt.safety_backup_id ? (
+                                      <p>
+                                        Safety backup: {receipt.safety_backup_id}{' '}
+                                        <button
+                                          type="button"
+                                          className="btn btn-secondary btn-sm"
+                                          disabled={
+                                            busy ||
+                                            downloadingBackupIds.has(receipt.safety_backup_id)
+                                          }
+                                          onClick={() => void download(receipt.safety_backup_id!)}
+                                        >
+                                          Download safety backup
+                                        </button>
+                                      </p>
+                                    ) : (
+                                      <p>Safety backup: No safety backup created</p>
+                                    )}
+                                    <p>
+                                      The runtime is stopped. Start the preview when you are ready;
+                                      no bootstrap or migrations were run automatically.
+                                    </p>
+                                  </div>
+                                )}
                               </article>
                             ))}
                             {olderCount > 0 && (
@@ -1078,153 +1239,7 @@ export function DatabaseHistoryPanel({
                   </details>
                 </section>
               )}
-              {selected && !receipt && (
-                <section
-                  className="database-history-wizard"
-                  aria-label="Restore database backup"
-                  data-history-restore-wizard
-                >
-                  <h4>Restore {selected.database_name}</h4>
-                  <label>
-                    Mode{' '}
-                    <select
-                      value={mode}
-                      disabled={busy}
-                      onChange={(event) =>
-                        changeContext(event.target.value as SqliteHistoryRestoreMode)
-                      }
-                    >
-                      <option value="merge">Merge</option>
-                      <option value="overwrite">Overwrite</option>
-                    </select>
-                  </label>
-                  {mode === 'merge' && (
-                    <label>
-                      Default conflict policy{' '}
-                      <select
-                        value={policy}
-                        disabled={busy}
-                        onChange={(event) =>
-                          changeContext(
-                            undefined,
-                            event.target.value as SqliteHistoryConflictPolicy,
-                          )
-                        }
-                      >
-                        <option value="keep_current">Keep current</option>
-                        <option value="use_backup">Use backup</option>
-                      </select>
-                    </label>
-                  )}
-                  {mode === 'merge' ? (
-                    <p className="database-history-warning">
-                      Merge can resurrect rows deliberately deleted from the current database.
-                    </p>
-                  ) : (
-                    <p className="database-history-warning">Overwrite removes current-only data.</p>
-                  )}
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    disabled={preparing || busy}
-                    onClick={() => void prepare()}
-                  >
-                    {preparing ? 'Preparing actual preview…' : 'Prepare preview'}
-                  </button>
-                  {preview && (
-                    <div
-                      className="database-history-preview"
-                      data-history-preview={preview.preview_id ?? 'unavailable'}
-                    >
-                      <h4>Actual restore preview</h4>
-                      <p>
-                        Migrations:{' '}
-                        {preview.migrations_applied.length
-                          ? preview.migrations_applied.join(', ')
-                          : 'none'}
-                      </p>
-                      {preview.warnings.map((warning) => (
-                        <p key={warning} className="database-history-warning">
-                          {warning}
-                        </p>
-                      ))}
-                      {preview.blockers.map((blocker) => (
-                        <p key={blocker} className="database-history-error">
-                          {blocker}
-                        </p>
-                      ))}
-                      {preview.tables.map((table) => (
-                        <details key={table.name}>
-                          <summary>
-                            {table.name}: {table.inserted} inserted, {table.updated} updated,{' '}
-                            {table.deleted} deleted, {table.conflicts} conflicts
-                          </summary>
-                          {mode === 'merge' && (
-                            <label>
-                              Table conflict policy ({table.name}){' '}
-                              <select
-                                value={tablePolicies[table.name] ?? policy}
-                                disabled={busy}
-                                onChange={(event) => {
-                                  if (busy) return;
-                                  invalidatePreview();
-                                  setError(null);
-                                  setTablePolicies((policies) => ({
-                                    ...policies,
-                                    [table.name]: event.target.value as SqliteHistoryConflictPolicy,
-                                  }));
-                                }}
-                              >
-                                <option value="keep_current">Keep current</option>
-                                <option value="use_backup">Use backup</option>
-                              </select>
-                            </label>
-                          )}
-                          {table.conflict_samples.slice(0, 20).map((sample) => (
-                            <pre key={JSON.stringify([table.name, sample.key])}>
-                              {JSON.stringify(sample, null, 2)}
-                            </pre>
-                          ))}
-                        </details>
-                      ))}
-                      {preview.can_apply && preview.preview_id && (
-                        <button
-                          type="button"
-                          className="btn btn-primary"
-                          disabled={busy}
-                          onClick={() => void restore()}
-                        >
-                          <RotateCcw size={14} /> {confirming ? 'Restoring…' : 'Confirm restore'}
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </section>
-              )}
-              {receipt && (
-                <section className="database-history-receipt" role="status" data-history-receipt>
-                  <h4>Database restored</h4>
-                  {receipt.safety_backup_id ? (
-                    <p>
-                      Safety backup: {receipt.safety_backup_id}{' '}
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        disabled={busy || downloadingBackupIds.has(receipt.safety_backup_id)}
-                        onClick={() => void download(receipt.safety_backup_id!)}
-                      >
-                        Download safety backup
-                      </button>
-                    </p>
-                  ) : (
-                    <p>Safety backup: No safety backup created</p>
-                  )}
-                  <p>
-                    The runtime is stopped. Start the preview when you are ready; no bootstrap or
-                    migrations were run automatically.
-                  </p>
-                </section>
-              )}
+
             </div>
           </section>
         </div>
