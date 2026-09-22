@@ -1219,6 +1219,7 @@ export function UserSpacePanel({
     null,
   );
   const [expandedSnapshotIds, setExpandedSnapshotIds] = useState<Set<string>>(new Set());
+  const [snapshotsListHeight, setSnapshotsListHeight] = useState(280);
   const [snapshotDiffSummaries, setSnapshotDiffSummaries] = useState<
     Record<string, UserSpaceSnapshotDiffSummary>
   >({});
@@ -3243,6 +3244,19 @@ export function UserSpacePanel({
     [activeWorkspaceId, loadSnapshotDiffSummary],
   );
 
+  const SNAPSHOTS_MIN_HEIGHT = 100;
+  const SNAPSHOTS_MAX_HEIGHT = 600;
+
+  const handleSnapshotsResize = useCallback((delta: number) => {
+    setSnapshotsListHeight((h) =>
+      Math.max(SNAPSHOTS_MIN_HEIGHT, Math.min(SNAPSHOTS_MAX_HEIGHT, h - delta)),
+    );
+  }, []);
+
+  const handleSnapshotsResizeTo = useCallback((value: number) => {
+    setSnapshotsListHeight(Math.max(SNAPSHOTS_MIN_HEIGHT, Math.min(SNAPSHOTS_MAX_HEIGHT, value)));
+  }, []);
+
   const handleSnapshotFileHoverStart = useCallback(
     (snapshotId: string, filePath: string) => {
       if (!activeWorkspaceId) return;
@@ -3394,6 +3408,7 @@ export function UserSpacePanel({
     setSnapshotsLoadedForWorkspace(null);
     setShowSnapshots(false);
     setExpandedSnapshotIds(new Set());
+    setSnapshotsListHeight(280);
     setSnapshotDiffSummaries({});
     setLoadingSnapshotDiffSummaryIds({});
     setSnapshotDiffSummaryErrors({});
@@ -9644,8 +9659,21 @@ export function UserSpacePanel({
             )}
           </div>
 
+          {showSnapshots && (
+            <ResizeHandle
+              direction="vertical"
+              ariaLabel="Resize snapshots panel"
+              value={snapshotsListHeight}
+              min={SNAPSHOTS_MIN_HEIGHT}
+              max={SNAPSHOTS_MAX_HEIGHT}
+              valueUnit="pixels"
+              onResize={handleSnapshotsResize}
+              onResizeTo={handleSnapshotsResizeTo}
+            />
+          )}
+
           {/* Snapshots */}
-          <div className="userspace-snapshots-section">
+          <div className="userspace-snapshots-section" style={{ marginTop: showSnapshots ? 0 : 8 }}>
             <button
               className="userspace-snapshots-toggle"
               disabled={snapshotUiLocked}
@@ -9669,7 +9697,7 @@ export function UserSpacePanel({
               <ChevronDown size={14} className={showSnapshots ? '' : 'rotated'} />
             </button>
             {showSnapshots && (
-              <div className="userspace-snapshots-list">
+              <div className="userspace-snapshots-list" style={{ height: snapshotsListHeight }}>
                 {activeWorkspaceId && (
                   <div className="database-history-snapshot-host" data-history-host="workspace">
                     <DatabaseHistoryPanel

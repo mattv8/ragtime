@@ -3091,7 +3091,10 @@ textarea:focus {
 
 .userspace-snapshots-section {
   flex-shrink: 0;
-  border-top: 1px solid var(--color-border);
+}
+
+.userspace-right-pane > .resize-handle-vertical {
+  margin-block: 2px;
 }
 
 .userspace-snapshots-toggle {
@@ -3124,7 +3127,6 @@ textarea:focus {
 }
 
 .userspace-snapshots-list {
-  max-height: 300px;
   overflow-y: auto;
   padding: 0 var(--space-xs) var(--space-sm);
 }
