@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse
 
+from ragtime.core.logging import get_logger
 from ragtime.core.security import get_current_user
 from ragtime.userspace.service import userspace_service
 from ragtime.userspace.sqlite_backup_queue import get_sqlite_backup_queue_service
@@ -27,6 +30,7 @@ from ragtime.userspace.sqlite_history_models import (
 )
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space SQLite History"])
+logger = get_logger(__name__)
 
 
 async def _manage(workspace_id: str, user: Any) -> None:
@@ -57,18 +61,116 @@ def _public_capture_job(job: dict[str, Any]) -> dict[str, Any]:
     return {field: job[field] for field in fields if field in job}
 
 
+async def _sqlite_history_list_payload(
+    workspace_id: str,
+    *,
+    database_name: str | None = None,
+    snapshot_id: str | None = None,
+) -> dict[str, Any]:
+    service = get_sqlite_history_service()
+    response = SqliteHistoryListResponse(
+        workspace_id=workspace_id,
+        backups=await service.list_backups(workspace_id, database_name=database_name, snapshot_id=snapshot_id),
+        can_manage=True,
+        interrupted_maintenance=await service.interrupted_maintenance(workspace_id),
+    )
+    return response.model_dump(mode="json")
+
+
+async def _sqlite_history_capture_jobs_payload(
+    workspace_id: str,
+    *,
+    database_name: str | None = None,
+    snapshot_id: str | None = None,
+) -> dict[str, Any]:
+    jobs = await get_sqlite_backup_queue_service().list_jobs(
+        workspace_id,
+        database_name=database_name,
+        snapshot_id=snapshot_id,
+        limit=50,
+    )
+    return SqliteHistoryCaptureJobListResponse(jobs=[_public_capture_job(job) for job in jobs]).model_dump(mode="json")
+
+
+async def _sqlite_history_event_payload(
+    workspace_id: str,
+    *,
+    database_name: str | None = None,
+    snapshot_id: str | None = None,
+) -> tuple[str, bool]:
+    history, jobs = await asyncio.gather(
+        _sqlite_history_list_payload(workspace_id, database_name=database_name, snapshot_id=snapshot_id),
+        _sqlite_history_capture_jobs_payload(workspace_id, database_name=database_name, snapshot_id=snapshot_id),
+    )
+    payload = json.dumps({"history": history, "jobs": jobs}, sort_keys=True, separators=(",", ":"))
+    active = any(job["status"] in {"pending", "running"} for job in jobs["jobs"])
+    return payload, active
+
+
 @router.get("/workspaces/{workspace_id}/sqlite-history", response_model=SqliteHistoryListResponse)
 async def list_sqlite_history(
     workspace_id: str, database_name: str | None = Query(default=None), snapshot_id: str | None = Query(default=None), user: Any = Depends(get_current_user)
 ):
     await _manage(workspace_id, user)
-    service = get_sqlite_history_service()
-    return {
-        "workspace_id": workspace_id,
-        "backups": await service.list_backups(workspace_id, database_name=database_name, snapshot_id=snapshot_id),
-        "can_manage": True,
-        "interrupted_maintenance": await service.interrupted_maintenance(workspace_id),
-    }
+    return await _sqlite_history_list_payload(workspace_id, database_name=database_name, snapshot_id=snapshot_id)
+
+
+@router.get("/workspaces/{workspace_id}/sqlite-history/events")
+async def stream_sqlite_history_events(
+    workspace_id: str,
+    request: Request,
+    database_name: str | None = Query(default=None),
+    snapshot_id: str | None = Query(default=None),
+    user: Any = Depends(get_current_user),
+) -> StreamingResponse:
+    await _manage(workspace_id, user)
+    initial_payload, initial_active = await _sqlite_history_event_payload(
+        workspace_id,
+        database_name=database_name,
+        snapshot_id=snapshot_id,
+    )
+
+    async def event_stream() -> AsyncIterator[str]:
+        payload = initial_payload
+        active = initial_active
+        first_iteration = True
+        last_payload: str | None = None
+        while True:
+            if await request.is_disconnected():
+                return
+            try:
+                if not first_iteration:
+                    await _manage(workspace_id, user)
+                    payload, active = await _sqlite_history_event_payload(
+                        workspace_id,
+                        database_name=database_name,
+                        snapshot_id=snapshot_id,
+                    )
+                else:
+                    first_iteration = False
+                if payload != last_payload:
+                    last_payload = payload
+                    yield "event: history_changed\ndata: {}\n\n"
+                else:
+                    yield ": keepalive\n\n"
+            except asyncio.CancelledError:
+                raise
+            except HTTPException as exc:
+                if exc.status_code in {401, 403}:
+                    yield "event: access_revoked\ndata: {}\n\n"
+                    return
+                logger.exception("SQLite history event stream failed workspace_id=%s", workspace_id)
+                return
+            except Exception:
+                logger.exception("SQLite history event stream failed workspace_id=%s", workspace_id)
+                return
+            await asyncio.sleep(2 if active else 5)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/workspaces/{workspace_id}/sqlite-history", response_model=SqliteHistoryCaptureResponse)
@@ -122,8 +224,7 @@ async def list_sqlite_history_capture_jobs(
     user: Any = Depends(get_current_user),
 ):
     await _manage(workspace_id, user)
-    jobs = await get_sqlite_backup_queue_service().list_jobs(workspace_id, database_name=database_name, snapshot_id=snapshot_id, limit=50)
-    return {"jobs": [_public_capture_job(job) for job in jobs]}
+    return await _sqlite_history_capture_jobs_payload(workspace_id, database_name=database_name, snapshot_id=snapshot_id)
 
 
 @router.get("/workspaces/{workspace_id}/sqlite-history/capture-jobs/{job_id}", response_model=SqliteHistoryCaptureJobResponse)
