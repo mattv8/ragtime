@@ -13,6 +13,7 @@
 }
 
 [data-theme-pack='modern'] .userspace-layout.userspace-fullscreen {
+  height: auto;
   padding: max(var(--workbench-padding), env(safe-area-inset-top))
     max(var(--workbench-padding), env(safe-area-inset-right))
     max(var(--workbench-padding), env(safe-area-inset-bottom))
