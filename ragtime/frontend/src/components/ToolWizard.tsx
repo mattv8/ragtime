@@ -43,6 +43,7 @@ import {
   type ToolAccessPolicy,
   type ToolAccessUserOption,
 } from './ToolAccessEditor';
+import { toToolAccessGroupOptions, toToolAccessUserOptions } from '@/utils/toolAccessOptions';
 
 // System mounts to filter out from the "Available Mounts" display
 // These are internal container mounts not useful for user filesystem indexing
@@ -3669,23 +3670,8 @@ export function ToolWizard({
         if (cancelled) {
           return;
         }
-        setAccessUserOptions(
-          users.map((user) => ({
-            id: user.id,
-            username: user.username,
-            display_name: user.display_name,
-            is_admin: user.role === 'admin',
-          })),
-        );
-        setAccessGroupOptions(
-          groups.map((group) => ({
-            id: group.id,
-            key: group.key,
-            display_name: group.display_name,
-            provider: group.provider,
-            member_count: group.member_count,
-          })),
-        );
+        setAccessUserOptions(toToolAccessUserOptions(users));
+        setAccessGroupOptions(toToolAccessGroupOptions(groups));
         setAccessPolicy(policy);
       } catch (err) {
         if (!cancelled) {

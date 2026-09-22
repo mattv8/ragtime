@@ -245,6 +245,28 @@ class ChatRuntimeService:
         result_payload["source_provider"] = provider
         return result_payload
 
+    async def _prepare_search_results(
+        self,
+        raw_results: Any,
+        *,
+        provider: str,
+        max_results: int,
+        include_pdf_metadata: bool,
+    ) -> tuple[list[dict[str, Any]], int]:
+        results: list[dict[str, Any]] = []
+        for item in raw_results:
+            if len(results) >= max_results or not isinstance(item, dict):
+                break
+            normalized = self._normalize_search_result(item, provider=provider)
+            if normalized is not None:
+                results.append(normalized)
+
+        pdf_result_count = await self._attach_pdf_metadata(
+            results,
+            include_pdf_metadata=include_pdf_metadata,
+        )
+        return results, pdf_result_count
+
     async def _search_web_searxng(
         self,
         *,
@@ -300,16 +322,10 @@ class ChatRuntimeService:
                 detail="SearXNG search returned invalid JSON",
             ) from exc
 
-        results: list[dict[str, Any]] = []
-        for item in data.get("results") or []:
-            if len(results) >= max_results or not isinstance(item, dict):
-                break
-            normalized = self._normalize_search_result(item, provider="searxng")
-            if normalized is not None:
-                results.append(normalized)
-
-        pdf_result_count = await self._attach_pdf_metadata(
-            results,
+        results, pdf_result_count = await self._prepare_search_results(
+            data.get("results") or [],
+            provider="searxng",
+            max_results=max_results,
             include_pdf_metadata=include_pdf_metadata,
         )
 
@@ -394,16 +410,10 @@ class ChatRuntimeService:
                 detail="Tavily search returned invalid JSON",
             ) from exc
 
-        results: list[dict[str, Any]] = []
-        for item in data.get("results") or []:
-            if len(results) >= max_results or not isinstance(item, dict):
-                break
-            normalized = self._normalize_search_result(item, provider="tavily")
-            if normalized is not None:
-                results.append(normalized)
-
-        pdf_result_count = await self._attach_pdf_metadata(
-            results,
+        results, pdf_result_count = await self._prepare_search_results(
+            data.get("results") or [],
+            provider="tavily",
+            max_results=max_results,
             include_pdf_metadata=include_pdf_metadata,
         )
 

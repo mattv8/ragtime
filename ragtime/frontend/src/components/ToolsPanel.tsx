@@ -36,6 +36,7 @@ import {
 } from './shared/SearchFilterBar';
 import { HardDrive, Trash2, Pencil, X, Upload } from 'lucide-react';
 import { resolveSourceDisplayPath } from '@/utils/mountPaths';
+import { toToolAccessGroupOptions, toToolAccessUserOptions } from '@/utils/toolAccessOptions';
 import { useIsTruncated } from '@/utils/useIsTruncated';
 import {
   getExportPasswordPolicy,
@@ -1187,23 +1188,8 @@ export function ToolsPanel({
           api.listAuthGroups(),
         ]);
         setToolAccessPolicy(policy);
-        setToolAccessUserOptions(
-          users.map((user) => ({
-            id: user.id,
-            username: user.username,
-            display_name: user.display_name,
-            is_admin: user.role === 'admin',
-          })),
-        );
-        setToolAccessGroupOptions(
-          groups.map((group) => ({
-            id: group.id,
-            key: group.key,
-            display_name: group.display_name,
-            provider: group.provider,
-            member_count: group.member_count,
-          })),
-        );
+        setToolAccessUserOptions(toToolAccessUserOptions(users));
+        setToolAccessGroupOptions(toToolAccessGroupOptions(groups));
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Failed to load tool access');
         setToolAccessModalTool(null);

@@ -51,6 +51,18 @@ HostnameResolver = Callable[[str], list[str] | Awaitable[list[str]]]
 OAuthCredentialUpdater = Callable[[dict[str, Any]], Awaitable[None]]
 
 
+async def _read_limited_response_and_close(response: httpx.Response, *, limit: int, error_message: str) -> bytes:
+    raw = bytearray()
+    try:
+        async for chunk in response.aiter_bytes():
+            raw.extend(chunk)
+            if len(raw) > limit:
+                raise ValueError(error_message)
+    finally:
+        await response.aclose()
+    return bytes(raw)
+
+
 @dataclass(frozen=True)
 class _ResolvedTarget:
     original_host: str
@@ -382,16 +394,13 @@ class HttpApiBroker:
                 data=payload or None,
             )
             response = await client.send(request, stream=True)
-            raw = bytearray()
-            try:
-                async for chunk in response.aiter_bytes():
-                    raw.extend(chunk)
-                    if len(raw) > _RESPONSE_BODY_LIMIT:
-                        raise ValueError("OAuth provider response exceeds limit")
-            finally:
-                await response.aclose()
+            raw = await _read_limited_response_and_close(
+                response,
+                limit=_RESPONSE_BODY_LIMIT,
+                error_message="OAuth provider response exceeds limit",
+            )
         try:
-            parsed_body = json.loads(bytes(raw).decode("utf-8"))
+            parsed_body = json.loads(raw.decode("utf-8"))
         except Exception:
             parsed_body = {}
         return response.status_code, parsed_body if isinstance(parsed_body, dict) else {}
@@ -421,17 +430,14 @@ class HttpApiBroker:
         url = _join_base_and_path(build_pinned_base_url(target.base_url, target.pinned_host), path)
         request_obj = client.build_request(method, url, headers=headers, json=json_body, data=form_body)
         response = await client.send(request_obj, stream=True)
-        raw = bytearray()
-        try:
-            async for chunk in response.aiter_bytes():
-                raw.extend(chunk)
-                if len(raw) > response_limit:
-                    raise ValueError("HTTP API response exceeds limit")
-        finally:
-            await response.aclose()
+        raw = await _read_limited_response_and_close(
+            response,
+            limit=response_limit,
+            error_message="HTTP API response exceeds limit",
+        )
         if response.status_code >= 0:
-            response.extensions["raw_bytes"] = bytes(raw)
-        return bytes(raw)
+            response.extensions["raw_bytes"] = raw
+        return raw
 
     async def _send_request(
         self,
@@ -486,14 +492,11 @@ class HttpApiBroker:
         if len(encoded_body) > _REQUEST_BODY_LIMIT:
             raise HttpApiConfigurationError("HTTP API request body exceeds the configured size limit")
         response = await client.send(request_obj, stream=True)
-        raw = bytearray()
-        try:
-            async for chunk in response.aiter_bytes():
-                raw.extend(chunk)
-                if len(raw) > _RESPONSE_BODY_LIMIT:
-                    raise ValueError("HTTP API response exceeds limit")
-        finally:
-            await response.aclose()
+        raw = await _read_limited_response_and_close(
+            response,
+            limit=_RESPONSE_BODY_LIMIT,
+            error_message="HTTP API response exceeds limit",
+        )
 
         if (
             response.status_code == 401
@@ -516,7 +519,7 @@ class HttpApiBroker:
                 oauth_credential_updater=oauth_credential_updater,
             )
 
-        raw_bytes = bytes(raw)
+        raw_bytes = raw
         parsed: Any
         try:
             parsed = json.loads(raw_bytes.decode("utf-8"))

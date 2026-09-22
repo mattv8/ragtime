@@ -1,5 +1,6 @@
 import json
 import unittest
+from copy import deepcopy
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, patch
@@ -20,21 +21,49 @@ from ragtime.rag.components import (
 from tests.test_knowledge_search_shared import FakeDoc, FakeFaissDb
 
 
+class _Unset:
+    pass
+
+
+_UNSET = _Unset()
+
+
+def _build_rag(
+    faiss_dbs: dict | None = None,
+    *,
+    index_metadata: list[dict] | _Unset = _UNSET,
+    app_settings: dict | None = None,
+    embedding_model: object | None | _Unset = _UNSET,
+) -> RAGComponents:
+    """Build an isolated RAG instance for knowledge-search tool tests."""
+    rag = RAGComponents()
+    rag._app_settings = {
+        "search_results_k": 5,
+        "search_use_mmr": False,
+        "search_mmr_lambda": 0.5,
+        "embedding_provider": "ollama",
+        "embedding_model": "nomic-embed-text:latest",
+    }
+    if app_settings is not None:
+        rag._app_settings.update(deepcopy(app_settings))
+
+    rag.faiss_dbs = dict(faiss_dbs) if faiss_dbs is not None else {}
+    rag.retrievers = {name: SimpleNamespace() for name in rag.faiss_dbs}
+    rag._index_metadata = (
+        [{"name": name, "description": f"Test index {name}", "enabled": True} for name in rag.faiss_dbs]
+        if index_metadata is _UNSET
+        else deepcopy(cast(list[dict], index_metadata))
+    )
+    rag._embedding_model = SimpleNamespace(aembed_query=AsyncMock(return_value=[0.1, 0.2, 0.3])) if embedding_model is _UNSET else embedding_model
+    return rag
+
+
 class KnowledgeSearchToolOutputTests(unittest.IsolatedAsyncioTestCase):
     async def _search_tool(self, faiss_dbs: dict | None, index_metadata: list | None = None):
-        rag = RAGComponents()
-        rag._app_settings = {
-            "search_results_k": 5,
-            "search_use_mmr": False,
-            "search_mmr_lambda": 0.5,
-            "embedding_provider": "ollama",
-            "embedding_model": "nomic-embed-text:latest",
-        }
-        rag.faiss_dbs = faiss_dbs or {}
-        rag.retrievers = {name: SimpleNamespace() for name in rag.faiss_dbs}
-        rag._index_metadata = index_metadata or [{"name": name, "description": f"Test index {name}", "enabled": True} for name in rag.faiss_dbs]
-        rag._embedding_model = SimpleNamespace(aembed_query=AsyncMock(return_value=[0.1, 0.2, 0.3]))
-        return rag._create_knowledge_search_tool()
+        return _build_rag(
+            faiss_dbs,
+            index_metadata=_UNSET if index_metadata is None else index_metadata,
+        )._create_knowledge_search_tool()
 
     async def test_search_knowledge_emits_structured_json_payload(self):
         tool = await self._search_tool(
@@ -186,27 +215,20 @@ class KnowledgeSearchToolOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Search error", payload["error_details"][0]["message"])
 
     async def test_search_knowledge_returns_typed_timeout_failure_payload(self):
-        rag = RAGComponents()
-        rag._app_settings = {
-            "search_results_k": 5,
-            "search_use_mmr": False,
-            "search_mmr_lambda": 0.5,
-            "embedding_provider": "ollama",
-            "embedding_model": "nomic-embed-text:latest",
-        }
-        rag.faiss_dbs = {"docs": FakeFaissDb([FakeDoc("body", "src.py")])}
-        rag.retrievers = {"docs": SimpleNamespace()}
-        rag._index_metadata = [{"name": "docs", "description": "Docs index", "enabled": True}]
-        rag._embedding_model = SimpleNamespace(
-            aembed_query=AsyncMock(
-                side_effect=EmbeddingOperationError(
-                    kind=EmbeddingFailureKind.TIMEOUT,
-                    provider="ollama",
-                    model="nomic-embed-text:latest",
-                    operation="query",
-                    endpoint="http://private-embedding-host:11434",
+        rag = _build_rag(
+            {"docs": FakeFaissDb([FakeDoc("body", "src.py")])},
+            index_metadata=[{"name": "docs", "description": "Docs index", "enabled": True}],
+            embedding_model=SimpleNamespace(
+                aembed_query=AsyncMock(
+                    side_effect=EmbeddingOperationError(
+                        kind=EmbeddingFailureKind.TIMEOUT,
+                        provider="ollama",
+                        model="nomic-embed-text:latest",
+                        operation="query",
+                        endpoint="http://private-embedding-host:11434",
+                    )
                 )
-            )
+            ),
         )
         tool = rag._create_knowledge_search_tool()
         coroutine = tool.coroutine
@@ -220,18 +242,15 @@ class KnowledgeSearchToolOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private-embedding-host", payload["error_details"][0]["message"])
 
     async def test_per_index_search_returns_typed_configuration_failure_when_embedding_model_missing(self):
-        rag = RAGComponents()
-        rag._app_settings = {
-            "search_results_k": 5,
-            "search_use_mmr": False,
-            "search_mmr_lambda": 0.5,
-            "embedding_provider": "openai",
-            "embedding_model": "text-embedding-3-small",
-        }
-        rag.faiss_dbs = {"docs": FakeFaissDb([FakeDoc("body", "src.py")])}
-        rag.retrievers = {"docs": SimpleNamespace()}
-        rag._index_metadata = [{"name": "docs", "description": "Docs index", "enabled": True}]
-        rag._embedding_model = None
+        rag = _build_rag(
+            {"docs": FakeFaissDb([FakeDoc("body", "src.py")])},
+            index_metadata=[{"name": "docs", "description": "Docs index", "enabled": True}],
+            app_settings={
+                "embedding_provider": "openai",
+                "embedding_model": "text-embedding-3-small",
+            },
+            embedding_model=None,
+        )
         tool = rag._create_per_index_search_tools()[0]
         coroutine = tool.coroutine
         assert coroutine is not None
@@ -243,27 +262,20 @@ class KnowledgeSearchToolOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("OpenAI embedding configuration", payload["message"])
 
     async def test_per_index_search_returns_typed_connection_failure_payload(self):
-        rag = RAGComponents()
-        rag._app_settings = {
-            "search_results_k": 5,
-            "search_use_mmr": False,
-            "search_mmr_lambda": 0.5,
-            "embedding_provider": "ollama",
-            "embedding_model": "nomic-embed-text:latest",
-        }
-        rag.faiss_dbs = {"docs": FakeFaissDb([FakeDoc("body", "src.py")])}
-        rag.retrievers = {"docs": SimpleNamespace()}
-        rag._index_metadata = [{"name": "docs", "description": "Docs index", "enabled": True}]
-        rag._embedding_model = SimpleNamespace(
-            aembed_query=AsyncMock(
-                side_effect=EmbeddingOperationError(
-                    kind=EmbeddingFailureKind.CONNECTION,
-                    provider="ollama",
-                    model="nomic-embed-text:latest",
-                    operation="query",
-                    endpoint="http://private-embedding-host:11434",
+        rag = _build_rag(
+            {"docs": FakeFaissDb([FakeDoc("body", "src.py")])},
+            index_metadata=[{"name": "docs", "description": "Docs index", "enabled": True}],
+            embedding_model=SimpleNamespace(
+                aembed_query=AsyncMock(
+                    side_effect=EmbeddingOperationError(
+                        kind=EmbeddingFailureKind.CONNECTION,
+                        provider="ollama",
+                        model="nomic-embed-text:latest",
+                        operation="query",
+                        endpoint="http://private-embedding-host:11434",
+                    )
                 )
-            )
+            ),
         )
         tool = rag._create_per_index_search_tools()[0]
         coroutine = tool.coroutine
@@ -277,18 +289,10 @@ class KnowledgeSearchToolOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private-embedding-host", payload["message"])
 
     async def test_search_knowledge_per_index_search_emits_json(self):
-        rag = RAGComponents()
-        rag._app_settings = {
-            "search_results_k": 5,
-            "search_use_mmr": False,
-            "search_mmr_lambda": 0.5,
-            "embedding_provider": "ollama",
-            "embedding_model": "nomic-embed-text:latest",
-        }
-        rag.faiss_dbs = {"docs": FakeFaissDb([FakeDoc("body", "src.py")])}
-        rag.retrievers = {"docs": SimpleNamespace()}
-        rag._index_metadata = [{"name": "docs", "description": "Docs index", "enabled": True}]
-        rag._embedding_model = SimpleNamespace(aembed_query=AsyncMock(return_value=[0.1, 0.2, 0.3]))
+        rag = _build_rag(
+            {"docs": FakeFaissDb([FakeDoc("body", "src.py")])},
+            index_metadata=[{"name": "docs", "description": "Docs index", "enabled": True}],
+        )
         tools = rag._create_per_index_search_tools()
         self.assertEqual(len(tools), 1)
         tool = tools[0]
@@ -307,19 +311,11 @@ class KnowledgeSearchToolOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(payload["results"][0]["truncated"])
 
     async def test_per_index_search_routes_faiss_calls_through_coordinator(self):
-        rag = RAGComponents()
-        rag._app_settings = {
-            "search_results_k": 5,
-            "search_use_mmr": False,
-            "search_mmr_lambda": 0.5,
-            "embedding_provider": "ollama",
-            "embedding_model": "nomic-embed-text:latest",
-        }
         db = FakeFaissDb([FakeDoc("body", "src.py")])
-        rag.faiss_dbs = {"docs": db}
-        rag.retrievers = {"docs": SimpleNamespace()}
-        rag._index_metadata = [{"name": "docs", "description": "Docs index", "enabled": True}]
-        rag._embedding_model = SimpleNamespace(aembed_query=AsyncMock(return_value=[0.1, 0.2, 0.3]))
+        rag = _build_rag(
+            {"docs": db},
+            index_metadata=[{"name": "docs", "description": "Docs index", "enabled": True}],
+        )
         tool = rag._create_per_index_search_tools()[0]
         coroutine = tool.coroutine
         assert coroutine is not None
@@ -372,23 +368,11 @@ class KnowledgeSearchFrontendIntegrityTests(unittest.TestCase):
 
 
 class KnowledgeSearchSyncToolInvocationTests(unittest.TestCase):
-    def _build_rag(self) -> RAGComponents:
-        rag = RAGComponents()
-        rag._app_settings = {
-            "search_results_k": 5,
-            "search_use_mmr": False,
-            "search_mmr_lambda": 0.5,
-            "embedding_provider": "ollama",
-            "embedding_model": "nomic-embed-text:latest",
-        }
-        rag.faiss_dbs = {"docs": FakeFaissDb([FakeDoc("body", "src.py")])}
-        rag.retrievers = {"docs": SimpleNamespace()}
-        rag._index_metadata = [{"name": "docs", "description": "Docs index", "enabled": True}]
-        rag._embedding_model = SimpleNamespace(aembed_query=AsyncMock(return_value=[0.1, 0.2, 0.3]))
-        return rag
-
     def test_search_knowledge_sync_invoke_routes_through_coordinator(self):
-        tool = self._build_rag()._create_knowledge_search_tool()
+        tool = _build_rag(
+            {"docs": FakeFaissDb([FakeDoc("body", "src.py")])},
+            index_metadata=[{"name": "docs", "description": "Docs index", "enabled": True}],
+        )._create_knowledge_search_tool()
 
         async def _run(index_name, operation, *args, **kwargs):
             self.assertEqual(index_name, "docs")
@@ -406,7 +390,10 @@ class KnowledgeSearchSyncToolInvocationTests(unittest.TestCase):
         coordinator_run.assert_awaited_once()
 
     def test_per_index_search_sync_run_routes_through_coordinator(self):
-        tool = self._build_rag()._create_per_index_search_tools()[0]
+        tool = _build_rag(
+            {"docs": FakeFaissDb([FakeDoc("body", "src.py")])},
+            index_metadata=[{"name": "docs", "description": "Docs index", "enabled": True}],
+        )._create_per_index_search_tools()[0]
 
         async def _run(index_name, operation, *args, **kwargs):
             self.assertEqual(index_name, "docs")
