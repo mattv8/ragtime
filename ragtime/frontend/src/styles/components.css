@@ -10934,6 +10934,28 @@ fieldset legend.legend-with-status .legend-divider {
   overflow-wrap: anywhere;
 }
 
+.userspace-connect-agent-endpoint {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  padding: var(--space-xs) 0;
+}
+
+.userspace-connect-agent-endpoint-label {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.userspace-connect-agent-endpoint code,
+.userspace-connect-agent-manual-details p code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .userspace-connect-agent-token {
   min-width: 0;
 }
