@@ -74,3 +74,12 @@ local ignored switch artifacts. Do not edit or commit them as migration source.
 For maintenance of the active target only, use the override-based Compose
 invocation recorded in `.data/worktree-switch/state.json`; it is not a way to
 switch worktrees. Use `scripts/switch-dev-worktree.sh` for every checkout change.
+
+## Durable SQLite history
+
+Reversing code and Prisma migrations does not reverse runtime SQLite-history
+activation or legacy-to-Restic conversion. When selecting a target against
+already-activated data, require compatible history readers and writers; do not
+promise automatic rollback. See `.agents/userspace-sqlite-history.md` for the
+activation, repository, and recovery contracts and
+`.agents/userspace-object-storage.md` for separate gateway-owned backup state.
