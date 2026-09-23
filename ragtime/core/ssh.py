@@ -135,7 +135,7 @@ class _RagtimeTransport(paramiko.Transport):
     def _log(self, level: int, msg: Any, *args: Any) -> None:
         if isinstance(msg, list):
             msg = "\n".join(str(line) for line in msg)
-        super()._log(level, msg, *args)
+        self.logger.log(level, msg, *args)
 
 
 def _load_private_key(
