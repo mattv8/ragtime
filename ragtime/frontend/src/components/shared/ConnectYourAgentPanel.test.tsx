@@ -17,7 +17,6 @@ const apiMock = vi.hoisted(() => ({
   rotateWorkspaceDevelopmentCredential: vi.fn(),
   revokeWorkspaceDevelopmentCredential: vi.fn(),
   deleteWorkspaceDevelopmentCredential: vi.fn(),
-  executeWorkspaceDevelopmentOperation: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({ api: apiMock }));
@@ -41,7 +40,6 @@ describe('ConnectYourAgentPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([]);
-    apiMock.executeWorkspaceDevelopmentOperation.mockResolvedValue([]);
   });
 
   it('adds the created credential card immediately and opens its connect step', async () => {
@@ -231,55 +229,5 @@ describe('ConnectYourAgentPanel', () => {
     rerender(<ConnectYourAgentPanel workspaceId="workspace-2" canManage={false} />);
     expect(await screen.findByText(/only workspace owners and admins/i)).toBeTruthy();
     expect(screen.queryByRole('article')).toBeNull();
-  });
-
-  it('hides development activity during setup and keeps it collapsed otherwise', async () => {
-    const user = userEvent.setup();
-    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
-    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
-
-    await screen.findByRole('article', { name: 'External agent credential' });
-    expect(
-      (screen.getByText('Development activity').closest('details') as HTMLDetailsElement).open,
-    ).toBe(false);
-    await user.click(screen.getByText('Development activity'));
-    expect(
-      (screen.getByText('Development activity').closest('details') as HTMLDetailsElement).open,
-    ).toBe(true);
-
-    // Opening the new-agent wizard hides development activity entirely
-    await user.click(screen.getByRole('button', { name: /^new agent$/i }));
-    expect(screen.queryByText('Development activity')).toBeNull();
-  });
-
-  it('cancels a running development job and refreshes activity', async () => {
-    const user = userEvent.setup();
-    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
-    apiMock.executeWorkspaceDevelopmentOperation
-      .mockResolvedValueOnce([{ id: 'job-1', status: 'running' }])
-      .mockResolvedValueOnce({ id: 'job-1' })
-      .mockResolvedValueOnce([{ id: 'job-1', status: 'cancelled' }]);
-    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
-
-    await screen.findByRole('article', { name: 'External agent credential' });
-    await user.click(screen.getByText('Development activity'));
-    await user.click(screen.getByRole('button', { name: /^refresh$/i }));
-    await screen.findByText('running');
-    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
-
-    await waitFor(() => {
-      expect(apiMock.executeWorkspaceDevelopmentOperation).toHaveBeenNthCalledWith(
-        2,
-        'workspace-1',
-        'exec_cancel',
-        { job_id: 'job-1' },
-      );
-      expect(apiMock.executeWorkspaceDevelopmentOperation).toHaveBeenNthCalledWith(
-        3,
-        'workspace-1',
-        'exec_list',
-      );
-    });
-    expect(screen.getByText('cancelled')).toBeTruthy();
   });
 });

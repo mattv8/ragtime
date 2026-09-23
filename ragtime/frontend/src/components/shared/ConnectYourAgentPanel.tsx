@@ -10,13 +10,6 @@ interface ConnectYourAgentPanelProps {
   canManage: boolean;
 }
 
-interface ExecJob {
-  id: string;
-  status: string;
-  output?: string;
-  exit_code?: number | null;
-}
-
 type SetupStep = 'create' | 'connect' | 'start';
 
 function getErrorMessage(reason: unknown, fallback: string): string {
@@ -113,9 +106,6 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
   const [showCreateForm, setShowCreateForm] = useState(true);
   const [pendingRotationId, setPendingRotationId] = useState<string | null>(null);
   const [name, setName] = useState('External agent');
-  const [command, setCommand] = useState('');
-  const [jobs, setJobs] = useState<ExecJob[]>([]);
-  const [activityOpen, setActivityOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const workspaceRef = useRef(workspaceId);
@@ -149,20 +139,6 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
     [isCurrentContext, workspaceId],
   );
 
-  const loadJobs = useCallback(
-    async (requestedWorkspaceId: string) => {
-      const result = await api.executeWorkspaceDevelopmentOperation<unknown>(
-        requestedWorkspaceId,
-        'exec_list',
-      );
-      if (!Array.isArray(result)) {
-        throw new Error('Development activity returned an invalid job list.');
-      }
-      if (isCurrentContext(requestedWorkspaceId)) setJobs(result as ExecJob[]);
-    },
-    [isCurrentContext],
-  );
-
   useEffect(() => {
     let cancelled = false;
     setCredentials([]);
@@ -172,8 +148,6 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
     setStep('create');
     setShowCreateForm(true);
     setPendingRotationId(null);
-    setJobs([]);
-    setActivityOpen(false);
     setError(null);
     if (!canManage) return;
 
@@ -254,31 +228,9 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
     }, 'Failed to revoke credential');
   };
 
-  const startJob = () => {
-    const trimmedCommand = command.trim();
-    if (!trimmedCommand) return;
-    void runWorkspaceAction(async (requestedWorkspaceId) => {
-      await api.executeWorkspaceDevelopmentOperation(requestedWorkspaceId, 'exec_start', {
-        command: trimmedCommand,
-      });
-      if (isCurrentContext(requestedWorkspaceId)) setCommand('');
-      await loadJobs(requestedWorkspaceId);
-    }, 'Failed to start command');
-  };
-
-  const cancelJob = (jobId: string) => {
-    void runWorkspaceAction(async (requestedWorkspaceId) => {
-      await api.executeWorkspaceDevelopmentOperation(requestedWorkspaceId, 'exec_cancel', {
-        job_id: jobId,
-      });
-      await loadJobs(requestedWorkspaceId);
-    }, 'Failed to cancel command');
-  };
-
   const bootstrapManifestUrl = `${window.location.origin}/indexes/userspace/development/workspaces/${workspaceId}/bootstrap`;
   const mcpUrl = `${window.location.origin}/mcp`;
   const operationsUrl = `${window.location.origin}/indexes/userspace/development/workspaces/${workspaceId}/operations`;
-  const wizardActive = showCreateForm || activeCredentialId !== null;
 
   return (
     <section
@@ -682,88 +634,6 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
               <p role="alert" className="error-message">
                 {error}
               </p>
-            )}
-
-            {!wizardActive && (
-              <details
-                id={`workspace-development-activity-${workspaceId}`}
-                className="userspace-connect-agent-activity"
-                data-userspace-disclosure="development-activity"
-                open={activityOpen}
-                onToggle={(event) => setActivityOpen(event.currentTarget.open)}
-              >
-                <summary>Development activity</summary>
-                <div className="userspace-connect-agent-activity-content">
-                  <p className="muted userspace-connect-agent-activity-help">
-                    Run a one-off command in this workspace's sandbox runtime and watch its status.
-                    Useful for checking that a connected agent's environment works; not part of
-                    setup.
-                  </p>
-                  <div className="userspace-connect-agent-input-row">
-                    <input
-                      aria-label="Sandbox command"
-                      type="text"
-                      value={command}
-                      onChange={(event) => setCommand(event.target.value)}
-                      placeholder="Run a sandbox command"
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      disabled={loading || !command.trim()}
-                      onClick={startJob}
-                    >
-                      Run
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      disabled={loading}
-                      onClick={() =>
-                        void runWorkspaceAction(loadJobs, 'Failed to load development activity')
-                      }
-                    >
-                      Refresh
-                    </button>
-                  </div>
-                  {jobs.length > 0 && (
-                    <ul
-                      className="userspace-connect-agent-list"
-                      data-userspace-list="development-jobs"
-                    >
-                      {jobs.map((job) => (
-                        <li
-                          key={job.id}
-                          id={`workspace-development-job-${job.id}`}
-                          className="userspace-connect-agent-row userspace-connect-agent-job"
-                        >
-                          <div className="userspace-connect-agent-row-main">
-                            <strong>{job.status}</strong>
-                            {job.exit_code !== undefined && job.exit_code !== null && (
-                              <span className="muted">exit {job.exit_code}</span>
-                            )}
-                          </div>
-                          {!['completed', 'failed', 'cancelled'].includes(job.status) && (
-                            <div className="userspace-connect-agent-row-actions">
-                              <button
-                                type="button"
-                                className="btn btn-secondary btn-sm"
-                                disabled={loading}
-                                onClick={() => cancelJob(job.id)}
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          )}
-                          {job.output && (
-                            <pre className="userspace-connect-agent-job-output">{job.output}</pre>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </details>
             )}
           </>
         )}
