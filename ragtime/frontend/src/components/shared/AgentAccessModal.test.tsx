@@ -684,4 +684,82 @@ describe('AgentAccessModal', () => {
         .getAttribute('aria-pressed'),
     ).toBe('true');
   });
+
+  it('opens requested Coding Agent Setup tabs repeatedly without overriding manual tab changes', async () => {
+    const user = userEvent.setup();
+    const props = {
+      isOpen: true,
+      onClose: vi.fn(),
+      sourceWorkspace: SOURCE_WORKSPACE,
+      availableWorkspaces: [],
+      grants: [],
+      onUpsert: vi.fn().mockResolvedValue(undefined),
+      onRevoke: vi.fn().mockResolvedValue(undefined),
+      connectAgentSection: <div>Setup content</div>,
+    };
+    const { rerender } = render(
+      <AgentAccessModal {...props} openRequest={{ requestId: 1, tabId: 'coding-agent-setup' }} />,
+    );
+
+    expect(
+      screen.getByRole('tab', { name: 'Coding Agent Setup' }).getAttribute('aria-selected'),
+    ).toBe('true');
+    await user.click(screen.getByRole('tab', { name: 'Workspace Grants' }));
+    rerender(
+      <AgentAccessModal {...props} openRequest={{ requestId: 1, tabId: 'coding-agent-setup' }} />,
+    );
+    expect(
+      screen.getByRole('tab', { name: 'Workspace Grants' }).getAttribute('aria-selected'),
+    ).toBe('true');
+
+    rerender(
+      <AgentAccessModal {...props} openRequest={{ requestId: 2, tabId: 'coding-agent-setup' }} />,
+    );
+    expect(
+      screen.getByRole('tab', { name: 'Coding Agent Setup' }).getAttribute('aria-selected'),
+    ).toBe('true');
+
+    rerender(<AgentAccessModal {...props} openRequest={null} />);
+    expect(
+      screen.getByRole('tab', { name: 'Workspace Grants' }).getAttribute('aria-selected'),
+    ).toBe('true');
+    await user.click(screen.getByRole('tab', { name: 'Coding Agent Setup' }));
+    rerender(<AgentAccessModal {...props} openRequest={null} />);
+    expect(
+      screen.getByRole('tab', { name: 'Coding Agent Setup' }).getAttribute('aria-selected'),
+    ).toBe('true');
+  });
+
+  it('uses Workspace Grants for legacy openings and exposes dialog semantics', () => {
+    renderModal();
+    expect(screen.getByRole('dialog', { name: 'Agent Access' }).getAttribute('aria-modal')).toBe(
+      'true',
+    );
+    expect(screen.getByRole('button', { name: 'Add grant' })).toBeTruthy();
+  });
+
+  it('closes with Escape unless a grant operation is locked', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const props = {
+      isOpen: true,
+      onClose,
+      sourceWorkspace: SOURCE_WORKSPACE,
+      availableWorkspaces: [],
+      grants: [],
+      onUpsert: vi.fn().mockResolvedValue(undefined),
+      onRevoke: vi.fn().mockResolvedValue(undefined),
+    };
+    const { rerender } = render(<AgentAccessModal {...props} />);
+
+    expect(screen.getByRole('button', { name: 'Close agent access' }).getAttribute('type')).toBe(
+      'button',
+    );
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledOnce();
+
+    rerender(<AgentAccessModal {...props} loading />);
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
 });

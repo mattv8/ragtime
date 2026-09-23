@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { forwardRef } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UserDirectoryEntry } from '@/types';
 import type { UserSpaceWorkspaceShareLinkStatus } from '@/types';
@@ -39,6 +40,7 @@ const {
   workspaceChatSearchMock,
   workspaceScmActivityMock,
   shareLinkModalPropsMock,
+  agentAccessModalPropsMock,
 } = vi.hoisted(() => ({
   previewApiMock: {
     listUserSpaceWorkspaces: vi.fn(),
@@ -64,6 +66,8 @@ const {
     discoverLdapWithStoredCredentials: vi.fn(),
     listUserSpaceWorkspaceShareLinks: vi.fn(),
     listUserSpaceWorkspaceAgentGrants: vi.fn(),
+    upsertUserSpaceWorkspaceAgentGrant: vi.fn(),
+    revokeUserSpaceWorkspaceAgentGrant: vi.fn(),
     createUserSpaceWorkspaceShareLink: vi.fn(),
     deleteUserSpaceWorkspaceShareLink: vi.fn(),
     getUserSpaceWorkspacePreviewEntryUrl: vi.fn(),
@@ -89,6 +93,7 @@ const {
   },
   workspaceScmActivityMock: { hasActivity: false, syncState: null },
   shareLinkModalPropsMock: vi.fn(),
+  agentAccessModalPropsMock: vi.fn(),
 }));
 
 let latestSqliteInspectorModalProps: unknown = null;
@@ -157,14 +162,17 @@ vi.mock('./shared/ConnectYourAgentPanel', () => ({
   ConnectYourAgentPanel: ({
     workspaceId,
     canManage,
+    selectionRequest,
   }: {
     workspaceId: string;
     canManage: boolean;
+    selectionRequest?: { clientId: string };
   }) => (
     <div
       data-testid="connect-your-agent"
       data-workspace-id={workspaceId}
       data-can-manage={canManage}
+      data-selection-client={selectionRequest?.clientId ?? ''}
     />
   ),
 }));
@@ -235,10 +243,12 @@ vi.mock('./WorkspaceScmWizard', () => ({
 }));
 vi.mock('./shared/AdminWorkspaceModal', () => ({ default: () => null }));
 vi.mock('./shared/AgentAccessButton', () => ({
-  AgentAccessButton: ({ onClick, title }: { onClick: () => void; title: string }) => (
-    <button type="button" title={title} onClick={onClick}>
-      Agent Access
-    </button>
+  AgentAccessButton: forwardRef<HTMLButtonElement, { onClick: () => void; title: string }>(
+    ({ onClick, title }, ref) => (
+      <button ref={ref} type="button" title={title} aria-label={title} onClick={onClick}>
+        Agent Access
+      </button>
+    ),
   ),
 }));
 vi.mock('./shared/AgentAccessModal', () => ({
@@ -246,17 +256,26 @@ vi.mock('./shared/AgentAccessModal', () => ({
     isOpen,
     agentCollaborationSection,
     connectAgentSection,
+    openRequest,
+    onClose,
   }: {
     isOpen: boolean;
     agentCollaborationSection?: React.ReactNode;
     connectAgentSection?: React.ReactNode;
-  }) =>
-    isOpen ? (
-      <div data-testid="agent-access-modal">
+    openRequest?: { requestId: number; tabId: string } | null;
+    onClose: () => void;
+  }) => {
+    agentAccessModalPropsMock({ isOpen, openRequest, onClose });
+    return isOpen ? (
+      <div data-testid="agent-access-modal" data-open-request={openRequest?.tabId ?? ''}>
         <div data-testid="agent-access-modal-collaboration">{agentCollaborationSection}</div>
         <div data-testid="agent-access-modal-connect-agent">{connectAgentSection}</div>
+        <button type="button" onClick={onClose}>
+          Close agent modal
+        </button>
       </div>
-    ) : null,
+    ) : null;
+  },
 }));
 vi.mock('./shared/MemberManagementButton', () => ({ MemberManagementButton: () => null }));
 vi.mock('./shared/MemberManagementModal', () => ({ MemberManagementModal: () => null }));
@@ -655,6 +674,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
   shareLinkModalPropsMock.mockClear();
+  agentAccessModalPropsMock.mockClear();
   latestSqliteInspectorModalProps = null;
   sqliteInspectorModalRender = () => null;
 });
@@ -1032,6 +1052,67 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     });
     expect(screen.getByTestId('connect-your-agent').dataset.workspaceId).toBe(WORKSPACE.id);
     expect(screen.getByTestId('connect-your-agent').dataset.canManage).toBe('true');
+  });
+
+  it('opens the requested client through the existing Agent Access grant-read path', async () => {
+    await renderPanelWithRuntimeOverlay(false);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Set up Claude Code' }));
+
+    await waitFor(() => {
+      expect(previewApiMock.listUserSpaceWorkspaceAgentGrants).toHaveBeenCalledWith(WORKSPACE.id);
+      expect(screen.getByTestId('agent-access-modal').dataset.openRequest).toBe(
+        'coding-agent-setup',
+      );
+    });
+    expect(screen.getByTestId('connect-your-agent').dataset.selectionClient).toBe('claude-code');
+    expect(previewApiMock.upsertUserSpaceWorkspaceAgentGrant).not.toHaveBeenCalled();
+    expect(previewApiMock.revokeUserSpaceWorkspaceAgentGrant).not.toHaveBeenCalled();
+  });
+
+  it('dismisses and restores the rail after the generation policy is toggled', async () => {
+    const { rerender } = render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Dismiss agent setup' })).toBeTruthy();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss agent setup' }));
+    expect(screen.queryByRole('button', { name: 'Dismiss agent setup' })).toBeNull();
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        screen.getByRole('button', { name: 'Manage cross-workspace agent access' }),
+      );
+    });
+
+    rerender(<UserSpacePanel currentUser={{ ...CURRENT_USER }} userspaceGenerationEnabled />);
+    expect(screen.queryByRole('button', { name: 'Connect your agent' })).toBeNull();
+    rerender(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    expect(await screen.findByRole('button', { name: 'Dismiss agent setup' })).toBeTruthy();
+  });
+
+  it('only renders the rail for a resolved workspace when embedded generation is disabled', async () => {
+    previewApiMock.listUserSpaceWorkspaces.mockResolvedValue({ items: [], total: 0 });
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await waitFor(() => {
+      expect(previewApiMock.listUserSpaceWorkspaces).toHaveBeenCalled();
+    });
+    expect(screen.queryByRole('button', { name: 'Connect your agent' })).toBeNull();
+  });
+
+  it('returns a rail-opened modal to Workspace Grants for an ordinary toolbar open', async () => {
+    await renderPanelWithRuntimeOverlay(false);
+    await userEvent.click(screen.getByRole('button', { name: 'Set up Codex' }));
+    await screen.findByTestId('agent-access-modal');
+    expect(screen.getByTestId('agent-access-modal').dataset.openRequest).toBe('coding-agent-setup');
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Manage cross-workspace agent access' }),
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-access-modal').dataset.openRequest).toBe('');
+    });
+    expect(screen.getByTestId('connect-your-agent').dataset.selectionClient).toBe('');
   });
 
   it('passes read-only credential management to editors in Agent Access', async () => {

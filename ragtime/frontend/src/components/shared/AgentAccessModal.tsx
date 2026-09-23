@@ -27,6 +27,7 @@ interface AgentAccessModalProps {
   revokingTargetId?: string | null;
   agentCollaborationSection?: ReactNode;
   connectAgentSection?: ReactNode;
+  openRequest?: { requestId: number; tabId: 'coding-agent-setup' } | null;
 }
 
 type AgentAccessDraft = {
@@ -95,6 +96,7 @@ export function AgentAccessModal({
   revokingTargetId = null,
   agentCollaborationSection,
   connectAgentSection,
+  openRequest = null,
 }: AgentAccessModalProps) {
   const [targetWorkspaceId, setTargetWorkspaceId] = useState('');
   const [draftsByTargetId, setDraftsByTargetId] = useState<Record<string, AgentAccessDraft>>({});
@@ -102,6 +104,9 @@ export function AgentAccessModal({
   const [createError, setCreateError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('workspace-grants');
   const persistedGrantSignaturesRef = useRef<Record<string, string>>({});
+  const consumedOpenRequestIdRef = useRef<number | null>(null);
+  const previousOpenRequestRef = useRef(openRequest);
+  const wasOpenRef = useRef(false);
 
   const workspaceOptions = useMemo(
     () =>
@@ -122,13 +127,38 @@ export function AgentAccessModal({
   const hasTabs = Boolean(agentCollaborationSection || connectAgentSection);
 
   useEffect(() => {
-    setActiveTab('workspace-grants');
+    const justOpened = isOpen && !wasOpenRef.current;
+    const requestWasCleared =
+      isOpen && previousOpenRequestRef.current !== null && openRequest === null;
+    wasOpenRef.current = isOpen;
+    previousOpenRequestRef.current = openRequest;
     if (!isOpen) {
+      setActiveTab('workspace-grants');
       return;
+    }
+    const hasNewOpenRequest =
+      openRequest?.requestId != null && consumedOpenRequestIdRef.current !== openRequest.requestId;
+    if (hasNewOpenRequest && openRequest) {
+      consumedOpenRequestIdRef.current = openRequest.requestId;
+      setActiveTab(openRequest.tabId);
+    } else if (justOpened || requestWasCleared) {
+      setActiveTab('workspace-grants');
     }
     setTargetWorkspaceId('');
     setCreateError(null);
-  }, [isOpen]);
+  }, [isOpen, openRequest]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isOperationLocked) {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, isOperationLocked, onClose]);
 
   useEffect(() => {
     if (!hasTabs) setActiveTab('workspace-grants');
@@ -455,11 +485,20 @@ export function AgentAccessModal({
       <div
         id="userspace-agent-access-modal"
         className={`modal-content modal-small userspace-agent-access-modal${hasTabs ? ' modal-with-tabs' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="userspace-agent-access-modal-title"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal-header">
-          <h3>Agent Access</h3>
-          <button className="modal-close" onClick={handleClose} disabled={isOperationLocked}>
+          <h3 id="userspace-agent-access-modal-title">Agent Access</h3>
+          <button
+            type="button"
+            className="modal-close"
+            onClick={handleClose}
+            aria-label="Close agent access"
+            disabled={isOperationLocked}
+          >
             &times;
           </button>
         </div>

@@ -189,6 +189,8 @@ import { WorkspaceObjectStorageExplorer } from './shared/WorkspaceObjectStorageE
 import { AgentAccessSection } from './shared/AgentAccessSection';
 import { ExternalApiAccessSection } from './shared/ExternalApiAccessSection';
 import { ConnectYourAgentPanel } from './shared/ConnectYourAgentPanel';
+import { UserSpaceAgentOnboardingRail } from './shared/UserSpaceAgentOnboardingRail';
+import type { CodingAgentClientId, CodingAgentSelectionRequest } from './shared/codingAgentClients';
 import { ShareLinkModal } from './shared/ShareLinkModal';
 import type { LdapGroup } from './LdapGroupSelect';
 import { Popover, DisabledPopover } from './Popover';
@@ -1127,6 +1129,15 @@ export function UserSpacePanel({
   const workspacePickerSearchInputRef = useRef<HTMLInputElement>(null);
   const [showMembersModal, setShowMembersModal] = useState(false);
   const [showAgentAccessModal, setShowAgentAccessModal] = useState(false);
+  const [agentAccessOpenRequest, setAgentAccessOpenRequest] = useState<{
+    requestId: number;
+    tabId: 'coding-agent-setup';
+  } | null>(null);
+  const [agentSelectionRequest, setAgentSelectionRequest] =
+    useState<CodingAgentSelectionRequest | null>(null);
+  const [agentOnboardingDismissedWorkspaceId, setAgentOnboardingDismissedWorkspaceId] = useState<
+    string | null
+  >(null);
   const [showAdminWorkspacesModal, setShowAdminWorkspacesModal] = useState(false);
   const [allUsers, setAllUsers] = useState<UserDirectoryEntry[]>([]);
   const [pendingMembers, setPendingMembers] = useState<UserSpaceWorkspaceMember[]>([]);
@@ -1255,6 +1266,10 @@ export function UserSpacePanel({
   const treeFileHoverSuppressRef = useRef<string | null>(null);
   const fileContentCacheRef = useRef(fileContentCache);
   const activeWorkspaceIdRef = useRef<string | null>(activeWorkspaceId);
+  const agentAccessRequestIdRef = useRef(0);
+  const agentAccessLoadRequestIdRef = useRef(0);
+  const agentAccessButtonRef = useRef<HTMLButtonElement | null>(null);
+  const agentAccessLaunchTriggerRef = useRef<HTMLElement | null>(null);
   const activeWorkspaceConversationIdRef = useRef<string | null>(activeWorkspaceConversationId);
   const loadWorkspaceDataRequestIdRef = useRef(0);
   const loadChangedFileStateRequestIdRef = useRef(0);
@@ -6419,27 +6434,83 @@ export function UserSpacePanel({
     [activeWorkspace, isOwner],
   );
 
-  const handleOpenAgentAccessModal = useCallback(async () => {
-    if (!activeWorkspace) return;
-    setShowAgentAccessModal(true);
-    setAgentGrantsLoading(true);
-    try {
-      const limit = Math.max(workspacesTotal || workspaces.length || 50, 50);
-      const [grants, workspacePage] = await Promise.all([
-        api.listUserSpaceWorkspaceAgentGrants(activeWorkspace.id),
-        api.listUserSpaceWorkspaces(0, limit),
-      ]);
-      setAgentGrants(sortWorkspaceAgentGrants(grants));
-      setAgentGrantWorkspaces(
-        workspacePage.items.filter((workspace) => workspace.id !== activeWorkspace.id),
+  useEffect(() => {
+    setAgentSelectionRequest(null);
+    setAgentAccessOpenRequest(null);
+    setAgentOnboardingDismissedWorkspaceId(null);
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
+    if (userspaceGenerationEnabled) setAgentOnboardingDismissedWorkspaceId(null);
+  }, [userspaceGenerationEnabled]);
+
+  const handleOpenAgentAccessModal = useCallback(
+    async (selection?: CodingAgentSelectionRequest, trigger?: HTMLElement) => {
+      if (!activeWorkspace) return;
+      const workspaceId = activeWorkspace.id;
+      const loadRequestId = ++agentAccessLoadRequestIdRef.current;
+      agentAccessLaunchTriggerRef.current = trigger ?? null;
+      if (selection) {
+        setAgentSelectionRequest(selection);
+        setAgentAccessOpenRequest({ requestId: selection.requestId, tabId: 'coding-agent-setup' });
+      } else {
+        setAgentSelectionRequest(null);
+        setAgentAccessOpenRequest(null);
+      }
+      setShowAgentAccessModal(true);
+      setAgentGrantsLoading(true);
+      try {
+        const limit = Math.max(workspacesTotal || workspaces.length || 50, 50);
+        const [grants, workspacePage] = await Promise.all([
+          api.listUserSpaceWorkspaceAgentGrants(workspaceId),
+          api.listUserSpaceWorkspaces(0, limit),
+        ]);
+        if (
+          activeWorkspaceIdRef.current !== workspaceId ||
+          agentAccessLoadRequestIdRef.current !== loadRequestId
+        ) {
+          return;
+        }
+        setAgentGrants(sortWorkspaceAgentGrants(grants));
+        setAgentGrantWorkspaces(
+          workspacePage.items.filter((workspace) => workspace.id !== workspaceId),
+        );
+        setError(null);
+      } catch (err) {
+        if (
+          activeWorkspaceIdRef.current === workspaceId &&
+          agentAccessLoadRequestIdRef.current === loadRequestId
+        ) {
+          setError(err instanceof Error ? err.message : 'Failed to load agent access settings');
+        }
+      } finally {
+        if (
+          activeWorkspaceIdRef.current === workspaceId &&
+          agentAccessLoadRequestIdRef.current === loadRequestId
+        ) {
+          setAgentGrantsLoading(false);
+        }
+      }
+    },
+    [activeWorkspace, workspaces.length, workspacesTotal],
+  );
+
+  const handleOpenAgentOnboarding = useCallback(
+    (clientId: CodingAgentClientId, trigger: HTMLButtonElement) => {
+      if (!activeWorkspaceId) return;
+      const requestId = ++agentAccessRequestIdRef.current;
+      void handleOpenAgentAccessModal(
+        { requestId, clientId, workspaceId: activeWorkspaceId },
+        trigger,
       );
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load agent access settings');
-    } finally {
-      setAgentGrantsLoading(false);
-    }
-  }, [activeWorkspace, workspaces.length, workspacesTotal]);
+    },
+    [activeWorkspaceId, handleOpenAgentAccessModal],
+  );
+
+  const handleCloseAgentAccessModal = useCallback(() => {
+    setShowAgentAccessModal(false);
+    (agentAccessLaunchTriggerRef.current ?? agentAccessButtonRef.current)?.focus();
+  }, []);
 
   const handleUpsertAgentGrant = useCallback(
     async (request: UpsertWorkspaceAgentGrantRequest) => {
@@ -8961,7 +9032,8 @@ export function UserSpacePanel({
           )}
           {activeWorkspaceId && (
             <AgentAccessButton
-              onClick={handleOpenAgentAccessModal}
+              ref={agentAccessButtonRef}
+              onClick={() => void handleOpenAgentAccessModal()}
               title="Manage cross-workspace agent access"
             />
           )}
@@ -9464,6 +9536,18 @@ export function UserSpacePanel({
               )}
             </div>
           </div>
+
+          {!userspaceGenerationEnabled &&
+          activeWorkspace &&
+          agentOnboardingDismissedWorkspaceId !== activeWorkspace.id ? (
+            <UserSpaceAgentOnboardingRail
+              onSelectClient={handleOpenAgentOnboarding}
+              onDismiss={() => {
+                setAgentOnboardingDismissedWorkspaceId(activeWorkspace.id);
+                requestAnimationFrame(() => agentAccessButtonRef.current?.focus());
+              }}
+            />
+          ) : null}
 
           {userspaceGenerationEnabled && (
             <ResizeHandle
@@ -12087,7 +12171,7 @@ export function UserSpacePanel({
         <AgentAccessModal
           key={`agent-access-${activeWorkspace.id}`}
           isOpen={showAgentAccessModal}
-          onClose={() => setShowAgentAccessModal(false)}
+          onClose={handleCloseAgentAccessModal}
           sourceWorkspace={activeWorkspace}
           availableWorkspaces={agentGrantWorkspaces.map((workspace) => ({
             ...workspace,
@@ -12107,8 +12191,10 @@ export function UserSpacePanel({
             <ConnectYourAgentPanel
               workspaceId={activeWorkspace.id}
               canManage={isOwner || currentUser.role === 'admin'}
+              selectionRequest={agentSelectionRequest ?? undefined}
             />
           }
+          openRequest={agentAccessOpenRequest}
         />
       )}
 

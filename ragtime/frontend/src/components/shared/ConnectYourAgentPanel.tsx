@@ -4,10 +4,18 @@ import { api } from '@/api';
 import type { WorkspaceDevelopmentCredential } from '@/types';
 import { DeleteConfirmButton } from '../DeleteConfirmButton';
 import { InlineCopyButton } from './InlineCopyButton';
+import {
+  CODING_AGENT_CLIENTS,
+  type CodingAgentClientId,
+  type CodingAgentSelectionRequest,
+} from './codingAgentClients';
+import { CodingAgentClientGuide } from './CodingAgentClientGuide';
+import './CodingAgentSetup.css';
 
 interface ConnectYourAgentPanelProps {
   workspaceId: string;
   canManage: boolean;
+  selectionRequest?: CodingAgentSelectionRequest;
 }
 
 type SetupStep = 'create' | 'connect' | 'start';
@@ -21,9 +29,11 @@ function buildSetupInstructions(
   workspaceId: string,
   token: string,
   credentialName: string,
+  clientId: CodingAgentClientId,
 ): string {
+  const client = CODING_AGENT_CLIENTS.find((item) => item.id === clientId)!;
   return [
-    '# Set up native development client',
+    `# Set up ${client.label}`,
     '',
     `Authenticate with this workspace's development credential. It grants the agent read access to workspace context plus authorized edit and run operations. Use the manifest URL to discover and install required skills, configuration, and rules.`,
     '',
@@ -36,13 +46,18 @@ function buildSetupInstructions(
     `**Credential (${credentialName}):**`,
     token,
     '',
+    '**Selected client profile:**',
+    client.label,
+    '',
+    `**Profile ID:** ${client.id}`,
+    '',
     '## Instructions for trusted receiving agent',
     '',
-    '1. **Fetch the manifest** from the URL above with an Authorization: Bearer <credential> header. Choose the profile for your agent client.',
+    `1. **Fetch the manifest** from the URL above with an Authorization: Bearer <credential> header. Use only the selected \`${client.id}\` profile.`,
     '',
     '2. **Download and verify** all required skills, rules, and configuration files. Verify checksums as indicated in the manifest.',
     '',
-    '3. **Install locally for your agent client** using that profile’s destinations and merge instructions. Preserve unrelated configuration, provider settings, and user rules; update managed entries without duplicating them. Keep setup files separate from the remote workspace’s application source.',
+    '3. **Install locally for the selected profile** using that profile’s destinations and merge instructions. Preserve unrelated configuration, provider settings, and user rules; update managed entries without duplicating them. Keep setup files separate from the remote workspace’s application source.',
     '',
     '4. **Store the credential privately** outside version control. Arrange the environment variable(s) declared in the manifest when launching your client.',
     '',
@@ -55,6 +70,12 @@ function buildSetupInstructions(
     'If this credential has been revoked or rotated, create or rotate a new credential instead of re-using it.',
   ].join('\n');
 }
+
+const NATIVE_MANIFEST_CLIENT_IDS = new Set<CodingAgentClientId>([
+  'opencode',
+  'claude-code',
+  'codex',
+]);
 
 function getCredentialStatus(
   credential: WorkspaceDevelopmentCredential,
@@ -97,7 +118,11 @@ function SetupSteps({ step }: { step: SetupStep }) {
   );
 }
 
-export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAgentPanelProps) {
+export function ConnectYourAgentPanel({
+  workspaceId,
+  canManage,
+  selectionRequest,
+}: ConnectYourAgentPanelProps) {
   const [credentials, setCredentials] = useState<WorkspaceDevelopmentCredential[]>([]);
   const [token, setToken] = useState<string | null>(null);
   const [tokenCredentialId, setTokenCredentialId] = useState<string | null>(null);
@@ -107,9 +132,14 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
   const [pendingRotationId, setPendingRotationId] = useState<string | null>(null);
   const [name, setName] = useState('External agent');
   const [loading, setLoading] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedClientId, setSelectedClientId] = useState<CodingAgentClientId>('opencode');
+  const [instructionsExpanded, setInstructionsExpanded] = useState(false);
   const workspaceRef = useRef(workspaceId);
   const canManageRef = useRef(canManage);
+  const selectedRequestIdRef = useRef<number | null>(null);
+  const selectedWorkspaceRef = useRef(workspaceId);
   workspaceRef.current = workspaceId;
   canManageRef.current = canManage;
 
@@ -148,6 +178,7 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
     setStep('create');
     setShowCreateForm(true);
     setPendingRotationId(null);
+    setIsCreating(false);
     setError(null);
     if (!canManage) return;
 
@@ -173,7 +204,27 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
     };
   }, [canManage, isCurrentContext, workspaceId]);
 
+  useEffect(() => {
+    const workspaceChanged = selectedWorkspaceRef.current !== workspaceId;
+    if (workspaceChanged) {
+      selectedWorkspaceRef.current = workspaceId;
+      selectedRequestIdRef.current = null;
+      setSelectedClientId('opencode');
+      setInstructionsExpanded(false);
+    }
+
+    if (
+      selectionRequest?.workspaceId === workspaceId &&
+      selectionRequest.requestId !== selectedRequestIdRef.current
+    ) {
+      selectedRequestIdRef.current = selectionRequest.requestId;
+      setSelectedClientId(selectionRequest.clientId);
+      setInstructionsExpanded(true);
+    }
+  }, [selectionRequest, workspaceId]);
+
   const createCredential = () => {
+    setIsCreating(true);
     void runWorkspaceAction(async (requestedWorkspaceId) => {
       const created = await api.createWorkspaceDevelopmentCredential(requestedWorkspaceId, {
         name: name.trim() || 'External agent',
@@ -186,7 +237,9 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
         setStep('connect');
         setShowCreateForm(false);
       }
-    }, 'Failed to create credential');
+    }, 'Failed to create credential').finally(() => {
+      if (isCurrentContext(workspaceId)) setIsCreating(false);
+    });
   };
 
   const rotateCredential = () => {
@@ -244,14 +297,57 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
         className="userspace-connect-agent-body"
         data-userspace-panel="connect-your-agent-content"
       >
-        <header className="userspace-connect-agent-header">
-          <div>
-            <h3>Coding Agent Setup</h3>
-            <p className="muted">
-              Create access, connect your trusted coding agent, then start working.
-            </p>
+        <section className="coding-agent-setup-guide" aria-label="Coding agent connection guide">
+          <div className="coding-agent-setup-endpoint">
+            <div>
+              <span className="coding-agent-setup-eyebrow">MCP endpoint</span>
+              <code>{mcpUrl}</code>
+            </div>
+            <InlineCopyButton
+              copyText={mcpUrl}
+              className="btn btn-secondary btn-sm"
+              title="Copy MCP endpoint"
+              ariaLabel="Copy MCP endpoint"
+              label="Copy endpoint"
+            />
           </div>
-        </header>
+          <div
+            className="coding-agent-setup-client-picker"
+            role="group"
+            aria-label="Coding agent client"
+          >
+            {CODING_AGENT_CLIENTS.map((client) => (
+              <button
+                key={client.id}
+                type="button"
+                className="btn btn-secondary btn-sm coding-agent-client-btn"
+                data-client-id={client.id}
+                aria-pressed={selectedClientId === client.id && instructionsExpanded}
+                aria-expanded={selectedClientId === client.id && instructionsExpanded}
+                aria-controls={`workspace-agent-client-guide-${workspaceId}`}
+                onClick={() => {
+                  if (selectedClientId === client.id && instructionsExpanded) {
+                    setInstructionsExpanded(false);
+                    return;
+                  }
+                  setSelectedClientId(client.id);
+                  setInstructionsExpanded(true);
+                }}
+              >
+                {client.label}
+              </button>
+            ))}
+          </div>
+          <div id={`workspace-agent-client-guide-${workspaceId}`}>
+            {instructionsExpanded && (
+              <CodingAgentClientGuide
+                clientId={selectedClientId}
+                mcpUrl={mcpUrl}
+                workspaceId={workspaceId}
+              />
+            )}
+          </div>
+        </section>
 
         {!canManage ? (
           <p className="muted">
@@ -295,6 +391,7 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
                         type="button"
                         className="close-btn"
                         aria-label="Dismiss new agent form"
+                        disabled={loading}
                         onClick={() => setShowCreateForm(false)}
                       >
                         <X size={16} />
@@ -324,7 +421,7 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
                       disabled={loading}
                       onClick={createCredential}
                     >
-                      Create credential and continue
+                      {isCreating ? 'Creating credential…' : 'Create credential and continue'}
                     </button>
                   </div>
                 </div>
@@ -434,40 +531,15 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
                                 data-userspace-panel="setup-instructions"
                               >
                                 <h5>Connect agent</h5>
-                                {hasSecret ? (
-                                  <>
+                                {selectedClientId === 'chatgpt' ? (
+                                  <div className="userspace-connect-agent-recovery">
                                     <p>
-                                      Copy these instructions and paste them into a new conversation
-                                      with your trusted coding agent. They include this credential
-                                      and explain the read, edit, and run access it grants.
+                                      This scoped workspace credential cannot connect ChatGPT. Use
+                                      the ChatGPT OAuth-route guidance above instead; rotating it
+                                      will not make it compatible.
                                     </p>
-                                    <InlineCopyButton
-                                      copyText={() =>
-                                        buildSetupInstructions(
-                                          bootstrapManifestUrl,
-                                          workspaceId,
-                                          token,
-                                          credential.name,
-                                        )
-                                      }
-                                      className="btn btn-primary btn-sm"
-                                      title="Copy setup instructions"
-                                      ariaLabel="Copy setup instructions"
-                                      label="Copy setup instructions"
-                                    />
-                                    <details className="userspace-connect-agent-preview">
-                                      <summary>Preview setup instructions</summary>
-                                      <pre>
-                                        {buildSetupInstructions(
-                                          bootstrapManifestUrl,
-                                          workspaceId,
-                                          token,
-                                          credential.name,
-                                        )}
-                                      </pre>
-                                    </details>
-                                  </>
-                                ) : (
+                                  </div>
+                                ) : !hasSecret ? (
                                   <div className="userspace-connect-agent-recovery">
                                     <p>
                                       Your secret is only shown when created or rotated. To recover
@@ -483,6 +555,49 @@ export function ConnectYourAgentPanel({ workspaceId, canManage }: ConnectYourAge
                                     >
                                       Rotate credential
                                     </button>
+                                  </div>
+                                ) : NATIVE_MANIFEST_CLIENT_IDS.has(selectedClientId) ? (
+                                  <>
+                                    <p>
+                                      Copy these instructions and paste them into a new conversation
+                                      with your trusted coding agent. They include this credential
+                                      and explain the read, edit, and run access it grants.
+                                    </p>
+                                    <InlineCopyButton
+                                      copyText={() =>
+                                        buildSetupInstructions(
+                                          bootstrapManifestUrl,
+                                          workspaceId,
+                                          token,
+                                          credential.name,
+                                          selectedClientId,
+                                        )
+                                      }
+                                      className="btn btn-primary btn-sm"
+                                      title="Copy setup instructions"
+                                      ariaLabel="Copy setup instructions"
+                                      label="Copy setup instructions"
+                                    />
+                                    <details className="userspace-connect-agent-preview">
+                                      <summary>Preview setup instructions</summary>
+                                      <pre>
+                                        {buildSetupInstructions(
+                                          bootstrapManifestUrl,
+                                          workspaceId,
+                                          token,
+                                          credential.name,
+                                          selectedClientId,
+                                        )}
+                                      </pre>
+                                    </details>
+                                  </>
+                                ) : (
+                                  <div className="userspace-connect-agent-manual-ready">
+                                    <p>
+                                      Follow the selected client guide above. Copy this credential
+                                      explicitly from Manual connection details when you are ready
+                                      to add it to your private local store.
+                                    </p>
                                   </div>
                                 )}
                                 <details
