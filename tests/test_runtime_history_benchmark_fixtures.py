@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import unittest
+import zlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -116,6 +117,30 @@ class BenchmarkFixtureTests(unittest.TestCase):
                 self.assertGreater(wal_path.stat().st_size, 0)
             finally:
                 connection.close()
+
+    def test_fixture_zlib_compression_ratio_exceeds_threshold(self) -> None:
+        """A raw payload is effectively incompressible."""
+        payload = SQLiteBenchmarkFixture(size_mib=1, seed=42)._deterministic_payload(0)
+        self.assertEqual(8192, len(payload))
+        compression_ratio = len(zlib.compress(payload, level=6)) / len(payload)
+        self.assertGreater(compression_ratio, 0.95)
+
+    def test_payload_generation_is_deterministic(self) -> None:
+        first = SQLiteBenchmarkFixture(size_mib=256, seed=42)
+        second = SQLiteBenchmarkFixture(size_mib=256, seed=42)
+        self.assertEqual(first._deterministic_payload(0), second._deterministic_payload(0))
+
+    def test_original_and_mutation_payload_namespaces_are_disjoint_at_large_size(self) -> None:
+        """Phase identity prevents offset collisions without allocating 256 MiB."""
+        fixture = SQLiteBenchmarkFixture(size_mib=256, seed=42)
+        original = fixture._deterministic_payload(0)
+        mutations = {
+            fixture._deterministic_payload(0, phase="sparse"),
+            fixture._deterministic_payload(0, phase="append"),
+            fixture._deterministic_payload(0, phase="wal"),
+        }
+        self.assertNotIn(original, mutations)
+        self.assertEqual(3, len(mutations))
 
 
 if __name__ == "__main__":

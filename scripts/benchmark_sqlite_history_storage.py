@@ -13,7 +13,6 @@ import argparse
 import asyncio
 import hashlib
 import json
-import os
 import resource
 import sqlite3
 import sys
@@ -30,10 +29,7 @@ from runtime.worker.sqlite_history.models import ResticArtifact
 from runtime.worker.sqlite_history.repository import ResticRepository
 from scripts.sqlite_history_benchmark_fixtures import SQLiteBenchmarkFixture
 
-DEFAULT_RESTIC_BINARIES = (
-    Path("/var/folders/v2/jhfs1xs518s0fv3tlh30zm400000gn/T/opencode/restic"),
-    Path("/opt/ragtime-backup/bin/restic"),
-)
+DEFAULT_RESTIC_BINARIES = (Path("/opt/ragtime-backup/bin/restic"),)
 SCENARIOS = ("unchanged", "sparse", "append", "wal", "vacuum")
 
 
@@ -118,12 +114,14 @@ def _capture(source: Path, destination: Path, *, source_connection: sqlite3.Conn
 
 
 async def _ingest(repository: ResticRepository, image: Path, operation_id: str) -> tuple[ResticArtifact, float]:
+    # Hashing is preparation/verification input, not repository ingest time.
+    source_sha256 = _sha256_file(image)
     started = time.perf_counter()
     artifact = await repository.ingest(
         image,
         workspace_id="benchmark-workspace",
         operation_id=operation_id,
-        sha256=_sha256_file(image),
+        sha256=source_sha256,
         size_bytes=image.stat().st_size,
     )
     return artifact, time.perf_counter() - started

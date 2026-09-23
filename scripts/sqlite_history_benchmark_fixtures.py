@@ -25,15 +25,15 @@ class SQLiteBenchmarkFixture:
         self.seed = seed
         self.target_bytes = size_mib * 1024 * 1024
 
-    def _deterministic_payload(self, offset: int) -> bytes:
-        """Generate deterministic, incompressible payload from seed + offset."""
-        # Use seed and offset to generate a stable pseudorandom sequence
-        h = hashlib.sha256()
-        h.update(self.seed.to_bytes(8, "little"))
-        h.update(offset.to_bytes(8, "little"))
-        # Repeat to fill the required size; incompressible due to hash output
-        digest = h.digest()
-        return digest * ((8192 // len(digest)) + 1)
+    def _deterministic_payload(self, offset: int, *, phase: str = "original") -> bytes:
+        """Return one deterministic, high-entropy, phase-separated payload.
+
+        The counter is expanded through SHA-256 rather than repeating one digest.
+        Size, seed, and mutation phase are all part of the domain separator, so a
+        mutation cannot reuse an original payload merely by choosing an offset.
+        """
+        identity = (f"sqlite-history-benchmark-v1\0{self.seed}\0{self.size_mib}\0{phase}\0{offset}\0").encode()
+        return b"".join(hashlib.sha256(identity + block.to_bytes(8, "little")).digest() for block in range(8192 // hashlib.sha256().digest_size))
 
     def create_fixture(self, path: Path) -> tuple[str, int]:
         """Create a deterministic database at the target size.
@@ -50,8 +50,6 @@ class SQLiteBenchmarkFixture:
             bytes_written = 0
             offset = 0
             row_id = 1
-            chunk_size = 8192  # Deterministic chunk for each row
-
             while bytes_written < self.target_bytes:
                 payload = self._deterministic_payload(offset)
                 conn.execute("INSERT INTO records(payload) VALUES (?)", (payload,))
@@ -87,7 +85,7 @@ class SQLiteBenchmarkFixture:
             # Update rows at deterministic offsets
             for i in range(mutations):
                 row_id = (i * (total_rows // mutations)) + 1
-                new_payload = self._deterministic_payload(offset=10000 + i)
+                new_payload = self._deterministic_payload(offset=i, phase="sparse")
                 conn.execute("UPDATE records SET payload = ? WHERE id = ?", (new_payload, row_id))
 
             conn.commit()
@@ -106,11 +104,10 @@ class SQLiteBenchmarkFixture:
             target_growth_bytes = max(self.target_bytes // 10, int(bytes_before * append_ratio))
 
             bytes_added = 0
-            chunk_size = 8192
             new_id = max_id + 1
 
             while bytes_added < target_growth_bytes:
-                payload = self._deterministic_payload(offset=20000 + new_id)
+                payload = self._deterministic_payload(offset=new_id, phase="append")
                 conn.execute("INSERT INTO records(payload) VALUES (?)", (payload,))
                 bytes_added += len(payload)
                 new_id += 1
@@ -129,7 +126,7 @@ class SQLiteBenchmarkFixture:
         conn.execute("PRAGMA journal_mode=WAL")
         (max_id,) = conn.execute("SELECT MAX(id) FROM records").fetchone() or (0,)
         max_id = max_id or 0
-        payload = self._deterministic_payload(offset=30000 + max_id)
+        payload = self._deterministic_payload(offset=max_id, phase="wal")
         conn.execute("INSERT INTO records(payload) VALUES (?)", (payload,))
         conn.commit()
         return conn
