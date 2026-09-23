@@ -21732,7 +21732,7 @@ class UserSpaceService:
         }
 
         async with self._snapshot_operation_semaphore:
-            async with self._guarded_code_restore(workspace_id):
+            async with self._guarded_code_restore(workspace_id, user_id=user_id):
                 # Reset/checkout are intentionally inside the runtime fence;
                 # the guard restores consistent live DB copies afterwards.
                 await self._run_git(workspace_id, ["reset", "--hard"], check=False)
@@ -22149,7 +22149,7 @@ class UserSpaceService:
             await self._restore_snapshot_by_id(workspace_id, target_snapshot_id, user_id)
         else:
             async with self._snapshot_operation_semaphore:
-                async with self._guarded_code_restore(workspace_id):
+                async with self._guarded_code_restore(workspace_id, user_id=user_id):
                     if branch_ref_name:
                         await self._run_git(workspace_id, ["checkout", branch_ref_name], check=False)
                 await self._activate_branch(workspace_id, branch_id)

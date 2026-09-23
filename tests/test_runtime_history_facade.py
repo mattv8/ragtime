@@ -121,19 +121,16 @@ class RuntimeHistoryFacadeTests(unittest.IsolatedAsyncioTestCase):
                 {"acknowledged": True},
             ]
         )
-        service_module = ModuleType("ragtime.userspace.service")
         queue_module = ModuleType("ragtime.userspace.sqlite_backup_queue")
         setattr(queue_module, "get_sqlite_backup_queue_service", lambda: queue)
-        with tempfile.TemporaryDirectory() as root:
-            workspace = Path(root) / "workspaces" / "workspace-1"
-            workspace.mkdir(parents=True)
-            setattr(service_module, "userspace_service", SimpleNamespace(root_path=Path(root)))
-            with (
-                mock.patch.dict("sys.modules", {"ragtime.userspace.service": service_module, "ragtime.userspace.sqlite_backup_queue": queue_module}),
-                mock.patch.object(service, "runtime_history_active", new_callable=mock.AsyncMock, return_value=True),
-                mock.patch.object(service, "_runtime_history_request", history_request),
-            ):
-                await service.run_maintenance_once()
+        db = SimpleNamespace(query_raw=mock.AsyncMock(return_value=[{"id": "workspace-1"}]))
+        with (
+            mock.patch.dict("sys.modules", {"ragtime.userspace.sqlite_backup_queue": queue_module}),
+            mock.patch("ragtime.userspace.sqlite_history.get_db", new=mock.AsyncMock(return_value=db)),
+            mock.patch.object(service, "runtime_history_active", new_callable=mock.AsyncMock, return_value=True),
+            mock.patch.object(service, "_runtime_history_request", history_request),
+        ):
+            await service.run_maintenance_once()
 
         self.assertEqual(2, queue.enqueue.await_count)
         self.assertEqual("scheduled:workspace-1:occurrence-1", queue.enqueue.await_args_list[0].kwargs["request_key"])
@@ -141,6 +138,61 @@ class RuntimeHistoryFacadeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({}, service._runtime_due_receipts)
         self.assertEqual("/sqlite-history/due/claim", history_request.await_args_list[1].args[1])
         self.assertEqual("/workspaces/workspace-1/sqlite-history/due/ack", history_request.await_args_list[2].args[1])
+
+    async def test_runtime_capture_404_replays_exact_operation_payload(self) -> None:
+        service = SqliteHistoryService(lambda _workspace_id: Path("/must-not-open"))
+        operation_id = str(uuid4())
+        missing = HTTPException(status_code=404, detail="not found")
+        request = mock.AsyncMock(
+            side_effect=[
+                missing,
+                missing,
+                {"operation_id": operation_id, "phase": "completed", "database_outcomes": {}},
+            ]
+        )
+        with (
+            mock.patch.object(service, "runtime_history_active", new_callable=mock.AsyncMock, return_value=True),
+            mock.patch.object(service, "_runtime_history_request", request),
+        ):
+            await service.capture_workspace_databases("workspace/one", trigger="manual", capture_job_id=operation_id)
+
+        self.assertEqual(3, request.await_count)
+        self.assertEqual(request.await_args_list[0].kwargs["payload"], request.await_args_list[2].kwargs["payload"])
+        self.assertEqual(operation_id, request.await_args_list[2].kwargs["payload"]["operation_id"])
+        self.assertIn("workspace%2Fone", request.await_args_list[0].args[1])
+
+    async def test_runtime_scheduler_pages_database_membership_in_eight_workspace_rotations(self) -> None:
+        service = SqliteHistoryService(lambda _workspace_id: Path("/must-not-open"))
+        db = SimpleNamespace(
+            query_raw=mock.AsyncMock(
+                side_effect=[
+                    [{"id": f"workspace-{number}"} for number in range(8)],
+                    [{"id": "workspace-8"}],
+                ]
+            )
+        )
+        queue = SimpleNamespace(enqueue=mock.AsyncMock(return_value={"id": "scheduled-job"}))
+        queue_module = ModuleType("ragtime.userspace.sqlite_backup_queue")
+        setattr(queue_module, "get_sqlite_backup_queue_service", lambda: queue)
+        request = mock.AsyncMock(return_value={"claims": []})
+        with (
+            mock.patch.dict("sys.modules", {"ragtime.userspace.sqlite_backup_queue": queue_module}),
+            mock.patch("ragtime.userspace.sqlite_history.get_db", new=mock.AsyncMock(return_value=db)),
+            mock.patch.object(service, "runtime_history_active", new_callable=mock.AsyncMock, return_value=True),
+            mock.patch.object(service, "_runtime_history_request", request),
+        ):
+            await service.run_maintenance_once()
+            await service.run_maintenance_once()
+
+        self.assertEqual(
+            [
+                mock.call("SELECT id FROM workspaces ORDER BY id LIMIT $1 OFFSET $2", 8, 0),
+                mock.call("SELECT id FROM workspaces ORDER BY id LIMIT $1 OFFSET $2", 8, 8),
+            ],
+            db.query_raw.await_args_list,
+        )
+        self.assertEqual([f"workspace-{number}" for number in range(8)], request.await_args_list[0].kwargs["payload"]["workspace_ids"])
+        self.assertEqual(["workspace-8"], request.await_args_list[1].kwargs["payload"]["workspace_ids"])
 
     async def test_configured_runtime_with_unknown_activation_fails_closed(self) -> None:
         service = SqliteHistoryService(lambda _workspace_id: Path("/must-not-open"))

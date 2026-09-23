@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any, AsyncIterator
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -29,6 +30,7 @@ from ragtime.userspace.sqlite_history_models import (
     SqliteHistoryRestoreRequest,
     SqliteHistoryRestoreResponse,
 )
+from ragtime.userspace.sqlite_history_transport import ClosingStreamingResponse
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space SQLite History"])
 logger = get_logger(__name__)
@@ -69,12 +71,13 @@ async def _sqlite_history_list_payload(
     snapshot_id: str | None = None,
 ) -> dict[str, Any]:
     service = get_sqlite_history_service()
+    state = await service.history_state(workspace_id, database_name=database_name, snapshot_id=snapshot_id)
     response = SqliteHistoryListResponse.model_validate(
         {
             "workspace_id": workspace_id,
-            "backups": await service.list_backups(workspace_id, database_name=database_name, snapshot_id=snapshot_id),
+            "backups": state["backups"],
             "can_manage": True,
-            "interrupted_maintenance": await service.interrupted_maintenance(workspace_id),
+            "interrupted_maintenance": state["interrupted_maintenance"],
         }
     )
     return response.model_dump(mode="json")
@@ -257,25 +260,39 @@ async def download_sqlite_history(workspace_id: str, backup_id: str, user: Any =
         path = await get_sqlite_history_service().download_path(workspace_id, backup_id)
 
         async def legacy_stream() -> AsyncIterator[bytes]:
+            source = None
             try:
-                with path.open("rb") as source:
-                    while chunk := source.read(64 * 1024):
-                        yield chunk
+                source = await asyncio.to_thread(path.open, "rb")
+                while chunk := await asyncio.to_thread(source.read, 64 * 1024):
+                    yield chunk
             finally:
-                path.unlink(missing_ok=True)
+                if source is not None:
+                    await asyncio.to_thread(source.close)
 
-        return StreamingResponse(
+        async def cleanup() -> None:
+            await asyncio.to_thread(path.unlink, missing_ok=True)
+
+        return ClosingStreamingResponse(
             legacy_stream(),
+            cleanup=cleanup,
             media_type="application/vnd.sqlite3",
             headers={"Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="{backup_id}.sqlite3"'},
         )
 
     config = get_runtime_manager_request_config()
     client = httpx.AsyncClient(timeout=httpx.Timeout(config.timeout_seconds), follow_redirects=True)
-    response = await client.send(
-        client.build_request("GET", f"{config.base_url}/workspaces/{workspace_id}/sqlite-history/backups/{backup_id}/download", headers=config.headers),
-        stream=True,
-    )
+    try:
+        response = await client.send(
+            client.build_request(
+                "GET",
+                f"{config.base_url}/workspaces/{quote(workspace_id, safe='')}/sqlite-history/backups/{quote(backup_id, safe='')}/download",
+                headers=config.headers,
+            ),
+            stream=True,
+        )
+    except BaseException:
+        await client.aclose()
+        raise
     if response.status_code >= 400:
         detail = (await response.aread()).decode(errors="replace")[:256] or "Runtime SQLite history download failed"
         await response.aclose()
@@ -290,8 +307,9 @@ async def download_sqlite_history(workspace_id: str, backup_id: str, user: Any =
             await response.aclose()
             await client.aclose()
 
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         runtime_stream(),
+        cleanup=client.aclose,
         media_type=response.headers.get("content-type", "application/vnd.sqlite3"),
         headers={"Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="{backup_id}.sqlite3"'},
     )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 from uuid import uuid4
 
@@ -36,6 +37,9 @@ class _Store:
 
 
 class _History:
+    async def runtime_history_active(self) -> bool:
+        return False
+
     async def capture_workspace_databases(self, workspace_id: str, **kwargs):
         self.kwargs = kwargs
         await kwargs["progress_callback"](1, 1)
@@ -119,6 +123,53 @@ class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
         ):
             await service._run_claimed(job)
         self.assertEqual("cancelled", store.finished[0]["status"])
+
+    async def test_runtime_shutdown_during_initial_get_detaches_before_capture(self) -> None:
+        job = self._job()
+        store = _Store(job)
+        service = SqliteBackupQueueService(store)
+        get_started = asyncio.Event()
+
+        async def delayed_get(_workspace_id: str, _job_id: str) -> dict:
+            get_started.set()
+            await asyncio.Event().wait()
+            return job
+
+        history = _History()
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.object(queue.settings, "index_data_path", temp),
+            mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=history),
+            mock.patch.object(store, "get_job", new=delayed_get),
+            mock.patch.object(history, "capture_workspace_databases", new=mock.AsyncMock()) as capture,
+        ):
+            activation = Path(temp) / "_userspace" / "sqlite-history-runtime-activation-v2.json"
+            activation.parent.mkdir()
+            activation.write_text("{}")
+            service._worker_task = asyncio.create_task(service._run_claimed(job))
+            await get_started.wait()
+            await service.stop()
+
+        self.assertFalse(store.finished)
+        capture.assert_not_awaited()
+
+    async def test_configured_but_inactive_runtime_capture_remains_legacy_and_does_not_ack(self) -> None:
+        job = self._job()
+        store = _Store(job)
+        service = SqliteBackupQueueService(store)
+        history = _History()
+        ack = mock.AsyncMock()
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.object(queue.settings, "index_data_path", temp),
+            mock.patch.object(queue.settings, "userspace_runtime_manager_url", "http://runtime:8090"),
+            mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=history),
+            mock.patch.object(queue, "runtime_manager_request", ack),
+        ):
+            await service._run_claimed(job)
+
+        self.assertEqual("completed", store.finished[0]["status"])
+        ack.assert_not_awaited()
 
     async def test_known_failed_outcomes_have_safe_summary(self) -> None:
         job = self._job()

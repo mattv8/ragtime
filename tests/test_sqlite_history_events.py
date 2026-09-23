@@ -9,6 +9,7 @@ from unittest import mock
 from fastapi import HTTPException, Request
 
 from ragtime.userspace import sqlite_history_routes as routes
+from ragtime.userspace.sqlite_history_transport import ClosingStreamingResponse
 
 
 def _backup(**changes):
@@ -64,6 +65,7 @@ class SqliteHistoryEventRouteTests(unittest.IsolatedAsyncioTestCase):
         self.history = SimpleNamespace(
             list_backups=mock.AsyncMock(return_value=[_backup()]),
             interrupted_maintenance=mock.AsyncMock(return_value=None),
+            history_state=mock.AsyncMock(return_value={"backups": [_backup()], "interrupted_maintenance": None}),
         )
         self.queue = SimpleNamespace(list_jobs=mock.AsyncMock(return_value=[_job()]))
         self.manage = mock.patch.object(routes, "_manage", new_callable=mock.AsyncMock)
@@ -98,7 +100,7 @@ class SqliteHistoryEventRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("no-store", response.headers["cache-control"])
         self.assertEqual("no", response.headers["x-accel-buffering"])
         self.assertEqual("event: history_changed\ndata: {}\n\n", await anext(events))
-        self.history.list_backups.assert_awaited_once_with("workspace-1", database_name="app.sqlite3", snapshot_id="snapshot-1")
+        self.history.history_state.assert_awaited_once_with("workspace-1", database_name="app.sqlite3", snapshot_id="snapshot-1")
         self.queue.list_jobs.assert_awaited_once_with("workspace-1", database_name="app.sqlite3", snapshot_id="snapshot-1", limit=50)
 
     async def test_streams_change_then_keepalive_using_active_and_idle_intervals(self) -> None:
@@ -131,7 +133,7 @@ class SqliteHistoryEventRouteTests(unittest.IsolatedAsyncioTestCase):
                 await self._stream()
 
         self.assertEqual(403, error.exception.status_code)
-        self.history.list_backups.assert_not_awaited()
+        self.history.history_state.assert_not_awaited()
         self.queue.list_jobs.assert_not_awaited()
 
     async def test_denies_before_creating_stream_and_revokes_later_access(self) -> None:
@@ -155,4 +157,22 @@ class SqliteHistoryEventRouteTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(StopAsyncIteration):
             await anext(events)
-        self.history.list_backups.assert_awaited_once()
+        self.history.history_state.assert_awaited_once()
+
+    async def test_streaming_cleanup_runs_when_asgi_send_fails_before_body_iteration(self) -> None:
+        cleanup = mock.AsyncMock()
+
+        async def body():
+            yield b"unreachable"
+
+        async def receive():
+            await asyncio.Event().wait()
+
+        async def send(_message):
+            raise RuntimeError("client disconnected")
+
+        response = ClosingStreamingResponse(body(), cleanup=cleanup)
+        with self.assertRaisesRegex(RuntimeError, "client disconnected"):
+            await response({"type": "http", "method": "GET", "headers": []}, receive, send)
+
+        cleanup.assert_awaited_once()

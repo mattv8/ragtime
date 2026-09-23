@@ -9,7 +9,10 @@ import stat
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID, uuid4
+
+from fastapi import HTTPException
 
 from ragtime.config import settings
 from ragtime.core.logging import get_logger
@@ -93,6 +96,11 @@ def _release_job_lock(fd: int) -> None:
         os.close(fd)
 
 
+def _runtime_history_was_activated() -> bool:
+    """Read the durable cutover fact without awaiting a runtime request."""
+    return os.path.lexists(Path(settings.index_data_path) / "_userspace" / "sqlite-history-runtime-activation-v2.json")
+
+
 @contextmanager
 def _held_job_lock(job_id: str) -> Any:
     fd = _try_job_lock(job_id)
@@ -122,6 +130,7 @@ class SqliteBackupQueueService:
         self._owned_jobs: dict[str, str] = {}
         self._ownership_lost: set[str] = set()
         self._unknown_failures: set[str] = set()
+        self._runtime_jobs: dict[str, bool] = {}
         self._next_maintenance = 0.0
 
     async def start(self) -> None:
@@ -140,14 +149,24 @@ class SqliteBackupQueueService:
     async def stop(self) -> None:
         self._stopping = True
         self._wake.set()
-        # Mark only work this process owns. Running captures observe this at the
-        # next database boundary and drain their confined child before finalizing.
-        await asyncio.gather(
-            *(self._store.cancel(workspace_id, job_id) for job_id, workspace_id in self._owned_jobs.items()),
-            return_exceptions=True,
-        )
+        runtime_jobs = {job_id for job_id in self._owned_jobs if self._runtime_jobs.get(job_id, False)}
+        legacy_jobs = {job_id: workspace_id for job_id, workspace_id in self._owned_jobs.items() if job_id not in runtime_jobs}
+        if legacy_jobs:
+            # Legacy work remains locally owned and retains its established
+            # cooperative cancellation behavior. Runtime receipts instead stay
+            # durable for a later observer to reconcile.
+            await asyncio.gather(
+                *(self._store.cancel(workspace_id, job_id) for job_id, workspace_id in legacy_jobs.items()),
+                return_exceptions=True,
+            )
         if self._worker_task is not None:
-            await self._worker_task
+            if runtime_jobs:
+                self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                if not runtime_jobs:
+                    raise
         self._worker_task = None
         self._owned_jobs.clear()
 
@@ -214,6 +233,10 @@ class SqliteBackupQueueService:
         owner_token = job.get("owner_token") or self._owner_token
         workspace_id = job["workspace_id"]
         self._owned_jobs[job_id] = workspace_id
+        # This must happen before the first await: shutdown uses the durable
+        # cutover marker to decide whether to detach rather than cancel work.
+        # A merely configured but inactive runtime remains a legacy capture.
+        self._runtime_jobs[job_id] = _runtime_history_was_activated()
         self._ownership_lost.discard(job_id)
         self._unknown_failures.discard(job_id)
         lock_fd: int | None = None
@@ -227,8 +250,10 @@ class SqliteBackupQueueService:
             latest = await self._store.get_job(workspace_id, job_id)
             if latest is None or latest.get("status") != "running" or latest.get("owner_token") != owner_token:
                 return
-            if self._stopping:
+            if self._stopping and not self._runtime_jobs.get(job_id, False):
                 await self._store.finish(job_id, owner_token, status="cancelled", backup_ids=[])
+                return
+            if self._stopping:
                 return
             heartbeat_task = asyncio.create_task(self._heartbeat_loop(job_id, owner_token))
             outcomes = await self._capture(job, owner_token, lock_fd)
@@ -244,12 +269,29 @@ class SqliteBackupQueueService:
                 if not finished:
                     logger.warning("SQLite backup queue ownership lost before interruption job_id=%s", job_id)
                 return
-            cancelled = self._stopping or job_id in self._ownership_lost or await self._store.is_cancel_requested(job_id, owner_token)
+            cancelled = (
+                (self._stopping and not self._runtime_jobs.get(job_id, False))
+                or job_id in self._ownership_lost
+                or await self._store.is_cancel_requested(job_id, owner_token)
+            )
             has_failure = any(outcome.get("status") == "failed" for outcome in outcomes)
             status = "cancelled" if cancelled else "failed" if has_failure else "completed"
             error_message = "One or more SQLite databases could not be captured" if has_failure else None
-            if not await self._store.finish(job_id, owner_token, status=status, backup_ids=backup_ids, error_message=error_message):
+            finished = await self._store.finish(job_id, owner_token, status=status, backup_ids=backup_ids, error_message=error_message)
+            if not finished:
                 logger.warning("SQLite backup queue ownership lost before completion job_id=%s", job_id)
+            elif self._runtime_jobs.get(job_id, False):
+                try:
+                    await runtime_manager_request(
+                        "POST",
+                        f"/workspaces/{quote(workspace_id, safe='')}/sqlite-history/captures/{quote(job_id, safe='')}/ack",
+                        surface_error_status=True,
+                        unavailable_detail_prefix="Runtime SQLite history is unavailable",
+                    )
+                except Exception:
+                    # The durable terminal row is the retry outbox; recovery
+                    # retries acknowledgement without changing finished_at.
+                    logger.warning("Could not acknowledge runtime SQLite capture job_id=%s", job_id, exc_info=True)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -278,6 +320,7 @@ class SqliteBackupQueueService:
             if lock_fd is not None:
                 _release_job_lock(lock_fd)
             self._owned_jobs.pop(job_id, None)
+            self._runtime_jobs.pop(job_id, None)
             self._ownership_lost.discard(job_id)
             self._unknown_failures.discard(job_id)
 
@@ -291,9 +334,11 @@ class SqliteBackupQueueService:
     async def _capture(self, job: dict[str, Any], owner_token: str, lock_fd: int) -> list[dict[str, Any]]:
         from ragtime.userspace.sqlite_history import get_sqlite_history_service
 
+        history = get_sqlite_history_service()
+
         async def cancel_check() -> bool:
             return (
-                self._stopping
+                (self._stopping and not self._runtime_jobs.get(job["id"], False))
                 or job["id"] in self._ownership_lost
                 or job["id"] in self._unknown_failures
                 or await self._store.is_cancel_requested(job["id"], owner_token)
@@ -307,7 +352,7 @@ class SqliteBackupQueueService:
                 self._ownership_lost.add(job["id"])
 
         with inherit_capture_fds((lock_fd,)):
-            return await get_sqlite_history_service().capture_workspace_databases(
+            return await history.capture_workspace_databases(
                 job["workspace_id"],
                 trigger=job["trigger"],
                 database_names=set(job.get("database_names") or ()) or None,
@@ -344,20 +389,48 @@ class SqliteBackupQueueService:
             if hasattr(self._store, "reconcilable")
             else self._store.stale_running(older_than_seconds=120, limit=50)
         )
-        for job in candidates:
-            from ragtime.userspace.sqlite_history import get_sqlite_history_service
+        if not candidates:
+            return interrupted
 
-            if await get_sqlite_history_service().runtime_history_active():
+        from ragtime.userspace.sqlite_history import get_sqlite_history_service
+
+        history = get_sqlite_history_service()
+        runtime_active = await history.runtime_history_active()
+        for job in candidates:
+            if runtime_active:
                 owner_token = job.get("owner_token")
                 if not isinstance(owner_token, str):
                     continue
                 try:
                     receipt = await runtime_manager_request(
                         "GET",
-                        f"/workspaces/{job['workspace_id']}/sqlite-history/captures/{job['id']}",
+                        f"/workspaces/{quote(job['workspace_id'], safe='')}/sqlite-history/captures/{quote(job['id'], safe='')}",
                         surface_error_status=True,
                         unavailable_detail_prefix="Runtime SQLite history is unavailable",
                     )
+                except HTTPException as exc:
+                    if exc.status_code != 404 or job.get("status") not in {"running", "interrupted"}:
+                        logger.warning("Could not observe stale runtime SQLite capture job_id=%s error_type=%s", job["id"], type(exc).__name__)
+                        continue
+                    payload = history.runtime_capture_payload(
+                        job["id"],
+                        creator_id=job.get("requested_by_id") or "system",
+                        trigger=job["trigger"],
+                        database_names=list(job.get("database_names") or ()) or None,
+                        snapshot_id=job.get("snapshot_id"),
+                        snapshot_git_commit_hash=job.get("snapshot_git_commit_hash"),
+                    )
+                    try:
+                        receipt = await runtime_manager_request(
+                            "POST",
+                            f"/workspaces/{quote(job['workspace_id'], safe='')}/sqlite-history/captures",
+                            json_payload=payload,
+                            surface_error_status=True,
+                            unavailable_detail_prefix="Runtime SQLite history is unavailable",
+                        )
+                    except Exception as replay_error:
+                        logger.warning("Could not replay stale runtime SQLite capture job_id=%s error_type=%s", job["id"], type(replay_error).__name__)
+                        continue
                 except Exception as exc:
                     # A runtime outage or unknown transport outcome leaves the
                     # queue row unresolved.  Replaying under a fresh ID would
@@ -383,8 +456,29 @@ class SqliteBackupQueueService:
                     if project
                     else await self._store.finish(job["id"], owner_token, status=status, backup_ids=backup_ids, error_message=receipt.get("error"))
                 )
-                if projected:
+                if projected or job.get("status") in _TERMINAL:
                     interrupted.append(job["id"])
+                # Runtime receipts are retained until the durable PostgreSQL
+                # projection succeeds.  An ambiguous ACK is harmless: replay
+                # later uses the same capture ID and cannot start new work.
+                if projected or job.get("status") in _TERMINAL:
+                    try:
+                        await runtime_manager_request(
+                            "POST",
+                            f"/workspaces/{quote(job['workspace_id'], safe='')}/sqlite-history/captures/{quote(job['id'], safe='')}/ack",
+                            surface_error_status=True,
+                            unavailable_detail_prefix="Runtime SQLite history is unavailable",
+                        )
+                    except Exception as exc:
+                        # The terminal PostgreSQL row is the durable outbox.
+                        # Leave it eligible for a fair future reconciliation;
+                        # never overwrite its stable terminal timestamp merely
+                        # because acknowledgement transport was ambiguous.
+                        logger.warning(
+                            "Could not acknowledge terminal runtime SQLite capture job_id=%s error_type=%s",
+                            job["id"],
+                            type(exc).__name__,
+                        )
                 continue
             lock_fd = _try_job_lock(job["id"])
             if lock_fd is None:
