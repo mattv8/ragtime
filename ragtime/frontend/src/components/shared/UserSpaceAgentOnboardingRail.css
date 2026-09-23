@@ -80,8 +80,23 @@
   outline-offset: 2px;
 }
 
+.userspace-agent-onboarding-brand-icon {
+  display: block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: currentColor;
+}
+
+.userspace-agent-onboarding-brand-icon-mask {
+  background: currentColor;
+  mask: var(--provider-icon-url) center / contain no-repeat;
+  -webkit-mask: var(--provider-icon-url) center / contain no-repeat;
+}
+
 [data-theme-pack='modern'] .userspace-agent-onboarding-rail {
   gap: var(--workbench-gap);
+  margin-block-start: calc(10px - var(--workbench-gap));
   padding: var(--workbench-padding);
   border: var(--workbench-container-border);
   border-radius: var(--workbench-surface-radius);

@@ -28,6 +28,7 @@
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/nunito": "^5.3.0",
     "@fontsource/source-serif-4": "^5.3.0",
+    "@lobehub/icons-static-svg": "1.95.1",
     "@uiw/react-codemirror": "^4.25.4",
     "@vscode/codicons": "^0.0.46-24",
     "@xterm/addon-fit": "^0.11.0",
