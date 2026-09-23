@@ -128,6 +128,8 @@ COPY tests/test_runtime_history_bootstrap.py /runtime/tests/
 COPY tests/test_runtime_sqlite_history_bootstrap_inventory.py /runtime/tests/
 COPY tests/test_runtime_history_bootstrap_cli.py /runtime/tests/
 COPY tests/test_runtime_package_imports.py /runtime/tests/
+COPY tests/test_runtime_history_core_remediation.py /runtime/tests/
+COPY tests/test_runtime_history_coordination_remediation.py /runtime/tests/
 RUN pip install --no-cache-dir pytest \
     && /opt/ragtime-backup/bin/restic version | grep -F 'restic 0.19.1 ' \
     && pytest -q tests/test_runtime_restic_repository.py \
@@ -151,6 +153,8 @@ RUN pip install --no-cache-dir pytest \
                tests/test_runtime_history_bootstrap.py \
                tests/test_runtime_sqlite_history_bootstrap_inventory.py \
                tests/test_runtime_history_bootstrap_cli.py \
-               tests/test_runtime_package_imports.py
+               tests/test_runtime_package_imports.py \
+               tests/test_runtime_history_core_remediation.py \
+               tests/test_runtime_history_coordination_remediation.py
 
 FROM runtime-base AS runtime

@@ -54,3 +54,26 @@ class ResticInstallerTests(unittest.TestCase):
                 install_restic.install_restic("ppc64le", self.destination)
 
         urlopen.assert_not_called()
+
+    def test_applies_bounded_timeout_to_download(self) -> None:
+        payload = b"restic binary fixture"
+        archive = self.root / "restic.bz2"
+        archive.write_bytes(bz2.compress(payload))
+        expected_sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
+
+        with mock.patch.object(install_restic.urllib.request, "urlopen") as urlopen_mock:
+            mock_response = io.BytesIO(archive.read_bytes())
+            urlopen_mock.return_value.__enter__.return_value = mock_response
+
+            with mock.patch.dict(install_restic.RESTIC_SHA256_BY_ARCH, {"amd64": expected_sha256}, clear=True):
+                install_restic.install_restic("amd64", self.destination, archive_url=archive.as_uri())
+
+            # Verify urlopen was called with timeout parameter
+            urlopen_mock.assert_called_once()
+            call_args = urlopen_mock.call_args
+            # Check timeout keyword argument is set and bounded
+            self.assertIn("timeout", call_args.kwargs)
+            timeout_value = call_args.kwargs["timeout"]
+            self.assertIsInstance(timeout_value, int)
+            self.assertGreater(timeout_value, 0)
+            self.assertLessEqual(timeout_value, 600)  # Reasonable max like 10 minutes

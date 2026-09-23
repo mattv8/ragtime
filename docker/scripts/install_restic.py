@@ -19,6 +19,7 @@ RESTIC_SHA256_BY_ARCH = {
     "arm64": "a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465",
 }
 RESTIC_INSTALL_PATH = Path("/opt/ragtime-backup/bin/restic")
+RESTIC_DOWNLOAD_TIMEOUT_SECONDS = 300  # 5 minutes for archive download
 
 
 def restic_download_url(arch: str) -> str:
@@ -44,7 +45,7 @@ def install_restic(
         with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".restic-", suffix=".bz2", delete=False) as archive_file:
             archive_path = Path(archive_file.name)
             digest = hashlib.sha256()
-            with urllib.request.urlopen(archive_url or restic_download_url(arch)) as response:
+            with urllib.request.urlopen(archive_url or restic_download_url(arch), timeout=RESTIC_DOWNLOAD_TIMEOUT_SECONDS) as response:
                 while chunk := response.read(1024 * 1024):
                     digest.update(chunk)
                     archive_file.write(chunk)
