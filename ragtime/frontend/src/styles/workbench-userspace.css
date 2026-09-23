@@ -223,6 +223,19 @@
   background: var(--color-chrome);
 }
 
+[data-theme-pack='modern'] .userspace-snapshots-header {
+  background: var(--color-chrome);
+}
+
+[data-theme-pack='modern'] .userspace-snapshots-toggle {
+  min-height: unset;
+  border-radius: 0;
+}
+
+[data-theme-pack='modern'] .userspace-snapshots-header-db-history {
+  padding: 2px;
+}
+
 [data-theme-pack='modern'] .userspace-file-sidebar-header h4 {
   display: inline-flex;
   align-items: center;
