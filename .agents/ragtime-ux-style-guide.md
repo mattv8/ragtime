@@ -14,7 +14,8 @@ token/theme files, shared CSS, then this guide. Start with:
 - `ragtime/frontend/src/styles/theme.css` — base token contract and Default.
 - `ragtime/frontend/src/styles/themes/modern.css` and `themes/serif.css` — pack
   overrides and Modern's canonical workbench hierarchy.
-- `ragtime/frontend/src/styles/components.css`, `layout.css`, `workbench*.css`,
+- `ragtime/frontend/src/styles/components.css`, `layout.css`, `workbench.css`,
+  `workbench-chat.css`, `workbench-userspace.css`, `workbench-admin.css`,
   `chat.css`, and `responsive.css` — reusable controls and breakpoints.
 - `ragtime/frontend/src/theme/` — pack/mode resolution and runtime updates.
 - The component being changed plus its adjacent tests. Existing behavior is the
@@ -36,6 +37,8 @@ token/theme files, shared CSS, then this guide. Start with:
   icon meaning in addition to color. Every keyboard action needs a visible
   token-based focus indication. Preserve semantic roles, labels, `aria-*`
   relationships, live-region urgency, and keyboard Escape/Enter/Space behavior.
+  Check WCAG AA contrast at 4.5:1 for normal text and 3:1 for large text and
+  meaningful non-text controls; do not assume current tokens pass.
 - **Identity hooks.** Every unique primary page, section, panel, card, modal,
   form, toolbar, table/list, and repeated domain record needs a stable,
   human-readable named identity. Use a unique `id` where it is unique in the
@@ -72,6 +75,8 @@ new UI reads as technical and neutral, without creating a competing palette.
 blue accent, square-ish controls, 4px grid, structural borders, and no small or
 medium shadows. Its hierarchy is strict: workbench desk → transparent route or
 page container → `--color-panel` section → one `--color-widget` record layer.
+  This desk → panel → widget hierarchy applies to Chat, Workspaces, and Admin
+  surfaces.
 Overlays remain widget surfaces with overlay shadows. Check 35px titlebars,
 32px toolbars, 28px controls, 4px sashes, 8px pane inset/radius where relevant.
 Do not add soft cards, double-nested bordered containers, or a second record
@@ -83,8 +88,10 @@ selection, and touch.
 Warm parchment/ivory light surfaces and near-black/warm dark surfaces,
 terracotta primary, Source Serif 4 body/headings, sharper radii, and soft
 ring-style depth. Preserve the cool blue focus token in light mode and legible
-warm semantic feedback. Review dense controls especially: editorial typography
-must remain scannable and never turn code or UI chrome into serif by accident.
+warm semantic feedback. Light mode uses cool blue `#3898ec`; dark mode aliases
+focus to the terracotta primary. Check focus contrast in both modes. Review
+dense controls especially: editorial typography must remain scannable and never
+turn code or UI chrome into serif by accident.
 
 ## Recurring interaction patterns
 
@@ -123,19 +130,21 @@ must remain scannable and never turn code or UI chrome into serif by accident.
   as `ToolSelectorDropdown.tsx` calculate viewport position to draw above
   iframes; review clipping, Escape/outside dismissal, focus, and small windows.
 - **Transient status.** `Toast.tsx` has timed success/info/error feedback and
-  a dismiss affordance; `UserSpaceStatusOverlay.tsx` supplies polite persistent
-  status. Check message priority, timing, dismissibility, and whether a durable
-  in-context error is also required.
+  a dismiss affordance; its current container is `aria-live="polite"` while its
+  items use `role="alert"`. When reusing it, verify announcement urgency and
+  duplication. `UserSpaceStatusOverlay.tsx` supplies polite persistent status;
+  also check timing, dismissibility, and whether a durable in-context error is
+  required.
 - **Credential dialogs.** `ExternalApiCredentialDialogs.tsx` is the modal
   exemplar: dialog semantics, `aria-modal`, labelled title, focus trap, and
-  credential-use tabs. Secrets must not be exposed by visual truncation,
-  clipboard surprises, or an unprotected secondary view.
+  curl and Power Query credential-use tabs. Secrets must not be exposed by
+  visual truncation, clipboard surprises, or an unprotected secondary view.
 
 ## Audited caveats — inspect, do not copy
 
-- Several older overlays, including `FileDiffOverlay.tsx`, are click-backdrop
-  dialogs without the full dialog role/focus-trap contract. Treat that as a
-  review target, not a general modal template.
+- `FileDiffOverlay.tsx` is a click-backdrop overlay without dialog semantics,
+  focus trapping, or Escape dismissal. Treat it as a review target, not a
+  general modal template.
 - `ToolSelectorDropdown.tsx` portals and positions a complex menu correctly
   above iframes, but its group header uses a `div` with `role="button"`; prefer
   a native button for new expandable controls when compatible with the design.
