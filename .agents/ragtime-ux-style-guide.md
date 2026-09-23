@@ -1,10 +1,11 @@
 # Ragtime UX Review Reference
 
 Use this guide to review a proposed frontend change against the implemented
-Ragtime interface. It is a review aid, not a replacement for the source. Report
-each finding as **Pass**, **Fail**, or **N/A**, with its user impact and an exact
-`path:line` reference. Distinguish a required contract from a local legacy
-limitation; do not turn a caveat into a new convention.
+Ragtime interface. It is a review aid, not a replacement for the source. Mark
+applicable checklist items **Pass**, **Fail**, or **N/A**, then report failed
+items as findings with user impact and an exact `path:line` reference.
+Distinguish a required contract from a local legacy limitation; do not turn a
+caveat into a new convention.
 
 ## Authority and source map
 
@@ -75,8 +76,8 @@ new UI reads as technical and neutral, without creating a competing palette.
 blue accent, square-ish controls, 4px grid, structural borders, and no small or
 medium shadows. Its hierarchy is strict: workbench desk → transparent route or
 page container → `--color-panel` section → one `--color-widget` record layer.
-  This desk → panel → widget hierarchy applies to Chat, Workspaces, and Admin
-  surfaces.
+This desk → panel → widget hierarchy applies to Chat, Workspaces, and Admin
+surfaces.
 Overlays remain widget surfaces with overlay shadows. Check 35px titlebars,
 32px toolbars, 28px controls, 4px sashes, 8px pane inset/radius where relevant.
 Do not add soft cards, double-nested bordered containers, or a second record
@@ -146,11 +147,11 @@ turn code or UI chrome into serif by accident.
   focus trapping, or Escape dismissal. Treat it as a review target, not a
   general modal template.
 - `ToolSelectorDropdown.tsx` portals and positions a complex menu correctly
-  above iframes, but its group header uses a `div` with `role="button"`; prefer
-  a native button for new expandable controls when compatible with the design.
-- `SearchFilterBar.tsx` keys filter tags with an index because tags are mutable
-  local state. This is not permission to use array indexes for primary repeated
-  UI identity.
+  above iframes, but its `div` `role="button"` group header contains a nested
+  checkbox; prefer valid native/control structures for new UI.
+- `SearchFilterBar.tsx`'s composite tag key includes the array index because
+  tags are mutable local state. This is not permission to use index-derived
+  identity for primary repeated UI.
 - `ToastContainer` combines a polite container with alert items. Review new
   announcements for duplication and choose urgency deliberately.
 
