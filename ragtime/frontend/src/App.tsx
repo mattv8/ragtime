@@ -1,6 +1,6 @@
-import { Suspense, lazy, useState, useEffect, useCallback, useRef } from 'react';
+import { Suspense, lazy, useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { MoreHorizontal, Waves } from 'lucide-react';
-import { api, onAuthExpired } from '@/api';
+import { api, apiFetch, isResponseAuthContextCurrent } from '@/api';
 import WebGLGradient from '@/components/WebGLGradient';
 import { ConfigurationBanner } from './components/ConfigurationBanner';
 import { LoginGradientShell } from './components/LoginGradientShell';
@@ -9,6 +9,10 @@ import { MemoryStatus } from './components/MemoryStatus';
 import { OAuthCallbackError } from './components/OAuthCallbackError';
 import { OAuthLoginPage } from './components/OAuthLoginPage';
 import type { OAuthParams } from './components/OAuthLoginPage';
+import { buildAuthorizeForm, parseAuthorizeError } from './auth/oauthAuthorization';
+import { useAuthSession } from './auth/useAuthSession';
+import { sessionLifecycle } from './auth/sessionLifecycle';
+import { AuthRecoveryState } from './components/AuthRecoveryState';
 import { SecurityBanner } from './components/SecurityBanner';
 import { ToastContainer, useToast } from '@/components/shared/Toast';
 import { UserMenu } from './components/UserMenu';
@@ -188,6 +192,7 @@ interface OAuthCallbackErrorParams {
   title: string;
   summary: string;
   nextSteps: string[];
+  runtime?: boolean;
 }
 
 function getOAuthCallbackError(): OAuthCallbackErrorParams | null {
@@ -229,21 +234,36 @@ function getUserSpaceSharedRoute(): UserSpaceSharedRoute {
 }
 
 export function App() {
-  // Auth state
-  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const authRefreshPromiseRef = useRef<Promise<void> | null>(null);
-  const authRefreshRequestRef = useRef(0);
-  const authSessionVersionRef = useRef(0);
+  const {
+    authStatus,
+    currentUser,
+    phase: authPhase,
+    refresh,
+    completeLogin,
+    logout,
+    retryBootstrap,
+    retryLogout,
+    recoveryAction,
+    recoveryBusy,
+    refreshError,
+    generation: authGeneration,
+    updatePresentation,
+  } = useAuthSession();
+  const authLoading =
+    authPhase === 'bootstrapping' || authPhase === 'establishing' || authPhase === 'logging-out';
 
   // OAuth flow state - capture on mount
-  const [oauthCallbackError] = useState<OAuthCallbackErrorParams | null>(getOAuthCallbackError);
-  const [oauthParams] = useState<OAuthParams | null>(() => {
+  const [oauthCallbackError, setOauthCallbackError] = useState<OAuthCallbackErrorParams | null>(
+    getOAuthCallbackError,
+  );
+  const [oauthRetry, setOauthRetry] = useState(0);
+  const oauthAuthorizationPromiseRef = useRef<Promise<void> | null>(null);
+  const [oauthParams, setOauthParams] = useState<OAuthParams | null>(() => {
     const params = getOAuthParams();
     return params;
   });
   const [userspaceSharedRoute] = useState<UserSpaceSharedRoute>(getUserSpaceSharedRoute);
+  const sharedRouteMountedRef = useRef(false);
 
   // App state
   const [activeView, setActiveView] = useState<ViewType>(getInitialView);
@@ -317,6 +337,8 @@ export function App() {
   );
   const [toasts, toast] = useToast();
   const observedServerTerminalToastsRef = useRef<Set<string>>(new Set());
+  const firstNavButtonRef = useRef<HTMLButtonElement | null>(null);
+  const pendingRecoveryFocusRef = useRef(false);
 
   // Schema indexer state
   const [schemaJobs, setSchemaJobs] = useState<SchemaIndexJob[]>([]);
@@ -331,6 +353,18 @@ export function App() {
   const [configurationWarnings, setConfigurationWarnings] = useState<ConfigurationWarning[]>([]);
   const [openRouterCreditStatus, setOpenRouterCreditStatus] =
     useState<OpenRouterCreditStatus | null>(null);
+  const authIdentityRef = useRef({
+    generation: authGeneration,
+    userId: currentUser?.id ?? null,
+    role: currentUser?.role ?? null,
+  });
+  authIdentityRef.current = {
+    generation: authGeneration,
+    userId: currentUser?.id ?? null,
+    role: currentUser?.role ?? null,
+  };
+  const principalKeyRef = useRef<string | null>(null);
+  const settingsRequestRef = useRef(0);
   const [encryptionBackupReminderDismissed, setEncryptionBackupReminderDismissed] = useState(() =>
     readPersistentDismissed(ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY),
   );
@@ -366,37 +400,11 @@ export function App() {
     [chatEnabled],
   );
 
-  const forceLoginScreen = useCallback(() => {
-    authSessionVersionRef.current += 1;
-    setAuthLoading(false);
+  const clearPrincipalState = useCallback(() => {
     setObservedServerBackupJob(null);
     setObservedServerRestoreJob(null);
     observedServerTerminalToastsRef.current.clear();
-    setCurrentUser(null);
-    setAuthStatus((previous) => {
-      if (previous) {
-        return {
-          ...previous,
-          authenticated: false,
-        };
-      }
-      return {
-        authenticated: false,
-        ldap_configured: false,
-        local_admin_enabled: true,
-        debug_mode: false,
-        api_key_configured: false,
-        session_cookie_secure: false,
-        allowed_origins_open: true,
-        server_name: serverName,
-        authenticated_webgl_background_enabled: authenticatedWebglBackgroundEnabled,
-        chat_compaction_threshold_percent: 80,
-        chat_auto_compaction_threshold_percent: 99,
-        chat_enabled: false,
-        userspace_generation_enabled: false,
-      };
-    });
-  }, [authenticatedWebglBackgroundEnabled, serverName]);
+  }, []);
 
   const applyAuthStatusPresentation = useCallback((status: AuthStatus, user?: User | null) => {
     const authServerName = (status.server_name || '').trim();
@@ -408,55 +416,60 @@ export function App() {
     setThemePack(resolveThemePackId(user?.theme_pack, status.default_theme_pack));
   }, []);
 
-  const refreshAuthenticatedState = useCallback(
-    async ({ supersede = false }: { supersede?: boolean } = {}): Promise<void> => {
-      if (authRefreshPromiseRef.current && !supersede) return authRefreshPromiseRef.current;
+  const presentationServerName = authStatus?.server_name;
+  const presentationWebglEnabled = authStatus?.authenticated_webgl_background_enabled;
+  const presentationDefaultTheme = authStatus?.default_theme_pack;
+  const presentationUserTheme = currentUser?.theme_pack;
+  useLayoutEffect(() => {
+    if (!authStatus) return;
+    applyAuthStatusPresentation(
+      {
+        ...authStatus,
+        server_name: presentationServerName,
+        authenticated_webgl_background_enabled: presentationWebglEnabled,
+        default_theme_pack: presentationDefaultTheme,
+      },
+      presentationUserTheme === currentUser?.theme_pack ? currentUser : null,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only presentation primitives may restore preferences
+  }, [
+    applyAuthStatusPresentation,
+    presentationDefaultTheme,
+    presentationServerName,
+    presentationUserTheme,
+    presentationWebglEnabled,
+  ]);
 
-      const requestId = authRefreshRequestRef.current + 1;
-      authRefreshRequestRef.current = requestId;
-      const sessionVersion = authSessionVersionRef.current;
-      const refresh = (async () => {
-        const status = await api.getAuthStatus();
-        if (
-          requestId !== authRefreshRequestRef.current ||
-          sessionVersion !== authSessionVersionRef.current
-        )
-          return;
-        if (!status.authenticated) {
-          applyAuthStatusPresentation(status);
-          setObservedServerBackupJob(null);
-          setObservedServerRestoreJob(null);
-          observedServerTerminalToastsRef.current.clear();
-          setAuthStatus(status);
-          setCurrentUser(null);
-          return;
-        }
-        const user = await api.getCurrentUser();
-        if (
-          requestId !== authRefreshRequestRef.current ||
-          sessionVersion !== authSessionVersionRef.current
-        )
-          return;
-        setAuthStatus(status);
-        setCurrentUser(user);
-        applyAuthStatusPresentation(status, user);
-      })();
-      authRefreshPromiseRef.current = refresh;
-      try {
-        await refresh;
-      } finally {
-        if (authRefreshPromiseRef.current === refresh) authRefreshPromiseRef.current = null;
+  // Handle post-recovery focus after authenticated DOM mounts
+  useLayoutEffect(() => {
+    // Only consume the pending flag after recovery completes and DOM settles
+    if (
+      pendingRecoveryFocusRef.current &&
+      !recoveryBusy &&
+      (authPhase === 'authenticated' || authPhase === 'anonymous' || authPhase === 'unavailable')
+    ) {
+      // Focus only if authenticated
+      if (authPhase === 'authenticated' && firstNavButtonRef.current) {
+        firstNavButtonRef.current.focus();
       }
-    },
-    [applyAuthStatusPresentation],
-  );
+      // Clear the pending flag - recovery is settled
+      pendingRecoveryFocusRef.current = false;
+    }
+  }, [authPhase, recoveryBusy]);
+
+  // Derive stable primitive values to avoid effect dependency on full user object
+  const userId = currentUser?.id;
+  const userRole = currentUser?.role;
 
   useEffect(() => {
-    const unsubscribe = onAuthExpired(() => {
-      forceLoginScreen();
-    });
-    return unsubscribe;
-  }, [forceLoginScreen]);
+    const principalKey = userId && userRole ? `${userId}:${userRole}` : null;
+    if (principalKeyRef.current === principalKey) return;
+    principalKeyRef.current = principalKey;
+    settingsRequestRef.current += 1;
+    clearPrincipalState();
+    setConfigurationWarnings([]);
+    setOpenRouterCreditStatus(null);
+  }, [clearPrincipalState, userId, userRole]);
 
   useEffect(() => {
     if (currentUser && !chatEnabled && activeView === 'chat') {
@@ -465,8 +478,22 @@ export function App() {
   }, [activeView, currentUser, chatEnabled]);
 
   const refreshConfigurationWarnings = useCallback(async () => {
+    const expected = authIdentityRef.current;
+    if (!expected.userId || expected.role !== 'admin') return;
+    const requestId = ++settingsRequestRef.current;
+    const isCurrent = () => {
+      const current = authIdentityRef.current;
+      return (
+        requestId === settingsRequestRef.current &&
+        current.generation === expected.generation &&
+        current.userId === expected.userId &&
+        current.role === expected.role
+      );
+    };
+
     try {
       const { settings, configuration_warnings } = await api.getSettings();
+      if (!isCurrent()) return;
       const configuredServerName = (settings.server_name || '').trim();
       const resolvedServerName = configuredServerName || 'Ragtime';
       const nextWarnings = configuration_warnings ?? [];
@@ -487,22 +514,22 @@ export function App() {
         window.sessionStorage.removeItem(ENCRYPTION_KEY_ERROR_DISMISS_KEY);
       }
     } catch (error) {
-      console.error('Failed to refresh configuration warnings', error);
+      if (isCurrent()) console.error('Failed to refresh configuration warnings', error);
     }
   }, []);
 
   const handleSettingsSaved = useCallback(async () => {
     await refreshConfigurationWarnings();
     try {
-      await refreshAuthenticatedState({ supersede: true });
+      await refresh('policy-save');
     } catch (error) {
       console.error('Failed to refresh authenticated state after saving settings', error);
     }
-  }, [refreshAuthenticatedState, refreshConfigurationWarnings]);
+  }, [refresh, refreshConfigurationWarnings]);
 
   useEffect(() => {
-    void refreshConfigurationWarnings();
-  }, [refreshConfigurationWarnings]);
+    if (currentUser?.role === 'admin') void refreshConfigurationWarnings();
+  }, [authGeneration, currentUser?.id, currentUser?.role, refreshConfigurationWarnings]);
 
   // Callback to update server name from SettingsPanel
   const handleServerNameChange = useCallback((name: string) => {
@@ -511,29 +538,27 @@ export function App() {
     document.title = resolvedName;
   }, []);
 
-  const handleChatCompactionThresholdChange = useCallback((threshold: number) => {
-    const normalizedThreshold = Math.max(1, Math.min(100, Math.round(threshold)));
-    setAuthStatus((previous) =>
-      previous
-        ? {
-            ...previous,
-            chat_compaction_threshold_percent: normalizedThreshold,
-          }
-        : previous,
-    );
-  }, []);
+  const handleChatCompactionThresholdChange = useCallback(
+    (threshold: number) => {
+      const normalizedThreshold = Math.max(1, Math.min(100, Math.round(threshold)));
+      updatePresentation((previous) => ({
+        ...previous,
+        chat_compaction_threshold_percent: normalizedThreshold,
+      }));
+    },
+    [updatePresentation],
+  );
 
-  const handleChatAutoCompactionThresholdChange = useCallback((threshold: number) => {
-    const normalizedThreshold = Math.max(1, Math.min(100, Math.round(threshold)));
-    setAuthStatus((previous) =>
-      previous
-        ? {
-            ...previous,
-            chat_auto_compaction_threshold_percent: normalizedThreshold,
-          }
-        : previous,
-    );
-  }, []);
+  const handleChatAutoCompactionThresholdChange = useCallback(
+    (threshold: number) => {
+      const normalizedThreshold = Math.max(1, Math.min(100, Math.round(threshold)));
+      updatePresentation((previous) => ({
+        ...previous,
+        chat_auto_compaction_threshold_percent: normalizedThreshold,
+      }));
+    },
+    [updatePresentation],
+  );
 
   const handleEncryptedArtifactDelivered = useCallback(() => {
     try {
@@ -601,53 +626,10 @@ export function App() {
     [toast],
   );
 
-  // Check authentication status on mount
-  useEffect(() => {
-    const checkAuth = async () => {
-      const sessionVersion = authSessionVersionRef.current;
-      const requestId = authRefreshRequestRef.current + 1;
-      try {
-        await refreshAuthenticatedState();
-      } catch (err) {
-        if (
-          sessionVersion !== authSessionVersionRef.current ||
-          requestId !== authRefreshRequestRef.current
-        ) {
-          return;
-        }
-        console.error('Failed to check auth status:', err);
-        // If we can't check auth, assume not authenticated
-        setAuthStatus({
-          authenticated: false,
-          ldap_configured: false,
-          local_admin_enabled: true,
-          debug_mode: false,
-          api_key_configured: false,
-          session_cookie_secure: false,
-          allowed_origins_open: true,
-          server_name: serverName,
-          authenticated_webgl_background_enabled: authenticatedWebglBackgroundEnabled,
-          chat_enabled: false,
-          userspace_generation_enabled: false,
-        });
-      } finally {
-        if (
-          sessionVersion === authSessionVersionRef.current &&
-          requestId === authRefreshRequestRef.current
-        ) {
-          setAuthLoading(false);
-        }
-      }
-    };
-
-    checkAuth();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- auth check runs on mount/route change; serverName/webgl flags are read but must not retrigger it
-  }, [userspaceSharedRoute, refreshAuthenticatedState]);
-
   useEffect(() => {
     const refreshOnReturn = () => {
       if (document.visibilityState === 'visible') {
-        void refreshAuthenticatedState().catch((error) => {
+        void refresh('return').catch((error) => {
           console.warn('Failed to refresh authenticated state after returning to the app', error);
         });
       }
@@ -658,28 +640,11 @@ export function App() {
       window.removeEventListener('focus', refreshOnReturn);
       document.removeEventListener('visibilitychange', refreshOnReturn);
     };
-  }, [refreshAuthenticatedState]);
+  }, [refresh]);
 
-  const handleLoginSuccess = (user: User) => {
-    authSessionVersionRef.current += 1;
-    const sessionVersion = authSessionVersionRef.current;
-    setAuthLoading(true);
-    setCurrentUser(user);
-
-    // Refresh the full guarded session snapshot now that session auth is established.
-    void (async () => {
-      try {
-        await refreshAuthenticatedState({ supersede: true });
-      } catch (err) {
-        console.error('Failed to refresh auth status after login:', err);
-      } finally {
-        if (sessionVersion === authSessionVersionRef.current) {
-          setAuthLoading(false);
-        }
-      }
-    })();
-
-    // If non-admin tried to access an admin view via URL, redirect to the workspace.
+  const handleLoginSuccess = async (user: User) => {
+    if ((await completeLogin(user)) !== 'applied') return;
+    // Redirect only after the current generation accepted the verified pair.
     if (user.role !== 'admin' && activeView !== 'chat' && activeView !== 'userspace') {
       setActiveView('userspace');
     }
@@ -687,57 +652,85 @@ export function App() {
 
   // Auto-complete OAuth flow if user is already authenticated
   useEffect(() => {
-    if (!oauthParams || !currentUser || authLoading) return;
+    if (
+      !oauthParams ||
+      !currentUser ||
+      authLoading ||
+      oauthCallbackError ||
+      oauthAuthorizationPromiseRef.current
+    )
+      return;
 
+    const context = sessionLifecycle.capture('session');
     const completeOAuthFlow = async () => {
       try {
-        const formData = new URLSearchParams();
-        formData.append('client_id', oauthParams.client_id);
-        formData.append('redirect_uri', oauthParams.redirect_uri);
-        formData.append('response_type', oauthParams.response_type);
-        formData.append('code_challenge', oauthParams.code_challenge);
-        formData.append('code_challenge_method', oauthParams.code_challenge_method);
-        formData.append('state', oauthParams.state);
-        if (oauthParams.resource) formData.append('resource', oauthParams.resource);
-        if (oauthParams.scope) formData.append('scope', oauthParams.scope);
-
-        const response = await fetch('/authorize/session', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
+        const response = await apiFetch(
+          '/authorize/session',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: buildAuthorizeForm(oauthParams).toString(),
           },
-          body: formData.toString(),
-          credentials: 'include', // Include session cookie
-        });
+          'session',
+        );
 
         const data = await response.json();
+        if (!sessionLifecycle.isCurrent(context)) return;
 
-        if (response.ok && data.redirect_url) {
+        if (response.ok && data.redirect_url && isResponseAuthContextCurrent(response)) {
           window.location.href = data.redirect_url;
-        } else {
-          // Session invalid or error - user needs to re-login
-          console.error('OAuth flow: Session auth failed', data);
-          // Clear the user so login page shows
-          forceLoginScreen();
+        } else if (isResponseAuthContextCurrent(response)) {
+          setOauthCallbackError({
+            title: 'Authorization failed',
+            runtime: true,
+            ...parseAuthorizeError(data),
+          });
         }
       } catch (err) {
-        console.error('OAuth flow: Failed to complete', err);
-        // Clear the user so login page shows
-        forceLoginScreen();
+        if (!sessionLifecycle.isCurrent(context)) return;
+        setOauthCallbackError({
+          title: 'Authorization failed',
+          summary:
+            err instanceof Error
+              ? err.message
+              : 'The authorization request could not be completed.',
+          nextSteps: [],
+          runtime: true,
+        });
       }
     };
 
-    completeOAuthFlow();
-  }, [oauthParams, currentUser, authLoading, forceLoginScreen]);
+    const request = completeOAuthFlow();
+    oauthAuthorizationPromiseRef.current = request;
+    void request.finally(() => {
+      if (oauthAuthorizationPromiseRef.current === request) {
+        oauthAuthorizationPromiseRef.current = null;
+      }
+    });
+  }, [oauthParams, currentUser, authLoading, oauthCallbackError, oauthRetry]);
 
-  const handleLogout = async () => {
-    try {
-      await api.logout();
-    } catch {
-      // Ignore logout errors
+  const handleLogout = logout;
+
+  const handleRecoveryRetry = useCallback(async () => {
+    // Before retry, check if user has input focused
+    const activeElement = document.activeElement as HTMLElement | null;
+    const hasUserInputFocus =
+      activeElement instanceof HTMLInputElement ||
+      activeElement instanceof HTMLTextAreaElement ||
+      activeElement?.role === 'textbox' ||
+      activeElement?.contentEditable === 'true';
+
+    // Set pending flag to focus nav button after React mounts authenticated DOM
+    // Only set if user doesn't have input focused
+    if (!hasUserInputFocus) {
+      pendingRecoveryFocusRef.current = true;
     }
-    forceLoginScreen();
-  };
+
+    // Run the recovery - useLayoutEffect will consume the flag after DOM mounts
+    await (recoveryAction === 'retry-logout' ? retryLogout() : retryBootstrap());
+  }, [recoveryAction, retryLogout, retryBootstrap]);
 
   // Check if user is admin
   const isAdmin = currentUser?.role === 'admin';
@@ -1154,11 +1147,12 @@ export function App() {
   }, [currentUser, isAdmin, isIndexerView, jobs, loadJobs, loadIndexes]);
 
   if (userspaceSharedRoute) {
+    if (!authLoading) sharedRouteMountedRef.current = true;
     // Block until the initial auth check has settled so PublicSharedChatView
     // mounts with a stable currentUser snapshot. Otherwise a null→user
     // transition during initial auth resolution would be misread as a fresh
     // sign-in and trigger an unwanted redirect to the authenticated view.
-    if (authLoading) {
+    if (authLoading && !sharedRouteMountedRef.current) {
       if (oauthParams || oauthCallbackError) {
         return (
           <LoginGradientShell className="auth-loading" aria-live="polite">
@@ -1174,29 +1168,81 @@ export function App() {
         </div>
       );
     }
+    const showSharedRecovery =
+      authPhase === 'unavailable' || (authPhase === 'logging-out' && recoveryBusy);
+    const sharedRecoveryLabel =
+      recoveryAction === 'retry-logout'
+        ? 'Retry sign out'
+        : recoveryAction === 'retry-bootstrap'
+          ? 'Try connecting again'
+          : 'Check session again';
     return (
-      <Suspense fallback={<RouteViewFallback />}>
-        {userspaceSharedRoute.mode === 'token' ? (
-          <LazyPublicSharedChatView
-            shareToken={userspaceSharedRoute.token}
-            currentUser={currentUser}
-            authStatus={authStatus}
-            serverName={serverName}
-            onLoginSuccess={handleLoginSuccess}
-            onLogout={handleLogout}
-          />
-        ) : (
-          <LazyPublicSharedChatView
-            ownerUsername={userspaceSharedRoute.ownerUsername}
-            shareSlug={userspaceSharedRoute.shareSlug}
-            currentUser={currentUser}
-            authStatus={authStatus}
-            serverName={serverName}
-            onLoginSuccess={handleLoginSuccess}
-            onLogout={handleLogout}
-          />
+      <>
+        <div id="public-shared-route">
+          <Suspense fallback={<RouteViewFallback />}>
+            {userspaceSharedRoute.mode === 'token' ? (
+              <LazyPublicSharedChatView
+                shareToken={userspaceSharedRoute.token}
+                currentUser={currentUser}
+                authStatus={authStatus}
+                serverName={serverName}
+                onLoginSuccess={handleLoginSuccess}
+                onLogout={handleLogout}
+              />
+            ) : (
+              <LazyPublicSharedChatView
+                ownerUsername={userspaceSharedRoute.ownerUsername}
+                shareSlug={userspaceSharedRoute.shareSlug}
+                currentUser={currentUser}
+                authStatus={authStatus}
+                serverName={serverName}
+                onLoginSuccess={handleLoginSuccess}
+                onLogout={handleLogout}
+              />
+            )}
+          </Suspense>
+        </div>
+        {showSharedRecovery && (
+          <div
+            id="public-shared-auth-recovery-banner"
+            className="login-status"
+            role="region"
+            aria-label={`Authentication recovery: ${sharedRecoveryLabel}`}
+            aria-busy={recoveryBusy}
+            style={{
+              position: 'fixed',
+              top: 'var(--space-lg)',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              width: 'calc(100vw - 2rem)',
+              maxWidth: '32rem',
+              maxHeight: 'calc(100vh - (2 * var(--space-lg)))',
+              overflowY: 'auto',
+              zIndex: 1000,
+              padding: 'var(--space-lg)',
+              color: 'var(--color-text-primary)',
+              background: 'var(--color-surface)',
+              border: '1px solid var(--color-error-border)',
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-xl)',
+            }}
+          >
+            <p role="alert">{refreshError || 'Unable to check the session.'}</p>
+            <div aria-live="polite" aria-atomic="true">
+              {recoveryBusy ? 'Attempting recovery...' : null}
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={recoveryBusy}
+              aria-busy={recoveryBusy}
+              onClick={() => void handleRecoveryRetry()}
+            >
+              {sharedRecoveryLabel}
+            </button>
+          </div>
         )}
-      </Suspense>
+      </>
     );
   }
 
@@ -1225,6 +1271,25 @@ export function App() {
         title={oauthCallbackError.title}
         summary={oauthCallbackError.summary}
         nextSteps={oauthCallbackError.nextSteps}
+        busy={false}
+        onRetry={
+          oauthCallbackError.runtime
+            ? () => {
+                setOauthCallbackError(null);
+                setOauthRetry((retry) => retry + 1);
+              }
+            : undefined
+        }
+        onBack={
+          oauthCallbackError.runtime
+            ? () => {
+                setOauthCallbackError(null);
+                setOauthParams(null);
+                window.history.replaceState({}, '', `${window.location.pathname}?view=userspace`);
+                setActiveView('userspace');
+              }
+            : undefined
+        }
       />
     );
   }
@@ -1244,25 +1309,27 @@ export function App() {
     return <OAuthLoginPage params={oauthParams} serverName={serverName} />;
   }
 
+  if (authPhase === 'unavailable') {
+    return (
+      <LoginGradientShell>
+        <AuthRecoveryState
+          action={recoveryAction}
+          busy={recoveryBusy}
+          message={refreshError || 'Unable to connect to the server.'}
+          onRetry={() => void handleRecoveryRetry()}
+        />
+      </LoginGradientShell>
+    );
+  }
+
   // Show login page if not authenticated
   if (!currentUser) {
     return (
       <LoginPage
-        authStatus={
-          authStatus || {
-            authenticated: false,
-            ldap_configured: false,
-            local_admin_enabled: true,
-            debug_mode: false,
-            api_key_configured: false,
-            session_cookie_secure: false,
-            allowed_origins_open: true,
-            chat_enabled: false,
-            userspace_generation_enabled: false,
-          }
-        }
+        authStatus={authStatus!}
         onLoginSuccess={handleLoginSuccess}
         serverName={serverName}
+        initialError={refreshError}
       />
     );
   }
@@ -1343,6 +1410,7 @@ export function App() {
             >
               {chatEnabled && (
                 <button
+                  ref={firstNavButtonRef}
                   type="button"
                   className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
                   onClick={() => handleViewSelect('chat')}
@@ -1351,6 +1419,7 @@ export function App() {
                 </button>
               )}
               <button
+                ref={!chatEnabled ? firstNavButtonRef : null}
                 type="button"
                 className={`topnav-link ${activeView === 'userspace' ? 'active' : ''}`}
                 onClick={() => handleViewSelect('userspace')}
@@ -1556,7 +1625,7 @@ export function App() {
                     onOpenChat={chatEnabled ? handleOpenChatFromUsers : undefined}
                     onGenerationPolicyUpdated={async (updatedUser) => {
                       if (updatedUser.id !== currentUser.id) return;
-                      await refreshAuthenticatedState({ supersede: true });
+                      await refresh('policy-save');
                     }}
                   />
                 </Suspense>

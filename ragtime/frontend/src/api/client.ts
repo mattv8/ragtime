@@ -249,6 +249,11 @@ import type {
 } from '@/types';
 import { getThemeSnapshot } from '@/theme/themeSnapshot';
 import { formatPublicErrorDetail, getPublicErrorDetail } from './publicErrorDetail';
+import {
+  sessionLifecycle,
+  type AuthPurpose,
+  type RequestAuthContext,
+} from '@/auth/sessionLifecycle';
 
 import type {
   AuthProviderConfig,
@@ -322,35 +327,6 @@ import type {
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
-
-type AuthExpiredListener = () => void;
-const authExpiredListeners = new Set<AuthExpiredListener>();
-let authExpiredNotified = false;
-
-function notifyAuthExpired(): void {
-  if (authExpiredNotified) {
-    return;
-  }
-  authExpiredNotified = true;
-  authExpiredListeners.forEach((listener) => {
-    try {
-      listener();
-    } catch {
-      // Ignore listener errors to ensure all callbacks run.
-    }
-  });
-}
-
-function resetAuthExpiredNotification(): void {
-  authExpiredNotified = false;
-}
-
-export function onAuthExpired(listener: AuthExpiredListener): () => void {
-  authExpiredListeners.add(listener);
-  return () => {
-    authExpiredListeners.delete(listener);
-  };
-}
 
 function encodeFilePath(path: string): string {
   return path
@@ -477,23 +453,64 @@ class ApiError extends Error {
 /**
  * Wrapper for fetch that includes credentials and handles common options
  */
-async function apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
+const responseContexts = new WeakMap<Response, RequestAuthContext>();
+
+/** Fetch with browser auth provenance. Endpoint methods must explicitly classify exceptions. */
+export async function apiFetch(
+  url: string,
+  options: RequestInit = {},
+  purpose: AuthPurpose = 'session',
+): Promise<Response> {
+  const context = sessionLifecycle.capture(purpose);
   const headers = new Headers(options.headers ?? undefined);
   if (typeof window !== 'undefined' && window.location.origin) {
     headers.set('X-Ragtime-Browser-Origin', window.location.origin);
   }
-  return fetch(url, {
+  const response = await fetch(url, {
     ...options,
     headers,
     credentials: 'include',
   });
+  responseContexts.set(response, context);
+  if (response.status === 401) sessionLifecycle.expire(context);
+  return response;
+}
+
+export function getResponseAuthContext(response: Response): RequestAuthContext | undefined {
+  return responseContexts.get(response);
+}
+
+export function isResponseAuthContextCurrent(response: Response): boolean {
+  const context = responseContexts.get(response);
+  return context !== undefined && sessionLifecycle.isCurrent(context);
+}
+
+/** Accept a terminal credential exchange before handing its result to UI callers. */
+export function beginResponseSessionEstablishment(response: Response): RequestAuthContext | null {
+  const context = responseContexts.get(response);
+  return context ? sessionLifecycle.beginEstablishment(context) : null;
+}
+
+function obsoleteCredentialResult(): Error {
+  return new DOMException('Authentication result is no longer current', 'AbortError');
+}
+
+function requireTerminalEstablishment(response: Response): void {
+  if (!beginResponseSessionEstablishment(response)) throw obsoleteCredentialResult();
+}
+
+function requireCurrentResponse(response: Response): void {
+  if (!isResponseAuthContextCurrent(response)) throw obsoleteCredentialResult();
+}
+
+function requestRevalidationAfterChallenge401(response: Response): void {
+  if (response.status !== 401) return;
+  const context = responseContexts.get(response);
+  if (context) sessionLifecycle.revalidate(context);
 }
 
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    if (response.status === 401) {
-      notifyAuthExpired();
-    }
     const data = await response.json().catch(() => ({}));
     throw new ApiError(
       data.detail || `Request failed with status ${response.status}`,
@@ -510,9 +527,6 @@ async function downloadBlobResponse(
   errorMessage: string,
 ): Promise<void> {
   if (!response.ok) {
-    if (response.status === 401) {
-      notifyAuthExpired();
-    }
     const data = await response.json().catch(() => ({}));
     throw new ApiError(data.detail || errorMessage, response.status, data.detail);
   }
@@ -619,7 +633,7 @@ export const api = {
    * Get authentication status
    */
   async getAuthStatus(): Promise<AuthStatus> {
-    const response = await apiFetch(`${AUTH_BASE}/status`, { cache: 'no-store' });
+    const response = await apiFetch(`${AUTH_BASE}/status`, { cache: 'no-store' }, 'public');
     return handleResponse<AuthStatus>(response);
   },
 
@@ -628,7 +642,7 @@ export const api = {
    * only). Returns null when debug mode is off or no debug code is available.
    */
   async getDebugTotpCode(): Promise<{ code: string | null }> {
-    const response = await apiFetch(`${AUTH_BASE}/debug/totp`, { cache: 'no-store' });
+    const response = await apiFetch(`${AUTH_BASE}/debug/totp`, { cache: 'no-store' }, 'public');
     return handleResponse<{ code: string | null }>(response);
   },
 
@@ -636,14 +650,21 @@ export const api = {
    * Login with username and password
    */
   async login(request: LoginRequest): Promise<LoginResponse> {
-    const response = await apiFetch(`${AUTH_BASE}/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-      // Include cookies
-    });
+    const response = await apiFetch(
+      `${AUTH_BASE}/login`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+        // Include cookies
+      },
+      'challenge',
+    );
     const result = await handleResponse<LoginResponse>(response);
-    resetAuthExpiredNotification();
+    requireCurrentResponse(response);
+    if (result.success && !result.mfa_required && !result.mfa_enrollment_required) {
+      requireTerminalEstablishment(response);
+    }
     return result;
   },
 
@@ -651,9 +672,14 @@ export const api = {
    * Logout current session
    */
   async logout(): Promise<void> {
-    await fetch(`${AUTH_BASE}/logout`, {
-      method: 'POST',
-    });
+    const response = await apiFetch(
+      `${AUTH_BASE}/logout`,
+      {
+        method: 'POST',
+      },
+      'public',
+    );
+    if (response.status !== 401) await handleResponse<{ success: boolean }>(response);
   },
 
   /**
@@ -662,7 +688,7 @@ export const api = {
   async getCurrentUser(): Promise<User> {
     const response = await apiFetch(`${AUTH_BASE}/me`, {});
     const user = await handleResponse<User>(response);
-    resetAuthExpiredNotification();
+    requireCurrentResponse(response);
     return user;
   },
 
@@ -718,11 +744,15 @@ export const api = {
   },
 
   async startMfaEnrollment(mfaChallengeToken?: string): Promise<MfaEnrollStartResponse> {
-    const response = await apiFetch(`${AUTH_BASE}/mfa/enroll/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mfa_challenge_token: mfaChallengeToken ?? null }),
-    });
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/enroll/start`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mfa_challenge_token: mfaChallengeToken ?? null }),
+      },
+      mfaChallengeToken ? 'challenge' : 'session',
+    );
     return handleResponse<MfaEnrollStartResponse>(response);
   },
 
@@ -732,22 +762,59 @@ export const api = {
     mfa_challenge_token?: string | null;
     remember_device?: boolean;
   }): Promise<MfaEnrollCompleteResponse> {
-    const response = await apiFetch(`${AUTH_BASE}/mfa/enroll/complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
-    const result = await handleResponse<MfaEnrollCompleteResponse>(response);
-    resetAuthExpiredNotification();
-    return result;
+    const renewal = request.mfa_challenge_token
+      ? null
+      : sessionLifecycle.beginRenewal(sessionLifecycle.capture('session'));
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 30_000);
+    try {
+      const response = await apiFetch(
+        `${AUTH_BASE}/mfa/enroll/complete`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request),
+          signal: controller.signal,
+        },
+        'challenge',
+      );
+      requestRevalidationAfterChallenge401(response);
+      const result = await handleResponse<MfaEnrollCompleteResponse>(response);
+      requireCurrentResponse(response);
+      if (result.success) {
+        if (request.mfa_challenge_token) {
+          requireTerminalEstablishment(response);
+        } else if (
+          !result.user ||
+          !sessionLifecycle.renewSession(getResponseAuthContext(response)!, result.user.id)
+        ) {
+          throw obsoleteCredentialResult();
+        }
+      } else if (renewal) {
+        // A tokenless response that declines enrollment has no later error
+        // path to abandon the renewal fence.
+        sessionLifecycle.abandonRenewal(renewal);
+      }
+      return result;
+    } catch (error) {
+      if (renewal) sessionLifecycle.abandonRenewal(renewal);
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
   },
 
   async startTotpRotation(verificationCode: string): Promise<MfaEnrollStartResponse> {
-    const response = await apiFetch(`${AUTH_BASE}/mfa/totp/rotate/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ verification_code: verificationCode }),
-    });
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/totp/rotate/start`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verification_code: verificationCode }),
+      },
+      'challenge',
+    );
+    requestRevalidationAfterChallenge401(response);
     return handleResponse<MfaEnrollStartResponse>(response);
   },
 
@@ -755,20 +822,30 @@ export const api = {
     enrollment_token: string;
     code: string;
   }): Promise<MfaEnrollCompleteResponse> {
-    const response = await apiFetch(`${AUTH_BASE}/mfa/totp/rotate/complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/totp/rotate/complete`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+      'challenge',
+    );
+    requestRevalidationAfterChallenge401(response);
     return handleResponse<MfaEnrollCompleteResponse>(response);
   },
 
   async regenerateRecoveryCodes(verificationCode: string): Promise<RecoveryCodesResponse> {
-    const response = await apiFetch(`${AUTH_BASE}/mfa/recovery-codes/regenerate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ verification_code: verificationCode }),
-    });
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/recovery-codes/regenerate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verification_code: verificationCode }),
+      },
+      'challenge',
+    );
+    requestRevalidationAfterChallenge401(response);
     return handleResponse<RecoveryCodesResponse>(response);
   },
 
@@ -777,24 +854,35 @@ export const api = {
     code: string;
     remember_device?: boolean;
   }): Promise<LoginResponse> {
-    const response = await apiFetch(`${AUTH_BASE}/mfa/verify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/verify`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+      'challenge',
+    );
     const result = await handleResponse<LoginResponse>(response);
-    resetAuthExpiredNotification();
+    requireCurrentResponse(response);
+    if (result.success && !result.mfa_required && !result.mfa_enrollment_required) {
+      requireTerminalEstablishment(response);
+    }
     return result;
   },
 
   async startWebauthnRegistration(
     mfaChallengeToken?: string,
   ): Promise<WebauthnRegisterStartResponse> {
-    const response = await apiFetch(`${AUTH_BASE}/mfa/webauthn/register/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mfa_challenge_token: mfaChallengeToken ?? null }),
-    });
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/webauthn/register/start`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mfa_challenge_token: mfaChallengeToken ?? null }),
+      },
+      mfaChallengeToken ? 'challenge' : 'session',
+    );
     return handleResponse<WebauthnRegisterStartResponse>(response);
   },
 
@@ -805,24 +893,33 @@ export const api = {
     mfa_challenge_token?: string;
     remember_device?: boolean;
   }): Promise<WebauthnRegisterCompleteResponse> {
-    const response = await apiFetch(`${AUTH_BASE}/mfa/webauthn/register/complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/webauthn/register/complete`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+      request.mfa_challenge_token ? 'challenge' : 'session',
+    );
     const result = await handleResponse<WebauthnRegisterCompleteResponse>(response);
-    resetAuthExpiredNotification();
+    requireCurrentResponse(response);
+    if (result.success && request.mfa_challenge_token) requireTerminalEstablishment(response);
     return result;
   },
 
   async startWebauthnAuthentication(
     mfaChallengeToken: string,
   ): Promise<WebauthnAuthenticateStartResponse> {
-    const response = await apiFetch(`${AUTH_BASE}/mfa/webauthn/authenticate/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mfa_challenge_token: mfaChallengeToken }),
-    });
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/webauthn/authenticate/start`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mfa_challenge_token: mfaChallengeToken }),
+      },
+      'challenge',
+    );
     return handleResponse<WebauthnAuthenticateStartResponse>(response);
   },
 
@@ -832,13 +929,20 @@ export const api = {
     credential: Record<string, unknown>;
     remember_device?: boolean;
   }): Promise<LoginResponse> {
-    const response = await apiFetch(`${AUTH_BASE}/mfa/webauthn/authenticate/complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/webauthn/authenticate/complete`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+      'challenge',
+    );
     const result = await handleResponse<LoginResponse>(response);
-    resetAuthExpiredNotification();
+    requireCurrentResponse(response);
+    if (result.success && !result.mfa_required && !result.mfa_enrollment_required) {
+      requireTerminalEstablishment(response);
+    }
     return result;
   },
 
@@ -5261,7 +5365,9 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
       },
+      'challenge',
     );
+    requestRevalidationAfterChallenge401(response);
     return handleResponse<WorkspaceMountDirectoryEntry>(response);
   },
 
@@ -5279,11 +5385,16 @@ export const api = {
   async createCloudMountSourceDirectory(
     request: CreateCloudMountSourceDirectoryRequest,
   ): Promise<WorkspaceMountDirectoryEntry> {
-    const response = await apiFetch(`${API_BASE}/userspace/cloud-mount-sources/directory`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/cloud-mount-sources/directory`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+      'challenge',
+    );
+    requestRevalidationAfterChallenge401(response);
     return handleResponse<WorkspaceMountDirectoryEntry>(response);
   },
 
@@ -5416,11 +5527,16 @@ export const api = {
     workspaceId: string,
     request: CreateWorkspaceMountRequest,
   ): Promise<WorkspaceMount> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/mounts`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+      'challenge',
+    );
+    requestRevalidationAfterChallenge401(response);
     return handleResponse<WorkspaceMount>(response);
   },
 
@@ -5465,7 +5581,9 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request ?? {}),
       },
+      'challenge',
     );
+    requestRevalidationAfterChallenge401(response);
     return handleResponse<WorkspaceMountSyncPreviewResponse>(response);
   },
 
@@ -6355,6 +6473,8 @@ export const api = {
   async resolvePublicShareTarget(shareToken: string): Promise<PublicShareTargetResponse> {
     const response = await apiFetch(
       `${API_BASE}/public-shares/${encodeURIComponent(shareToken)}/target`,
+      {},
+      'public',
     );
     return handleResponse<PublicShareTargetResponse>(response);
   },
@@ -6365,6 +6485,8 @@ export const api = {
   ): Promise<PublicShareTargetResponse> {
     const response = await apiFetch(
       `${API_BASE}/public-shares/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/target`,
+      {},
+      'public',
     );
     return handleResponse<PublicShareTargetResponse>(response);
   },
@@ -6376,6 +6498,8 @@ export const api = {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
     const response = await apiFetch(
       `${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}${suffix}`,
+      {},
+      'public',
     );
     return handleResponse<SharedConversationResponse>(response);
   },
@@ -6388,6 +6512,8 @@ export const api = {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
     const response = await apiFetch(
       `${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}${suffix}`,
+      {},
+      'public',
     );
     return handleResponse<SharedConversationResponse>(response);
   },
@@ -6416,7 +6542,9 @@ export const api = {
       {
         method: 'POST',
       },
+      'challenge',
     );
+    requestRevalidationAfterChallenge401(response);
     return handleResponse<SharedConversationResponse>(response);
   },
 
@@ -6431,7 +6559,9 @@ export const api = {
       {
         method: 'POST',
       },
+      'challenge',
     );
+    requestRevalidationAfterChallenge401(response);
     return handleResponse<SharedConversationResponse>(response);
   },
 
@@ -6452,6 +6582,7 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withClientClock(request)),
       },
+      'public',
     );
     return handleResponse<{
       message: ChatMessage;
@@ -6478,6 +6609,7 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withClientClock(request)),
       },
+      'public',
     );
     return handleResponse<{
       message: ChatMessage;
@@ -6497,6 +6629,7 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
       },
+      'public',
     );
     return handleResponse<ExecuteComponentResponse>(response);
   },
@@ -6513,6 +6646,7 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
       },
+      'public',
     );
     return handleResponse<ExecuteComponentResponse>(response);
   },
@@ -6698,6 +6832,7 @@ export const api = {
         headers,
         body: JSON.stringify(request),
       },
+      'public',
     );
     return handleResponse<UserSpacePreviewLaunchResponse>(response);
   },
@@ -6719,6 +6854,7 @@ export const api = {
         headers,
         body: JSON.stringify(request),
       },
+      'public',
     );
     return handleResponse<UserSpacePreviewLaunchResponse>(response);
   },

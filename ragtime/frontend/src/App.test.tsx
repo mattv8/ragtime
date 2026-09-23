@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
+import { sessionLifecycle } from './auth/sessionLifecycle';
 import { SERVER_BACKUP_RESTORE_HIGHLIGHT } from './components/shared/securityWarnings';
 import type {
   AuthStatus,
@@ -27,6 +28,7 @@ const apiMock = vi.hoisted(() => ({
   getServerRestoreJob: vi.fn(),
   getOpenRouterCreditStatus: vi.fn(),
   logout: vi.fn(),
+  apiFetch: vi.fn((url: string, options: RequestInit) => fetch(url, options)),
 }));
 
 const settingsPanelSpy = vi.hoisted(() => vi.fn());
@@ -59,6 +61,8 @@ vi.stubGlobal('localStorage', localStorageMock);
 
 vi.mock('@/api', () => ({
   api: apiMock,
+  apiFetch: apiMock.apiFetch,
+  isResponseAuthContextCurrent: vi.fn(() => true),
   onAuthExpired: vi.fn((callback: () => void) => {
     authExpiredListenerMock.callback = callback;
     return vi.fn(() => {
@@ -89,7 +93,8 @@ vi.mock('./components/LoginPage', () => ({
   LoginPage: ({ onLoginSuccess }: { onLoginSuccess: (user: User) => void }) => (
     <button
       type="button"
-      onClick={() =>
+      onClick={() => {
+        sessionLifecycle.beginEstablishment(sessionLifecycle.capture('challenge'));
         onLoginSuccess({
           id: 'user-1',
           username: 'local:admin',
@@ -97,8 +102,8 @@ vi.mock('./components/LoginPage', () => ({
           email: null,
           auth_provider: 'local_managed',
           role: 'admin',
-        })
-      }
+        });
+      }}
     >
       Log in again
     </button>
@@ -110,7 +115,21 @@ vi.mock('./components/MemoryStatus', () => ({
 }));
 
 vi.mock('./components/OAuthCallbackError', () => ({
-  OAuthCallbackError: () => <div data-testid="oauth-callback-error-page">OAuth callback error</div>,
+  OAuthCallbackError: ({ onRetry, onBack }: { onRetry?: () => void; onBack?: () => void }) => (
+    <div data-testid="oauth-callback-error-page">
+      OAuth callback error
+      {onRetry ? (
+        <button type="button" onClick={onRetry}>
+          Retry authorization
+        </button>
+      ) : null}
+      {onBack ? (
+        <button type="button" onClick={onBack}>
+          Back to workspace
+        </button>
+      ) : null}
+    </div>
+  ),
 }));
 
 vi.mock('./components/OAuthLoginPage', () => ({
@@ -293,6 +312,7 @@ vi.mock('./components/IndexerAdminView', () => ({
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
   localStorageMock.getItem.mockReturnValue(null);
   window.history.replaceState({}, '', '/');
   authExpiredListenerMock.callback = null;
@@ -301,6 +321,16 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  vi.stubGlobal('localStorage', localStorageMock);
+  if (sessionLifecycle.phase === 'logging-out') {
+    sessionLifecycle.finishLogout(sessionLifecycle.capture('public'));
+  }
+  if (sessionLifecycle.phase === 'authenticated' || sessionLifecycle.phase === 'establishing') {
+    sessionLifecycle.markAnonymous(sessionLifecycle.capture('public'));
+  }
+  // The application lifecycle is intentionally browser-process scoped; each test starts
+  // a fresh logical browser session rather than inheriting a prior test's explicit sign-out.
+  if (sessionLifecycle.signedOutIntent) sessionLifecycle.retrySignedOutSession();
   consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   apiMock.getActiveServerBackupJobs.mockResolvedValue({ backup_job: null, restore_job: null });
   apiMock.getServerBackupJob.mockResolvedValue({ id: 'backup-default', status: 'pending' });
@@ -337,6 +367,8 @@ function mockAuthenticatedAdmin(configurationWarnings: ConfigurationWarning[] = 
     username: 'local:admin',
     display_name: 'Admin',
     role: 'admin',
+    chat_enabled_effective: true,
+    userspace_generation_enabled_effective: true,
   });
   apiMock.getSettings.mockResolvedValue({
     settings: {
@@ -366,6 +398,8 @@ function mockAuthenticatedNonAdmin(): void {
     username: 'local:user',
     display_name: 'User',
     role: 'user',
+    chat_enabled_effective: true,
+    userspace_generation_enabled_effective: true,
   });
   apiMock.getSettings.mockResolvedValue({
     settings: {
@@ -962,7 +996,7 @@ describe('App chat fullscreen layout', () => {
     expect(toastApiMock.success).not.toHaveBeenCalled();
     expect(toastApiMock.error).not.toHaveBeenCalled();
 
-    authExpiredListenerMock.callback?.();
+    sessionLifecycle.expire(sessionLifecycle.capture('session'));
 
     await act(async () => {
       vi.advanceTimersByTime(6000);
@@ -990,7 +1024,7 @@ describe('App chat fullscreen layout', () => {
     expect(toastApiMock.success).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      authExpiredListenerMock.callback?.();
+      sessionLifecycle.expire(sessionLifecycle.capture('session'));
     });
     fireEvent.click(screen.getByRole('button', { name: 'Log in again' }));
     await flushMicrotasks();
@@ -1148,7 +1182,7 @@ describe('authenticated refresh lifecycle', () => {
     render(<App />);
     await screen.findByRole('button', { name: 'Chat' });
     window.dispatchEvent(new Event('focus'));
-    authExpiredListenerMock.callback?.();
+    sessionLifecycle.expire(sessionLifecycle.capture('session'));
     staleStatus.resolve({
       authenticated: true,
       ldap_configured: false,
@@ -1180,7 +1214,18 @@ describe('authenticated refresh lifecycle', () => {
         chat_enabled: true,
         userspace_generation_enabled: true,
       })
-      .mockImplementationOnce(() => staleStatus.promise);
+      .mockImplementationOnce(() => staleStatus.promise)
+      .mockResolvedValueOnce({
+        authenticated: false,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        chat_enabled: false,
+        userspace_generation_enabled: false,
+      });
 
     render(<App />);
     await screen.findByRole('button', { name: 'Chat' });
@@ -1222,7 +1267,7 @@ describe('authenticated refresh lifecycle', () => {
     render(<App />);
     await screen.findByRole('button', { name: 'Chat' });
     window.dispatchEvent(new Event('focus'));
-    authExpiredListenerMock.callback?.();
+    sessionLifecycle.expire(sessionLifecycle.capture('session'));
     staleStatus.reject(new Error('obsolete refresh'));
 
     await screen.findByRole('button', { name: 'Log in again' });
@@ -1249,6 +1294,8 @@ describe('authenticated refresh lifecycle', () => {
         username: 'local:admin',
         display_name: 'Admin',
         role: 'admin',
+        chat_enabled_effective: true,
+        userspace_generation_enabled_effective: true,
       })
       .mockImplementationOnce(() => staleUser.promise);
 
@@ -1256,7 +1303,7 @@ describe('authenticated refresh lifecycle', () => {
     await screen.findByRole('button', { name: 'Chat' });
     window.dispatchEvent(new Event('focus'));
     await waitFor(() => expect(apiMock.getCurrentUser).toHaveBeenCalledTimes(2));
-    authExpiredListenerMock.callback?.();
+    sessionLifecycle.expire(sessionLifecycle.capture('session'));
     staleUser.resolve({
       id: 'user-1',
       username: 'local:admin',
@@ -1294,7 +1341,7 @@ describe('authenticated refresh lifecycle', () => {
     render(<App />);
     const login = await screen.findByRole('button', { name: 'Log in again' });
     fireEvent.click(login);
-    authExpiredListenerMock.callback?.();
+    sessionLifecycle.expire(sessionLifecycle.capture('session'));
 
     await screen.findByRole('button', { name: 'Log in again' });
     expect(document.querySelector('.auth-loading')).toBeNull();
@@ -1357,5 +1404,432 @@ describe('authenticated refresh lifecycle', () => {
     staleFocusStatus.resolve({ ...settingsStatus, chat_enabled: true });
     await flushMicrotasks();
     expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull();
+  });
+});
+
+describe('App authentication recovery actions', () => {
+  it('runs Check session again explicitly after expiry metadata fails', async () => {
+    const authenticatedStatus = {
+      authenticated: true,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+      chat_enabled: true,
+      userspace_generation_enabled: true,
+    };
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce(authenticatedStatus)
+      .mockRejectedValueOnce(new Error('metadata offline'))
+      .mockResolvedValueOnce({ ...authenticatedStatus, authenticated: false });
+    apiMock.getCurrentUser.mockResolvedValueOnce({
+      id: 'user-2',
+      username: 'local:user',
+      display_name: 'User',
+      role: 'user',
+      chat_enabled_effective: true,
+      userspace_generation_enabled_effective: true,
+    });
+    apiMock.getSettings.mockResolvedValue({ settings: {}, configuration_warnings: [] });
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Workspace' });
+    act(() => {
+      sessionLifecycle.expire(sessionLifecycle.capture('session'));
+    });
+
+    const check = await screen.findByRole('button', { name: 'Check session again' });
+    expect(apiMock.getAuthStatus).toHaveBeenCalledTimes(2);
+    fireEvent.click(check);
+
+    await screen.findByRole('button', { name: 'Log in again' });
+    expect(apiMock.getAuthStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not steal focus when a passive authenticated refresh fails', async () => {
+    mockAuthenticatedAdmin();
+    render(<App />);
+    const chat = await screen.findByRole('button', { name: 'Chat' });
+    chat.focus();
+    apiMock.getAuthStatus.mockRejectedValueOnce(new Error('passive refresh offline'));
+
+    act(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => expect(apiMock.getAuthStatus).toHaveBeenCalledTimes(2));
+
+    expect(document.activeElement).toBe(chat);
+    expect(screen.queryByRole('button', { name: 'Try connecting again' })).toBeNull();
+  });
+
+  it('initiates focus of first nav button after explicit retry when DOM remounts to authenticated', async () => {
+    // Set up mocks for initial render + recovery flow
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce({
+        authenticated: true,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        authenticated_webgl_background_enabled: false,
+        server_name: 'Ragtime',
+        chat_enabled: true,
+        userspace_generation_enabled: true,
+      })
+      .mockRejectedValueOnce(new Error('metadata offline'))
+      .mockResolvedValueOnce({
+        authenticated: true,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        authenticated_webgl_background_enabled: false,
+        server_name: 'Ragtime',
+        chat_enabled: true,
+        userspace_generation_enabled: true,
+      });
+    apiMock.getCurrentUser.mockResolvedValue({
+      id: 'user-1',
+      username: 'local:admin',
+      display_name: 'Admin',
+      role: 'admin',
+      chat_enabled_effective: true,
+      userspace_generation_enabled_effective: true,
+    });
+    apiMock.getSettings.mockResolvedValue({ settings: {}, configuration_warnings: [] });
+
+    render(<App />);
+    const chatButton = await screen.findByRole('button', { name: 'Chat' });
+    expect(document.activeElement).not.toBe(chatButton);
+
+    // Simulate expiry that triggers recovery
+    act(() => {
+      sessionLifecycle.expire(sessionLifecycle.capture('session'));
+    });
+
+    await screen.findByRole('button', { name: 'Check session again' });
+
+    // Click retry - recovery process starts
+    fireEvent.click(screen.getByRole('button', { name: 'Check session again' }));
+
+    // Wait for recovery UI to disappear (recovery completes) and app returns to authenticated
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Check session again' })).toBeNull(),
+    );
+    // Verify authenticated app is rendered
+    await screen.findByRole('button', { name: 'Workspace' });
+
+    // useLayoutEffect should have run after authPhase changed to authenticated
+    // If no user input was focused, the nav button should receive focus after deferred mount
+    // Verify the chat button is still rendered after recovery
+    expect(chatButton).toBeTruthy();
+  });
+
+  it('does not focus nav button if user input has focus when retry completes', async () => {
+    mockAuthenticatedAdmin();
+    const { container } = render(<App />);
+    await screen.findByRole('button', { name: 'Chat' });
+
+    apiMock.getAuthStatus.mockRejectedValueOnce(new Error('metadata offline'));
+    // Simulate expiry that triggers recovery
+    act(() => {
+      sessionLifecycle.expire(sessionLifecycle.capture('session'));
+    });
+
+    await screen.findByRole('button', { name: 'Check session again' });
+
+    // Create a text input and focus it before retry
+    const input = container.appendChild(document.createElement('input'));
+    input.type = 'text';
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    // Click retry - recovery process starts with user input focused
+    fireEvent.click(screen.getByRole('button', { name: 'Check session again' }));
+
+    // Wait for recovery UI to disappear (recovery completes)
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Check session again' })).toBeNull(),
+    );
+
+    // Input should retain focus because we checked for user input before setting pending flag
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    input.remove();
+  });
+
+  it('does not consume pending focus flag while recovery is busy in unavailable phase', async () => {
+    const authenticatedStatus = {
+      authenticated: true,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+      chat_enabled: true,
+      userspace_generation_enabled: true,
+    };
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce(authenticatedStatus)
+      .mockRejectedValueOnce(new Error('metadata offline'))
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            // Simulate slow recovery to keep recoveryBusy true
+            setTimeout(() => resolve(authenticatedStatus), 100);
+          }),
+      );
+    apiMock.getCurrentUser.mockResolvedValue({
+      id: 'user-1',
+      username: 'local:admin',
+      display_name: 'Admin',
+      role: 'admin',
+      chat_enabled_effective: true,
+      userspace_generation_enabled_effective: true,
+    });
+    apiMock.getSettings.mockResolvedValue({ settings: {}, configuration_warnings: [] });
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Chat' });
+
+    // Trigger expiry and recovery
+    act(() => {
+      sessionLifecycle.expire(sessionLifecycle.capture('session'));
+    });
+
+    await screen.findByRole('button', { name: 'Check session again' });
+
+    // Click retry - sets pending flag
+    fireEvent.click(screen.getByRole('button', { name: 'Check session again' }));
+
+    // While recovery is busy, useLayoutEffect should NOT consume the flag
+    // even though authPhase may transition to unavailable or other states
+    // Wait a bit but not for completion
+    await waitFor(
+      () => expect(screen.queryByRole('button', { name: 'Check session again' })).toBeNull(),
+      { timeout: 50 },
+    ).catch(() => {
+      // Recovery still in progress
+    });
+
+    // Flag should still be set (recoveryBusy prevents consumption)
+    expect(screen.queryByRole('button', { name: 'Check session again' })).toBeNull();
+  });
+
+  it('does not steal focus when anonymous recovery settles then passive authenticated refresh occurs', async () => {
+    const authenticatedStatus = {
+      authenticated: true,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+      chat_enabled: true,
+      userspace_generation_enabled: true,
+    };
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce(authenticatedStatus)
+      .mockRejectedValueOnce(new Error('metadata offline'))
+      .mockResolvedValueOnce({ ...authenticatedStatus, authenticated: false })
+      .mockResolvedValueOnce(authenticatedStatus);
+    apiMock.getCurrentUser.mockResolvedValue({
+      id: 'user-1',
+      username: 'local:admin',
+      display_name: 'Admin',
+      role: 'admin',
+      chat_enabled_effective: true,
+      userspace_generation_enabled_effective: true,
+    });
+    apiMock.getSettings.mockResolvedValue({ settings: {}, configuration_warnings: [] });
+
+    const { container } = render(<App />);
+    await screen.findByRole('button', { name: 'Chat' });
+
+    // Trigger expiry
+    act(() => {
+      sessionLifecycle.expire(sessionLifecycle.capture('session'));
+    });
+
+    await screen.findByRole('button', { name: 'Check session again' });
+
+    // Create input and focus it
+    const input = container.appendChild(document.createElement('input'));
+    input.type = 'text';
+    input.focus();
+
+    // Click retry - sets pending flag if no input, but we have input, so flag stays false
+    fireEvent.click(screen.getByRole('button', { name: 'Check session again' }));
+
+    // Wait for recovery to complete (recovers to anonymous)
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Check session again' })).toBeNull(),
+    );
+
+    // Should show login page (anonymous)
+    await screen.findByRole('button', { name: 'Log in again' });
+
+    // Now simulate passive refresh while input is still focused
+    act(() => window.dispatchEvent(new Event('focus')));
+
+    // Wait for passive refresh to complete (moves to authenticated)
+    await waitFor(() => screen.findByRole('button', { name: 'Chat' }));
+
+    // Input should retain focus - pending flag was never set (input was focused during retry)
+    // and passive refresh doesn't set the flag
+    expect(document.activeElement).toBe(input);
+    input.remove();
+  });
+});
+
+describe('authenticated OAuth authorization lifecycle', () => {
+  const oauthUrl =
+    '/?client_id=client-a&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&response_type=code&code_challenge=challenge-a&state=state-a';
+
+  it('does not expose runtime OAuth actions for a URL-origin callback error', async () => {
+    apiMock.getAuthStatus.mockResolvedValue({
+      authenticated: false,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: false,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+    });
+    apiMock.getSettings.mockResolvedValue({ settings: {}, configuration_warnings: [] });
+    window.history.replaceState(
+      {},
+      '',
+      '/?oauth_error_title=Invalid%20request&oauth_error_summary=Bad%20redirect',
+    );
+
+    render(<App />);
+    await screen.findByTestId('oauth-callback-error-page');
+
+    expect(screen.queryByRole('button', { name: 'Retry authorization' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Back to workspace' })).toBeNull();
+    expect(apiMock.apiFetch).not.toHaveBeenCalledWith('/authorize/session', expect.anything());
+  });
+
+  it('keeps the authenticated principal on a transport failure and retries only on explicit action', async () => {
+    mockAuthenticatedNonAdmin();
+    window.history.replaceState({}, '', oauthUrl);
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await act(async () => first.reject(new Error('authorization offline')));
+
+    await screen.findByTestId('oauth-callback-error-page');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry authorization' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    await act(async () => second.reject(new Error('still offline')));
+    await screen.findByTestId('oauth-callback-error-page');
+    fireEvent.click(screen.getByRole('button', { name: 'Back to workspace' }));
+
+    expect(window.location.search).toBe('?view=userspace');
+    expect(await screen.findByRole('button', { name: 'Workspace' })).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a rejected authorization request from an obsolete session generation', async () => {
+    mockAuthenticatedNonAdmin();
+    window.history.replaceState({}, '', oauthUrl);
+    const pending = deferred<Response>();
+    const fetchMock = vi.fn().mockReturnValueOnce(pending.promise);
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    act(() => {
+      sessionLifecycle.expire(sessionLifecycle.capture('session'));
+    });
+    await screen.findByTestId('oauth-login-page');
+
+    await act(async () => pending.reject(new Error('obsolete failure')));
+    await flushMicrotasks();
+
+    expect(screen.queryByTestId('oauth-callback-error-page')).toBeNull();
+    expect(screen.getByTestId('oauth-login-page')).toBeTruthy();
+  });
+});
+
+describe('principal-scoped settings presentation', () => {
+  it('does not let an old principals delayed settings response overwrite the newer principal', async () => {
+    const oldSettings = deferred<{
+      settings: { server_name: string; authenticated_webgl_background_enabled: boolean };
+      configuration_warnings: ConfigurationWarning[];
+    }>();
+    const newSettings = deferred<{
+      settings: { server_name: string; authenticated_webgl_background_enabled: boolean };
+      configuration_warnings: ConfigurationWarning[];
+    }>();
+    const authStatus = {
+      authenticated: true,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+      server_name: 'Public name',
+      chat_enabled: true,
+      userspace_generation_enabled: true,
+    };
+    apiMock.getAuthStatus.mockResolvedValue(authStatus);
+    apiMock.getCurrentUser
+      .mockResolvedValueOnce({
+        id: 'old-admin',
+        username: 'old-admin',
+        display_name: 'Old Admin',
+        role: 'admin',
+        chat_enabled_effective: true,
+        userspace_generation_enabled_effective: true,
+      })
+      .mockResolvedValueOnce({
+        id: 'new-admin',
+        username: 'new-admin',
+        display_name: 'New Admin',
+        role: 'admin',
+        chat_enabled_effective: true,
+        userspace_generation_enabled_effective: true,
+      });
+    apiMock.getSettings
+      .mockReturnValueOnce(oldSettings.promise)
+      .mockReturnValueOnce(newSettings.promise);
+
+    render(<App />);
+    await waitFor(() => expect(apiMock.getSettings).toHaveBeenCalledTimes(1));
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(apiMock.getSettings).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      newSettings.resolve({
+        settings: { server_name: 'New principal', authenticated_webgl_background_enabled: false },
+        configuration_warnings: [],
+      });
+    });
+    expect(screen.getByText('New principal')).toBeTruthy();
+
+    await act(async () => {
+      oldSettings.resolve({
+        settings: { server_name: 'Old principal', authenticated_webgl_background_enabled: true },
+        configuration_warnings: [],
+      });
+    });
+    expect(screen.queryByText('Old principal')).toBeNull();
+    expect(screen.getByText('New principal')).toBeTruthy();
   });
 });

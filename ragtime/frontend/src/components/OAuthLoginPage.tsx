@@ -1,21 +1,22 @@
-import { useState, type FormEvent } from 'react';
-import { api } from '@/api';
+import { useRef, useState, type FormEvent } from 'react';
+import {
+  api,
+  apiFetch,
+  beginResponseSessionEstablishment,
+  isResponseAuthContextCurrent,
+} from '@/api';
 import type { MfaMethod } from '@/types';
+import {
+  buildAuthorizeForm,
+  parseAuthorizeError,
+  type OAuthParams,
+} from '@/auth/oauthAuthorization';
 import { BrandName } from '@/utils/buildEnvironment';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
 import { LoginGradientShell } from './LoginGradientShell';
 import { LoginMfaPanel } from './shared/LoginMfaPanel';
 
-export interface OAuthParams {
-  client_id: string;
-  redirect_uri: string;
-  response_type: string;
-  code_challenge: string;
-  code_challenge_method: string;
-  state: string;
-  resource?: string;
-  scope?: string;
-}
+export type { OAuthParams } from '@/auth/oauthAuthorization';
 
 interface OAuthLoginPageProps {
   params: OAuthParams;
@@ -33,6 +34,17 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
   const [mfaPreferredMethod, setMfaPreferredMethod] = useState<MfaMethod | null>(null);
   const [mfaCode, setMfaCode] = useState('');
   const [rememberDevice, setRememberDevice] = useState(true);
+  const [authorizationRetryAvailable, setAuthorizationRetryAvailable] = useState(false);
+  const authorizationAttemptRef = useRef(0);
+
+  const beginAuthorizationAttempt = () => {
+    authorizationAttemptRef.current += 1;
+    return authorizationAttemptRef.current;
+  };
+
+  const isCurrentAttempt = (attempt: number) => authorizationAttemptRef.current === attempt;
+  const isObsoleteResult = (error: unknown) =>
+    error instanceof DOMException && error.name === 'AbortError';
 
   // Extract display name from client_id (often contains URL info)
   const getClientDisplay = () => {
@@ -41,64 +53,59 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
     return display.length > 50 ? display.substring(0, 47) + '...' : display;
   };
 
-  const completeOAuthFromSession = async () => {
-    const formData = new URLSearchParams();
-    formData.append('client_id', params.client_id);
-    formData.append('redirect_uri', params.redirect_uri);
-    formData.append('response_type', params.response_type);
-    formData.append('code_challenge', params.code_challenge);
-    formData.append('code_challenge_method', params.code_challenge_method);
-    formData.append('state', params.state);
-    if (params.resource) formData.append('resource', params.resource);
-    if (params.scope) formData.append('scope', params.scope);
-
-    const response = await fetch('/authorize/session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: formData.toString(),
-      credentials: 'include',
-    });
+  const completeOAuthFromSession = async (attempt: number) => {
+    const response = await apiFetch(
+      '/authorize/session',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: buildAuthorizeForm(params).toString(),
+      },
+      'session',
+    );
     const data = await response.json();
+    if (!isCurrentAttempt(attempt) || !isResponseAuthContextCurrent(response)) {
+      throw new DOMException('OAuth authorization result is no longer current', 'AbortError');
+    }
     if (response.ok && data.redirect_url) {
-      window.location.href = data.redirect_url;
+      window.location.assign(data.redirect_url);
       return;
     }
-    throw new Error(data.error || 'OAuth authorization failed');
+    throw new Error(parseAuthorizeError(data).summary);
   };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    const attempt = beginAuthorizationAttempt();
     setError(null);
     setIsLoading(true);
 
     try {
-      // POST to /authorize endpoint
-      const formData = new URLSearchParams();
-      formData.append('client_id', params.client_id);
-      formData.append('redirect_uri', params.redirect_uri);
-      formData.append('response_type', params.response_type);
-      formData.append('code_challenge', params.code_challenge);
-      formData.append('code_challenge_method', params.code_challenge_method);
-      formData.append('state', params.state);
-      if (params.resource) formData.append('resource', params.resource);
-      if (params.scope) formData.append('scope', params.scope);
+      const formData = buildAuthorizeForm(params);
       formData.append('username', username);
       formData.append('password', password);
 
-      const response = await fetch('/authorize', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
+      const response = await apiFetch(
+        '/authorize',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: formData.toString(),
         },
-        body: formData.toString(),
-        credentials: 'include', // Include session cookie
-      });
+        'challenge',
+      );
 
       // If we get redirected (302), the browser should follow it
       // But with fetch, we need to check if we ended up at a different URL
       if (response.redirected) {
+        const establishedContext = beginResponseSessionEstablishment(response);
+        if (!establishedContext || !isCurrentAttempt(attempt)) {
+          throw new DOMException('OAuth authorization result is no longer current', 'AbortError');
+        }
         // The redirect was followed - navigate to final URL
-        window.location.href = response.url;
+        window.location.assign(response.url);
         return;
       }
 
@@ -108,6 +115,10 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
         data = await response.json();
       } catch {
         // Response wasn't JSON
+      }
+
+      if (!isCurrentAttempt(attempt) || !isResponseAuthContextCurrent(response)) {
+        throw new DOMException('OAuth authorization result is no longer current', 'AbortError');
       }
 
       if (response.ok) {
@@ -128,8 +139,12 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
           return;
         }
         if (data && data.redirect_url) {
+          const establishedContext = beginResponseSessionEstablishment(response);
+          if (!establishedContext || !isCurrentAttempt(attempt)) {
+            throw new DOMException('OAuth authorization result is no longer current', 'AbortError');
+          }
           // Navigate to the redirect URL
-          window.location.href = data.redirect_url;
+          window.location.assign(data.redirect_url);
           return;
         }
         // Fallback or unexpected success without redirect info
@@ -143,48 +158,90 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
         setError('Authentication failed');
       }
     } catch (err) {
+      if (!isCurrentAttempt(attempt) || isObsoleteResult(err)) return;
       if (err instanceof Error) {
         setError(err.message);
       } else {
         setError('An unexpected error occurred');
       }
     } finally {
-      setIsLoading(false);
+      if (isCurrentAttempt(attempt)) setIsLoading(false);
     }
   };
 
   const handleMfaVerify = async () => {
     if (!mfaChallengeToken) return;
+    const attempt = beginAuthorizationAttempt();
     setError(null);
     setIsLoading(true);
+    let sessionEstablished = false;
     try {
       await api.verifyMfaChallenge({
         mfa_challenge_token: mfaChallengeToken,
         code: mfaCode,
         remember_device: rememberDevice,
       });
-      await completeOAuthFromSession();
+      if (!isCurrentAttempt(attempt)) return;
+      sessionEstablished = true;
+      await completeOAuthFromSession(attempt);
     } catch (err) {
+      if (!isCurrentAttempt(attempt) || isObsoleteResult(err)) return;
       setError(err instanceof Error ? err.message : 'MFA verification failed');
+      if (sessionEstablished) setAuthorizationRetryAvailable(true);
     } finally {
-      setIsLoading(false);
+      if (isCurrentAttempt(attempt)) setIsLoading(false);
     }
   };
 
   // Shared by passkey verification and MFA enrollment: the session cookie is
   // already set, so we only need to complete the OAuth authorization.
   const handleMfaSessionEstablished = async () => {
+    const attempt = beginAuthorizationAttempt();
     setError(null);
+    setIsLoading(true);
     try {
-      await completeOAuthFromSession();
+      await completeOAuthFromSession(attempt);
     } catch (err) {
+      if (!isCurrentAttempt(attempt) || isObsoleteResult(err)) return;
       setError(err instanceof Error ? err.message : 'OAuth authorization failed');
+      setAuthorizationRetryAvailable(true);
+    } finally {
+      if (isCurrentAttempt(attempt)) setIsLoading(false);
+    }
+  };
+
+  const retryAuthorization = async () => {
+    const attempt = beginAuthorizationAttempt();
+    setError(null);
+    setIsLoading(true);
+    try {
+      await completeOAuthFromSession(attempt);
+      setAuthorizationRetryAvailable(false);
+    } catch (err) {
+      if (!isCurrentAttempt(attempt) || isObsoleteResult(err)) return;
+      setError(err instanceof Error ? err.message : 'OAuth authorization failed');
+    } finally {
+      if (isCurrentAttempt(attempt)) setIsLoading(false);
+    }
+  };
+
+  const handleRecoveryContinue = async () => {
+    const attempt = beginAuthorizationAttempt();
+    setError(null);
+    setIsLoading(true);
+    try {
+      await completeOAuthFromSession(attempt);
+    } catch (err) {
+      if (!isCurrentAttempt(attempt) || isObsoleteResult(err)) return;
+      setError(err instanceof Error ? err.message : 'OAuth authorization failed');
+    } finally {
+      if (isCurrentAttempt(attempt)) setIsLoading(false);
     }
   };
 
   return (
     <LoginGradientShell>
-      <div className="login-card">
+      <div id="oauth-login-card" className="login-card">
         <div className="login-header">
           <h1 className="login-title">
             <BrandName name={serverName} />
@@ -224,8 +281,19 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
             onRememberDeviceChange={setRememberDevice}
             onVerify={handleMfaVerify}
             onSessionEstablished={handleMfaSessionEstablished}
-            onRecoveryContinue={() => void completeOAuthFromSession()}
+            onRecoveryContinue={() => void handleRecoveryContinue()}
           />
+        )}
+
+        {authorizationRetryAvailable && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => void retryAuthorization()}
+            disabled={isLoading}
+          >
+            Retry authorization
+          </button>
         )}
 
         <div className="login-footer">

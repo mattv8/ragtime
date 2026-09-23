@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api } from '@/api';
+import { sessionLifecycle } from '@/auth/sessionLifecycle';
 import type { User, AuthStatus, AuthMethodStatus, MfaMethod } from '@/types';
 import { BrandName } from '@/utils/buildEnvironment';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
@@ -8,13 +9,16 @@ import { LoginMfaPanel } from './shared/LoginMfaPanel';
 
 interface LoginPageProps {
   authStatus: AuthStatus;
-  onLoginSuccess: (user: User) => void;
+  onLoginSuccess: (user: User) => void | Promise<void>;
   serverName?: string;
+  initialError?: string | null;
 }
 
 // TOTP window is 30s and verification accepts a +/-1 step grace period, so a
 // 15s refresh keeps the pre-filled code inside its valid window at click time.
 const DEBUG_TOTP_REFRESH_MS = 15_000;
+const isObsoleteResult = (error: unknown) =>
+  error instanceof DOMException && error.name === 'AbortError';
 
 function resolveAuthMethods(authStatus: AuthStatus): AuthMethodStatus[] {
   if (authStatus.auth_methods && authStatus.auth_methods.length > 0) {
@@ -36,12 +40,17 @@ function resolveAuthMethods(authStatus: AuthStatus): AuthMethodStatus[] {
   return methods;
 }
 
-export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }: LoginPageProps) {
+export function LoginCard({
+  authStatus,
+  onLoginSuccess,
+  serverName = 'Ragtime',
+  initialError = null,
+}: LoginPageProps) {
   const authMethods = resolveAuthMethods(authStatus);
   const hasLdapMethod = authMethods.some((method) => method.key === 'ldap' && method.configured);
   const [username, setUsername] = useState(authStatus.debug_username || '');
   const [password, setPassword] = useState(authStatus.debug_password || '');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialError);
   const [isLoading, setIsLoading] = useState(false);
   const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(null);
   const [mfaMode, setMfaMode] = useState<'none' | 'verify' | 'enroll' | 'recovery'>('none');
@@ -84,8 +93,12 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
   }, [mfaMode, authStatus.debug_totp_code]);
 
   const finishLogin = async (userOverride?: User | null) => {
+    const context = sessionLifecycle.capture('session');
     const user = userOverride || (await api.getCurrentUser());
-    onLoginSuccess(user);
+    if (!sessionLifecycle.isCurrent(context)) {
+      throw new DOMException('Authentication result is no longer current', 'AbortError');
+    }
+    await onLoginSuccess(user);
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -121,6 +134,7 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
         setError(response.error || 'Login failed');
       }
     } catch (err) {
+      if (isObsoleteResult(err)) return;
       if (err instanceof Error) {
         setError(err.message);
       } else {
@@ -147,6 +161,7 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
         setError(response.error || 'MFA verification failed');
       }
     } catch (err) {
+      if (isObsoleteResult(err)) return;
       setError(err instanceof Error ? err.message : 'MFA verification failed');
     } finally {
       setIsLoading(false);
@@ -161,12 +176,26 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
     try {
       await finishLogin();
     } catch (err) {
+      if (isObsoleteResult(err)) return;
       setError(err instanceof Error ? err.message : 'Sign-in could not be completed');
     }
   };
 
+  const handleRecoveryContinue = async () => {
+    setError(null);
+    setIsLoading(true);
+    try {
+      await finishLogin();
+    } catch (err) {
+      if (isObsoleteResult(err)) return;
+      setError(err instanceof Error ? err.message : 'Sign-in could not be completed');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
-    <div className="login-card">
+    <div id="login-card" className="login-card">
       <div className="login-header">
         <h1 className="login-title">
           <BrandName name={serverName} />
@@ -207,7 +236,7 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
           onRememberDeviceChange={setRememberDevice}
           onVerify={handleMfaVerify}
           onSessionEstablished={handleMfaSessionEstablished}
-          onRecoveryContinue={() => void finishLogin()}
+          onRecoveryContinue={() => void handleRecoveryContinue()}
         />
       )}
 
