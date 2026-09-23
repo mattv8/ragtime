@@ -30,6 +30,14 @@ class HttpTransport:
     request: Callable[[str, str, dict[str, str], bytes | None, float], tuple[int, bytes]]
 
 
+class HttpResponseError(RuntimeError):
+    """A response reached the runtime, so acceptance is definitive."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"runtime returned HTTP {status}")
+        self.status = status
+
+
 def _stdlib_request(method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float) -> tuple[int, bytes]:
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     opener = urllib.request.build_opener(_NoRedirect())
@@ -112,7 +120,7 @@ def _decode_response(status: int, raw: bytes) -> dict[str, object]:
     if not isinstance(value, dict):
         raise RuntimeError(f"runtime returned HTTP {status} with an invalid JSON response")
     if not 200 <= status < 300:
-        raise RuntimeError(f"runtime returned HTTP {status}")
+        raise HttpResponseError(status)
     return value
 
 
@@ -250,6 +258,20 @@ def main(
             _emit(out, {"event": "submitting", "run_id": run_id})
             try:
                 result = _request(request_transport, "POST", _endpoint(base_url, "/sqlite-history/bootstrap"), token, args.timeout_seconds, payload)
+            except HttpResponseError as error:
+                if 400 <= error.status < 500:
+                    _emit(
+                        out,
+                        {
+                            "instruction": "Acceptance was definitively rejected by the runtime; do not retry this run ID.",
+                            "run_id": run_id,
+                            "status": "rejected",
+                            "http_status": error.status,
+                        },
+                    )
+                else:
+                    _emit(out, {"instruction": "Acceptance is unknown; observe this same run ID with --status.", "run_id": run_id, "status": "unknown"})
+                return 1
             except (OSError, RuntimeError, urllib.error.URLError):
                 _emit(out, {"instruction": "Acceptance is unknown; observe this same run ID with --status.", "run_id": run_id, "status": "unknown"})
                 return 1

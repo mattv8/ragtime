@@ -214,6 +214,26 @@ class RuntimeHistoryBootstrapCliTests(unittest.TestCase):
         self.assertEqual(1, len(transport.calls))
         self.assertNotIn("secret-token", diagnostics)
 
+    def test_definitive_apply_rejection_is_not_reported_as_unknown_acceptance(self) -> None:
+        run_id = "553b6b91-00bb-44d1-8680-0e81533401d1"
+        transport = _Transport([(409, {"detail": "conflict"})])
+
+        exit_code, output, _ = self._run(["--apply", "--user-id", "local:admin", "--run-id", run_id, "--no-wait"], transport)
+
+        self.assertNotEqual(0, exit_code)
+        self.assertEqual("rejected", output[-1]["status"])
+        self.assertEqual(409, output[-1]["http_status"])
+        self.assertNotIn("unknown", str(output[-1]["instruction"]))
+
+    def test_server_acceptance_failure_remains_unknown(self) -> None:
+        run_id = "553b6b91-00bb-44d1-8680-0e81533401d1"
+        transport = _Transport([(503, {"detail": "unavailable"})])
+
+        exit_code, output, _ = self._run(["--apply", "--user-id", "local:admin", "--run-id", run_id, "--no-wait"], transport)
+
+        self.assertNotEqual(0, exit_code)
+        self.assertEqual("unknown", output[-1]["status"])
+
     def test_resume_transport_failure_does_not_issue_a_second_request(self) -> None:
         run_id = "553b6b91-00bb-44d1-8680-0e81533401d1"
         transport = _FailingPostTransport([])

@@ -3,11 +3,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
-import json
 import os
 import queue
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -20,7 +18,6 @@ from runtime.worker.sqlite_history.bootstrap import BootstrapManager
 from runtime.worker.sqlite_history.bootstrap_api import bootstrap_router
 from runtime.worker.sqlite_history.coordinator import SqliteHistoryCoordinator
 from runtime.worker.sqlite_history.models import RESTIC_IMAGE_PATH
-from runtime.worker.sqlite_history.operations import OperationStore
 from runtime.worker.sqlite_history.repository import ResticRepository
 from runtime.worker.sqlite_history.service import RuntimeSqliteHistoryService
 
@@ -138,7 +135,7 @@ class BootstrapManagerTests(unittest.IsolatedAsyncioTestCase):
         self.coordinator = SqliteHistoryCoordinator(self.root, object(), history_factory=lambda: self.history)
         self.coordinator.activate()
         self.manager = BootstrapManager(self.coordinator)
-        self.manager.inventory = lambda workspace_ids=None: self.inventory.report(workspace_ids)  # type: ignore[method-assign]
+        self.manager.inventory = lambda workspace_ids=None, **_kwargs: self.inventory.report(workspace_ids)  # type: ignore[method-assign]
 
     async def asyncTearDown(self) -> None:
         await self.manager.shutdown()
@@ -239,7 +236,7 @@ class BootstrapManagerTests(unittest.IsolatedAsyncioTestCase):
         inventory_started: queue.Queue[list[str] | None] = queue.Queue()
         inventory_release: queue.Queue[None] = queue.Queue()
 
-        def blocking_inventory(workspace_ids: list[str] | None = None) -> dict[str, Any]:
+        def blocking_inventory(workspace_ids: list[str] | None = None, **_kwargs: Any) -> dict[str, Any]:
             inventory_started.put(workspace_ids)
             inventory_release.get(timeout=2)
             return self.inventory.report(workspace_ids)
@@ -300,7 +297,7 @@ class BootstrapManagerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.manager.store.transition(run_id, "interrupted", error="worker restart")
         child_payload = {"operation_id": child_id, "user_id": "operator"}
-        child = self.coordinator._store.accept(
+        self.coordinator._store.accept(
             operation_id=child_id,
             workspace_id="alpha",
             creator_id="operator",
@@ -336,6 +333,25 @@ class BootstrapManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(42, completed["after"]["totals"]["repository_physical_bytes"])
         self.assertEqual(completed["after"], observed["after"])
         self.assertEqual(1, observed["verification"]["unique_artifacts_verified"])
+
+    async def test_final_verification_uses_current_records_without_racy_inventory_count(self) -> None:
+        self.inventory.workspace_ids = ["alpha"]
+        self.inventory.converted.add("alpha")
+        original = self.history.list_backups
+
+        async def concurrent_list(workspace_id: str, **filters: Any) -> list[dict[str, Any]]:
+            first = await original(workspace_id, **filters)
+            second = dict(first[0])
+            second["id"] = "backup-added-during-verification"
+            second["storage"] = dict(first[0]["storage"])
+            second["storage"]["snapshot_id"] = "c" * 64
+            return [*first, second]
+
+        self.history.list_backups = concurrent_list  # type: ignore[method-assign]
+        after, verification = await self.manager._verify_completion(["alpha"], -1)
+        self.assertEqual(1, after["totals"]["ready_records"])
+        self.assertEqual(2, verification["ready_records_verified"])
+        self.assertEqual(2, verification["unique_artifacts_verified"])
 
     async def test_dead_running_child_resumes_same_attempt(self) -> None:
         self.inventory.workspace_ids = ["alpha"]

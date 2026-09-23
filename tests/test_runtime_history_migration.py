@@ -11,6 +11,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
+from fastapi import HTTPException
+
+from runtime.worker.sqlite_history.coordinator import SqliteHistoryCoordinator
+from runtime.worker.sqlite_history.migration import LegacyHistoryMigration, _digest
 from runtime.worker.sqlite_history.models import RESTIC_IMAGE_PATH, ResticArtifact
 from runtime.worker.sqlite_history.repository import ResticRepository
 from runtime.worker.sqlite_history.service import RuntimeSqliteHistoryService
@@ -87,6 +91,103 @@ class RuntimeHistoryMigrationTests(unittest.IsolatedAsyncioTestCase):
             rows = await service.list_backups("workspace")
             self.assertTrue(all(row["storage"]["kind"] == "restic" for row in rows))
             self.assertFalse(image.exists())
+
+    async def test_http_failure_is_durably_terminal_and_replay_observes_it(self) -> None:
+        class FailingHistory:
+            async def migrate_legacy_backups(self, *_args: object, **_kwargs: object) -> int:
+                raise HTTPException(status_code=409, detail="corrupt legacy catalog")
+
+        from uuid import uuid4
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            coordinator = SqliteHistoryCoordinator(root, object(), history_factory=FailingHistory)
+            coordinator.activate()
+            migration = LegacyHistoryMigration(coordinator)
+            operation_id = str(uuid4())
+            with self.assertRaises(HTTPException) as failure:
+                await migration.accept("workspace", {"operation_id": operation_id, "user_id": "operator"})
+            self.assertEqual(409, failure.exception.status_code)
+            terminal = await migration.get("workspace", operation_id)
+            self.assertEqual("failed", terminal["phase"])
+            self.assertEqual("corrupt legacy catalog", terminal["error"])
+            replay = await migration.accept("workspace", {"operation_id": operation_id, "user_id": "operator"})
+            self.assertEqual("failed", replay["phase"])
+
+    async def test_cancel_is_observed_while_waiting_for_capture_admission(self) -> None:
+        from uuid import uuid4
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            coordinator = SqliteHistoryCoordinator(root, object(), history_factory=lambda: object())
+            coordinator.activate()
+            migration = LegacyHistoryMigration(coordinator)
+            operation_id = str(uuid4())
+            payload = {"operation_id": operation_id, "user_id": "operator"}
+            coordinator._store.accept(
+                operation_id=operation_id,
+                workspace_id="workspace",
+                creator_id="operator",
+                request_digest=_digest(payload),
+                kind="legacy_migration",
+                accepted_payload=payload,
+            )
+
+            async def cancelled() -> bool:
+                return True
+
+            with mock.patch.object(coordinator, "_try_global_capture_lock", return_value=None):
+                result = await migration.run_with_parent_fds("workspace", operation_id, cancel_check=cancelled)
+            self.assertEqual("cancelled", result["phase"])
+
+    async def test_admission_replay_observes_live_liveness_holder_without_mutating_receipt(self) -> None:
+        from uuid import uuid4
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            coordinator = SqliteHistoryCoordinator(root, object(), history_factory=lambda: object())
+            coordinator.activate()
+            migration = LegacyHistoryMigration(coordinator)
+            operation_id = str(uuid4())
+            payload = {"operation_id": operation_id, "user_id": "operator"}
+            coordinator._store.accept(
+                operation_id=operation_id,
+                workspace_id="workspace",
+                creator_id="operator",
+                request_digest=_digest(payload),
+                kind="legacy_migration",
+                accepted_payload=payload,
+            )
+            with coordinator._store.hold_liveness(operation_id):
+                observed = await migration.run_with_parent_fds("workspace", operation_id)
+            self.assertEqual("accepted", observed["phase"])
+            self.assertEqual("accepted", (await migration.get("workspace", operation_id))["phase"])
+
+    async def test_task_cancellation_during_migration_terminalizes_without_cancel_check(self) -> None:
+        class BlockingHistory:
+            def __init__(self) -> None:
+                self.started = asyncio.Event()
+
+            async def migrate_legacy_backups(self, *_args: object, **_kwargs: object) -> int:
+                self.started.set()
+                await asyncio.Event().wait()
+                return 0
+
+        from uuid import uuid4
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            history = BlockingHistory()
+            coordinator = SqliteHistoryCoordinator(root, object(), history_factory=lambda: history)
+            coordinator.activate()
+            migration = LegacyHistoryMigration(coordinator)
+            operation_id = str(uuid4())
+            task = asyncio.create_task(migration.accept("workspace", {"operation_id": operation_id, "user_id": "operator"}))
+            await history.started.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertEqual("cancelled", (await migration.get("workspace", operation_id))["phase"])
 
     async def test_restic_capture_materializes_a_verified_ready_row(self) -> None:
         binary = Path(os.environ.get("RESTIC_BINARY", "/opt/ragtime-backup/bin/restic"))

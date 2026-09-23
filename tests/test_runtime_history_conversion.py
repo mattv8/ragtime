@@ -121,6 +121,38 @@ class RuntimeHistoryConversionTests(unittest.IsolatedAsyncioTestCase):
             journal = next((history / "conversion-ledger").glob("*.json"))
             self.assertNotIn("legacy.sqlite3", journal.name)
 
+    async def test_fresh_conversion_verifies_once_but_resumed_stage_reverifies(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            service, history, repository = self._service(root)
+            (history / "blobs").mkdir(parents=True)
+            image = history / "blobs/legacy.sqlite3"
+            image.write_bytes(b"immutable")
+            self._manifest(service, history, image)
+            converter = LegacyHistoryConverter(service, "workspace", pass_fds=())
+            with mock.patch.object(repository, "verify", wraps=repository.verify) as verify:
+                self.assertEqual(2, await converter.migrate())
+                self.assertEqual(1, verify.await_count)
+
+            image.write_bytes(b"resumed")
+            self._manifest(service, history, image)
+            converter = LegacyHistoryConverter(service, "workspace", pass_fds=())
+            original = converter._save_ledger
+
+            def stop_after_repository_verification(ledger: dict[str, object]) -> None:
+                original(ledger)
+                if ledger.get("stage") == "repository_verified":
+                    raise OSError("simulated controller loss")
+
+            converter._save_ledger = stop_after_repository_verification  # type: ignore[method-assign]
+            with mock.patch.object(repository, "verify", wraps=repository.verify) as verify:
+                with self.assertRaises(OSError):
+                    await converter.migrate()
+                self.assertEqual(1, verify.await_count)
+            with mock.patch.object(repository, "verify", wraps=repository.verify) as verify:
+                self.assertEqual(2, await service.migrate_legacy_backups("workspace"))
+                self.assertEqual(1, verify.await_count)
+
     async def test_low_space_blocks_before_repository_write(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

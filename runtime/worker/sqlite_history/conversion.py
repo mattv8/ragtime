@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import HTTPException
 
+from .conversion_ledger import ledger_filename, operation_id, valid_ledger
 from .models import RESTIC_IMAGE_PATH, ResticArtifact
 
 
@@ -28,14 +29,12 @@ class LegacyHistoryConverter:
 
     @staticmethod
     def _operation_id(workspace_id: str, blob: str, digest: str) -> str:
-        # This deliberately does not expose a user controlled path in a tag/name.
-        identity = hashlib.sha256(f"{workspace_id}\0{blob}\0{digest}".encode()).hexdigest()
-        return f"legacy-v1-{identity}"
+        return operation_id(workspace_id, blob, digest)
 
     def _ledger_path(self, operation_id: str) -> Path:
         directory = self.root / "conversion-ledger"
         self.service._require_legacy_directory(directory)
-        return directory / f"{hashlib.sha256(operation_id.encode()).hexdigest()}.json"
+        return directory / ledger_filename(operation_id)
 
     def _read_ledger(self, operation_id: str) -> dict[str, Any] | None:
         path = self._ledger_path(operation_id)
@@ -76,22 +75,8 @@ class LegacyHistoryConverter:
         return None
 
     def _validate_ledger(self, ledger: dict[str, Any], path: Path) -> None:
-        blob, digest, operation_id = ledger.get("legacy_blob"), ledger.get("sha256"), ledger.get("operation_id")
-        if (
-            ledger.get("version") != 1
-            or ledger.get("workspace_id") != self.workspace_id
-            or not isinstance(blob, str)
-            or not isinstance(digest, str)
-            or len(digest) != 64
-            or any(char not in "0123456789abcdef" for char in digest)
-            or not isinstance(ledger.get("size_bytes"), int)
-            or ledger["size_bytes"] < 0
-            or ledger.get("stage") not in {"prepared", "repository_verified", "catalog_published", "source_removed"}
-            or operation_id != self._operation_id(self.workspace_id, blob, digest)
-            or path.name != hashlib.sha256(str(operation_id).encode()).hexdigest() + ".json"
-            or not isinstance(ledger.get("backup_ids"), list)
-            or not all(isinstance(value, str) and value for value in ledger["backup_ids"])
-        ):
+        blob = ledger.get("legacy_blob")
+        if not valid_ledger(ledger, self.workspace_id, path.name):
             raise HTTPException(status_code=409, detail="SQLite history conversion journal is invalid")
         # This confirms direct-child format and no-follow safety before any unlink.
         self.service._protected_path(self.root, blob, "blobs")
@@ -220,6 +205,7 @@ class LegacyHistoryConverter:
             operation_id = str(ledger["operation_id"])
             if cancel_check is not None and await cancel_check():
                 return converted
+            verified_in_this_pass = False
             if ledger["stage"] == "prepared":
                 artifact = await self._adopt(operation_id, digest, size_bytes, ledger.get("legacy_operation_id"))
                 if artifact is None:
@@ -232,17 +218,26 @@ class LegacyHistoryConverter:
                         size_bytes=size_bytes,
                         pass_fds=self.pass_fds,
                     )
-                await self._verify(artifact)
+                    await self._verify(artifact)
+                # _adopt already byte-verifies tagged snapshots before returning
+                # them.  Freshly ingested artifacts are verified immediately
+                # above, so either path reaches this durable stage once.
+                verified_in_this_pass = True
                 ledger.update(stage="repository_verified", storage=self._storage(artifact))
                 await run_sqlite_blocking(self._save_ledger, ledger)
             if ledger["stage"] == "repository_verified":
-                await self._verify(self._artifact(ledger))
+                # A persisted stage can be resumed after an interrupted process,
+                # so it must be reverified.  A fresh stage was verified above.
+                if not verified_in_this_pass:
+                    await self._verify(self._artifact(ledger))
+                    verified_in_this_pass = True
                 affected = await run_sqlite_blocking(self._publish, blob, ledger)
                 ledger["stage"] = "catalog_published"
                 await run_sqlite_blocking(self._save_ledger, ledger)
                 converted += len(affected)
             if ledger["stage"] == "catalog_published":
-                await self._verify(self._artifact(ledger))
+                if not verified_in_this_pass:
+                    await self._verify(self._artifact(ledger))
                 await run_sqlite_blocking(self._remove_published_source, blob, digest, size_bytes, ledger)
                 ledger["stage"] = "source_removed"
                 await run_sqlite_blocking(self._save_ledger, ledger)

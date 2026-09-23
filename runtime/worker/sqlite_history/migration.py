@@ -93,11 +93,27 @@ class LegacyHistoryMigration:
         A busy global admission leaves the receipt accepted so the same UUID can
         be retried; it is not misreported as a completed migration.
         """
+        liveness = self._coordinator._store.hold_liveness(operation_id)
         try:
-            with self._coordinator._store.hold_liveness(operation_id) as liveness_fd:
+            liveness_fd = liveness.__enter__()
+        except OperationConflict:
+            # Only failure to acquire liveness means another producer is live.
+            # Conflicts raised while processing must still terminalize below.
+            return await asyncio.to_thread(self._coordinator._store.get, operation_id)
+        try:
+            try:
                 capture_fd = self._coordinator._try_global_capture_lock()
                 if capture_fd is None:
-                    return await asyncio.to_thread(self._coordinator._store.get, operation_id)
+                    while capture_fd is None:
+                        current = await asyncio.to_thread(self._coordinator._store.get, operation_id)
+                        if current["phase"] == "cancelled":
+                            return current
+                        if current["phase"] == "cancelling" or (cancel_check is not None and await cancel_check()):
+                            if current["phase"] in {"accepted", "cancelling"}:
+                                return await asyncio.to_thread(self._coordinator._store.transition, operation_id, "cancelled")
+                            return current
+                        await asyncio.sleep(0.25)
+                        capture_fd = self._coordinator._try_global_capture_lock()
                 try:
                     await asyncio.to_thread(self._coordinator._store.transition, operation_id, "running")
                     pass_fds = tuple(dict.fromkeys((*parent_pass_fds, liveness_fd, capture_fd)))
@@ -119,13 +135,15 @@ class LegacyHistoryMigration:
                 finally:
                     fcntl.flock(capture_fd, fcntl.LOCK_UN)
                     os.close(capture_fd)
-        except HTTPException as exc:
-            if exc.status_code != 507:
+            except asyncio.CancelledError:
+                await self._terminalize_cancel(operation_id)
                 raise
+        except HTTPException as exc:
             try:
                 current = await asyncio.to_thread(self._coordinator._store.get, operation_id)
                 if current["phase"] not in {"completed", "failed", "cancelled", "interrupted"}:
-                    await asyncio.to_thread(self._coordinator._store.transition, operation_id, "failed", error=LOW_SPACE_ERROR)
+                    error = LOW_SPACE_ERROR if exc.status_code == 507 else str(exc.detail)
+                    await asyncio.to_thread(self._coordinator._store.transition, operation_id, "failed", error=error)
             except (OperationConflict, OperationNotFound):
                 pass
             raise
@@ -142,3 +160,22 @@ class LegacyHistoryMigration:
             except (OperationConflict, OperationNotFound):
                 pass
             raise
+        finally:
+            liveness.__exit__(None, None, None)
+
+    async def _terminalize_cancel(self, operation_id: str) -> dict[str, Any]:
+        """Make cancellation durable even when the caller supplied no probe."""
+        try:
+            current = await asyncio.to_thread(self._coordinator._store.get, operation_id)
+            phase = current["phase"]
+            if phase in {"completed", "failed", "cancelled", "interrupted"}:
+                return current
+            if phase == "catalog_committed":
+                return await asyncio.to_thread(self._coordinator._store.transition, operation_id, "completed")
+            if phase == "accepted":
+                return await asyncio.to_thread(self._coordinator._store.transition, operation_id, "cancelled")
+            if phase != "cancelling":
+                await asyncio.to_thread(self._coordinator._store.transition, operation_id, "cancelling")
+            return await asyncio.to_thread(self._coordinator._store.transition, operation_id, "cancelled")
+        except (OperationConflict, OperationNotFound):
+            return await asyncio.to_thread(self._coordinator._store.get, operation_id)

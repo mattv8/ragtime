@@ -44,8 +44,8 @@ class BootstrapManager:
     def child_operation_id(run_id: str, workspace_id: str, attempt: int) -> str:
         return str(uuid5(UUID(run_id), f"bootstrap:{workspace_id}:{attempt}"))
 
-    def inventory(self, workspace_ids: list[str] | None = None) -> dict[str, Any]:
-        report = inventory_legacy_history(self.coordinator._root, workspace_ids)
+    def inventory(self, workspace_ids: list[str] | None = None, *, verify_integrity: bool = True) -> dict[str, Any]:
+        report = inventory_legacy_history(self.coordinator._root, workspace_ids, verify_integrity=verify_integrity)
         report["active"] = self.coordinator._active()
         return report
 
@@ -81,7 +81,7 @@ class BootstrapManager:
             return self.view(existing)
 
         try:
-            before = await asyncio.to_thread(self.inventory, raw_scope)
+            before = await asyncio.to_thread(self.inventory, raw_scope, verify_integrity=False)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid workspace ID") from exc
         frozen = [str(item["workspace_id"]) for item in before["workspaces"]]
@@ -239,7 +239,7 @@ class BootstrapManager:
 
         payload = receipt.get("accepted_payload") or {}
         frozen = list(payload.get("workspace_ids") or [])
-        current_inventory = await asyncio.to_thread(self.inventory, frozen)
+        current_inventory = await asyncio.to_thread(self.inventory, frozen, verify_integrity=False)
         if any(item.get("issues") for item in current_inventory["workspaces"]):
             await asyncio.to_thread(
                 self.store.transition,
@@ -523,8 +523,6 @@ class BootstrapManager:
                         artifact.sha256,
                     )
                     unique[key] = artifact
-            if ready_records != int(after["totals"].get("ready_records", 0)):
-                raise RuntimeError("Ready history inventory changed during final verification")
             for artifact in unique.values():
                 await repository.verify(artifact, pass_fds=verification_fds)
         return after, {

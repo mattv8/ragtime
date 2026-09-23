@@ -16,10 +16,10 @@ import stat
 from pathlib import Path
 from typing import Any
 
+from .conversion_ledger import is_direct_blob, valid_ledger, valid_metadata
+
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _OVERHEAD = 64 * 1024 * 1024
-_LEDGER_STAGES = {"prepared", "repository_verified", "catalog_published", "source_removed"}
 
 
 def _directory(path: Path) -> bool:
@@ -92,7 +92,7 @@ def _tree_bytes(root: Path) -> int:
     return walk(root)
 
 
-def _blank_report(workspace_id: str, issues: list[str]) -> dict[str, Any]:
+def _blank_report(workspace_id: str, issues: list[str], *, verify_integrity: bool) -> dict[str, Any]:
     return {
         "workspace_id": workspace_id,
         "ready_records": 0,
@@ -100,19 +100,12 @@ def _blank_report(workspace_id: str, issues: list[str]) -> dict[str, Any]:
         "unique_legacy_blobs": 0,
         "legacy_bytes": 0,
         "logical_legacy_bytes": 0,
-        "unique_legacy_contents": 0,
+        "unique_legacy_contents": 0 if verify_integrity else None,
         "restic_records": 0,
         "ledger_pending": 0,
         "ledger_pending_bytes": 0,
         "issues": issues,
     }
-
-
-def _valid_metadata(row: dict[str, Any]) -> tuple[str, int] | None:
-    digest, size_bytes = row.get("sha256"), row.get("size_bytes")
-    if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None or not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0:
-        return None
-    return digest, size_bytes
 
 
 def _file_sha256(path: Path) -> str | None:
@@ -138,32 +131,6 @@ def _legacy_blob(storage: Any, row: dict[str, Any]) -> str | None:
     if isinstance(storage, dict):
         return storage.get("blob") if storage.get("kind") == "legacy_file" else None
     return row.get("blob")
-
-
-def _is_direct_blob(blob: Any) -> bool:
-    if not isinstance(blob, str):
-        return False
-    parts = Path(blob).parts
-    return len(parts) == 2 and parts[0] == "blobs" and parts[1] not in {"", ".", ".."}
-
-
-def _valid_ledger(record: Any, workspace_id: str, filename: str) -> bool:
-    if not isinstance(record, dict) or record.get("version") != 1:
-        return False
-    if record.get("workspace_id") != workspace_id or record.get("stage") not in _LEDGER_STAGES:
-        return False
-    if not _is_direct_blob(record.get("legacy_blob")) or _valid_metadata(record) is None:
-        return False
-    digest, _ = _valid_metadata(record) or ("", 0)
-    operation_id = record.get("operation_id")
-    backup_ids = record.get("backup_ids")
-    expected_operation = hashlib.sha256(f"{workspace_id}\0{record.get('legacy_blob')}\0{digest}".encode()).hexdigest()
-    return (
-        operation_id == f"legacy-v1-{expected_operation}"
-        and filename == hashlib.sha256(str(operation_id).encode()).hexdigest() + ".json"
-        and isinstance(backup_ids, list)
-        and all(isinstance(backup_id, str) and backup_id for backup_id in backup_ids)
-    )
 
 
 def _read_manifest(root: Path, workspace_id: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -194,22 +161,25 @@ def _discover_workspaces(root: Path) -> list[str]:
     for workspace_id in names:
         if _safe_directory(root, "workspaces", workspace_id, "files") is None:
             continue
-        manifest, issue = _read_manifest(root, workspace_id)
-        if manifest is not None and issue is None:
+        history = root / "workspaces" / workspace_id / "sqlite_backups"
+        manifest = history / "manifest-v1.json"
+        if (_safe_directory(root, "workspaces", workspace_id, "sqlite_backups") is None and os.path.lexists(history)) or os.path.lexists(manifest):
             discovered.append(workspace_id)
     return discovered
 
 
-def _inventory_workspace(root: Path, workspace_id: str) -> tuple[dict[str, Any], dict[tuple[int, int], int], dict[tuple[int, int], int]]:
+def _inventory_workspace(
+    root: Path, workspace_id: str, *, verify_integrity: bool
+) -> tuple[dict[str, Any], dict[tuple[int, int], int], dict[tuple[int, int], int]]:
     issues: list[str] = []
     if _safe_directory(root, "workspaces", workspace_id, "files") is None:
         issues.append("workspace files directory is missing or unsafe")
     manifest, manifest_issue = _read_manifest(root, workspace_id)
     if manifest_issue is not None:
         issues.append(manifest_issue)
-        return _blank_report(workspace_id, sorted(set(issues))), {}, {}
+        return _blank_report(workspace_id, sorted(set(issues)), verify_integrity=verify_integrity), {}, {}
 
-    report = _blank_report(workspace_id, issues)
+    report = _blank_report(workspace_id, issues, verify_integrity=verify_integrity)
     images: dict[tuple[int, int], int] = {}
     pending_images: dict[tuple[int, int], int] = {}
     logical_digests: set[str] = set()
@@ -224,16 +194,16 @@ def _inventory_workspace(root: Path, workspace_id: str) -> tuple[dict[str, Any],
         storage = row.get("storage")
         if isinstance(storage, dict) and storage.get("kind") == "restic":
             report["restic_records"] += 1
-            if _valid_metadata(row) is None:
+            if valid_metadata(row) is None:
                 issues.append("ready backup metadata is invalid")
             continue
 
         report["legacy_records"] += 1
         blob = _legacy_blob(storage, row)
-        metadata = _valid_metadata(row)
+        metadata = valid_metadata(row)
         if metadata is None:
             issues.append("ready backup metadata is invalid")
-        if not _is_direct_blob(blob):
+        if not is_direct_blob(blob):
             issues.append("legacy blob path is missing or unsafe")
             continue
         assert isinstance(blob, str)
@@ -251,19 +221,20 @@ def _inventory_workspace(root: Path, workspace_id: str) -> tuple[dict[str, Any],
         key = (details.st_dev, details.st_ino)
         images[key] = details.st_size
         legacy_blobs.add(blob)
-        if key not in actual_digests:
+        if verify_integrity and key not in actual_digests:
             actual_digests[key] = _file_sha256(direct_file[0])
-        actual_digest = actual_digests[key]
-        if actual_digest is None:
-            issues.append("legacy blob is unreadable")
-        else:
-            logical_digests.add(actual_digest)
+        actual_digest = actual_digests.get(key)
+        if verify_integrity:
+            if actual_digest is None:
+                issues.append("legacy blob is unreadable")
+            else:
+                logical_digests.add(actual_digest)
         if metadata is not None:
             digest, expected_size = metadata
             report["logical_legacy_bytes"] += expected_size
             if expected_size != details.st_size:
                 issues.append("legacy blob size does not match catalog metadata")
-            if actual_digest is not None and digest != actual_digest:
+            if verify_integrity and actual_digest is not None and digest != actual_digest:
                 issues.append("legacy blob digest does not match catalog metadata")
             previous = metadata_by_blob.setdefault(blob, metadata)
             if previous != metadata:
@@ -287,7 +258,7 @@ def _inventory_workspace(root: Path, workspace_id: str) -> tuple[dict[str, Any],
                     raise ValueError
                 with path.open(encoding="utf-8") as source:
                     record = json.load(source)
-                if not _valid_ledger(record, workspace_id, path.name):
+                if not valid_ledger(record, workspace_id, path.name):
                     raise ValueError
             except (OSError, ValueError, json.JSONDecodeError):
                 issues.append("conversion ledger is unreadable")
@@ -317,13 +288,13 @@ def _inventory_workspace(root: Path, workspace_id: str) -> tuple[dict[str, Any],
 
     report["unique_legacy_blobs"] = len(images)
     report["legacy_bytes"] = sum(images.values())
-    report["unique_legacy_contents"] = len(logical_digests)
+    report["unique_legacy_contents"] = len(logical_digests) if verify_integrity else None
     report["ledger_pending_bytes"] = sum(pending_images.values())
     report["issues"] = sorted(set(issues))
     return report, images, pending_images
 
 
-def inventory_legacy_history(root: Path, workspace_ids: list[str] | None = None) -> dict[str, Any]:
+def inventory_legacy_history(root: Path, workspace_ids: list[str] | None = None, *, verify_integrity: bool = True) -> dict[str, Any]:
     """Enumerate validated retained catalogs without creating files or repositories.
 
     ``None`` discovers retained catalogs.  A supplied list, including ``[]``, is
@@ -340,7 +311,7 @@ def inventory_legacy_history(root: Path, workspace_ids: list[str] | None = None)
     ingest_reserve = 0
     verification_reserve = 0
     for workspace_id in entries:
-        report, images, pending_images = _inventory_workspace(root, workspace_id)
+        report, images, pending_images = _inventory_workspace(root, workspace_id, verify_integrity=verify_integrity)
         reports.append(report)
         all_images.update(images)
         all_pending_images.update(pending_images)
@@ -361,7 +332,9 @@ def inventory_legacy_history(root: Path, workspace_ids: list[str] | None = None)
         "unique_legacy_blobs": len(all_images),
         "legacy_bytes": sum(all_images.values()),
         "logical_legacy_bytes": sum(report["logical_legacy_bytes"] for report in reports),
-        "unique_legacy_contents": sum(report["unique_legacy_contents"] for report in reports),
+        "unique_legacy_contents": (
+            None if any(report["unique_legacy_contents"] is None for report in reports) else sum(report["unique_legacy_contents"] for report in reports)
+        ),
         "restic_records": sum(report["restic_records"] for report in reports),
         "ledger_pending": sum(report["ledger_pending"] for report in reports),
         "ledger_pending_bytes": sum(all_pending_images.values()),

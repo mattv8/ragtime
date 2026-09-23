@@ -145,6 +145,30 @@ class LegacyHistoryInventoryTests(unittest.TestCase):
             self.assertEqual(report["workspaces"][0]["ledger_pending"], 0)
             self.assertIn("conversion ledger is unreadable", report["workspaces"][0]["issues"])
 
+    def test_discovery_surfaces_corrupt_catalogs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog = self._catalog(root)
+            (catalog / "manifest-v1.json").write_text("{", encoding="utf-8")
+
+            report = inventory_legacy_history(root)
+
+            self.assertEqual(["one"], [row["workspace_id"] for row in report["workspaces"]])
+            self.assertIn("history catalog is unreadable", report["workspaces"][0]["issues"])
+
+    def test_discovery_ignores_empty_safe_catalog_directory_and_lightweight_contents_are_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            catalog = self._catalog(root)
+            self.assertEqual([], inventory_legacy_history(root)["workspaces"])
+            (catalog / "blobs" / "image.sqlite3").write_bytes(b"sqlite")
+            self._write_manifest(catalog, "one", [self._legacy_row("image.sqlite3")])
+
+            report = inventory_legacy_history(root, verify_integrity=False)
+
+            self.assertIsNone(report["workspaces"][0]["unique_legacy_contents"])
+            self.assertIsNone(report["totals"]["unique_legacy_contents"])
+
     def test_published_catalog_pending_cleanup_reports_unreferenced_source_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
