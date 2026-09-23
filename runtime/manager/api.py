@@ -48,6 +48,10 @@ from runtime.manager.models import (
 )
 from runtime.manager.service import SessionManager
 from runtime.worker import api as worker_api
+from runtime.worker.service import get_worker_service
+from runtime.worker.sqlite_history.api import history_router
+from runtime.worker.sqlite_history.bootstrap_api import bootstrap_router
+from runtime.worker.sqlite_history.transfer_api import create_transfer_router
 
 
 def create_app() -> FastAPI:
@@ -56,17 +60,30 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         await manager.startup()
-        yield
-        await manager.shutdown()
-        # Also clean up local worker devserver processes (relevant when
-        # manager+worker routes are combined in the same app).
-        await worker_api.shutdown_worker_resources()
+        try:
+            # Including the worker router does not enter its lifespan when it
+            # is embedded in the manager app, so start its durable history
+            # recovery explicitly.
+            await get_worker_service().sqlite_history_coordinator().start()
+            yield
+        finally:
+            try:
+                await manager.shutdown()
+            finally:
+                # Also clean up local worker devserver processes (relevant when
+                # manager+worker routes are combined in the same app).
+                await worker_api.shutdown_worker_resources()
 
     application = FastAPI(
         title="Ragtime User Space Runtime Manager",
         version="0.1.0",
         lifespan=lifespan,
     )
+    # The manager embeds the worker in this deployment mode, so both surfaces
+    # intentionally resolve the same durable coordinator instance.
+    application.include_router(history_router("", ManagerAuth, lambda: get_worker_service().sqlite_history_coordinator()))
+    application.include_router(bootstrap_router("", ManagerAuth, lambda: get_worker_service().sqlite_history_coordinator()))
+    application.include_router(create_transfer_router(lambda: get_worker_service().sqlite_history_coordinator(), ManagerAuth))
 
     @application.get("/health", response_model=RuntimeManagerHealthResponse)
     async def health(
@@ -426,6 +443,7 @@ def create_app() -> FastAPI:
             workspace_id,
             args=payload.args,
             env=payload.env,
+            sqlite_history_operation_id=payload.sqlite_history_operation_id,
         )
 
     @application.get(

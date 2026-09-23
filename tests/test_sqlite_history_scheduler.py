@@ -17,6 +17,13 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
         self.files = Path(self.temp.name) / "workspace" / "files"
         self.files.mkdir(parents=True)
         self.service = SqliteHistoryService(lambda _: self.files)
+        runtime_active_patch = mock.patch.object(
+            SqliteHistoryService,
+            "runtime_history_active",
+            new=mock.AsyncMock(return_value=False),
+        )
+        runtime_active_patch.start()
+        self.addCleanup(runtime_active_patch.stop)
         self.root = self.files.parent / "sqlite_backups"
 
     def tearDown(self) -> None:

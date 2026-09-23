@@ -117,6 +117,13 @@ class LinkedSqliteInspectorServiceTests(unittest.IsolatedAsyncioTestCase):
         self.index_data_root = Path(self.temp_dir.name)
         self.workspace_root = self.index_data_root / "_userspace" / "workspaces"
         self.sqlite_history = SqliteHistoryService(self._workspace_files_dir)
+        runtime_active_patch = mock.patch.object(
+            SqliteHistoryService,
+            "runtime_history_active",
+            new=mock.AsyncMock(return_value=False),
+        )
+        runtime_active_patch.start()
+        self.addCleanup(runtime_active_patch.stop)
         self._sqlite_runtime_settings_patch = mock.patch.object(sqlite_runtime.settings, "index_data_path", str(self.index_data_root))
         self._sqlite_runtime_manager_patch = mock.patch.object(sqlite_runtime, "runtime_manager_enabled", return_value=False)
         self._sqlite_runtime_settings_patch.start()

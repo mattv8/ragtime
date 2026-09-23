@@ -232,6 +232,29 @@ class SqliteBackupQueueStore:
         )
         return [_payload(row) for row in rows]
 
+    async def reconcilable(self, *, older_than_seconds: int = 120, limit: int = 50) -> list[dict[str, Any]]:
+        """Include interrupted projections: runtime receipts may finish later."""
+        db = await get_db()
+        rows = await db.query_raw(
+            f"SELECT {_COLUMNS} FROM workspace_sqlite_backup_jobs WHERE status IN ('running', 'interrupted') AND COALESCE(heartbeat_at, finished_at, started_at, created_at) < NOW() - ($1 * INTERVAL '1 second') ORDER BY COALESCE(heartbeat_at, finished_at, started_at, created_at) LIMIT $2",
+            older_than_seconds,
+            max(1, min(limit, 50)),
+        )
+        return [_payload(row) for row in rows]
+
+    async def project_runtime_terminal(self, job_id: str, *, status: str, backup_ids: list[str], error_message: str | None) -> bool:
+        if status not in _TERMINAL:
+            raise ValueError("runtime projection must be terminal")
+        db = await get_db()
+        updated = await db.execute_raw(
+            "UPDATE workspace_sqlite_backup_jobs SET status = $1, backup_ids = $2::text[], error_message = $3, finished_at = NOW(), updated_at = NOW(), heartbeat_at = NOW() WHERE id = $4 AND status IN ('running', 'interrupted')",
+            status,
+            backup_ids,
+            error_message,
+            job_id,
+        )
+        return updated == 1
+
     async def interrupt(self, job_id: str, owner_token: str, *, error_message: str) -> bool:
         db = await get_db()
         updated = await db.execute_raw(
@@ -241,6 +264,24 @@ class SqliteBackupQueueStore:
             owner_token,
         )
         return updated == 1
+
+    async def takeover_observer(self, job_id: str, previous_owner_token: str, observer_token: str) -> dict[str, Any] | None:
+        """CAS transfer an expired projection lease without changing runtime work.
+
+        This is intentionally only queue-observer ownership.  The stable job ID
+        remains the runtime operation ID, so a controller restart cannot create
+        a second capture.
+        """
+        db = await get_db()
+        async with db.tx() as tx:
+            await tx.query_raw("SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended($1, 0))", _QUEUE_LOCK)
+            rows = await tx.query_raw(
+                f"UPDATE workspace_sqlite_backup_jobs SET owner_token = $1, heartbeat_at = NOW(), updated_at = NOW() WHERE id = $2 AND status = 'running' AND owner_token = $3 RETURNING {_COLUMNS}",
+                observer_token,
+                job_id,
+                previous_owner_token,
+            )
+            return _payload(rows[0]) if rows else None
 
     async def prune_terminal(self, *, older_than_days: int = 30, limit: int = 100) -> list[str]:
         db = await get_db()

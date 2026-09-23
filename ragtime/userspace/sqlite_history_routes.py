@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 from typing import Any, AsyncIterator
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from ragtime.core.logging import get_logger
+from ragtime.core.runtime_manager_client import get_runtime_manager_request_config
 from ragtime.core.security import get_current_user
 from ragtime.userspace.service import userspace_service
 from ragtime.userspace.sqlite_backup_queue import get_sqlite_backup_queue_service
@@ -248,16 +249,52 @@ async def cancel_sqlite_history_capture_job(workspace_id: str, job_id: str, user
 
 
 @router.get("/workspaces/{workspace_id}/sqlite-history/{backup_id}/download")
-async def download_sqlite_history(workspace_id: str, backup_id: str, background_tasks: BackgroundTasks, user: Any = Depends(get_current_user)):
+async def download_sqlite_history(workspace_id: str, backup_id: str, user: Any = Depends(get_current_user)):
     await _manage(workspace_id, user)
-    path = await get_sqlite_history_service().download_path(workspace_id, backup_id)
+    if not await get_sqlite_history_service().runtime_history_active():
+        # Compatibility before coordinated activation only.  Once a runtime is
+        # configured, history bytes are never opened by this control plane.
+        path = await get_sqlite_history_service().download_path(workspace_id, backup_id)
 
-    def cleanup_temp_download(temp_path: Path) -> None:
-        """Remove temporary download copy after transmission."""
-        temp_path.unlink(missing_ok=True)
+        async def legacy_stream() -> AsyncIterator[bytes]:
+            try:
+                with path.open("rb") as source:
+                    while chunk := source.read(64 * 1024):
+                        yield chunk
+            finally:
+                path.unlink(missing_ok=True)
 
-    background_tasks.add_task(cleanup_temp_download, path)
-    return FileResponse(path, filename=f"{backup_id}.sqlite3", media_type="application/vnd.sqlite3", headers={"Cache-Control": "no-store"})
+        return StreamingResponse(
+            legacy_stream(),
+            media_type="application/vnd.sqlite3",
+            headers={"Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="{backup_id}.sqlite3"'},
+        )
+
+    config = get_runtime_manager_request_config()
+    client = httpx.AsyncClient(timeout=httpx.Timeout(config.timeout_seconds), follow_redirects=True)
+    response = await client.send(
+        client.build_request("GET", f"{config.base_url}/workspaces/{workspace_id}/sqlite-history/backups/{backup_id}/download", headers=config.headers),
+        stream=True,
+    )
+    if response.status_code >= 400:
+        detail = (await response.aread()).decode(errors="replace")[:256] or "Runtime SQLite history download failed"
+        await response.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=response.status_code if response.status_code < 500 else 502, detail=detail)
+
+    async def runtime_stream() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        runtime_stream(),
+        media_type=response.headers.get("content-type", "application/vnd.sqlite3"),
+        headers={"Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="{backup_id}.sqlite3"'},
+    )
 
 
 @router.delete("/workspaces/{workspace_id}/sqlite-history/{backup_id}")

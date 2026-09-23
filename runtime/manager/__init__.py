@@ -1,4 +1,8 @@
-"""Runtime manager package with API, models, and orchestration service."""
+"""Runtime manager package with API, models, and orchestration service.
+
+Keep package import lightweight so worker modules can import manager models
+without initializing the FastAPI application.
+"""
 
 from importlib import import_module
 from typing import TYPE_CHECKING, Any

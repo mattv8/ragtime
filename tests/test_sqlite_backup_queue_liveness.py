@@ -10,6 +10,7 @@ from unittest import mock
 from uuid import uuid4
 
 from ragtime.userspace import sqlite_backup_queue as queue
+from ragtime.userspace.sqlite_history import SqliteHistoryService
 
 
 class _RecoveryStore:
@@ -26,6 +27,15 @@ class _RecoveryStore:
 
 
 class SqliteBackupQueueLivenessTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        runtime_active_patch = mock.patch.object(
+            SqliteHistoryService,
+            "runtime_history_active",
+            new=mock.AsyncMock(return_value=False),
+        )
+        runtime_active_patch.start()
+        self.addCleanup(runtime_active_patch.stop)
+
     async def test_recovery_does_not_interrupt_when_another_process_holds_job_lock(self) -> None:
         job_id = str(uuid4())
         store = _RecoveryStore(job_id)

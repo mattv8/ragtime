@@ -30,6 +30,13 @@ class SqliteHistoryCatalogTests(unittest.IsolatedAsyncioTestCase):
             connection.execute("CREATE TABLE item (id INTEGER PRIMARY KEY, value TEXT)")
             connection.execute("INSERT INTO item(value) VALUES ('before')")
         self.history = SqliteHistoryService(lambda workspace_id: self.files)
+        runtime_active_patch = mock.patch.object(
+            SqliteHistoryService,
+            "runtime_history_active",
+            new=mock.AsyncMock(return_value=False),
+        )
+        runtime_active_patch.start()
+        self.addCleanup(runtime_active_patch.stop)
 
         @asynccontextmanager
         async def recovery(workspace_id: str, lease_id: str):
@@ -755,6 +762,13 @@ class SqliteHistoryApplyFencePreIntentTests(unittest.IsolatedAsyncioTestCase):
         self.root = workspace_dir / "sqlite_backups"
         self.marker = self.root / "sqlite-maintenance-intent.json"
         self.history = SqliteHistoryService(lambda workspace_id: self.files)
+        runtime_active_patch = mock.patch.object(
+            SqliteHistoryService,
+            "runtime_history_active",
+            new=mock.AsyncMock(return_value=False),
+        )
+        runtime_active_patch.start()
+        self.addCleanup(runtime_active_patch.stop)
 
         # A candidate blob whose sha the preview will reference.
         candidate_dir = self.root / "candidates"

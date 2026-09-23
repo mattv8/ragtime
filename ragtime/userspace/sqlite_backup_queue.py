@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 from ragtime.config import settings
 from ragtime.core.logging import get_logger
+from ragtime.core.runtime_manager_client import runtime_manager_request
 from ragtime.userspace.sqlite_capture_admission import _directory_flags, _open_directory_chain, inherit_capture_fds
 
 logger = get_logger(__name__)
@@ -313,6 +314,7 @@ class SqliteBackupQueueService:
                 snapshot_id=job.get("snapshot_id"),
                 snapshot_git_commit_hash=job.get("snapshot_git_commit_hash"),
                 capture_job_id=job["id"],
+                creator_id=job.get("requested_by_id") or "system",
                 cancel_check=cancel_check,
                 progress_callback=progress_callback,
             )
@@ -335,9 +337,55 @@ class SqliteBackupQueueService:
                 return
 
     async def recover_stale(self) -> list[str]:
-        """Fence only stale jobs whose liveness lock is actually free."""
+        """Reattach runtime-backed work; local liveness never proves its death."""
         interrupted: list[str] = []
-        for job in await self._store.stale_running(older_than_seconds=120, limit=50):
+        candidates = await (
+            self._store.reconcilable(older_than_seconds=120, limit=50)
+            if hasattr(self._store, "reconcilable")
+            else self._store.stale_running(older_than_seconds=120, limit=50)
+        )
+        for job in candidates:
+            from ragtime.userspace.sqlite_history import get_sqlite_history_service
+
+            if await get_sqlite_history_service().runtime_history_active():
+                owner_token = job.get("owner_token")
+                if not isinstance(owner_token, str):
+                    continue
+                try:
+                    receipt = await runtime_manager_request(
+                        "GET",
+                        f"/workspaces/{job['workspace_id']}/sqlite-history/captures/{job['id']}",
+                        surface_error_status=True,
+                        unavailable_detail_prefix="Runtime SQLite history is unavailable",
+                    )
+                except Exception as exc:
+                    # A runtime outage or unknown transport outcome leaves the
+                    # queue row unresolved.  Replaying under a fresh ID would
+                    # violate receipt idempotency.
+                    logger.warning("Could not observe stale runtime SQLite capture job_id=%s error_type=%s", job["id"], type(exc).__name__)
+                    continue
+                phase = str(receipt.get("phase") or "")
+                if phase not in _TERMINAL:
+                    await self._store.takeover_observer(job["id"], owner_token, self._owner_token)
+                    continue
+                outcomes = receipt.get("database_outcomes") or {}
+                backup_ids = [
+                    str(result["id"])
+                    for outcome in outcomes.values()
+                    if isinstance(outcome, dict)
+                    for result in outcome.get("results", [])
+                    if isinstance(result, dict) and result.get("id")
+                ]
+                status = "completed" if phase == "completed" else phase
+                project = getattr(self._store, "project_runtime_terminal", None)
+                projected = (
+                    await project(job["id"], status=status, backup_ids=backup_ids, error_message=receipt.get("error"))
+                    if project
+                    else await self._store.finish(job["id"], owner_token, status=status, backup_ids=backup_ids, error_message=receipt.get("error"))
+                )
+                if projected:
+                    interrupted.append(job["id"])
+                continue
             lock_fd = _try_job_lock(job["id"])
             if lock_fd is None:
                 continue

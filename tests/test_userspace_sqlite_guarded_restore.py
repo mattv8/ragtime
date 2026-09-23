@@ -37,7 +37,10 @@ class GuardedRestoreTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     def _history(self):
-        return mock.Mock(capture_workspace_databases=mock.AsyncMock(return_value=[]))
+        return mock.Mock(
+            runtime_history_active=mock.AsyncMock(return_value=False),
+            capture_workspace_databases=mock.AsyncMock(return_value=[]),
+        )
 
     async def test_git_failure_preserves_database_and_releases_fence(self) -> None:
         released = False

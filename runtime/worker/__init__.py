@@ -1,4 +1,8 @@
-"""Worker package public exports."""
+"""Worker package.
+
+Keep package import lightweight so standalone runtime utilities can run in the
+minimal history-test image without importing the FastAPI application.
+"""
 
 from importlib import import_module
 from typing import TYPE_CHECKING, Any

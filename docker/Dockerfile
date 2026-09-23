@@ -120,7 +120,10 @@ FROM frontend-base AS frontend-test
 RUN npm run test
 
 FROM ${PYTHON_CI_DEPS_IMAGE} AS python-ci-base
+ARG TARGETARCH
 WORKDIR /ragtime
+COPY docker/scripts/install_restic.py /tmp/install_restic.py
+RUN python /tmp/install_restic.py --arch "${TARGETARCH}"
 COPY pyproject.toml .jscpd.json /ragtime/
 COPY docker/Dockerfile docker/Dockerfile.runtime docker/Dockerfile.storage /ragtime/docker/
 COPY docker/entrypoint.sh /ragtime/docker/entrypoint.sh

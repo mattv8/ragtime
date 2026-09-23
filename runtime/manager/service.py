@@ -1090,11 +1090,13 @@ class SessionManager:
         *,
         args: list[str],
         env: dict[str, str] | None = None,
+        sqlite_history_operation_id: str | None = None,
     ) -> RuntimeWorkspaceGitCommandResponse:
         return await self._worker_service.run_workspace_git_command(
             workspace_id,
             args=args,
             env=env,
+            sqlite_history_operation_id=sqlite_history_operation_id,
         )
 
     async def get_workspace_scm_status(

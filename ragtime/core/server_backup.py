@@ -4,6 +4,7 @@ import argparse
 import getpass
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import shutil
@@ -19,6 +20,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Callable, Iterator, Optional
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -141,6 +143,7 @@ class BackupManifest:
     includes_managed_key: bool
     deployment_environment_variables: list[str] = field(default_factory=list)
     legacy_embedded_key: bool = False
+    sqlite_history: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -155,6 +158,10 @@ class BackupManifest:
         environment_variable_names = payload.get("deployment_environment_variables", [])
         if not isinstance(environment_variable_names, list):
             environment_variable_names = []
+        sqlite_history_payload = payload.get("sqlite_history")
+        sqlite_history: dict[str, object] | None = None
+        if isinstance(sqlite_history_payload, dict) and all(isinstance(key, str) for key in sqlite_history_payload):
+            sqlite_history = {key: value for key, value in sqlite_history_payload.items() if isinstance(key, str)}
         return cls(
             format=str(payload.get("format", "tar.gz")),
             version=version_value,
@@ -166,6 +173,7 @@ class BackupManifest:
             includes_managed_key=bool(payload.get("includes_managed_key", False)),
             deployment_environment_variables=sorted(str(name) for name in environment_variable_names if isinstance(name, str)),
             legacy_embedded_key=bool(payload.get("legacy_embedded_key", False)),
+            sqlite_history=sqlite_history,
         )
 
 
@@ -683,13 +691,24 @@ def _is_relative_subpath(relative: Path, root_name: str) -> bool:
     return bool(parts) and parts[0] == root_name
 
 
-def _should_skip_data_path(relative: Path) -> bool:
+def _should_skip_data_path(relative: Path, *, skip_runtime_history: bool = False) -> bool:
     path = relative.as_posix()
+    history_path = relative.parts[:2] == ("_userspace", "_sqlite_history")
+    if history_path and len(relative.parts) >= 3 and relative.parts[2] in {"secrets", "cache", "scratch", "transfers"}:
+        # These are never generic backup inputs, even when runtime is offline.
+        # Portable repository keys enter only the encrypted runtime bundle.
+        return True
     if path in {".encryption_key", ".jwt_secret"}:
         return True
     if path.startswith("_tmp"):
         return True
     if _is_relative_subpath(relative, "_server_backups"):
+        return True
+    if skip_runtime_history and (
+        history_path
+        or _is_relative_subpath(relative, "_sqlite_history")
+        or (len(relative.parts) >= 4 and relative.parts[:2] == ("_userspace", "workspaces") and "sqlite_backups" in relative.parts[2:])
+    ):
         return True
     if path.startswith("_userspace/workspaces/") and "/rootfs" in path:
         return True
@@ -976,9 +995,14 @@ def _copy_backup_data_tree(
     progress_start: int = 0,
     progress_end: int = 0,
     progress_message: str = "",
+    skip_runtime_history: bool = False,
 ) -> int:
     destination_dir.mkdir(parents=True, exist_ok=True)
-    all_children = [child for child in _iter_tree_entries(source_dir) if not _should_skip_data_path(child.relative_to(source_dir))]
+    all_children = [
+        child
+        for child in _iter_tree_entries(source_dir)
+        if not _should_skip_data_path(child.relative_to(source_dir), skip_runtime_history=skip_runtime_history)
+    ]
     total_items = sum(1 for child in all_children if not child.is_dir() or child.is_symlink())
     reporter = _ItemProgressReporter(
         progress,
@@ -1060,6 +1084,209 @@ def _object_storage_backup_lease() -> Iterator[None]:
             _object_storage_control_request("/v1/backup/release", {"lease_id": lease_id})
         except BackupError:
             logger.error("Object storage backup lease %s could not be released", lease_id)
+
+
+_RUNTIME_HISTORY_BUNDLE_PATH = Path("runtime-sqlite-history") / "export.bundle"
+
+
+def _is_repository_identity(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(character in string.hexdigits.lower() for character in value)
+
+
+def _runtime_history_endpoint() -> tuple[str, str] | None:
+    """Return the authenticated manager endpoint only when it is configured."""
+    token = (getattr(settings, "userspace_runtime_auth_token", "") or "").strip()
+    base_url = (getattr(settings, "userspace_runtime_manager_url", "") or "").strip().rstrip("/")
+    return (base_url, token) if base_url and token else None
+
+
+def _runtime_history_request(path: str, *, method: str = "GET", body: bytes | None = None, allow_not_found: bool = False):
+    endpoint = _runtime_history_endpoint()
+    if endpoint is None:
+        return None
+    base_url, token = endpoint
+    request = Request(
+        f"{base_url}/sqlite-history{path}",
+        data=body,
+        method=method,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    try:
+        return urlopen(request, timeout=30)  # nosec B310: authenticated internal runtime manager
+    except HTTPError as exc:
+        if allow_not_found and exc.code == 404:
+            return None
+        raise BackupError("Runtime SQLite history status could not be determined") from exc
+    except Exception as exc:
+        # Transport errors and 503 responses are ambiguous.  Never substitute
+        # a generic data-tree copy for an unavailable active history backend.
+        raise BackupError("Runtime SQLite history status could not be determined") from exc
+
+
+def _runtime_history_status() -> dict[str, object] | None:
+    observed_activation = DATA_DIR / "_userspace" / "sqlite-history-runtime-activation-v2.json"
+    activation_response = _runtime_history_request("/activation", allow_not_found=True)
+    if activation_response is None:
+        if os.path.lexists(observed_activation):
+            raise BackupError("Runtime SQLite history must be available after activation")
+        return None
+    with activation_response:
+        try:
+            activation = json.loads(activation_response.read().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise BackupError("Runtime SQLite history returned invalid status metadata") from exc
+    if not isinstance(activation, dict) or not isinstance(activation.get("active"), bool) or not isinstance(activation.get("capability"), bool):
+        raise BackupError("Runtime SQLite history returned invalid status metadata")
+    # An old or deliberately inactive runtime has no history to export.  Once
+    # it advertises the v2 capability, every status/export failure is fatal.
+    if not activation["active"]:
+        if os.path.lexists(observed_activation):
+            raise BackupError("Runtime SQLite history activation cannot be downgraded")
+        return None
+    response = _runtime_history_request("/exports/status")
+    if response is None:  # Defensive: status is never allowed to 404 here.
+        raise BackupError("Runtime SQLite history status is unavailable")
+    with response:
+        try:
+            payload = json.loads(response.read().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise BackupError("Runtime SQLite history returned invalid status metadata") from exc
+    if not isinstance(payload, dict) or payload.get("active") is not True:
+        raise BackupError("Runtime SQLite history is active but export status is invalid")
+    return payload if payload["active"] else None
+
+
+def _runtime_history_export(destination: Path, *, include_repository_key: bool) -> dict[str, object] | None:
+    """Stage an immutable runtime-created export without opening its repository."""
+    status = _runtime_history_status()
+    if status is None:
+        return None
+    response = _runtime_history_request("/exports", method="POST", body=json.dumps({"include_repository_key": include_repository_key}).encode("utf-8"))
+    if response is None:
+        raise BackupError("Runtime SQLite history became unavailable while preparing export")
+    with response:
+        try:
+            receipt = json.loads(response.read().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise BackupError("Runtime SQLite history returned an invalid export receipt") from exc
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("export_id"), str) or not receipt["export_id"]:
+        raise BackupError("Runtime SQLite history returned an invalid export receipt")
+    export_id = receipt["export_id"]
+    # Runtime must not respond with a downloadable path until its private
+    # repository/catalog barrier has completed.  A bounded poll preserves the
+    # existing backup-job timeout behavior while avoiding a live-file copy.
+    deadline = time.monotonic() + 3600
+    while receipt.get("status") not in {"completed", "failed"}:
+        if time.monotonic() >= deadline:
+            raise BackupError("Runtime SQLite history export did not complete in time")
+        time.sleep(1)
+        response = _runtime_history_request(f"/exports/{export_id}")
+        if response is None:
+            raise BackupError("Runtime SQLite history became unavailable while exporting")
+        with response:
+            try:
+                receipt = json.loads(response.read().decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise BackupError("Runtime SQLite history returned an invalid export receipt") from exc
+    if receipt.get("status") != "completed":
+        raise BackupError("Runtime SQLite history export failed")
+    repository_id = receipt.get("repository_id")
+    if not _is_repository_identity(repository_id):
+        raise BackupError("Runtime SQLite history export lacks repository identity")
+    includes_key = receipt.get("includes_repository_key")
+    if includes_key is not include_repository_key:
+        raise BackupError("Runtime SQLite history export key inclusion did not match the requested backup")
+    response = _runtime_history_request(f"/exports/{export_id}/download")
+    if response is None:
+        raise BackupError("Runtime SQLite history export download is unavailable")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with response, destination.open("wb") as handle:
+        shutil.copyfileobj(response, handle, length=1024 * 1024)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return {
+        "version": int(receipt.get("export_version", 1)),
+        "repository_id": repository_id,
+        "includes_repository_key": includes_key,
+        "requires_original_repository_key": not includes_key,
+        "bundle": _RUNTIME_HISTORY_BUNDLE_PATH.as_posix(),
+    }
+
+
+def _runtime_history_import(bundle: Path, metadata: dict[str, object]) -> None:
+    """Ask runtime to validate and atomically activate an immutable bundle."""
+    if bundle.is_symlink() or not bundle.is_file():
+        raise BackupValidationError("Backup archive contains an invalid runtime SQLite history bundle")
+    endpoint = _runtime_history_endpoint()
+    if endpoint is None:
+        raise BackupValidationError("Runtime SQLite history is required to restore this backup")
+    base_url, token = endpoint
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise BackupValidationError("Runtime SQLite history endpoint is invalid")
+    connection_type = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_type(parsed.hostname, parsed.port, timeout=600)
+    path = f"{parsed.path.rstrip('/')}/sqlite-history/imports" or "/sqlite-history/imports"
+    try:
+        connection.putrequest("POST", path)
+        connection.putheader("Authorization", f"Bearer {token}")
+        connection.putheader("Content-Type", "application/octet-stream")
+        connection.putheader("Content-Length", str(bundle.stat().st_size))
+        connection.putheader("X-Ragtime-History-Metadata", json.dumps(metadata, separators=(",", ":")))
+        connection.endheaders()
+        with bundle.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                connection.send(chunk)
+        response = connection.getresponse()
+        if response.status >= 400:
+            raise OSError(f"runtime returned {response.status}")
+        receipt = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise BackupValidationError("Runtime SQLite history import could not be accepted") from exc
+    finally:
+        connection.close()
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("import_id"), str) or not receipt["import_id"]:
+        raise BackupValidationError("Runtime SQLite history import returned an invalid receipt")
+    import_id = receipt["import_id"]
+    deadline = time.monotonic() + 3600
+    while receipt.get("status") not in {"completed", "failed"}:
+        if time.monotonic() >= deadline:
+            raise BackupValidationError("Runtime SQLite history import did not complete in time")
+        time.sleep(1)
+        try:
+            response = _runtime_history_request(f"/imports/{import_id}")
+        except BackupError as exc:
+            raise BackupValidationError("Runtime SQLite history import status is unavailable") from exc
+        if response is None:
+            raise BackupValidationError("Runtime SQLite history import status is unavailable")
+        with response:
+            try:
+                receipt = json.loads(response.read().decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise BackupValidationError("Runtime SQLite history import returned an invalid receipt") from exc
+    if receipt.get("status") != "completed":
+        raise BackupValidationError("Runtime SQLite history import did not validate and activate")
+
+
+def _runtime_history_bundle_from_archive(extract_dir: Path, manifest: BackupManifest, restore_scope: BackupScope) -> tuple[Path, dict[str, object]] | None:
+    metadata = manifest.sqlite_history
+    if metadata is None:
+        return None  # Legacy formats predate runtime-owned history exports.
+    included = metadata.get("included", True)
+    if included is False:
+        return None
+    if restore_scope == BackupScope.DATABASE:
+        raise BackupValidationError("Database-only restore cannot activate runtime SQLite history")
+    repository_id = metadata.get("repository_id")
+    bundle_name = metadata.get("bundle")
+    if not _is_repository_identity(repository_id):
+        raise BackupValidationError("Backup archive contains invalid runtime SQLite history metadata")
+    if bundle_name != _RUNTIME_HISTORY_BUNDLE_PATH.as_posix():
+        raise BackupValidationError("Backup archive contains invalid runtime SQLite history bundle reference")
+    bundle = extract_dir / _RUNTIME_HISTORY_BUNDLE_PATH
+    if bundle.is_symlink() or not bundle.is_file() or bundle.stat().st_size == 0:
+        raise BackupValidationError("Backup archive does not contain a valid runtime SQLite history bundle")
+    return bundle, metadata
 
 
 def _resolve_data_source(extract_dir: Path) -> Optional[Path]:
@@ -1197,6 +1424,23 @@ def create_backup(options: BackupOptions, progress: Optional[ProgressCallback] =
             _dump_database(root / "database.dump")
             _emit_progress(progress, "database_dump_complete", progress=25, message="Database dump complete", item_count=1)
 
+        sqlite_history: dict[str, object] | None = None
+        skip_runtime_history = False
+        if options.scope in {BackupScope.FULL, BackupScope.FILES}:
+            if _runtime_history_status() is not None:
+                _emit_progress(progress, "sqlite_history_export_start", progress=30, message="Staging runtime SQLite history export")
+                sqlite_history = _runtime_history_export(
+                    root / _RUNTIME_HISTORY_BUNDLE_PATH,
+                    include_repository_key=options.encrypt,
+                )
+                if sqlite_history is None:
+                    raise BackupError("Runtime SQLite history became unavailable while preparing export")
+                skip_runtime_history = sqlite_history is not None
+                _emit_progress(progress, "sqlite_history_export_complete", progress=34, message="Runtime SQLite history export staged")
+        elif _runtime_history_status() is not None:
+            # Database-only artifacts deliberately do not carry history bytes.
+            sqlite_history = {"version": 1, "included": False, "reason": "database_scope"}
+
         includes_managed_key = options.encrypt and ENCRYPTION_KEY_FILE.exists()
         copied_data_items = 0
         if options.scope in {BackupScope.FULL, BackupScope.FILES} or includes_managed_key:
@@ -1212,6 +1456,7 @@ def create_backup(options: BackupOptions, progress: Optional[ProgressCallback] =
                     progress_start=35,
                     progress_end=55,
                     progress_message=files_collect_message,
+                    skip_runtime_history=skip_runtime_history,
                 )
                 _emit_progress(
                     progress,
@@ -1231,7 +1476,7 @@ def create_backup(options: BackupOptions, progress: Optional[ProgressCallback] =
 
         manifest = BackupManifest(
             format="ragbak" if options.encrypt else "tar.gz",
-            version=1,
+            version=2 if sqlite_history is not None else 1,
             created_at=datetime.now(timezone.utc).isoformat(),
             scope=options.scope,
             ragtime_version=_get_ragtime_version(),
@@ -1240,6 +1485,7 @@ def create_backup(options: BackupOptions, progress: Optional[ProgressCallback] =
             includes_managed_key=includes_managed_key,
             deployment_environment_variables=deployment_environment_variables,
             legacy_embedded_key=False,
+            sqlite_history=sqlite_history,
         )
         _emit_progress(progress, "manifest_write", progress=65, message="Backup manifest written")
         _write_manifest(root, manifest)
@@ -1382,6 +1628,7 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
             data_item_count=extract_stats["data_item_count"],
         )
         restore_scope = options.scope_override or manifest.scope
+        runtime_history_bundle = _runtime_history_bundle_from_archive(extract_dir, manifest, restore_scope)
         data_source = _resolve_data_source(extract_dir)
         restored_storage = data_source / "_userspace" / "_object_storage" if data_source is not None else None
         destination_storage = _object_storage_root()
@@ -1491,6 +1738,11 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
                     key_path = DATA_DIR / ".encryption_key"
                     if key_path.exists():
                         key_path.chmod(0o600)
+
+                if runtime_history_bundle is not None:
+                    _emit_progress(progress, "sqlite_history_import_start", progress=98, message="Validating and activating runtime SQLite history")
+                    _runtime_history_import(*runtime_history_bundle)
+                    _emit_progress(progress, "sqlite_history_import_complete", progress=99, message="Runtime SQLite history activated")
 
                 _emit_progress(progress, "complete", progress=100, message="Restore completed", scope=restore_scope.value)
                 if options.scope_override is not None:

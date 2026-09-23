@@ -427,6 +427,15 @@ class WorkerService:
         self._mcp_pools: dict[str, _McpServerPool] = {}
         self._mcp_pools_lock = asyncio.Lock()
         self._mcp_tool_catalog_cache: dict[str, list[RuntimeMcpToolInfo]] = {}
+        self._sqlite_history_coordinator: Any | None = None
+
+    def sqlite_history_coordinator(self) -> Any:
+        """Return the process-wide runtime-history coordinator for this worker."""
+        if self._sqlite_history_coordinator is None:
+            from runtime.worker.sqlite_history.coordinator import SqliteHistoryCoordinator
+
+            self._sqlite_history_coordinator = SqliteHistoryCoordinator(self._root, self)
+        return self._sqlite_history_coordinator
 
     def _normalize_file_path(
         self,
@@ -558,7 +567,12 @@ class WorkerService:
         *,
         args: list[str],
         env: dict[str, str] | None = None,
+        sqlite_history_operation_id: str | None = None,
     ) -> RuntimeWorkspaceGitCommandResponse:
+        if sqlite_history_operation_id:
+            await self.sqlite_history_coordinator().authorize_git_operation(workspace_id, sqlite_history_operation_id)
+        elif self._has_durable_sqlite_maintenance_marker(workspace_id):
+            raise HTTPException(status_code=423, detail="Workspace SQLite maintenance is active")
         # Snapshot and SCM commands operate on the active tree and cannot race
         # another filesystem API mutation or a root transition.
         async with self._workspace_file_lock(workspace_id):
@@ -4489,6 +4503,8 @@ class WorkerService:
             return session
 
     async def shutdown(self) -> None:
+        if self._sqlite_history_coordinator is not None:
+            await self._sqlite_history_coordinator.shutdown()
         async with self._lock:
             startup_tasks = list(self._startup_tasks.values())
             self._startup_tasks.clear()
@@ -4524,9 +4540,14 @@ class WorkerService:
                 active_sessions=active_sessions,
                 metadata={
                     "worker_name": self._worker_name,
-                    "runtime_capabilities": {"bridge_credential_file": True, "sqlite_workspace_maintenance": True},
+                    "runtime_capabilities": {
+                        "bridge_credential_file": True,
+                        "sqlite_workspace_maintenance": True,
+                        "sqlite_history_v2": self.sqlite_history_coordinator().capability(),
+                    },
                     "bridge_credential_file": True,
                     "sqlite_workspace_maintenance": True,
+                    "sqlite_history_v2": self.sqlite_history_coordinator().capability(),
                     **sandbox_diagnostics(),
                 },
             )

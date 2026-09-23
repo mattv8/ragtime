@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextvars
 import hashlib
 import hmac
 import importlib
@@ -29,6 +31,7 @@ from typing import Any, Callable, Literal, Optional, Protocol, Sequence, TypedDi
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
+import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
 from prisma import Json
@@ -62,6 +65,7 @@ from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_co
 from ragtime.core.git import create_repository, parse_git_url
 from ragtime.core.http_timeouts import get_http_proxy_safe_timeout_seconds
 from ragtime.core.logging import get_logger
+from ragtime.core.runtime_manager_client import get_runtime_manager_request_config, runtime_manager_request
 from ragtime.core.scheduling import next_anchored_run_after
 from ragtime.core.sql_utils import (
     DB_TYPE_POSTGRES,
@@ -305,6 +309,7 @@ from runtime.core.sqlite_recovery import capture_database
 from runtime.core.workspace_ops import is_managed_sqlite_artifact, iter_managed_sqlite_database_paths
 
 logger = get_logger(__name__)
+_sqlite_history_operation_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("sqlite_history_operation_id", default=None)
 
 
 def _get_model_preferences_module() -> Any:
@@ -8357,13 +8362,28 @@ class UserSpaceService:
         check: bool = True,
         env: dict[str, str] | None = None,
     ) -> tuple[int, bytes, bytes]:
-        from ragtime.userspace.runtime_service import userspace_runtime_service
+        operation_id = _sqlite_history_operation_id.get()
+        if operation_id:
+            payload = await runtime_manager_request(
+                "POST",
+                f"/workspaces/{workspace_id}/git",
+                json_payload={"args": args, "env": env, "sqlite_history_operation_id": operation_id},
+                retry_safe=False,
+                surface_error_status=True,
+                unavailable_detail_prefix="Runtime guarded Git operation is unavailable",
+            )
+            raw_returncode = payload.get("returncode")
+            returncode = int(raw_returncode) if raw_returncode is not None else 1
+            stdout_bytes = base64.b64decode(str(payload.get("stdout_b64") or ""))
+            stderr_bytes = base64.b64decode(str(payload.get("stderr_b64") or ""))
+        else:
+            from ragtime.userspace.runtime_service import userspace_runtime_service
 
-        returncode, stdout_bytes, stderr_bytes = await userspace_runtime_service.run_workspace_git_command_internal(
-            workspace_id,
-            args=args,
-            env=env,
-        )
+            returncode, stdout_bytes, stderr_bytes = await userspace_runtime_service.run_workspace_git_command_internal(
+                workspace_id,
+                args=args,
+                env=env,
+            )
         if check and returncode != 0:
             stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
             raise HTTPException(
@@ -11212,7 +11232,7 @@ class UserSpaceService:
         return await self._run_git(workspace_id, args, check=check)
 
     @asynccontextmanager
-    async def _guarded_code_restore(self, workspace_id: str):
+    async def _guarded_code_restore(self, workspace_id: str, *, user_id: str = "system"):
         """Fence code checkout and preserve managed SQLite data across Git.
 
         Git is allowed to restore migration source, but never the direct child
@@ -11222,6 +11242,37 @@ class UserSpaceService:
         from ragtime.userspace.sqlite_history import SqliteHistoryService, get_sqlite_history_service
         from ragtime.userspace.sqlite_runtime import run_sqlite_blocking
         from runtime.core.secure_files import SecureFileError, delete_file, publish_regular_file
+
+        history = get_sqlite_history_service()
+        if await history.runtime_history_active():
+            operation_id = str(uuid4())
+            await history._runtime_history_request(
+                "POST",
+                f"/workspaces/{workspace_id}/sqlite-history/guarded-code-restores/begin",
+                payload={"operation_id": operation_id, "user_id": user_id},
+            )
+            token = _sqlite_history_operation_id.set(operation_id)
+            runtime_body_error: BaseException | None = None
+            try:
+                # Git commands are routed through the trusted runtime endpoint
+                # by _run_git_raw while this parent lease is installed.
+                yield self._workspace_files_dir(workspace_id)
+            except BaseException as exc:
+                runtime_body_error = exc
+            finally:
+                _sqlite_history_operation_id.reset(token)
+                await history._runtime_history_request(
+                    "POST",
+                    f"/workspaces/{workspace_id}/sqlite-history/guarded-code-restores/{operation_id}/finish",
+                    payload={
+                        "user_id": user_id,
+                        "git_succeeded": runtime_body_error is None,
+                        "git_error": str(runtime_body_error)[:400] if runtime_body_error else None,
+                    },
+                )
+            if runtime_body_error is not None:
+                raise runtime_body_error
+            return
 
         body_error: BaseException | None = None
         async with sqlite_workspace_access(workspace_id, maintenance=True) as files_dir:
@@ -24788,55 +24839,88 @@ SELECT json_build_object(
             is_admin=is_admin,
             promote_mode=True,
         )
+        try:
+            source_details = source_path.lstat()
+            if not source_path.is_file() or source_path.is_symlink():
+                raise OSError("not a regular file")
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail="Uploaded database file was not readable") from exc
         from ragtime.userspace.sqlite_history import get_sqlite_history_service
-        from runtime.core.secure_files import SecureFileError, delete_file, ensure_directory, publish_regular_file, stat_regular_file
 
-        async with sqlite_workspace_access(database_context.owner_workspace_id, maintenance=True) as files_dir:
-            # Capture performs its own no-follow enumeration; requesting a
-            # missing database is harmless, while a symlinked target must
-            # never be probed through Path.exists().
-            await get_sqlite_history_service().capture_workspace_databases(
-                database_context.owner_workspace_id,
-                trigger="pre_restore",
-                mandatory=True,
-                database_names={database_name},
-                files_dir=files_dir,
-            )
-            with tempfile.TemporaryDirectory(prefix="ragtime-sqlite-import-") as staging_name:
-                staging = Path(staging_name)
-                # Validate uploaded bytes in a private tree first.  The final
-                # workspace publication uses descriptor-relative no-follow I/O
-                # rather than sqlite_inspector's path-based replace helper.
-                await asyncio.to_thread(
-                    sqlite_inspector_helpers.import_database_file,
-                    staging,
-                    database_name,
-                    source_path,
-                )
-                try:
-                    await asyncio.to_thread(ensure_directory, files_dir, ".ragtime/db")
-                    await asyncio.to_thread(
-                        publish_regular_file,
-                        staging,
-                        f".ragtime/db/{database_name}",
-                        files_dir,
-                        f".ragtime/db/{database_name}",
-                    )
-                    for suffix in ("-wal", "-shm", "-journal"):
-                        await asyncio.to_thread(delete_file, files_dir, f".ragtime/db/{database_name}{suffix}")
-                except SecureFileError as exc:
-                    raise HTTPException(status_code=409, detail="SQLite import target is unsafe") from exc
+        if await get_sqlite_history_service().runtime_history_active():
+            config = get_runtime_manager_request_config()
+            url = f"{config.base_url}/workspaces/{database_context.owner_workspace_id}/sqlite-history/import-database/{quote(database_name, safe='')}"
+            headers = {**config.headers, "X-Ragtime-Creator-User": user_id, "Content-Type": "application/octet-stream"}
+
+            async def stream_upload():
+                with source_path.open("rb") as source:
+                    while chunk := await asyncio.to_thread(source.read, 1024 * 1024):
+                        yield chunk
+
             try:
-                details = await asyncio.to_thread(stat_regular_file, files_dir, f".ragtime/db/{database_name}")
-            except SecureFileError as exc:
-                raise HTTPException(status_code=409, detail="SQLite import target is unsafe") from exc
+                async with httpx.AsyncClient(follow_redirects=False) as client:
+                    response = await client.post(url, headers=headers, content=stream_upload(), timeout=httpx.Timeout(config.timeout_seconds))
+                if response.status_code >= 400:
+                    raise HTTPException(
+                        status_code=response.status_code if response.status_code < 500 else 502, detail=response.text[:256] or "Runtime SQLite import rejected"
+                    )
+                payload = response.json()
+            except HTTPException:
+                raise
+            except (httpx.HTTPError, ValueError, OSError) as exc:
+                raise HTTPException(status_code=502, detail="Runtime SQLite import is unavailable") from exc
+            if not isinstance(payload, dict) or not isinstance(payload.get("size_bytes"), int):
+                raise HTTPException(status_code=502, detail="Runtime SQLite import returned an invalid receipt")
             database_summary = sqlite_inspector_helpers.DatabaseSummary(
                 name=database_name,
                 relative_path=f"{sqlite_inspector_helpers.MANAGED_DB_DIRNAME}/{database_name}",
-                size_bytes=details.st_size,
+                size_bytes=int(payload["size_bytes"]),
                 table_count=0,
-                last_modified_ms=int(details.st_mtime * 1000),
+                last_modified_ms=int(source_details.st_mtime * 1000),
             )
+        else:
+            from runtime.core.secure_files import SecureFileError, delete_file, ensure_directory, publish_regular_file, stat_regular_file
+
+            async with sqlite_workspace_access(database_context.owner_workspace_id, maintenance=True) as files_dir:
+                await get_sqlite_history_service().capture_workspace_databases(
+                    database_context.owner_workspace_id,
+                    trigger="pre_restore",
+                    mandatory=True,
+                    database_names={database_name},
+                    files_dir=files_dir,
+                )
+                with tempfile.TemporaryDirectory(prefix="ragtime-sqlite-import-") as staging_name:
+                    staging = Path(staging_name)
+                    await asyncio.to_thread(
+                        sqlite_inspector_helpers.import_database_file,
+                        staging,
+                        database_name,
+                        source_path,
+                    )
+                    try:
+                        await asyncio.to_thread(ensure_directory, files_dir, ".ragtime/db")
+                        await asyncio.to_thread(
+                            publish_regular_file,
+                            staging,
+                            f".ragtime/db/{database_name}",
+                            files_dir,
+                            f".ragtime/db/{database_name}",
+                        )
+                        for suffix in ("-wal", "-shm", "-journal"):
+                            await asyncio.to_thread(delete_file, files_dir, f".ragtime/db/{database_name}{suffix}")
+                    except SecureFileError as exc:
+                        raise HTTPException(status_code=409, detail="SQLite import target is unsafe") from exc
+                try:
+                    details = await asyncio.to_thread(stat_regular_file, files_dir, f".ragtime/db/{database_name}")
+                except SecureFileError as exc:
+                    raise HTTPException(status_code=409, detail="SQLite import target is unsafe") from exc
+                database_summary = sqlite_inspector_helpers.DatabaseSummary(
+                    name=database_name,
+                    relative_path=f"{sqlite_inspector_helpers.MANAGED_DB_DIRNAME}/{database_name}",
+                    size_bytes=details.st_size,
+                    table_count=0,
+                    last_modified_ms=int(details.st_mtime * 1000),
+                )
         summary = self._build_sqlite_inspector_database_summary(
             database_name=database_summary.name,
             owner_workspace_id=database_context.owner_workspace_id,

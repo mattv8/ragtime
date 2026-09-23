@@ -15,6 +15,13 @@ class SqliteBackupQueueCaptureTests(unittest.TestCase):
         self.database_dir = self.files / ".ragtime" / "db"
         self.database_dir.mkdir(parents=True)
         self.service = SqliteHistoryService(lambda _: self.files)
+        runtime_active_patch = mock.patch.object(
+            SqliteHistoryService,
+            "runtime_history_active",
+            new=mock.AsyncMock(return_value=False),
+        )
+        runtime_active_patch.start()
+        self.addCleanup(runtime_active_patch.stop)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
