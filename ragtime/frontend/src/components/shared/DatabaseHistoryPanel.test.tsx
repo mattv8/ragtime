@@ -500,10 +500,7 @@ describe('DatabaseHistoryPanel', () => {
     await waitFor(() =>
       expect(apiMock.subscribeUserSpaceSqliteHistoryEvents).toHaveBeenCalledTimes(1),
     );
-    expect(apiMock.subscribeUserSpaceSqliteHistoryEvents).toHaveBeenCalledWith('ws-1', {
-      databaseName: 'app.sqlite3',
-      snapshotId: 'snap-1',
-    });
+    expect(apiMock.subscribeUserSpaceSqliteHistoryEvents).toHaveBeenCalledWith('ws-1');
     await waitFor(() => expect(apiMock.listUserSpaceSqliteBackupJobs).toHaveBeenCalledTimes(1));
 
     listeners.get('history_changed')?.(new Event('history_changed'));
@@ -534,14 +531,6 @@ describe('DatabaseHistoryPanel', () => {
     );
     rerender(<DatabaseHistoryPanel workspaceId="ws-2" ownerOrAdmin hostId="workspace" />);
     expect(firstSource.close).toHaveBeenCalled();
-    expect(firstSource.removeEventListener).toHaveBeenCalledWith(
-      'history_changed',
-      expect.any(Function),
-    );
-    expect(firstSource.removeEventListener).toHaveBeenCalledWith(
-      'access_revoked',
-      expect.any(Function),
-    );
 
     await waitFor(() =>
       expect(apiMock.subscribeUserSpaceSqliteHistoryEvents).toHaveBeenCalledTimes(2),

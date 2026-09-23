@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import { Loader2 } from 'lucide-react';
 
 import { api, ApiError } from '@/api/client';
 import type {
@@ -8,6 +9,7 @@ import type {
   SqliteHistoryPreview,
   SqliteHistoryRestoreMode,
 } from '@/types';
+import { subscribeHistoryEvents } from '@/utils/sqliteHistoryEventBus';
 
 export interface SnapshotRestorePanelProps {
   workspaceId: string;
@@ -195,14 +197,8 @@ export function SnapshotRestorePanel({
 
   useEffect(() => {
     if (!allowDatabaseRestore) return;
-    const events = api.subscribeUserSpaceSqliteHistoryEvents(workspaceId, { snapshotId });
-    const revoke = () => clearPrivilegedState();
-    events.addEventListener('access_revoked', revoke);
-    return () => {
-      events.removeEventListener('access_revoked', revoke);
-      events.close();
-    };
-  }, [allowDatabaseRestore, workspaceId, snapshotId]);
+    return subscribeHistoryEvents(workspaceId, { onAccessRevoked: clearPrivilegedState });
+  }, [allowDatabaseRestore, workspaceId]);
 
   useEffect(() => {
     const version = ++contextVersionRef.current;
@@ -756,8 +752,26 @@ export function SnapshotRestorePanel({
     <section
       className="snapshot-restore-panel"
       data-snapshot-restore-panel={snapshotId}
-      aria-busy={busy}
+      aria-busy={loading || busy}
     >
+      {loading && (
+        <p role="status" className="database-history-maintenance-busy">
+          <Loader2 size={14} className="spinning" /> Loading restore options…
+        </p>
+      )}
+      {!loading && busy && (
+        <p
+          role="status"
+          className="database-history-maintenance-busy"
+          data-snapshot-restore-phase={phase}
+        >
+          <Loader2 size={14} className="spinning" />
+          {phase === 'restoring-code' && 'Restoring code snapshot…'}
+          {phase === 'preparing' && 'Preparing database previews…'}
+          {phase === 'applying' && 'Applying database restore…'}
+          {phase === 'recovering' && 'Recovering database maintenance…'}
+        </p>
+      )}
       <fieldset className="snapshot-restore-scope-options" disabled={!canChangeScope}>
         <legend>Restore scope</legend>
         {codeAvailable && (

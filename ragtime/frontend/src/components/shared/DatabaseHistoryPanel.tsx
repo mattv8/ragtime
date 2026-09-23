@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 
 import { api, ApiError } from '@/api/client';
+import { subscribeHistoryEvents } from '@/utils/sqliteHistoryEventBus';
 import { SnapshotRestorePanel } from '@/components/shared/SnapshotRestorePanel';
 import {
   isInDatabaseCaptureWindow,
@@ -396,18 +397,10 @@ export function DatabaseHistoryPanel({
   }, [history]);
 
   useEffect(() => {
-    if (open) void load();
-  }, [open, load]);
-
-  useEffect(() => {
     if (!open || !ownerOrAdmin) return;
     let active = true;
     let refreshing = false;
     let refreshQueued = false;
-    const events = api.subscribeUserSpaceSqliteHistoryEvents(workspaceId, {
-      databaseName,
-      snapshotId,
-    });
     const refresh = async () => {
       if (!active) return;
       if (refreshing) {
@@ -427,18 +420,16 @@ export function DatabaseHistoryPanel({
     const revoke = () => {
       if (!active) return;
       active = false;
-      events.close();
       clearRevokedHistory();
     };
-    const historyChanged = () => void refresh();
-    events.addEventListener('history_changed', historyChanged);
-    events.addEventListener('access_revoked', revoke);
+    const unsubscribe = subscribeHistoryEvents(workspaceId, {
+      onHistoryChanged: () => void refresh(),
+      onAccessRevoked: revoke,
+    });
     void loadJobs();
     return () => {
       active = false;
-      events.removeEventListener('history_changed', historyChanged);
-      events.removeEventListener('access_revoked', revoke);
-      events.close();
+      unsubscribe();
     };
   }, [
     open,
@@ -450,6 +441,10 @@ export function DatabaseHistoryPanel({
     loadJobs,
     clearRevokedHistory,
   ]);
+
+  useEffect(() => {
+    if (open) void load();
+  }, [open, load]);
 
   useEffect(() => {
     if (!open) return;

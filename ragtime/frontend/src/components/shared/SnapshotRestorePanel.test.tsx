@@ -206,6 +206,90 @@ describe('SnapshotRestorePanel', () => {
     expect(await screen.findByLabelText('Database only')).toBeTruthy();
   });
 
+  it('announces initial loading and marks the panel busy', async () => {
+    const pendingTimeline = deferred<UserSpaceSnapshotTimeline>();
+    apiMock.getUserSpaceSnapshotTimeline.mockReturnValueOnce(pendingTimeline.promise);
+    mount();
+
+    expect(screen.getByRole('status').textContent).toMatch(/loading restore options/i);
+    expect(
+      document.querySelector('[data-snapshot-restore-panel="snap"]')?.getAttribute('aria-busy'),
+    ).toBe('true');
+    pendingTimeline.resolve(timeline);
+    expect(await screen.findByLabelText('Code only')).toBeTruthy();
+  });
+
+  it('announces preparing and applying phases with their semantic phase hook', async () => {
+    const user = await chooseDatabaseScope();
+    const pendingPreview = deferred<SqliteHistoryPreview>();
+    apiMock.previewUserSpaceSqliteHistory.mockReturnValueOnce(pendingPreview.promise);
+    await user.click(screen.getByRole('button', { name: 'Prepare database previews' }));
+
+    const preparing = await screen.findByText(/preparing database previews/i);
+    expect(preparing.getAttribute('data-snapshot-restore-phase')).toBe('preparing');
+    expect(
+      document.querySelector('[data-snapshot-restore-panel="snap"]')?.getAttribute('aria-busy'),
+    ).toBe('true');
+    pendingPreview.resolve(preview(one));
+    await screen.findByRole('button', { name: 'Confirm database restore' });
+
+    const pendingRestore = deferred<ReturnType<typeof databaseResult>>();
+    apiMock.restoreUserSpaceSqliteHistory.mockReturnValueOnce(pendingRestore.promise);
+    await user.click(screen.getByRole('button', { name: 'Confirm database restore' }));
+    const applying = await screen.findByText(/applying database restore/i);
+    expect(applying.getAttribute('data-snapshot-restore-phase')).toBe('applying');
+    pendingRestore.resolve(databaseResult(one.id));
+  });
+
+  it('announces restoring-code and recovery phases while the panel is busy', async () => {
+    const user = userEvent.setup();
+    const pendingCodeRestore = deferred<typeof restoreResult>();
+    apiMock.restoreUserSpaceSnapshot.mockReturnValueOnce(pendingCodeRestore.promise);
+    mount();
+    await user.click(await screen.findByRole('button', { name: 'Restore code' }));
+
+    const restoring = await screen.findByText(/restoring code snapshot/i);
+    expect(restoring.getAttribute('data-snapshot-restore-phase')).toBe('restoring-code');
+    expect(
+      document.querySelector('[data-snapshot-restore-panel="snap"]')?.getAttribute('aria-busy'),
+    ).toBe('true');
+    pendingCodeRestore.resolve(restoreResult);
+    await screen.findByText(/code restored/i);
+
+    const pendingRecovery = deferred<{
+      operation_id: string;
+      status: string;
+      runtime_stopped: boolean;
+    }>();
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue(
+      history({
+        interrupted_maintenance: {
+          state: 'invalid',
+          operation_id: 'maintenance',
+          can_complete: true,
+          can_abort: true,
+          detail: 'Runtime stopped.',
+        },
+      }),
+    );
+    apiMock.recoverUserSpaceSqliteHistoryMaintenance.mockReturnValueOnce(pendingRecovery.promise);
+    mount({ defaultScope: 'database' });
+    await user.click(await screen.findByRole('button', { name: 'Complete maintenance' }));
+
+    const recovering = await screen.findByText(/recovering database maintenance/i);
+    expect(recovering.getAttribute('data-snapshot-restore-phase')).toBe('recovering');
+    expect(
+      document
+        .querySelectorAll('[data-snapshot-restore-panel="snap"]')[1]
+        ?.getAttribute('aria-busy'),
+    ).toBe('true');
+    pendingRecovery.resolve({
+      operation_id: 'maintenance',
+      status: 'completed',
+      runtime_stopped: true,
+    });
+  });
+
   it('uses only ready exact-snapshot backups and preselects only the initial database', async () => {
     apiMock.listUserSpaceSqliteHistory.mockResolvedValue(
       history({

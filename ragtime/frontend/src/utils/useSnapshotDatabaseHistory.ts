@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { api, ApiError } from '@/api';
 import type { SqliteHistoryBackup } from '@/types';
+import { subscribeHistoryEvents } from './sqliteHistoryEventBus';
 
 /** Loads the small, ready-only history catalog used to decorate snapshot rows. */
 export function useSnapshotDatabaseHistory(
@@ -25,11 +26,18 @@ export function useSnapshotDatabaseHistory(
 
     let active = true;
     let revoked = false;
+    let loading = false;
+    let refreshQueued = false;
     const clear = () => {
       if (active && revision === revisionRef.current) setCatalog(null);
     };
     const load = async () => {
       if (!active || revoked) return;
+      if (loading) {
+        refreshQueued = true;
+        return;
+      }
+      loading = true;
       const request = ++requestRef.current;
       try {
         const result = await api.listUserSpaceSqliteHistory(workspaceId);
@@ -51,22 +59,28 @@ export function useSnapshotDatabaseHistory(
           return;
         }
         clear();
+      } finally {
+        loading = false;
+        if (refreshQueued && active && !revoked) {
+          refreshQueued = false;
+          void load();
+        }
       }
     };
 
-    void load();
-    const events = api.subscribeUserSpaceSqliteHistoryEvents(workspaceId);
-    events.addEventListener('history_changed', () => void load());
-    events.addEventListener('access_revoked', () => {
-      if (!active) return;
-      revoked = true;
-      ++requestRef.current;
-      clear();
-      events.close();
+    const unsubscribe = subscribeHistoryEvents(workspaceId, {
+      onHistoryChanged: () => void load(),
+      onAccessRevoked: () => {
+        if (!active) return;
+        revoked = true;
+        ++requestRef.current;
+        clear();
+      },
     });
+    void load();
     return () => {
       active = false;
-      events.close();
+      unsubscribe();
     };
   }, [workspaceId, enabled, ownerOrAdmin]);
 
