@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { UpdateSettingsRequest } from '@/types';
 import { ChatSettingsSection } from './ChatSettingsSection';
 
@@ -7,7 +7,13 @@ vi.mock('@/api', () => ({
   api: { getOpenRouterCreditStatus: vi.fn().mockResolvedValue({ state: 'ok' }) },
 }));
 
-function renderSection(formData: UpdateSettingsRequest, isAdmin = true) {
+afterEach(cleanup);
+
+function renderSection(
+  formData: UpdateSettingsRequest,
+  isAdmin = true,
+  configurationVisible?: boolean,
+) {
   const setFormData = vi.fn();
   const handleSaveChat = vi.fn();
   render(
@@ -26,6 +32,7 @@ function renderSection(formData: UpdateSettingsRequest, isAdmin = true) {
       handleSaveChat={handleSaveChat}
       chatSaving={false}
       isAdmin={isAdmin}
+      configurationVisible={configurationVisible}
       hasManagementApiKey={false}
     />,
   );
@@ -33,7 +40,7 @@ function renderSection(formData: UpdateSettingsRequest, isAdmin = true) {
 }
 
 describe('ChatSettingsSection', () => {
-  it('puts the admin enable switch first and hides chat-only fields while disabled', () => {
+  it('keeps model configuration available to an admin while the global default is disabled', () => {
     renderSection({ chat_enabled: false, default_chat_model: 'retained-model' });
 
     expect((document.getElementById('chat-enabled') as HTMLInputElement).checked).toBe(false);
@@ -41,12 +48,19 @@ describe('ChatSettingsSection', () => {
       screen.getByRole('switch', { name: 'Enable chat' }).getAttribute('aria-describedby'),
     ).toBe('chat-enabled-help');
     expect(screen.getByText('Configure Chat Models')).toBeTruthy();
-    expect(screen.queryByText('Default Chat Model')).toBeNull();
+    expect(screen.getByText('Default Chat Model')).toBeTruthy();
     expect(screen.getByText('OpenAPI Models')).toBeTruthy();
     expect(screen.getByText('Cache Model Discovery')).toBeTruthy();
   });
 
-  it('retains hidden draft values and sends only the toggle update through its save action', () => {
+  it('shows model configuration to an effectively enabled non-admin', () => {
+    renderSection({ chat_enabled: false }, false, true);
+
+    expect(screen.queryByRole('switch', { name: 'Enable chat' })).toBeNull();
+    expect(screen.getByText('Default Chat Model')).toBeTruthy();
+  });
+
+  it('retains model draft values until its save action runs', () => {
     const { setFormData, handleSaveChat } = renderSection({
       chat_enabled: false,
       default_chat_model: 'retained-model',

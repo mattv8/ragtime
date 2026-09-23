@@ -3110,13 +3110,11 @@ export function SettingsPanel({
         // API output settings
         tool_output_mode: formData.tool_output_mode,
       };
-      if (formData.chat_enabled !== false) {
-        dataToSave.default_chat_model = formData.default_chat_model;
-        dataToSave.allowed_chat_models = formData.allowed_chat_models;
-        dataToSave.chat_compaction_threshold_percent = formData.chat_compaction_threshold_percent;
-        dataToSave.chat_auto_compaction_threshold_percent =
-          formData.chat_auto_compaction_threshold_percent;
-      }
+      dataToSave.default_chat_model = formData.default_chat_model;
+      dataToSave.allowed_chat_models = formData.allowed_chat_models;
+      dataToSave.chat_compaction_threshold_percent = formData.chat_compaction_threshold_percent;
+      dataToSave.chat_auto_compaction_threshold_percent =
+        formData.chat_auto_compaction_threshold_percent;
       if (isAdmin) {
         dataToSave.chat_enabled = formData.chat_enabled !== false;
       }
@@ -3184,15 +3182,10 @@ export function SettingsPanel({
       setFormData((previous) => ({
         ...previous,
         chat_enabled: updated.chat_enabled !== false,
-        ...(previous.chat_enabled !== false
-          ? {
-              default_chat_model: updated.default_chat_model ?? null,
-              allowed_chat_models: updated.allowed_chat_models,
-              chat_compaction_threshold_percent: updated.chat_compaction_threshold_percent,
-              chat_auto_compaction_threshold_percent:
-                updated.chat_auto_compaction_threshold_percent,
-            }
-          : {}),
+        default_chat_model: updated.default_chat_model ?? null,
+        allowed_chat_models: updated.allowed_chat_models,
+        chat_compaction_threshold_percent: updated.chat_compaction_threshold_percent,
+        chat_auto_compaction_threshold_percent: updated.chat_auto_compaction_threshold_percent,
         openapi_sync_chat_models: updated.openapi_sync_chat_models,
         available_models_cache_enabled: updated.available_models_cache_enabled,
         openrouter_credit_monitor_enabled: updated.openrouter_credit_monitor_enabled,
@@ -4218,6 +4211,9 @@ export function SettingsPanel({
     !ldapFormData.bind_dn.trim() ||
     (!ldapFormData.bind_password && !ldapCanReuseStoredCredentials);
   const isAdmin = currentUser?.role === 'admin';
+  const chatConfigurationVisible = isAdmin || currentUser?.chat_enabled_effective === true;
+  const userspaceConfigurationVisible =
+    isAdmin || currentUser?.userspace_generation_enabled_effective === true;
   const manualDefaultChatModel = (() => {
     if (formData.default_chat_model !== undefined) {
       return formData.default_chat_model ?? null;
@@ -4734,7 +4730,7 @@ export function SettingsPanel({
         data-1p-ignore="true"
       >
         <div className="settings-accordion">
-          {(isAdmin || formData.chat_enabled !== false) && (
+          {chatConfigurationVisible && (
             <ChatSettingsSection
               open={openAccordionSections.chat}
               onToggle={handleToggleAccordionSection}
@@ -4750,6 +4746,7 @@ export function SettingsPanel({
               handleSaveChat={handleSaveLlm}
               chatSaving={llmSaving}
               isAdmin={isAdmin}
+              configurationVisible={chatConfigurationVisible}
               hasManagementApiKey={settings?.has_openrouter_management_api_key === true}
             />
           )}
@@ -4824,12 +4821,12 @@ export function SettingsPanel({
                   }
                   help={
                     formData.userspace_generation_enabled !== false
-                      ? 'Enable workspace agents and build tasks. External development harnesses, runtime, files, and previews remain available independently.'
-                      : 'Workspace agents and build tasks are disabled. External development harnesses, runtime, files, and previews remain available.'
+                      ? 'Enable workspace agents and build tasks by default. Configure exceptions in Users > User policies. External development harnesses, runtime, files, and previews remain available independently.'
+                      : 'Disable workspace agents and build tasks by default. Configure enabled exceptions in Users > User policies. External development harnesses, runtime, files, and previews remain available.'
                   }
                 />
               )}
-              {formData.userspace_generation_enabled !== false && (
+              {userspaceConfigurationVisible && (
                 <div className="form-group" id="setting-userspace-build-model">
                   <label>Builder Model</label>
                   <ModelSelector

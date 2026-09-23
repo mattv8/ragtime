@@ -9,7 +9,6 @@ import type { User } from '@/types';
 
 interface UserPoliciesModalProps {
   user: User;
-  isSelf: boolean;
   actionLoading: boolean;
   contentProtectionAvailable: boolean;
   contentProtectionEnabled: boolean;
@@ -27,7 +26,6 @@ interface UserPoliciesModalProps {
 
 export function UserPoliciesModal({
   user,
-  isSelf,
   actionLoading,
   contentProtectionAvailable,
   contentProtectionEnabled,
@@ -57,7 +55,6 @@ export function UserPoliciesModal({
   const getEffectivePolicyHelp = (
     rawValue: boolean | null | undefined,
     effectiveValue: boolean | undefined,
-    label: string,
   ): string => {
     if (effectiveValue === undefined) {
       return 'Effective status is unavailable until the policy refreshes.';
@@ -65,10 +62,9 @@ export function UserPoliciesModal({
     if (rawValue === null || rawValue === undefined) {
       return `Inherited. Effective: ${effectiveValue ? 'Enabled' : 'Disabled'}.`;
     }
-    if (rawValue && !effectiveValue) {
-      return `Enabled for this user, but Disabled effectively: this instance disables ${label}.`;
-    }
-    return `Effective: ${effectiveValue ? 'Enabled' : 'Disabled'}.`;
+    return rawValue && !effectiveValue
+      ? 'Explicit enabled override. Effective: Disabled; the server has not enabled this policy.'
+      : `Explicit override. Effective: ${effectiveValue ? 'Enabled' : 'Disabled'}. This user setting overrides the global default.`;
   };
 
   useEffect(() => {
@@ -131,57 +127,58 @@ export function UserPoliciesModal({
             &times;
           </button>
         </div>
-        <div className="modal-body" data-user-policies-modal="body">
-          {!isSelf && (
-            <>
-              <div className="form-group" data-user-policy="chat-generation">
-                <label htmlFor={`chat-generation-policy-${user.id}`}>Chat</label>
-                <select
-                  id={`chat-generation-policy-${user.id}`}
-                  value={chatMode}
-                  disabled={actionLoading}
-                  onChange={(event) =>
-                    void onGenerationPolicyChange(user.id, 'chat_enabled', event.target.value)
-                  }
-                >
-                  <option value="inherit">inherit</option>
-                  <option value="enabled">enabled</option>
-                  <option value="disabled">disabled</option>
-                </select>
-                <p className="field-help">
-                  {getEffectivePolicyHelp(user.chat_enabled, user.chat_enabled_effective, 'Chat')}
-                </p>
-              </div>
-              <div className="form-group" data-user-policy="userspace-generation">
-                <label htmlFor={`userspace-generation-policy-${user.id}`}>
-                  User Space AI generation
-                </label>
-                <select
-                  id={`userspace-generation-policy-${user.id}`}
-                  value={userspaceGenerationMode}
-                  disabled={actionLoading}
-                  onChange={(event) =>
-                    void onGenerationPolicyChange(
-                      user.id,
-                      'userspace_generation_enabled',
-                      event.target.value,
-                    )
-                  }
-                >
-                  <option value="inherit">inherit</option>
-                  <option value="enabled">enabled</option>
-                  <option value="disabled">disabled</option>
-                </select>
-                <p className="field-help">
-                  {getEffectivePolicyHelp(
-                    user.userspace_generation_enabled,
-                    user.userspace_generation_enabled_effective,
-                    'User Space AI generation',
-                  )}
-                </p>
-              </div>
-            </>
-          )}
+        <div
+          className="modal-body"
+          data-user-policies-modal="body"
+          aria-busy={actionLoading || contentProtectionSaving}
+        >
+          <div className="form-group" data-user-policy="chat-generation">
+            <label htmlFor={`chat-generation-policy-${user.id}`}>Chat</label>
+            <select
+              id={`chat-generation-policy-${user.id}`}
+              aria-describedby={`chat-generation-policy-help-${user.id}`}
+              value={chatMode}
+              disabled={actionLoading}
+              onChange={(event) =>
+                void onGenerationPolicyChange(user.id, 'chat_enabled', event.target.value)
+              }
+            >
+              <option value="inherit">Use global default</option>
+              <option value="enabled">Enabled for this user</option>
+              <option value="disabled">Disabled for this user</option>
+            </select>
+            <p id={`chat-generation-policy-help-${user.id}`} className="field-help">
+              {getEffectivePolicyHelp(user.chat_enabled, user.chat_enabled_effective)}
+            </p>
+          </div>
+          <div className="form-group" data-user-policy="userspace-generation">
+            <label htmlFor={`userspace-generation-policy-${user.id}`}>
+              User Space AI generation
+            </label>
+            <select
+              id={`userspace-generation-policy-${user.id}`}
+              aria-describedby={`userspace-generation-policy-help-${user.id}`}
+              value={userspaceGenerationMode}
+              disabled={actionLoading}
+              onChange={(event) =>
+                void onGenerationPolicyChange(
+                  user.id,
+                  'userspace_generation_enabled',
+                  event.target.value,
+                )
+              }
+            >
+              <option value="inherit">Use global default</option>
+              <option value="enabled">Enabled for this user</option>
+              <option value="disabled">Disabled for this user</option>
+            </select>
+            <p id={`userspace-generation-policy-help-${user.id}`} className="field-help">
+              {getEffectivePolicyHelp(
+                user.userspace_generation_enabled,
+                user.userspace_generation_enabled_effective,
+              )}
+            </p>
+          </div>
           {contentProtectionAvailable && contentProtectionEnabled && (
             <div className="form-group" data-user-policy="content-protection">
               <label htmlFor={`content-protection-policy-${user.id}`}>Content protection</label>

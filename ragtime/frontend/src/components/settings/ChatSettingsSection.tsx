@@ -22,6 +22,7 @@ export interface ChatSettingsSectionProps {
   handleSaveChat: () => void | Promise<void>;
   chatSaving: boolean;
   isAdmin: boolean;
+  configurationVisible?: boolean;
   hasManagementApiKey: boolean;
 }
 
@@ -152,6 +153,7 @@ export function ChatSettingsSection(props: ChatSettingsSectionProps): JSX.Elemen
     handleSaveChat,
     chatSaving,
     isAdmin,
+    configurationVisible = isAdmin,
     hasManagementApiKey,
   } = props;
   const chatEnabled = formData.chat_enabled !== false;
@@ -170,12 +172,12 @@ export function ChatSettingsSection(props: ChatSettingsSectionProps): JSX.Elemen
             }
             help={
               chatEnabled
-                ? 'Enabled by default. Admins can disable access for individual users.'
-                : 'Disabled for all users. Individual user overrides cannot re-enable it.'
+                ? 'Enabled by default. Configure exceptions in Users > User policies.'
+                : 'Disabled by default. Configure enabled exceptions in Users > User policies.'
             }
           />
         )}
-        {chatEnabled && (
+        {configurationVisible && (
           <>
             <p className="fieldset-help">
               Choose which models appear in chat and which model is selected by default.

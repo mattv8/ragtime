@@ -444,11 +444,11 @@ class UpdateUserRoleRequest(BaseModel):
 class UpdateUserGenerationPolicyRequest(BaseModel):
     chat_enabled: Optional[bool] = Field(
         default=None,
-        description="Per-user Chat generation override; null inherits the global policy.",
+        description="Per-user Chat generation override; null inherits the global default, while true or false overrides it.",
     )
     userspace_generation_enabled: Optional[bool] = Field(
         default=None,
-        description="Per-user User Space generation override; null inherits the global policy.",
+        description="Per-user User Space generation override; null inherits the global default, while true or false overrides it.",
     )
 
 
@@ -935,8 +935,12 @@ async def _bulk_user_responses(users: list[User]) -> list[UserResponse]:
     auth_config = await get_auth_provider_config()
     user_ids = [user.id for user in users]
     generation_settings = await db.appsettings.find_unique(where={"id": "default"})
-    chat_globally_enabled = bool(generation_settings and getattr(generation_settings, "chatEnabled", False))
-    userspace_globally_enabled = bool(generation_settings and getattr(generation_settings, "userspaceGenerationEnabled", False))
+    chat_global_value = getattr(generation_settings, "chatEnabled", None) if generation_settings else None
+    userspace_global_value = getattr(generation_settings, "userspaceGenerationEnabled", None) if generation_settings else None
+    chat_settings_available = chat_global_value is not None
+    userspace_settings_available = userspace_global_value is not None
+    chat_globally_enabled = bool(chat_global_value)
+    userspace_globally_enabled = bool(userspace_global_value)
 
     memberships = await db.authgroupmembership.find_many(where={"userId": {"in": user_ids}})
     memberships_by_user_id: dict[str, list[Any]] = {}
@@ -990,10 +994,9 @@ async def _bulk_user_responses(users: list[User]) -> list[UserResponse]:
                 recovery_codes_remaining=recovery_code_counts.get(user.id, 0),
                 chat_enabled=getattr(user, "chatEnabled", None),
                 userspace_generation_enabled=getattr(user, "userspaceGenerationEnabled", None),
-                chat_enabled_effective=effective_generation_enabled(chat_globally_enabled, getattr(user, "chatEnabled", None)),
-                userspace_generation_enabled_effective=effective_generation_enabled(
-                    userspace_globally_enabled, getattr(user, "userspaceGenerationEnabled", None)
-                ),
+                chat_enabled_effective=chat_settings_available and effective_generation_enabled(chat_globally_enabled, getattr(user, "chatEnabled", None)),
+                userspace_generation_enabled_effective=userspace_settings_available
+                and effective_generation_enabled(userspace_globally_enabled, getattr(user, "userspaceGenerationEnabled", None)),
             )
         )
     return responses

@@ -622,11 +622,11 @@ class AppSettings(BaseModel):
     )
     chat_enabled: bool = Field(
         default=True,
-        description="Allow Chat generation globally.",
+        description="Default Chat generation policy; explicit per-user overrides may enable or disable generation.",
     )
     userspace_generation_enabled: bool = Field(
         default=True,
-        description="Allow User Space generation globally.",
+        description="Default User Space generation policy; explicit per-user overrides may enable or disable generation.",
     )
     userspace_build_model: Optional[str] = Field(
         default=None,
@@ -1486,8 +1486,11 @@ class UpdateSettingsRequest(BaseModel):
     available_models_cache_enabled: Optional[bool] = None
     show_tool_card_footer_actions: Optional[bool] = None
     tool_skills_enabled: Optional[bool] = None
-    chat_enabled: Optional[bool] = None
-    userspace_generation_enabled: Optional[bool] = None
+    chat_enabled: Optional[bool] = Field(default=None, description="Default Chat generation policy; explicit per-user overrides take precedence.")
+    userspace_generation_enabled: Optional[bool] = Field(
+        default=None,
+        description="Default User Space generation policy; explicit per-user overrides take precedence.",
+    )
     userspace_build_model: Optional[str] = None
     openrouter_credit_monitor_enabled: Optional[bool] = None
     openrouter_low_credit_threshold_usd: Optional[float] = Field(default=None, ge=0)

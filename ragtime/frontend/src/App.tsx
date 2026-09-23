@@ -233,6 +233,9 @@ export function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const authRefreshPromiseRef = useRef<Promise<void> | null>(null);
+  const authRefreshRequestRef = useRef(0);
+  const authSessionVersionRef = useRef(0);
 
   // OAuth flow state - capture on mount
   const [oauthCallbackError] = useState<OAuthCallbackErrorParams | null>(getOAuthCallbackError);
@@ -364,6 +367,8 @@ export function App() {
   );
 
   const forceLoginScreen = useCallback(() => {
+    authSessionVersionRef.current += 1;
+    setAuthLoading(false);
     setObservedServerBackupJob(null);
     setObservedServerRestoreJob(null);
     observedServerTerminalToastsRef.current.clear();
@@ -392,6 +397,59 @@ export function App() {
       };
     });
   }, [authenticatedWebglBackgroundEnabled, serverName]);
+
+  const applyAuthStatusPresentation = useCallback((status: AuthStatus, user?: User | null) => {
+    const authServerName = (status.server_name || '').trim();
+    if (authServerName) {
+      setServerName(authServerName);
+      document.title = authServerName;
+    }
+    setAuthenticatedWebglBackgroundEnabled(status.authenticated_webgl_background_enabled ?? true);
+    setThemePack(resolveThemePackId(user?.theme_pack, status.default_theme_pack));
+  }, []);
+
+  const refreshAuthenticatedState = useCallback(
+    async ({ supersede = false }: { supersede?: boolean } = {}): Promise<void> => {
+      if (authRefreshPromiseRef.current && !supersede) return authRefreshPromiseRef.current;
+
+      const requestId = authRefreshRequestRef.current + 1;
+      authRefreshRequestRef.current = requestId;
+      const sessionVersion = authSessionVersionRef.current;
+      const refresh = (async () => {
+        const status = await api.getAuthStatus();
+        if (
+          requestId !== authRefreshRequestRef.current ||
+          sessionVersion !== authSessionVersionRef.current
+        )
+          return;
+        if (!status.authenticated) {
+          applyAuthStatusPresentation(status);
+          setObservedServerBackupJob(null);
+          setObservedServerRestoreJob(null);
+          observedServerTerminalToastsRef.current.clear();
+          setAuthStatus(status);
+          setCurrentUser(null);
+          return;
+        }
+        const user = await api.getCurrentUser();
+        if (
+          requestId !== authRefreshRequestRef.current ||
+          sessionVersion !== authSessionVersionRef.current
+        )
+          return;
+        setAuthStatus(status);
+        setCurrentUser(user);
+        applyAuthStatusPresentation(status, user);
+      })();
+      authRefreshPromiseRef.current = refresh;
+      try {
+        await refresh;
+      } finally {
+        if (authRefreshPromiseRef.current === refresh) authRefreshPromiseRef.current = null;
+      }
+    },
+    [applyAuthStatusPresentation],
+  );
 
   useEffect(() => {
     const unsubscribe = onAuthExpired(() => {
@@ -436,11 +494,11 @@ export function App() {
   const handleSettingsSaved = useCallback(async () => {
     await refreshConfigurationWarnings();
     try {
-      setAuthStatus(await api.getAuthStatus());
+      await refreshAuthenticatedState({ supersede: true });
     } catch (error) {
-      console.error('Failed to refresh auth status after saving settings', error);
+      console.error('Failed to refresh authenticated state after saving settings', error);
     }
-  }, [refreshConfigurationWarnings]);
+  }, [refreshAuthenticatedState, refreshConfigurationWarnings]);
 
   useEffect(() => {
     void refreshConfigurationWarnings();
@@ -546,30 +604,17 @@ export function App() {
   // Check authentication status on mount
   useEffect(() => {
     const checkAuth = async () => {
+      const sessionVersion = authSessionVersionRef.current;
+      const requestId = authRefreshRequestRef.current + 1;
       try {
-        const status = await api.getAuthStatus();
-        setAuthStatus(status);
-        const authServerName = (status.server_name || '').trim();
-        if (authServerName) {
-          setServerName(authServerName);
-          document.title = authServerName;
-        }
-        setAuthenticatedWebglBackgroundEnabled(
-          status.authenticated_webgl_background_enabled ?? true,
-        );
-
-        // Only try to get current user if we might be authenticated
-        // This avoids unnecessary 401 errors in the console
-        let resolvedUser: User | null = null;
-        try {
-          resolvedUser = await api.getCurrentUser();
-          setCurrentUser(resolvedUser);
-        } catch {
-          // Not authenticated, that's fine - show login page
-          setCurrentUser(null);
-        }
-        setThemePack(resolveThemePackId(resolvedUser?.theme_pack, status.default_theme_pack));
+        await refreshAuthenticatedState();
       } catch (err) {
+        if (
+          sessionVersion !== authSessionVersionRef.current ||
+          requestId !== authRefreshRequestRef.current
+        ) {
+          return;
+        }
         console.error('Failed to check auth status:', err);
         // If we can't check auth, assume not authenticated
         setAuthStatus({
@@ -586,37 +631,51 @@ export function App() {
           userspace_generation_enabled: false,
         });
       } finally {
-        setAuthLoading(false);
+        if (
+          sessionVersion === authSessionVersionRef.current &&
+          requestId === authRefreshRequestRef.current
+        ) {
+          setAuthLoading(false);
+        }
       }
     };
 
     checkAuth();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- auth check runs on mount/route change; serverName/webgl flags are read but must not retrigger it
-  }, [userspaceSharedRoute]);
+  }, [userspaceSharedRoute, refreshAuthenticatedState]);
+
+  useEffect(() => {
+    const refreshOnReturn = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshAuthenticatedState().catch((error) => {
+          console.warn('Failed to refresh authenticated state after returning to the app', error);
+        });
+      }
+    };
+    window.addEventListener('focus', refreshOnReturn);
+    document.addEventListener('visibilitychange', refreshOnReturn);
+    return () => {
+      window.removeEventListener('focus', refreshOnReturn);
+      document.removeEventListener('visibilitychange', refreshOnReturn);
+    };
+  }, [refreshAuthenticatedState]);
 
   const handleLoginSuccess = (user: User) => {
+    authSessionVersionRef.current += 1;
+    const sessionVersion = authSessionVersionRef.current;
     setAuthLoading(true);
     setCurrentUser(user);
 
-    // Refresh auth posture flags now that session auth is established.
+    // Refresh the full guarded session snapshot now that session auth is established.
     void (async () => {
       try {
-        const status = await api.getAuthStatus();
-        setAuthStatus(status);
-
-        const authServerName = (status.server_name || '').trim();
-        if (authServerName) {
-          setServerName(authServerName);
-          document.title = authServerName;
-        }
-        setAuthenticatedWebglBackgroundEnabled(
-          status.authenticated_webgl_background_enabled ?? true,
-        );
-        setThemePack(resolveThemePackId(user.theme_pack, status.default_theme_pack));
+        await refreshAuthenticatedState({ supersede: true });
       } catch (err) {
         console.error('Failed to refresh auth status after login:', err);
       } finally {
-        setAuthLoading(false);
+        if (sessionVersion === authSessionVersionRef.current) {
+          setAuthLoading(false);
+        }
       }
     })();
 
@@ -1495,6 +1554,10 @@ export function App() {
                     currentUser={currentUser}
                     onOpenWorkspace={handleOpenWorkspaceFromUsers}
                     onOpenChat={chatEnabled ? handleOpenChatFromUsers : undefined}
+                    onGenerationPolicyUpdated={async (updatedUser) => {
+                      if (updatedUser.id !== currentUser.id) return;
+                      await refreshAuthenticatedState({ supersede: true });
+                    }}
                   />
                 </Suspense>
               </div>

@@ -248,6 +248,7 @@ interface UsersPanelProps {
   currentUser: User | null;
   onOpenWorkspace: (workspaceId: string) => void;
   onOpenChat?: (conversationId: string) => void;
+  onGenerationPolicyUpdated?: (user: User) => void | Promise<void>;
 }
 
 type ExpandedUserDetailMode = 'workspaces' | 'chats';
@@ -532,7 +533,12 @@ function UserEditModal({
   );
 }
 
-export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPanelProps) {
+export function UsersPanel({
+  currentUser,
+  onOpenWorkspace,
+  onOpenChat,
+  onGenerationPolicyUpdated,
+}: UsersPanelProps) {
   const [activeTab, setActiveTab] = useState<PanelTab>('management');
 
   const [users, setUsers] = useState<User[]>([]);
@@ -584,13 +590,22 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
         });
         setUsers((current) => current.map((user) => (user.id === updated.id ? updated : user)));
         toast.success('Generation policy updated');
+        try {
+          await onGenerationPolicyUpdated?.(updated);
+        } catch (error) {
+          toast.error(
+            error instanceof Error
+              ? `Generation policy saved, but the authenticated state could not be refreshed: ${error.message}`
+              : 'Generation policy saved, but the authenticated state could not be refreshed.',
+          );
+        }
       } catch (error) {
         toast.error(error instanceof Error ? error.message : 'Failed to update generation policy');
       } finally {
         setActionLoading(null);
       }
     },
-    [toast],
+    [onGenerationPolicyUpdated, toast],
   );
   const [showCreateLocalUserModal, setShowCreateLocalUserModal] = useState(false);
   const [showManageAuthGroupsModal, setShowManageAuthGroupsModal] = useState(
@@ -2719,18 +2734,16 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                       </>
                                     )}
                                   </span>
-                                  {(!isRowSelf || contentProtectionEnabled) && (
-                                    <button
-                                      id={`user-policies-button-${user.id}`}
-                                      type="button"
-                                      className="btn btn-sm btn-secondary users-btn-inline"
-                                      data-user-policies-button={user.id}
-                                      title="User policies"
-                                      onClick={() => setPoliciesUserId(user.id)}
-                                    >
-                                      <Shield size={13} /> User policies
-                                    </button>
-                                  )}
+                                  <button
+                                    id={`user-policies-button-${user.id}`}
+                                    type="button"
+                                    className="btn btn-sm btn-secondary users-btn-inline"
+                                    data-user-policies-button={user.id}
+                                    title="User policies"
+                                    onClick={() => setPoliciesUserId(user.id)}
+                                  >
+                                    <Shield size={13} /> User policies
+                                  </button>
                                   {!isRowSelf && (
                                     <>
                                       <button
@@ -3309,7 +3322,6 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
           return (
             <UserPoliciesModal
               user={policyUser}
-              isSelf={isSelf(policyUser.id)}
               actionLoading={actionLoading === `generation-policy-${policyUser.id}`}
               contentProtectionAvailable={contentProtectionConfig !== null}
               contentProtectionEnabled={contentProtectionEnabled}

@@ -85,8 +85,8 @@ describe('UsersPanel user policies', () => {
     );
     expect(screen.getAllByRole('button', { name: /user policies/i })).toHaveLength(2);
     fireEvent.click(screen.getAllByRole('button', { name: /user policies/i })[0]);
-    expect(screen.queryByLabelText('Chat')).toBeNull();
-    expect(screen.queryByLabelText('User Space AI generation')).toBeNull();
+    expect(screen.getByLabelText('Chat')).not.toBeNull();
+    expect(screen.getByLabelText('User Space AI generation')).not.toBeNull();
     expect(screen.getByLabelText('Content protection')).not.toBeNull();
   });
 
@@ -143,7 +143,7 @@ describe('UsersPanel user policies', () => {
     );
   });
 
-  it('shows backend effective policy states for inherited settings and independent global vetoes', async () => {
+  it('shows backend effective policy states without attributing explicit overrides to a global veto', async () => {
     apiMock.listUsers.mockResolvedValue([
       user('user-1', null, null, true, false),
       user('user-2', true, true, false, false),
@@ -156,10 +156,10 @@ describe('UsersPanel user policies', () => {
     const dialog = screen.getByRole('dialog', { name: 'User policies: Sam' });
     expect(dialog.getAttribute('aria-modal')).toBe('true');
     expect(dialog.textContent).toContain(
-      'Enabled for this user, but Disabled effectively: this instance disables Chat.',
+      'Explicit enabled override. Effective: Disabled; the server has not enabled this policy.',
     );
     expect(dialog.textContent).toContain(
-      'Enabled for this user, but Disabled effectively: this instance disables User Space AI generation.',
+      'Explicit enabled override. Effective: Disabled; the server has not enabled this policy.',
     );
 
     fireEvent.keyDown(document, { key: 'Escape' });
@@ -196,7 +196,7 @@ describe('UsersPanel user policies', () => {
     ]);
   });
 
-  it('hides content-protection status and self policy button when the master policy is off', async () => {
+  it('keeps self generation policy controls available when content protection is off', async () => {
     contentProtectionMock.getConfig.mockResolvedValue(config(false));
     render(<UsersPanel currentUser={user('user-1')} onOpenWorkspace={vi.fn()} />);
 
@@ -204,11 +204,87 @@ describe('UsersPanel user policies', () => {
     expect(document.querySelector('[data-user-policies-cell="user-1"]')?.textContent).not.toContain(
       'Protection:',
     );
-    expect(screen.getAllByRole('button', { name: /user policies/i })).toHaveLength(1);
-    fireEvent.click(screen.getByRole('button', { name: /user policies/i }));
+    expect(screen.getAllByRole('button', { name: /user policies/i })).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole('button', { name: /user policies/i })[0]);
     expect(screen.getByLabelText('Chat')).not.toBeNull();
     expect(screen.getByLabelText('User Space AI generation')).not.toBeNull();
     expect(screen.queryByLabelText('Content protection')).toBeNull();
+  });
+
+  it('notifies the app only after a successful self policy save', async () => {
+    const onGenerationPolicyUpdated = vi.fn();
+    apiMock.updateUserGenerationPolicy.mockResolvedValue(user('user-1', true, null, true, false));
+    render(
+      <UsersPanel
+        currentUser={user('user-1')}
+        onOpenWorkspace={vi.fn()}
+        onGenerationPolicyUpdated={onGenerationPolicyUpdated}
+      />,
+    );
+
+    await screen.findByText('Alex');
+    fireEvent.click(screen.getAllByRole('button', { name: /user policies/i })[0]);
+    fireEvent.change(screen.getByLabelText('Chat'), { target: { value: 'enabled' } });
+
+    await waitFor(() =>
+      expect(apiMock.updateUserGenerationPolicy).toHaveBeenCalledWith('user-1', {
+        chat_enabled: true,
+      }),
+    );
+    await waitFor(() =>
+      expect(onGenerationPolicyUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'user-1' }),
+      ),
+    );
+  });
+
+  it('keeps the saved policy unchanged and does not notify the app when its PATCH fails', async () => {
+    const onGenerationPolicyUpdated = vi.fn();
+    apiMock.updateUserGenerationPolicy.mockRejectedValue(new Error('policy service unavailable'));
+    render(
+      <UsersPanel
+        currentUser={user('user-1')}
+        onOpenWorkspace={vi.fn()}
+        onGenerationPolicyUpdated={onGenerationPolicyUpdated}
+      />,
+    );
+
+    await screen.findByText('Alex');
+    fireEvent.click(screen.getAllByRole('button', { name: /user policies/i })[0]);
+    const chatPolicy = screen.getByLabelText('Chat') as HTMLSelectElement;
+    fireEvent.change(chatPolicy, { target: { value: 'enabled' } });
+
+    await screen.findByText('policy service unavailable');
+    expect(chatPolicy.value).toBe('inherit');
+    expect(document.querySelector('[data-user-policies-cell="user-1"]')?.textContent).toContain(
+      'Chat: inherit',
+    );
+    expect(onGenerationPolicyUpdated).not.toHaveBeenCalled();
+  });
+
+  it('retains a successful policy save and reports a separate refresh failure', async () => {
+    const onGenerationPolicyUpdated = vi.fn().mockRejectedValue(new Error('refresh unavailable'));
+    apiMock.updateUserGenerationPolicy.mockResolvedValue(user('user-1', true, null, true, false));
+    render(
+      <UsersPanel
+        currentUser={user('user-1')}
+        onOpenWorkspace={vi.fn()}
+        onGenerationPolicyUpdated={onGenerationPolicyUpdated}
+      />,
+    );
+
+    await screen.findByText('Alex');
+    fireEvent.click(screen.getAllByRole('button', { name: /user policies/i })[0]);
+    const chatPolicy = screen.getByLabelText('Chat') as HTMLSelectElement;
+    fireEvent.change(chatPolicy, { target: { value: 'enabled' } });
+
+    await screen.findByText(
+      /Generation policy saved, but the authenticated state could not be refreshed/,
+    );
+    expect(chatPolicy.value).toBe('enabled');
+    expect(document.querySelector('[data-user-policies-cell="user-1"]')?.textContent).toContain(
+      'Chat: enabled',
+    );
   });
 
   it('shows the degraded status and hides the content-protection field after config failure', async () => {
@@ -223,7 +299,7 @@ describe('UsersPanel user policies', () => {
         ),
       ).toBe(true),
     );
-    fireEvent.click(screen.getByRole('button', { name: /user policies/i }));
+    fireEvent.click(screen.getAllByRole('button', { name: /user policies/i })[0]);
     expect(screen.queryByLabelText('Content protection')).toBeNull();
   });
 });

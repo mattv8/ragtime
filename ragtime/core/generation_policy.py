@@ -39,7 +39,8 @@ def generation_context(surface: GenerationSurface, *user_ids: str | None) -> Ite
 
 
 def effective_generation_enabled(global_enabled: bool, user_override: bool | None = None) -> bool:
-    return bool(global_enabled) and (user_override is None or bool(user_override))
+    """Resolve a nullable per-user override over a valid global default."""
+    return bool(global_enabled) if user_override is None else bool(user_override)
 
 
 def _combined_principals(explicit: Iterable[str | None]) -> tuple[str | None, ...]:
@@ -74,12 +75,16 @@ async def _enabled(surface: GenerationSurface | None, user_ids: Iterable[str | N
     try:
         db = await get_db()
         app_settings = await db.appsettings.find_unique(where={"id": "default"})
-        global_enabled = bool(app_settings and getattr(app_settings, global_field, False))
-        if not global_enabled:
+        global_value = getattr(app_settings, global_field, None) if app_settings else None
+        # A missing settings row or required global setting is not the same as a
+        # configured false default: both deny, but only the latter may be
+        # overridden by a user's explicit value.
+        if global_value is None:
             return False
+        global_enabled = bool(global_value)
         principals = [user_id for user_id in _combined_principals(user_ids) if user_id]
         if not principals:
-            return True
+            return global_enabled
         rows = await db.user.find_many(where={"id": {"in": principals}})
         by_id = {str(row.id): row for row in rows}
         return all(user_id in by_id and effective_generation_enabled(global_enabled, getattr(by_id[user_id], user_field, None)) for user_id in principals)

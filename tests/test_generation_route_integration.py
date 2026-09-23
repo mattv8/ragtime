@@ -82,7 +82,7 @@ class GenerationRouteIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                 self.assertEqual(actual, "provider::model")
 
-    async def test_readiness_checks_caller_and_owner_and_global_vetoes_for_each_surface(self) -> None:
+    async def test_readiness_checks_caller_and_owner_and_global_defaults_for_each_surface(self) -> None:
         cases = [
             (None, _policy_db(chat_enabled=True, userspace_enabled=True, owner_chat=False), "chat_generation_disabled"),
             (

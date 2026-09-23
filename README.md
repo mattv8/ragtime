@@ -528,8 +528,9 @@ Ragtime can provide the workspace control plane while an external agent harness 
 
 **Chat** and **User Space AI generation** are independently controlled:
 
-- **Settings > Chat > Enable chat**: Global switch for Chat UI generation (titles, responses, background inference). Default: on. Overridable per user in **Users**; global off disables all users regardless of override.
-- **Settings > User Space > Enable User Space AI generation**: Global switch for workspace generation and build tasks. Default: on. Overridable per user; global off disables all users.
+- **Settings > Chat > Enable chat**: Default for Chat UI generation (titles, responses, background inference). Default: on. Administrators can set each user's Chat policy in **Users > User policies** to use the default, enable it, or disable it. An enabled user override works even when the global default is off.
+- **Settings > User Space > Enable User Space AI generation**: Default for workspace generation and build tasks. Default: on. Administrators can set each user's User Space policy in **Users > User policies** to use the default, enable it, or disable it. An enabled user override works even when the global default is off.
+- **Administrator self-management**: Administrators can manage their own Chat and User Space generation overrides through **Users > User policies**. Existing enabled overrides become active immediately after this behavior is deployed, including when the corresponding global default is off.
 - **External API** (`/v1/chat/completions`): Always available independently of both switches. All existing auth, content-protection policies, and credential restrictions remain in place.
 - **External harness scope**: When User Space AI generation is off, Ragtime does not generate workspace content or handle build tasks; however, file access, runtime execution, index retrieval, and provider-backed embeddings for indexing remain available to the harness and external tools.
 

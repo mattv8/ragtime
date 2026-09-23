@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
 import { SERVER_BACKUP_RESTORE_HIGHLIGHT } from './components/shared/securityWarnings';
-import type { ConfigurationWarning, ServerBackupJob, ServerRestoreJob, User } from './types';
+import type {
+  AuthStatus,
+  ConfigurationWarning,
+  ServerBackupJob,
+  ServerRestoreJob,
+  User,
+} from './types';
 
 const localStorageMock = vi.hoisted(() => ({
   getItem: vi.fn(() => null),
@@ -43,6 +49,7 @@ const toastApiMock = vi.hoisted(() => ({
 }));
 const toastContainerSpy = vi.hoisted(() => vi.fn());
 const oauthLoginPageSpy = vi.hoisted(() => vi.fn());
+const usersPanelSpy = vi.hoisted(() => vi.fn());
 const authExpiredListenerMock = vi.hoisted(() => ({
   callback: null as null | (() => void),
 }));
@@ -122,7 +129,14 @@ vi.mock('./components/SecurityBanner', () => ({
 }));
 
 vi.mock('./components/UserMenu', () => ({
-  UserMenu: () => null,
+  UserMenu: ({ user, onLogout }: { user: User; onLogout: () => Promise<void> }) => (
+    <>
+      <output data-testid="current-user-chat-policy">{String(user.chat_enabled_effective)}</output>
+      <button type="button" onClick={() => void onLogout()}>
+        Log out
+      </button>
+    </>
+  ),
 }));
 
 vi.mock('./components/WarningsBanner', () => ({
@@ -178,7 +192,31 @@ vi.mock('./components/ToolsPanel', () => ({
 }));
 
 vi.mock('./components/UsersPanel', () => ({
-  UsersPanel: () => null,
+  UsersPanel: (props: unknown) => {
+    usersPanelSpy(props);
+    const onGenerationPolicyUpdated =
+      props && typeof props === 'object' && 'onGenerationPolicyUpdated' in props
+        ? (props as { onGenerationPolicyUpdated?: (user: User) => Promise<void> | void })
+            .onGenerationPolicyUpdated
+        : undefined;
+    return (
+      <button
+        type="button"
+        onClick={() =>
+          void onGenerationPolicyUpdated?.({
+            id: 'user-1',
+            username: 'local:admin',
+            display_name: 'Admin',
+            email: null,
+            role: 'admin',
+            auth_provider: 'local_managed',
+          })
+        }
+      >
+        Save self generation policy
+      </button>
+    );
+  },
 }));
 
 vi.mock('./components/SettingsPanel', async () => {
@@ -363,7 +401,49 @@ async function flushMicrotasks(): Promise<void> {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('generation capabilities', () => {
+  it('refreshes both authenticated policy snapshots after a self policy save', async () => {
+    window.history.replaceState({}, '', '/?view=users');
+    mockAuthenticatedAdmin();
+    apiMock.getAuthStatus.mockResolvedValueOnce({
+      authenticated: true,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+      chat_enabled: true,
+      userspace_generation_enabled: false,
+    });
+    apiMock.getCurrentUser.mockResolvedValueOnce({
+      id: 'user-1',
+      username: 'local:admin',
+      display_name: 'Admin',
+      role: 'admin',
+      auth_provider: 'local_managed',
+      chat_enabled_effective: true,
+      userspace_generation_enabled_effective: false,
+    });
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Save self generation policy' });
+    fireEvent.click(screen.getByRole('button', { name: 'Save self generation policy' }));
+
+    await waitFor(() => expect(apiMock.getAuthStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(apiMock.getCurrentUser).toHaveBeenCalledTimes(2));
+  });
+
   it('redirects a user without Chat from a chat URL while preserving User Space generation', async () => {
     window.history.replaceState({}, '', '/?view=chat');
     mockGenerationPolicyNonAdmin(false, true);
@@ -397,6 +477,62 @@ describe('generation capabilities', () => {
       );
     },
   );
+
+  it('keeps navigation and the current-user policy synchronized after self enable and revoke saves', async () => {
+    window.history.replaceState({}, '', '/?view=users');
+    const enabledStatus = {
+      authenticated: true,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+      chat_enabled: true,
+      userspace_generation_enabled: false,
+    };
+    const disabledStatus = { ...enabledStatus, chat_enabled: false };
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce(disabledStatus)
+      .mockResolvedValueOnce(enabledStatus)
+      .mockResolvedValueOnce(disabledStatus);
+    apiMock.getCurrentUser
+      .mockResolvedValueOnce({
+        id: 'user-1',
+        username: 'local:admin',
+        display_name: 'Admin',
+        role: 'admin',
+        chat_enabled_effective: false,
+      })
+      .mockResolvedValueOnce({
+        id: 'user-1',
+        username: 'local:admin',
+        display_name: 'Admin',
+        role: 'admin',
+        chat_enabled_effective: true,
+      })
+      .mockResolvedValueOnce({
+        id: 'user-1',
+        username: 'local:admin',
+        display_name: 'Admin',
+        role: 'admin',
+        chat_enabled_effective: false,
+      });
+    apiMock.getSettings.mockResolvedValue({ settings: {}, configuration_warnings: [] });
+
+    render(<App />);
+    const save = await screen.findByRole('button', { name: 'Save self generation policy' });
+    expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull();
+    expect(screen.getByTestId('current-user-chat-policy').textContent).toBe('false');
+
+    fireEvent.click(save);
+    await screen.findByRole('button', { name: 'Chat' });
+    expect(screen.getByTestId('current-user-chat-policy').textContent).toBe('true');
+
+    fireEvent.click(save);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull());
+    expect(screen.getByTestId('current-user-chat-policy').textContent).toBe('false');
+  });
 });
 
 describe('OpenRouter credit alerts', () => {
@@ -926,5 +1062,300 @@ describe('App chat fullscreen layout', () => {
     expect(apiMock.getServerBackupJob).toHaveBeenCalledTimes(3);
     expect(toastApiMock.error).not.toHaveBeenCalled();
     expect(toastApiMock.success).not.toHaveBeenCalled();
+  });
+});
+
+describe('authenticated refresh lifecycle', () => {
+  it('deduplicates simultaneous focus and visibility refreshes instead of applying a later conflicting snapshot', async () => {
+    mockAuthenticatedAdmin();
+    const returningAnonymousStatus = deferred<{
+      authenticated: boolean;
+      ldap_configured: boolean;
+      local_admin_enabled: boolean;
+      debug_mode: boolean;
+      api_key_configured: boolean;
+      session_cookie_secure: boolean;
+      allowed_origins_open: boolean;
+      chat_enabled: boolean;
+      userspace_generation_enabled: boolean;
+    }>();
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce({
+        authenticated: true,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        chat_enabled: true,
+        userspace_generation_enabled: true,
+      })
+      .mockImplementationOnce(() => returningAnonymousStatus.promise)
+      .mockResolvedValue({
+        authenticated: true,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        chat_enabled: true,
+        userspace_generation_enabled: true,
+      });
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Chat' });
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await act(async () => {
+      returningAnonymousStatus.resolve({
+        authenticated: false,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        chat_enabled: false,
+        userspace_generation_enabled: false,
+      });
+    });
+
+    await screen.findByRole('button', { name: 'Log in again' });
+  });
+
+  it('does not restore an expired session when an in-flight status refresh resolves', async () => {
+    mockAuthenticatedAdmin();
+    const staleStatus = deferred<AuthStatus>();
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce({
+        authenticated: true,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        chat_enabled: true,
+        userspace_generation_enabled: true,
+      })
+      .mockImplementationOnce(() => staleStatus.promise);
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Chat' });
+    window.dispatchEvent(new Event('focus'));
+    authExpiredListenerMock.callback?.();
+    staleStatus.resolve({
+      authenticated: true,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+      chat_enabled: true,
+      userspace_generation_enabled: true,
+    });
+
+    await screen.findByRole('button', { name: 'Log in again' });
+    expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull();
+  });
+
+  it('does not restore a logged-out session when an in-flight status refresh resolves', async () => {
+    mockAuthenticatedAdmin();
+    const staleStatus = deferred<AuthStatus>();
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce({
+        authenticated: true,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        chat_enabled: true,
+        userspace_generation_enabled: true,
+      })
+      .mockImplementationOnce(() => staleStatus.promise);
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Chat' });
+    window.dispatchEvent(new Event('focus'));
+    fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
+    staleStatus.resolve({
+      authenticated: true,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+      chat_enabled: true,
+      userspace_generation_enabled: true,
+    });
+
+    await screen.findByRole('button', { name: 'Log in again' });
+    expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull();
+  });
+
+  it('keeps expiry state when an obsolete status refresh rejects', async () => {
+    mockAuthenticatedAdmin();
+    const staleStatus = deferred<AuthStatus>();
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce({
+        authenticated: true,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        chat_enabled: true,
+        userspace_generation_enabled: true,
+      })
+      .mockImplementationOnce(() => staleStatus.promise);
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Chat' });
+    window.dispatchEvent(new Event('focus'));
+    authExpiredListenerMock.callback?.();
+    staleStatus.reject(new Error('obsolete refresh'));
+
+    await screen.findByRole('button', { name: 'Log in again' });
+    expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull();
+  });
+
+  it('does not restore an expired session when the stale current-user response arrives', async () => {
+    mockAuthenticatedAdmin();
+    const staleUser = deferred<User>();
+    apiMock.getAuthStatus.mockResolvedValueOnce({
+      authenticated: true,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+      chat_enabled: true,
+      userspace_generation_enabled: true,
+    });
+    apiMock.getCurrentUser
+      .mockResolvedValueOnce({
+        id: 'user-1',
+        username: 'local:admin',
+        display_name: 'Admin',
+        role: 'admin',
+      })
+      .mockImplementationOnce(() => staleUser.promise);
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Chat' });
+    window.dispatchEvent(new Event('focus'));
+    await waitFor(() => expect(apiMock.getCurrentUser).toHaveBeenCalledTimes(2));
+    authExpiredListenerMock.callback?.();
+    staleUser.resolve({
+      id: 'user-1',
+      username: 'local:admin',
+      display_name: 'Stale admin',
+      email: null,
+      auth_provider: 'local_managed',
+      role: 'admin',
+    });
+
+    await screen.findByRole('button', { name: 'Log in again' });
+    expect(screen.queryByText('Stale admin')).toBeNull();
+  });
+
+  it('keeps the login screen available when login refresh is superseded by expiry', async () => {
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce({
+        authenticated: false,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: true,
+        session_cookie_secure: false,
+        allowed_origins_open: false,
+        chat_enabled: false,
+        userspace_generation_enabled: false,
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise(() => {
+            // Keep the post-login refresh in flight until auth expiry.
+          }),
+      );
+    apiMock.getSettings.mockResolvedValue({ settings: {}, configuration_warnings: [] });
+
+    render(<App />);
+    const login = await screen.findByRole('button', { name: 'Log in again' });
+    fireEvent.click(login);
+    authExpiredListenerMock.callback?.();
+
+    await screen.findByRole('button', { name: 'Log in again' });
+    expect(document.querySelector('.auth-loading')).toBeNull();
+  });
+
+  it('uses anonymous status presentation without requesting a current user', async () => {
+    apiMock.getAuthStatus.mockResolvedValue({
+      authenticated: false,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+      server_name: 'Guest Ragtime',
+      default_theme_pack: 'serif',
+      chat_enabled: false,
+      userspace_generation_enabled: false,
+    });
+    apiMock.getSettings.mockResolvedValue({ settings: {}, configuration_warnings: [] });
+
+    render(<App />);
+
+    await screen.findByRole('button', { name: 'Log in again' });
+    expect(document.title).toBe('Guest Ragtime');
+    expect(document.documentElement.getAttribute('data-theme-pack')).toBe('serif');
+    expect(apiMock.getCurrentUser).not.toHaveBeenCalled();
+  });
+
+  it('lets a settings save supersede an older focus refresh', async () => {
+    const staleFocusStatus = deferred<AuthStatus>();
+    const settingsStatus = {
+      authenticated: true,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+      chat_enabled: false,
+      userspace_generation_enabled: true,
+    };
+    mockAuthenticatedAdmin();
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce({
+        ...settingsStatus,
+        chat_enabled: true,
+      })
+      .mockImplementationOnce(() => staleFocusStatus.promise)
+      .mockResolvedValueOnce(settingsStatus);
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Chat' });
+    window.dispatchEvent(new Event('focus'));
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    settingsPanelModuleGate.resolve();
+    fireEvent.click(await screen.findByRole('button', { name: 'Save settings' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull());
+
+    staleFocusStatus.resolve({ ...settingsStatus, chat_enabled: true });
+    await flushMicrotasks();
+    expect(screen.queryByRole('button', { name: 'Chat' })).toBeNull();
   });
 });

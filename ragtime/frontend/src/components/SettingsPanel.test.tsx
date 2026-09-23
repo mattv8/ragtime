@@ -44,6 +44,7 @@ const searchSectionState = vi.hoisted(() => ({
   run: null as null | ((props: Record<string, unknown>) => void),
 }));
 const sectionRenderOrder = vi.hoisted(() => [] as string[]);
+const adminUser = { id: 'admin', username: 'admin', role: 'admin' } as User;
 
 const apiMock = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -725,6 +726,7 @@ describe('SettingsPanel', () => {
   it('does not render an API-key warning from a stale unauthenticated status', async () => {
     render(
       <SettingsPanel
+        currentUser={adminUser}
         authStatus={{
           authenticated: false,
           ldap_configured: false,
@@ -796,7 +798,7 @@ describe('SettingsPanel', () => {
       return Promise.resolve({ success: true, models: [] });
     });
 
-    render(<SettingsPanel />);
+    render(<SettingsPanel currentUser={adminUser} />);
     await screen.findByRole('button', { name: 'Open chat models' });
 
     await waitFor(() => {
@@ -872,7 +874,7 @@ describe('SettingsPanel', () => {
   });
 
   it('passes deduplicated rendered settings search candidates into the shared search bar', async () => {
-    render(<SettingsPanel />);
+    render(<SettingsPanel currentUser={adminUser} />);
     await screen.findByRole('button', { name: 'Open chat models' });
 
     await waitFor(() => {
@@ -903,7 +905,7 @@ describe('SettingsPanel', () => {
     });
   });
 
-  it('reapplies an active filter when User Space generation hides its builder controls', async () => {
+  it('keeps builder configuration visible to admins when the global default is disabled', async () => {
     searchFilterState.queries = ['Builder Model'];
     searchFilterState.hasActiveFilters = true;
 
@@ -918,8 +920,8 @@ describe('SettingsPanel', () => {
     fireEvent.click(toggle);
 
     await waitFor(() => {
-      expect(screen.queryByText('Builder Model')).toBeNull();
-      expect(screen.getByText('No settings match the current filters.')).toBeTruthy();
+      expect(screen.getByText('Builder Model')).toBeTruthy();
+      expect(screen.queryByText('No settings match the current filters.')).toBeNull();
     });
   });
 
@@ -1135,7 +1137,7 @@ describe('SettingsPanel', () => {
       ],
     });
 
-    render(<SettingsPanel />);
+    render(<SettingsPanel currentUser={adminUser} />);
     await screen.findByRole('button', { name: 'Open chat models' });
 
     await waitFor(() => {
@@ -1158,7 +1160,7 @@ describe('SettingsPanel', () => {
   it('renders the load-tools-on-demand toggle as unchecked when the API returns false', async () => {
     apiMock.getSettings.mockResolvedValue(buildSettingsResponse({ tool_skills_enabled: false }));
 
-    render(<SettingsPanel />);
+    render(<SettingsPanel currentUser={adminUser} />);
 
     await screen.findByRole('button', { name: 'Open chat models' });
     const checkbox = (await screen.findByLabelText('Load tools on demand')) as HTMLInputElement;
@@ -1195,7 +1197,7 @@ describe('SettingsPanel', () => {
   });
 
   it('renders Agent Behavior after Chat and before MCP, closed by default, with the expected wiring', async () => {
-    render(<SettingsPanel />);
+    render(<SettingsPanel currentUser={adminUser} />);
 
     await waitFor(() => {
       expect(chatModelsSectionState.latestProps).toBeTruthy();
@@ -1330,13 +1332,26 @@ describe('SettingsPanel', () => {
     });
   });
 
-  it('saves Chat with its toggle and omits dependent values when disabled', async () => {
-    apiMock.getSettings.mockResolvedValue(buildSettingsResponse({ chat_enabled: false }));
+  it('saves Chat model configuration while the global default is disabled', async () => {
+    apiMock.getSettings.mockResolvedValue(
+      buildSettingsResponse({ chat_enabled: false, default_chat_model: 'retained-model' }),
+    );
+    apiMock.updateSettings.mockResolvedValueOnce(
+      buildSettingsResponse({ chat_enabled: false, default_chat_model: 'saved-model' }).settings,
+    );
     render(
       <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
     );
 
     await screen.findByRole('button', { name: 'Open chat models' });
+    act(() => {
+      (chatModelsSectionState.latestProps?.setFormData as (value: unknown) => void)(
+        (prev: Record<string, unknown>) => ({ ...prev, default_chat_model: 'draft-model' }),
+      );
+    });
+    await waitFor(() => {
+      expect(chatModelsSectionState.latestProps?.formData.default_chat_model).toBe('draft-model');
+    });
     await (
       chatModelsSectionState.latestProps?.handleSaveChat as (() => Promise<void>) | undefined
     )?.();
@@ -1344,9 +1359,16 @@ describe('SettingsPanel', () => {
     await waitFor(() => expect(apiMock.updateSettings.mock.calls.length).toBeGreaterThan(0));
     const latestPayload =
       apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0];
-    expect(latestPayload).toMatchObject({ chat_enabled: false });
-    expect(latestPayload).not.toHaveProperty('default_chat_model');
-    expect(latestPayload).not.toHaveProperty('allowed_chat_models');
+    expect(latestPayload).toMatchObject({
+      chat_enabled: false,
+      default_chat_model: 'draft-model',
+    });
+    expect(latestPayload).toHaveProperty('allowed_chat_models');
+    await waitFor(() => {
+      expect(chatModelsSectionState.latestProps?.formData).toEqual(
+        expect.objectContaining({ chat_enabled: false, default_chat_model: 'saved-model' }),
+      );
+    });
   });
 
   it('shows Chat save failure feedback', async () => {
@@ -1452,7 +1474,7 @@ describe('SettingsPanel', () => {
       }),
     );
 
-    render(<SettingsPanel />);
+    render(<SettingsPanel currentUser={adminUser} />);
 
     await screen.findByRole('button', { name: 'Open chat models' });
     await (

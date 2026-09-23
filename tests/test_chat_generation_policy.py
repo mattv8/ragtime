@@ -8,7 +8,7 @@ from ragtime.core import generation_policy
 
 
 class ChatGenerationPolicyTests(unittest.IsolatedAsyncioTestCase):
-    async def test_global_disable_wins_over_user_enable(self) -> None:
+    async def test_explicit_user_enable_overrides_global_disable(self) -> None:
         db = SimpleNamespace(
             appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(chatEnabled=False))),
             user=SimpleNamespace(
@@ -17,7 +17,7 @@ class ChatGenerationPolicyTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         with mock.patch.object(generation_policy, "get_db", mock.AsyncMock(return_value=db)):
-            self.assertFalse(await generation_policy.chat_generation_enabled("user-1"))
+            self.assertTrue(await generation_policy.chat_generation_enabled("user-1"))
 
     async def test_context_principals_are_checked(self) -> None:
         db = SimpleNamespace(
