@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime
 import fcntl
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -12,13 +15,16 @@ import shutil
 import tarfile
 import tempfile
 import threading
-from collections.abc import Coroutine
+from collections.abc import AsyncIterator, Coroutine
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 
+from runtime.core.sqlite_workspace_state import SqliteWorkspaceStateError, validate_workspace_id
+
+from . import models as history_models
 from .export import RuntimeHistoryExporter
 from .repository import ResticRepository
 from .storage import repository_gate
@@ -28,6 +34,7 @@ _logger = logging.getLogger(__name__)
 _MAX_BUNDLE_BYTES = 64 * 1024 * 1024 * 1024
 _MAX_MEMBERS = 100_000
 _MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024 * 1024
+_EXTRACTION_FREE_SPACE_MARGIN = 64 * 1024 * 1024
 _TERMINAL_STATUSES = frozenset({"completed", "failed"})
 _JOURNAL_VERSION = 1
 
@@ -50,7 +57,22 @@ class RuntimeHistoryTransfers:
         return self._coordinator._service()  # activation/capability gate
 
     def _root(self) -> Path:
-        return self._service()._runtime.root / "_sqlite_history" / "transfers"
+        # Transfer recovery must run before activation is evaluated.  In
+        # particular, do not obtain the history service here: doing so makes a
+        # perfectly recoverable activation rename crash unrecoverable.
+        return self._runtime_root() / "_sqlite_history" / "transfers"
+
+    def _runtime_root(self) -> Path:
+        root = getattr(self._coordinator, "_root", None)
+        if root is None:  # Compatibility for isolated legacy test adapters.
+            root = getattr(self._coordinator, "_runtime_root", None)
+        if root is None:
+            root = self._coordinator._runtime.root
+        return Path(root)
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.datetime.now(datetime.UTC).isoformat()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -87,7 +109,7 @@ class RuntimeHistoryTransfers:
         ``committed`` means only backup cleanup may still be pending.  A
         rollback that cannot finish keeps the journal for the next start.
         """
-        root = self._service()._runtime.root
+        root = self._runtime_root()
         path = self._journal_path()
         path.with_suffix(".tmp").unlink(missing_ok=True)
         if path.is_symlink() or not path.is_file():
@@ -136,26 +158,95 @@ class RuntimeHistoryTransfers:
                     continue
                 if not isinstance(receipt, dict) or receipt.get("status") in _TERMINAL_STATUSES:
                     continue
-                if self._transfer_is_live(kind, entry.name):
+                try:
+                    lock_fd = self._acquire_transfer_lock(kind, entry.name)
+                except (BlockingIOError, OSError):
                     continue
-                self._write_receipt(kind, entry.name, {**receipt, identifier_key: entry.name, "status": "failed"})
-                for pattern in ("unpacked-*", "sqlite-history-export-*"):
-                    for leftover in entry.glob(pattern):
-                        shutil.rmtree(leftover, ignore_errors=True)
+                try:
+                    self._write_receipt(
+                        kind,
+                        entry.name,
+                        {**receipt, identifier_key: entry.name, "status": "failed", "completed_at": self._now()},
+                    )
+                    for pattern in ("unpacked-*", "sqlite-history-export-*"):
+                        for leftover in entry.glob(pattern):
+                            shutil.rmtree(leftover, ignore_errors=True)
+                    # An interrupted import can never be resumed without its owner.
+                    self._remove_path(entry / "import.bundle")
+                finally:
+                    self._release_transfer_lock(lock_fd)
                 _logger.warning("Failed orphaned runtime history transfer %s/%s on startup", kind, entry.name)
+
+    async def cleanup(self) -> None:
+        """Remove only terminal, unreferenced transfer payloads.
+
+        A live flock is the authority for a download or a worker still using a
+        receipt; age is merely the retention policy.  Older receipts without a
+        timestamp are retained rather than guessed away.
+        """
+        await asyncio.to_thread(self._cleanup_sync)
+
+    def _cleanup_sync(self) -> None:
+        export_age = history_models.HISTORY_EXPORT_RETENTION_SECONDS
+        receipt_age = history_models.HISTORY_RECEIPT_RETENTION_SECONDS
+        now = datetime.datetime.now(datetime.UTC)
+        for kind, identifier_key in (("exports", "export_id"), ("imports", "import_id")):
+            base = self._root() / kind
+            if base.is_symlink() or not base.is_dir():
+                continue
+            for entry in base.iterdir():
+                try:
+                    UUID(entry.name)
+                except ValueError:
+                    continue
+                if entry.is_symlink() or not entry.is_dir():
+                    continue
+                try:
+                    fd = self._acquire_transfer_lock(kind, entry.name)
+                except BlockingIOError:
+                    continue
+                try:
+                    self._cleanup_terminal_entry(kind, entry, now, export_age, receipt_age)
+                finally:
+                    self._release_transfer_lock(fd)
+
+    def _cleanup_terminal_entry(self, kind: str, entry: Path, now: datetime.datetime, export_age: int, receipt_age: int) -> None:
+        """Delete only while holding the same exclusive flock cleanup probed."""
+        try:
+            receipt = json.loads((entry / "receipt.json").read_text(encoding="utf-8"))
+            created = datetime.datetime.fromisoformat(receipt["completed_at"])
+        except (KeyError, OSError, TypeError, ValueError):
+            return
+        if receipt.get("status") not in _TERMINAL_STATUSES:
+            return
+        age = (now - created.astimezone(datetime.UTC)).total_seconds()
+        payload = entry / ("export.bundle" if kind == "exports" else "import.bundle")
+        if kind == "imports" and payload.exists():
+            self._remove_path(payload)
+        if kind == "exports" and age >= export_age and payload.exists():
+            self._remove_path(payload)
+        if age >= receipt_age and not payload.exists() and not self._journal_references(entry.name):
+            self._remove_path(entry)
+
+    def _journal_references(self, transfer_id: str) -> bool:
+        try:
+            payload = json.loads(self._journal_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(payload, dict) and payload.get("transfer_id") == transfer_id
 
     # -- per-transfer liveness ----------------------------------------------
 
     def _lock_path(self, kind: str, transfer_id: str) -> Path:
         return self._receipt_path(kind, transfer_id).parent / "transfer.lock"
 
-    def _acquire_transfer_lock(self, kind: str, transfer_id: str) -> int:
+    def _acquire_transfer_lock(self, kind: str, transfer_id: str, *, shared: bool = False) -> int:
         """Hold the per-transfer liveness flock for the accepted task's lifetime."""
         lock_path = self._lock_path(kind, transfer_id)
         lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
             return fd
         except BaseException:
             os.close(fd)
@@ -227,7 +318,13 @@ class RuntimeHistoryTransfers:
     async def accept_export(self, *, include_repository_key: bool) -> dict[str, Any]:
         self._require_recovered()
         transfer_id = str(uuid4())
-        receipt = {"export_id": transfer_id, "status": "accepted", "export_version": 1, "includes_repository_key": include_repository_key}
+        receipt = {
+            "export_id": transfer_id,
+            "status": "accepted",
+            "accepted_at": self._now(),
+            "export_version": 1,
+            "includes_repository_key": include_repository_key,
+        }
         lock_fd = self._acquire_transfer_lock("exports", transfer_id)
         try:
             self._write_receipt("exports", transfer_id, receipt)
@@ -250,6 +347,8 @@ class RuntimeHistoryTransfers:
                 staged = await RuntimeHistoryExporter(self._service()).stage_server_export(receipt_dir, include_repository_key=include_repository_key)
                 bundle = receipt_dir / "export.bundle"
                 await asyncio.to_thread(self._archive, staged, bundle)
+                await asyncio.to_thread(self._fsync_file, bundle)
+                bundle_size_bytes, bundle_sha256 = await asyncio.to_thread(self._bundle_digest, bundle)
                 metadata = json.loads((staged / "history-export.json").read_text(encoding="utf-8"))
                 self._write_receipt(
                     "exports",
@@ -257,9 +356,12 @@ class RuntimeHistoryTransfers:
                     {
                         "export_id": transfer_id,
                         "status": "completed",
+                        "completed_at": self._now(),
                         "export_version": 1,
                         "repository_id": metadata["repository_id"],
                         "includes_repository_key": include_repository_key,
+                        "bundle_size_bytes": bundle_size_bytes,
+                        "bundle_sha256": bundle_sha256,
                     },
                 )
             except Exception:
@@ -267,7 +369,13 @@ class RuntimeHistoryTransfers:
                 self._write_receipt(
                     "exports",
                     transfer_id,
-                    {"export_id": transfer_id, "status": "failed", "export_version": 1, "includes_repository_key": include_repository_key},
+                    {
+                        "export_id": transfer_id,
+                        "status": "failed",
+                        "completed_at": self._now(),
+                        "export_version": 1,
+                        "includes_repository_key": include_repository_key,
+                    },
                 )
             finally:
                 if staged is not None:
@@ -285,17 +393,30 @@ class RuntimeHistoryTransfers:
             raise HTTPException(status_code=409, detail="SQLite history export is not ready")
         return bundle
 
+    @contextlib.asynccontextmanager
+    async def export_download_lifetime(self, transfer_id: str) -> AsyncIterator[None]:
+        """Pin a bundle only while its ASGI response actually runs."""
+        try:
+            lock_fd = await asyncio.to_thread(self._acquire_transfer_lock, "exports", transfer_id, shared=True)
+        except (BlockingIOError, OSError) as exc:
+            raise HTTPException(status_code=409, detail="SQLite history export is busy") from exc
+        try:
+            self.export_bundle(transfer_id)
+            yield
+        finally:
+            await asyncio.to_thread(self._release_transfer_lock, lock_fd)
+
     # -- imports -------------------------------------------------------------
 
     async def accept_import(self, source: Path, metadata: dict[str, Any]) -> dict[str, Any]:
         self._require_recovered()
         transfer_id = str(uuid4())
         receipt_path = self._receipt_path("imports", transfer_id)
-        receipt = {"import_id": transfer_id, "status": "accepted"}
+        receipt = {"import_id": transfer_id, "status": "accepted", "accepted_at": self._now()}
         lock_fd = self._acquire_transfer_lock("imports", transfer_id)
         try:
             target = receipt_path.parent / "import.bundle"
-            await asyncio.to_thread(shutil.move, str(source), str(target))
+            await asyncio.to_thread(self._move_and_fsync, source, target)
             self._write_receipt("imports", transfer_id, receipt)
         except BaseException:
             self._release_transfer_lock(lock_fd)
@@ -306,12 +427,17 @@ class RuntimeHistoryTransfers:
     async def _run_import(self, transfer_id: str, metadata: dict[str, Any], lock_fd: int) -> None:
         try:
             try:
-                await asyncio.to_thread(self._import_sync, transfer_id, metadata)
-                self._write_receipt("imports", transfer_id, {"import_id": transfer_id, "status": "completed"})
+                activate = await asyncio.to_thread(self._import_sync, transfer_id, metadata)
+                if activate:
+                    # Coordinator activation schedules maintenance and must run
+                    # on its owning asyncio loop, never the install worker.
+                    self._coordinator.activate()
+                self._write_receipt("imports", transfer_id, {"import_id": transfer_id, "status": "completed", "completed_at": self._now()})
             except Exception:
                 _logger.exception("Import failed for %s", transfer_id)
-                self._write_receipt("imports", transfer_id, {"import_id": transfer_id, "status": "failed"})
+                self._write_receipt("imports", transfer_id, {"import_id": transfer_id, "status": "failed", "completed_at": self._now()})
         finally:
+            self._remove_path(self._receipt_path("imports", transfer_id).parent / "import.bundle")
             self._release_transfer_lock(lock_fd)
 
     def import_receipt(self, transfer_id: str) -> dict[str, Any]:
@@ -319,17 +445,27 @@ class RuntimeHistoryTransfers:
 
     @staticmethod
     def _archive(source: Path, destination: Path) -> None:
-        with tarfile.open(destination, "w:gz") as archive:
+        # The bundle is already an internal transport artifact.  Plain tar
+        # avoids spending the exclusive repository interval compressing it;
+        # import retains r:* compatibility with historic gzip bundles.
+        with tarfile.open(destination, "w") as archive:
             for entry in sorted(source.rglob("*")):
                 archive.add(entry, arcname=entry.relative_to(source).as_posix(), recursive=False)
 
-    def _import_sync(self, transfer_id: str, metadata: dict[str, Any]) -> None:
-        service = self._service()
-        root = service._runtime.root
+    def _import_sync(self, transfer_id: str, metadata: dict[str, Any]) -> bool:
+        root = self._runtime_root()
         receipt_dir = self._receipt_path("imports", transfer_id).parent
         unpacked = Path(tempfile.mkdtemp(prefix="unpacked-", dir=receipt_dir))
         try:
             bundle_path = receipt_dir / "import.bundle"
+            expected_size = metadata.get("bundle_size_bytes")
+            expected_digest = metadata.get("bundle_sha256")
+            if expected_size is not None or expected_digest is not None:
+                if not isinstance(expected_size, int) or expected_size <= 0 or not isinstance(expected_digest, str) or len(expected_digest) != 64:
+                    raise RuntimeError("import bundle integrity metadata is invalid")
+                actual_size, actual_digest = self._bundle_digest(bundle_path)
+                if actual_size != expected_size or not hmac.compare_digest(actual_digest, expected_digest):
+                    raise RuntimeError("import bundle integrity verification failed")
 
             # Extract and validate bundle structure
             self._safe_extract(bundle_path, unpacked)
@@ -352,24 +488,26 @@ class RuntimeHistoryTransfers:
             if not includes_key and has_secrets:
                 raise RuntimeError("bundle declared no key but secrets directory present")
 
-            # Validate first: the destination is untouched until every check,
-            # including a full repository check with the effective key, passes.
+            # Validate private unpacked state before taking the live repository
+            # gate.  The gate is for the short recheck/install transaction.
+            reachable_snapshots = self._validate_import(unpacked, expected_id, includes_key)
             with repository_gate(root, exclusive=True):
                 self._require_recovered()
-                self._validate_import(unpacked, expected_id, includes_key)
+                self._validate_destination_key(unpacked, expected_id, includes_key)
+                self._validate_destination_catalogs(root, expected_id, unpacked, reachable_snapshots)
                 self._install_verified(root, unpacked, transfer_id)
+                return getattr(self._coordinator, "activate", None) is not None
         finally:
             shutil.rmtree(unpacked, ignore_errors=True)
 
-    def _validate_import(self, unpacked: Path, repository_id: str, includes_key: bool) -> None:
+    def _validate_import(self, unpacked: Path, repository_id: str, includes_key: bool) -> set[str]:
         """Validate that the imported bundle matches its declared identity and key state.
 
         For keyless imports, use the existing destination key rather than one in the bundle.
         For key-inclusive imports, validate the portable key matches the repository.
         Preserves original destination until all checks pass.
         """
-        service = self._service()
-        root = service._runtime.root
+        root = self._runtime_root()
         repo_root_import = unpacked / "_sqlite_history"
         repo_root_dest = root / "_sqlite_history"
 
@@ -406,6 +544,97 @@ class RuntimeHistoryTransfers:
         if actual != repository_id:
             raise RuntimeError("repository key does not match repository")
         repository._check(True, threading.Event(), ())
+        return self._validate_catalogs(unpacked, repository_id, repository)
+
+    def _validate_destination_key(self, unpacked: Path, repository_id: str, includes_key: bool) -> None:
+        """Recheck key-dependent validation after waiting for the live gate."""
+        if includes_key:
+            return
+        key_path = self._runtime_root() / "_sqlite_history" / "secrets" / "repository-password"
+        if key_path.is_symlink() or not key_path.is_file():
+            raise RuntimeError("keyless import requires existing repository key at destination")
+        repository = ResticRepository(
+            repository_path=unpacked / "_sqlite_history" / "restic",
+            cache_path=unpacked / "_sqlite_history" / "cache",
+            password_path=key_path,
+            scratch_path=unpacked / "_sqlite_history" / "scratch",
+        )
+        if repository._initialize(threading.Event(), ()) != repository_id:
+            raise RuntimeError("destination repository key no longer matches import")
+
+    @staticmethod
+    def _valid_workspace_id(value: str) -> bool:
+        try:
+            return validate_workspace_id(value) == value
+        except SqliteWorkspaceStateError:
+            return False
+
+    def _validate_catalogs(self, unpacked: Path, repository_id: str, repository: ResticRepository) -> set[str]:
+        snapshots = json.loads(repository._run("snapshots", "--json", cancelled=threading.Event(), pass_fds=()))
+        reachable = {str(item["id"]) for item in snapshots if isinstance(item, dict) and isinstance(item.get("id"), str)}
+        workspaces = unpacked / "workspaces"
+        if not workspaces.exists():
+            return reachable
+        if workspaces.is_symlink() or not workspaces.is_dir():
+            raise RuntimeError("import bundle workspace catalogs are invalid")
+        for workspace in workspaces.iterdir():
+            if workspace.is_symlink() or not workspace.is_dir() or not self._valid_workspace_id(workspace.name):
+                raise RuntimeError("import bundle workspace ID is invalid")
+            catalog = workspace / "sqlite_backups" / "manifest-v1.json"
+            catalog_dir = catalog.parent
+            if not catalog.exists() and catalog_dir.is_dir() and not catalog_dir.is_symlink() and all(entry.name == ".lock" for entry in catalog_dir.iterdir()):
+                continue
+            if catalog.is_symlink() or not catalog.is_file():
+                raise RuntimeError("import bundle history catalog is invalid")
+            try:
+                manifest = json.loads(catalog.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise RuntimeError("import bundle history catalog is unreadable") from exc
+            if not isinstance(manifest, dict) or manifest.get("workspace_id") != workspace.name or not isinstance(manifest.get("backups"), list):
+                raise RuntimeError("import bundle history catalog is invalid")
+            for row in manifest["backups"]:
+                if not isinstance(row, dict) or row.get("status") != "ready":
+                    continue
+                storage = row.get("storage") if isinstance(row, dict) else None
+                # Old verified local rows predate Restic storage references.
+                # They are safe to retain: this install only replaces Restic
+                # state, and a later migration can handle their local payload.
+                if storage is None and isinstance(row.get("sha256"), str) and isinstance(row.get("size_bytes"), int):
+                    continue
+                if not isinstance(storage, dict) or storage.get("kind") != "restic":
+                    raise RuntimeError("import bundle history storage reference is invalid")
+                if storage.get("repository_id") != repository_id or storage.get("snapshot_id") not in reachable:
+                    raise RuntimeError("import bundle history snapshot reference is unreachable")
+        return reachable
+
+    def _validate_destination_catalogs(self, root: Path, repository_id: str, unpacked: Path, reachable_snapshots: set[str]) -> None:
+        """Fail before mutation when a destination-only catalog would be stranded."""
+        incoming = unpacked / "workspaces"
+        incoming_catalog_workspaces = (
+            {entry.name for entry in incoming.iterdir() if (entry / "sqlite_backups").is_dir() and not (entry / "sqlite_backups").is_symlink()}
+            if incoming.is_dir() and not incoming.is_symlink()
+            else set()
+        )
+        workspaces = root / "workspaces"
+        if not workspaces.is_dir() or workspaces.is_symlink():
+            return
+        for workspace in workspaces.iterdir():
+            if workspace.name in incoming_catalog_workspaces:
+                continue
+            catalog = workspace / "sqlite_backups" / "manifest-v1.json"
+            if not catalog.exists():
+                continue
+            if catalog.is_symlink() or not catalog.is_file():
+                raise HTTPException(status_code=409, detail="Destination SQLite history catalog is invalid")
+            try:
+                manifest = json.loads(catalog.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise HTTPException(status_code=409, detail="Destination SQLite history catalog is unreadable") from exc
+            for row in manifest.get("backups", []) if isinstance(manifest, dict) else []:
+                storage = row.get("storage") if isinstance(row, dict) else None
+                if isinstance(storage, dict) and storage.get("kind") == "restic":
+                    if storage.get("repository_id") != repository_id or storage.get("snapshot_id") not in reachable_snapshots:
+                        raise HTTPException(status_code=409, detail="Import would strand destination SQLite history catalog")
 
     # -- durable install ------------------------------------------------------
 
@@ -436,6 +665,18 @@ class RuntimeHistoryTransfers:
             os.fsync(fd)
         finally:
             os.close(fd)
+
+    @staticmethod
+    def _fsync_file(path: Path) -> None:
+        with path.open("rb") as source:
+            os.fsync(source.fileno())
+
+    @staticmethod
+    def _move_and_fsync(source: Path, target: Path) -> None:
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        shutil.move(str(source), str(target))
+        RuntimeHistoryTransfers._fsync_file(target)
+        RuntimeHistoryTransfers._fsync_directory(target.parent)
 
     @staticmethod
     def _journal_payload(root: Path, transfer_id: str, phase: str, undo: list[tuple[Path, Path, bool]]) -> dict[str, Any]:
@@ -567,6 +808,16 @@ class RuntimeHistoryTransfers:
             path.unlink(missing_ok=True)
 
     @staticmethod
+    def _bundle_digest(path: Path) -> tuple[int, str]:
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                size += len(chunk)
+                digest.update(chunk)
+        return size, digest.hexdigest()
+
+    @staticmethod
     def _safe_extract(bundle: Path, destination: Path) -> None:
         """Safely extract tar bundle with size/entry/duplicate bounds.
 
@@ -609,6 +860,13 @@ class RuntimeHistoryTransfers:
                     if total_uncompressed > _MAX_UNCOMPRESSED_BYTES:
                         raise RuntimeError("history transfer bundle uncompressed size exceeds limit")
 
+            required = total_uncompressed + _EXTRACTION_FREE_SPACE_MARGIN
+            if shutil.disk_usage(destination).free < required:
+                raise HTTPException(status_code=507, detail="SQLite history import is blocked by insufficient disk space")
+
+            extracted_bytes = 0
+            for member in members:
+                path = PurePosixPath(member.name)
                 # Extract safely
                 target = destination.joinpath(*path.parts)
                 if member.isdir():
@@ -622,5 +880,16 @@ class RuntimeHistoryTransfers:
                 if source is None:
                     raise RuntimeError("history transfer bundle is invalid")
                 with source, target.open("xb") as output:
-                    shutil.copyfileobj(source, output)
+                    remaining = member.size
+                    while remaining:
+                        block = source.read(min(1024 * 1024, remaining))
+                        if not block:
+                            raise RuntimeError("history transfer bundle member is truncated")
+                        output.write(block)
+                        remaining -= len(block)
+                        extracted_bytes += len(block)
+                        if extracted_bytes > total_uncompressed:
+                            raise RuntimeError("history transfer bundle uncompressed size exceeds limit")
+                    if source.read(1):
+                        raise RuntimeError("history transfer bundle member size is invalid")
                 os.chmod(target, member.mode & 0o777)

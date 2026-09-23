@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import multiprocessing
 import multiprocessing.synchronize
-import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -129,7 +128,7 @@ class OperationStoreTests(unittest.TestCase):
 
         with TemporaryDirectory() as temporary:
             store = OperationStore(Path(temporary))
-            self.assertEqual(store.suboperation_id(OPERATION_ID, "primary"), store.suboperation_id(OPERATION_ID, "primary"))
+            self.assertEqual(store.suboperation_id(OPERATION_ID, "primary database.sqlite3"), store.suboperation_id(OPERATION_ID, "primary database.sqlite3"))
             with self.assertRaises(ValueError):
                 store.suboperation_id(OPERATION_ID, "../primary")
             self._accept(store)

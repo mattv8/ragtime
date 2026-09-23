@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from runtime.core.secure_files import SecureFileError, open_directory, sha256_regular_file, stat_regular_file
+from runtime.core.sqlite_history_scratch import SCRATCH_PREFIX, scratch_owner_lock
 
 from .service import _PREVIEW_TTL, _catalog_lock, _history_subdirectory, _now, run_admitted_subprocess, run_sqlite_blocking, sqlite_workspace_access
 
@@ -75,6 +77,12 @@ class RuntimeInspectorImport:
             raise HTTPException(status_code=400, detail="Uploaded database file was not readable")
 
         root = self._history._root(workspace_id)
+        # The confinement child writes into a private import staging directory,
+        # not the reaper-scanned candidate namespace.  It is atomically moved
+        # under the catalog lock immediately before the preview publishes its
+        # durable ownership reference.
+        staging_name = f"{SCRATCH_PREFIX}import-{uuid4()}"
+        staged = f"imports/{staging_name}/image.sqlite3"
         candidate = f"candidates/import-{uuid4()}.sqlite3"
 
         # Establish only runtime-private history directories before passing
@@ -82,12 +90,21 @@ class RuntimeInspectorImport:
         def ensure_candidate_dir() -> None:
             with _catalog_lock(root):
                 self._history._enforce_quota(root, self._history._load(root, workspace_id), details.st_size)
-                _history_subdirectory(root, "candidates", create=True)
+                imports = _history_subdirectory(root, "imports", create=True)
+                (imports / staging_name).mkdir(mode=0o700)
 
         await run_sqlite_blocking(ensure_candidate_dir)
-        await run_sqlite_blocking(self._copy_confined, upload.parent, upload.name, root, candidate)
-        candidate_sha256 = await run_sqlite_blocking(sha256_regular_file, root, candidate)
-        candidate_size = (await run_sqlite_blocking(stat_regular_file, root, candidate)).st_size
+        staging = root / "imports" / staging_name
+        owner = scratch_owner_lock(staging)
+        await run_sqlite_blocking(owner.__enter__)
+        try:
+            await run_sqlite_blocking(self._copy_confined, upload.parent, upload.name, root, staged)
+            candidate_sha256 = await run_sqlite_blocking(sha256_regular_file, root, staged)
+            candidate_size = (await run_sqlite_blocking(stat_regular_file, root, staged)).st_size
+        except BaseException:
+            await run_sqlite_blocking(owner.__exit__, None, None, None)
+            await run_sqlite_blocking(shutil.rmtree, staging, ignore_errors=True)
+            raise
         # Stable source ID deliberately identifies an upload rather than
         # pretending it is a catalog backup row.
         source_id = f"import-{candidate_sha256}"
@@ -98,6 +115,8 @@ class RuntimeInspectorImport:
                 def persist_preview() -> str:
                     with _catalog_lock(root):
                         manifest = self._history._load(root, workspace_id)
+                        _history_subdirectory(root, "candidates", create=True)
+                        os.replace(root / staged, root / candidate)
                         preview_id = str(uuid4())
                         manifest["previews"][preview_id] = {
                             "backup_id": source_id,
@@ -131,7 +150,13 @@ class RuntimeInspectorImport:
                         try:
                             os.unlink(root / candidate)
                         except FileNotFoundError:
-                            pass
+                            try:
+                                os.unlink(root / staged)
+                            except FileNotFoundError:
+                                pass
 
             await run_sqlite_blocking(remove_unpublished)
             raise
+        finally:
+            await run_sqlite_blocking(owner.__exit__, None, None, None)
+            await run_sqlite_blocking(shutil.rmtree, staging, ignore_errors=True)

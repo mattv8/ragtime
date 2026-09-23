@@ -148,6 +148,7 @@ class ServerBackupSqliteHistoryTests(unittest.TestCase):
                 mock.patch.object(server_backup, "DATA_DIR", destination),
                 mock.patch.object(server_backup, "_copy_tree_contents", side_effect=copy),
                 mock.patch.object(server_backup, "_runtime_history_import", side_effect=imported),
+                mock.patch.object(server_backup, "_preflight_runtime_history_import"),
                 mock.patch.object(server_backup, "_invalidate_restored_workspace_runtime_artifacts"),
             ):
                 server_backup.restore_backup(
@@ -204,3 +205,93 @@ class ServerBackupSqliteHistoryTests(unittest.TestCase):
         ):
             self.assertIsNone(server_backup._runtime_history_status())
         request.assert_called_once()
+
+    def test_generic_replace_preserves_managed_history_inode_in_place(self) -> None:
+        """Generic replacement must not unlink a runtime-owned live lock."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "destination"
+            lock = destination / "_userspace" / "_sqlite_history" / "restic" / "lock"
+            lock.parent.mkdir(parents=True)
+            lock.write_text("live", encoding="utf-8")
+            inode = lock.stat().st_ino
+            (destination / "replace-me.txt").write_text("old", encoding="utf-8")
+            source = root / "source"
+            (source / "replace-me.txt").parent.mkdir(parents=True)
+            (source / "replace-me.txt").write_text("new", encoding="utf-8")
+            with mock.patch.object(server_backup, "DATA_DIR", destination):
+                server_backup._copy_tree_contents(source, destination, replace=True, preserve_runtime_history=True)
+            self.assertEqual(lock.stat().st_ino, inode)
+            self.assertEqual(lock.read_text(encoding="utf-8"), "live")
+            self.assertEqual((destination / "replace-me.txt").read_text(encoding="utf-8"), "new")
+
+    def test_restore_failure_rollback_preserves_runtime_history_key_and_lock_inodes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "destination"
+            history = destination / "_userspace" / "_sqlite_history"
+            lock = history / "restic" / "lock"
+            key = history / "secrets" / "repository-password"
+            lock.parent.mkdir(parents=True)
+            key.parent.mkdir(parents=True)
+            lock.write_text("live-lock", encoding="utf-8")
+            key.write_text("live-key", encoding="utf-8")
+            workspace_lock = destination / "_userspace" / "workspaces" / "ws" / "sqlite_backups" / ".lock"
+            workspace_lock.parent.mkdir(parents=True)
+            workspace_lock.write_text("workspace-lock", encoding="utf-8")
+            original_inodes = {path: path.stat().st_ino for path in (lock, key, workspace_lock)}
+            (destination / "old.txt").write_text("old", encoding="utf-8")
+            staging = root / "staging"
+            (staging / "data").mkdir(parents=True)
+            (staging / "data" / "new.txt").write_text("new", encoding="utf-8")
+            bundle = staging / "runtime-sqlite-history" / "export.bundle"
+            bundle.parent.mkdir()
+            bundle.write_bytes(b"bundle")
+            (staging / "backup-meta.json").write_text(
+                json.dumps(
+                    {
+                        "format": "tar.gz",
+                        "version": 2,
+                        "scope": "files",
+                        "encrypted": False,
+                        "includes_managed_key": False,
+                        "sqlite_history": {
+                            "version": 1,
+                            "repository_id": "c" * 64,
+                            "includes_repository_key": False,
+                            "requires_original_repository_key": True,
+                            "bundle": "runtime-sqlite-history/export.bundle",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            archive = root / "backup.tar.gz"
+            with tarfile.open(archive, "w:gz") as tar:
+                for child in staging.rglob("*"):
+                    tar.add(child, child.relative_to(staging).as_posix())
+            with (
+                mock.patch.object(server_backup, "DATA_DIR", destination),
+                mock.patch.object(server_backup, "_preflight_runtime_history_import"),
+                mock.patch.object(server_backup, "_runtime_history_import", side_effect=RuntimeError("activation failed")),
+                mock.patch.object(server_backup, "_invalidate_restored_workspace_runtime_artifacts"),
+            ):
+                with self.assertRaises(server_backup.BackupMutationError):
+                    server_backup.restore_backup(
+                        server_backup.RestoreOptions(
+                            archive_path=archive,
+                            scope_override=server_backup.BackupScope.FILES,
+                            replace_data=True,
+                            restore_confirmation="RESTORE ragtime",
+                        )
+                    )
+            self.assertEqual((destination / "old.txt").read_text(encoding="utf-8"), "old")
+            self.assertFalse((destination / "new.txt").exists())
+            for path, inode in original_inodes.items():
+                self.assertEqual(path.stat().st_ino, inode)
+            self.assertEqual(key.read_text(encoding="utf-8"), "live-key")
+
+    def test_runtime_history_path_is_exact_workspace_catalog_location(self) -> None:
+        self.assertTrue(server_backup._is_runtime_history_path(Path("_userspace/workspaces/ws/sqlite_backups")))
+        self.assertTrue(server_backup._is_runtime_history_path(Path("_userspace/workspaces/ws/sqlite_backups/manifest-v1.json")))
+        self.assertFalse(server_backup._is_runtime_history_path(Path("_userspace/workspaces/ws/files/sqlite_backups/legacy.db")))

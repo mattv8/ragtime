@@ -570,22 +570,45 @@ class WorkerService:
         sqlite_history_operation_id: str | None = None,
     ) -> RuntimeWorkspaceGitCommandResponse:
         if sqlite_history_operation_id:
-            await self.sqlite_history_coordinator().authorize_git_operation(workspace_id, sqlite_history_operation_id)
-        elif self._has_durable_sqlite_maintenance_marker(workspace_id):
-            raise HTTPException(status_code=423, detail="Workspace SQLite maintenance is active")
-        # Snapshot and SCM commands operate on the active tree and cannot race
-        # another filesystem API mutation or a root transition.
-        async with self._workspace_file_lock(workspace_id):
-            returncode, stdout_bytes, stderr_bytes = await self._run_git_in_workspace_raw(
-                workspace_id,
-                args=args,
-                env=env,
-            )
-            return RuntimeWorkspaceGitCommandResponse(
-                returncode=returncode,
-                stdout_b64=base64.b64encode(stdout_bytes).decode("ascii"),
-                stderr_b64=base64.b64encode(stderr_bytes).decode("ascii"),
-            )
+            async with self.sqlite_history_coordinator().guarded_git_operation(workspace_id, sqlite_history_operation_id):
+                # Snapshot and SCM commands operate on the active tree and cannot race
+                # another filesystem API mutation or a root transition.
+                async with self._workspace_file_lock(workspace_id):
+                    # Shielding alone would let cancellation leave the guarded
+                    # context while Git still owns the workspace.  Drain the raw
+                    # execution before releasing guard authority so recovery never
+                    # republishes over a running child.
+                    git = asyncio.create_task(self._run_git_in_workspace_raw(workspace_id, args=args, env=env))
+                    try:
+                        returncode, stdout_bytes, stderr_bytes = await asyncio.shield(git)
+                    except asyncio.CancelledError:
+                        while not git.done():
+                            try:
+                                await asyncio.shield(git)
+                            except asyncio.CancelledError:
+                                continue
+                            except Exception:
+                                break
+                        if git.done() and not git.cancelled():
+                            with contextlib.suppress(Exception):
+                                git.result()
+                        raise
+        else:
+            # Snapshot and SCM commands operate on the active tree and cannot race
+            # another filesystem API mutation or a root transition.
+            async with self._workspace_file_lock(workspace_id):
+                if self._has_durable_sqlite_maintenance_marker(workspace_id):
+                    raise HTTPException(status_code=423, detail="Workspace SQLite maintenance is active")
+                returncode, stdout_bytes, stderr_bytes = await self._run_git_in_workspace_raw(
+                    workspace_id,
+                    args=args,
+                    env=env,
+                )
+        return RuntimeWorkspaceGitCommandResponse(
+            returncode=returncode,
+            stdout_b64=base64.b64encode(stdout_bytes).decode("ascii"),
+            stderr_b64=base64.b64encode(stderr_bytes).decode("ascii"),
+        )
 
     async def get_workspace_scm_status(
         self,

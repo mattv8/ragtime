@@ -8,6 +8,7 @@ recovery behavior. Runs in Docker with real Restic binary and proper file permis
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import os
 import shutil
@@ -21,6 +22,7 @@ from types import SimpleNamespace
 from unittest import mock
 from uuid import uuid4
 
+from runtime.worker.sqlite_history.coordinator import SqliteHistoryCoordinator
 from runtime.worker.sqlite_history.export import RuntimeHistoryExporter
 from runtime.worker.sqlite_history.repository import ResticRepository
 from runtime.worker.sqlite_history.storage import AsyncRepositoryGate
@@ -389,6 +391,27 @@ class RuntimeHistoryTransferTests(unittest.IsolatedAsyncioTestCase):
         await self.transfers.start()
         self.assertEqual(self.transfers.export_receipt(completed_id)["status"], "completed")
 
+    async def test_cleanup_keeps_aged_bundle_while_download_lifetime_is_live(self) -> None:
+        export_id = str(uuid4())
+        receipt_dir = self.transfers._receipt_path("exports", export_id).parent
+        receipt_dir.mkdir(parents=True)
+        bundle = receipt_dir / "export.bundle"
+        bundle.write_bytes(b"bundle")
+        self.transfers._write_receipt(
+            "exports",
+            export_id,
+            {
+                "export_id": export_id,
+                "status": "completed",
+                "completed_at": (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=2)).isoformat(),
+            },
+        )
+        async with self.transfers.export_download_lifetime(export_id):
+            await self.transfers.cleanup()
+            self.assertTrue(bundle.exists())
+        await self.transfers.cleanup()
+        self.assertFalse(bundle.exists())
+
     async def test_start_finishes_committed_journal_cleanup(self) -> None:
         """A committed journal only removes this transfer's backups on start."""
         self._seed_destination()
@@ -500,8 +523,11 @@ class RuntimeHistoryTransferRoundtripTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.base = Path(self._temporary.name).resolve()
+        self._coordinators: list[SqliteHistoryCoordinator] = []
 
     async def asyncTearDown(self) -> None:
+        for coordinator in reversed(self._coordinators):
+            await coordinator.shutdown()
         self._temporary.cleanup()
 
     @staticmethod
@@ -550,6 +576,52 @@ class RuntimeHistoryTransferRoundtripTests(unittest.IsolatedAsyncioTestCase):
             encoding="utf-8",
         )
         return transfers, artifact, digest, image
+
+    async def _stage_active_coordinator_source(self, root: Path):
+        """Create a real active coordinator and a keyed portable source bundle."""
+        root.mkdir(parents=True, exist_ok=True)
+        coordinator = SqliteHistoryCoordinator(root, object())
+        self._coordinators.append(coordinator)
+        await coordinator.start()
+        self.assertFalse(coordinator.capability())
+        coordinator.activate()
+        repository = coordinator._service().repository
+        image, digest, size = self._fixture_database()
+        artifact = await repository.ingest(
+            image,
+            workspace_id="ws-roundtrip",
+            operation_id="e" * 32,
+            sha256=digest,
+            size_bytes=size,
+        )
+        catalog = root / "workspaces" / "ws-roundtrip" / "sqlite_backups"
+        catalog.mkdir(parents=True)
+        (catalog / "manifest-v1.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "workspace_id": "ws-roundtrip",
+                    "backups": [
+                        {
+                            "id": "backup-1",
+                            "status": "ready",
+                            "size_bytes": size,
+                            "sha256": digest,
+                            "storage": {
+                                "kind": "restic",
+                                "repository_id": artifact.repository_id,
+                                "snapshot_id": artifact.snapshot_id,
+                                "path": artifact.path,
+                            },
+                        }
+                    ],
+                    "previews": {},
+                    "operations": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return coordinator, artifact, digest, image
 
     async def _run_export(self, transfers: RuntimeHistoryTransfers, include_key: bool):
         receipt = await transfers.accept_export(include_repository_key=include_key)
@@ -640,6 +712,158 @@ class RuntimeHistoryTransferRoundtripTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transfers_b.import_receipt(import_id)["status"], "failed")
         self.assertEqual((marker / "config").read_text(), "pre-existing destination state")
         self.assertFalse((destination_root / "workspaces").exists())
+
+    async def test_import_rejects_same_repository_destination_only_snapshot_absent_from_export(self) -> None:
+        """An older export cannot replace a repository containing a newer catalog snapshot."""
+        source_root = self.base / "source"
+        transfers, artifact, digest, image = await self._stage_source(source_root)
+        _completed, bundle = await self._run_export(transfers, include_key=True)
+
+        post_export = self.base / "post-export.sqlite3"
+        with sqlite3.connect(post_export) as connection:
+            connection.execute("create table records (id integer primary key, payload blob not null)")
+            connection.execute("insert into records(payload) values (?)", (b"post-export" * 4096,))
+        post_digest = self._sha256(post_export)
+        post_artifact = await transfers._service().repository.ingest(
+            post_export,
+            workspace_id="ws-destination-only",
+            operation_id="f" * 32,
+            sha256=post_digest,
+            size_bytes=post_export.stat().st_size,
+        )
+        catalog = source_root / "workspaces" / "ws-destination-only" / "sqlite_backups"
+        catalog.mkdir(parents=True)
+        manifest = catalog / "manifest-v1.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "workspace_id": "ws-destination-only",
+                    "backups": [
+                        {
+                            "id": "post-export",
+                            "status": "ready",
+                            "size_bytes": post_export.stat().st_size,
+                            "sha256": post_digest,
+                            "storage": {
+                                "kind": "restic",
+                                "repository_id": post_artifact.repository_id,
+                                "snapshot_id": post_artifact.snapshot_id,
+                                "path": post_artifact.path,
+                            },
+                        }
+                    ],
+                    "previews": {},
+                    "operations": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        original_manifest = manifest.read_bytes()
+        original_config = (source_root / "_sqlite_history" / "restic" / "config").read_bytes()
+
+        import_id = await self._run_import(transfers, bundle, artifact.repository_id)
+
+        self.assertEqual(transfers.import_receipt(import_id)["status"], "failed")
+        self.assertEqual(manifest.read_bytes(), original_manifest)
+        self.assertEqual((source_root / "_sqlite_history" / "restic" / "config").read_bytes(), original_config)
+        restored = self.base / "restored-post-export.sqlite3"
+        await transfers._service().repository.materialize(post_artifact, restored)
+        self.assertEqual(restored.read_bytes(), post_export.read_bytes())
+        self.assertEqual(self._sha256(image), digest)
+
+    async def test_import_allows_destination_only_catalog_without_restic_reference(self) -> None:
+        """Legacy local-only destination catalogs do not depend on the replaced repository."""
+        source_root = self.base / "source"
+        transfers, artifact, _digest, _image = await self._stage_source(source_root)
+        _completed, bundle = await self._run_export(transfers, include_key=True)
+        catalog = source_root / "workspaces" / "ws-destination-only" / "sqlite_backups"
+        catalog.mkdir(parents=True)
+        manifest = catalog / "manifest-v1.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "workspace_id": "ws-destination-only",
+                    "backups": [{"id": "legacy", "status": "ready", "size_bytes": 1, "sha256": "0" * 64}],
+                    "previews": {},
+                    "operations": {},
+                },
+            ),
+            encoding="utf-8",
+        )
+
+        import_id = await self._run_import(transfers, bundle, artifact.repository_id)
+
+        self.assertEqual(transfers.import_receipt(import_id)["status"], "completed")
+        self.assertTrue(manifest.exists())
+
+    async def test_keyed_import_activates_a_started_inactive_coordinator(self) -> None:
+        """A normal keyed transfer activates an already-started fresh coordinator."""
+        source, artifact, digest, image = await self._stage_active_coordinator_source(self.base / "source-coordinator")
+        _completed, bundle = await self._run_export(source.get_history_transfers(), include_key=True)
+
+        destination_root = self.base / "destination-coordinator"
+        destination_root.mkdir()
+        destination = SqliteHistoryCoordinator(destination_root, object())
+        self._coordinators.append(destination)
+        await destination.start()
+        self.assertFalse(destination.capability())
+
+        upload = self.base / "keyed-coordinator.bundle"
+        shutil.copy2(bundle, upload)
+        transfers = destination.get_history_transfers()
+        accepted = await transfers.accept_import(upload, {"repository_id": artifact.repository_id})
+        task = transfers._tasks[accepted["import_id"]]
+        await task
+
+        self.assertEqual(transfers.import_receipt(accepted["import_id"])["status"], "completed")
+        self.assertTrue(destination.capability())
+        self.assertEqual((await transfers.status())["repository_id"], artifact.repository_id)
+        restored = self.base / "restored-started-inactive.sqlite3"
+        await destination._service().repository.materialize(artifact, restored)
+        self.assertEqual(self._sha256(restored), digest)
+        self.assertEqual(restored.read_bytes(), image.read_bytes())
+
+    async def test_start_recovers_activation_rename_crash_before_activation_is_read(self) -> None:
+        """Startup rolls back a journal left after activation was moved aside."""
+        source, artifact, _digest, _image = await self._stage_active_coordinator_source(self.base / "source-crash")
+        _completed, bundle = await self._run_export(source.get_history_transfers(), include_key=True)
+
+        destination_root = self.base / "destination-crash"
+        destination_root.mkdir()
+        destination = SqliteHistoryCoordinator(destination_root, object())
+        destination.activate()
+        transfers = destination.get_history_transfers()
+        upload = self.base / "crash.bundle"
+        shutil.copy2(bundle, upload)
+        activation = destination_root / "_sqlite_history" / "activation-v1.json"
+        real_replace = os.replace
+
+        def crash_activation_install(src, dst, *args, **kwargs):
+            if Path(dst) == activation:
+                raise OSError("simulated process crash during activation rename")
+            return real_replace(src, dst, *args, **kwargs)
+
+        with mock.patch("os.replace", new=crash_activation_install):
+            accepted = await transfers.accept_import(upload, {"repository_id": artifact.repository_id})
+            await transfers._tasks[accepted["import_id"]]
+
+        self.assertEqual(transfers.import_receipt(accepted["import_id"])["status"], "failed")
+        self.assertFalse(activation.exists(), "old activation was renamed to its journal backup")
+        journal = destination_root / "_sqlite_history" / "transfers" / "import-journal.json"
+        self.assertTrue(journal.exists())
+
+        recovered = SqliteHistoryCoordinator(destination_root, object())
+        self._coordinators.append(recovered)
+        await recovered.start()
+
+        self.assertFalse(journal.exists())
+        self.assertTrue(recovered.capability())
+        self.assertEqual(
+            json.loads(activation.read_text(encoding="utf-8")),
+            {"version": 2, "active": True},
+        )
 
 
 class RuntimeHistoryTransferRouterTests(unittest.TestCase):

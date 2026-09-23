@@ -11,6 +11,7 @@ import asyncio
 import fcntl
 import os
 import stat
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -19,6 +20,8 @@ from typing import Any, Iterable, Iterator
 from .models import ResticArtifact
 
 _repository_gate_holds: ContextVar[dict[str, tuple[int, bool, int]]] = ContextVar("runtime_sqlite_history_repository_gate_holds", default={})
+_repository_gate_waiters: dict[str, int] = {}
+_repository_gate_waiter_changed: dict[str, asyncio.Event] = {}
 
 
 def _repository_gate_key(root: Path) -> str:
@@ -57,6 +60,20 @@ def _release_repository_gate(fd: int) -> None:
         fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
+
+
+def _try_acquire_repository_gate(root: Path, *, exclusive: bool) -> int | None:
+    """Try a flock once; callers yield rather than occupying an executor."""
+    fd = _open_repository_gate(root)
+    try:
+        fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        return fd
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 async def _drain_thread(function: Any, *args: Any, **kwargs: Any) -> tuple[Any, bool]:
@@ -123,7 +140,7 @@ def _noop() -> Iterator[None]:
 
 
 class AsyncRepositoryGate:
-    """Acquire the cross-process flock off the application event loop."""
+    """Cancellable, writer-aware repository gate without executor-held waits."""
 
     def __init__(self, root: Path, *, exclusive: bool) -> None:
         self._root = root
@@ -131,8 +148,43 @@ class AsyncRepositoryGate:
         self._token: Any | None = None
         self._fd: int | None = None
         self._owns_fd = False
+        self._waiting_writer = False
 
-    async def __aenter__(self) -> None:
+    @classmethod
+    async def try_exclusive(cls, root: Path, *, budget_seconds: float = 0.05) -> "AsyncRepositoryGate | None":
+        """Acquire an exclusive gate briefly, withdrawing writer intent on busy.
+
+        Background maintenance uses this instead of joining the normal fair
+        writer queue: a long-lived shared guard must not turn one maintenance
+        pass into an indefinite admission barrier for unrelated readers.
+        """
+        if budget_seconds < 0:
+            raise ValueError("repository gate budget must not be negative")
+        gate = cls(root, exclusive=True)
+        if await gate._acquire(budget_seconds=budget_seconds):
+            return gate
+        return None
+
+    @staticmethod
+    async def _backoff() -> None:
+        # A short cancellable pause avoids spinning on an external flock.
+        await asyncio.sleep(0.01)
+
+    def _notify_waiters(self, key: str) -> None:
+        event = _repository_gate_waiter_changed.setdefault(key, asyncio.Event())
+        event.set()
+
+    def _finish_waiting_writer(self, key: str) -> None:
+        if self._waiting_writer:
+            remaining = _repository_gate_waiters.get(key, 1) - 1
+            if remaining:
+                _repository_gate_waiters[key] = remaining
+            else:
+                _repository_gate_waiters.pop(key, None)
+            self._waiting_writer = False
+            self._notify_waiters(key)
+
+    async def _acquire(self, *, budget_seconds: float | None = None) -> bool:
         key = _repository_gate_key(self._root)
         held = _repository_gate_holds.get().get(key)
         if held is not None:
@@ -140,22 +192,54 @@ class AsyncRepositoryGate:
             if self._exclusive and not held_exclusive:
                 raise RuntimeError("cannot upgrade shared runtime history repository gate")
             self._token = _repository_gate_holds.set({**_repository_gate_holds.get(), key: (fd, held_exclusive, depth + 1)})
-            return
-        fd, cancelled = await _drain_thread(_acquire_repository_gate, self._root, exclusive=self._exclusive)
-        if cancelled:
-            await _drain_thread(_release_repository_gate, fd)
-            raise asyncio.CancelledError
-        self._fd = fd
+            return True
+        if self._exclusive:
+            _repository_gate_waiters[key] = _repository_gate_waiters.get(key, 0) + 1
+            self._waiting_writer = True
+            self._notify_waiters(key)
+        try:
+            deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
+            while True:
+                # Once a local writer is waiting, do not admit fresh readers.
+                if not self._exclusive and _repository_gate_waiters.get(key, 0):
+                    event = _repository_gate_waiter_changed.setdefault(key, asyncio.Event())
+                    event.clear()
+                    await event.wait()
+                    continue
+                acquired_fd = _try_acquire_repository_gate(self._root, exclusive=self._exclusive)
+                if acquired_fd is not None:
+                    break
+                if deadline is not None and time.monotonic() >= deadline:
+                    self._finish_waiting_writer(key)
+                    return False
+                await self._backoff()
+        except BaseException:
+            self._finish_waiting_writer(key)
+            raise
+        self._finish_waiting_writer(key)
+        self._fd = acquired_fd
         self._owns_fd = True
-        self._token = _repository_gate_holds.set({**_repository_gate_holds.get(), key: (fd, self._exclusive, 1)})
+        self._token = _repository_gate_holds.set({**_repository_gate_holds.get(), key: (acquired_fd, self._exclusive, 1)})
+        return True
+
+    async def __aenter__(self) -> None:
+        acquired = await self._acquire()
+        assert acquired
 
     async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
         if self._token is not None:
             _repository_gate_holds.reset(self._token)
         if self._owns_fd and self._fd is not None:
-            _, cancelled = await _drain_thread(_release_repository_gate, self._fd)
-            if cancelled:
-                raise asyncio.CancelledError
+            # Unlock/close are constant-time syscalls, so release never waits
+            # behind a saturated default executor.
+            _release_repository_gate(self._fd)
+        self._owns_fd = False
+        self._fd = None
+        self._token = None
+
+    async def aclose(self) -> None:
+        """Release a gate returned by :meth:`try_exclusive`."""
+        await self.__aexit__(None, None, None)
 
 
 def restic_artifact(storage: dict[str, object], *, size_bytes: int, sha256: str):

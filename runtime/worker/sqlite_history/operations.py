@@ -10,7 +10,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import re
 import secrets
 import stat
 from contextlib import contextmanager
@@ -74,7 +73,6 @@ class OperationStore:
         "interrupted": frozenset({"acknowledged_at", "error", "database_outcomes", "repository_refs"}),
         "reconciling": frozenset({"database_outcomes", "repository_refs", "error"}),
     }
-    _DATABASE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
     _IDENTITY_FIELDS = frozenset({"operation_id", "workspace_id", "creator_id", "request_digest", "kind", "accepted_payload", "created_at"})
 
     def __init__(self, root: Path) -> None:
@@ -84,9 +82,17 @@ class OperationStore:
     def suboperation_id(parent_operation_id: str, database_name: str) -> str:
         """Return UUIDv5(parent UUID, validated database name)."""
         parent = UUID(parent_operation_id)
-        if not isinstance(database_name, str) or not OperationStore._DATABASE_NAME.fullmatch(database_name):
+        if not isinstance(database_name, str):
             raise ValueError("Invalid database name")
-        return str(uuid5(parent, database_name))
+        # The history service owns filename semantics (including spaces); do
+        # not let deterministic suboperation IDs impose a second policy.
+        try:
+            from .service import _validate_database_name
+
+            canonical = _validate_database_name(database_name)
+        except Exception as exc:
+            raise ValueError("Invalid database name") from exc
+        return str(uuid5(parent, canonical))
 
     def accept(
         self,
@@ -190,6 +196,11 @@ class OperationStore:
         return self.transition(operation_id, "cancelling")
 
     def acknowledge(self, operation_id: str, *, acknowledged_at: str | None = None) -> dict[str, Any]:
+        receipt = self.get(operation_id)
+        if receipt.get("retired_at") is not None:
+            return receipt
+        if receipt["phase"] not in self._TERMINAL:
+            raise OperationConflict("Only terminal operations may be acknowledged")
         return self.update_progress(operation_id, acknowledged_at=acknowledged_at or self._now())
 
     def list_active(self, *, workspace_id: str | None = None) -> list[dict[str, Any]]:
@@ -224,13 +235,33 @@ class OperationStore:
                 raise OperationConflict("Only terminal operations may be retired")
             if receipt.get("retired_at") is None:
                 receipt["accepted_payload"] = None
-                receipt["database_outcomes"] = {}
-                receipt["repository_refs"] = []
-                receipt["error"] = None
+                # A tombstone remains an authoritative terminal projection.  It
+                # retains outcome/error/repository evidence for replay and any
+                # recovery protection; only request payload is discarded.
                 receipt["retired_at"] = self._now()
                 receipt["updated_at"] = receipt["retired_at"]
                 self._write(operation_id, receipt)
             return receipt
+
+    def retire_acknowledged_before(self, cutoff: datetime) -> list[dict[str, Any]]:
+        """Compact old acknowledged terminal receipts without losing identity."""
+        retired: list[dict[str, Any]] = []
+        for receipt in self.list_workspace(None):
+            acknowledged = receipt.get("acknowledged_at")
+            if receipt["phase"] not in self._TERMINAL or receipt.get("retired_at") is not None or not isinstance(acknowledged, str):
+                continue
+            try:
+                acknowledged_at = datetime.fromisoformat(acknowledged)
+            except ValueError:
+                # A corrupt receipt is not authority to stop retiring every
+                # other acknowledged terminal receipt.  Leave it durable for
+                # explicit recovery/inspection.
+                continue
+            if acknowledged_at.tzinfo is None:
+                continue
+            if acknowledged_at <= cutoff:
+                retired.append(self.retire(receipt["operation_id"]))
+        return retired
 
     def clear_for_workspace_deletion(self, operation_id: str, *, workspace_id: str) -> None:
         """Remove a tombstone only as part of durable workspace deletion.
@@ -283,7 +314,12 @@ class OperationStore:
         operation_id = self._operation_id(operation_id)
         with self._receipt_lock(operation_id, create=False):
             self._require(operation_id)
-        fd = self._open_leaf(operation_id, "operation.lock", os.O_RDWR, create=False)
+        try:
+            fd = self._open_leaf(operation_id, "operation.lock", os.O_RDWR, create=False)
+        except FileNotFoundError:
+            # A receipt can be durable before its worker obtains liveness.  A
+            # missing lock therefore proves no live worker owns this operation.
+            return False
         try:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

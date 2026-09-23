@@ -1355,9 +1355,9 @@ class ServerBackupTests(unittest.TestCase):
             rollback_locks: list[str] = []
             original_restore_snapshot = server_backup._restore_snapshot
 
-            def probe_snapshot(snapshot: Path, destination: Path) -> None:
+            def probe_snapshot(snapshot: Path, destination: Path, *, exclude_paths: set[Path] | None = None) -> None:
                 rollback_locks.append(_other_process_lock_state(Path(tmpdir) / "restore.lock"))
-                original_restore_snapshot(snapshot, destination)
+                original_restore_snapshot(snapshot, destination, exclude_paths=exclude_paths)
 
             def probe_database(_archive: Path) -> None:
                 rollback_locks.append(_other_process_lock_state(Path(tmpdir) / "restore.lock"))
@@ -1399,9 +1399,9 @@ class ServerBackupTests(unittest.TestCase):
             original_restore_snapshot = server_backup._restore_snapshot
             original_copy_tree = server_backup._copy_tree_contents
 
-            def probe_snapshot(snapshot: Path, destination: Path) -> None:
+            def probe_snapshot(snapshot: Path, destination: Path, *, exclude_paths: set[Path] | None = None) -> None:
                 rollback_locks.append(_other_process_lock_state(Path(tmpdir) / "restore.lock"))
-                original_restore_snapshot(snapshot, destination)
+                original_restore_snapshot(snapshot, destination, exclude_paths=exclude_paths)
 
             def probe_database(_archive: Path) -> None:
                 rollback_locks.append(_other_process_lock_state(Path(tmpdir) / "restore.lock"))

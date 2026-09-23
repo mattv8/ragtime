@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+from runtime.core.private_file_response import private_file_response
 
 from .transfer import RuntimeHistoryTransfers
 
@@ -58,15 +60,17 @@ def create_transfer_router(
         return get_transfers().export_receipt(export_id)
 
     @router.get("/sqlite-history/exports/{export_id}/download")
-    async def download(export_id: str, _auth: None = dependency) -> StreamingResponse:
-        path = get_transfers().export_bundle(export_id)
-
-        async def stream() -> AsyncIterator[bytes]:
-            with path.open("rb") as source:
-                while chunk := source.read(1024 * 1024):
-                    yield chunk
-
-        return StreamingResponse(stream(), media_type="application/octet-stream")
+    async def download(export_id: str, _auth: None = dependency) -> Any:
+        # A2 owns this response primitive.  It holds the liveness callback for
+        # the complete ASGI lifecycle, including a response never iterated.
+        transfers = get_transfers()
+        path = transfers.export_bundle(export_id)
+        return private_file_response(
+            path,
+            media_type="application/octet-stream",
+            filename="sqlite-history-export.tar",
+            lifetime=lambda: transfers.export_download_lifetime(export_id),
+        )
 
     @router.post("/sqlite-history/imports", status_code=202)
     async def import_bundle(request: Request, _auth: None = dependency) -> dict[str, Any]:
@@ -85,14 +89,8 @@ def create_transfer_router(
             raise HTTPException(status_code=500, detail="Import tempfile directory is unsafe")
 
         fd, name = tempfile.mkstemp(prefix="sqlite-history-import-", dir=str(tmpdir))
-        size = 0
         try:
-            with os.fdopen(fd, "wb") as output:
-                async for chunk in request.stream():
-                    size += len(chunk)
-                    if size > 64 * 1024 * 1024 * 1024:
-                        raise HTTPException(status_code=413, detail="Runtime history import is too large")
-                    output.write(chunk)
+            await _write_upload(request, fd)
             return await transfers.accept_import(Path(name), metadata)
         except Exception:
             Path(name).unlink(missing_ok=True)
@@ -103,3 +101,19 @@ def create_transfer_router(
         return get_transfers().import_receipt(import_id)
 
     return router
+
+
+async def _write_upload(request: Request, fd: int) -> None:
+    """Consume upload chunks without blocking the request event loop."""
+    output = os.fdopen(fd, "wb")
+    size = 0
+    try:
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > 64 * 1024 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="Runtime history import is too large")
+            await asyncio.to_thread(output.write, chunk)
+        await asyncio.to_thread(output.flush)
+        await asyncio.to_thread(os.fsync, output.fileno())
+    finally:
+        await asyncio.to_thread(output.close)

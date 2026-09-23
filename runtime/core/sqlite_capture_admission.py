@@ -27,9 +27,13 @@ def inherit_capture_fds(fds: tuple[int, ...]) -> Iterator[None]:
 
 
 def run_admitted_subprocess(root: Path, command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
-    slots = root / "_sqlite_history" / "capture_slots"
+    # This is the pre-existing shared namespace used by the control-plane
+    # admission wrapper.  Keeping it outside history internals makes the two
+    # processes contend on the same kernel locks during coordinated rollout.
+    slots = root / "sqlite_capture_slots"
     slots.mkdir(parents=True, exist_ok=True)
-    if slots.is_symlink() or not slots.is_dir():
+    details = slots.lstat()
+    if stat.S_ISLNK(details.st_mode) or not stat.S_ISDIR(details.st_mode):
         raise RuntimeError("capture admission storage is unsafe")
     deadline = time.monotonic() + CAPTURE_SLOT_WAIT_SECONDS
     slot = -1

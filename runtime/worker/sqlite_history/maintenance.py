@@ -6,7 +6,6 @@ import asyncio
 import time
 from typing import Any
 
-from .service import run_sqlite_blocking
 from .storage import AsyncRepositoryGate
 
 
@@ -31,7 +30,13 @@ class RuntimeHistoryMaintenance:
         repository = getattr(self.service, "repository", None)
         if repository is None:
             return
-        async with AsyncRepositoryGate(self.service._runtime.root, exclusive=True):
+        gate = await AsyncRepositoryGate.try_exclusive(self.service._runtime.root)
+        if gate is None:
+            # This is a periodic best-effort pass.  Crucially, do not leave a
+            # queued writer behind a long guarded restore: that would prevent
+            # all new shared history reads until the guard finishes.
+            return
+        try:
             await self.service.drain_restic_forget_tombstones()
             now = time.monotonic()
             if read_data or now >= self._next_repository_check:
@@ -40,6 +45,8 @@ class RuntimeHistoryMaintenance:
             if capacity_pressure or now >= self._next_repository_prune:
                 await repository.prune(max_repack_size=max_repack_size)
                 self._next_repository_prune = now + 24 * 60 * 60
+        finally:
+            await gate.aclose()
 
     def start(self) -> None:
         if self._task is None or self._task.done():

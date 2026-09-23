@@ -16,12 +16,14 @@ import logging
 import os
 import re
 import stat
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, AsyncIterator, Callable
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 
+from .models import HISTORY_RECEIPT_RETENTION_SECONDS
 from .operations import OperationConflict, OperationNotFound, OperationStore
 
 logger = logging.getLogger(__name__)
@@ -100,7 +102,7 @@ class SqliteHistoryCoordinator:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
-        if self._started and self._maintenance_task is None:
+        if self._started and (self._maintenance_task is None or self._maintenance_task.done()):
             self._maintenance_task = asyncio.get_running_loop().create_task(self._maintenance_loop(), name="sqlite-history-maintenance")
         return {"version": 2, "active": True, "capability": self.capability()}
 
@@ -144,12 +146,13 @@ class SqliteHistoryCoordinator:
             return
         self._started = True
         await self.sqlite_history_bootstrap_manager().start()
+        # Transfer journals can restore the activation marker and repository.
+        # Recover them before evaluating activation or constructing history.
+        transfers = self.get_history_transfers()
+        if hasattr(transfers, "start"):
+            await transfers.start()
         if self._active():
             self._service()
-            transfers = self.get_history_transfers()
-            if hasattr(transfers, "start"):
-                await transfers.start()
-            self._maintenance_task = asyncio.create_task(self._maintenance_loop(), name="sqlite-history-maintenance")
         # Never infer death from a timer.  Only receipts whose inherited
         # liveness flock is free can be classified after a worker restart.
         for receipt in await asyncio.to_thread(self._store.list_active):
@@ -176,6 +179,8 @@ class SqliteHistoryCoordinator:
                             )
             except Exception:
                 logger.exception("Runtime history reconciliation failed operation_id=%s", operation_id)
+        if self._active() and (self._maintenance_task is None or self._maintenance_task.done()):
+            self._maintenance_task = asyncio.create_task(self._maintenance_loop(), name="sqlite-history-maintenance")
 
     async def shutdown(self) -> None:
         # Accepted jobs are intentionally not cancelled by a lost HTTP request
@@ -194,12 +199,6 @@ class SqliteHistoryCoordinator:
             await self._transfers.shutdown()
 
     async def _maintenance_loop(self) -> None:
-        try:
-            await self.get_history_transfers().start()
-        except Exception:
-            logger.exception("Runtime history transfer recovery failed")
-            self._maintenance_error = "Runtime SQLite history transfer recovery failed"
-            return
         while self._started:
             try:
                 if self._maintenance is None:
@@ -212,6 +211,18 @@ class SqliteHistoryCoordinator:
                 # release any durable receipt/maintenance fence.
                 self._maintenance_error = "Runtime SQLite history maintenance failed"
                 logger.exception("Runtime SQLite history maintenance failed")
+            finally:
+                # Receipt/bundle lifecycle is independent of repository health;
+                # a failed closed check must not postpone safe terminal cleanup.
+                try:
+                    transfers = self.get_history_transfers()
+                    cleanup = getattr(transfers, "cleanup", None)
+                    if cleanup is not None:
+                        await cleanup()
+                    cutoff = datetime.now(timezone.utc) - timedelta(seconds=HISTORY_RECEIPT_RETENTION_SECONDS)
+                    await asyncio.to_thread(self._store.retire_acknowledged_before, cutoff)
+                except Exception:
+                    logger.exception("Runtime SQLite history receipt cleanup failed")
             await asyncio.sleep(300)
 
     async def list_backups(self, workspace_id: str, **filters: Any) -> list[dict[str, Any]]:
@@ -314,11 +325,12 @@ class SqliteHistoryCoordinator:
                     # repository adoption identity is deterministic from the parent
                     # operation UUID rather than a request-order-specific token.
                     for index, name in enumerate(names, start=1):
-                        if name is not None and (
-                            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", str(name))
-                            or not str(name).lower().endswith((".sqlite", ".sqlite3", ".db", ".db3"))
-                        ):
-                            raise HTTPException(status_code=400, detail="Invalid database name")
+                        if name is not None:
+                            # Keep admission semantics identical to the service,
+                            # rather than maintaining a stricter parallel regex.
+                            from .service import _validate_database_name
+
+                            name = _validate_database_name(str(name))
                         suboperation_id = self._store.suboperation_id(operation_id, str(name)) if name is not None else operation_id
                         capture_kwargs = {
                             **kwargs,
@@ -440,3 +452,12 @@ class SqliteHistoryCoordinator:
     async def authorize_git_operation(self, workspace_id: str, operation_id: str) -> None:
         service = self._service()
         await service.verify_guarded_code_restore_lease(workspace_id, operation_id)
+
+    @contextlib.asynccontextmanager
+    async def guarded_git_operation(self, workspace_id: str, operation_id: str) -> AsyncIterator[None]:
+        """Thin in-process delegation to the runtime guard lifecycle."""
+        method = getattr(self._service(), "guarded_git_operation", None)
+        if method is None:
+            raise HTTPException(status_code=503, detail="Runtime guarded restore capability is unavailable")
+        async with method(workspace_id, operation_id):
+            yield

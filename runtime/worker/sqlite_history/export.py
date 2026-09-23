@@ -7,6 +7,7 @@ live repository path.  ``include_repository_key`` is deliberately explicit.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import shutil
@@ -14,7 +15,9 @@ import stat
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from fastapi import HTTPException
 
 from runtime.core.sqlite_history_scratch import is_managed_scratch
 
@@ -47,13 +50,28 @@ class RuntimeHistoryExporter:
                 if repository is None:
                     raise RuntimeError("runtime history repository is unavailable")
                 repository_id = repository._initialize(threading.Event(), ())
+                size_estimate = self._portable_size(runtime_root, destination_root)
+                assert isinstance(size_estimate, tuple)
+                portable_size, linked_pack_size = size_estimate
+                # Same-filesystem immutable packs are hardlinked, so they do
+                # not consume a second staging copy.  The archive always does.
+                # If linking later falls back to EXDEV, the callback below
+                # re-admits the additional copy before writing it.
+                required = portable_size * 2 - linked_pack_size + 64 * 1024 * 1024
+                if shutil.disk_usage(destination_root).free < required:
+                    raise HTTPException(status_code=507, detail="SQLite history export is blocked by insufficient disk space")
                 exported_history = staging / "_sqlite_history"
                 # This is an allowlist.  Never turn this into a history-root
                 # copy: it contains password material, cache, and scratch.
                 for name in ("restic", "operations", "activation-v1.json"):
                     source = history_root / name
                     if source.exists() and not source.is_symlink():
-                        self._copy_regular_tree(source, exported_history / name)
+                        self._copy_regular_tree(
+                            source,
+                            exported_history / name,
+                            immutable_packs=name == "restic",
+                            copy_headroom=lambda size: self._require_copy_headroom(destination_root, portable_size, size),
+                        )
                 # Catalog copy must stay within exclusive barrier for consistency
                 workspaces = runtime_root / "workspaces"
                 catalogs = staging / "workspaces"
@@ -61,7 +79,7 @@ class RuntimeHistoryExporter:
                     for workspace in workspaces.iterdir():
                         source = workspace / "sqlite_backups"
                         if source.is_dir() and not source.is_symlink():
-                            self._copy_regular_tree(source, catalogs / workspace.name / "sqlite_backups")
+                            self._copy_regular_tree(source, catalogs / workspace.name / "sqlite_backups", exclude_transient=True)
                 password = getattr(repository, "_password_path", None)
                 if include_repository_key:
                     if not isinstance(password, Path) or password.is_symlink() or not password.is_file():
@@ -77,7 +95,58 @@ class RuntimeHistoryExporter:
             raise
 
     @staticmethod
-    def _copy_regular_tree(source: Path, destination: Path) -> None:
+    def _portable_size(runtime_root: Path, destination_root: Path | None = None) -> tuple[int, int] | int:
+        """Estimate only portable inputs, never scratch/cache/transfers."""
+        total = 0
+        linked_packs = 0
+        history = runtime_root / "_sqlite_history"
+        for name in ("restic", "operations", "activation-v1.json"):
+            source = history / name
+            if source.is_file() and not source.is_symlink():
+                total += source.stat().st_size
+            elif source.is_dir() and not source.is_symlink():
+                for entry in source.rglob("*"):
+                    if entry.is_file() and not entry.is_symlink() and not is_managed_scratch(entry):
+                        size = entry.stat().st_size
+                        total += size
+                        if destination_root is not None and entry.relative_to(source).parts[:1] == ("data",):
+                            try:
+                                if entry.stat().st_dev == destination_root.stat().st_dev:
+                                    linked_packs += size
+                            except OSError:
+                                pass
+        workspaces = runtime_root / "workspaces"
+        if workspaces.is_dir() and not workspaces.is_symlink():
+            for workspace in workspaces.iterdir():
+                catalog = workspace / "sqlite_backups"
+                if catalog.is_dir() and not catalog.is_symlink():
+                    total += sum(
+                        entry.stat().st_size
+                        for entry in catalog.rglob("*")
+                        if entry.is_file() and not entry.is_symlink() and not RuntimeHistoryExporter._is_transient_export_path(entry.relative_to(catalog))
+                    )
+        return (total, linked_packs) if destination_root is not None else total
+
+    @staticmethod
+    def _require_copy_headroom(destination_root: Path, archive_size: int, copy_size: int) -> None:
+        """Re-admit capacity when a predicted hardlink must become a copy."""
+        if shutil.disk_usage(destination_root).free < archive_size + copy_size + 64 * 1024 * 1024:
+            raise HTTPException(status_code=507, detail="SQLite history export is blocked by insufficient disk space")
+
+    @staticmethod
+    def _is_transient_export_path(relative: Path) -> bool:
+        """Never package disposable transfer/download scratch from a catalog."""
+        return any(part in {"downloads", "candidates", "imports"} for part in relative.parts)
+
+    @staticmethod
+    def _copy_regular_tree(
+        source: Path,
+        destination: Path,
+        *,
+        immutable_packs: bool = False,
+        exclude_transient: bool = False,
+        copy_headroom: Callable[[int], None] | None = None,
+    ) -> None:
         """Copy a trusted runtime subtree without preserving executable links."""
         if source.is_symlink():
             raise RuntimeError("runtime history export source is unsafe")
@@ -87,6 +156,9 @@ class RuntimeHistoryExporter:
             return
         destination.mkdir(parents=True, exist_ok=True)
         for entry in source.rglob("*"):
+            relative = entry.relative_to(source)
+            if exclude_transient and RuntimeHistoryExporter._is_transient_export_path(relative):
+                continue
             if entry.is_dir() and is_managed_scratch(entry):
                 # rglob has already discovered this direct child, but pruning
                 # descendants below prevents private temp contents from export.
@@ -95,13 +167,23 @@ class RuntimeHistoryExporter:
                 continue
             if entry.is_symlink():
                 raise RuntimeError("runtime history export source contains a link")
-            target = destination / entry.relative_to(source)
+            target = destination / relative
             mode = entry.stat().st_mode
             if stat.S_ISDIR(mode):
                 target.mkdir(parents=True, exist_ok=True)
             elif stat.S_ISREG(mode):
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(entry, target, follow_symlinks=False)
+                if immutable_packs and entry.relative_to(source).parts[:1] == ("data",):
+                    try:
+                        os.link(entry, target)
+                    except OSError as exc:
+                        if exc.errno != errno.EXDEV:
+                            raise
+                        if copy_headroom is not None:
+                            copy_headroom(entry.stat().st_size)
+                        shutil.copy2(entry, target, follow_symlinks=False)
+                else:
+                    shutil.copy2(entry, target, follow_symlinks=False)
             else:
                 raise RuntimeError("runtime history export source contains a special file")
 

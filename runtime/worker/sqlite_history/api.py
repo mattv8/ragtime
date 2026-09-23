@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import contextlib
+import asyncio
 import os
 import tempfile
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from starlette.background import BackgroundTask
+
+from runtime.core.private_file_response import private_file_response
 
 from .coordinator import SqliteHistoryCoordinator
 from .inspector_import import RuntimeInspectorImport
@@ -115,20 +115,23 @@ def history_router(prefix: str, auth: Any, coordinator: Callable[[], SqliteHisto
         staging.mkdir(mode=0o700, parents=True, exist_ok=True)
         if staging.is_symlink() or not staging.is_dir():
             raise HTTPException(status_code=503, detail="SQLite import staging is unavailable")
-        fd, raw_name = tempfile.mkstemp(prefix="sqlite-import-", suffix=".sqlite3", dir=staging)
+        fd, raw_name = await asyncio.to_thread(tempfile.mkstemp, prefix="sqlite-import-", suffix=".sqlite3", dir=staging)
         size = 0
         try:
-            with os.fdopen(fd, "wb") as output:
+            output = await asyncio.to_thread(os.fdopen, fd, "wb")
+            try:
                 async for chunk in request.stream():
                     size += len(chunk)
                     if size > 1024 * 1024 * 1024:
                         raise HTTPException(status_code=413, detail="Uploaded SQLite database is too large")
-                    output.write(chunk)
-                output.flush()
-                os.fsync(output.fileno())
+                    await asyncio.to_thread(output.write, chunk)
+                await asyncio.to_thread(output.flush)
+                await asyncio.to_thread(os.fsync, output.fileno())
+            finally:
+                await asyncio.to_thread(output.close)
             return await RuntimeInspectorImport(history).import_database(workspace_id, database_name, creator_id, Path(raw_name))
         finally:
-            Path(raw_name).unlink(missing_ok=True)
+            await asyncio.to_thread(Path(raw_name).unlink, missing_ok=True)
 
     @router.get("/workspaces/{workspace_id}/sqlite-history/captures/{operation_id}")
     async def get_capture(workspace_id: str, operation_id: str, _auth: None = auth) -> dict[str, Any]:
@@ -169,28 +172,13 @@ def history_router(prefix: str, auth: Any, coordinator: Callable[[], SqliteHisto
         await coordinator().delete(workspace_id, backup_id)
 
     @router.get("/workspaces/{workspace_id}/sqlite-history/backups/{backup_id}/download")
-    async def download(workspace_id: str, backup_id: str, _auth: None = auth) -> StreamingResponse:
+    async def download(workspace_id: str, backup_id: str, _auth: None = auth):
         path = await coordinator().download_path(workspace_id, backup_id)
 
-        async def stream() -> AsyncIterator[bytes]:
-            try:
-                with path.open("rb") as source:
-                    while chunk := source.read(64 * 1024):
-                        yield chunk
-            finally:
-                with contextlib.suppress(OSError):
-                    os.unlink(path)
-
         async def cleanup() -> None:
-            with contextlib.suppress(OSError):
-                os.unlink(path)
+            await asyncio.to_thread(path.unlink, missing_ok=True)
 
-        return StreamingResponse(
-            stream(),
-            media_type="application/x-sqlite3",
-            headers={"Content-Disposition": f'attachment; filename="{backup_id}.sqlite3"'},
-            background=BackgroundTask(cleanup),
-        )
+        return private_file_response(path, media_type="application/x-sqlite3", filename=f"{backup_id}.sqlite3", cleanup=cleanup)
 
     @router.post("/workspaces/{workspace_id}/sqlite-history/guarded-code-restores/begin")
     async def begin_guarded_restore(workspace_id: str, payload: GuardedRestoreBeginRequest, _auth: None = auth) -> dict[str, Any]:

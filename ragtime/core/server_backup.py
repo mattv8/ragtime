@@ -704,6 +704,8 @@ def _should_skip_data_path(relative: Path, *, skip_runtime_history: bool = False
         return True
     if _is_relative_subpath(relative, "_server_backups"):
         return True
+    # Once runtime history is managed, portable runtime export/import owns its
+    # transfer.  Inactive legacy history remains part of generic backups.
     if skip_runtime_history and (
         history_path
         or _is_relative_subpath(relative, "_sqlite_history")
@@ -893,6 +895,7 @@ def _snapshot_directory(
     target: Path,
     snapshot_root: Path,
     *,
+    exclude_paths: set[Path] | None = None,
     progress: Optional[ProgressCallback] = None,
     progress_start: int = 0,
     progress_end: int = 0,
@@ -906,6 +909,7 @@ def _snapshot_directory(
         target,
         snapshot_path,
         replace=False,
+        exclude_paths=exclude_paths,
         progress=progress,
         progress_phase="data_snapshot_start",
         progress_start=progress_start,
@@ -915,19 +919,19 @@ def _snapshot_directory(
     return snapshot_path, item_count
 
 
-def _restore_snapshot(snapshot_path: Path, target: Path) -> None:
+def _restore_snapshot(snapshot_path: Path, target: Path, *, exclude_paths: set[Path] | None = None) -> None:
+    excluded = exclude_paths or set()
     if target.exists():
         for child in list(target.iterdir()):
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
+            _remove_restore_path(child, Path(child.name), excluded)
     else:
         target.mkdir(parents=True, exist_ok=True)
     for child in snapshot_path.iterdir():
         destination = target / child.name
+        if _is_excluded_restore_path(Path(child.name), excluded):
+            continue
         if child.is_dir() and not child.is_symlink():
-            shutil.copytree(child, destination, symlinks=True)
+            shutil.copytree(child, destination, symlinks=True, dirs_exist_ok=True)
         else:
             shutil.copy2(child, destination, follow_symlinks=False)
 
@@ -938,6 +942,8 @@ def _copy_tree_contents(
     *,
     replace: bool,
     preserve_paths: set[Path] | None = None,
+    preserve_runtime_history: bool = False,
+    exclude_paths: set[Path] | None = None,
     progress: Optional[ProgressCallback] = None,
     progress_phase: str = "files_restore_start",
     progress_start: int = 0,
@@ -956,18 +962,13 @@ def _copy_tree_contents(
         message=progress_message,
     )
     item_count = 0
-    preserved = preserve_paths or set()
+    preserved = (preserve_paths or set()) | (exclude_paths or set())
     if replace:
         for child in list(destination_dir.iterdir()):
-            if Path(child.name) in preserved:
-                continue
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
+            _remove_restore_path(child, Path(child.name), preserved, preserve_runtime_history)
     for child in all_children:
         relative = child.relative_to(source_dir)
-        if relative in preserved:
+        if _is_excluded_restore_path(relative, preserved) or (preserve_runtime_history and _is_runtime_history_path(relative)):
             continue
         target = destination_dir / relative
         if child.is_dir() and not child.is_symlink():
@@ -985,6 +986,35 @@ def _copy_tree_contents(
             item_count += 1
             reporter.update(relative.as_posix(), item_count, force=item_count == total_items)
     return item_count
+
+
+def _is_runtime_history_path(relative: Path) -> bool:
+    parts = relative.parts
+    return (len(parts) >= 2 and parts[:2] == ("_userspace", "_sqlite_history")) or (
+        len(parts) >= 4 and parts[:2] == ("_userspace", "workspaces") and parts[3] == "sqlite_backups"
+    )
+
+
+def _is_excluded_restore_path(relative: Path, excluded: set[Path]) -> bool:
+    # Probe the (short) ancestor chain against the set instead of scanning every
+    # managed workspace exclusion for every restored file.
+    return any(candidate in excluded for candidate in (relative, *relative.parents))
+
+
+def _remove_restore_path(path: Path, relative: Path, excluded: set[Path], preserve_runtime_history: bool = False) -> None:
+    if _is_excluded_restore_path(relative, excluded) or (preserve_runtime_history and _is_runtime_history_path(relative)):
+        return
+    if not path.is_dir() or path.is_symlink():
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        return
+    for child in list(path.iterdir()):
+        child_relative = relative / child.name
+        _remove_restore_path(child, child_relative, excluded, preserve_runtime_history)
+    if not any(path.iterdir()):
+        path.rmdir()
 
 
 def _copy_backup_data_tree(
@@ -1031,6 +1061,26 @@ def _copy_backup_data_tree(
             item_count += 1
             reporter.update(relative.as_posix(), item_count, force=item_count == total_items)
     return item_count
+
+
+def _runtime_history_is_managed() -> bool:
+    history = DATA_DIR / "_userspace" / "_sqlite_history"
+    return history.is_dir() and not history.is_symlink() and (history / "restic").is_dir()
+
+
+def _runtime_history_restore_exclusions() -> set[Path]:
+    """Return the actual runtime-owned paths which generic restore must not touch."""
+    if not _runtime_history_is_managed():
+        return set()
+    root = DATA_DIR / "_userspace"
+    exclusions = {Path("_userspace") / "_sqlite_history"}
+    workspaces = root / "workspaces"
+    if workspaces.is_dir() and not workspaces.is_symlink():
+        for workspace in workspaces.iterdir():
+            history = workspace / "sqlite_backups"
+            if history.is_dir() and not history.is_symlink():
+                exclusions.add(Path("_userspace") / "workspaces" / workspace.name / "sqlite_backups")
+    return exclusions
 
 
 def _object_storage_root() -> Path:
@@ -1200,16 +1250,35 @@ def _runtime_history_export(destination: Path, *, include_repository_key: bool) 
     if response is None:
         raise BackupError("Runtime SQLite history export download is unavailable")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    expected_size = receipt.get("bundle_size_bytes")
+    expected_digest = receipt.get("bundle_sha256")
+    if (expected_size is None) != (expected_digest is None):
+        raise BackupError("Runtime SQLite history export has incomplete bundle integrity metadata")
+    if expected_size is not None and (
+        not isinstance(expected_size, int) or expected_size <= 0 or not isinstance(expected_digest, str) or len(expected_digest) != 64
+    ):
+        raise BackupError("Runtime SQLite history export has invalid bundle integrity metadata")
+    digest = hashlib.sha256()
+    downloaded = 0
     with response, destination.open("wb") as handle:
-        shutil.copyfileobj(response, handle, length=1024 * 1024)
+        while chunk := response.read(1024 * 1024):
+            downloaded += len(chunk)
+            digest.update(chunk)
+            handle.write(chunk)
         handle.flush()
         os.fsync(handle.fileno())
+    if expected_size is not None:
+        assert isinstance(expected_digest, str)
+        if downloaded != expected_size or not hmac.compare_digest(digest.hexdigest(), expected_digest):
+            destination.unlink(missing_ok=True)
+            raise BackupError("Runtime SQLite history export bundle integrity verification failed")
     return {
         "version": int(receipt.get("export_version", 1)),
         "repository_id": repository_id,
         "includes_repository_key": includes_key,
         "requires_original_repository_key": not includes_key,
         "bundle": _RUNTIME_HISTORY_BUNDLE_PATH.as_posix(),
+        **({"bundle_size_bytes": expected_size, "bundle_sha256": expected_digest} if expected_size is not None else {}),
     }
 
 
@@ -1268,6 +1337,17 @@ def _runtime_history_import(bundle: Path, metadata: dict[str, object]) -> None:
         raise BackupValidationError("Runtime SQLite history import did not validate and activate")
 
 
+def _stream_sha256(path: Path) -> tuple[int, str]:
+    """Hash a potentially large bundle without materializing it in memory."""
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            size += len(chunk)
+            digest.update(chunk)
+    return size, digest.hexdigest()
+
+
 def _runtime_history_bundle_from_archive(extract_dir: Path, manifest: BackupManifest, restore_scope: BackupScope) -> tuple[Path, dict[str, object]] | None:
     metadata = manifest.sqlite_history
     if metadata is None:
@@ -1286,7 +1366,28 @@ def _runtime_history_bundle_from_archive(extract_dir: Path, manifest: BackupMani
     bundle = extract_dir / _RUNTIME_HISTORY_BUNDLE_PATH
     if bundle.is_symlink() or not bundle.is_file() or bundle.stat().st_size == 0:
         raise BackupValidationError("Backup archive does not contain a valid runtime SQLite history bundle")
+    expected_size = metadata.get("bundle_size_bytes")
+    expected_digest = metadata.get("bundle_sha256")
+    if (expected_size is None) != (expected_digest is None):
+        raise BackupValidationError("Backup archive contains incomplete runtime SQLite history bundle integrity metadata")
+    if expected_size is not None:
+        if not isinstance(expected_size, int) or expected_size <= 0 or not isinstance(expected_digest, str) or len(expected_digest) != 64:
+            raise BackupValidationError("Backup archive contains invalid runtime SQLite history bundle integrity metadata")
+        actual_size, digest = _stream_sha256(bundle)
+        if actual_size != expected_size or not hmac.compare_digest(digest, expected_digest):
+            raise BackupValidationError("Backup archive runtime SQLite history bundle integrity verification failed")
     return bundle, metadata
+
+
+def _preflight_runtime_history_import(metadata: dict[str, object]) -> None:
+    """Reject unavailable/keyless runtime history before app mutation begins."""
+    if _runtime_history_endpoint() is None:
+        raise BackupValidationError("Runtime SQLite history is required to restore this backup")
+    if metadata.get("includes_repository_key"):
+        return
+    status = _runtime_history_status()
+    if status is None or status.get("repository_id") != metadata.get("repository_id"):
+        raise BackupValidationError("Keyless runtime SQLite history restore requires the original active repository key")
 
 
 def _resolve_data_source(extract_dir: Path) -> Optional[Path]:
@@ -1629,6 +1730,8 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
         )
         restore_scope = options.scope_override or manifest.scope
         runtime_history_bundle = _runtime_history_bundle_from_archive(extract_dir, manifest, restore_scope)
+        if runtime_history_bundle is not None:
+            _preflight_runtime_history_import(runtime_history_bundle[1])
         data_source = _resolve_data_source(extract_dir)
         restored_storage = data_source / "_userspace" / "_object_storage" if data_source is not None else None
         destination_storage = _object_storage_root()
@@ -1670,6 +1773,7 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
     snapshot_path: Optional[Path] = None
     database_safety_dump_path: Optional[Path] = None
     db_mutated = False
+    runtime_history_exclusions = _runtime_history_restore_exclusions()
     try:
         with _locked_operation():
             try:
@@ -1680,6 +1784,7 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
                     snapshot_path, snapshot_count = _snapshot_directory(
                         DATA_DIR,
                         Path(tempdir.name),
+                        exclude_paths=runtime_history_exclusions,
                         progress=progress,
                         progress_start=48,
                         progress_end=50,
@@ -1720,11 +1825,13 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
                         DATA_DIR,
                         replace=options.replace_data,
                         preserve_paths=preserved_data_keys,
+                        exclude_paths=runtime_history_exclusions,
                         progress=progress,
                         progress_phase="files_restore_start",
                         progress_start=90,
                         progress_end=95,
                         progress_message=files_restore_message,
+                        preserve_runtime_history=False,
                     )
                     _emit_progress(
                         progress,
@@ -1752,7 +1859,7 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
                 rollback_errors: list[str] = []
                 if snapshot_path is not None:
                     try:
-                        _restore_snapshot(snapshot_path, DATA_DIR)
+                        _restore_snapshot(snapshot_path, DATA_DIR, exclude_paths=runtime_history_exclusions)
                     except Exception as rollback_exc:
                         logger.error("Data rollback failed after restore error: %s", rollback_exc)
                         rollback_errors.append(f"data rollback failed: {rollback_exc}")

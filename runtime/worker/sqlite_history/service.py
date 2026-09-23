@@ -37,13 +37,6 @@ from runtime.core.sqlite_capture_admission import (
     run_admitted_subprocess as _run_admitted_subprocess,
 )
 from runtime.core.sqlite_history_scratch import managed_scratch_bytes, regular_tree_bytes, remove_orphaned_scratch
-from runtime.core.sqlite_recovery import (
-    SqliteRecoveryError,
-    capture_database,
-    database_fingerprint,
-    migration_fingerprint,
-    prepare_restore,
-)
 from runtime.core.sqlite_workspace_state import (
     MARKER_NAME,
     SqliteWorkspaceStateError,
@@ -56,7 +49,7 @@ from runtime.core.sqlite_workspace_state import (
     read_marker as _read_runtime_marker,
 )
 
-from .models import RESTIC_IMAGE_PATH, ResticArtifact
+from .models import ResticArtifact
 from .storage import held_repository_fds
 
 _TRIGGERS = {"manual", "snapshot", "scheduled", "pre_restore"}
@@ -134,8 +127,33 @@ async def _workspace_operation(workspace_id: str, *, exclusive: bool) -> AsyncIt
         finally:
             _workspace_operation_depth.reset(token)
         return
-    manager = workspace_operation(context.root, workspace_id, exclusive=exclusive)
-    await run_sqlite_blocking(manager.__enter__)
+    # Each ordinary attempt is nonblocking and short-lived, so a waiting
+    # maintenance flock never consumes an executor thread for its whole wait.
+    deadline = asyncio.get_running_loop().time() + 5.0 if not exclusive else None
+    manager = None
+    while manager is None:
+        candidate = workspace_operation(context.root, workspace_id, exclusive=exclusive, nonblocking=True)
+        entered = asyncio.create_task(asyncio.to_thread(candidate.__enter__))
+        try:
+            await asyncio.shield(entered)
+        except BlockingIOError:
+            if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+                raise HTTPException(status_code=503, detail="SQLite workspace is busy")
+            await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            # A successful flock can race cancellation after the thread enters
+            # it.  Drain that exact attempt and explicitly release its fd; do
+            # not depend on generator destruction to eventually unlock it.
+            while not entered.done():
+                try:
+                    await asyncio.shield(entered)
+                except asyncio.CancelledError:
+                    continue
+            if not entered.cancelled() and entered.exception() is None:
+                await run_sqlite_blocking(candidate.__exit__, None, None, None)
+            raise
+        else:
+            manager = candidate
     token = _workspace_operation_depth.set({**held, workspace_id: (exclusive, 1)})
     try:
         yield
@@ -169,11 +187,14 @@ async def sqlite_workspace_access(workspace_id: str, *, maintenance: bool = Fals
     lease_id = uuid4().hex
     marker = context.history_root(workspace_id) / MARKER_NAME
     if maintenance:
-        await run_sqlite_blocking(
-            claim_marker,
-            marker,
-            {"workspace_id": workspace_id, "lease_id": lease_id, "state": "acquiring", "origin": "runtime"},
-        )
+        try:
+            await run_sqlite_blocking(
+                claim_marker,
+                marker,
+                {"workspace_id": workspace_id, "lease_id": lease_id, "state": "acquiring", "origin": "runtime"},
+            )
+        except SqliteWorkspaceStateError as exc:
+            raise HTTPException(status_code=423, detail="SQLite maintenance marker is active") from exc
     acquired = False
     released = False
     body_completed = False
@@ -182,6 +203,9 @@ async def sqlite_workspace_access(workspace_id: str, *, maintenance: bool = Fals
     try:
         async with _workspace_operation(workspace_id, exclusive=maintenance):
             try:
+                existing_marker = await run_sqlite_blocking(read_marker, marker)
+                if existing_marker is not None and (not maintenance or existing_marker.get("lease_id") != lease_id):
+                    raise HTTPException(status_code=423, detail="SQLite maintenance marker is active")
                 result = await context.worker.acquire_sqlite_workspace_access(workspace_id, lease_id, maintenance=maintenance)
             except HTTPException as exc:
                 acquire_rejected = exc.status_code == 409
@@ -745,7 +769,8 @@ class SqliteHistoryService:
             now = _now()
             claim = manifest.get("scheduled_claim")
             if claim and not recover_orphan_claim:
-                return None
+                claim_id = claim.get("claim_id") if isinstance(claim, dict) else None
+                return claim_id if isinstance(claim_id, str) and claim_id else None
             next_due = manifest.get("next_scheduled_at")
             if next_due is None:
                 # Legacy manifests that already have a successful timestamp keep
@@ -790,6 +815,9 @@ class SqliteHistoryService:
             blob_root = root / "blobs"
             if blob_root.is_dir() and not blob_root.is_symlink():
                 remove_orphaned_scratch(blob_root)
+            imports = root / "imports"
+            if imports.is_dir() and not imports.is_symlink():
+                remove_orphaned_scratch(imports)
             manifest = self._load(root, workspace_id)
             before = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
             now = _now()
@@ -1030,7 +1058,11 @@ class SqliteHistoryService:
         manifest = self._load(root, workspace_id)
         if capture_job_id is not None:
             existing = next(
-                (row for row in manifest["backups"] if row.get("capture_job_id") == capture_job_id and row.get("database_name") == name),
+                (
+                    row
+                    for row in manifest["backups"]
+                    if row.get("capture_job_id") == capture_job_id and row.get("database_name") == name and row.get("status") == "ready"
+                ),
                 None,
             )
             if existing is not None:
@@ -1379,7 +1411,9 @@ class SqliteHistoryService:
                     used -= image[1]
             if used + incoming > _MAX_WORKSPACE_BYTES:
                 raise HTTPException(status_code=409, detail="SQLite history quota would be exceeded")
+            evicted_rows = [row for row in manifest["backups"] if str(row["id"]) in eviction_ids]
             manifest["backups"] = [row for row in manifest["backups"] if str(row["id"]) not in eviction_ids]
+            self._queue_restic_tombstones(manifest, evicted_rows)
             self._save(root, manifest)
             self._unlink_unreferenced(root, manifest, {str(row.get("blob") or "") for row in candidates if str(row["id"]) in eviction_ids})
 
@@ -1392,7 +1426,7 @@ class SqliteHistoryService:
         blobs = root / "blobs"
         if blobs.is_dir() and not blobs.is_symlink():
             total += managed_scratch_bytes(blobs)
-        for name in ("candidates", "downloads"):
+        for name in ("candidates", "downloads", "imports"):
             total += regular_tree_bytes(root / name)
         return total
 
@@ -1497,7 +1531,6 @@ class SqliteHistoryService:
                 backup_relative = str(row["blob"])
             if not backup.is_file() or _sha256(backup) != row["sha256"]:
                 raise HTTPException(status_code=409, detail="SQLite backup integrity verification failed")
-            migration_dir = files_dir / ".ragtime" / "db" / "migrations"
             # Preview preparation can hold a source online-backup copy and emit
             # a full candidate. Reserve both conservative inputs before the
             # child starts, then validate actual disk usage before publication.
@@ -2056,15 +2089,17 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
         # loop, so the narrow bridge cannot cross an application-loop lock.
         with repository_gate(self._runtime.root, exclusive=False):
             artifact = asyncio.run(ingest())
-            # Restic's successful backup/ls metadata is not sufficient for a
-            # destructive safety point. Verify the committed bytes before the
-            # manifest can name the snapshot.
-            verify_dir = destination.parent
-            verify = verify_dir / f".ingest-verify-{uuid4()}.sqlite3"
-            try:
-                asyncio.run(repository.materialize(artifact, verify, pass_fds=_capture_pass_fds.get()))
-            finally:
-                verify.unlink(missing_ok=True)
+            if row.get("trigger") == "pre_restore":
+                # A destructive safety point proves full materialization before
+                # publication. Ordinary captures use repository streaming
+                # verification and do not create a second full scratch image.
+                verify = destination.parent / f".ingest-verify-{uuid4()}.sqlite3"
+                try:
+                    asyncio.run(repository.materialize(artifact, verify, pass_fds=_capture_pass_fds.get()))
+                finally:
+                    verify.unlink(missing_ok=True)
+            else:
+                asyncio.run(repository.verify(artifact, pass_fds=_capture_pass_fds.get()))
         return {
             "kind": "restic",
             "repository_id": artifact.repository_id,
@@ -2136,12 +2171,13 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
         workspace_id = validate_workspace_id(workspace_id)
         if self.repository is None:
             raise HTTPException(status_code=503, detail="SQLite history repository is unavailable")
+        from .storage import AsyncRepositoryGate
+
         token = _capture_pass_fds.set(tuple(dict.fromkeys((*_capture_pass_fds.get(), *pass_fds))))
         try:
             # One-time migration owns the exclusive history gate so normal
             # cleanup/delete cannot race a prepared legacy blob. DB writers are
             # not fenced by this repository/catalog maintenance barrier.
-            from .storage import AsyncRepositoryGate
 
             async with AsyncRepositoryGate(self._runtime.root, exclusive=True):
                 async with self._installed():
@@ -2156,9 +2192,16 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
         async with self._installed():
             claims: list[dict[str, str]] = []
             for workspace_id in workspace_ids[:100]:
-                workspace_id = validate_workspace_id(workspace_id)
-                root = self._root(workspace_id)
-                claim = await run_sqlite_blocking(self._claim_scheduled_due_sync, root, workspace_id)
+                try:
+                    workspace_id = validate_workspace_id(workspace_id)
+                    root = self._root(workspace_id)
+                    claim = await run_sqlite_blocking(self._claim_scheduled_due_sync, root, workspace_id)
+                except (SqliteWorkspaceStateError, HTTPException) as exc:
+                    # A stale scheduler entry is isolated here. It is not proof
+                    # that corrupt data is safe for destructive collection.
+                    if isinstance(exc, HTTPException) and exc.status_code not in {404, 409}:
+                        raise
+                    continue
                 if claim is not None:
                     claims.append({"workspace_id": workspace_id, "occurrence_id": claim})
             return claims
@@ -2220,8 +2263,10 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
             def clear(workspace_id: str = workspace_id, root: Path = root) -> None:
                 with _catalog_lock(root):
                     manifest = self._load(root, workspace_id)
-                    manifest["restic_forget_tombstones"] = [item for item in manifest.get("restic_forget_tombstones", []) if item not in forgotten]
-                    self._save(root, manifest)
+                    remaining = [item for item in manifest.get("restic_forget_tombstones", []) if item not in forgotten]
+                    if remaining != manifest.get("restic_forget_tombstones", []):
+                        manifest["restic_forget_tombstones"] = remaining
+                        self._save(root, manifest)
 
             await run_sqlite_blocking(clear)
         return forgotten
@@ -2242,12 +2287,11 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
         try:
             validate_workspace_id(workspace_id)
             from .operations import OperationStore
-            from .storage import AsyncRepositoryGate
 
             payload = receipt.get("accepted_payload")
             names = payload.get("database_names") if isinstance(payload, dict) else None
             operation_ids = [OperationStore.suboperation_id(operation_id, str(name)) for name in names] if isinstance(names, list) and names else [operation_id]
-            async with AsyncRepositoryGate(self._runtime.root, exclusive=False):
+            async with self._installed():
                 discovered = {
                     candidate: await self.repository.list_operation_snapshot_ids(workspace_id=workspace_id, operation_id=candidate)
                     for candidate in operation_ids
@@ -2259,7 +2303,7 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
 
         root = self._root(workspace_id)
 
-        def verified_catalog_boundary() -> bool:
+        def catalog_rows() -> dict[str, dict[str, Any]] | None:
             with _catalog_lock(root):
                 manifest = self._load(root, workspace_id)
                 rows_by_snapshot = {
@@ -2271,18 +2315,31 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
                 }
                 snapshot_ids = {values[0] for values in discovered.values()}
                 if len(snapshot_ids) != len(discovered) or not snapshot_ids.issubset(rows_by_snapshot):
-                    return False
-                for snapshot_id in snapshot_ids:
-                    row = rows_by_snapshot[snapshot_id]
-                    probe = _history_subdirectory(root, "downloads", create=True) / f".reconcile-{uuid4()}.sqlite3"
-                    try:
-                        self._materialize_row_sync(root, row, probe)
-                    finally:
-                        probe.unlink(missing_ok=True)
-                return True
+                    return None
+                return {snapshot_id: dict(rows_by_snapshot[snapshot_id]) for snapshot_id in snapshot_ids}
+
+        def catalog_rows_unchanged(rows: dict[str, dict[str, Any]]) -> bool:
+            current = catalog_rows()
+            return current is not None and all(current.get(snapshot_id, {}).get("id") == row.get("id") for snapshot_id, row in rows.items())
 
         try:
-            verified = await run_sqlite_blocking(verified_catalog_boundary)
+            # Repository I/O happens outside the catalog lock.  `_installed`
+            # was acquired before any catalog acquisition above, preserving the
+            # repository-before-catalog order even with a queued writer.
+            async with self._installed():
+                rows = await run_sqlite_blocking(catalog_rows)
+                if rows is None:
+                    verified = False
+                else:
+                    for row in rows.values():
+                        probe = _history_subdirectory(root, "downloads", create=True) / f".reconcile-{uuid4()}.sqlite3"
+                        try:
+                            await run_sqlite_blocking(self._materialize_row_sync, root, row, probe)
+                        finally:
+                            probe.unlink(missing_ok=True)
+                    # Publication/cleanup cannot race our repository check into
+                    # an unrelated logical row before completion is reported.
+                    verified = await run_sqlite_blocking(catalog_rows_unchanged, rows)
         except Exception:
             verified = False
         if not verified:
@@ -2313,7 +2370,12 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
             "user_id": user_id,
             "begun": loop.create_future(),
             "finish": loop.create_future(),
+            "closing": False,
+            "git_substeps": 0,
+            "git_drained": asyncio.Event(),
+            "finish_lock": asyncio.Lock(),
         }
+        held["git_drained"].set()
         self._guarded_restores[operation_id] = held
         task = asyncio.create_task(self._guarded_restore_lifecycle(operation_id, held), name=f"sqlite-guarded-restore-{operation_id}")
         held["task"] = task
@@ -2323,10 +2385,12 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
     def _guarded_restore_done(self, operation_id: str, held: dict[str, Any], task: asyncio.Task[Any]) -> None:
         """Retain failed guards for explicit durable recovery; discard successes."""
         if task.cancelled():
+            held["closing"] = True
             logger.error("SQLite guarded restore lifecycle cancelled operation_id=%s; durable recovery is required", operation_id)
             return
         error = task.exception()
         if error is not None:
+            held["closing"] = True
             logger.error("SQLite guarded restore lifecycle failed operation_id=%s error_type=%s", operation_id, type(error).__name__)
             return
         if self._guarded_restores.get(operation_id) is held:
@@ -2362,6 +2426,20 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
                     def persist() -> None:
                         with _catalog_lock(root):
                             manifest = self._load(root, workspace_id)
+                            # A mandatory preservation response is not proof by
+                            # itself: replayed failed rows must never arm Git.
+                            for item in preserved:
+                                backup_id = item.get("id") if isinstance(item, dict) else None
+                                row = next((entry for entry in manifest["backups"] if entry.get("id") == backup_id), None)
+                                if row is None or row.get("status") != "ready":
+                                    raise HTTPException(status_code=409, detail="guarded SQLite preservation is unavailable")
+                                if isinstance(row.get("storage"), dict):
+                                    if not self._restic_row_is_materializable(root, row):
+                                        raise HTTPException(status_code=409, detail="guarded SQLite preservation is unavailable")
+                                else:
+                                    blob = self._protected_path(root, str(row.get("blob") or ""), "blobs")
+                                    if not blob.is_file() or _sha256(blob) != row.get("sha256"):
+                                        raise HTTPException(status_code=409, detail="guarded SQLite preservation is unavailable")
                             manifest["operations"][operation_id] = {
                                 "kind": "guarded_code_restore",
                                 "status": "active",
@@ -2443,18 +2521,55 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
         files = held.get("files")
         if not isinstance(lease_id, str) or not isinstance(files, Path):
             raise HTTPException(status_code=409, detail="guarded SQLite restore lease is unavailable")
-        async with self._installed():
-            marker = await run_sqlite_blocking(read_marker, self._root(workspace_id) / MARKER_NAME)
+        # The lifecycle already owns the repository gate. Git substeps must not
+        # try to reacquire it behind a pending exclusive writer.
+        marker = await run_sqlite_blocking(read_marker, self._root(workspace_id) / MARKER_NAME)
         if marker is None or marker.get("lease_id") != lease_id:
             raise HTTPException(status_code=423, detail="guarded SQLite restore lease ownership was lost")
         return {"operation_id": operation_id, "workspace_id": workspace_id, "lease_id": lease_id, "authoritative_root": str(files)}
+
+    @asynccontextmanager
+    async def guarded_git_operation(self, workspace_id: str, operation_id: str) -> AsyncIterator[None]:
+        """Admit one Git substep into a live guarded restore lifecycle.
+
+        This is deliberately a context rather than a check-only authorization:
+        recovery/finish first revoke future admission, then wait until every
+        previously admitted Git operation has actually drained.
+        """
+        workspace_id = validate_workspace_id(workspace_id)
+        held = self._guarded_restores.get(operation_id)
+        if held is None or held.get("workspace_id") != workspace_id or held.get("closing"):
+            raise HTTPException(status_code=409, detail="guarded SQLite restore lease is unavailable")
+        await self.verify_guarded_code_restore_lease(workspace_id, operation_id)
+        # No await separates the check from reservation, so finish/recovery
+        # cannot close the gate between them on this event loop.
+        task = held.get("task")
+        if held.get("closing") or not isinstance(task, asyncio.Task) or task.done():
+            raise HTTPException(status_code=409, detail="guarded SQLite restore lease is unavailable")
+        held["git_substeps"] = int(held["git_substeps"]) + 1
+        drained = held["git_drained"]
+        if isinstance(drained, asyncio.Event):
+            drained.clear()
+        try:
+            yield
+        finally:
+            held["git_substeps"] = max(0, int(held["git_substeps"]) - 1)
+            if not held["git_substeps"] and isinstance(drained, asyncio.Event):
+                drained.set()
 
     async def recover_guarded_code_restore(self, workspace_id: str, operation_id: str) -> dict[str, Any]:
         """Restart recovery: reattach the marker lease, republish, then release."""
         workspace_id = validate_workspace_id(workspace_id)
         held = self._guarded_restores.get(operation_id)
         if held is not None and held.get("workspace_id") == workspace_id and not held["task"].done():
-            raise HTTPException(status_code=409, detail="guarded SQLite restore lease is active")
+            # Controller loss while this runtime remains alive is recoverable:
+            # stop new Git work, drain admitted work, and ask the owning task to
+            # republish the verified preservation set.
+            held["closing"] = True
+            drained = held.get("git_drained")
+            if isinstance(drained, asyncio.Event):
+                await drained.wait()
+            return await self.finish_guarded_code_restore(workspace_id, operation_id, str(held["user_id"]), git_error="guarded controller recovered")
         root = self._root(workspace_id)
         async with self._installed():
             marker = await run_sqlite_blocking(read_marker, root / MARKER_NAME)
@@ -2507,18 +2622,30 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
         held = self._guarded_restores.get(operation_id)
         if held is None or held.get("workspace_id") != workspace_id:
             raise HTTPException(status_code=409, detail="guarded SQLite restore lease is unavailable")
-        if held.get("workspace_id") != workspace_id:
+        if held.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="guarded SQLite restore creator does not match")
+        finish_lock = held.get("finish_lock")
+        if not isinstance(finish_lock, asyncio.Lock):
             raise HTTPException(status_code=409, detail="guarded SQLite restore lease is unavailable")
-        task = held.get("task")
-        if not isinstance(task, asyncio.Task) or task.done():
-            raise HTTPException(status_code=409, detail="guarded SQLite restore lease is unavailable")
-        begun: asyncio.Future[dict[str, Any]] = held["begun"]
-        await asyncio.shield(begun)
-        finish: asyncio.Future[tuple[str, str | None, asyncio.Future[dict[str, Any]]]] = held["finish"]
-        if finish.done():
-            raise HTTPException(status_code=409, detail="guarded SQLite restore finish is already in progress")
-        completed: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
-        finish.set_result((user_id, git_error, completed))
+        async with finish_lock:
+            task = held.get("task")
+            if not isinstance(task, asyncio.Task) or task.done():
+                raise HTTPException(status_code=409, detail="guarded SQLite restore lease is unavailable")
+            begun: asyncio.Future[dict[str, Any]] = held["begun"]
+            await asyncio.shield(begun)
+            finish: asyncio.Future[tuple[str, str | None, asyncio.Future[dict[str, Any]]]] = held["finish"]
+            if finish.done():
+                raise HTTPException(status_code=409, detail="guarded SQLite restore finish is already in progress")
+            held["closing"] = True
+            drained = held.get("git_drained")
+            if isinstance(drained, asyncio.Event):
+                await drained.wait()
+            # Another finisher/recovery may have consumed the future while this
+            # caller drained active Git work.
+            if finish.done():
+                raise HTTPException(status_code=409, detail="guarded SQLite restore finish is already in progress")
+            completed: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+            finish.set_result((user_id, git_error, completed))
         return await asyncio.shield(completed)
 
     @asynccontextmanager
@@ -2574,8 +2701,17 @@ class RuntimeSqliteHistoryService(SqliteHistoryService):
             return await super().apply(workspace_id, preview_id, **kwargs)
 
     async def recover_operation(self, workspace_id: str, operation_id: str, **kwargs: Any) -> dict[str, Any]:
+        workspace_id = validate_workspace_id(workspace_id)
+        held = self._guarded_restores.get(operation_id)
+        if held is not None and held.get("workspace_id") == workspace_id:
+            task = held.get("task")
+            if isinstance(task, asyncio.Task) and not task.done():
+                # The live lifecycle already owns the shared repository gate.
+                # Route before fresh admission so a queued exclusive writer
+                # cannot deadlock controller-loss recovery.
+                return await self.recover_guarded_code_restore(workspace_id, operation_id)
         async with self._installed():
-            root = self._root(validate_workspace_id(workspace_id))
+            root = self._root(workspace_id)
 
             def guarded() -> bool:
                 with _catalog_lock(root):
