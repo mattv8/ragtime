@@ -249,13 +249,26 @@ describe('ConnectYourAgentPanel', () => {
     expect(apiMock.listWorkspaceDevelopmentCredentials).not.toHaveBeenCalled();
   });
 
+  it('renders development credentials before MCP client setup', async () => {
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    const credentialsHeading = await screen.findByRole('heading', {
+      name: 'Development credentials',
+    });
+    const endpointLabel = screen.getByText('MCP endpoint');
+
+    expect(
+      credentialsHeading.compareDocumentPosition(endpointLabel) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it('hides existing cards while the new-agent form is open and restores them on dismiss', async () => {
     const user = userEvent.setup();
     apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
     await screen.findByRole('article', { name: 'External agent credential' });
-    await user.click(screen.getByRole('button', { name: /^new agent$/i }));
+    await user.click(screen.getByRole('button', { name: /^new credential$/i }));
 
     // Create form is visible; existing card is hidden
     expect(screen.getByLabelText('Credential name')).toBeTruthy();
@@ -286,7 +299,7 @@ describe('ConnectYourAgentPanel', () => {
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
     await screen.findByRole('article', { name: 'External agent credential' });
-    await user.click(screen.getByRole('button', { name: /^new agent$/i }));
+    await user.click(screen.getByRole('button', { name: /^new credential$/i }));
     await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
 
     expect(
@@ -431,6 +444,10 @@ describe('ConnectYourAgentPanel', () => {
       );
     });
     expect(screen.queryByRole('article', { name: 'External agent credential' })).toBeNull();
+
+    const newCredentialButton = screen.getByRole('button', { name: /^new credential$/i });
+    await user.click(newCredentialButton);
+    expect(screen.getByLabelText('Credential name')).toBeTruthy();
   });
 
   it('shows error and keeps card when delete call fails', async () => {

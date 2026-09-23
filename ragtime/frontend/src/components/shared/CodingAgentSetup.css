@@ -57,9 +57,31 @@
   flex: 1 0 max-content;
   min-width: max-content;
   padding-inline: var(--space-sm);
+  min-height: 2rem;
   font-size: var(--text-xs);
-  line-height: 1.2;
+  line-height: var(--leading-normal);
   white-space: nowrap;
+}
+
+.userspace-connect-agent .coding-agent-client-guide {
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.userspace-connect-agent
+  :is(.userspace-connect-agent-section-header h4, .userspace-connect-agent-setup h5) {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: var(--leading-normal);
+}
+
+.userspace-connect-agent .coding-agent-client-guide :is(p, li, summary, code) {
+  font-size: inherit;
+}
+
+.userspace-connect-agent .coding-agent-copyable-snippet pre {
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .userspace-connect-agent .coding-agent-setup-client-picker [aria-pressed='true'] {
@@ -93,6 +115,8 @@
   margin: 0;
   color: var(--color-text-primary);
   font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: var(--leading-normal);
 }
 
 .userspace-connect-agent .coding-agent-guide-steps,
@@ -193,6 +217,17 @@
   .userspace-connect-agent .coding-agent-setup-endpoint {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .userspace-connect-agent .userspace-connect-agent-endpoint,
+  .userspace-connect-agent .userspace-connect-agent-token {
+    grid-template-columns: auto;
+    grid-auto-flow: row;
+  }
+
+  .userspace-connect-agent .userspace-connect-agent-endpoint > *:last-child,
+  .userspace-connect-agent .userspace-connect-agent-token > *:last-child {
+    justify-self: start;
   }
 }
 

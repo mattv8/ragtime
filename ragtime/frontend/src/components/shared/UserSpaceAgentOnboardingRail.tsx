@@ -63,16 +63,16 @@ export function UserSpaceAgentOnboardingRail({
             </button>
           );
         })}
-        <button
-          type="button"
-          className="userspace-agent-onboarding-dismiss"
-          title="Dismiss agent setup"
-          aria-label="Dismiss agent setup"
-          onClick={onDismiss}
-        >
-          <X size={14} aria-hidden="true" />
-        </button>
       </div>
+      <button
+        type="button"
+        className="userspace-agent-onboarding-dismiss"
+        title="Dismiss agent setup"
+        aria-label="Dismiss agent setup"
+        onClick={onDismiss}
+      >
+        <X size={14} aria-hidden="true" />
+      </button>
     </section>
   );
 }

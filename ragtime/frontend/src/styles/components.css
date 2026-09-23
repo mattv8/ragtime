@@ -10909,6 +10909,9 @@ fieldset legend.legend-with-status .legend-divider {
   border-radius: var(--radius-md);
   background: var(--color-bg-tertiary);
   padding: var(--space-sm) var(--space-md);
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .userspace-connect-agent-preview summary,
@@ -10928,10 +10931,11 @@ fieldset legend.legend-with-status .legend-divider {
 
 .userspace-connect-agent-endpoint {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: max-content minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-xs);
   min-width: 0;
+  max-width: 100%;
   padding: var(--space-xs) 0;
 }
 
@@ -10943,13 +10947,22 @@ fieldset legend.legend-with-status .legend-divider {
 }
 
 .userspace-connect-agent-endpoint code,
+.userspace-connect-agent-token code,
 .userspace-connect-agent-manual-details p code {
   min-width: 0;
+  max-width: 100%;
+  white-space: normal;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .userspace-connect-agent-token {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-xs);
   min-width: 0;
+  max-width: 100%;
 }
 
 .userspace-connect-agent-rotation-warning {

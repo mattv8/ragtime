@@ -1,7 +1,6 @@
 .userspace-agent-onboarding-rail {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
   gap: var(--space-sm);
   flex-wrap: wrap;
   width: 100%;
@@ -42,9 +41,15 @@
 .userspace-agent-onboarding-actions {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: var(--space-xs);
   flex-wrap: wrap;
-  min-width: 0;
+  flex: 1 1 0;
+  min-width: min(100%, 10rem);
+}
+
+.userspace-agent-onboarding-dismiss {
+  margin-inline-start: auto;
 }
 
 .userspace-agent-onboarding-client,
