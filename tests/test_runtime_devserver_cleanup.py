@@ -44,8 +44,11 @@ class RuntimeDevserverCleanupTests(unittest.IsolatedAsyncioTestCase):
                 rootfs_path=workspace_root / "rootfs",
             ),
             pty_access_token="token",
-            workspace_env={},
+            workspace_env={
+                "RAGTIME_BRIDGE_TOKEN_FILE": worker_service.RUNTIME_BRIDGE_TOKEN_FILE_PATH,
+            },
             workspace_env_visibility={},
+            bridge_token_file_initial_token="test-bridge-token",
             workspace_mounts=[],
             mount_targets_to_clear=set(),
             state="running",
@@ -61,6 +64,19 @@ class RuntimeDevserverCleanupTests(unittest.IsolatedAsyncioTestCase):
             runtime_operation_updated_at=None,
             updated_at=worker_service.utc_now(),
         )
+
+    @staticmethod
+    def _provision_sandbox(spec: Any) -> None:
+        spec.rootfs_path.mkdir(parents=True, exist_ok=True)
+
+    def _build_recording_provisioner(self, provision_started: asyncio.Event) -> Any:
+        loop = asyncio.get_running_loop()
+
+        def record_provision(spec: Any) -> None:
+            self._provision_sandbox(spec)
+            loop.call_soon_threadsafe(provision_started.set)
+
+        return record_provision
 
     async def test_terminates_entire_process_group(self) -> None:
         assert worker_service is not None
@@ -248,8 +264,7 @@ class RuntimeDevserverCleanupTests(unittest.IsolatedAsyncioTestCase):
             cleanup_started.set()
             await allow_cleanup.wait()
 
-        def record_provision(_spec: Any) -> None:
-            provision_started.set()
+        record_provision = self._build_recording_provisioner(provision_started)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             first = self._build_session(Path(tmpdir))
@@ -313,7 +328,7 @@ class RuntimeDevserverCleanupTests(unittest.IsolatedAsyncioTestCase):
             session.runtime_operation_id = "op-1"
             service._sessions[session.id] = session
             with (
-                mock.patch("runtime.worker.service.ensure_sandbox_ready"),
+                mock.patch("runtime.worker.service.ensure_sandbox_ready", side_effect=self._provision_sandbox),
                 mock.patch.object(service, "_materialize_workspace_mounts", new=mock.AsyncMock()),
                 mock.patch.object(service, "_run_workspace_bootstrap_if_needed", new=mock.AsyncMock(return_value=None)),
                 mock.patch.object(service, "_ensure_entrypoint_dependencies", new=mock.AsyncMock(return_value=None)),
@@ -355,8 +370,7 @@ class RuntimeDevserverCleanupTests(unittest.IsolatedAsyncioTestCase):
                 await release_cancelled_startup.wait()
                 raise
 
-        def record_provision(_spec: Any) -> None:
-            provision_started.set()
+        record_provision = self._build_recording_provisioner(provision_started)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             first = self._build_session(Path(tmpdir))

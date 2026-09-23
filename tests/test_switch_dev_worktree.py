@@ -92,7 +92,7 @@ class FakeRunner(Runner):
                     services[service]["volumes"] = [mount]
             text = json.dumps({"services": services})
         elif " config --format json" in joined:
-            services: dict[str, dict[str, object]] = {
+            services = {
                 "ragtime": {"environment": ["DATABASE_URL=postgresql://ragtime:ragtime_dev@ragtime-db:5432/ragtime"]},
                 "runtime": {},
             }
