@@ -146,3 +146,37 @@ describe('LoginPage gradient shell', () => {
     expect(screen.getByRole('button', { name: 'Sign In' })).toBeTruthy();
   });
 });
+
+describe('LoginCard authentication errors', () => {
+  it('announces a server failure, stays on credentials, and permits a retry', async () => {
+    const onLoginSuccess = vi.fn();
+    apiMock.login
+      .mockRejectedValueOnce(new Error('sentinel login failure from server'))
+      .mockResolvedValueOnce({ success: true, user_id: 'user-1' });
+    apiMock.getCurrentUser.mockResolvedValue({ id: 'user-1', username: 'ldap-user' });
+
+    render(<LoginCard authStatus={debugAuthStatus()} onLoginSuccess={onLoginSuccess} />);
+
+    const username = screen.getByLabelText('Username');
+    const password = screen.getByLabelText('Password');
+    expect(username.getAttribute('aria-describedby')).toBeNull();
+    expect(password.getAttribute('aria-describedby')).toBeNull();
+    fireEvent.change(username, { target: { value: 'ldap-user' } });
+    fireEvent.change(password, { target: { value: 'password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
+    await settleAsyncWork();
+
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('sentinel login failure from server');
+    expect(username.getAttribute('aria-describedby')).toBe(alert.id);
+    expect(password.getAttribute('aria-describedby')).toBe(alert.id);
+    expect(screen.queryByLabelText('Authenticator or recovery code')).toBeNull();
+    expect(onLoginSuccess).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
+    await settleAsyncWork();
+
+    expect(apiMock.getCurrentUser).toHaveBeenCalledOnce();
+    expect(onLoginSuccess).toHaveBeenCalledWith({ id: 'user-1', username: 'ldap-user' });
+  });
+});

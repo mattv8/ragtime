@@ -97,4 +97,44 @@ describe('OAuthLoginPage gradient shell', () => {
     expect(body.get('resource')).toBe(oauthParams.resource);
     expect(body.get('scope')).toBe(oauthParams.scope);
   });
+
+  it('announces a server failure, stays on credentials, and permits an MFA retry', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({
+        ok: false,
+        redirected: false,
+        json: async () => ({ error: 'sentinel OAuth failure from server' }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        redirected: false,
+        json: async () => ({
+          mfa_required: true,
+          mfa_challenge_token: 'challenge-token',
+          mfa_methods: ['totp'],
+          mfa_preferred_method: null,
+        }),
+      } as Response);
+
+    render(<OAuthLoginPage params={oauthParams} />);
+
+    const username = screen.getByLabelText('Username');
+    const password = screen.getByLabelText('Password');
+    expect(username.getAttribute('aria-describedby')).toBeNull();
+    expect(password.getAttribute('aria-describedby')).toBeNull();
+    fireEvent.change(username, { target: { value: 'ldap-user' } });
+    fireEvent.change(password, { target: { value: 'password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('sentinel OAuth failure from server');
+    expect(username.getAttribute('aria-describedby')).toBe(alert.id);
+    expect(password.getAttribute('aria-describedby')).toBe(alert.id);
+    expect(screen.queryByLabelText('Authenticator or recovery code')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
+    await waitFor(() => {
+      expect(screen.getByLabelText('Authenticator or recovery code')).toBeTruthy();
+    });
+  });
 });
