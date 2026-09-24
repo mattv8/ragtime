@@ -333,8 +333,8 @@ describe('ConnectYourAgentPanel', () => {
     });
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
-    await user.click(screen.getByRole('button', { name: /^cursor$/i }));
     await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+    await user.click(await screen.findByRole('button', { name: /^cursor$/i }));
 
     expect(screen.queryByText(/secret is only shown when created or rotated/i)).toBeNull();
     await user.click(screen.getByText('Manual connection details'));
@@ -350,8 +350,8 @@ describe('ConnectYourAgentPanel', () => {
     });
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
-    await user.click(screen.getByRole('button', { name: /^chatgpt$/i }));
     await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+    await user.click(await screen.findByRole('button', { name: /^chatgpt$/i }));
 
     expect(screen.getByText(/cannot connect ChatGPT/i)).toBeTruthy();
     expect(
