@@ -1047,6 +1047,19 @@ class UserSpaceRuntimeService:
             if not self._workspace_preview_bridge_status_needs_recovery(status):
                 return
 
+            # Missing provider sessions and unusable metadata need lifecycle
+            # reconciliation, not credential rotation. No refresh was attempted,
+            # so these states must not consume the recovery cooldown.
+            if status.state == "unavailable":
+                raise HTTPException(status_code=503, detail="Runtime bridge provider status is unavailable; retry shortly")
+            if status.state == "not_running":
+                raise HTTPException(status_code=503, detail="Runtime session is not running; retry preview launch shortly")
+            if status.state in {"missing", "invalid", "session_mismatch"}:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Runtime bridge metadata cannot be refreshed; perform a full runtime-session restart",
+                )
+
             now_ts = self._bridge_recovery_monotonic()
             last_attempt_ts = self._workspace_preview_bridge_last_recovery_attempt_ts.get(session.workspace_id)
             if last_attempt_ts is not None:
@@ -1061,13 +1074,6 @@ class UserSpaceRuntimeService:
 
             self._workspace_preview_bridge_last_recovery_attempt_ts[session.workspace_id] = now_ts
 
-            if status.state == "unavailable":
-                raise HTTPException(status_code=503, detail="Runtime bridge provider status is unavailable; retry shortly")
-            if status.state in {"missing", "invalid", "session_mismatch"}:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Runtime bridge metadata cannot be refreshed; perform a full runtime-session restart",
-                )
             await self._refresh_file_bridge_credential(session, status)
 
             active = await self._get_active_session_row(session.workspace_id)
@@ -1181,7 +1187,14 @@ class UserSpaceRuntimeService:
                 try:
                     status = await self._get_workspace_preview_bridge_status(session)
                     status_name = status.state
+                    # The watch only renews credentials. Session recreation and
+                    # invalid metadata are handled by the runtime lifecycle.
+                    if status.state not in {"healthy", "expired"}:
+                        return
                     if not self._workspace_preview_bridge_status_needs_recovery(status):
+                        return
+                    last_attempt_ts = self._workspace_preview_bridge_last_recovery_attempt_ts.get(workspace_id)
+                    if last_attempt_ts is not None and self._bridge_recovery_monotonic() - last_attempt_ts < _RUNTIME_BRIDGE_RECOVERY_COOLDOWN_SECONDS:
                         return
                     await self._ensure_workspace_preview_bridge_ready(session)
                 except asyncio.CancelledError:

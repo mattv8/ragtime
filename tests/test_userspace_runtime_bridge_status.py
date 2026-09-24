@@ -696,7 +696,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(restart_wait.await_count, 2)
 
-    async def test_preview_bridge_readiness_concurrent_waiters_after_failure_share_cooldown(self) -> None:
+    async def test_preview_bridge_readiness_concurrent_waiter_observes_unrefreshable_metadata(self) -> None:
         session = self.service._to_runtime_session(_session_row(session_id="sess-1"))
         expired_status = _bridge_status(state="expired", detail="expired bridge token")
         failed_status = _bridge_status(state="missing", detail="metadata unavailable")
@@ -753,7 +753,7 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(results), 2)
         self.assertTrue(all(isinstance(result, HTTPException) for result in results))
         statuses = sorted(result.status_code for result in results if isinstance(result, HTTPException))
-        self.assertEqual(statuses, [502, 503])
+        self.assertEqual(statuses, [409, 502])
 
     async def test_preview_bridge_readiness_restarts_once_for_two_concurrent_calls(self) -> None:
         session = self.service._to_runtime_session(_session_row(session_id="sess-1"))
@@ -1037,6 +1037,83 @@ class RuntimeBridgeStatusTests(unittest.IsolatedAsyncioTestCase):
         ensure_ready_args = ensure_ready.await_args
         assert ensure_ready_args is not None
         self.assertEqual(ensure_ready_args.args[0].workspace_id, "ws-recover")
+
+    async def test_nonrefreshable_bridge_states_do_not_consume_recovery_cooldown(self) -> None:
+        cases = [
+            (_bridge_status(state="unavailable"), 503),
+            (_bridge_status(state="missing"), 409),
+            (_bridge_status(state="invalid"), 409),
+            (_bridge_status(state="session_mismatch"), 409),
+            (_bridge_status(state="not_running"), 503),
+        ]
+        for status, expected_code in cases:
+            with self.subTest(state=status.state):
+                service = UserSpaceRuntimeService()
+                session = service._to_runtime_session(_session_row(session_id="sess-1"))
+                with (
+                    mock.patch.object(service, "_get_workspace_preview_bridge_status", mock.AsyncMock(return_value=status)),
+                    mock.patch.object(service, "_refresh_file_bridge_credential", mock.AsyncMock()) as refresh,
+                ):
+                    for _ in range(2):
+                        with self.assertRaises(HTTPException) as error:
+                            await service._ensure_workspace_preview_bridge_ready(session)
+                        self.assertEqual(error.exception.status_code, expected_code)
+                        self.assertIsNone(error.exception.headers)
+                self.assertEqual(service._workspace_preview_bridge_last_recovery_attempt_ts, {})
+                refresh.assert_not_awaited()
+
+    async def test_bridge_refresh_watch_skips_nonrefreshable_states_without_repeated_warnings(self) -> None:
+        statuses = [
+            _bridge_status(state="unavailable"),
+            _bridge_status(state="missing"),
+            _bridge_status(state="invalid"),
+            _bridge_status(state="session_mismatch"),
+            _bridge_status(state="not_running"),
+        ]
+        rows = [_session_row(session_id="sess-1", workspace_id=status.state) for status in statuses]
+        by_workspace = {status.state: status for status in statuses}
+        db = SimpleNamespace(userspaceruntimesession=SimpleNamespace(find_many=mock.AsyncMock(return_value=rows)))
+
+        async def get_status(session, **kwargs):
+            return by_workspace[session.workspace_id]
+
+        with (
+            mock.patch("ragtime.userspace.runtime_service.get_db", mock.AsyncMock(return_value=db)),
+            mock.patch.object(self.service, "_get_workspace_preview_bridge_status", mock.AsyncMock(side_effect=get_status)) as observe,
+            mock.patch.object(self.service, "_refresh_file_bridge_credential", mock.AsyncMock()) as refresh,
+            mock.patch("ragtime.userspace.runtime_service.logger.warning") as warning,
+        ):
+            for _ in range(2):
+                await self.service._refresh_runtime_bridge_credentials_for_active_workspaces()
+        self.assertEqual(observe.await_count, 10)
+        refresh.assert_not_awaited()
+        warning.assert_not_called()
+        self.assertEqual(self.service._workspace_preview_bridge_last_recovery_attempt_ts, {})
+
+    async def test_bridge_refresh_watch_waits_out_actual_failed_refresh_cooldown(self) -> None:
+        row = _session_row(session_id="sess-1")
+        db = SimpleNamespace(userspaceruntimesession=SimpleNamespace(find_many=mock.AsyncMock(return_value=[row])))
+        clock = [100.0]
+        with (
+            mock.patch("ragtime.userspace.runtime_service.get_db", mock.AsyncMock(return_value=db)),
+            mock.patch.object(self.service, "_bridge_recovery_monotonic", side_effect=lambda: clock[0]),
+            mock.patch.object(self.service, "_get_workspace_preview_bridge_status", mock.AsyncMock(return_value=_bridge_status(state="expired"))),
+            mock.patch.object(
+                self.service, "_refresh_file_bridge_credential", mock.AsyncMock(side_effect=HTTPException(status_code=503, detail="refresh failed"))
+            ) as refresh,
+            mock.patch("ragtime.userspace.runtime_service.logger.warning") as warning,
+        ):
+            await self.service._refresh_runtime_bridge_credentials_for_active_workspaces()
+            self.assertEqual(refresh.await_count, 1)
+            self.assertEqual(warning.call_count, 1)
+            clock[0] = 140.0
+            await self.service._refresh_runtime_bridge_credentials_for_active_workspaces()
+            self.assertEqual(refresh.await_count, 1)
+            self.assertEqual(warning.call_count, 1)
+            clock[0] = 221.0
+            await self.service._refresh_runtime_bridge_credentials_for_active_workspaces()
+            self.assertEqual(refresh.await_count, 2)
+            self.assertEqual(warning.call_count, 2)
 
     async def test_schedule_bridge_refresh_watch_is_idempotent(self) -> None:
         release_task = asyncio.Event()
