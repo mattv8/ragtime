@@ -947,6 +947,16 @@ export function getWorkspaceToolReadOnlyDescription(
   );
 }
 
+function readDismissedOnboardingCookie(): Set<string> {
+  const raw = getCookieValue('agent_onboarding_dismissed');
+  if (!raw) return new Set();
+  return new Set(raw.split(',').filter(Boolean));
+}
+
+function writeDismissedOnboardingCookie(ids: Set<string>): void {
+  setSessionCookieValue('agent_onboarding_dismissed', [...ids].join(','));
+}
+
 export function UserSpacePanel({
   currentUser,
   userspaceGenerationEnabled = false,
@@ -1145,9 +1155,8 @@ export function UserSpacePanel({
   } | null>(null);
   const [agentSelectionRequest, setAgentSelectionRequest] =
     useState<CodingAgentSelectionRequest | null>(null);
-  const [agentOnboardingDismissedWorkspaceId, setAgentOnboardingDismissedWorkspaceId] = useState<
-    string | null
-  >(null);
+  const [dismissedOnboardingIds, setDismissedOnboardingIds] =
+    useState<Set<string>>(readDismissedOnboardingCookie);
   const [showAdminWorkspacesModal, setShowAdminWorkspacesModal] = useState(false);
   const [allUsers, setAllUsers] = useState<UserDirectoryEntry[]>([]);
   const [pendingMembers, setPendingMembers] = useState<UserSpaceWorkspaceMember[]>([]);
@@ -6552,12 +6561,7 @@ export function UserSpacePanel({
   useEffect(() => {
     setAgentSelectionRequest(null);
     setAgentAccessOpenRequest(null);
-    setAgentOnboardingDismissedWorkspaceId(null);
   }, [activeWorkspaceId]);
-
-  useEffect(() => {
-    if (userspaceGenerationEnabled) setAgentOnboardingDismissedWorkspaceId(null);
-  }, [userspaceGenerationEnabled]);
 
   const handleOpenAgentAccessModal = useCallback(
     async (selection?: CodingAgentSelectionRequest, trigger?: HTMLElement) => {
@@ -9654,11 +9658,15 @@ export function UserSpacePanel({
 
           {!userspaceGenerationEnabled &&
           activeWorkspace &&
-          agentOnboardingDismissedWorkspaceId !== activeWorkspace.id ? (
+          !dismissedOnboardingIds.has(activeWorkspace.id) ? (
             <UserSpaceAgentOnboardingRail
               onSelectClient={handleOpenAgentOnboarding}
               onDismiss={() => {
-                setAgentOnboardingDismissedWorkspaceId(activeWorkspace.id);
+                setDismissedOnboardingIds((prev) => {
+                  const next = new Set([...prev, activeWorkspace.id]);
+                  writeDismissedOnboardingCookie(next);
+                  return next;
+                });
                 requestAnimationFrame(() => agentAccessButtonRef.current?.focus());
               }}
             />

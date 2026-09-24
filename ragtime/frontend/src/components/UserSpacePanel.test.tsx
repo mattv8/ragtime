@@ -722,6 +722,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  document.cookie = 'agent_onboarding_dismissed=; max-age=0; path=/';
   cleanup();
   vi.useRealTimers();
   vi.clearAllMocks();
@@ -1123,7 +1124,7 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     expect(previewApiMock.revokeUserSpaceWorkspaceAgentGrant).not.toHaveBeenCalled();
   });
 
-  it('dismisses and restores the rail after the generation policy is toggled', async () => {
+  it('persists rail dismissal across generation policy changes', async () => {
     const { rerender } = render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Dismiss agent setup' })).toBeTruthy();
@@ -1137,10 +1138,32 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       );
     });
 
+    // Toggling generation on then back off must not restore the dismissed rail
     rerender(<UserSpacePanel currentUser={{ ...CURRENT_USER }} userspaceGenerationEnabled />);
-    expect(screen.queryByRole('button', { name: 'Connect your agent' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Connect your agent to build' })).toBeNull();
     rerender(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
-    expect(await screen.findByRole('button', { name: 'Dismiss agent setup' })).toBeTruthy();
+    // Rail stays hidden — dismissal is session-cookie-backed and persists
+    expect(screen.queryByRole('button', { name: 'Dismiss agent setup' })).toBeNull();
+  });
+
+  it('persists rail dismissal in a session cookie across re-renders', async () => {
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Dismiss agent setup' })).toBeTruthy();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss agent setup' }));
+
+    // Cookie must be written
+    expect(document.cookie).toContain('agent_onboarding_dismissed=');
+
+    // Deliberate mid-test cleanup+render to simulate a page reload: beforeEach mocks
+    // remain in effect from this test's setup, which is the correct state for re-mount.
+    cleanup();
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Dismiss agent setup' })).toBeNull();
+    });
   });
 
   it('only renders the rail for a resolved workspace when embedded generation is disabled', async () => {
@@ -1150,7 +1173,7 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     await waitFor(() => {
       expect(previewApiMock.listUserSpaceWorkspaces).toHaveBeenCalled();
     });
-    expect(screen.queryByRole('button', { name: 'Connect your agent' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Connect your agent to build' })).toBeNull();
   });
 
   it('returns a rail-opened modal to Workspace Grants for an ordinary toolbar open', async () => {
