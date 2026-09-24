@@ -19,7 +19,7 @@ describe('ExternalApiAccessSection Styles', () => {
   let componentsCss: string;
   let workbenchAdminCss: string;
   const modernModalScope =
-    "[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-external-api-access";
+    "[data-theme-pack='modern'] .modal-with-tabs .userspace-external-api-access";
 
   beforeEach(() => {
     // Load CSS files for static analysis
@@ -344,10 +344,7 @@ describe('ExternalApiAccessSection Styles', () => {
 
   describe('existing share-workspace contracts', () => {
     it('removes duplicate top spacing from the tabbed modal body', () => {
-      const tabbedModalBodyRule = getRuleBody(
-        componentsCss,
-        '.userspace-share-modal-with-tabs .modal-body',
-      );
+      const tabbedModalBodyRule = getRuleBody(componentsCss, '.modal-with-tabs .modal-body');
 
       expectDeclarations(tabbedModalBodyRule, ['padding-top: 0']);
     });

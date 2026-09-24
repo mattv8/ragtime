@@ -1,4 +1,4 @@
-import type { FormEvent } from 'react';
+import { useId, type FormEvent } from 'react';
 
 interface AuthCredentialsFormProps {
   username: string;
@@ -25,17 +25,26 @@ export function AuthCredentialsForm({
   submitLabel = 'Sign In',
   loadingLabel = 'Signing in...',
 }: AuthCredentialsFormProps) {
+  const formId = `auth-credentials-${useId().replace(/:/g, '')}`;
+  const errorId = `${formId}-error`;
+  const usernameId = `${formId}-username`;
+  const passwordId = `${formId}-password`;
+
   return (
-    <form onSubmit={onSubmit} className="login-form">
-      {error && <div className="login-error">{error}</div>}
+    <form id={formId} data-auth-credentials-form="true" onSubmit={onSubmit} className="login-form">
+      {error && (
+        <div id={errorId} data-auth-credentials-error="true" className="login-error" role="alert">
+          {error}
+        </div>
+      )}
 
       <div className="form-group">
-        <label htmlFor="username" className="form-label">
+        <label htmlFor={usernameId} className="form-label">
           Username
         </label>
         <input
           type="text"
-          id="username"
+          id={usernameId}
           value={username}
           onChange={(event) => onUsernameChange(event.target.value)}
           className="form-input"
@@ -43,22 +52,24 @@ export function AuthCredentialsForm({
           required
           autoFocus
           autoComplete="username"
+          aria-describedby={error ? errorId : undefined}
         />
       </div>
 
       <div className="form-group">
-        <label htmlFor="password" className="form-label">
+        <label htmlFor={passwordId} className="form-label">
           Password
         </label>
         <input
           type="password"
-          id="password"
+          id={passwordId}
           value={password}
           onChange={(event) => onPasswordChange(event.target.value)}
           className="form-input"
           placeholder="Password"
           required
           autoComplete="current-password"
+          aria-describedby={error ? errorId : undefined}
         />
       </div>
 

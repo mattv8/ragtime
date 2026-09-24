@@ -44,6 +44,7 @@ import {
 } from './shared/ObjectStorageSettings';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
 import { ModelFilterModal } from './ModelFilterModal';
+import { ModelSelector } from './ModelSelector';
 import { CheckboxDropdown } from './shared/CheckboxDropdown';
 import {
   SearchFilterBar,
@@ -94,9 +95,11 @@ import { SettingsAccordionSection } from './settings/SettingsAccordionSection';
 import { SearchSettingsSection } from './settings/SearchSettingsSection';
 import { SecuritySettingsSection } from './settings/SecuritySettingsSection';
 import { AppearanceSettingsSection } from './settings/AppearanceSettingsSection';
-import { ChatModelsSettingsSection } from './settings/ChatModelsSettingsSection';
+import { ChatSettingsSection } from './settings/ChatSettingsSection';
 import { AgentBehaviorSettingsSection } from './settings/AgentBehaviorSettingsSection';
+import { ContentProtectionSettingsSection } from './settings/ContentProtectionSettingsSection';
 import { McpSettingsSection } from './settings/McpSettingsSection';
+import { MasterToggle } from './settings/MasterToggle';
 import { ServerBackupRestoreSettingsSection } from './settings/ServerBackupRestoreSettingsSection';
 import { IndexingResourcesSettings } from './settings/IndexingResourcesSettings';
 import { useIndexResourceStatus } from '@/hooks/useIndexResourceStatus';
@@ -684,6 +687,19 @@ export function SettingsPanel({
     setOpenAccordionSections((current) => ({ ...current, [id]: !current[id] }));
   }, []);
 
+  useEffect(() => {
+    const openContentProtection = () => {
+      if (window.location.hash.startsWith('#content-protection')) {
+        setOpenAccordionSections((current) =>
+          openSettingsAccordionSections(current, ['content-protection']),
+        );
+      }
+    };
+    openContentProtection();
+    window.addEventListener('hashchange', openContentProtection);
+    return () => window.removeEventListener('hashchange', openContentProtection);
+  }, []);
+
   const savedThemePackRef = useRef<ThemePackId>('default');
   const unconfiguredCloudOAuthProviders = useMemo(
     () => getUnconfiguredCloudOAuthProviders(cloudOAuthProviderStatuses),
@@ -889,7 +905,9 @@ export function SettingsPanel({
   const [openapiAvailableModels, setOpenapiAvailableModels] = useState<AvailableModel[]>([]);
 
   // MCP Routes panel state
-  const [showMcpRoutesPanel, setShowMcpRoutesPanel] = useState(false);
+  const [showMcpRoutesPanel, setShowMcpRoutesPanel] = useState(
+    () => window.location.hash === '#manage-mcp-routes',
+  );
   const [mcpRoutes, setMcpRoutes] = useState<McpRouteConfig[]>([]);
 
   // LDAP configuration state
@@ -938,6 +956,18 @@ export function SettingsPanel({
     String(USERSPACE_EXEC_TIMEOUT_MAX_SECONDS),
   );
   const settingsFormRef = useRef<HTMLFormElement | null>(null);
+
+  useEffect(() => {
+    const root = settingsPanelRef.current;
+    if (!root || loading) return;
+    const nextCandidates = collectSettingsSearchCompletionCandidates(root);
+    setSettingsFilterCompletionCandidates((current) =>
+      current.length === nextCandidates.length &&
+      current.every((value, index) => value === nextCandidates[index])
+        ? current
+        : nextCandidates,
+    );
+  }, [formData.chat_enabled, formData.userspace_generation_enabled, loading]);
 
   const userspaceExecTimeoutError = useMemo(() => {
     const defaultSeconds = parseUserspaceExecTimeoutDraft(userspaceExecTimeoutDefaultDraft);
@@ -2330,7 +2360,7 @@ export function SettingsPanel({
         ]);
       const data = {
         ...sanitizeOllamaDefaults(rawSettings),
-        tool_skills_enabled: rawSettings.tool_skills_enabled !== false,
+        tool_skills_enabled: rawSettings.tool_skills_enabled === true,
       };
       setSettings(data);
       setUserspaceExecTimeoutDefaultDraft(
@@ -2390,6 +2420,8 @@ export function SettingsPanel({
         github_copilot_enterprise_url: data.github_copilot_enterprise_url,
         openai_codex_base_url: data.openai_codex_base_url,
         default_chat_model: data.default_chat_model ?? null,
+        chat_enabled: data.chat_enabled !== false,
+        userspace_generation_enabled: data.userspace_generation_enabled !== false,
         userspace_build_model: data.userspace_build_model ?? null,
         openrouter_credit_monitor_enabled: data.openrouter_credit_monitor_enabled ?? false,
         openrouter_low_credit_threshold_usd: data.openrouter_low_credit_threshold_usd ?? 5,
@@ -2398,7 +2430,7 @@ export function SettingsPanel({
         chat_compaction_threshold_percent: data.chat_compaction_threshold_percent,
         chat_auto_compaction_threshold_percent: data.chat_auto_compaction_threshold_percent,
         // Token optimization settings
-        tool_skills_enabled: data.tool_skills_enabled !== false,
+        tool_skills_enabled: data.tool_skills_enabled === true,
         max_tool_output_chars: data.max_tool_output_chars,
         scratchpad_window_size: data.scratchpad_window_size,
         userspace_exec_timeout_default_seconds: data.userspace_exec_timeout_default_seconds,
@@ -3070,13 +3102,8 @@ export function SettingsPanel({
         github_copilot_base_url: formData.github_copilot_base_url,
         github_copilot_enterprise_url: formData.github_copilot_enterprise_url,
         openai_codex_base_url: formData.openai_codex_base_url,
-        default_chat_model: formData.default_chat_model,
-        userspace_build_model: formData.userspace_build_model,
         openrouter_credit_monitor_enabled: formData.openrouter_credit_monitor_enabled,
         openrouter_low_credit_threshold_usd: formData.openrouter_low_credit_threshold_usd,
-        allowed_chat_models: formData.allowed_chat_models,
-        chat_compaction_threshold_percent: formData.chat_compaction_threshold_percent,
-        chat_auto_compaction_threshold_percent: formData.chat_auto_compaction_threshold_percent,
         // OpenAPI model settings
         openapi_sync_chat_models: formData.openapi_sync_chat_models,
         available_models_cache_enabled: formData.available_models_cache_enabled,
@@ -3086,6 +3113,14 @@ export function SettingsPanel({
         // API output settings
         tool_output_mode: formData.tool_output_mode,
       };
+      dataToSave.default_chat_model = formData.default_chat_model;
+      dataToSave.allowed_chat_models = formData.allowed_chat_models;
+      dataToSave.chat_compaction_threshold_percent = formData.chat_compaction_threshold_percent;
+      dataToSave.chat_auto_compaction_threshold_percent =
+        formData.chat_auto_compaction_threshold_percent;
+      if (isAdmin) {
+        dataToSave.chat_enabled = formData.chat_enabled !== false;
+      }
       if (formData.openrouter_management_api_key !== undefined) {
         dataToSave.openrouter_management_api_key = formData.openrouter_management_api_key;
       }
@@ -3147,10 +3182,22 @@ export function SettingsPanel({
       }
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
+      setFormData((previous) => ({
+        ...previous,
+        chat_enabled: updated.chat_enabled !== false,
+        default_chat_model: updated.default_chat_model ?? null,
+        allowed_chat_models: updated.allowed_chat_models,
+        chat_compaction_threshold_percent: updated.chat_compaction_threshold_percent,
+        chat_auto_compaction_threshold_percent: updated.chat_auto_compaction_threshold_percent,
+        openapi_sync_chat_models: updated.openapi_sync_chat_models,
+        available_models_cache_enabled: updated.available_models_cache_enabled,
+        openrouter_credit_monitor_enabled: updated.openrouter_credit_monitor_enabled,
+        openrouter_low_credit_threshold_usd: updated.openrouter_low_credit_threshold_usd,
+      }));
       onChatCompactionThresholdChange?.(updated.chat_compaction_threshold_percent ?? 80);
       onChatAutoCompactionThresholdChange?.(updated.chat_auto_compaction_threshold_percent ?? 99);
       await onSettingsSaved?.();
-      toast.success('LLM configuration saved');
+      toast.success('Chat settings saved');
       refreshModels();
       await refreshDefaultChatModelPreview();
     } catch (err) {
@@ -3168,7 +3215,7 @@ export function SettingsPanel({
 
     try {
       const dataToSave: UpdateSettingsRequest = {
-        tool_skills_enabled: formData.tool_skills_enabled !== false,
+        tool_skills_enabled: formData.tool_skills_enabled === true,
         max_iterations: formData.max_iterations,
         max_tool_output_chars: formData.max_tool_output_chars,
         scratchpad_window_size: formData.scratchpad_window_size,
@@ -3184,7 +3231,7 @@ export function SettingsPanel({
       const updated = await api.updateSettings(dataToSave);
       const normalizedUpdated = {
         ...updated,
-        tool_skills_enabled: updated.tool_skills_enabled !== false,
+        tool_skills_enabled: updated.tool_skills_enabled === true,
       };
       setSettings(normalizedUpdated);
       setFormData((prev) => ({
@@ -3617,6 +3664,8 @@ export function SettingsPanel({
     try {
       await objectStorageSettingsRef.current?.save();
       const updated = await api.updateSettings({
+        userspace_generation_enabled: formData.userspace_generation_enabled !== false,
+        userspace_build_model: formData.userspace_build_model,
         snapshot_stale_branch_threshold: formData.snapshot_stale_branch_threshold,
         userspace_duplicate_copy_files_default: formData.userspace_duplicate_copy_files_default,
         userspace_duplicate_copy_metadata_default:
@@ -3641,6 +3690,8 @@ export function SettingsPanel({
       setSettings(updated);
       setFormData((prev) => ({
         ...prev,
+        userspace_generation_enabled: updated.userspace_generation_enabled !== false,
+        userspace_build_model: updated.userspace_build_model ?? null,
         snapshot_stale_branch_threshold: updated.snapshot_stale_branch_threshold,
         userspace_duplicate_copy_files_default: updated.userspace_duplicate_copy_files_default,
         userspace_duplicate_copy_metadata_default:
@@ -3670,6 +3721,8 @@ export function SettingsPanel({
   }, [
     toast,
     formData.snapshot_stale_branch_threshold,
+    formData.userspace_generation_enabled,
+    formData.userspace_build_model,
     formData.userspace_duplicate_copy_files_default,
     formData.userspace_duplicate_copy_metadata_default,
     formData.userspace_duplicate_copy_chats_default,
@@ -3963,7 +4016,12 @@ export function SettingsPanel({
 
     setSettingsFilterHasMatches(hasAnyMatches);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsFilter.queries, loading]);
+  }, [
+    settingsFilter.queries,
+    loading,
+    formData.chat_enabled,
+    formData.userspace_generation_enabled,
+  ]);
 
   if (loading) {
     return (
@@ -4158,6 +4216,9 @@ export function SettingsPanel({
     !ldapFormData.bind_dn.trim() ||
     (!ldapFormData.bind_password && !ldapCanReuseStoredCredentials);
   const isAdmin = currentUser?.role === 'admin';
+  const chatConfigurationVisible = isAdmin || currentUser?.chat_enabled_effective === true;
+  const userspaceConfigurationVisible =
+    isAdmin || currentUser?.userspace_generation_enabled_effective === true;
   const manualDefaultChatModel = (() => {
     if (formData.default_chat_model !== undefined) {
       return formData.default_chat_model ?? null;
@@ -4674,23 +4735,26 @@ export function SettingsPanel({
         data-1p-ignore="true"
       >
         <div className="settings-accordion">
-          <ChatModelsSettingsSection
-            open={openAccordionSections['chat-models']}
-            onToggle={handleToggleAccordionSection}
-            formData={formData}
-            setFormData={setFormData}
-            filteredChatModels={filteredChatModels}
-            manualDefaultChatModel={manualDefaultChatModel}
-            automaticDefaultChatModel={automaticDefaultChatModel}
-            chatModelsLoading={chatModelsLoading}
-            toScopedModelIdentifier={toScopedModelIdentifier}
-            openModelFilterModal={openModelFilterModal}
-            openOpenapiModelModal={openOpenapiModelModal}
-            handleSaveLlm={handleSaveLlm}
-            llmSaving={llmSaving}
-            isAdmin={isAdmin}
-            hasManagementApiKey={settings?.has_openrouter_management_api_key === true}
-          />
+          {chatConfigurationVisible && (
+            <ChatSettingsSection
+              open={openAccordionSections.chat}
+              onToggle={handleToggleAccordionSection}
+              formData={formData}
+              setFormData={setFormData}
+              filteredChatModels={filteredChatModels}
+              manualDefaultChatModel={manualDefaultChatModel}
+              automaticDefaultChatModel={automaticDefaultChatModel}
+              chatModelsLoading={chatModelsLoading}
+              toScopedModelIdentifier={toScopedModelIdentifier}
+              openModelFilterModal={openModelFilterModal}
+              openOpenapiModelModal={openOpenapiModelModal}
+              handleSaveChat={handleSaveLlm}
+              chatSaving={llmSaving}
+              isAdmin={isAdmin}
+              configurationVisible={chatConfigurationVisible}
+              hasManagementApiKey={settings?.has_openrouter_management_api_key === true}
+            />
+          )}
 
           <AgentBehaviorSettingsSection
             open={(openAccordionSections as Record<string, boolean>)['agent-behavior']}
@@ -4706,6 +4770,14 @@ export function SettingsPanel({
             onUserspaceExecTimeoutMaxDraftChange={setUserspaceExecTimeoutMaxDraft}
             userspaceExecTimeoutError={isAdmin ? userspaceExecTimeoutError : null}
           />
+
+          {isAdmin && (
+            <ContentProtectionSettingsSection
+              open={openAccordionSections['content-protection']}
+              onToggle={handleToggleAccordionSection}
+              searchQuery={settingsFilter.queries[0] || ''}
+            />
+          )}
 
           <McpSettingsSection
             open={openAccordionSections.mcp}
@@ -4740,9 +4812,48 @@ export function SettingsPanel({
                 Configure shared User Space runtime behavior, workspace support settings, and code
                 index maintenance.
               </p>
-              {currentUser?.role === 'admin' && (
-                <ObjectStorageSettings ref={objectStorageSettingsRef} />
+              {isAdmin && (
+                <MasterToggle
+                  settingId="setting-userspace_generation_enabled"
+                  inputId="userspace-generation-enabled"
+                  label="Enable User Space AI generation"
+                  checked={formData.userspace_generation_enabled !== false}
+                  onChange={(checked) =>
+                    setFormData((current) => ({
+                      ...current,
+                      userspace_generation_enabled: checked,
+                    }))
+                  }
+                  help={
+                    formData.userspace_generation_enabled !== false
+                      ? 'Enable workspace agents and build tasks by default. Configure exceptions in Users > User policies. External development harnesses, runtime, files, and previews remain available independently.'
+                      : 'Disable workspace agents and build tasks by default. Configure enabled exceptions in Users > User policies. External development harnesses, runtime, files, and previews remain available.'
+                  }
+                />
               )}
+              {userspaceConfigurationVisible && (
+                <div className="form-group" id="setting-userspace-build-model">
+                  <label>Builder Model</label>
+                  <ModelSelector
+                    models={filteredChatModels}
+                    selectedModelId={formData.userspace_build_model ?? ''}
+                    onModelChange={(selectedValue) =>
+                      setFormData({ ...formData, userspace_build_model: selectedValue || null })
+                    }
+                    getModelSelectionKey={toScopedModelIdentifier}
+                    disabled={chatModelsLoading || filteredChatModels.length === 0}
+                    loading={chatModelsLoading}
+                    placeholder="Use normal model defaults"
+                    variant="full"
+                    triggerClassName="settings-control-height"
+                  />
+                  <p className="field-help">
+                    Optional model for new User Space build tasks. It uses the live allowed model
+                    catalog.
+                  </p>
+                </div>
+              )}
+              {isAdmin && <ObjectStorageSettings ref={objectStorageSettingsRef} />}
 
               <div
                 id="userspace-management-columns"

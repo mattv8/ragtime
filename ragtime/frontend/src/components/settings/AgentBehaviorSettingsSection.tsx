@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import type { UpdateSettingsRequest } from '@/types';
 
 import { SettingsAccordionSection } from './SettingsAccordionSection';
+import { MasterToggle } from './MasterToggle';
 import type { SettingsAccordionSectionId } from './settingsAccordionState';
 
 export interface AgentBehaviorSettingsSectionProps {
@@ -38,7 +39,7 @@ export function AgentBehaviorSettingsSection(
     userspaceExecTimeoutError,
   } = props;
 
-  const toolSkillsEnabled = formData.tool_skills_enabled !== false;
+  const toolSkillsEnabled = formData.tool_skills_enabled === true;
   const maxIterations = formData.max_iterations ?? 30;
   const maxToolOutputChars = formData.max_tool_output_chars ?? 5000;
   const scratchpadWindowSize = formData.scratchpad_window_size ?? 6;
@@ -54,35 +55,18 @@ export function AgentBehaviorSettingsSection(
         <legend>Agent Behavior</legend>
         <p className="fieldset-help">Configure global agent execution and tool behavior.</p>
 
-        <div
-          className="form-group agent-behavior-settings-switch-card"
-          id="setting-tool_skills_enabled"
-        >
-          <div className="agent-behavior-settings-switch-copy">
-            <label
-              htmlFor="agent-behavior-tool-skills-enabled"
-              className="agent-behavior-settings-switch-title"
-            >
-              Load tools on demand
-            </label>
-            <p className="field-help">
-              {toolSkillsEnabled
-                ? 'Only essential tools and the tool-skill controls are sent initially. The agent can load other tools during the same request. Loaded tools remain available for the conversation while current access and health checks continue to apply.'
-                : 'All eligible tools and schemas are sent with every request, matching legacy behavior.'}
-            </p>
-          </div>
-
-          <label className="toggle-switch agent-behavior-settings-switch-toggle">
-            <input
-              id="agent-behavior-tool-skills-enabled"
-              type="checkbox"
-              aria-label="Load tools on demand"
-              checked={toolSkillsEnabled}
-              onChange={(e) => setFormData({ ...formData, tool_skills_enabled: e.target.checked })}
-            />
-            <span className="toggle-slider"></span>
-          </label>
-        </div>
+        <MasterToggle
+          settingId="setting-tool_skills_enabled"
+          inputId="agent-behavior-tool-skills-enabled"
+          label="Load tools on demand"
+          checked={toolSkillsEnabled}
+          onChange={(checked) => setFormData({ ...formData, tool_skills_enabled: checked })}
+          help={
+            toolSkillsEnabled
+              ? 'Only essential tools and the tool-skill controls are sent initially. The agent can load other tools during the same request. Loaded tools remain available for the conversation while current access and health checks continue to apply.'
+              : 'All eligible tools and schemas are sent with every request, matching legacy behavior.'
+          }
+        />
 
         <div className="agent-behavior-settings-grid">
           <div className="form-group">

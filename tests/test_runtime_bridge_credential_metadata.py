@@ -4,12 +4,14 @@ import base64
 import importlib
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from unittest import mock
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 
 def _jwt_segment(payload: dict[str, object]) -> str:
@@ -28,40 +30,41 @@ class RuntimeBridgeCredentialMetadataTests(unittest.TestCase):
         return models_module, worker_service_module
 
     def _build_session(self, worker_service_module, *, token: str | None):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch.dict(os.environ, {"RUNTIME_WORKSPACE_ROOT": tmpdir}, clear=False):
-                service = worker_service_module.WorkerService()
-                workspace_root, workspace_files_path, sandbox_spec = service._resolve_workspace_root("ws-1")
-                now = datetime.now(timezone.utc)
-                session = worker_service_module.WorkerSession(
-                    id="worker-1",
-                    workspace_id="ws-1",
-                    provider_session_id="provider-1",
-                    workspace_root=workspace_root,
-                    workspace_files_path=workspace_files_path,
-                    sandbox_spec=sandbox_spec,
-                    pty_access_token="pty-token",
-                    workspace_env={
-                        "RAGTIME_BRIDGE_URL": "http://bridge.example/runtime-bridge",
-                        **({"RAGTIME_BRIDGE_TOKEN": token} if token is not None else {}),
-                    },
-                    workspace_env_visibility={},
-                    workspace_mounts=[],
-                    mount_targets_to_clear=set(),
-                    state="running",
-                    devserver_running=True,
-                    devserver_port=4173,
-                    devserver_command=["npm", "run", "dev"],
-                    launch_framework="vite",
-                    launch_cwd=".",
-                    last_error=None,
-                    runtime_operation_id=None,
-                    runtime_operation_phase=None,
-                    runtime_operation_started_at=None,
-                    runtime_operation_updated_at=None,
-                    updated_at=now,
-                )
-                return service, session
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
+        with mock.patch.dict(os.environ, {"RUNTIME_WORKSPACE_ROOT": tmpdir}, clear=False):
+            service = worker_service_module.WorkerService()
+            workspace_root, workspace_files_path, sandbox_spec = service._resolve_workspace_root("ws-1")
+            sandbox_spec.rootfs_path.mkdir(parents=True)
+            now = datetime.now(timezone.utc)
+            session = worker_service_module.WorkerSession(
+                id="worker-1",
+                workspace_id="ws-1",
+                provider_session_id="provider-1",
+                workspace_root=workspace_root,
+                workspace_files_path=workspace_files_path,
+                sandbox_spec=sandbox_spec,
+                pty_access_token="pty-token",
+                workspace_env={"RAGTIME_BRIDGE_URL": "http://bridge.example/runtime-bridge"},
+                workspace_env_visibility={},
+                workspace_mounts=[],
+                mount_targets_to_clear=set(),
+                state="running",
+                devserver_running=True,
+                devserver_port=4173,
+                devserver_command=["npm", "run", "dev"],
+                launch_framework="vite",
+                launch_cwd=".",
+                last_error=None,
+                runtime_operation_id=None,
+                runtime_operation_phase=None,
+                runtime_operation_started_at=None,
+                runtime_operation_updated_at=None,
+                updated_at=now,
+            )
+            if token is not None:
+                service._write_bridge_token_file(session, token)
+            return service, session
 
     def test_session_response_decodes_safe_bridge_credential_metadata(self) -> None:
         _, worker_service_module = self._load_modules()
@@ -103,12 +106,39 @@ class RuntimeBridgeCredentialMetadataTests(unittest.TestCase):
 
         self.assertIsNone(response.bridge_credential)
 
+    def test_start_request_allows_only_worker_file_mode(self) -> None:
+        models_module, _ = self._load_modules()
+
+        self.assertEqual(models_module.StartSessionRequest(workspace_id="ws", leased_by_user_id="user").bridge_credential_mode, "worker_file")
+        with self.assertRaises(ValidationError):
+            models_module.StartSessionRequest(workspace_id="ws", leased_by_user_id="user", bridge_credential_mode="env")
+
 
 if __name__ == "__main__":
     unittest.main()
 
 
 class RuntimeWorkerWorkspaceIdentityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_start_requires_private_token_and_rejects_raw_env_token(self) -> None:
+        worker_service_module = importlib.import_module("runtime.worker.service")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict(os.environ, {"RUNTIME_WORKSPACE_ROOT": tmpdir}, clear=False):
+                service = worker_service_module.WorkerService()
+                for workspace_env, initial_token in (({}, None), ({"RAGTIME_BRIDGE_TOKEN": "raw"}, "private-token")):
+                    with self.subTest(workspace_env=workspace_env, initial_token=initial_token):
+                        with self.assertRaises(HTTPException) as rejected:
+                            await service.start_session(
+                                worker_service_module.WorkerStartSessionRequest(
+                                    workspace_id=f"ws-{len(service._sessions)}",
+                                    provider_session_id=f"provider-{len(service._sessions)}",
+                                    pty_access_token="pty-token",
+                                    workspace_env=workspace_env,
+                                    bridge_token_file_initial_token=initial_token,
+                                )
+                            )
+                        self.assertEqual(rejected.exception.status_code, 400)
+
     async def test_worker_reuse_rejects_cross_workspace_identity_mismatch(self) -> None:
         worker_service_module = importlib.import_module("runtime.worker.service")
 
@@ -128,6 +158,7 @@ class RuntimeWorkerWorkspaceIdentityTests(unittest.IsolatedAsyncioTestCase):
                             workspace_env={"FIRST": "one"},
                             workspace_env_visibility={"FIRST": True},
                             workspace_mounts=[{"target_path": "/workspace/one"}],
+                            bridge_token_file_initial_token="private-token",
                         )
                     )
                     startup_task = service._startup_tasks[first.worker_session_id]
@@ -146,6 +177,7 @@ class RuntimeWorkerWorkspaceIdentityTests(unittest.IsolatedAsyncioTestCase):
                             workspace_env={"SECOND": "two"},
                             workspace_env_visibility={"SECOND": False},
                             workspace_mounts=[{"target_path": "/workspace/two"}],
+                            bridge_token_file_initial_token="private-token",
                         )
                     )
 
@@ -155,7 +187,13 @@ class RuntimeWorkerWorkspaceIdentityTests(unittest.IsolatedAsyncioTestCase):
                 unchanged_session = service._sessions[first.worker_session_id]
                 self.assertEqual(unchanged_session.workspace_id, "ws-1")
                 self.assertEqual(unchanged_session.pty_access_token, "pty-token")
-                self.assertEqual(unchanged_session.workspace_env, {"FIRST": "one"})
-                self.assertEqual(unchanged_session.workspace_env_visibility, {"FIRST": True})
+                self.assertEqual(
+                    unchanged_session.workspace_env,
+                    {"FIRST": "one", "RAGTIME_BRIDGE_TOKEN_FILE": "/run/.ragtime-bridge/token"},
+                )
+                self.assertEqual(
+                    unchanged_session.workspace_env_visibility,
+                    {"FIRST": True, "RAGTIME_BRIDGE_TOKEN_FILE": True},
+                )
                 self.assertEqual(unchanged_session.workspace_mounts, [{"target_path": "/workspace/one"}])
                 self.assertEqual(unchanged_session.updated_at, original_updated_at)

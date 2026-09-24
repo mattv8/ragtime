@@ -201,10 +201,12 @@ COPY docker/scripts/import.sh /docker-scripts/import.sh
 RUN dos2unix /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh /docker-scripts/functions.sh /docker-scripts/export.sh /docker-scripts/import.sh && \
     chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh /docker-scripts/functions.sh /docker-scripts/export.sh /docker-scripts/import.sh && \
     ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/backup && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/restore && \
-    ln -sf /docker-scripts/export.sh /usr/local/bin/export && ln -sf /docker-scripts/import.sh /usr/local/bin/import
+    ln -sf /docker-scripts/export.sh /usr/local/bin/export && ln -sf /docker-scripts/import.sh /usr/local/bin/import && \
+    mkdir -p /run/ragtime-keystore && chown ragtime:ragtime /run/ragtime-keystore
 ARG APP_VERSION=dev
 LABEL maintainer="elastropy.com" description="Ragtime - OpenAI-compatible RAG server with tool calling and indexer" version="${APP_VERSION}"
-ENV RAGTIME_VERSION=${APP_VERSION} RAGTIME_LEGACY_CPU=${LEGACY_CPU}
+ENV RAGTIME_VERSION=${APP_VERSION} RAGTIME_LEGACY_CPU=${LEGACY_CPU} \
+    OBJECT_STORAGE_KEY_EXPORT_PATH=/run/ragtime-keystore/.encryption_key
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 CMD ["curl", "-f", "http://localhost:8000/health"]
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]

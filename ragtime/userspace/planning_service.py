@@ -47,7 +47,8 @@ class UserSpacePlanningService:
         user = await db.user.find_unique(where={"id": user_id})
         return bool(user and getattr(user, "role", "") == "admin")
 
-    async def _selected_tools(self, workspace: Any) -> list[dict[str, Any]]:
+    async def _selected_tool_ids(self, workspace: Any) -> list[str]:
+        """Resolve workspace-owner-authorized tool IDs without loading configs."""
         from ragtime.userspace.service import userspace_service
 
         selected_ids = await resolve_effective_tool_ids(
@@ -58,7 +59,12 @@ class UserSpacePlanningService:
             list_enabled_tool_ids=repository.list_enabled_tool_ids,
             get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
         )
-        selected_ids = await userspace_service.filter_tool_ids_for_workspace_owner(workspace, selected_ids)
+        return await userspace_service.filter_tool_ids_for_workspace_owner(workspace, selected_ids)
+
+    async def _selected_tools(self, workspace: Any) -> list[dict[str, Any]]:
+        from ragtime.userspace.service import userspace_service
+
+        selected_ids = await self._selected_tool_ids(workspace)
         selected = set(selected_ids)
         owner_access = await userspace_service._resolve_workspace_owner_tool_access(workspace, selected_ids)
         configs = await repository.list_tool_configs(enabled_only=True)
@@ -83,6 +89,10 @@ class UserSpacePlanningService:
                     "tool_type": getattr(cfg.tool_type, "value", str(cfg.tool_type)),
                     "description": cfg.description or "",
                     "server_write_enabled": write_enabled,
+                    "execute_component": {
+                        "supported": False,
+                        "reason": "This tool type is not supported on the browser/external read-only execute_component surface.",
+                    },
                 }
             )
         return tools
@@ -111,10 +121,13 @@ class UserSpacePlanningService:
         workspace = await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer", is_admin=is_admin)
 
         files = await userspace_service.list_workspace_files(workspace_id, user_id, is_admin=is_admin)
-        visible = [entry for entry in files if _is_visible_file(entry)]
-        key_files = sorted(entry.path for entry in visible)[:_MAX_KEY_FILES]
+        # Continuity describes user files; seeded platform controls must not
+        # turn a fresh workspace into an existing app. Developer file listing
+        # exposes those controls separately through its full-inventory option.
+        continuity_files = [entry for entry in files if _is_visible_file(entry)]
+        key_files = sorted(entry.path for entry in continuity_files)[:_MAX_KEY_FILES]
 
-        entrypoint = userspace_service.get_workspace_entrypoint_status(workspace_id)
+        entrypoint = await userspace_service.get_workspace_entrypoint_status_authoritative(workspace_id)
         is_default_static = bool(userspace_service.is_default_static_entrypoint(workspace_id, status=entrypoint))
 
         snapshot_summary: dict[str, Any] = {"count": 0, "last_message": None, "last_created_at": None}
@@ -162,7 +175,7 @@ class UserSpacePlanningService:
                 "command": entrypoint.command if valid else None,
                 "cwd": entrypoint.cwd if valid else None,
                 "is_default_static": is_default_static,
-                "file_count": len(visible),
+                "file_count": len(continuity_files),
                 "key_files": key_files,
             },
             "selected_tools": selected_tools,
@@ -175,7 +188,7 @@ class UserSpacePlanningService:
         }
         payload["context_revision"] = self._context_revision(
             getattr(workspace, "updated_at", None),
-            len(visible),
+            len(continuity_files),
             entrypoint,
             [tool["component_id"] for tool in selected_tools],
         )
@@ -188,6 +201,7 @@ class UserSpacePlanningService:
         prefix: str = "",
         offset: int = 0,
         limit: int = 200,
+        developer_full_inventory: bool = False,
     ) -> dict[str, Any]:
         from ragtime.userspace.service import userspace_service
 
@@ -195,7 +209,7 @@ class UserSpacePlanningService:
         offset = max(0, int(offset))
         is_admin = await self._is_admin(user_id)
         files = await userspace_service.list_workspace_files(workspace_id, user_id, is_admin=is_admin)
-        visible = [entry for entry in files if _is_visible_file(entry)]
+        visible = [entry for entry in files if getattr(entry, "entry_type", "file") != "directory" and (developer_full_inventory or _is_visible_file(entry))]
         cleaned_prefix = (prefix or "").strip().lstrip("/")
         if cleaned_prefix:
             visible = [entry for entry in visible if str(entry.path).startswith(cleaned_prefix)]

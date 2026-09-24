@@ -8,6 +8,8 @@ from typing import Any
 from unittest import mock
 
 import ragtime.indexer.background_tasks as background_tasks
+from tests.content_protection_support import use_disabled_content_protection
+from tests.generation_policy_test_support import enabled_generation_policy
 
 
 class _HangingAsyncStream:
@@ -128,6 +130,9 @@ class _AppendGate:
 
 
 class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     @staticmethod
     def _completed_task_dependencies(add_message: Any, link_assistant_snapshot_tool_calls: Any) -> tuple[Any, Any, Any, Any]:
         fake_conversation = SimpleNamespace(
@@ -162,6 +167,7 @@ class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            enabled_generation_policy("user-1"),
             mock.patch.object(background_tasks, "repository", fake_repository),
             mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
             mock.patch.object(background_tasks, "rag", fake_rag),
@@ -193,6 +199,7 @@ class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            enabled_generation_policy("user-1"),
             mock.patch.object(background_tasks, "repository", fake_repository),
             mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
             mock.patch.object(background_tasks, "rag", fake_rag),
@@ -225,6 +232,7 @@ class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
         fake_event_bus = SimpleNamespace(publish=mock.AsyncMock(side_effect=fail_completed_event))
 
         with (
+            enabled_generation_policy("user-1"),
             mock.patch.object(background_tasks, "repository", fake_repository),
             mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
             mock.patch.object(background_tasks, "rag", fake_rag),
@@ -274,6 +282,7 @@ class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
         fake_settings_cache = SimpleNamespace(get_settings=mock.AsyncMock(return_value={"max_tool_output_chars": 5000}))
 
         with (
+            enabled_generation_policy("user-1"),
             mock.patch.object(background_tasks, "repository", fake_repository),
             mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
             mock.patch.object(background_tasks, "rag", fake_rag),
@@ -344,6 +353,7 @@ class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
         fake_settings_cache = SimpleNamespace(get_settings=mock.AsyncMock(return_value={"max_tool_output_chars": 5000}))
 
         with (
+            enabled_generation_policy("admin-1", "conversation-owner-1"),
             mock.patch.object(background_tasks, "repository", fake_repository),
             mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
             mock.patch.object(background_tasks, "rag", fake_rag),
@@ -425,6 +435,9 @@ class BackgroundTaskStreamActivityTests(unittest.TestCase):
 
 
 class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     """Verify the in-component post-tool inactivity guard cancels stalled streams.
 
     This exercises only the wait_for + aclose pattern that the new
@@ -486,6 +499,7 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
             return outputs
 
         with ExitStack() as stack:
+            stack.enter_context(enabled_generation_policy())
             stack.enter_context(mock.patch.object(rag_components, "_convert_message_to_langchain_async", mock.AsyncMock(return_value="hello")))
             stack.enter_context(mock.patch.object(rag_components, "_get_request_scoped_llm", mock.AsyncMock(return_value=llm_resolution)))
             stack.enter_context(mock.patch.object(rag_components, "_build_request_runtime_context", mock.AsyncMock(return_value=request_context)))

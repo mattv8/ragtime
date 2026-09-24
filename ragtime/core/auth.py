@@ -16,6 +16,7 @@ import hmac
 import re
 import secrets
 import ssl
+import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -26,6 +27,7 @@ from jose import JWTError, jwt  # type: ignore[import-untyped]
 from ldap3 import (
     ALL,
     AUTO_BIND_NO_TLS,  # type: ignore[import-untyped]
+    AUTO_BIND_NONE,
     AUTO_BIND_TLS_BEFORE_BIND,
     SUBTREE,
     Connection,
@@ -35,6 +37,8 @@ from ldap3 import (
 from ldap3.core.exceptions import (  # type: ignore[import-untyped]
     LDAPBindError,
     LDAPException,
+    LDAPNoSuchObjectResult,
+    LDAPOperationResult,
 )
 from ldap3.utils.conv import escape_filter_chars  # type: ignore[import-untyped]
 from prisma import Json, types
@@ -56,6 +60,12 @@ from ragtime.core.auth_policy import (
 )
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret
+from ragtime.core.ldap_errors import (
+    AuthFailureCode,
+    auth_failure_message,
+    classify_directory_failure,
+    classify_user_bind_failure,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.oauth_grants import OAuthGrantError, lock_user_security_generation, revoke_user_auth
 
@@ -95,6 +105,7 @@ class AuthResult(BaseModel):
     email: Optional[str] = None
     role: str = "user"
     error: Optional[str] = None
+    failure_code: AuthFailureCode | None = None
 
 
 class LdapDiscoveryResult(BaseModel):
@@ -607,6 +618,8 @@ def _ldap_group_rid(
     ldap_config: Any,
     bind_password: str,
     group_dn: str,
+    *,
+    strict: bool = False,
 ) -> int | None:
     group_conn = _get_ldap_connection(
         ldap_config.serverUrl,
@@ -615,19 +628,28 @@ def _ldap_group_rid(
         ldap_config.allowSelfSigned,
     )
     if not group_conn:
+        if strict:
+            raise LDAPException("LDAP group lookup connection failed")
         return None
 
     try:
-        group_conn.search(
+        search_succeeded = group_conn.search(
             search_base=group_dn,
             search_filter="(objectClass=*)",
             search_scope="BASE",
             attributes=["primaryGroupToken", "objectSid"],
         )
+        if not search_succeeded:
+            result = getattr(group_conn, "result", {}) or {}
+            result_code = result.get("result") if isinstance(result, dict) else None
+            if result_code not in (None, 0):
+                raise _ldap_operation_result(result, response_type="searchResDone")
         if group_conn.entries:
             return _group_entry_rid(group_conn.entries[0])
-    except LDAPException as e:
-        logger.debug(f"Failed to get RID for group {group_dn}: {e}")
+    except LDAPException as exc:
+        logger.debug("LDAP group RID lookup failed exception_type=%s ldap_result=%s", type(exc).__name__, _ldap_result_code(exc))
+        if strict:
+            raise
     finally:
         if group_conn.bound:
             group_conn.unbind()
@@ -641,6 +663,7 @@ def _ldap_entry_has_group_dn(
     group_dn: str,
     ldap_config: Any | None = None,
     bind_password: str | None = None,
+    strict: bool = False,
 ) -> bool:
     """Check direct memberOf and, when possible, AD primary-group membership."""
     group_dn_lower = group_dn.lower()
@@ -655,7 +678,7 @@ def _ldap_entry_has_group_dn(
     if not primary_group_id:
         return False
 
-    return _ldap_group_rid(ldap_config, bind_password, group_dn) == primary_group_id
+    return _ldap_group_rid(ldap_config, bind_password, group_dn, strict=strict) == primary_group_id
 
 
 async def _record_auth_sync_event(
@@ -698,6 +721,23 @@ async def get_ldap_config():
     return config
 
 
+def _ldap_server(
+    server_url: str,
+    allow_self_signed: bool,
+    connect_timeout: int,
+) -> Server:
+    """Build the common LDAP server configuration for service and user binds."""
+    use_ssl = server_url.startswith("ldaps://")
+    tls_config = Tls(validate=ssl.CERT_NONE if allow_self_signed else ssl.CERT_REQUIRED) if use_ssl else None
+    return Server(
+        server_url,
+        get_info=ALL,
+        use_ssl=use_ssl,
+        tls=tls_config,
+        connect_timeout=connect_timeout,
+    )
+
+
 def _get_ldap_connection(
     server_url: str,
     bind_dn: str,
@@ -711,28 +751,13 @@ def _get_ldap_connection(
 
     for attempt in range(max_retries):
         try:
-            # Parse server URL
-            use_ssl = server_url.startswith("ldaps://")
-
-            # Configure TLS for self-signed certificates if needed
-            tls_config = None
-            if use_ssl and allow_self_signed:
-                tls_config = Tls(validate=ssl.CERT_NONE)
-
-            server = Server(
-                server_url,
-                get_info=ALL,
-                use_ssl=use_ssl,
-                tls=tls_config,
-                connect_timeout=connect_timeout,
-            )
-
-            auto_bind = AUTO_BIND_TLS_BEFORE_BIND if use_ssl else AUTO_BIND_NO_TLS
+            server = _ldap_server(server_url, allow_self_signed, connect_timeout)
             conn = Connection(
                 server,
                 user=bind_dn,
                 password=bind_password,
-                auto_bind=auto_bind,
+                # Server(use_ssl=True) performs implicit LDAPS; StartTLS is not needed.
+                auto_bind=AUTO_BIND_NO_TLS,
                 raise_exceptions=True,
                 receive_timeout=connect_timeout,
             )
@@ -745,6 +770,95 @@ def _get_ldap_connection(
 
     logger.error(f"LDAP connection failed after {max_retries} attempts: {last_error}")
     return None
+
+
+def _ldap_result_code(exc: Exception) -> int | None:
+    result = getattr(exc, "result", None)
+    return result if isinstance(result, int) else None
+
+
+def _ldap_operation_result(result: dict[str, Any], *, response_type: str) -> LDAPOperationResult:
+    """Turn a non-raising LDAP result into a classifiable structured exception."""
+    result_code = result.get("result")
+    return LDAPOperationResult(
+        result=result_code if isinstance(result_code, int) else -1,
+        description=str(result.get("description", "")),
+        dn=str(result.get("dn", "")),
+        message=str(result.get("message", "")),
+        response_type=response_type,
+    )
+
+
+def _log_ldap_failure(code: AuthFailureCode, *, phase: str, exc: Exception | None = None) -> None:
+    """Log only normalized LDAP failure metadata, never server diagnostics."""
+    logger.warning(
+        "LDAP authentication failed phase=%s code=%s exception_type=%s ldap_result=%s",
+        phase,
+        code.value,
+        type(exc).__name__ if exc is not None else None,
+        _ldap_result_code(exc) if exc is not None else None,
+    )
+
+
+def _ldap_failure(code: AuthFailureCode, *, phase: str, exc: Exception | None = None) -> AuthResult:
+    """Create a public LDAP failure without exposing directory diagnostics."""
+    _log_ldap_failure(code, phase=phase, exc=exc)
+    if exc is not None and code is AuthFailureCode.INTERNAL_ERROR and exc.__traceback__ is not None:
+        frame = traceback.extract_tb(exc.__traceback__)[-1]
+        logger.warning(
+            "LDAP authentication unexpected failure phase=%s frame_file=%s frame_function=%s frame_line=%s",
+            phase,
+            frame.filename,
+            frame.name,
+            frame.lineno,
+        )
+    return AuthResult(success=False, error=auth_failure_message(code), failure_code=code)
+
+
+def _bind_ldap_user(
+    server_url: str,
+    user_dn: str,
+    password: str,
+    allow_self_signed: bool = False,
+    connect_timeout: int = 5,
+) -> AuthFailureCode | None:
+    """Verify one user's password exactly once, preserving bind failures for classification."""
+    if not password:
+        return AuthFailureCode.INVALID_CREDENTIALS
+
+    conn: Connection | None = None
+    try:
+        server = _ldap_server(server_url, allow_self_signed, connect_timeout)
+        conn = Connection(
+            server,
+            user=user_dn,
+            password=password,
+            auto_bind=AUTO_BIND_NONE,
+            raise_exceptions=True,
+            receive_timeout=connect_timeout,
+        )
+        conn.open(read_server_info=False)
+        if conn.closed:
+            return AuthFailureCode.DIRECTORY_UNAVAILABLE
+        if not conn.bind(read_server_info=False):
+            result = getattr(conn, "result", {}) or {}
+            if isinstance(result, dict) and isinstance(result.get("result"), int):
+                bind_error = _ldap_operation_result(result, response_type="bindResponse")
+                code = classify_user_bind_failure(bind_error)
+                _log_ldap_failure(code, phase="user_bind", exc=bind_error)
+                return code
+            return AuthFailureCode.INVALID_CREDENTIALS
+        return None
+    except Exception as exc:
+        code = classify_user_bind_failure(exc)
+        _log_ldap_failure(code, phase="user_bind", exc=exc)
+        return code
+    finally:
+        if conn is not None:
+            try:
+                conn.unbind()
+            except Exception:
+                pass
 
 
 def _is_invalid_attribute_error(error: LDAPException) -> bool:
@@ -918,17 +1032,32 @@ def _search_first_matching_entry(
     search_filters: list[str],
     attributes: list[str],
     context: str,
+    strict: bool = False,
 ) -> Optional[Any]:
     """Try search filters in order and return first matching LDAP entry."""
+    retained_error: LDAPException | None = None
     for search_filter in search_filters:
         try:
-            _search_with_attribute_fallback(
+            search_succeeded = _search_with_attribute_fallback(
                 conn,
                 search_base=search_base,
                 search_filter=search_filter,
                 search_scope=SUBTREE,
                 attributes=attributes,
             )
+            if not search_succeeded:
+                result = getattr(conn, "result", {}) or {}
+                result_code = result.get("result") if isinstance(result, dict) else None
+                if result_code not in (None, 0):
+                    if result_code == 32:
+                        raise LDAPNoSuchObjectResult(
+                            result=32,
+                            description=str(result.get("description", "noSuchObject")),
+                            dn=str(result.get("dn", "")),
+                            message=str(result.get("message", "")),
+                            response_type="searchResDone",
+                        )
+                    raise LDAPException("LDAP search returned an operational failure")
             if conn.entries:
                 return conn.entries[0]
         except LDAPException as e:
@@ -936,8 +1065,16 @@ def _search_first_matching_entry(
                 logger.debug(f"LDAP filter skipped in {context} due to unsupported attribute: {search_filter} ({e})")
                 continue
 
-            logger.debug(f"LDAP search failed in {context} for filter {search_filter}: {e}")
+            logger.debug(
+                "LDAP search failed context=%s exception_type=%s ldap_result=%s",
+                context,
+                type(e).__name__,
+                _ldap_result_code(e),
+            )
+            retained_error = e
 
+    if strict and retained_error is not None:
+        raise retained_error
     return None
 
 
@@ -1658,26 +1795,25 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
     ldap_config = await get_ldap_config()
 
     if not ldap_config.serverUrl or not ldap_config.bindDn:
-        return AuthResult(success=False, error="LDAP not configured")
+        return _ldap_failure(AuthFailureCode.NOT_CONFIGURED, phase="configuration")
 
-    # Decrypt bind password if encrypted
-    bind_password = decrypt_secret(ldap_config.bindPassword)
-
-    # Connect with service account
-    conn = _get_ldap_connection(
-        ldap_config.serverUrl,
-        ldap_config.bindDn,
-        bind_password,
-        ldap_config.allowSelfSigned,
-    )
-    if not conn:
-        return AuthResult(success=False, error="Failed to connect to LDAP server")
-
+    conn: Connection | None = None
     try:
+        # Decrypt bind password if encrypted and establish the legacy service connection.
+        bind_password = decrypt_secret(ldap_config.bindPassword)
+        conn = _get_ldap_connection(
+            ldap_config.serverUrl,
+            ldap_config.bindDn,
+            bind_password,
+            ldap_config.allowSelfSigned,
+        )
+        if not conn:
+            return _ldap_failure(AuthFailureCode.DIRECTORY_UNAVAILABLE, phase="service_bind")
+
         # Build search base
         search_base = ldap_config.userSearchBase or ldap_config.baseDn
         if not search_base:
-            return AuthResult(success=False, error="LDAP search base not configured")
+            return _ldap_failure(AuthFailureCode.DIRECTORY_CONFIGURATION_ERROR, phase="lookup")
 
         search_filters = _build_user_search_filters(
             ldap_config.userSearchFilter or "(uid={username})",
@@ -1689,20 +1825,20 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
             search_filters=search_filters,
             attributes=_get_user_entry_search_attributes(),
             context="LDAP authentication",
+            strict=True,
         )
 
         if not user_entry:
-            return AuthResult(success=False, error="User not found")
+            return _ldap_failure(AuthFailureCode.INVALID_CREDENTIALS, phase="lookup")
 
         user_dn = str(user_entry.entry_dn)
 
         conn.unbind()
 
         # Verify user's password by binding as the user
-        user_conn = _get_ldap_connection(ldap_config.serverUrl, user_dn, password, ldap_config.allowSelfSigned)
-        if not user_conn:
-            return AuthResult(success=False, error="Invalid credentials")
-        user_conn.unbind()
+        bind_failure = _bind_ldap_user(ldap_config.serverUrl, user_dn, password, ldap_config.allowSelfSigned)
+        if bind_failure is not None:
+            return _ldap_failure(bind_failure, phase="user_bind")
 
         # Determine role based on group membership
         try:
@@ -1711,10 +1847,11 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
                 bind_password=bind_password,
                 user_entry=user_entry,
                 ldap_username=username,
+                strict=True,
             )
         except ValueError:
             logger.warning(f"User {username} not in authorized group. required userGroupDns={ldap_config.userGroupDns}")
-            return AuthResult(success=False, error="User not in authorized group")
+            return _ldap_failure(AuthFailureCode.ACCESS_DENIED, phase="group_check")
 
         profile = _ldap_profile_from_entry(
             user_entry=user_entry,
@@ -1740,7 +1877,7 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
                 )
 
         if not user:
-            return AuthResult(success=False, error="Failed to sync user to database")
+            return _ldap_failure(AuthFailureCode.INTERNAL_ERROR, phase="sync")
 
         return AuthResult(
             success=True,
@@ -1753,15 +1890,17 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
 
     except LdapIdentityResolutionError as exc:
         logger.warning(f"LDAP identity resolution rejected for {username}: {exc}")
-        return AuthResult(success=False, error="LDAP identity conflict")
-    except LDAPBindError:
-        return AuthResult(success=False, error="Invalid credentials")
-    except LDAPException as e:
-        logger.error(f"LDAP auth error: {e}")
-        return AuthResult(success=False, error=f"LDAP error: {str(e)}")
+        return _ldap_failure(AuthFailureCode.IDENTITY_CONFLICT, phase="sync")
+    except LDAPException as exc:
+        return _ldap_failure(classify_directory_failure(exc), phase="directory", exc=exc)
+    except Exception as exc:
+        return _ldap_failure(AuthFailureCode.INTERNAL_ERROR, phase="internal", exc=exc)
     finally:
-        if conn.bound:
-            conn.unbind()
+        if conn is not None and conn.bound:
+            try:
+                conn.unbind()
+            except Exception:
+                pass
 
 
 async def search_ldap_user_profile(username: str) -> AuthUserProfile | None:
@@ -1912,19 +2051,35 @@ def _determine_ldap_role_for_entry(
     bind_password: str,
     user_entry: Any,
     ldap_username: str,
+    strict: bool = False,
 ) -> UserRole:
     """Resolve LDAP role for a user entry using configured group mappings."""
     role: UserRole = UserRole.user
     admin_group_dns = [dn for dn in (getattr(ldap_config, "adminGroupDns", []) or []) if str(dn).strip()]
     user_group_dns = [dn for dn in (getattr(ldap_config, "userGroupDns", []) or []) if str(dn).strip()]
 
-    def is_member_of_group(group_dn: str) -> bool:
+    def is_member_of_group(group_dn: str, *, require_verification: bool) -> bool:
         return _ldap_entry_has_group_dn(
             user_entry=user_entry,
             group_dn=group_dn,
             ldap_config=ldap_config,
             bind_password=bind_password,
+            strict=strict and require_verification,
         )
+
+    def has_any_group(group_dns: list[str], *, require_verification: bool) -> bool:
+        retained_error: LDAPException | None = None
+        for group_dn in group_dns:
+            try:
+                if is_member_of_group(group_dn, require_verification=require_verification):
+                    return True
+            except LDAPException as exc:
+                if not strict:
+                    raise
+                retained_error = exc
+        if strict and require_verification and retained_error is not None:
+            raise retained_error
+        return False
 
     member_of = _entry_group_dns(user_entry)
     primary_group_id = _entry_primary_group_id(user_entry)
@@ -1935,10 +2090,10 @@ def _determine_ldap_role_for_entry(
         f"adminGroupDns={admin_group_dns}, userGroupDns={user_group_dns}"
     )
 
-    if user_group_dns and not any(is_member_of_group(group_dn) for group_dn in user_group_dns):
+    if user_group_dns and not has_any_group(user_group_dns, require_verification=True):
         raise ValueError("User not in authorized group")
 
-    if any(is_member_of_group(group_dn) for group_dn in admin_group_dns):
+    if has_any_group(admin_group_dns, require_verification=False):
         return UserRole.admin
 
     return role
@@ -2313,8 +2468,8 @@ async def authenticate(username: str, password: str) -> AuthResult:
         ldap_result = await authenticate_ldap(username, password)
         if ldap_result.success:
             return ldap_result
-        # If LDAP explicitly fails (not just "not configured"), return error
-        if ldap_result.error and ldap_result.error != "LDAP not configured":
+        # Preserve the configured local-admin fallback when LDAP is unavailable.
+        if ldap_result.failure_code != AuthFailureCode.NOT_CONFIGURED:
             # Still try local fallback for local admin
             if username == settings.local_admin_user:
                 return await authenticate_local(username, password)

@@ -1,8 +1,17 @@
-import type { Dispatch, SetStateAction } from 'react';
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
+import {
+  contentProtectionApi,
+  requirementModeFor,
+  type ContentProtectionConfig,
+  type ContentProtectionRequirementMode,
+  updateContentProtectionConfigSlice,
+  withRequirement,
+} from '@/api/contentProtection';
 import { Eye, EyeOff } from 'lucide-react';
 import { InlineCopyButton } from '../shared/InlineCopyButton';
 import { LdapGroupChips, LdapGroupSelect, type LdapGroup } from '../LdapGroupSelect';
 import { SettingsAccordionSection } from './SettingsAccordionSection';
+import { MasterToggle } from './MasterToggle';
 import type { AppSettings, UpdateSettingsRequest } from '@/types';
 import type { SettingsAccordionSectionId } from './settingsAccordionState';
 
@@ -21,7 +30,7 @@ export interface McpSettingsSectionProps {
   mcpSaving: boolean;
   handleSaveMcp: () => void | Promise<void>;
   setShowMcpRoutesPanel: Dispatch<SetStateAction<boolean>>;
-  toast: { success: (message: string) => void };
+  toast: { success: (message: string) => void; error: (message: string) => void };
   generateMcpClientId: () => string;
   generateMcpSecret: () => string;
 }
@@ -46,6 +55,8 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
     generateMcpClientId,
     generateMcpSecret,
   } = props;
+  const [contentProtectionConfig, setContentProtectionConfig] =
+    useState<ContentProtectionConfig | null>(null);
   const authEnabled = formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth ?? false;
   const authMethod =
     formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'oauth2';
@@ -56,6 +67,32 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
     ((settings?.has_mcp_default_password && formData.mcp_default_route_password !== '') ||
       Boolean(formData.mcp_default_route_password));
 
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    void contentProtectionApi.getConfig().then(
+      (config) => active && setContentProtectionConfig(config),
+      () => active && setContentProtectionConfig(null),
+    );
+    return () => {
+      active = false;
+    };
+  }, [open]);
+
+  const updateDefaultRouteRequirement = async (mode: ContentProtectionRequirementMode) => {
+    try {
+      const nextConfig = await updateContentProtectionConfigSlice((config) =>
+        withRequirement(config, 'mcp_route', 'default', mode),
+      );
+      setContentProtectionConfig(nextConfig);
+      toast.success('Content protection requirement saved');
+    } catch (caught) {
+      toast.error(
+        caught instanceof Error ? caught.message : 'Failed to save content protection requirement',
+      );
+    }
+  };
+
   return (
     <SettingsAccordionSection id="mcp" title="MCP Configuration" open={open} onToggle={onToggle}>
       <fieldset>
@@ -64,26 +101,19 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
           Configure Model Context Protocol (MCP) access and authentication settings.
         </p>
 
-        <div className="form-group">
-          <label
-            className="chat-toggle-control"
-            style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
-          >
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={formData.mcp_enabled ?? settings?.mcp_enabled ?? false}
-                onChange={(e) => setFormData({ ...formData, mcp_enabled: e.target.checked })}
-              />
-              <span className="toggle-slider"></span>
-            </label>
-            <span>Enable MCP Server</span>
-          </label>
-          <p className="field-help">
-            When enabled, the MCP server endpoints (<code>/mcp</code> and custom routes) will be
-            active. Disable to prevent all MCP access.
-          </p>
-        </div>
+        <MasterToggle
+          settingId="setting-mcp_enabled"
+          inputId="mcp-enabled"
+          label="Enable MCP Server"
+          checked={formData.mcp_enabled ?? settings?.mcp_enabled ?? false}
+          onChange={(checked) => setFormData({ ...formData, mcp_enabled: checked })}
+          help={
+            <>
+              When enabled, the MCP server endpoints (<code>/mcp</code> and custom routes) will be
+              active. Disable to prevent all MCP access.
+            </>
+          }
+        />
 
         {/* Only show other MCP settings when enabled */}
         {(formData.mcp_enabled ?? settings?.mcp_enabled ?? false) && (
@@ -113,6 +143,32 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
                       : ' Set a password below to enable password-based authentication.'}
               </p>
             </div>
+
+            {contentProtectionConfig?.enabled && (
+              <div className="form-group" id="mcp-default-route-content-protection">
+                <label htmlFor="mcp-default-route-require-classification">
+                  Require classification
+                </label>
+                <select
+                  id="mcp-default-route-require-classification"
+                  value={requirementModeFor(contentProtectionConfig, 'mcp_route', 'default')}
+                  onChange={(event) =>
+                    void updateDefaultRouteRequirement(
+                      event.target.value as ContentProtectionRequirementMode,
+                    )
+                  }
+                >
+                  <option value="inherit">Inherit</option>
+                  <option value="require">Require</option>
+                </select>
+                {contentProtectionConfig.coverage_mode === 'all_supported_traffic' && (
+                  <p className="field-help">
+                    Coverage is currently All supported traffic; scope requirements apply when
+                    coverage is Selected scopes.
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Auth method selection - always show when auth is enabled. LDAP-only OAuth2 is conditional. */}
             {authEnabled && (

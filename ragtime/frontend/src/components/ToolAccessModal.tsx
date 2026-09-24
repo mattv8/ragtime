@@ -1,5 +1,13 @@
-import { useEffect, useId } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { X } from 'lucide-react';
+import {
+  contentProtectionApi,
+  updateContentProtectionConfigSlice,
+  withRequirement,
+  type ContentProtectionConfig,
+  type ContentProtectionRequirementMode,
+} from '@/api/contentProtection';
+import { ToastContainer, useToast } from './shared/Toast';
 
 import {
   ToolAccessEditor,
@@ -20,6 +28,7 @@ interface ToolAccessModalProps {
   globalWriteEnabled?: boolean;
   onChange: (policy: ToolAccessPolicy) => void;
   onSave: (policy: ToolAccessPolicy) => void | Promise<void>;
+  onContentProtectionModeChange?: (toolId: string, mode: ContentProtectionRequirementMode) => void;
   onClose: () => void;
 }
 
@@ -35,9 +44,14 @@ export function ToolAccessModal({
   globalWriteEnabled = true,
   onChange,
   onSave,
+  onContentProtectionModeChange,
   onClose,
 }: ToolAccessModalProps) {
   const titleId = useId();
+  const [contentProtectionConfig, setContentProtectionConfig] =
+    useState<ContentProtectionConfig | null>(null);
+  const [contentProtectionSaving, setContentProtectionSaving] = useState(false);
+  const [toasts, toast] = useToast();
 
   useEffect(() => {
     if (!open) {
@@ -55,11 +69,60 @@ export function ToolAccessModal({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose, open]);
 
+  useEffect(() => {
+    if (!open) {
+      setContentProtectionConfig(null);
+      return;
+    }
+
+    let active = true;
+    void contentProtectionApi
+      .getConfig()
+      .then((config) => {
+        if (active) setContentProtectionConfig(config);
+      })
+      .catch(() => {
+        if (active) setContentProtectionConfig(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open]);
+
   if (!open) {
     return null;
   }
 
   const editorDisabled = disabled || loading || saving || policy == null;
+  const contentProtectionMode =
+    contentProtectionConfig && policy
+      ? contentProtectionConfig.requirements.some(
+          (requirement) =>
+            requirement.scope_kind === 'tool' &&
+            requirement.scope_key === policy.tool_id &&
+            requirement.mode === 'require',
+        )
+        ? 'require'
+        : 'inherit'
+      : 'inherit';
+
+  const handleContentProtectionModeChange = async (mode: ContentProtectionRequirementMode) => {
+    if (!policy || contentProtectionSaving) return;
+
+    setContentProtectionSaving(true);
+    try {
+      const savedConfig = await updateContentProtectionConfigSlice((config) =>
+        withRequirement(config, 'tool', policy.tool_id, mode),
+      );
+      setContentProtectionConfig(savedConfig);
+      onContentProtectionModeChange?.(policy.tool_id, mode);
+      toast.success('Content protection updated');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to update content protection');
+    } finally {
+      setContentProtectionSaving(false);
+    }
+  };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -92,6 +155,31 @@ export function ToolAccessModal({
               onChange={onChange}
             />
           )}
+          {policy != null && contentProtectionConfig?.enabled && (
+            <section id="tool-content-protection" data-tool-content-protection>
+              <label htmlFor="tool-content-protection-mode">Content protection</label>
+              <select
+                id="tool-content-protection-mode"
+                data-tool-content-protection-mode
+                value={contentProtectionMode}
+                disabled={disabled || contentProtectionSaving}
+                onChange={(event) =>
+                  void handleContentProtectionModeChange(
+                    event.target.value as ContentProtectionRequirementMode,
+                  )
+                }
+              >
+                <option value="inherit">Inherit</option>
+                <option value="require">Require classification</option>
+              </select>
+              {contentProtectionConfig.coverage_mode === 'all_supported_traffic' && (
+                <p className="field-help">
+                  Coverage is currently All supported traffic; scope requirements apply when
+                  coverage is Selected scopes.
+                </p>
+              )}
+            </section>
+          )}
         </div>
         <div className="modal-footer">
           <button type="button" className="btn btn-secondary" onClick={onClose}>
@@ -110,6 +198,7 @@ export function ToolAccessModal({
             {saving ? 'Saving...' : 'Save Access'}
           </button>
         </div>
+        <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
       </div>
     </div>
   );

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Info } from 'lucide-react';
 
 import { api } from '@/api';
+import { formatPublicErrorDetail } from '@/api/publicErrorDetail';
 import type {
   AuthStatus,
   ChatTask,
@@ -690,7 +691,10 @@ function SharedChatSurface({
                                                 role="status"
                                               >
                                                 <AlertCircle size={14} aria-hidden="true" />
-                                                <span>Generation failed: {event.content}</span>
+                                                <span>
+                                                  Generation failed:{' '}
+                                                  {formatPublicErrorDetail(event, event.content)}
+                                                </span>
                                               </div>,
                                             );
                                           } else if (event.type === 'tool') {

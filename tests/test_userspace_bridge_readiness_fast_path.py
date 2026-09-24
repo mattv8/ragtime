@@ -40,6 +40,7 @@ def _healthy_provider_status() -> dict[str, object]:
     now = utc_now()
     return {
         "bridge_credential": {
+            "mode": "worker_file",
             "bridge_url": "http://ragtime:8000/indexes/userspace/runtime-bridge",
             "token_kind": "userspace_runtime_bridge",
             "workspace_id": "workspace-1",
@@ -71,17 +72,30 @@ class BridgeReadinessFastPathTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_recovery_recheck_forces_fresh_status(self) -> None:
         service = UserSpaceRuntimeService()
-        unhealthy = {"bridge_credential": None}
-        get_status = mock.AsyncMock(side_effect=[unhealthy, unhealthy, _healthy_provider_status()])
+        healthy_cred = cast(dict[str, object], _healthy_provider_status()["bridge_credential"])
+        expired_provider_status = {
+            "bridge_credential": {
+                **healthy_cred,
+                "expires_at": (utc_now() - timedelta(seconds=1)).isoformat(),
+            }
+        }
+        get_status = mock.AsyncMock(side_effect=[expired_provider_status, expired_provider_status, _healthy_provider_status()])
+        expired = SimpleNamespace(
+            state="expired",
+            expires_at=utc_now() - timedelta(seconds=1),
+            detail=None,
+            mode="worker_file",
+            revision=0,
+        )
         get_bridge_status = mock.AsyncMock(
             side_effect=[
-                SimpleNamespace(state="missing", expires_at=None, detail=None, mode="env", revision=0),
-                SimpleNamespace(state="missing", expires_at=None, detail=None, mode="env", revision=0),
+                expired,
+                expired,
                 SimpleNamespace(
                     state="healthy",
                     expires_at=utc_now() + timedelta(hours=2),
                     detail=None,
-                    mode="env",
+                    mode="worker_file",
                     revision=0,
                 ),
             ]
@@ -92,9 +106,9 @@ class BridgeReadinessFastPathTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(service, "_get_runtime_bridge_status_for_session", new=get_bridge_status),
             mock.patch.object(
                 service,
-                "restart_runtime_env_vars_and_wait",
+                "_refresh_file_bridge_credential",
                 new=mock.AsyncMock(),
-            ),
+            ) as refresh_credential,
             mock.patch.object(
                 service,
                 "_get_active_session_row",
@@ -110,6 +124,7 @@ class BridgeReadinessFastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second_call.kwargs["max_age_seconds"], 0)
         self.assertEqual(third_call.kwargs["max_age_seconds"], 0)
         self.assertEqual(get_bridge_status.await_count, 3)
+        refresh_credential.assert_awaited_once_with(_session(), expired)
         for call in get_bridge_status.await_args_list:
             self.assertFalse(call.kwargs["include_last_success"])
 

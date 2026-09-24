@@ -51,7 +51,6 @@ from ragtime.core.userspace_limits import (
 from ragtime.indexer.document_parser import extract_text_from_file_async
 from ragtime.userspace.cross_workspace_sqlite import CrossWorkspaceSqliteError
 from ragtime.userspace.models import (
-    BridgeCredentialModeResponse,
     ExecuteComponentRequest,
     ExecuteComponentResponse,
     RequestAppRestart,
@@ -59,7 +58,6 @@ from ragtime.userspace.models import (
     RuntimeBridgeSqliteMutationResponse,
     RuntimeBridgeSqliteQueryRequest,
     RuntimeBridgeSqliteQueryResponse,
-    UpdateBridgeCredentialModeRequest,
     UserSpaceAuthMethod,
     UserSpaceBrowserAuthorization,
     UserSpaceBrowserAuthRequest,
@@ -2661,16 +2659,6 @@ async def refresh_runtime_bridge_credentials(
     user: Any = Depends(get_current_user),
 ):
     return await _runtime_service().refresh_runtime_bridge_credentials(workspace_id, user.id)
-
-
-@router.get("/runtime/workspaces/{workspace_id}/bridge-credential-mode", response_model=BridgeCredentialModeResponse)
-async def get_bridge_credential_mode(workspace_id: str, user: Any = Depends(get_current_user)):
-    return await _runtime_service().get_bridge_credential_mode(workspace_id, user.id, is_admin=user.role == "admin")
-
-
-@router.put("/runtime/workspaces/{workspace_id}/bridge-credential-mode", response_model=BridgeCredentialModeResponse)
-async def set_bridge_credential_mode(workspace_id: str, request: UpdateBridgeCredentialModeRequest, user: Any = Depends(get_current_user)):
-    return await _runtime_service().set_bridge_credential_mode(workspace_id, user.id, request.mode, is_admin=user.role == "admin")
 
 
 @router.post("/runtime/workspaces/{workspace_id}/app/restart", response_model=UserSpaceRuntimeOperation)

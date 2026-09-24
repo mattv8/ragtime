@@ -14,6 +14,9 @@ from typing import Any, Optional
 def build_where_clause_for_since(
     since: Optional[datetime],
     column_name: str = "created_at",
+    *,
+    until: Optional[datetime] = None,
+    start_param_idx: int = 1,
 ) -> tuple[list[str], list[Any], int]:
     """
     Build a WHERE clause fragment for timestamp filtering.
@@ -21,6 +24,8 @@ def build_where_clause_for_since(
     Args:
         since: Optional datetime for filtering (optional)
         column_name: Name of the timestamp column to filter on
+        until: Optional exclusive datetime for filtering
+        start_param_idx: First SQL parameter index to use
 
     Returns:
         Tuple of (where_clauses, params, next_param_idx)
@@ -28,11 +33,16 @@ def build_where_clause_for_since(
 
     where_clauses: list[str] = []
     params: list[Any] = []
-    param_idx = 1
+    param_idx = start_param_idx
 
     if since:
         where_clauses.append(f"{column_name} >= ${param_idx}::timestamp")
         params.append(since.isoformat())
+        param_idx += 1
+
+    if until:
+        where_clauses.append(f"{column_name} < ${param_idx}::timestamp")
+        params.append(until.isoformat())
         param_idx += 1
 
     return where_clauses, params, param_idx

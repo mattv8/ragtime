@@ -27,7 +27,8 @@ class RuntimeBridgePromptTests(unittest.TestCase):
     def test_valid_server_entrypoint_includes_bridge_guidance(self) -> None:
         text = build_userspace_entrypoint_nudge(self._status(), is_default_static=False)
         self.assertIn("`RAGTIME_BRIDGE_URL`", text)
-        self.assertIn("`RAGTIME_BRIDGE_TOKEN`", text)
+        self.assertIn("`RAGTIME_BRIDGE_TOKEN_FILE`", text)
+        self.assertNotIn("legacy `RAGTIME_BRIDGE_TOKEN`", text)
         self.assertIn("`{RAGTIME_BRIDGE_URL}/execute-component`", text)
         self.assertIn(
             "SERVER execution surface (this bridge, bearer token): follows Workspace Tools access policy.",

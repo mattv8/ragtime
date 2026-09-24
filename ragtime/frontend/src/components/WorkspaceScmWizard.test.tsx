@@ -226,7 +226,7 @@ function disconnectedWorkspace(): UserSpaceWorkspace {
 }
 
 async function openGitSourceTab() {
-  fireEvent.click(screen.getAllByRole('button', { name: 'Git Source' })[0]);
+  fireEvent.click(screen.getAllByRole('tab', { name: 'Git Source' })[0]);
   await act(async () => {
     await Promise.resolve();
   });
@@ -592,7 +592,7 @@ const mockArchiveExport = () => ({
 
 async function setupArchiveExportTab(workspace: typeof baseWorkspace) {
   renderWizard(workspace);
-  fireEvent.click(screen.getAllByRole('button', { name: 'Backup/Restore' })[0]);
+  fireEvent.click(screen.getAllByRole('tab', { name: 'Backup/Restore' })[0]);
   await act(async () => {
     await Promise.resolve();
   });
@@ -763,7 +763,7 @@ describe('WorkspaceScmWizard archive download spinner', () => {
     });
 
     const { rerender } = renderWizard(baseWorkspace);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Backup/Restore' })[0]);
+    fireEvent.click(screen.getAllByRole('tab', { name: 'Backup/Restore' })[0]);
     await act(async () => {
       await Promise.resolve();
     });
@@ -798,7 +798,7 @@ describe('WorkspaceScmWizard archive download spinner', () => {
       await Promise.resolve();
     });
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Backup/Restore' })[0]);
+    fireEvent.click(screen.getAllByRole('tab', { name: 'Backup/Restore' })[0]);
     await act(async () => {
       await Promise.resolve();
     });

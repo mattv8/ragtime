@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import codecs
 import contextlib
 import errno
 import hashlib
@@ -30,6 +31,7 @@ from runtime.manager.models import (
     RuntimeBridgeCredentialMetadata,
     RuntimeContentProbeRequest,
     RuntimeContentProbeResponse,
+    RuntimeExecJobResponse,
     RuntimeExecResponse,
     RuntimeExternalBrowseLink,
     RuntimeExternalBrowseRequest,
@@ -72,10 +74,12 @@ from runtime.worker.sandbox import (
 from ..core.secure_files import SecureFileError
 from ..core.secure_files import delete_file as secure_delete_file
 from ..core.secure_files import read_text as secure_read_text
+from ..core.secure_files import stat_file as secure_stat_file
 from ..core.secure_files import write_text as secure_write_text
 from ..core.shared import (
     RUNTIME_BOOTSTRAP_CONFIG_PATH,
     RUNTIME_BOOTSTRAP_STAMP_PATH,
+    RUNTIME_BRIDGE_TOKEN_FILE_PATH,
     RUNTIME_EXEC_TIMEOUT_HARD_CAP_SECONDS,
     EntrypointStatus,
     RuntimeSessionState,
@@ -337,7 +341,7 @@ class WorkerSession:
     runtime_operation_started_at: datetime | None
     runtime_operation_updated_at: datetime | None
     updated_at: datetime
-    bridge_credential_mode: str = "env"
+    bridge_credential_mode: str = "worker_file"
     bridge_session_id: str | None = None
     bridge_credential_revision: int = 0
     bridge_refresh_requests: dict[str, tuple[str, RuntimeBridgeCredentialMetadata]] = field(default_factory=dict)
@@ -345,7 +349,37 @@ class WorkerSession:
     bridge_token_file_initial_token: str | None = None
 
 
+@dataclass
+class _ExecJob:
+    id: str
+    session_id: str
+    workspace_id: str
+    command: str
+    cwd: str | None
+    timeout_seconds: int
+    user_id: str | None
+    credential_id: str | None
+    operation: str
+    created_at: datetime
+    status: str = "running"
+    exit_code: int | None = None
+    finished_at: datetime | None = None
+    output: bytearray = field(default_factory=bytearray)
+    truncated_before: int = 0
+    process: asyncio.subprocess.Process | None = None
+    cancel_requested: bool = False
+    output_redaction_carry: str = ""
+    output_decoder: Any = field(default_factory=lambda: codecs.getincrementaldecoder("utf-8")(errors="replace"))
+
+
 class WorkerService:
+    _EXEC_JOB_MAX_OUTPUT_BYTES: int = 1024 * 1024
+    _EXEC_JOB_MAX_FINISHED_PER_WORKSPACE = 100
+    _EXEC_JOB_MAX_RUNNING_PER_WORKSPACE = 2
+    _EXEC_JOB_MAX_RUNNING_GLOBAL = 8
+    _EXEC_JOB_READ_LIMIT_DEFAULT = 16 * 1024
+    _EXEC_JOB_READ_LIMIT_MAX = 64 * 1024
+
     def __init__(self) -> None:
         self._sessions: dict[str, WorkerSession] = {}
         self._provider_to_session: dict[str, str] = {}
@@ -362,6 +396,9 @@ class WorkerService:
         self._runtime_config_file = ".ragtime/runtime-entrypoint.json"
         self._startup_tasks: dict[str, asyncio.Task[None]] = {}
         self._active_execs: dict[str, dict[int, Any]] = {}
+        self._exec_jobs: dict[str, _ExecJob] = {}
+        self._exec_job_tasks: dict[str, asyncio.Task[None]] = {}
+        self._exec_job_workspaces_loaded: set[str] = set()
         self._app_restart_requests: dict[tuple[str, str], WorkerSessionResponse] = {}
         self._workspace_startup_locks: dict[str, asyncio.Lock] = {}
         # Lock order: startup lock -> file lock -> mount semaphore. File APIs
@@ -436,12 +473,24 @@ class WorkerService:
     ) -> tuple[int, bytes, bytes]:
         _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
         workspace_tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
+        # The active chroot mirror is a work tree, never the durable snapshot
+        # object store. Keep platform Git metadata at the worker-local canonical
+        # workspace path so commits made while active survive stop/restart.
+        git_env = dict(os.environ)
+        if env is not None:
+            git_env.update(env)
+        canonical_git_dir = workspace_files_path / ".git"
+        # A legacy .git file denotes an external/worktree layout. Leave that
+        # arrangement to Git rather than treating the file as a directory.
+        if not canonical_git_dir.is_file():
+            git_env["GIT_DIR"] = str(canonical_git_dir)
+            git_env["GIT_WORK_TREE"] = str(workspace_tree_root)
         try:
             process = await asyncio.create_subprocess_exec(
                 "git",
                 *args,
                 cwd=str(workspace_tree_root),
-                env=env,
+                env=git_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -466,31 +515,25 @@ class WorkerService:
     ) -> RuntimeWorkspaceFileListResponse:
         _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
         mount_specs = list(workspace_mounts or [])
-        tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
-
-        base_entries = await asyncio.to_thread(
-            list_workspace_tree_entries,
-            tree_root,
-            include_dirs=include_dirs,
-        )
-        mount_prefixes = deduplicate_ancestor_paths(
-            [repo_rel for spec in mount_specs if (repo_rel := workspace_mount_target_repo_relative_path(str(spec.get("target_path", "") or "")))]
-        )
-        if mount_prefixes and tree_root == workspace_files_path:
-            base_entries = [entry for entry in base_entries if not any(workspace_path_matches_mount_prefix(entry.path, prefix) for prefix in mount_prefixes)]
-
-        mount_entries = await asyncio.to_thread(
-            list_mount_source_tree_entries,
-            mount_specs,
-            include_dirs=include_dirs,
-        )
-        entries_by_path = {entry.path: entry for entry in base_entries}
-        for entry in mount_entries:
-            entries_by_path.setdefault(entry.path, entry)
-
-        return RuntimeWorkspaceFileListResponse(
-            files=[self._workspace_file_info(entry) for entry in sorted(entries_by_path.values(), key=lambda item: item.path)]
-        )
+        # List the same stable, worker-selected view used by file APIs. This
+        # also fences runtime stop/root transitions while an enumeration runs.
+        async with self._workspace_file_lock(workspace_id):
+            tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
+            base_entries = await asyncio.to_thread(list_workspace_tree_entries, tree_root, include_dirs=include_dirs)
+            mount_prefixes = deduplicate_ancestor_paths(
+                [repo_rel for spec in mount_specs if (repo_rel := workspace_mount_target_repo_relative_path(str(spec.get("target_path", "") or "")))]
+            )
+            if mount_prefixes and tree_root == workspace_files_path:
+                base_entries = [
+                    entry for entry in base_entries if not any(workspace_path_matches_mount_prefix(entry.path, prefix) for prefix in mount_prefixes)
+                ]
+            mount_entries = await asyncio.to_thread(list_mount_source_tree_entries, mount_specs, include_dirs=include_dirs)
+            entries_by_path = {entry.path: entry for entry in base_entries}
+            for entry in mount_entries:
+                entries_by_path.setdefault(entry.path, entry)
+            return RuntimeWorkspaceFileListResponse(
+                files=[self._workspace_file_info(entry) for entry in sorted(entries_by_path.values(), key=lambda item: item.path)]
+            )
 
     async def _active_workspace_tree_root(self, workspace_id: str, workspace_files_path: Path) -> Path:
         async with self._lock:
@@ -516,42 +559,43 @@ class WorkerService:
         args: list[str],
         env: dict[str, str] | None = None,
     ) -> RuntimeWorkspaceGitCommandResponse:
-        returncode, stdout_bytes, stderr_bytes = await self._run_git_in_workspace_raw(
-            workspace_id,
-            args=args,
-            env=env,
-        )
-        return RuntimeWorkspaceGitCommandResponse(
-            returncode=returncode,
-            stdout_b64=base64.b64encode(stdout_bytes).decode("ascii"),
-            stderr_b64=base64.b64encode(stderr_bytes).decode("ascii"),
-        )
+        # Snapshot and SCM commands operate on the active tree and cannot race
+        # another filesystem API mutation or a root transition.
+        async with self._workspace_file_lock(workspace_id):
+            returncode, stdout_bytes, stderr_bytes = await self._run_git_in_workspace_raw(
+                workspace_id,
+                args=args,
+                env=env,
+            )
+            return RuntimeWorkspaceGitCommandResponse(
+                returncode=returncode,
+                stdout_b64=base64.b64encode(stdout_bytes).decode("ascii"),
+                stderr_b64=base64.b64encode(stderr_bytes).decode("ascii"),
+            )
 
     async def get_workspace_scm_status(
         self,
         workspace_id: str,
     ) -> RuntimeWorkspaceScmStatusResponse:
-        _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
-        workspace_tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
-        sync_scope_paths = await asyncio.to_thread(
-            sync_scope_relative_paths,
-            workspace_tree_root,
-            ignored_relative_paths=PLATFORM_MANAGED_GITIGNORE_PATTERNS,
-        )
-        commit_result = await self._run_git_in_workspace_raw(
-            workspace_id,
-            args=["rev-parse", "HEAD"],
-        )
-        status_result = await self._run_git_in_workspace_raw(
-            workspace_id,
-            args=["status", "--porcelain", "--untracked-files=all"],
-        )
-        current_commit_hash = commit_result[1].decode("utf-8", errors="replace").strip() if commit_result[0] == 0 else ""
-        return RuntimeWorkspaceScmStatusResponse(
-            has_sync_scope_files=bool(sync_scope_paths),
-            has_uncommitted_changes=bool(status_result[1].decode("utf-8", errors="replace").strip()),
-            current_commit_hash=current_commit_hash or None,
-        )
+        async with self._workspace_file_lock(workspace_id):
+            _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
+            workspace_tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
+            sync_scope_paths = await asyncio.to_thread(
+                sync_scope_relative_paths,
+                workspace_tree_root,
+                ignored_relative_paths=PLATFORM_MANAGED_GITIGNORE_PATTERNS,
+            )
+            commit_result = await self._run_git_in_workspace_raw(workspace_id, args=["rev-parse", "HEAD"])
+            status_result = await self._run_git_in_workspace_raw(
+                workspace_id,
+                args=["status", "--porcelain", "--untracked-files=all"],
+            )
+            current_commit_hash = commit_result[1].decode("utf-8", errors="replace").strip() if commit_result[0] == 0 else ""
+            return RuntimeWorkspaceScmStatusResponse(
+                has_sync_scope_files=bool(sync_scope_paths),
+                has_uncommitted_changes=bool(status_result[1].decode("utf-8", errors="replace").strip()),
+                current_commit_hash=current_commit_hash or None,
+            )
 
     def _resolve_launch_cwd(self, session: WorkerSession) -> str:
         """Resolve the launch cwd as a sandbox-internal absolute path."""
@@ -576,6 +620,26 @@ class WorkerService:
     @staticmethod
     def _normalize_workspace_env(raw_env: dict[str, Any] | None) -> dict[str, str]:
         return {str(key): str(value) for key, value in (raw_env or {}).items() if str(key).strip()}
+
+    @staticmethod
+    def _prepare_file_bridge_workspace_env(
+        raw_env: dict[str, Any] | None,
+        *,
+        reject_raw_token: bool = True,
+    ) -> dict[str, str]:
+        """Apply the worker-owned bridge environment contract.
+
+        A startup carrying a raw token is rejected rather than silently
+        converting a legacy session. Restarts defensively remove reserved
+        values before restoring the sole public file path.
+        """
+        workspace_env = WorkerService._normalize_workspace_env(raw_env)
+        if reject_raw_token and "RAGTIME_BRIDGE_TOKEN" in workspace_env:
+            raise HTTPException(status_code=400, detail="Raw bridge tokens are not accepted in workspace environment")
+        workspace_env.pop("RAGTIME_BRIDGE_TOKEN", None)
+        workspace_env.pop("RAGTIME_BRIDGE_TOKEN_FILE", None)
+        workspace_env["RAGTIME_BRIDGE_TOKEN_FILE"] = RUNTIME_BRIDGE_TOKEN_FILE_PATH
+        return workspace_env
 
     @staticmethod
     def _normalize_workspace_env_visibility(
@@ -732,16 +796,21 @@ class WorkerService:
             return "", ""
 
         overlap = 0
-        for _, secret_value, _ in self._workspace_secret_redaction_items(session):
+        carry_length = 0
+        for key, secret_value, _ in self._workspace_secret_redaction_items(session):
             max_prefix_length = min(len(secret_value) - 1, len(combined))
             for prefix_length in range(max_prefix_length, 0, -1):
                 if combined.endswith(secret_value[:prefix_length]):
                     overlap = max(overlap, prefix_length)
+                    # Keep enough leading context for the existing key/value
+                    # redactor to recognize the completed secret next chunk.
+                    carry_length = max(carry_length, prefix_length + len(key) + 10)
                     break
 
         if overlap > 0:
-            output_text = combined[:-overlap]
-            next_carry = combined[-overlap:]
+            carry_length = min(len(combined), carry_length)
+            output_text = combined[:-carry_length]
+            next_carry = combined[-carry_length:]
         else:
             output_text = combined
             next_carry = ""
@@ -832,12 +901,10 @@ class WorkerService:
         session: WorkerSession,
     ) -> RuntimeBridgeCredentialMetadata | None:
         bridge_url = str(session.workspace_env.get("RAGTIME_BRIDGE_URL") or "").strip()
-        token = str(session.workspace_env.get("RAGTIME_BRIDGE_TOKEN") or "").strip()
-        if session.bridge_credential_mode == "worker_file":
-            try:
-                token = self._read_bridge_token_file(session) or ""
-            except HTTPException:
-                return None
+        try:
+            token = self._read_bridge_token_file(session) or ""
+        except HTTPException:
+            return None
         if not bridge_url or not token:
             return None
         payload = self._decode_jwt_payload_metadata(token)
@@ -857,7 +924,7 @@ class WorkerService:
             session_id=session_id,
             issued_at=issued_at,
             expires_at=expires_at,
-            mode=session.bridge_credential_mode,
+            mode="worker_file",
             revision=session.bridge_credential_revision,
         )
 
@@ -1216,13 +1283,47 @@ class WorkerService:
         rel_path: str,
         content: str,
         exists: bool,
+        *,
+        actual_updated_at: datetime | None = None,
+        artifact_metadata: dict[str, Any] | None = None,
+        is_utf8_text: bool = True,
     ) -> RuntimeFileReadResponse:
         return RuntimeFileReadResponse(
             path=rel_path,
             content=content,
             exists=exists,
-            updated_at=session.updated_at,
+            # Legacy consumers use updated_at; actual_updated_at is optional so
+            # older constructors and unavailable descriptor stats remain valid.
+            updated_at=actual_updated_at or session.updated_at,
+            actual_updated_at=actual_updated_at,
+            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest() if exists else None,
+            artifact_metadata=artifact_metadata,
+            is_utf8_text=is_utf8_text,
         )
+
+    @staticmethod
+    def _write_file_bundle(root: Path, relative_path: str, content: str, artifact_metadata: dict[str, Any] | None) -> Any:
+        """Persist content and its sidecar as one cancellation-drained API unit."""
+        secure_write_text(root, relative_path, content)
+        sidecar_path = relative_path + ".artifact.json"
+        if artifact_metadata is None:
+            secure_delete_file(root, sidecar_path)
+        else:
+            secure_write_text(root, sidecar_path, json.dumps(artifact_metadata, separators=(",", ":"), ensure_ascii=False))
+        return secure_stat_file(root, relative_path)
+
+    @staticmethod
+    def _delete_file_bundle(root: Path, relative_path: str) -> None:
+        secure_delete_file(root, relative_path)
+        secure_delete_file(root, relative_path + ".artifact.json")
+
+    @staticmethod
+    def _move_file_bundle(old_root: Path, old_relative_path: str, new_root: Path, new_relative_path: str, content: str, sidecar: str | None) -> None:
+        secure_write_text(new_root, new_relative_path, content)
+        if sidecar is not None:
+            secure_write_text(new_root, new_relative_path + ".artifact.json", sidecar)
+        secure_delete_file(old_root, old_relative_path)
+        secure_delete_file(old_root, old_relative_path + ".artifact.json")
 
     def _pick_free_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -2386,12 +2487,11 @@ class WorkerService:
                     # intentionally runs after releasing the file lock.
                     async with self._workspace_file_lock(workspace_id):
                         await asyncio.to_thread(ensure_sandbox_ready, session.sandbox_spec)
-                        if session.bridge_credential_mode == "worker_file":
-                            token = str(session.bridge_token_file_initial_token or "")
-                            if not token:
-                                raise HTTPException(status_code=400, detail="Missing worker file bridge credential")
-                            self._write_bridge_token_file(session, token)
-                            session.bridge_recent_tokens = [token]
+                        token = str(session.bridge_token_file_initial_token or "")
+                        if not token:
+                            raise HTTPException(status_code=400, detail="Missing worker file bridge credential")
+                        self._write_bridge_token_file(session, token)
+                        session.bridge_recent_tokens = [token]
                         await self._materialize_workspace_mounts(session)
                 except Exception as exc:
                     await self._mark_operation_failed(
@@ -2673,19 +2773,16 @@ class WorkerService:
                         status_code=409,
                         detail="Worker session workspace does not match requested workspace",
                     )
+                workspace_env = self._prepare_file_bridge_workspace_env(request.workspace_env)
+                token = str(request.bridge_token_file_initial_token or "").strip()
+                if not token:
+                    raise HTTPException(status_code=400, detail="worker_file mode requires separate bridge token")
                 session.pty_access_token = request.pty_access_token
-                session.workspace_env = self._normalize_workspace_env(request.workspace_env)
-                session.bridge_credential_mode = request.bridge_credential_mode
-                if request.bridge_credential_mode == "worker_file":
-                    token = str(request.bridge_token_file_initial_token or "").strip()
-                    if not token or "RAGTIME_BRIDGE_TOKEN" in session.workspace_env:
-                        raise HTTPException(status_code=400, detail="worker_file mode requires separate bridge token")
-                    session.workspace_env["RAGTIME_BRIDGE_TOKEN_FILE"] = "/run/.ragtime-bridge/token"
-                    session.bridge_token_file_initial_token = token
-                    session.bridge_recent_tokens = ([token] + session.bridge_recent_tokens)[:2]
-                    session.bridge_session_id = str((self._decode_jwt_payload_metadata(token) or {}).get("session_id") or "") or None
-                else:
-                    session.bridge_token_file_initial_token = None
+                session.workspace_env = workspace_env
+                session.bridge_credential_mode = "worker_file"
+                session.bridge_token_file_initial_token = token
+                session.bridge_recent_tokens = ([token] + session.bridge_recent_tokens)[:2]
+                session.bridge_session_id = str((self._decode_jwt_payload_metadata(token) or {}).get("session_id") or "") or None
                 session.workspace_env_visibility = self._normalize_workspace_env_visibility(
                     request.workspace_env_visibility,
                     session.workspace_env,
@@ -2699,12 +2796,10 @@ class WorkerService:
 
             session_id = f"wkr-{request.workspace_id[:8]}-{os.urandom(4).hex()}"
             workspace_root, workspace_files, sandbox_spec = self._resolve_workspace_root(request.workspace_id)
-            workspace_env = self._normalize_workspace_env(request.workspace_env)
-            if request.bridge_credential_mode == "worker_file":
-                token = str(request.bridge_token_file_initial_token or "").strip()
-                if not token or "RAGTIME_BRIDGE_TOKEN" in workspace_env:
-                    raise HTTPException(status_code=400, detail="worker_file mode requires separate bridge token")
-                workspace_env["RAGTIME_BRIDGE_TOKEN_FILE"] = "/run/.ragtime-bridge/token"
+            workspace_env = self._prepare_file_bridge_workspace_env(request.workspace_env)
+            token = str(request.bridge_token_file_initial_token or "").strip()
+            if not token:
+                raise HTTPException(status_code=400, detail="worker_file mode requires separate bridge token")
             session = WorkerSession(
                 id=session_id,
                 workspace_id=request.workspace_id,
@@ -2732,18 +2827,9 @@ class WorkerService:
                 runtime_operation_started_at=None,
                 runtime_operation_updated_at=None,
                 updated_at=utc_now(),
-                bridge_credential_mode=request.bridge_credential_mode,
-                bridge_session_id=str(
-                    (
-                        self._decode_jwt_payload_metadata(
-                            token if request.bridge_credential_mode == "worker_file" else workspace_env.get("RAGTIME_BRIDGE_TOKEN", "")
-                        )
-                        or {}
-                    ).get("session_id")
-                    or ""
-                )
-                or None,
-                bridge_token_file_initial_token=(token if request.bridge_credential_mode == "worker_file" else None),
+                bridge_credential_mode="worker_file",
+                bridge_session_id=str((self._decode_jwt_payload_metadata(token) or {}).get("session_id") or "") or None,
+                bridge_token_file_initial_token=token,
             )
             self._sessions[session_id] = session
             self._provider_to_session[request.provider_session_id] = session_id
@@ -2780,6 +2866,13 @@ class WorkerService:
                 startup_task.cancel()
             devserver_process, log_handle = self._take_devserver_resources_locked(session.id)
             active_execs = tuple(self._active_execs.pop(session.id, {}).values())
+            for job in self._exec_jobs.values():
+                if job.session_id == session.id and job.status == "running":
+                    job.status = "interrupted"
+                    job.finished_at = utc_now()
+                    job.cancel_requested = True
+            self._prune_exec_jobs_locked(session.workspace_id)
+            self._persist_exec_jobs_locked(session.workspace_root, session.workspace_id)
             for key in [key for key in self._app_restart_requests if key[0] == session.id]:
                 del self._app_restart_requests[key]
             sandbox_spec = session.sandbox_spec
@@ -2878,13 +2971,12 @@ class WorkerService:
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
             if workspace_env is not None:
-                session.workspace_env = self._normalize_workspace_env(workspace_env)
-                if session.bridge_credential_mode == "worker_file":
-                    # File-mode invariants survive env replacement: the raw token
-                    # never enters the process env, and the app keeps the
-                    # platform-fixed token-file path.
-                    session.workspace_env.pop("RAGTIME_BRIDGE_TOKEN", None)
-                    session.workspace_env["RAGTIME_BRIDGE_TOKEN_FILE"] = "/run/.ragtime-bridge/token"
+                # Restart callers may carry stale reserved fields. Strip them
+                # defensively while retaining the worker-managed token file.
+                session.workspace_env = self._prepare_file_bridge_workspace_env(
+                    workspace_env,
+                    reject_raw_token=False,
+                )
             if workspace_env is not None or workspace_env_visibility is not None:
                 session.workspace_env_visibility = self._normalize_workspace_env_visibility(
                     workspace_env_visibility,
@@ -3016,6 +3108,9 @@ class WorkerService:
                 if previous[0] != fingerprint:
                     raise HTTPException(status_code=409, detail="Credential request id payload conflict")
                 return previous[1]
+            # Do not treat a pre-cutover session as healthy merely because a
+            # refresh request arrived; its already-running child could still
+            # retain a legacy raw-token environment.
             if session.bridge_credential_mode != "worker_file":
                 raise HTTPException(status_code=409, detail="Worker file credential mode is not active")
             if session.bridge_session_id != expected_session_id or session.bridge_credential_revision != expected_revision:
@@ -3043,36 +3138,56 @@ class WorkerService:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
-            rel_path = self._normalize_file_path(
-                file_path,
-                enforce_sqlite_managed=True,
-            )
+            rel_path = self._normalize_file_path(file_path, enforce_sqlite_managed=True)
             workspace_id = session.workspace_id
             self._ensure_workspace_available_locked(workspace_id)
 
-        file_lock = self._workspace_file_lock(workspace_id)
-        async with file_lock:
+        # Keep bytes, mtime, and sidecar from one API-serialized view. The
+        # lock cannot coordinate arbitrary shell writers, but it prevents a
+        # second filesystem API call from racing metadata after its byte read.
+        async with self._workspace_file_lock(workspace_id):
             async with self._lock:
                 session, root, root_relative_path, operation_id = self._capture_file_target_locked(worker_session_id, rel_path, mutation=False)
-            io_task = asyncio.create_task(asyncio.to_thread(secure_read_text, root, root_relative_path))
-            try:
-                content = await self._drain_file_io_task(io_task)
-            except asyncio.CancelledError:
-                raise
-        async with self._lock:
-            current = self._sessions.get(worker_session_id)
-            if current is not None and current is session and current.runtime_operation_id == operation_id:
-                current.updated_at = utc_now()
-            response_session = session
-        if content is None:
-            return self._runtime_file_response(response_session, rel_path, "", False)
-        return self._runtime_file_response(response_session, rel_path, content, True)
+            content = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_read_text, root, root_relative_path)))
+            # A descriptor stat distinguishes a real but non-UTF-8 regular file
+            # from an absent or unsafe target without reopening a path by name.
+            stat = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_stat_file, root, root_relative_path)))
+            exists = stat is not None
+            is_utf8_text = content is not None
+            artifact_metadata: dict[str, Any] | None = None
+            if exists:
+                sidecar_content = await self._drain_file_io_task(
+                    asyncio.create_task(asyncio.to_thread(secure_read_text, root, root_relative_path + ".artifact.json"))
+                )
+                try:
+                    parsed_sidecar = json.loads(sidecar_content) if sidecar_content else None
+                    artifact_metadata = parsed_sidecar if isinstance(parsed_sidecar, dict) else None
+                except json.JSONDecodeError:
+                    artifact_metadata = None
+            async with self._lock:
+                current = self._sessions.get(worker_session_id)
+                if current is not None and current is session and current.runtime_operation_id == operation_id:
+                    current.updated_at = utc_now()
+                response_session = session
+            actual_updated_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC) if stat else None
+            return self._runtime_file_response(
+                response_session,
+                rel_path,
+                content or "",
+                exists,
+                actual_updated_at=actual_updated_at,
+                artifact_metadata=artifact_metadata,
+                is_utf8_text=is_utf8_text,
+            )
 
     async def write_file(
         self,
         worker_session_id: str,
         file_path: str,
         content: str,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
+        artifact_metadata: dict[str, Any] | None = None,
     ) -> RuntimeFileReadResponse:
         async with self._lock:
             session = self._sessions.get(worker_session_id)
@@ -3089,23 +3204,46 @@ class WorkerService:
         async with file_lock:
             async with self._lock:
                 session, root, root_relative_path, operation_id = self._capture_file_target_locked(worker_session_id, rel_path, mutation=True)
-            io_task = asyncio.create_task(asyncio.to_thread(secure_write_text, root, root_relative_path, content))
+            previous_content = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_read_text, root, root_relative_path)))
+            actual_hash = hashlib.sha256(previous_content.encode("utf-8")).hexdigest() if previous_content is not None else None
+            if require_content_hash and expected_content_hash != actual_hash:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "content_hash_conflict", "expected_hash": expected_content_hash, "actual_hash": actual_hash},
+                )
             try:
-                await self._drain_file_io_task(io_task)
+                stat = await self._drain_file_io_task(
+                    asyncio.create_task(asyncio.to_thread(self._write_file_bundle, root, root_relative_path, content, artifact_metadata))
+                )
             except SecureFileError as exc:
                 raise HTTPException(status_code=403, detail="Unsafe workspace file path") from exc
             except OSError as exc:
                 if self._is_unsafe_file_error(exc):
                     raise HTTPException(status_code=403, detail="Unsafe workspace file path") from exc
                 raise
-        async with self._lock:
-            current = self._sessions.get(worker_session_id)
-            if current is not None and current is session and current.runtime_operation_id == operation_id:
-                current.updated_at = utc_now()
-            response_session = session
-        return self._runtime_file_response(response_session, rel_path, content, True)
+            async with self._lock:
+                current = self._sessions.get(worker_session_id)
+                if current is not None and current is session and current.runtime_operation_id == operation_id:
+                    current.updated_at = utc_now()
+                response_session = session
+            actual_updated_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC) if stat else None
+            return self._runtime_file_response(
+                response_session,
+                rel_path,
+                content,
+                True,
+                actual_updated_at=actual_updated_at,
+                artifact_metadata=artifact_metadata,
+            )
 
-    async def delete_file(self, worker_session_id: str, file_path: str) -> dict[str, str | bool]:
+    async def delete_file(
+        self,
+        worker_session_id: str,
+        file_path: str,
+        *,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
+    ) -> dict[str, str | bool]:
         async with self._lock:
             session = self._sessions.get(worker_session_id)
             if not session:
@@ -3121,9 +3259,15 @@ class WorkerService:
         async with file_lock:
             async with self._lock:
                 session, root, root_relative_path, operation_id = self._capture_file_target_locked(worker_session_id, rel_path, mutation=True)
-            io_task = asyncio.create_task(asyncio.to_thread(secure_delete_file, root, root_relative_path))
+            previous_content = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_read_text, root, root_relative_path)))
+            actual_hash = hashlib.sha256(previous_content.encode("utf-8")).hexdigest() if previous_content is not None else None
+            if require_content_hash and expected_content_hash != actual_hash:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "content_hash_conflict", "expected_hash": expected_content_hash, "actual_hash": actual_hash},
+                )
             try:
-                await self._drain_file_io_task(io_task)
+                await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(self._delete_file_bundle, root, root_relative_path)))
             except SecureFileError as exc:
                 raise HTTPException(status_code=403, detail="Unsafe workspace file path") from exc
             except OSError as exc:
@@ -3136,7 +3280,397 @@ class WorkerService:
                 current.updated_at = utc_now()
         return {"success": True, "path": rel_path}
 
+    async def move_file(self, worker_session_id: str, old_path: str, new_path: str) -> dict[str, str | bool]:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            old_rel = self._normalize_file_path(old_path, enforce_sqlite_managed=True)
+            new_rel = self._normalize_file_path(new_path, enforce_sqlite_managed=True)
+            if old_rel == new_rel:
+                raise HTTPException(status_code=400, detail="Source and destination paths must be different")
+            workspace_id = session.workspace_id
+        async with self._workspace_file_lock(workspace_id):
+            async with self._lock:
+                session, old_root, old_root_path, operation_id = self._capture_file_target_locked(worker_session_id, old_rel, mutation=True)
+                _target_session, new_root, new_root_path, _target_operation = self._capture_file_target_locked(worker_session_id, new_rel, mutation=True)
+            source = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_read_text, old_root, old_root_path)))
+            if source is None:
+                raise HTTPException(status_code=404, detail="File not found")
+            target = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_read_text, new_root, new_root_path)))
+            if target is not None:
+                raise HTTPException(status_code=409, detail="Target file already exists")
+            sidecar = await self._drain_file_io_task(asyncio.create_task(asyncio.to_thread(secure_read_text, old_root, old_root_path + ".artifact.json")))
+            await self._drain_file_io_task(
+                asyncio.create_task(asyncio.to_thread(self._move_file_bundle, old_root, old_root_path, new_root, new_root_path, source, sidecar))
+            )
+        async with self._lock:
+            current = self._sessions.get(worker_session_id)
+            if current is not None and current is session and current.runtime_operation_id == operation_id:
+                current.updated_at = utc_now()
+        return {"success": True, "old_path": old_rel, "new_path": new_rel}
+
     _EXEC_MAX_OUTPUT_BYTES = 60_000
+
+    def _exec_job_ledger_path(self, workspace_root: Path) -> Path:
+        return workspace_root / ".runtime-exec-jobs.json"
+
+    def _persist_exec_jobs_locked(self, workspace_root: Path, workspace_id: str) -> None:
+        """Persist bounded job metadata locally; this is not a cross-process lock."""
+        jobs = [job for job in self._exec_jobs.values() if job.workspace_id == workspace_id]
+        payload = {
+            "version": 1,
+            "jobs": [
+                {
+                    "id": job.id,
+                    "session_id": job.session_id,
+                    "workspace_id": job.workspace_id,
+                    "command": job.command,
+                    "cwd": job.cwd,
+                    "timeout_seconds": job.timeout_seconds,
+                    "user_id": job.user_id,
+                    "credential_id": job.credential_id,
+                    "operation": job.operation,
+                    "created_at": job.created_at.isoformat(),
+                    "status": job.status,
+                    "exit_code": job.exit_code,
+                    "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+                    "output": bytes(job.output).decode("utf-8", errors="replace"),
+                    "truncated_before": job.truncated_before,
+                }
+                for job in jobs
+            ],
+        }
+        try:
+            workspace_root.mkdir(parents=True, exist_ok=True)
+            ledger = self._exec_job_ledger_path(workspace_root)
+            temporary = ledger.with_name(f"{ledger.name}.tmp-{os.getpid()}")
+            temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+            os.replace(temporary, ledger)
+        except OSError as exc:
+            logger.warning("Failed to persist runtime exec-job ledger for %s: %s", workspace_id, exc)
+
+    def _load_exec_jobs_locked(self, session: WorkerSession) -> None:
+        if session.workspace_id in self._exec_job_workspaces_loaded:
+            return
+        self._exec_job_workspaces_loaded.add(session.workspace_id)
+        try:
+            payload = json.loads(self._exec_job_ledger_path(session.workspace_root).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
+            return
+        for item in payload["jobs"][-self._EXEC_JOB_MAX_FINISHED_PER_WORKSPACE :]:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                continue
+            try:
+                created_at = datetime.fromisoformat(str(item["created_at"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            finished_at = None
+            if item.get("finished_at"):
+                with contextlib.suppress(TypeError, ValueError):
+                    finished_at = datetime.fromisoformat(str(item["finished_at"]))
+            status = str(item.get("status") or "interrupted")
+            if status == "running":
+                status = "interrupted"
+                finished_at = utc_now()
+            operation = item.get("operation")
+            if not isinstance(operation, str):
+                operation = "exec"
+            self._exec_jobs[item["id"]] = _ExecJob(
+                id=item["id"],
+                session_id=session.id,
+                workspace_id=session.workspace_id,
+                command=str(item.get("command") or ""),
+                cwd=item.get("cwd") if isinstance(item.get("cwd"), str) else None,
+                timeout_seconds=int(item.get("timeout_seconds") or 120),
+                user_id=item.get("user_id") if isinstance(item.get("user_id"), str) else None,
+                credential_id=item.get("credential_id") if isinstance(item.get("credential_id"), str) else None,
+                operation=operation,
+                created_at=created_at,
+                status=status,
+                exit_code=item.get("exit_code") if isinstance(item.get("exit_code"), int) else None,
+                finished_at=finished_at,
+                output=bytearray(str(item.get("output") or "").encode("utf-8")),
+                truncated_before=max(0, int(item.get("truncated_before") or 0)),
+            )
+        self._prune_exec_jobs_locked(session.workspace_id)
+        self._persist_exec_jobs_locked(session.workspace_root, session.workspace_id)
+
+    def _prune_exec_jobs_locked(self, workspace_id: str) -> None:
+        finished = sorted(
+            (job for job in self._exec_jobs.values() if job.workspace_id == workspace_id and job.status != "running"),
+            key=lambda job: job.finished_at or job.created_at,
+        )
+        for job in finished[: -self._EXEC_JOB_MAX_FINISHED_PER_WORKSPACE]:
+            self._exec_jobs.pop(job.id, None)
+
+    def _exec_job_response(self, job: _ExecJob, *, cursor: int = 0, limit: int = 0) -> RuntimeExecJobResponse:
+        start = max(cursor, job.truncated_before)
+        end = min(job.truncated_before + len(job.output), start + limit) if limit else job.truncated_before + len(job.output)
+        offset_start = start - job.truncated_before
+        offset_end = end - job.truncated_before
+        return RuntimeExecJobResponse(
+            id=job.id,
+            status=job.status,
+            exit_code=job.exit_code,
+            output=bytes(job.output[offset_start:offset_end]).decode("utf-8", errors="replace"),
+            cursor=start,
+            next_cursor=end,
+            truncated_before=job.truncated_before,
+            timed_out=job.status == "timed_out",
+            created_at=job.created_at,
+            finished_at=job.finished_at,
+            user_id=job.user_id,
+            credential_id=job.credential_id,
+            operation=job.operation,
+        )
+
+    def _append_exec_job_output_locked(self, job: _ExecJob, session: WorkerSession, data: bytes) -> None:
+        if not data:
+            return
+        decoded = job.output_decoder.decode(data, final=False)
+        redacted, job.output_redaction_carry = self.split_workspace_secret_output(
+            session,
+            decoded,
+            carry=job.output_redaction_carry,
+        )
+        self._append_redacted_exec_job_output_locked(job, redacted)
+
+    def _flush_exec_job_output_locked(self, job: _ExecJob, session: WorkerSession) -> None:
+        decoded = job.output_decoder.decode(b"", final=True)
+        combined = f"{job.output_redaction_carry}{decoded}"
+        job.output_redaction_carry = ""
+        self._append_redacted_exec_job_output_locked(job, self.redact_workspace_secret_output(session, combined))
+
+    def _append_redacted_exec_job_output_locked(self, job: _ExecJob, text: str) -> None:
+        if not text:
+            return
+        redacted = text.encode("utf-8")
+        job.output.extend(redacted)
+        overflow = len(job.output) - self._EXEC_JOB_MAX_OUTPUT_BYTES
+        if overflow > 0:
+            del job.output[:overflow]
+            job.truncated_before += overflow
+
+    async def start_exec_job(
+        self,
+        worker_session_id: str,
+        command: str,
+        *,
+        timeout_seconds: int = 120,
+        cwd: str | None = None,
+        user_id: str | None = None,
+        credential_id: str | None = None,
+        operation: str = "exec",
+    ) -> RuntimeExecJobResponse:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            if session.state != "running":
+                raise HTTPException(status_code=409, detail="Worker session is still starting or is not active")
+            self._ensure_workspace_available_locked(session.workspace_id)
+            self._load_exec_jobs_locked(session)
+            workspace_running = sum(job.status == "running" and job.workspace_id == session.workspace_id for job in self._exec_jobs.values())
+            global_running = sum(job.status == "running" for job in self._exec_jobs.values())
+            if workspace_running >= self._EXEC_JOB_MAX_RUNNING_PER_WORKSPACE:
+                raise HTTPException(status_code=429, detail="Workspace execution job quota exceeded")
+            if global_running >= self._EXEC_JOB_MAX_RUNNING_GLOBAL:
+                raise HTTPException(status_code=429, detail="Global execution job quota exceeded")
+            if cwd:
+                normalized_cwd = Path(cwd.replace("\\", "/"))
+                if normalized_cwd.is_absolute() or any(part == ".." for part in normalized_cwd.parts):
+                    raise HTTPException(status_code=400, detail="cwd must be within the workspace root")
+            job = _ExecJob(
+                id=f"exec-{os.urandom(12).hex()}",
+                session_id=session.id,
+                workspace_id=session.workspace_id,
+                command=command,
+                cwd=cwd,
+                timeout_seconds=max(1, min(timeout_seconds, RUNTIME_EXEC_TIMEOUT_HARD_CAP_SECONDS)),
+                user_id=user_id,
+                credential_id=credential_id,
+                operation=operation,
+                created_at=utc_now(),
+            )
+            self._exec_jobs[job.id] = job
+            self._persist_exec_jobs_locked(session.workspace_root, session.workspace_id)
+            task = asyncio.create_task(self._run_exec_job(job.id))
+            self._exec_job_tasks[job.id] = task
+            task.add_done_callback(lambda _task: self._exec_job_tasks.pop(job.id, None))
+            return self._exec_job_response(job)
+
+    async def _run_exec_job(self, job_id: str) -> None:
+        process: asyncio.subprocess.Process | None = None
+        reservation: object | None = None
+        workspace_root: Path | None = None
+        deadline = asyncio.get_running_loop().time()
+        async with self._lock:
+            job = self._exec_jobs.get(job_id)
+            if not job:
+                return
+            if job.cancel_requested:
+                job.status, job.finished_at = "cancelled", utc_now()
+                return
+            session = self._sessions.get(job.session_id)
+            if not session:
+                job.status, job.finished_at = "interrupted", utc_now()
+                return
+            redaction_session = session
+            workspace_root = session.workspace_root
+            try:
+                # Admission can race a SQLite maintenance lease acquired before
+                # this queued job reaches its spawn reservation.
+                self._ensure_workspace_available_locked(session.workspace_id)
+            except HTTPException as exc:
+                job.status, job.exit_code, job.finished_at = "failed", -1, utc_now()
+                self._append_exec_job_output_locked(
+                    job,
+                    session,
+                    f"Failed to execute command: {exc.detail}".encode(),
+                )
+                self._prune_exec_jobs_locked(job.workspace_id)
+                self._persist_exec_jobs_locked(workspace_root, job.workspace_id)
+                return
+            reservation = object()
+            self._active_execs.setdefault(session.id, {})[id(reservation)] = reservation
+            sandbox_cwd = f"{SANDBOX_WORKSPACE_MOUNT}/{Path(job.cwd).as_posix()}" if job.cwd else SANDBOX_WORKSPACE_MOUNT
+            sandbox_spec, environment = session.sandbox_spec, self.build_agent_process_environment(session)
+            deadline = asyncio.get_running_loop().time() + job.timeout_seconds
+        try:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            process = await asyncio.wait_for(
+                spawn_sandboxed(
+                    sandbox_spec,
+                    ["sh", "-lc", job.command],
+                    cwd=sandbox_cwd,
+                    env=environment,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                ),
+                timeout=remaining,
+            )
+            discard_process = False
+            async with self._lock:
+                active = self._active_execs.setdefault(job.session_id, {})
+                active.pop(id(reservation), None)
+                current = self._sessions.get(job.session_id)
+                if current is not session or job.status != "running" or job.cancel_requested:
+                    discard_process = True
+                    if job.status == "running":
+                        job.status = "cancelled" if job.cancel_requested else "interrupted"
+                        job.finished_at = utc_now()
+                else:
+                    job.process = process
+                    active[id(process)] = process
+            if discard_process:
+                await terminate_process_group(process)
+                return
+            while True:
+                try:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    chunk = await asyncio.wait_for(process.stdout.read(8192), timeout=remaining)  # type: ignore[union-attr]
+                except asyncio.TimeoutError:
+                    async with self._lock:
+                        job.status = "timed_out"
+                    await terminate_process_group(process)
+                    break
+                if not chunk:
+                    break
+                async with self._lock:
+                    current = self._sessions.get(job.session_id)
+                    if current:
+                        self._append_exec_job_output_locked(job, current, chunk)
+            await process.wait()
+            async with self._lock:
+                if job.status == "running":
+                    job.status = "cancelled" if job.cancel_requested else ("completed" if process.returncode == 0 else "failed")
+                job.exit_code, job.finished_at = process.returncode, utc_now()
+        except asyncio.CancelledError:
+            if process is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(terminate_process_group(process))
+            async with self._lock:
+                if job.status == "running":
+                    job.status, job.finished_at = "cancelled", utc_now()
+            raise
+        except asyncio.TimeoutError:
+            async with self._lock:
+                if job.status == "running":
+                    job.status, job.finished_at = "timed_out", utc_now()
+            if process is not None:
+                await terminate_process_group(process)
+        except Exception as exc:
+            async with self._lock:
+                if job.status == "running":
+                    job.status, job.exit_code, job.finished_at = "failed", -1, utc_now()
+                    session = self._sessions.get(job.session_id)
+                    if session:
+                        self._append_exec_job_output_locked(job, session, f"Failed to execute command: {exc}".encode())
+        finally:
+            async with self._lock:
+                self._flush_exec_job_output_locked(job, redaction_session)
+                active = self._active_execs.get(job.session_id, {})
+                if reservation is not None:
+                    active.pop(id(reservation), None)
+                if process:
+                    active.pop(id(process), None)
+                self._prune_exec_jobs_locked(job.workspace_id)
+                if workspace_root is not None:
+                    self._persist_exec_jobs_locked(workspace_root, job.workspace_id)
+
+    async def get_exec_job(self, worker_session_id: str, job_id: str, *, cursor: int = 0, limit: int = _EXEC_JOB_READ_LIMIT_DEFAULT) -> RuntimeExecJobResponse:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            self._load_exec_jobs_locked(session)
+            job = self._exec_jobs.get(job_id)
+            if not job or job.workspace_id != session.workspace_id:
+                raise HTTPException(status_code=404, detail="Execution job not found")
+            return self._exec_job_response(job, cursor=max(0, cursor), limit=max(1, min(limit, self._EXEC_JOB_READ_LIMIT_MAX)))
+
+    async def list_exec_jobs(self, worker_session_id: str) -> list[RuntimeExecJobResponse]:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            self._load_exec_jobs_locked(session)
+            return [
+                self._exec_job_response(job)
+                for job in sorted(self._exec_jobs.values(), key=lambda item: item.created_at, reverse=True)
+                if job.workspace_id == session.workspace_id
+            ]
+
+    async def cancel_exec_job(self, worker_session_id: str, job_id: str) -> RuntimeExecJobResponse:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            self._load_exec_jobs_locked(session)
+            job = self._exec_jobs.get(job_id)
+            if not job or job.workspace_id != session.workspace_id:
+                raise HTTPException(status_code=404, detail="Execution job not found")
+            if job.status != "running":
+                return self._exec_job_response(job)
+            job.cancel_requested = True
+            process = job.process
+            if process is None:
+                job.status, job.finished_at = "cancelled", utc_now()
+                self._persist_exec_jobs_locked(session.workspace_root, session.workspace_id)
+        if process:
+            await terminate_process_group(process)
+            async with self._lock:
+                if job.status == "running" and job.process is process:
+                    job.status, job.exit_code, job.finished_at = "cancelled", process.returncode, utc_now()
+                    self._persist_exec_jobs_locked(session.workspace_root, session.workspace_id)
+        return await self.get_exec_job(worker_session_id, job_id)
 
     async def exec_command(
         self,

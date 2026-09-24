@@ -39,6 +39,7 @@ class UserSpaceSnapshotMigrationGuardTests(unittest.IsolatedAsyncioTestCase):
 
         with self.subTest("snapshot rows present"):
             with (
+                mock.patch.object(service, "_ensure_active_workspace_gitignore", new=mock.AsyncMock(return_value=False)),
                 mock.patch.object(service, "_workspace_files_dir", return_value=Path("/tmp/workspace-files")),
                 mock.patch.object(service, "_workspace_git_dir", return_value=Path("/tmp/workspace-files/.git")),
                 mock.patch("pathlib.Path.exists", return_value=False),

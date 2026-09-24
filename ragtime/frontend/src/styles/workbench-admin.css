@@ -558,6 +558,12 @@
   padding: var(--space-md);
 }
 
+/* Make secondary buttons and model selectors visible against dark surfaces in Modern */
+[data-theme-pack='modern'] #workbench-settings-route .btn-secondary,
+[data-theme-pack='modern'] #workbench-settings-route .model-selector-trigger {
+  border-color: var(--color-text-muted);
+}
+
 [data-theme-pack='modern'] fieldset {
   padding: 0;
   border: 0;
@@ -1133,12 +1139,12 @@
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-share-tab:hover:not(:disabled) {
+[data-theme-pack='modern'] .modal-with-tabs .modal-tab:hover:not(:disabled) {
   background: transparent;
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-share-tab[aria-selected='true'] {
+[data-theme-pack='modern'] .modal-with-tabs .modal-tab[aria-selected='true'] {
   background: transparent;
   border-color: transparent;
   border-bottom-color: var(--color-accent);
@@ -1146,7 +1152,7 @@
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-share-tab[aria-selected='true']:hover:not(:disabled) {
+[data-theme-pack='modern'] .modal-with-tabs .modal-tab[aria-selected='true']:hover:not(:disabled) {
   background: transparent;
   border-color: transparent;
   border-bottom-color: var(--color-accent);
@@ -1169,12 +1175,12 @@
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-external-api-access .userspace-external-api-credential-fields > .userspace-external-api-field {
+[data-theme-pack='modern'] .modal-with-tabs .userspace-external-api-access .userspace-external-api-credential-fields > .userspace-external-api-field {
   min-width: 0;
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-external-api-access .userspace-external-api-credential-fields input {
+[data-theme-pack='modern'] .modal-with-tabs .userspace-external-api-access .userspace-external-api-credential-fields input {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -1185,35 +1191,35 @@
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-external-api-access .userspace-external-api-row {
+[data-theme-pack='modern'] .modal-with-tabs .userspace-external-api-access .userspace-external-api-row {
   align-items: center;
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-external-api-access .userspace-external-api-row-header {
+[data-theme-pack='modern'] .modal-with-tabs .userspace-external-api-access .userspace-external-api-row-header {
   align-items: center;
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-external-api-access .userspace-external-api-row-actions {
+[data-theme-pack='modern'] .modal-with-tabs .userspace-external-api-access .userspace-external-api-row-actions {
   align-self: center;
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-external-api-access .userspace-external-api-credential-row {
+[data-theme-pack='modern'] .modal-with-tabs .userspace-external-api-access .userspace-external-api-credential-row {
   border: var(--workbench-container-border);
   border-radius: var(--workbench-control-radius);
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-external-api-access .userspace-external-api-credential-actions > .btn {
+[data-theme-pack='modern'] .modal-with-tabs .userspace-external-api-access .userspace-external-api-credential-actions > .btn {
   width: auto;
   height: var(--workbench-control-height);
   min-height: var(--workbench-control-height);
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-external-api-access :is(.userspace-external-api-create-actions, .userspace-external-api-row-actions) > .btn {
+[data-theme-pack='modern'] .modal-with-tabs .userspace-external-api-access :is(.userspace-external-api-create-actions, .userspace-external-api-row-actions) > .btn {
   width: auto;
   height: var(--workbench-control-height);
   min-height: var(--workbench-control-height);
@@ -1237,12 +1243,12 @@
 
 @media (max-width: 640px) {
   /* prettier-ignore */
-  [data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-external-api-access .userspace-external-api-row-actions {
+  [data-theme-pack='modern'] .modal-with-tabs .userspace-external-api-access .userspace-external-api-row-actions {
     align-self: stretch;
   }
 
   /* prettier-ignore */
-  [data-theme-pack='modern'] .userspace-share-modal-with-tabs .userspace-external-api-access :is(.userspace-external-api-create-actions, .userspace-external-api-row-actions) > .btn {
+  [data-theme-pack='modern'] .modal-with-tabs .userspace-external-api-access :is(.userspace-external-api-create-actions, .userspace-external-api-row-actions) > .btn {
     width: 100%;
   }
 }

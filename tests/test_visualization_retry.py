@@ -12,6 +12,8 @@ from ragtime.indexer.visualization_retry import (
     VisualizationRetryContext,
     retry_visualization_with_repair,
 )
+from tests.content_protection_support import use_disabled_content_protection
+from tests.generation_policy_test_support import enabled_generation_policy
 
 
 def _context(selected_tool_ids: set[str] | None = None) -> VisualizationRetryContext:
@@ -57,6 +59,9 @@ def _rag_ready(value: bool = True):
 
 
 class VisualizationRetryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_datatable_retry_uses_deterministic_source_data(self) -> None:
         request = RetryVisualizationRequest(
             tool_type="datatable",
@@ -108,6 +113,7 @@ class VisualizationRetryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            enabled_generation_policy("user-1"),
             _rag_ready(),
             mock.patch.object(
                 visualization_retry.rag,
@@ -202,6 +208,7 @@ class VisualizationRetryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            enabled_generation_policy("user-1"),
             _rag_ready(),
             mock.patch.object(
                 visualization_retry.rag,

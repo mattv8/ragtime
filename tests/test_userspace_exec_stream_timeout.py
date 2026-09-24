@@ -4,13 +4,16 @@ from typing import Any, cast
 from unittest import mock
 
 from ragtime.rag.components import RAGComponents
+from tests.content_protection_support import use_disabled_content_protection
+from tests.generation_policy_test_support import enabled_generation_policy
 
 
 class _EventExecutor:
     tools: list[Any] = []
 
-    def astream_events(self, _input, version):
+    def astream_events(self, _input, version, config):
         assert version == "v2"
+        assert config is not None
 
         async def events():
             yield {
@@ -35,6 +38,9 @@ class _EventExecutor:
 
 
 class UserSpaceExecStreamTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_omitted_terminal_timeout_survives_admin_shrink_but_post_tool_uses_normal_guard(self) -> None:
         rag = RAGComponents()
         executor = _EventExecutor()
@@ -62,6 +68,7 @@ class UserSpaceExecStreamTimeoutTests(unittest.IsolatedAsyncioTestCase):
             return await original_wait_for(awaitable, timeout=timeout)
 
         with (
+            enabled_generation_policy(surface="userspace"),
             mock.patch.object(rag, "agent_executor", executor),
             # The terminal began when 1800 was allowed, then the administrator
             # lowered the maximum before the event-stream watchdog armed.
@@ -96,7 +103,10 @@ class UserSpaceExecStreamTimeoutTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_concurrent_terminal_guards_cleanup_independently(self) -> None:
         class ConcurrentExecutor(_EventExecutor):
-            def astream_events(self, _input, version):
+            def astream_events(self, _input, version, config):
+                assert version == "v2"
+                assert config is not None
+
                 async def events():
                     for event in (
                         {"event": "on_tool_start", "name": "run_terminal_command", "run_id": "long", "data": {"input": {"timeout_seconds": 1800}}},
@@ -137,6 +147,7 @@ class UserSpaceExecStreamTimeoutTests(unittest.IsolatedAsyncioTestCase):
             return await original_wait_for(awaitable, timeout=timeout)
 
         with (
+            enabled_generation_policy(surface="userspace"),
             executor_patch,
             mock.patch(
                 "ragtime.rag.components.get_app_settings",

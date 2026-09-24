@@ -27,6 +27,7 @@ from ragtime.userspace.models import (
     WorkspaceToolOptionState,
 )
 from ragtime.userspace.service import UserSpaceService
+from tests.content_protection_support import use_disabled_content_protection
 
 remove_fake_rag_prompts(inserted_fake_rag_prompts)
 
@@ -257,6 +258,9 @@ class _HttpExceptionExecuteService(_RuntimeBridgeWorkspaceService):
 
 
 class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_bridge_execute_delegates_to_workspace_path_and_records_proof(self) -> None:
         service = _RuntimeBridgeSuccessService()
         request = ExecuteComponentRequest(component_id="tool-1", request={"query": "select 1"})

@@ -23,7 +23,7 @@ from typing import Any
 
 import anyio
 from anyio.abc import TaskStatus
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from mcp.server.lowlevel.server import Server as MCPServer
 from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -52,16 +52,31 @@ from ragtime.mcp.oauth import (
     validate_client_credentials_bearer,
 )
 from ragtime.mcp.server import (
+    development_principal_context,
     get_custom_route_server,
     get_default_route_filtered_server,
     get_mcp_server,
+    mcp_request_context,
     notify_tools_changed,
     register_tools_changed_callback,
 )
 from ragtime.mcp.tools import mcp_tool_adapter
 from ragtime.mcp.user_oauth import is_mcp_access_token_candidate, validate_mcp_token_and_fetch_user
+from ragtime.userspace.development_access import DevelopmentPrincipal, resolve_development_principal
 
 logger = get_logger(__name__)
+
+
+def _protection_principal(scope: Scope, development_principal: Any | None = None) -> Any | None:
+    """Use only server-verified request identity, never a cached MCP server."""
+    if development_principal is not None:
+        return development_principal
+    user = scope.get("_mcp_oauth_user")
+    if user is not None:
+        return type("McpPrincipal", (), {"user_id": getattr(user, "id", None)})()
+    user_id = scope.get("_mcp_user_id")
+    return type("McpPrincipal", (), {"user_id": user_id})() if user_id else None
+
 
 router = APIRouter(prefix="/mcp-debug", tags=["MCP Debug"])
 
@@ -351,6 +366,43 @@ def _has_explicit_mcp_password(scope: Scope) -> bool:
     return bool(dict(scope.get("headers", [])).get(b"mcp-password", b"").decode())
 
 
+def _is_development_credential(scope: Scope) -> bool:
+    """Return whether this is a distinct workspace development credential."""
+    token = extract_bearer_token(dict(scope.get("headers", [])))
+    return bool(token and token.startswith("rtdev_"))
+
+
+async def _resolve_default_development_principal(
+    scope: Scope,
+    *,
+    auth_method: str,
+    resolved_auth_method: str,
+) -> DevelopmentPrincipal | None:
+    """Resolve only credential classes allowed to use default MCP development tools.
+
+    Custom routes retain their configured password/client-credentials semantics;
+    this helper is intentionally called only by ``MCPTransportEndpoint``.
+    """
+    try:
+        if _is_development_credential(scope):
+            return await resolve_development_principal(Request(scope))
+        if auth_method in {"client_credentials", "password"} or resolved_auth_method in {"client_credentials", "password"}:
+            return None
+        oauth_user = scope.get("_mcp_oauth_user")
+        if oauth_user is not None:
+            return DevelopmentPrincipal(
+                user_id=str(oauth_user.id),
+                is_admin=str(getattr(oauth_user, "role", "")) == "admin",
+            )
+        # Session credentials remain valid on the external development surface.
+        # Do not attempt to reinterpret MCP grant or client credentials here.
+        if _has_bearer_authorization(scope) or dict(scope.get("headers", [])).get(b"cookie"):
+            return await resolve_development_principal(Request(scope))
+    except HTTPException:
+        return None
+    return None
+
+
 async def _validate_oauth2_or_password_fallback(
     scope: Scope,
     *,
@@ -598,7 +650,14 @@ class MCPTransportEndpoint:
             is_valid = False
             failure_detail = None
 
-            if auth_method == "oauth2":
+            # rtdev credentials are accepted only on this default external
+            # development surface. They are not password/OAuth fallbacks and
+            # the server exposes them only workspace-development tools.
+            if _is_development_credential(scope):
+                principal = await _resolve_default_development_principal(scope, auth_method=auth_method, resolved_auth_method="workspace_development")
+                is_valid = principal is not None
+                resolved_auth_method = "workspace_development"
+            elif auth_method == "oauth2":
                 is_valid, oauth2_auth_method, failure_detail = await _validate_oauth2_or_password_fallback(
                     scope,
                     allowed_group_dn=allowed_group,
@@ -657,6 +716,8 @@ class MCPTransportEndpoint:
                 await _log_mcp(scope, auth_method=resolved_auth_method, status_code=401)
                 return
 
+        principal = await _resolve_default_development_principal(scope, auth_method=auth_method, resolved_auth_method=resolved_auth_method)
+
         # If using OAuth2 auth, check for LDAP group-based tool filtering
         if require_auth and auth_method == "oauth2" and resolved_auth_method == "oauth2":
             # Try to find a matching default route filter for this user
@@ -665,7 +726,8 @@ class MCPTransportEndpoint:
                 # Use filtered server directly (bypasses session manager issue)
                 filtered_server = await get_filtered_server(matching_filter_id)
                 if filtered_server:
-                    await handle_filtered_request(filtered_server, scope, receive, send)
+                    with mcp_request_context(_protection_principal(scope, principal), "default"):
+                        await handle_filtered_request(filtered_server, scope, receive, send)
                     await _log_mcp(scope, auth_method=resolved_auth_method)
                     return
                 # Filter found but couldn't create server - fall back to default
@@ -674,7 +736,8 @@ class MCPTransportEndpoint:
         session_manager = await get_session_manager()
         send_with_status, response_state = _wrap_send_for_status(send)
         try:
-            await session_manager.handle_request(scope, receive, send_with_status)
+            with mcp_request_context(_protection_principal(scope, principal), "default"):
+                await session_manager.handle_request(scope, receive, send_with_status)
         except Exception:
             await _log_mcp(
                 scope,
@@ -802,6 +865,26 @@ class MCPCustomRouteEndpoint:
             auth_client_id,
         ) = result
 
+        # Route-scoped custom MCP configurations never become a workspace
+        # developer surface. In particular, do not let rtdev credentials gain
+        # access through a password or client-credentials route.
+        if _is_development_credential(scope):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"application/json"), (b"www-authenticate", b'Bearer realm="mcp"')],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b'{"error": "Unauthorized", "detail": "Workspace development credentials are accepted only on /mcp."}',
+                }
+            )
+            await _log_mcp(scope, route_name=route_path, status_code=401)
+            return
+
         # Check authentication if required
         resolved_auth_method = "none"
         if require_auth:
@@ -889,7 +972,8 @@ class MCPCustomRouteEndpoint:
         # Handle request directly with the server (bypasses session manager)
         send_with_status, response_state = _wrap_send_for_status(send)
         try:
-            await handle_filtered_request(server, scope, receive, send_with_status)
+            with mcp_request_context(_protection_principal(scope), route_path):
+                await handle_filtered_request(server, scope, receive, send_with_status)
         except Exception:
             await _log_mcp(
                 scope,

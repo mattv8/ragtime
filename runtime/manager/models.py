@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -58,7 +58,7 @@ class StartSessionRequest(BaseModel):
             "source_type, mount_backend, read_only, and optional runtime_mount_mode."
         ),
     )
-    bridge_credential_mode: str = Field(default="env", pattern="^(env|worker_file)$")
+    bridge_credential_mode: Literal["worker_file"] = "worker_file"
     bridge_token_file_initial_token: str | None = Field(default=None, exclude=True)
 
 
@@ -69,7 +69,7 @@ class RuntimeBridgeCredentialMetadata(BaseModel):
     session_id: str = Field(description="Workspace session ID bound to the bridge token")
     issued_at: datetime = Field(description="Token issued-at timestamp")
     expires_at: datetime = Field(description="Token expiration timestamp")
-    mode: str = Field(default="env", pattern="^(env|worker_file)$")
+    mode: Literal["worker_file"] = "worker_file"
     revision: int = Field(default=0, ge=0)
 
 
@@ -155,7 +155,7 @@ class WorkerStartSessionRequest(BaseModel):
         default_factory=list,
         description="Workspace mount specs for sandbox materialization or live bind mounting",
     )
-    bridge_credential_mode: str = Field(default="env", pattern="^(env|worker_file)$")
+    bridge_credential_mode: Literal["worker_file"] = "worker_file"
     bridge_token_file_initial_token: str | None = Field(default=None, exclude=True)
 
 
@@ -172,10 +172,27 @@ class RuntimeFileReadResponse(BaseModel):
     content: str = Field(description="File content")
     exists: bool = Field(description="Whether the file exists")
     updated_at: datetime = Field(description="Updated timestamp")
+    actual_updated_at: datetime | None = Field(default=None, description="Filesystem modification timestamp")
+    content_hash: str | None = Field(default=None, description="SHA-256 hash of the UTF-8 file content")
+    artifact_metadata: dict[str, Any] | None = Field(default=None, description="Artifact sidecar metadata")
+    is_utf8_text: bool = Field(default=True, description="Whether content is valid UTF-8 text")
 
 
 class RuntimeFileWriteRequest(BaseModel):
     content: str = Field(description="File content to persist")
+    expected_content_hash: str | None = Field(default=None, description="Required current SHA-256 hash; null requires the file be absent")
+    require_content_hash: bool = Field(default=False, description="Whether expected_content_hash must match, including null for an absent file")
+    artifact_metadata: dict[str, Any] | None = Field(default=None, description="Artifact sidecar metadata to persist with the file")
+
+
+class RuntimeFileDeleteRequest(BaseModel):
+    expected_content_hash: str | None = Field(default=None, description="Required current SHA-256 hash; null requires the file be absent")
+    require_content_hash: bool = Field(default=False, description="Whether expected_content_hash must match, including null for an absent file")
+
+
+class RuntimeFileMoveRequest(BaseModel):
+    old_path: str = Field(min_length=1, description="Existing workspace-relative path")
+    new_path: str = Field(min_length=1, description="New workspace-relative path")
 
 
 class RuntimeContentProbeRequest(BaseModel):
@@ -356,6 +373,30 @@ class RuntimeExecResponse(BaseModel):
         default=False,
         description="Whether output was truncated due to size limits",
     )
+
+
+class RuntimeExecJobRequest(RuntimeExecRequest):
+    """Addressable, disconnect-safe programmatic sandbox execution request."""
+
+    user_id: str | None = Field(default=None, description="Acting user ID for minimal job attribution")
+    credential_id: str | None = Field(default=None, description="Development credential ID for minimal job attribution")
+    operation: str = Field(default="exec", min_length=1, max_length=64, description="Calling operation name for minimal job attribution")
+
+
+class RuntimeExecJobResponse(BaseModel):
+    id: str = Field(description="Addressable execution job ID")
+    status: str = Field(description="running, completed, failed, cancelled, timed_out, or interrupted")
+    exit_code: int | None = Field(default=None, description="Process exit code once known")
+    output: str = Field(default="", description="Bounded output after the requested cursor")
+    cursor: int = Field(default=0, description="Effective absolute output cursor used for this response")
+    next_cursor: int = Field(default=0, description="Absolute cursor for the next output request")
+    truncated_before: int = Field(default=0, description="Output before this absolute cursor was discarded")
+    timed_out: bool = Field(default=False, description="Whether the job reached its timeout")
+    created_at: datetime = Field(description="Job creation timestamp")
+    finished_at: datetime | None = Field(default=None, description="Terminal transition timestamp")
+    user_id: str | None = Field(default=None, description="Minimal acting-user attribution")
+    credential_id: str | None = Field(default=None, description="Minimal credential attribution")
+    operation: str = Field(default="exec", description="Calling operation attribution")
 
 
 class RuntimeExternalBrowseRequest(BaseModel):

@@ -84,6 +84,7 @@ class RuntimeManagerSessionReuseTests(unittest.IsolatedAsyncioTestCase):
             )
 
         worker_service = SimpleNamespace(
+            health=mock.AsyncMock(return_value=SimpleNamespace(metadata={"runtime_capabilities": {"bridge_credential_file": True}})),
             start_session=mock.AsyncMock(side_effect=start_session),
             get_session=mock.AsyncMock(),
             stop_session=mock.AsyncMock(),
@@ -98,6 +99,7 @@ class RuntimeManagerSessionReuseTests(unittest.IsolatedAsyncioTestCase):
                     workspace_env={"FIRST": "one"},
                     workspace_env_visibility={"FIRST": True},
                     workspace_mounts=[{"target_path": "/workspace/one"}],
+                    bridge_token_file_initial_token="private-token-1",
                 )
             )
             second = await manager.start_session(
@@ -108,6 +110,7 @@ class RuntimeManagerSessionReuseTests(unittest.IsolatedAsyncioTestCase):
                     workspace_env={"SECOND": "two"},
                     workspace_env_visibility={"SECOND": False},
                     workspace_mounts=[{"target_path": "/workspace/two"}],
+                    bridge_token_file_initial_token="private-token-2",
                 )
             )
 
@@ -118,6 +121,7 @@ class RuntimeManagerSessionReuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reused_request.workspace_env, {"SECOND": "two"})
         self.assertEqual(reused_request.workspace_env_visibility, {"SECOND": False})
         self.assertEqual(reused_request.workspace_mounts, [{"target_path": "/workspace/two"}])
+        self.assertEqual(reused_request.bridge_token_file_initial_token, "private-token-2")
         self.assertEqual(second.provider_session_id, first.provider_session_id)
         self.assertEqual(second.launch_port, 4173)
         self.assertIsNotNone(second.bridge_credential)
@@ -136,6 +140,7 @@ class RuntimeManagerSessionReuseTests(unittest.IsolatedAsyncioTestCase):
             )
 
         worker_service = SimpleNamespace(
+            health=mock.AsyncMock(return_value=SimpleNamespace(metadata={"runtime_capabilities": {"bridge_credential_file": True}})),
             start_session=mock.AsyncMock(side_effect=start_session),
             get_session=mock.AsyncMock(),
             stop_session=mock.AsyncMock(),
@@ -148,6 +153,7 @@ class RuntimeManagerSessionReuseTests(unittest.IsolatedAsyncioTestCase):
                     workspace_id="workspace-1",
                     leased_by_user_id="user-1",
                     workspace_env={"FIRST": "one"},
+                    bridge_token_file_initial_token="private-token-1",
                 )
             )
 

@@ -59,13 +59,13 @@ describe('AgentBehaviorSettingsSection', () => {
     expect(document.getElementById('setting-agent_behavior')).toBeTruthy();
     expect(document.getElementById('setting-tool_skills_enabled')).toBeTruthy();
     expect(screen.getByLabelText('Load tools on demand')).toBeTruthy();
-    expect((screen.getByLabelText('Load tools on demand') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText('Load tools on demand') as HTMLInputElement).checked).toBe(false);
     expect((screen.getByLabelText('Max Tool Iterations') as HTMLInputElement).value).toBe('30');
     expect((screen.getByLabelText('Max Tool Output (chars)') as HTMLInputElement).value).toBe(
       '5000',
     );
     expect((screen.getByLabelText('Context Window (steps)') as HTMLInputElement).value).toBe('6');
-    expect(container.querySelector('.agent-behavior-settings-switch-card')).toBeTruthy();
+    expect(container.querySelector('.master-toggle')).toBeTruthy();
     expect(container.querySelector('.agent-behavior-settings-grid')).toBeTruthy();
     expect(screen.getByText('30')).toBeTruthy();
     expect(screen.getByText('5K')).toBeTruthy();
@@ -77,7 +77,7 @@ describe('AgentBehaviorSettingsSection', () => {
     renderSection();
 
     await user.click(screen.getByLabelText('Load tools on demand'));
-    expect((screen.getByLabelText('Load tools on demand') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByLabelText('Load tools on demand') as HTMLInputElement).checked).toBe(true);
 
     fireEvent.change(screen.getByLabelText('Max Tool Iterations'), { target: { value: '42' } });
     expect(screen.getByText('42')).toBeTruthy();

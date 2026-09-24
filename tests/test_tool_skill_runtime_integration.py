@@ -16,6 +16,8 @@ from ragtime.rag.prompts import (
     build_html_component_theme_prompt,
 )
 from ragtime.rag.tool_skills import ToolSkillBindingState
+from tests.content_protection_support import use_disabled_content_protection
+from tests.generation_policy_test_support import enabled_generation_policy
 from tests.test_tool_skill_shared import (
     FakeAction,
     FakeExecutor,
@@ -32,10 +34,20 @@ from tests.test_tool_skill_shared import (
     tool_by_name,
 )
 
-# Convenience aliases for backwards compatibility
+# Test executors mirror LangChain's callback-config invocation protocol.
 _FakeAction = FakeAction
-_FakeExecutor = FakeExecutor
-_FakeStreamExecutor = FakeStreamExecutor
+
+
+class _FakeExecutor(FakeExecutor):
+    async def ainvoke(self, payload: dict[str, Any], config: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.callback_configs = getattr(self, "callback_configs", []) + [config]
+        return await super().ainvoke(payload)
+
+
+class _FakeStreamExecutor(FakeStreamExecutor):
+    def astream_events(self, payload: dict[str, Any], version: str = "v2", config: dict[str, Any] | None = None):
+        self.callback_configs = getattr(self, "callback_configs", []) + [config]
+        return super().astream_events(payload, version=version)
 
 
 # Convenience wrappers (all delegate to shared module)
@@ -80,6 +92,23 @@ def _make_request_context(**kwargs: Any) -> dict[str, Any]:
 
 
 class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        use_disabled_content_protection(self)
+
+        async def _enabled_users(*, where: dict[str, Any]) -> list[SimpleNamespace]:
+            return [SimpleNamespace(id=user_id, chatEnabled=None, userspaceGenerationEnabled=None) for user_id in where["id"]["in"]]
+
+        policy_db = SimpleNamespace(
+            appsettings=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(chatEnabled=True, userspaceGenerationEnabled=True))),
+            user=SimpleNamespace(find_many=mock.AsyncMock(side_effect=_enabled_users)),
+        )
+        patcher = mock.patch(
+            "ragtime.core.generation_policy.get_db",
+            new=mock.AsyncMock(return_value=policy_db),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _make_rag(self, *, tool_name: str = "Demo SQL", tool_description: str = "Reads demo SQL rows.") -> rag_components.RAGComponents:
         return make_rag_components(tool_name=tool_name, tool_description=tool_description)
 
@@ -538,6 +567,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
 
         with (
+            enabled_generation_policy(),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_rebuild_stage)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
@@ -693,6 +723,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             stage_records.append({"stage_index": stage_index, "input": stage_input})
 
         with (
+            enabled_generation_policy(),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_rebuild_stage)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
@@ -816,6 +847,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             stage_records.append({"stage_index": stage_index})
 
         with (
+            enabled_generation_policy(),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_rebuild_stage)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
@@ -1012,7 +1044,8 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()) as persist_debug,
         ):
-            events = [event async for event in rag.process_query_stream("hello", chat_history=[])]
+            with enabled_generation_policy():
+                events = [event async for event in rag.process_query_stream("hello", chat_history=[])]
 
         self.assertIn("done", "".join(event for event in events if isinstance(event, str)))
         self.assertEqual(
@@ -1184,7 +1217,8 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()) as persist_debug,
         ):
-            events = [event async for event in rag.process_query_stream("hello", chat_history=[])]
+            with enabled_generation_policy():
+                events = [event async for event in rag.process_query_stream("hello", chat_history=[])]
 
         self.assertIn("done", "".join(event for event in events if isinstance(event, str)))
         self.assertEqual(
@@ -1373,8 +1407,8 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_wrap_runtime_tools_with_request_state", side_effect=lambda tools, **_kwargs: (tools, request_state)),
             mock.patch.object(
                 rag_components.userspace_service,
-                "get_workspace_entrypoint_status",
-                return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd="."),
+                "get_workspace_entrypoint_status_authoritative",
+                new=mock.AsyncMock(return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd=".")),
             ),
             mock.patch.object(rag_components.userspace_service, "is_default_static_entrypoint", return_value=False),
             mock.patch.object(rag, "_build_userspace_continuity_prompt", new=mock.AsyncMock(return_value="")),

@@ -15,6 +15,7 @@ type ShareStatus = UserSpaceWorkspaceShareLinkStatus | ConversationShareLinkStat
 
 import { LdapGroupChips, LdapGroupSelect, type LdapGroup } from '../LdapGroupSelect';
 import { InlineCopyButton } from './InlineCopyButton';
+import { ModalTabs, type ModalTab } from './ModalTabs';
 import type { ShareLinkStyle } from '@/types';
 
 interface ShareLinkModalProps {
@@ -51,7 +52,6 @@ interface ShareLinkModalProps {
   shareTargetLabel?: string;
   openActionLabel?: string;
   extraAccessControls?: ReactNode;
-  agentAccessSection?: ReactNode;
   apiAccessSection?: ReactNode;
   onClose: () => void;
   onSelectShare?: (shareId: string) => void;
@@ -71,8 +71,6 @@ interface ShareLinkModalProps {
   onShareUrlInlineCopyError?: (error: Error) => void;
   formatUserLabel: (user: UserDirectoryEntry, fallback: string) => string;
 }
-
-type ShareModalTab = 'links' | 'api';
 
 const SHARE_ACCESS_MODE_LABELS: Record<ShareAccessMode, string> = {
   token: 'Public link',
@@ -145,7 +143,6 @@ export function ShareLinkModal({
   shareTargetLabel = 'workspace',
   openActionLabel = 'Open Preview',
   extraAccessControls,
-  agentAccessSection,
   apiAccessSection,
   onClose,
   onSelectShare,
@@ -166,16 +163,13 @@ export function ShareLinkModal({
   formatUserLabel,
 }: ShareLinkModalProps) {
   const [view, setView] = useState<'list' | 'edit'>('list');
-  const [activeTab, setActiveTab] = useState<ShareModalTab>('links');
-  const [hasMountedApiAccessSection, setHasMountedApiAccessSection] = useState(false);
+  const [activeTab, setActiveTab] = useState('links');
   const [deleteConfirmShareId, setDeleteConfirmShareId] = useState<string | null>(null);
   const [shareLabelDraft, setShareLabelDraft] = useState('');
   const [isEditingShareTitle, setIsEditingShareTitle] = useState(false);
   const pendingEditAfterCreateRef = useRef(false);
   const previousSelectedShareIdRef = useRef<string | null>(null);
   const previousCreatingShareLinkRef = useRef(creatingShareLink);
-  const shareLinksTabRef = useRef<HTMLButtonElement | null>(null);
-  const apiAccessTabRef = useRef<HTMLButtonElement | null>(null);
 
   const availableShareLinks = useMemo(
     () => (shareLinks.length > 0 ? shareLinks : shareStatus?.id ? [shareStatus] : []),
@@ -190,10 +184,10 @@ export function ShareLinkModal({
   }, [availableShareLinks, selectedShareId, shareStatus]);
 
   const hasApiAccessTab = Boolean(apiAccessSection);
+  const hasTabs = hasApiAccessTab;
 
   useEffect(() => {
     setActiveTab('links');
-    setHasMountedApiAccessSection(false);
 
     if (!isOpen) {
       setView('list');
@@ -206,11 +200,8 @@ export function ShareLinkModal({
   }, [isOpen]);
 
   useEffect(() => {
-    if (!hasApiAccessTab) {
-      setHasMountedApiAccessSection(false);
-      setActiveTab('links');
-    }
-  }, [hasApiAccessTab]);
+    if (!hasApiAccessTab && activeTab === 'api') setActiveTab('links');
+  }, [hasApiAccessTab, activeTab]);
 
   useEffect(() => {
     if (
@@ -261,48 +252,6 @@ export function ShareLinkModal({
   const listBusy = creatingShareLink || deletingSelectedShareLink || updatingShareLabel;
   const isEditView = view === 'edit' && Boolean(selectedShare);
   const linkIdentityLocked = Boolean(selectedShare?.has_share_link);
-
-  const selectTab = (tab: ShareModalTab) => {
-    if (tab === 'api' && !hasApiAccessTab) {
-      return;
-    }
-    if (tab === 'api') {
-      setHasMountedApiAccessSection(true);
-    }
-    setActiveTab(tab);
-  };
-
-  const moveTabSelection = (tab: ShareModalTab) => {
-    selectTab(tab);
-    if (tab === 'links') {
-      shareLinksTabRef.current?.focus();
-      return;
-    }
-    apiAccessTabRef.current?.focus();
-  };
-
-  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, tab: ShareModalTab) => {
-    if (!hasApiAccessTab) {
-      return;
-    }
-
-    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
-      event.preventDefault();
-      moveTabSelection(tab === 'links' ? 'api' : 'links');
-      return;
-    }
-
-    if (event.key === 'Home') {
-      event.preventDefault();
-      moveTabSelection('links');
-      return;
-    }
-
-    if (event.key === 'End') {
-      event.preventDefault();
-      moveTabSelection('api');
-    }
-  };
 
   const handleSaveShareLabel = () => {
     if (!canSaveShareLabel || updatingShareLabel) {
@@ -698,14 +647,17 @@ export function ShareLinkModal({
           <span>{creatingShareLink ? 'Creating...' : 'New Link'}</span>
         </button>
       </div>
-      {agentAccessSection}
     </>
   );
+  const shareTabs: ModalTab[] = [
+    { id: 'links', label: 'Share Links', content: linksPanel },
+    ...(apiAccessSection ? [{ id: 'api', label: 'API Access', content: apiAccessSection }] : []),
+  ];
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div
-        className={`modal-content userspace-share-modal${hasApiAccessTab ? ' userspace-share-modal-with-tabs' : ''}`}
+        className={`modal-content userspace-share-modal${hasTabs ? ' modal-with-tabs' : ''}`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-header">
@@ -728,57 +680,14 @@ export function ShareLinkModal({
           </button>
         </div>
         <div className="modal-body">
-          {hasApiAccessTab ? (
-            <>
-              <div className="userspace-share-tabs" id="share-workspace-tabs" role="tablist">
-                <button
-                  ref={shareLinksTabRef}
-                  type="button"
-                  id="share-workspace-tab-links"
-                  role="tab"
-                  className="userspace-share-tab"
-                  aria-selected={activeTab === 'links'}
-                  aria-controls="share-workspace-panel-links"
-                  tabIndex={activeTab === 'links' ? 0 : -1}
-                  onClick={() => selectTab('links')}
-                  onKeyDown={(event) => handleTabKeyDown(event, 'links')}
-                >
-                  Share Links
-                </button>
-                <button
-                  ref={apiAccessTabRef}
-                  type="button"
-                  id="share-workspace-tab-api"
-                  role="tab"
-                  className="userspace-share-tab"
-                  aria-selected={activeTab === 'api'}
-                  aria-controls="share-workspace-panel-api"
-                  tabIndex={activeTab === 'api' ? 0 : -1}
-                  onClick={() => selectTab('api')}
-                  onKeyDown={(event) => handleTabKeyDown(event, 'api')}
-                >
-                  API Access
-                </button>
-              </div>
-              <div
-                id="share-workspace-panel-links"
-                role="tabpanel"
-                className="userspace-share-tab-panel"
-                aria-labelledby="share-workspace-tab-links"
-                hidden={activeTab !== 'links'}
-              >
-                {linksPanel}
-              </div>
-              <div
-                id="share-workspace-panel-api"
-                role="tabpanel"
-                className="userspace-share-tab-panel"
-                aria-labelledby="share-workspace-tab-api"
-                hidden={activeTab !== 'api'}
-              >
-                {hasMountedApiAccessSection ? apiAccessSection : null}
-              </div>
-            </>
+          {hasTabs ? (
+            <ModalTabs
+              idPrefix="share-workspace"
+              label={title}
+              tabs={shareTabs}
+              activeTabId={activeTab}
+              onChange={setActiveTab}
+            />
           ) : (
             linksPanel
           )}

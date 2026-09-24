@@ -22,6 +22,8 @@ function fallbackAuthStatus(serverName: string): AuthStatus {
     authenticated_webgl_background_enabled: true,
     chat_compaction_threshold_percent: 80,
     chat_auto_compaction_threshold_percent: 99,
+    chat_enabled: false,
+    userspace_generation_enabled: false,
     auth_methods: [],
   };
 }

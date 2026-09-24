@@ -33,6 +33,8 @@ def make_settings_row(**overrides: Any) -> SimpleNamespace:
         "embeddingDimensions": None,
         "allowedChatModels": [],
         "enabledTools": [],
+        "chatEnabled": True,
+        "userspaceGenerationEnabled": True,
         "postgresHost": "",
         "postgresPort": 5432,
         "postgresUser": "",

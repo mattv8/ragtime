@@ -552,7 +552,7 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
         *,
         get_runtime_session: mock.AsyncMock | None = None,
         list_accessible_targets: mock.AsyncMock | None = None,
-        build_mode_prompt: mock.Mock | None = None,
+        build_instruction_sections: mock.Mock | None = None,
     ) -> tuple[dict[str, Any], mock.AsyncMock, mock.AsyncMock, mock.Mock]:
         rag = rag_components.RAGComponents.__new__(rag_components.RAGComponents)
         rag._tool_configs = [
@@ -573,7 +573,7 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
         runtime_tools = [SimpleNamespace(name="query_flapping_tool")]
         runtime_session_mock = get_runtime_session or mock.AsyncMock(return_value=SimpleNamespace(session=None))
         target_mock = list_accessible_targets or mock.AsyncMock(return_value=[])
-        prompt_mock = build_mode_prompt or mock.Mock(return_value="MODE_PROMPT")
+        prompt_mock = build_instruction_sections or mock.Mock(return_value={"identity": "", "entrypoint": "ENTRYPOINT_NUDGE", "workspace": "MODE_PROMPT"})
 
         with ExitStack() as stack:
             stack.enter_context(
@@ -705,14 +705,8 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(mock.patch.object(rag, "_build_userspace_object_storage_prompt_fragment", return_value=""))
             stack.enter_context(
                 mock.patch(
-                    "ragtime.rag.components.build_userspace_mode_prompt_addition",
+                    "ragtime.rag.components.build_userspace_instruction_sections",
                     prompt_mock,
-                )
-            )
-            stack.enter_context(
-                mock.patch(
-                    "ragtime.rag.components.build_userspace_entrypoint_nudge",
-                    return_value="ENTRYPOINT_NUDGE",
                 )
             )
             stack.enter_context(
@@ -724,8 +718,8 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(
                 mock.patch.object(
                     rag_components.userspace_service,
-                    "get_workspace_entrypoint_status",
-                    return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd="."),
+                    "get_workspace_entrypoint_status_authoritative",
+                    new=mock.AsyncMock(return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd=".")),
                 )
             )
             stack.enter_context(
@@ -1031,14 +1025,8 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(mock.patch.object(rag, "_build_userspace_object_storage_prompt_fragment", return_value=""))
             stack.enter_context(
                 mock.patch(
-                    "ragtime.rag.components.build_userspace_mode_prompt_addition",
-                    return_value="",
-                )
-            )
-            stack.enter_context(
-                mock.patch(
-                    "ragtime.rag.components.build_userspace_entrypoint_nudge",
-                    return_value="",
+                    "ragtime.rag.components.build_userspace_instruction_sections",
+                    return_value={"identity": "", "entrypoint": "", "workspace": ""},
                 )
             )
             stack.enter_context(
@@ -1050,8 +1038,8 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(
                 mock.patch.object(
                     rag_components.userspace_service,
-                    "get_workspace_entrypoint_status",
-                    return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd="."),
+                    "get_workspace_entrypoint_status_authoritative",
+                    new=mock.AsyncMock(return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd=".")),
                 )
             )
             stack.enter_context(
@@ -1104,7 +1092,7 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ENTRYPOINT_NUDGE", request_context["prompt_additions"])
         runtime_session_mock.assert_awaited_once_with("workspace-1", "viewer-1")
         target_mock.assert_awaited_once_with("workspace-1", "lease-user-1")
-        prompt_mock.assert_called_once()
+        self.assertEqual(prompt_mock.call_count, 1)
         self.assertEqual(prompt_mock.call_args.kwargs["shared_sqlite_databases"], targets)
 
     async def test_userspace_runtime_context_falls_back_to_request_user_for_shared_sqlite_targets_without_session(self) -> None:
@@ -1115,7 +1103,7 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ENTRYPOINT_NUDGE", request_context["prompt_additions"])
         runtime_session_mock.assert_awaited_once_with("workspace-1", "viewer-1")
         target_mock.assert_awaited_once_with("workspace-1", "viewer-1")
-        prompt_mock.assert_called_once()
+        self.assertEqual(prompt_mock.call_count, 1)
         self.assertEqual(prompt_mock.call_args.kwargs["shared_sqlite_databases"], [])
 
     async def test_userspace_runtime_context_omits_shared_sqlite_targets_when_runtime_session_lookup_fails(self) -> None:
@@ -1127,7 +1115,7 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ENTRYPOINT_NUDGE", request_context["prompt_additions"])
         runtime_session_mock.assert_awaited_once_with("workspace-1", "viewer-1")
         target_mock.assert_not_awaited()
-        prompt_mock.assert_called_once()
+        self.assertEqual(prompt_mock.call_count, 1)
         self.assertEqual(prompt_mock.call_args.kwargs["shared_sqlite_databases"], [])
         self.assertTrue(any("session lookup failed" in message for message in captured.output))
 
@@ -1141,7 +1129,7 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ENTRYPOINT_NUDGE", request_context["prompt_additions"])
         runtime_session_mock.assert_awaited_once_with("workspace-1", "viewer-1")
         target_mock.assert_awaited_once_with("workspace-1", "lease-user-1")
-        prompt_mock.assert_called_once()
+        self.assertEqual(prompt_mock.call_count, 1)
         self.assertEqual(prompt_mock.call_args.kwargs["shared_sqlite_databases"], [])
         self.assertTrue(any("target lookup failed" in message for message in captured.output))
 

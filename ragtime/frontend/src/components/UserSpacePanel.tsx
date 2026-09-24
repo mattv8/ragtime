@@ -188,6 +188,9 @@ import { DatabaseHistoryPanel } from './shared/DatabaseHistoryPanel';
 import { WorkspaceObjectStorageExplorer } from './shared/WorkspaceObjectStorageExplorer';
 import { AgentAccessSection } from './shared/AgentAccessSection';
 import { ExternalApiAccessSection } from './shared/ExternalApiAccessSection';
+import { ConnectYourAgentPanel } from './shared/ConnectYourAgentPanel';
+import { UserSpaceAgentOnboardingRail } from './shared/UserSpaceAgentOnboardingRail';
+import type { CodingAgentClientId, CodingAgentSelectionRequest } from './shared/codingAgentClients';
 import { ShareLinkModal } from './shared/ShareLinkModal';
 import type { LdapGroup } from './LdapGroupSelect';
 import { Popover, DisabledPopover } from './Popover';
@@ -209,6 +212,7 @@ import { applyTerminalTheme, readTerminalTheme } from '@/theme/terminalTheme';
 
 interface UserSpacePanelProps {
   currentUser: User;
+  userspaceGenerationEnabled?: boolean;
   debugMode?: boolean;
   openWorkspaceRequest?: { workspaceId: string; requestId: number } | null;
   onFullscreenChange?: (fullscreen: boolean) => void;
@@ -942,6 +946,7 @@ export function getWorkspaceToolReadOnlyDescription(
 
 export function UserSpacePanel({
   currentUser,
+  userspaceGenerationEnabled = false,
   debugMode = false,
   openWorkspaceRequest = null,
   onFullscreenChange,
@@ -1124,6 +1129,15 @@ export function UserSpacePanel({
   const workspacePickerSearchInputRef = useRef<HTMLInputElement>(null);
   const [showMembersModal, setShowMembersModal] = useState(false);
   const [showAgentAccessModal, setShowAgentAccessModal] = useState(false);
+  const [agentAccessOpenRequest, setAgentAccessOpenRequest] = useState<{
+    requestId: number;
+    tabId: 'coding-agent-setup';
+  } | null>(null);
+  const [agentSelectionRequest, setAgentSelectionRequest] =
+    useState<CodingAgentSelectionRequest | null>(null);
+  const [agentOnboardingDismissedWorkspaceId, setAgentOnboardingDismissedWorkspaceId] = useState<
+    string | null
+  >(null);
   const [showAdminWorkspacesModal, setShowAdminWorkspacesModal] = useState(false);
   const [allUsers, setAllUsers] = useState<UserDirectoryEntry[]>([]);
   const [pendingMembers, setPendingMembers] = useState<UserSpaceWorkspaceMember[]>([]);
@@ -1216,6 +1230,7 @@ export function UserSpacePanel({
     null,
   );
   const [expandedSnapshotIds, setExpandedSnapshotIds] = useState<Set<string>>(new Set());
+  const [snapshotsListHeight, setSnapshotsListHeight] = useState(280);
   const [snapshotDiffSummaries, setSnapshotDiffSummaries] = useState<
     Record<string, UserSpaceSnapshotDiffSummary>
   >({});
@@ -1251,6 +1266,10 @@ export function UserSpacePanel({
   const treeFileHoverSuppressRef = useRef<string | null>(null);
   const fileContentCacheRef = useRef(fileContentCache);
   const activeWorkspaceIdRef = useRef<string | null>(activeWorkspaceId);
+  const agentAccessRequestIdRef = useRef(0);
+  const agentAccessLoadRequestIdRef = useRef(0);
+  const agentAccessButtonRef = useRef<HTMLButtonElement | null>(null);
+  const agentAccessLaunchTriggerRef = useRef<HTMLElement | null>(null);
   const activeWorkspaceConversationIdRef = useRef<string | null>(activeWorkspaceConversationId);
   const loadWorkspaceDataRequestIdRef = useRef(0);
   const loadChangedFileStateRequestIdRef = useRef(0);
@@ -3240,6 +3259,19 @@ export function UserSpacePanel({
     [activeWorkspaceId, loadSnapshotDiffSummary],
   );
 
+  const SNAPSHOTS_MIN_HEIGHT = 100;
+  const SNAPSHOTS_MAX_HEIGHT = 600;
+
+  const handleSnapshotsResize = useCallback((delta: number) => {
+    setSnapshotsListHeight((h) =>
+      Math.max(SNAPSHOTS_MIN_HEIGHT, Math.min(SNAPSHOTS_MAX_HEIGHT, h - delta)),
+    );
+  }, []);
+
+  const handleSnapshotsResizeTo = useCallback((value: number) => {
+    setSnapshotsListHeight(Math.max(SNAPSHOTS_MIN_HEIGHT, Math.min(SNAPSHOTS_MAX_HEIGHT, value)));
+  }, []);
+
   const handleSnapshotFileHoverStart = useCallback(
     (snapshotId: string, filePath: string) => {
       if (!activeWorkspaceId) return;
@@ -3391,6 +3423,7 @@ export function UserSpacePanel({
     setSnapshotsLoadedForWorkspace(null);
     setShowSnapshots(false);
     setExpandedSnapshotIds(new Set());
+    setSnapshotsListHeight(280);
     setSnapshotDiffSummaries({});
     setLoadingSnapshotDiffSummaryIds({});
     setSnapshotDiffSummaryErrors({});
@@ -4680,7 +4713,7 @@ export function UserSpacePanel({
 
   const handleAskAgentToPrepareWorkspace = useCallback(
     async (prompt: string) => {
-      if (!activeWorkspaceId) return;
+      if (!userspaceGenerationEnabled || !activeWorkspaceId) return;
       expandChat();
       setError(null);
 
@@ -4718,6 +4751,7 @@ export function UserSpacePanel({
       activeWorkspaceId,
       awaitAvailableModelsReady,
       expandChat,
+      userspaceGenerationEnabled,
       refreshAvailableModels,
       updateActiveWorkspaceConversationId,
     ],
@@ -6400,27 +6434,83 @@ export function UserSpacePanel({
     [activeWorkspace, isOwner],
   );
 
-  const handleOpenAgentAccessModal = useCallback(async () => {
-    if (!activeWorkspace) return;
-    setShowAgentAccessModal(true);
-    setAgentGrantsLoading(true);
-    try {
-      const limit = Math.max(workspacesTotal || workspaces.length || 50, 50);
-      const [grants, workspacePage] = await Promise.all([
-        api.listUserSpaceWorkspaceAgentGrants(activeWorkspace.id),
-        api.listUserSpaceWorkspaces(0, limit),
-      ]);
-      setAgentGrants(sortWorkspaceAgentGrants(grants));
-      setAgentGrantWorkspaces(
-        workspacePage.items.filter((workspace) => workspace.id !== activeWorkspace.id),
+  useEffect(() => {
+    setAgentSelectionRequest(null);
+    setAgentAccessOpenRequest(null);
+    setAgentOnboardingDismissedWorkspaceId(null);
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
+    if (userspaceGenerationEnabled) setAgentOnboardingDismissedWorkspaceId(null);
+  }, [userspaceGenerationEnabled]);
+
+  const handleOpenAgentAccessModal = useCallback(
+    async (selection?: CodingAgentSelectionRequest, trigger?: HTMLElement) => {
+      if (!activeWorkspace) return;
+      const workspaceId = activeWorkspace.id;
+      const loadRequestId = ++agentAccessLoadRequestIdRef.current;
+      agentAccessLaunchTriggerRef.current = trigger ?? null;
+      if (selection) {
+        setAgentSelectionRequest(selection);
+        setAgentAccessOpenRequest({ requestId: selection.requestId, tabId: 'coding-agent-setup' });
+      } else {
+        setAgentSelectionRequest(null);
+        setAgentAccessOpenRequest(null);
+      }
+      setShowAgentAccessModal(true);
+      setAgentGrantsLoading(true);
+      try {
+        const limit = Math.max(workspacesTotal || workspaces.length || 50, 50);
+        const [grants, workspacePage] = await Promise.all([
+          api.listUserSpaceWorkspaceAgentGrants(workspaceId),
+          api.listUserSpaceWorkspaces(0, limit),
+        ]);
+        if (
+          activeWorkspaceIdRef.current !== workspaceId ||
+          agentAccessLoadRequestIdRef.current !== loadRequestId
+        ) {
+          return;
+        }
+        setAgentGrants(sortWorkspaceAgentGrants(grants));
+        setAgentGrantWorkspaces(
+          workspacePage.items.filter((workspace) => workspace.id !== workspaceId),
+        );
+        setError(null);
+      } catch (err) {
+        if (
+          activeWorkspaceIdRef.current === workspaceId &&
+          agentAccessLoadRequestIdRef.current === loadRequestId
+        ) {
+          setError(err instanceof Error ? err.message : 'Failed to load agent access settings');
+        }
+      } finally {
+        if (
+          activeWorkspaceIdRef.current === workspaceId &&
+          agentAccessLoadRequestIdRef.current === loadRequestId
+        ) {
+          setAgentGrantsLoading(false);
+        }
+      }
+    },
+    [activeWorkspace, workspaces.length, workspacesTotal],
+  );
+
+  const handleOpenAgentOnboarding = useCallback(
+    (clientId: CodingAgentClientId, trigger: HTMLButtonElement) => {
+      if (!activeWorkspaceId) return;
+      const requestId = ++agentAccessRequestIdRef.current;
+      void handleOpenAgentAccessModal(
+        { requestId, clientId, workspaceId: activeWorkspaceId },
+        trigger,
       );
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load agent access settings');
-    } finally {
-      setAgentGrantsLoading(false);
-    }
-  }, [activeWorkspace, workspaces.length, workspacesTotal]);
+    },
+    [activeWorkspaceId, handleOpenAgentAccessModal],
+  );
+
+  const handleCloseAgentAccessModal = useCallback(() => {
+    setShowAgentAccessModal(false);
+    (agentAccessLaunchTriggerRef.current ?? agentAccessButtonRef.current)?.focus();
+  }, []);
 
   const handleUpsertAgentGrant = useCallback(
     async (request: UpsertWorkspaceAgentGrantRequest) => {
@@ -8942,7 +9032,8 @@ export function UserSpacePanel({
           )}
           {activeWorkspaceId && (
             <AgentAccessButton
-              onClick={handleOpenAgentAccessModal}
+              ref={agentAccessButtonRef}
+              onClick={() => void handleOpenAgentAccessModal()}
               title="Manage cross-workspace agent access"
             />
           )}
@@ -9292,8 +9383,11 @@ export function UserSpacePanel({
             className="userspace-editor-section"
             ref={editorSectionRef}
             style={{
-              display: editorChatCollapsedSide === 'before' ? 'none' : undefined,
-              flex: editorFractionLiveRef.current,
+              display:
+                userspaceGenerationEnabled && editorChatCollapsedSide === 'before'
+                  ? 'none'
+                  : undefined,
+              flex: userspaceGenerationEnabled ? editorFractionLiveRef.current : 1,
             }}
           >
             {/* File sidebar */}
@@ -9443,94 +9537,110 @@ export function UserSpacePanel({
             </div>
           </div>
 
-          <ResizeHandle
-            direction="vertical"
-            ariaLabel="Resize workspace editor and chat"
-            value={Math.round(editorFraction * 100)}
-            min={10}
-            max={90}
-            valueUnit="percent"
-            onResize={handleResizeEditorChat}
-            onResizeTo={handleResizeEditorChatTo}
-            onResizeEnd={commitEditorChatFraction}
-            collapsed={editorChatCollapsedSide ?? undefined}
-            collapsible={{
-              side: 'after',
-              restoreValue: Math.round(
-                Math.min(0.9, Math.max(0.1, prevEditorFraction.current || 0.6)) * 100,
-              ),
-            }}
-          />
+          {!userspaceGenerationEnabled &&
+          activeWorkspace &&
+          agentOnboardingDismissedWorkspaceId !== activeWorkspace.id ? (
+            <UserSpaceAgentOnboardingRail
+              onSelectClient={handleOpenAgentOnboarding}
+              onDismiss={() => {
+                setAgentOnboardingDismissedWorkspaceId(activeWorkspace.id);
+                requestAnimationFrame(() => agentAccessButtonRef.current?.focus());
+              }}
+            />
+          ) : null}
 
-          {/* Chat section */}
-          <div
-            className="userspace-chat-section"
-            ref={chatSectionRef}
-            style={{
-              display: editorChatCollapsedSide === 'after' ? 'none' : undefined,
-              flex: editorChatCollapsedSide === 'before' ? 1 : 1 - editorFractionLiveRef.current,
-            }}
-          >
-            {activeWorkspaceId ? (
-              <ChatPanel
-                key={activeWorkspaceId}
-                currentUser={currentUser}
-                debugMode={debugMode}
-                workspaceId={activeWorkspaceId}
-                workspaceChatState={activeWorkspaceChatSnapshot}
-                workspaceAvailableTools={availableTools}
-                workspaceToolSelectionMode={effectiveWorkspaceToolSelection.mode}
-                workspaceSelectedToolIds={effectiveWorkspaceToolSelection.toolIds}
-                workspaceSelectedToolGroupIds={effectiveWorkspaceToolSelection.toolGroupIds}
-                workspaceToolGroups={toolGroups}
-                onRequestEnableWorkspaceTool={handleRequestEnableWorkspaceTool}
-                onWorkspaceBuiltInToolsChange={handleWorkspaceBuiltInToolsChange}
-                conversationShareableUserIds={workspaceChatShareableUserIds}
-                onUserMessageSubmitted={handleUserMessageSubmitted}
-                onConversationStateChange={handleConversationStateChange}
-                onActiveConversationChange={updateActiveWorkspaceConversationId}
-                onBranchSwitch={handleBranchSwitch}
-                onOpenWorkspaceFile={handleSelectFile}
-                onRegisterContextReferenceInserter={handleRegisterContextReferenceInserter}
-                onContextReferencesChange={handleContextReferencesChange}
-                onOpenContextReference={handleOpenChatContextReference}
-                onMessageSnapshotRestored={handleMessageSnapshotRestored}
-                onSnapshotsMaybeChanged={handleSnapshotsMaybeChanged}
-                embedded
-                readOnly={false}
-                allowAdminReadOnlyBypass={isAdminImpersonating}
-                inputBanner={
-                  branchRestoreSnapshotId ? (
-                    <div className="chat-branch-restore-banner">
-                      <span>This branch has an associated code snapshot.</span>
-                      {canEditWorkspace ? (
+          {userspaceGenerationEnabled && (
+            <ResizeHandle
+              direction="vertical"
+              ariaLabel="Resize workspace editor and chat"
+              value={Math.round(editorFraction * 100)}
+              min={10}
+              max={90}
+              valueUnit="percent"
+              onResize={handleResizeEditorChat}
+              onResizeTo={handleResizeEditorChatTo}
+              onResizeEnd={commitEditorChatFraction}
+              collapsed={editorChatCollapsedSide ?? undefined}
+              collapsible={{
+                side: 'after',
+                restoreValue: Math.round(
+                  Math.min(0.9, Math.max(0.1, prevEditorFraction.current || 0.6)) * 100,
+                ),
+              }}
+            />
+          )}
+
+          {/* Chat section is omitted when User Space generation is unavailable. */}
+          {userspaceGenerationEnabled && (
+            <div
+              className="userspace-chat-section"
+              ref={chatSectionRef}
+              style={{
+                display: editorChatCollapsedSide === 'after' ? 'none' : undefined,
+                flex: editorChatCollapsedSide === 'before' ? 1 : 1 - editorFractionLiveRef.current,
+              }}
+            >
+              {activeWorkspaceId ? (
+                <ChatPanel
+                  key={activeWorkspaceId}
+                  currentUser={currentUser}
+                  debugMode={debugMode}
+                  workspaceId={activeWorkspaceId}
+                  workspaceChatState={activeWorkspaceChatSnapshot}
+                  workspaceAvailableTools={availableTools}
+                  workspaceToolSelectionMode={effectiveWorkspaceToolSelection.mode}
+                  workspaceSelectedToolIds={effectiveWorkspaceToolSelection.toolIds}
+                  workspaceSelectedToolGroupIds={effectiveWorkspaceToolSelection.toolGroupIds}
+                  workspaceToolGroups={toolGroups}
+                  onRequestEnableWorkspaceTool={handleRequestEnableWorkspaceTool}
+                  onWorkspaceBuiltInToolsChange={handleWorkspaceBuiltInToolsChange}
+                  conversationShareableUserIds={workspaceChatShareableUserIds}
+                  onUserMessageSubmitted={handleUserMessageSubmitted}
+                  onConversationStateChange={handleConversationStateChange}
+                  onActiveConversationChange={updateActiveWorkspaceConversationId}
+                  onBranchSwitch={handleBranchSwitch}
+                  onOpenWorkspaceFile={handleSelectFile}
+                  onRegisterContextReferenceInserter={handleRegisterContextReferenceInserter}
+                  onContextReferencesChange={handleContextReferencesChange}
+                  onOpenContextReference={handleOpenChatContextReference}
+                  onMessageSnapshotRestored={handleMessageSnapshotRestored}
+                  onSnapshotsMaybeChanged={handleSnapshotsMaybeChanged}
+                  embedded
+                  readOnly={false}
+                  allowAdminReadOnlyBypass={isAdminImpersonating}
+                  inputBanner={
+                    branchRestoreSnapshotId ? (
+                      <div className="chat-branch-restore-banner">
+                        <span>This branch has an associated code snapshot.</span>
+                        {canEditWorkspace ? (
+                          <button
+                            className="chat-branch-restore-btn confirm"
+                            onClick={handleConfirmBranchRestore}
+                          >
+                            Restore
+                          </button>
+                        ) : (
+                          <span className="chat-branch-restore-note">
+                            Only workspace owners and editors can restore files.
+                          </span>
+                        )}
                         <button
-                          className="chat-branch-restore-btn confirm"
-                          onClick={handleConfirmBranchRestore}
+                          className="chat-branch-restore-btn dismiss"
+                          onClick={handleDismissBranchRestore}
                         >
-                          Restore
+                          Dismiss
                         </button>
-                      ) : (
-                        <span className="chat-branch-restore-note">
-                          Only workspace owners and editors can restore files.
-                        </span>
-                      )}
-                      <button
-                        className="chat-branch-restore-btn dismiss"
-                        onClick={handleDismissBranchRestore}
-                      >
-                        Dismiss
-                      </button>
-                    </div>
-                  ) : undefined
-                }
-              />
-            ) : (
-              <div className="userspace-chat-placeholder">
-                <p className="userspace-muted">Select or create a workspace to start chatting</p>
-              </div>
-            )}
-          </div>
+                      </div>
+                    ) : undefined
+                  }
+                />
+              ) : (
+                <div className="userspace-chat-placeholder">
+                  <p className="userspace-muted">Select or create a workspace to start chatting</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <ResizeHandle
@@ -9633,8 +9743,21 @@ export function UserSpacePanel({
             )}
           </div>
 
+          {showSnapshots && (
+            <ResizeHandle
+              direction="vertical"
+              ariaLabel="Resize snapshots panel"
+              value={snapshotsListHeight}
+              min={SNAPSHOTS_MIN_HEIGHT}
+              max={SNAPSHOTS_MAX_HEIGHT}
+              valueUnit="pixels"
+              onResize={handleSnapshotsResize}
+              onResizeTo={handleSnapshotsResizeTo}
+            />
+          )}
+
           {/* Snapshots */}
-          <div className="userspace-snapshots-section">
+          <div className="userspace-snapshots-section" style={{ marginTop: showSnapshots ? 0 : 8 }}>
             <button
               className="userspace-snapshots-toggle"
               disabled={snapshotUiLocked}
@@ -9658,7 +9781,7 @@ export function UserSpacePanel({
               <ChevronDown size={14} className={showSnapshots ? '' : 'rotated'} />
             </button>
             {showSnapshots && (
-              <div className="userspace-snapshots-list">
+              <div className="userspace-snapshots-list" style={{ height: snapshotsListHeight }}>
                 {activeWorkspaceId && (
                   <div className="database-history-snapshot-host" data-history-host="workspace">
                     <DatabaseHistoryPanel
@@ -10170,7 +10293,7 @@ export function UserSpacePanel({
           workspace={activeWorkspace}
           onClose={() => setShowScmWizard(false)}
           onSyncComplete={handleWorkspaceScmSyncComplete}
-          onAskAgent={handleAskAgentToPrepareWorkspace}
+          onAskAgent={userspaceGenerationEnabled ? handleAskAgentToPrepareWorkspace : undefined}
           onWorkspaceChanged={async () => {
             const refreshedWorkspace = await api.getUserSpaceWorkspace(activeWorkspace.id);
             setWorkspaces((current) =>
@@ -12046,8 +12169,9 @@ export function UserSpacePanel({
 
       {showAgentAccessModal && activeWorkspace && (
         <AgentAccessModal
+          key={`agent-access-${activeWorkspace.id}`}
           isOpen={showAgentAccessModal}
-          onClose={() => setShowAgentAccessModal(false)}
+          onClose={handleCloseAgentAccessModal}
           sourceWorkspace={activeWorkspace}
           availableWorkspaces={agentGrantWorkspaces.map((workspace) => ({
             ...workspace,
@@ -12060,10 +12184,22 @@ export function UserSpacePanel({
           loading={agentGrantsLoading}
           savingTargetId={savingAgentGrantTargetId}
           revokingTargetId={revokingAgentGrantTargetId}
+          agentCollaborationSection={
+            isOwner ? <AgentAccessSection workspaceId={activeWorkspace.id} /> : undefined
+          }
+          connectAgentSection={
+            <ConnectYourAgentPanel
+              workspaceId={activeWorkspace.id}
+              canManage={isOwner || currentUser.role === 'admin'}
+              selectionRequest={agentSelectionRequest ?? undefined}
+            />
+          }
+          openRequest={agentAccessOpenRequest}
         />
       )}
 
       <ShareLinkModal
+        key={activeWorkspaceId}
         isOpen={showShareModal && Boolean(activeWorkspace)}
         loadingShareStatus={loadingShareStatus}
         shareLinkType={shareLinkType}
@@ -12092,11 +12228,6 @@ export function UserSpacePanel({
         creatingShareLink={sharingWorkspace}
         updatingShareLabel={savingShareLabel}
         deletingSelectedShareLink={deletingSelectedShareLink}
-        agentAccessSection={
-          isOwner && activeWorkspace ? (
-            <AgentAccessSection workspaceId={activeWorkspace.id} />
-          ) : undefined
-        }
         apiAccessSection={
           isOwner && activeWorkspace ? (
             <ExternalApiAccessSection

@@ -1326,7 +1326,8 @@ textarea.chat-header-title-input {
   width: 30px !important;
   height: 30px !important;
 }
-.chat-toggle-control {
+.chat-toggle-control,
+.form-group > .chat-toggle-control {
   display: flex;
   align-items: center;
   gap: var(--space-sm);

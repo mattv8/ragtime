@@ -1,0 +1,59 @@
+import { InlineCopyButton } from './InlineCopyButton';
+
+export function CopyableSnippet({
+  value,
+  label = 'Copy configuration',
+}: {
+  value: string;
+  label?: string;
+}) {
+  return (
+    <div className="coding-agent-copyable-snippet">
+      <div className="coding-agent-copyable-snippet-toolbar">
+        <span className="coding-agent-copyable-snippet-label">{label}</span>
+        <InlineCopyButton
+          copyText={value}
+          className="btn btn-secondary btn-sm"
+          title={label}
+          ariaLabel={label}
+          label="Copy"
+        />
+      </div>
+      <pre>
+        <code>{value}</code>
+      </pre>
+    </div>
+  );
+}
+
+type ConfigLocation = string | { label: string; path: string };
+
+export function ConfigLocations({ locations }: { locations: ConfigLocation[] }) {
+  return (
+    <ul className="coding-agent-config-locations">
+      {locations.map((location) => (
+        <li
+          className="coding-agent-config-location"
+          key={typeof location === 'string' ? location : `${location.label}-${location.path}`}
+        >
+          {typeof location === 'string' ? (
+            <code>{location}</code>
+          ) : (
+            <>
+              <span className="coding-agent-config-location-label">{location.label}</span>
+              <code>{location.path}</code>
+            </>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function GuideNote({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="coding-agent-guide-note" role="note">
+      {children}
+    </p>
+  );
+}

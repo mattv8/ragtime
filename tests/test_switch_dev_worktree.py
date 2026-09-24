@@ -92,7 +92,7 @@ class FakeRunner(Runner):
                     services[service]["volumes"] = [mount]
             text = json.dumps({"services": services})
         elif " config --format json" in joined:
-            services: dict[str, dict[str, object]] = {
+            services = {
                 "ragtime": {"environment": ["DATABASE_URL=postgresql://ragtime:ragtime_dev@ragtime-db:5432/ragtime"]},
                 "runtime": {},
             }
@@ -264,6 +264,7 @@ class SwitchTests(unittest.TestCase):
             switch.run()
         override = switch.override.read_text()
         self.assertNotIn("runtime-s3:", override)
+        self.assertNotIn("keystore:", override)
         self.assertNotIn("object-storage-key", override)
         self.assertNotIn("runtime-s3", switch.services)
 

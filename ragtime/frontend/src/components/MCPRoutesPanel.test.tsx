@@ -28,6 +28,15 @@ const toastMock = {
 };
 
 vi.mock('@/api', () => ({ api: apiMock }));
+const contentProtectionMock = vi.hoisted(() => ({
+  getConfig: vi.fn(),
+  updateContentProtectionConfigSlice: vi.fn(),
+}));
+vi.mock('@/api/contentProtection', async () => ({
+  ...(await vi.importActual<typeof import('@/api/contentProtection')>('@/api/contentProtection')),
+  contentProtectionApi: { getConfig: contentProtectionMock.getConfig },
+  updateContentProtectionConfigSlice: contentProtectionMock.updateContentProtectionConfigSlice,
+}));
 
 vi.mock('./shared/Toast', () => ({
   useToast: () => [[], toastMock] as const,
@@ -84,6 +93,17 @@ const LDAP_GROUPS = [
   },
 ];
 
+const CONTENT_PROTECTION_CONFIG = {
+  revision: 1,
+  enabled: true,
+  classifier_model: null,
+  coverage_mode: 'selected_scopes' as const,
+  profiles: [],
+  group_profiles: [],
+  requirements: [],
+  user_overrides: [],
+};
+
 function makeRoute(overrides: Partial<McpRouteConfig> = {}): McpRouteConfig {
   return {
     id: 'route-1',
@@ -112,9 +132,11 @@ function makeRoute(overrides: Partial<McpRouteConfig> = {}): McpRouteConfig {
 async function renderPanel({
   routes = [],
   ldapConfigured = false,
+  contentProtectionConfig = CONTENT_PROTECTION_CONFIG,
 }: {
   routes?: McpRouteConfig[];
   ldapConfigured?: boolean;
+  contentProtectionConfig?: typeof CONTENT_PROTECTION_CONFIG;
 } = {}) {
   apiMock.listMcpRoutes.mockResolvedValue({ routes, count: routes.length });
   apiMock.listMcpDefaultFilters.mockResolvedValue({ filters: [], count: 0 });
@@ -127,6 +149,10 @@ async function renderPanel({
       mcp_default_route_auth_method: 'password',
     },
   });
+  contentProtectionMock.getConfig.mockResolvedValue(contentProtectionConfig);
+  contentProtectionMock.updateContentProtectionConfigSlice.mockImplementation(async (mutate) =>
+    mutate(CONTENT_PROTECTION_CONFIG),
+  );
 
   render(<MCPRoutesPanel ldapConfigured={ldapConfigured} ldapGroups={LDAP_GROUPS} />);
 
@@ -257,5 +283,53 @@ describe('MCPRoutesPanel', () => {
     });
 
     expect(screen.getByText('OAuth2 + Password')).toBeTruthy();
+  });
+
+  it('saves a classification requirement immediately for an existing route', async () => {
+    const user = userEvent.setup();
+    await renderPanel({ routes: [makeRoute()] });
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    const select = await screen.findByLabelText('Require classification');
+    await user.selectOptions(select, 'require');
+
+    await waitFor(() =>
+      expect(contentProtectionMock.updateContentProtectionConfigSlice).toHaveBeenCalledOnce(),
+    );
+    expect(
+      contentProtectionMock.updateContentProtectionConfigSlice.mock.calls[0][0](
+        CONTENT_PROTECTION_CONFIG,
+      ).requirements,
+    ).toEqual([{ scope_kind: 'mcp_route', scope_key: 'route-1', mode: 'require' }]);
+  });
+
+  it('explains that a route must be saved before classification can be required', async () => {
+    const user = userEvent.setup();
+    await renderPanel();
+    await user.click(screen.getByRole('button', { name: /add custom route/i }));
+
+    expect(
+      screen.getByText('Save the route first, then edit it to require classification.'),
+    ).toBeTruthy();
+    expect(screen.queryByLabelText('Require classification')).toBeNull();
+  });
+
+  it('hides route classification controls and the new-route hint when protection is disabled', async () => {
+    const user = userEvent.setup();
+    await renderPanel({
+      routes: [makeRoute()],
+      contentProtectionConfig: { ...CONTENT_PROTECTION_CONFIG, enabled: false },
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    await waitFor(() => expect(contentProtectionMock.getConfig).toHaveBeenCalled());
+    expect(screen.queryByLabelText('Require classification')).toBeNull();
+    expect(screen.queryByText(/Save the route first/)).toBeNull();
+    expect(contentProtectionMock.updateContentProtectionConfigSlice).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await user.click(screen.getByRole('button', { name: /add custom route/i }));
+    await waitFor(() => expect(contentProtectionMock.getConfig).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/Save the route first/)).toBeNull();
   });
 });

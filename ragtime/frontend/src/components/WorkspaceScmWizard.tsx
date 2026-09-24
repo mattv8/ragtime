@@ -2055,27 +2055,13 @@ export function WorkspaceScmWizard({
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content modal-large" onClick={(event) => event.stopPropagation()}>
         <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
-        <div className="modal-header" style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
-          <div style={{ display: 'flex', gap: 0, flex: 1 }}>
+        <div className="modal-header">
+          <div className="modal-header-tabs" role="tablist">
             <button
               type="button"
-              style={{
-                background: 'transparent',
-                border: 'none',
-                borderBottom:
-                  activeTab === 'archive'
-                    ? '2px solid var(--color-accent)'
-                    : '2px solid transparent',
-                padding: '8px 16px',
-                cursor: isLoading ? 'default' : 'pointer',
-                color:
-                  activeTab === 'archive'
-                    ? 'var(--color-text-primary)'
-                    : 'var(--color-text-secondary)',
-                fontSize: 14,
-                fontWeight: 600,
-                transition: 'color 0.15s, border-color 0.15s',
-              }}
+              className="modal-header-tab"
+              role="tab"
+              aria-selected={activeTab === 'archive'}
               onClick={() => handleTabSwitch('archive')}
               disabled={isLoading}
             >
@@ -2083,23 +2069,9 @@ export function WorkspaceScmWizard({
             </button>
             <button
               type="button"
-              style={{
-                background: 'transparent',
-                border: 'none',
-                borderBottom:
-                  activeTab === 'git-source'
-                    ? '2px solid var(--color-accent)'
-                    : '2px solid transparent',
-                padding: '8px 16px',
-                cursor: isLoading ? 'default' : 'pointer',
-                color:
-                  activeTab === 'git-source'
-                    ? 'var(--color-text-primary)'
-                    : 'var(--color-text-secondary)',
-                fontSize: 14,
-                fontWeight: 600,
-                transition: 'color 0.15s, border-color 0.15s',
-              }}
+              className="modal-header-tab"
+              role="tab"
+              aria-selected={activeTab === 'git-source'}
               onClick={() => handleTabSwitch('git-source')}
               disabled={isLoading}
             >
@@ -2107,24 +2079,9 @@ export function WorkspaceScmWizard({
             </button>
             <button
               type="button"
-              style={{
-                background: 'transparent',
-                border: 'none',
-                borderBottom:
-                  activeTab === 'sql-import'
-                    ? '2px solid var(--color-accent)'
-                    : '2px solid transparent',
-                padding: '8px 16px',
-                cursor: isLoading || !sqliteEnabled ? 'default' : 'pointer',
-                color:
-                  activeTab === 'sql-import'
-                    ? 'var(--color-text-primary)'
-                    : 'var(--color-text-secondary)',
-                fontSize: 14,
-                fontWeight: 600,
-                opacity: sqliteEnabled ? 1 : 0.4,
-                transition: 'color 0.15s, border-color 0.15s',
-              }}
+              className="modal-header-tab"
+              role="tab"
+              aria-selected={activeTab === 'sql-import'}
               onClick={() => handleTabSwitch('sql-import')}
               disabled={isLoading || !sqliteEnabled}
               title={
