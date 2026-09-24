@@ -1119,6 +1119,43 @@ def _write_workspace_mirror_hashes(spec: SandboxSpec) -> None:
         logger.warning("Failed to persist workspace mirror hashes for %s: %s", spec.workspace_id, exc)
 
 
+def _retire_workspace_mirror(spec: SandboxSpec, mirror: Path, *, label: str) -> Path | None:
+    """Rollback its baseline on archive failure; only success permanently retires it."""
+    baseline = _workspace_mirror_hash_path(spec)
+    if not mirror.exists():
+        baseline.unlink(missing_ok=True)
+        return None
+
+    archive = _safe_legacy_archive_path(spec.rootfs_path.parent, label)
+    descriptor, stash_name = tempfile.mkstemp(prefix=f".{baseline.name}.retiring-", dir=baseline.parent)
+    os.close(descriptor)
+    stash_path = Path(stash_name)
+    stash: Path | None = stash_path
+    try:
+        baseline.replace(stash_path)
+    except FileNotFoundError:
+        stash_path.unlink()
+        stash = None
+    except BaseException:
+        with contextlib.suppress(Exception):
+            stash_path.unlink()
+        raise
+    try:
+        mirror.rename(archive)
+    except BaseException:
+        if stash is not None:
+            try:
+                stash.replace(baseline)
+            except BaseException:
+                logger.error("Workspace mirror baseline rollback failed; retained stash at %s", stash, exc_info=True)
+                raise
+        raise
+    if stash is not None:
+        stash.unlink()
+    _ensure_real_directory(mirror)
+    return archive
+
+
 def _copy_mirror_path_to_canonical(source: Path, destination: Path) -> None:
     if source.is_symlink():
         _copy_workspace_symlink(source, destination)
@@ -1220,13 +1257,9 @@ def _reconcile_workspace_copy(spec: SandboxSpec, *, label: str, prefer_source: b
                 # later chroot launch can serve the deleted file directly.
                 _remove_canonical_path(source_workspace / relative)
         if conflicts:
-            archive = _safe_legacy_archive_path(spec.rootfs_path.parent, f"{label}-conflict")
-            try:
-                source_workspace.rename(archive)
-                _ensure_real_directory(source_workspace)
-                logger.warning("Workspace mirror drift conflict for %s preserved at %s (%s paths)", spec.workspace_id, archive, len(conflicts))
-            except OSError as exc:
-                logger.warning("Failed to archive workspace mirror conflict for %s: %s", spec.workspace_id, exc)
+            archive = _retire_workspace_mirror(spec, source_workspace, label=f"{label}-conflict")
+            logger.warning("Workspace mirror drift conflict for %s preserved at %s (%s paths)", spec.workspace_id, archive, len(conflicts))
+            return
         _write_workspace_mirror_hashes(spec)
         return
     try:
@@ -1253,19 +1286,7 @@ def _reconcile_workspace_copy(spec: SandboxSpec, *, label: str, prefer_source: b
         skip_dirs=_WORKSPACE_RECOVERY_SKIP_DIRS,
         prefer_source=prefer_source,
     )
-    archive = _safe_legacy_archive_path(spec.rootfs_path.parent, label)
-    try:
-        source_workspace.rename(archive)
-    except OSError as exc:
-        logger.warning(
-            "Failed to archive legacy workspace copy for %s at %s: %s",
-            spec.workspace_id,
-            source_workspace,
-            exc,
-        )
-        return
-    _ensure_real_directory(source_workspace)
-    _write_workspace_mirror_hashes(spec)
+    archive = _retire_workspace_mirror(spec, source_workspace, label=label)
     logger.info(
         "Reconciled legacy sandbox workspace for %s: copied=%s same=%s preserved_canonical=%s skipped=%s errors=%s archive=%s",
         spec.workspace_id,
@@ -1286,11 +1307,7 @@ def reconcile_stopped_workspace_mirror(spec: SandboxSpec) -> None:
 def archive_workspace_mirror(spec: SandboxSpec) -> None:
     """Archive a stale chroot mirror so a later provision cannot source-win it."""
     mirror = spec.rootfs_path / spec.sandbox_workspace.lstrip("/")
-    if not mirror.exists():
-        return
-    archive = _safe_legacy_archive_path(spec.rootfs_path.parent, "sqlite-maintenance")
-    mirror.rename(archive)
-    _ensure_real_directory(mirror)
+    _retire_workspace_mirror(spec, mirror, label="sqlite-maintenance")
 
 
 def provision_rootfs(spec: SandboxSpec) -> None:
@@ -2650,39 +2667,40 @@ def cleanup_sandbox(spec: SandboxSpec) -> None:
         return
 
     caps = detect_capabilities()
-    if workspace_mirror_required(spec, caps):
-        # Routine session stop: prefer canonical files/ with mtime-based
-        # comparison so stale rootfs content does not overwrite newer edits
-        # that arrived through the ragtime API. Mode transitions (provision
-        # path) continue to use source-wins to recover stranded chroot-era data.
-        _reconcile_workspace_copy(spec, label="chroot-workspace-cleanup", prefer_source=False)
-        # Refresh the marker so a subsequent provision sees the most
-        # recently used mode even when no transition occurred.
-        _write_sandbox_layout_marker(spec, caps)
-
-    _terminate_sandbox_cgroup_processes(spec, caps)
-
-    # Unmount any lingering bind mounts (best effort)
     try:
-        mounts_data = Path("/proc/mounts").read_text(encoding="utf-8")
-        rootfs_str = str(rootfs)
-        for line in mounts_data.splitlines():
-            parts = line.split()
-            if len(parts) >= 2 and parts[1].startswith(rootfs_str):
-                mount_point = parts[1]
-                try:
-                    _syscall_umount2(mount_point, 2)  # MNT_DETACH
-                except OSError:
-                    pass
-    except Exception:
-        pass
+        if workspace_mirror_required(spec, caps):
+            # Routine session stop: prefer canonical files/ with mtime-based
+            # comparison so stale rootfs content does not overwrite newer edits
+            # that arrived through the ragtime API. Mode transitions (provision
+            # path) continue to use source-wins to recover stranded chroot-era data.
+            _reconcile_workspace_copy(spec, label="chroot-workspace-cleanup", prefer_source=False)
+            # Refresh the marker so a subsequent provision sees the most
+            # recently used mode even when no transition occurred.
+            _write_sandbox_layout_marker(spec, caps)
+    finally:
+        _terminate_sandbox_cgroup_processes(spec, caps)
 
-    cgroup_path = _sandbox_cgroup_path(spec, caps)
-    if cgroup_path is not None:
+        # Unmount any lingering bind mounts (best effort)
         try:
-            cgroup_path.rmdir()
-        except OSError:
+            mounts_data = Path("/proc/mounts").read_text(encoding="utf-8")
+            rootfs_str = str(rootfs)
+            for line in mounts_data.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].startswith(rootfs_str):
+                    mount_point = parts[1]
+                    try:
+                        _syscall_umount2(mount_point, 2)  # MNT_DETACH
+                    except OSError:
+                        pass
+        except Exception:
             pass
+
+        cgroup_path = _sandbox_cgroup_path(spec, caps)
+        if cgroup_path is not None:
+            try:
+                cgroup_path.rmdir()
+            except OSError:
+                pass
 
     logger.info("Sandbox cleanup completed for rootfs: %s", rootfs)
 
