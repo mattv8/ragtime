@@ -636,6 +636,27 @@ class MCPToolAdapter:
 
         return f"Error: Unknown tool '{tool_name}'"
 
+    async def resolve_canonical_tool_id(self, tool_name: str) -> str:
+        """Return the durable ToolConfig ID for an exposed MCP name.
+
+        Names are presentation aliases and can change.  Coverage requirements
+        are stored against ToolConfig IDs, so callers must resolve this at each
+        request rather than capture it with a cached executor.
+        """
+        cached = self._tool_definitions.get(tool_name)
+        if cached is not None:
+            return str(cached.tool_config.get("id") or tool_name)
+        for config in await self._get_configs_for_name_resolution():
+            if tool_name in {
+                self._build_tool_name(config),
+                self._build_schema_tool_name(config),
+                self._build_http_api_catalog_search_tool_name(config),
+            }:
+                return str(config.get("id") or tool_name)
+        # Static/index-backed tools have no ToolConfig row. Their stable MCP
+        # name remains the canonical ID.
+        return tool_name
+
     async def _execute_tool_definition(self, tool_def: MCPToolDefinition, arguments: dict[str, Any]) -> str:
         unavailable_reason = self._get_tool_unavailable_reason(tool_def.tool_config)
         try:

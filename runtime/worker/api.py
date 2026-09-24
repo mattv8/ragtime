@@ -34,6 +34,8 @@ from runtime.manager.models import (
     RuntimeBridgeCredentialMetadata,
     RuntimeContentProbeRequest,
     RuntimeContentProbeResponse,
+    RuntimeExecJobRequest,
+    RuntimeExecJobResponse,
     RuntimeExecRequest,
     RuntimeExecResponse,
     RuntimeExternalBrowseRequest,
@@ -525,6 +527,9 @@ async def write_file(
         worker_session_id,
         file_path,
         str(payload.get("content", "")),
+        expected_content_hash=(str(payload["expected_content_hash"]) if payload.get("expected_content_hash") is not None else None),
+        require_content_hash=bool(payload.get("require_content_hash", False)),
+        artifact_metadata=(payload.get("artifact_metadata") if isinstance(payload.get("artifact_metadata"), dict) else None),
     )
 
 
@@ -532,9 +537,29 @@ async def write_file(
 async def delete_file(
     worker_session_id: str,
     file_path: str,
+    payload: dict[str, Any] | None = None,
     _auth: None = WorkerAuth,
 ) -> dict[str, Any]:
-    return await get_worker_service().delete_file(worker_session_id, file_path)
+    payload = payload or {}
+    return await get_worker_service().delete_file(
+        worker_session_id,
+        file_path,
+        expected_content_hash=(str(payload["expected_content_hash"]) if payload.get("expected_content_hash") is not None else None),
+        require_content_hash=bool(payload.get("require_content_hash", False)),
+    )
+
+
+@router.post("/worker/sessions/{worker_session_id}/fs/move")
+async def move_file(
+    worker_session_id: str,
+    payload: dict[str, Any],
+    _auth: None = WorkerAuth,
+) -> dict[str, Any]:
+    return await get_worker_service().move_file(
+        worker_session_id,
+        str(payload.get("old_path", "")),
+        str(payload.get("new_path", "")),
+    )
 
 
 @router.post(
@@ -584,6 +609,34 @@ async def exec_command(
         timeout_seconds=payload.timeout_seconds,
         cwd=payload.cwd,
     )
+
+
+@router.post("/worker/sessions/{worker_session_id}/exec-jobs", response_model=RuntimeExecJobResponse)
+async def start_exec_job(worker_session_id: str, payload: RuntimeExecJobRequest, _auth: None = WorkerAuth) -> RuntimeExecJobResponse:
+    return await get_worker_service().start_exec_job(
+        worker_session_id,
+        payload.command,
+        timeout_seconds=payload.timeout_seconds,
+        cwd=payload.cwd,
+        user_id=payload.user_id,
+        credential_id=payload.credential_id,
+        operation=payload.operation,
+    )
+
+
+@router.get("/worker/sessions/{worker_session_id}/exec-jobs", response_model=list[RuntimeExecJobResponse])
+async def list_exec_jobs(worker_session_id: str, _auth: None = WorkerAuth) -> list[RuntimeExecJobResponse]:
+    return await get_worker_service().list_exec_jobs(worker_session_id)
+
+
+@router.get("/worker/sessions/{worker_session_id}/exec-jobs/{job_id}", response_model=RuntimeExecJobResponse)
+async def get_exec_job(worker_session_id: str, job_id: str, cursor: int = 0, limit: int = 16384, _auth: None = WorkerAuth) -> RuntimeExecJobResponse:
+    return await get_worker_service().get_exec_job(worker_session_id, job_id, cursor=cursor, limit=limit)
+
+
+@router.post("/worker/sessions/{worker_session_id}/exec-jobs/{job_id}/cancel", response_model=RuntimeExecJobResponse)
+async def cancel_exec_job(worker_session_id: str, job_id: str, _auth: None = WorkerAuth) -> RuntimeExecJobResponse:
+    return await get_worker_service().cancel_exec_job(worker_session_id, job_id)
 
 
 @router.post(

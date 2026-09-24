@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { api } from './client';
+import { api, apiFetch } from './client';
+import { sessionLifecycle } from '@/auth/sessionLifecycle';
+import { formatPublicErrorDetail } from './publicErrorDetail';
+
+type TransportApi = (typeof import('./client'))['api'];
 
 function jsonResponse(body: unknown, status: number = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -8,6 +12,519 @@ function jsonResponse(body: unknown, status: number = 200): Response {
     headers: { 'Content-Type': 'application/json' },
   });
 }
+
+async function loadIsolatedTransport() {
+  vi.resetModules();
+  const [client, lifecycle] = await Promise.all([
+    import('./client'),
+    import('@/auth/sessionLifecycle'),
+  ]);
+  return { ...client, sessionLifecycle: lifecycle.sessionLifecycle };
+}
+
+describe('auth-aware transport', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => vi.stubGlobal('fetch', fetchMock));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('keeps anonymous public and challenge 401s local, but expires a current session once', async () => {
+    const events: string[] = [];
+    const unsubscribe = sessionLifecycle.subscribe((event) => events.push(event.type));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ detail: 'no session' }, 401))
+      .mockResolvedValueOnce(jsonResponse({ detail: 'bad password' }, 401))
+      .mockResolvedValueOnce(jsonResponse({ success: true, role: 'user' }))
+      .mockResolvedValueOnce(jsonResponse({ detail: 'expired' }, 401));
+
+    await expect(api.getAuthStatus()).rejects.toMatchObject({ status: 401 });
+    await expect(api.login({ username: 'bad', password: 'bad' })).rejects.toMatchObject({
+      status: 401,
+    });
+    await api.login({ username: 'ok', password: 'ok' });
+    await expect(api.getCurrentUser()).rejects.toMatchObject({ status: 401 });
+
+    expect(events.filter((type) => type === 'expired')).toHaveLength(1);
+    unsubscribe();
+  });
+
+  it('does not let an old private 401 expire a newer terminal exchange', async () => {
+    let resolveOld!: (response: Response) => void;
+    const oldResponse = new Promise<Response>((resolve) => {
+      resolveOld = resolve;
+    });
+    const events: string[] = [];
+    const unsubscribe = sessionLifecycle.subscribe((event) => events.push(event.type));
+    fetchMock
+      .mockReturnValueOnce(oldResponse)
+      .mockResolvedValueOnce(jsonResponse({ success: true, role: 'user' }));
+
+    const oldRequest = apiFetch('/private');
+    await api.login({ username: 'new', password: 'new' });
+    resolveOld(jsonResponse({ detail: 'old session' }, 401));
+    await oldRequest;
+
+    expect(events).not.toContain('expired');
+    unsubscribe();
+  });
+
+  it('uses browser credentials for logout and treats its 401 as signed-out success', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, 401));
+    await expect(api.logout()).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/auth/logout',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+  });
+
+  it('keeps public share access and shared previews local while private share management remains session-scoped', async () => {
+    const events: string[] = [];
+    const unsubscribe = sessionLifecycle.subscribe((event) => events.push(event.type));
+    const publicCalls = [
+      () => api.resolvePublicShareTarget('share'),
+      () => api.resolvePublicShareTargetBySlug('owner', 'share'),
+      () => api.getSharedConversation('share', 'password'),
+      () => api.getSharedConversationBySlug('owner', 'share', 'password'),
+      () => api.launchUserSpaceSharedPreview('share', { path: '/' }, 'password'),
+      () => api.launchUserSpaceSharedPreviewBySlug('owner', 'share', { path: '/' }, 'password'),
+    ];
+    for (const call of publicCalls) {
+      events.length = 0;
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ success: true, role: 'user' }))
+        .mockResolvedValueOnce(jsonResponse({ detail: 'password required' }, 401));
+      await api.login({ username: 'ok', password: 'ok' });
+      await expect(call()).rejects.toMatchObject({ status: 401 });
+      expect(events).not.toContain('expired');
+    }
+
+    events.length = 0;
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'forbidden' }, 401));
+    await expect(api.listUserSpaceWorkspaceShareLinks('workspace')).rejects.toMatchObject({
+      status: 401,
+    });
+
+    expect(events.filter((type) => type === 'expired')).toHaveLength(1);
+    unsubscribe();
+  });
+
+  it('revalidates an account enrollment code failure without expiring a healthy session', async () => {
+    const events: string[] = [];
+    const unsubscribe = sessionLifecycle.subscribe((event) => events.push(event.type));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ success: true, role: 'user' }))
+      .mockResolvedValueOnce(jsonResponse({ detail: 'invalid code' }, 401));
+
+    await api.login({ username: 'ok', password: 'ok' });
+    await expect(
+      api.completeMfaEnrollment({ code: '000000', enrollment_token: 'token' }),
+    ).rejects.toMatchObject({ status: 401 });
+
+    expect(events).toContain('revalidate');
+    expect(events).not.toContain('expired');
+    unsubscribe();
+  });
+
+  it('rejects stale successful current-user and pending credential bodies', async () => {
+    let resolveBody!: (value: unknown) => void;
+    const delayedBody = new Promise<unknown>((resolve) => {
+      resolveBody = resolve;
+    });
+    const delayedResponse = {
+      ok: true,
+      status: 200,
+      json: () => delayedBody,
+    } as unknown as Response;
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ success: true, role: 'user' }))
+      .mockResolvedValueOnce(delayedResponse)
+      .mockResolvedValueOnce(jsonResponse({ success: true, role: 'user' }));
+
+    await api.login({ username: 'first', password: 'first' });
+    const currentUser = api.getCurrentUser();
+    await api.login({ username: 'second', password: 'second' });
+    resolveBody({ id: 'u1' });
+    await expect(currentUser).rejects.toMatchObject({ name: 'AbortError' });
+
+    let resolvePendingBody!: (value: unknown) => void;
+    const delayedPending = new Promise<unknown>((resolve) => {
+      resolvePendingBody = resolve;
+    });
+    const pendingResponse = {
+      ok: true,
+      status: 200,
+      json: () => delayedPending,
+    } as unknown as Response;
+    fetchMock
+      .mockResolvedValueOnce(pendingResponse)
+      .mockResolvedValueOnce(jsonResponse({ success: true, role: 'user' }));
+    const pendingLogin = api.login({ username: 'pending', password: 'pending' });
+    await api.login({ username: 'newer', password: 'newer' });
+    resolvePendingBody({ success: true, role: 'user', mfa_required: true });
+    await expect(pendingLogin).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+describe('auth-aware transport isolated authenticated sessions', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => vi.stubGlobal('fetch', fetchMock));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  async function authenticatedTransport() {
+    const transport = await loadIsolatedTransport();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, role: 'user' }));
+    await transport.api.login({ username: 'ok', password: 'ok' });
+    expect(transport.sessionLifecycle.phase).toBe('establishing');
+    const established = transport.sessionLifecycle.adoptSession(
+      transport.sessionLifecycle.capture('session'),
+      'u1',
+    );
+    expect(established).not.toBeNull();
+    return transport;
+  }
+
+  it('captures the old private request as authenticated before a newer terminal exchange', async () => {
+    const transport = await authenticatedTransport();
+    let resolveOld!: (response: Response) => void;
+    const oldResponse = new Promise<Response>((resolve) => {
+      resolveOld = resolve;
+    });
+    const events: string[] = [];
+    transport.sessionLifecycle.subscribe((event) => events.push(event.type));
+    fetchMock
+      .mockReturnValueOnce(oldResponse)
+      .mockResolvedValueOnce(jsonResponse({ success: true }));
+
+    const oldRequest = transport.apiFetch('/private');
+    await transport.api.login({ username: 'new', password: 'new' });
+    resolveOld(jsonResponse({ detail: 'old cookie' }, 401));
+    const response = await oldRequest;
+
+    expect(transport.getResponseAuthContext(response)).toMatchObject({
+      purpose: 'session',
+      hadSession: true,
+    });
+    expect(events).not.toContain('expired');
+    expect(transport.sessionLifecycle.phase).toBe('establishing');
+  });
+
+  it.each([
+    ['public status', (api: TransportApi) => api.getAuthStatus()],
+    ['bad credentials', (api: TransportApi) => api.login({ username: 'bad', password: 'bad' })],
+    [
+      'MFA verification',
+      (api: TransportApi) =>
+        api.verifyMfaChallenge({ mfa_challenge_token: 'token', code: '000000' }),
+    ],
+    [
+      'WebAuthn authentication',
+      (api: TransportApi) => api.startWebauthnAuthentication('challenge'),
+    ],
+  ])('keeps authenticated %s 401 local', async (_label, call) => {
+    const transport = await authenticatedTransport();
+    const events: string[] = [];
+    transport.sessionLifecycle.subscribe((event) => events.push(event.type));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'rejected' }, 401));
+
+    await expect(call(transport.api)).rejects.toMatchObject({ status: 401 });
+
+    expect(transport.sessionLifecycle.phase).toBe('authenticated');
+    expect(events).not.toContain('expired');
+  });
+
+  it.each([
+    ['JSON', (api: TransportApi) => api.getCurrentUser()],
+    ['blob download', (api: TransportApi) => api.downloadIndex('private-index')],
+    ['delete', (api: TransportApi) => api.deleteIndex('private-index')],
+    ['cancel', (api: TransportApi) => api.cancelJob('job-1')],
+  ])('expires an authenticated session exactly once for a %s 401', async (_label, call) => {
+    const transport = await authenticatedTransport();
+    const events: string[] = [];
+    transport.sessionLifecycle.subscribe((event) => events.push(event.type));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'expired' }, 401));
+
+    await expect(call(transport.api)).rejects.toMatchObject({ status: 401 });
+
+    expect(events.filter((event) => event === 'expired')).toHaveLength(1);
+    expect(transport.sessionLifecycle.phase).toBe('anonymous');
+  });
+
+  it.each([
+    ['403', () => Promise.resolve(jsonResponse({ detail: 'forbidden' }, 403))],
+    ['500', () => Promise.resolve(jsonResponse({ detail: 'unavailable' }, 500))],
+    ['network failure', () => Promise.reject(new TypeError('network unavailable'))],
+  ])('does not expire a healthy session for %s', async (_label, response) => {
+    const transport = await authenticatedTransport();
+    const events: string[] = [];
+    transport.sessionLifecycle.subscribe((event) => events.push(event.type));
+    fetchMock.mockImplementationOnce(response);
+
+    await expect(transport.api.getCurrentUser()).rejects.toBeDefined();
+
+    expect(transport.sessionLifecycle.phase).toBe('authenticated');
+    expect(events).not.toContain('expired');
+  });
+
+  it.each([
+    ['TOTP rotation start', (api: TransportApi) => api.startTotpRotation('000000')],
+    [
+      'TOTP rotation completion',
+      (api: TransportApi) =>
+        api.completeTotpRotation({ enrollment_token: 'token', code: '000000' }),
+    ],
+    ['recovery regeneration', (api: TransportApi) => api.regenerateRecoveryCodes('000000')],
+    [
+      'account TOTP enrollment',
+      (api: TransportApi) =>
+        api.completeMfaEnrollment({ code: '000000', enrollment_token: 'token' }),
+    ],
+    [
+      'mount source directory creation',
+      (api: TransportApi) => api.createUserspaceMountSourceDirectory('source', { path: '/' }),
+    ],
+    [
+      'cloud mount directory creation',
+      (api: TransportApi) =>
+        api.createCloudMountSourceDirectory({
+          source_type: 'google_drive',
+          oauth_account_id: 'account',
+          path: '/',
+        }),
+    ],
+    [
+      'workspace mount creation',
+      (api: TransportApi) =>
+        api.createWorkspaceMount('workspace', {
+          mount_source_id: 'source',
+          source_path: '/',
+          target_path: '/',
+        }),
+    ],
+    [
+      'workspace mount sync preview',
+      (api: TransportApi) => api.previewWorkspaceMountSync('workspace', 'mount'),
+    ],
+  ])('revalidates but preserves a healthy session after %s 401', async (_label, call) => {
+    const transport = await authenticatedTransport();
+    const events: string[] = [];
+    transport.sessionLifecycle.subscribe((event) => events.push(event.type));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'provider or code rejected' }, 401));
+
+    await expect(call(transport.api)).rejects.toMatchObject({ status: 401 });
+
+    expect(transport.sessionLifecycle.phase).toBe('authenticated');
+    expect(events).toContain('revalidate');
+    expect(events).not.toContain('expired');
+  });
+
+  it.each([
+    ['token route', (api: TransportApi) => api.joinSharedConversation('share', 'bad-password')],
+    [
+      'owner/slug route',
+      (api: TransportApi) => api.joinSharedConversationBySlug('owner', 'share', 'bad-password'),
+    ],
+  ])(
+    'revalidates an authenticated shared-conversation join after a %s 401',
+    async (_label, call) => {
+      const transport = await authenticatedTransport();
+      const events: string[] = [];
+      transport.sessionLifecycle.subscribe((event) => events.push(event.type));
+      fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'password rejected' }, 401));
+
+      await expect(call(transport.api)).rejects.toMatchObject({ status: 401 });
+
+      expect(transport.sessionLifecycle.phase).toBe('authenticated');
+      expect(events).toContain('revalidate');
+      expect(events).not.toContain('expired');
+    },
+  );
+
+  it('abandons tokenless renewal when enrollment returns success=false', async () => {
+    const transport = await authenticatedTransport();
+    let resolveOld!: (response: Response) => void;
+    let resolveEnrollmentBody!: (body: unknown) => void;
+    const oldResponse = new Promise<Response>((resolve) => {
+      resolveOld = resolve;
+    });
+    const enrollmentBody = new Promise<unknown>((resolve) => {
+      resolveEnrollmentBody = resolve;
+    });
+    const enrollmentResponse = {
+      ok: true,
+      status: 200,
+      json: () => enrollmentBody,
+    } as Response;
+    const events: string[] = [];
+    transport.sessionLifecycle.subscribe((event) => events.push(event.type));
+    fetchMock.mockReturnValueOnce(oldResponse).mockResolvedValueOnce(enrollmentResponse);
+
+    const oldRequest = transport.apiFetch('/private');
+    const enrollment = transport.api.completeMfaEnrollment({
+      code: '000000',
+      enrollment_token: 'token',
+    });
+    resolveOld(jsonResponse({ detail: 'old cookie' }, 401));
+    await oldRequest;
+    expect(transport.sessionLifecycle.phase).toBe('authenticated');
+
+    resolveEnrollmentBody({ success: false });
+    await expect(enrollment).resolves.toEqual({ success: false });
+    expect(events.filter((event) => event === 'expired')).toHaveLength(1);
+    expect(transport.sessionLifecycle.phase).toBe('anonymous');
+  });
+
+  it('renews an in-session enrollment before a concurrent old-cookie 401 can expire it', async () => {
+    const transport = await authenticatedTransport();
+    let resolveOld!: (response: Response) => void;
+    const oldResponse = new Promise<Response>((resolve) => {
+      resolveOld = resolve;
+    });
+    const events: string[] = [];
+    transport.sessionLifecycle.subscribe((event) => events.push(event.type));
+    fetchMock
+      .mockReturnValueOnce(oldResponse)
+      .mockResolvedValueOnce(jsonResponse({ success: true, user: { id: 'u1' } }));
+
+    const oldRequest = transport.apiFetch('/private');
+    await expect(
+      transport.api.completeMfaEnrollment({ code: '000000', enrollment_token: 'token' }),
+    ).resolves.toMatchObject({ success: true });
+    resolveOld(jsonResponse({ detail: 'old cookie' }, 401));
+    await oldRequest;
+
+    expect(events).toContain('renewed');
+    expect(events).not.toContain('expired');
+    expect(transport.sessionLifecycle.phase).toBe('authenticated');
+  });
+
+  it('applies a deferred old-cookie expiry when enrollment fails over the network', async () => {
+    const transport = await authenticatedTransport();
+    let resolveOld!: (response: Response) => void;
+    let rejectEnrollment!: (error: Error) => void;
+    const oldResponse = new Promise<Response>((resolve) => {
+      resolveOld = resolve;
+    });
+    const enrollmentResponse = new Promise<Response>((_resolve, reject) => {
+      rejectEnrollment = reject;
+    });
+    const events: string[] = [];
+    transport.sessionLifecycle.subscribe((event) => events.push(event.type));
+    fetchMock.mockReturnValueOnce(oldResponse).mockReturnValueOnce(enrollmentResponse);
+
+    const oldRequest = transport.apiFetch('/private');
+    const enrollment = transport.api.completeMfaEnrollment({
+      code: '000000',
+      enrollment_token: 'token',
+    });
+    resolveOld(jsonResponse({ detail: 'old cookie' }, 401));
+    await oldRequest;
+    expect(transport.sessionLifecycle.phase).toBe('authenticated');
+    rejectEnrollment(new TypeError('network unavailable'));
+    await expect(enrollment).rejects.toThrow('network unavailable');
+
+    expect(events.filter((event) => event === 'expired')).toHaveLength(1);
+    expect(transport.sessionLifecycle.phase).toBe('anonymous');
+  });
+
+  it('abandons a timed-out enrollment fence and clears its timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const transport = await authenticatedTransport();
+      fetchMock.mockImplementationOnce(
+        (_url, options) =>
+          new Promise<Response>((_resolve, reject) => {
+            (options?.signal as AbortSignal).addEventListener('abort', () => {
+              reject(new DOMException('Timed out', 'AbortError'));
+            });
+          }),
+      );
+
+      const enrollment = transport.api.completeMfaEnrollment({
+        code: '000000',
+        enrollment_token: 'token',
+      });
+      const rejected = expect(enrollment).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await rejected;
+
+      expect(transport.sessionLifecycle.phase).toBe('authenticated');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('distinguishes pending enrollment and registration establishment from in-session renewal', async () => {
+    const transport = await loadIsolatedTransport();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, user: { id: 'u1' } }));
+
+    await transport.api.completeMfaEnrollment({
+      code: '000000',
+      enrollment_token: 'token',
+      mfa_challenge_token: 'challenge',
+    });
+    expect(transport.sessionLifecycle.phase).toBe('establishing');
+
+    const pendingRegistration = await loadIsolatedTransport();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true }));
+    await pendingRegistration.api.completeWebauthnRegistration({
+      registration_token: 'token',
+      credential: {},
+      mfa_challenge_token: 'challenge',
+    });
+    expect(pendingRegistration.sessionLifecycle.phase).toBe('establishing');
+
+    const accountRegistration = await authenticatedTransport();
+    const generation = accountRegistration.sessionLifecycle.generation;
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true }));
+    await accountRegistration.api.completeWebauthnRegistration({
+      registration_token: 'token',
+      credential: {},
+    });
+    expect(accountRegistration.sessionLifecycle.generation).toBe(generation);
+  });
+});
+
+describe('workspace development operation requests', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    ['exec_start', { command: 'npm test' }],
+    ['exec_get', { job_id: 'job-1', cursor: 128 }],
+    ['exec_cancel', { job_id: 'job-1' }],
+  ])(
+    'wraps %s arguments in the development operation request envelope',
+    async (operation, arguments_) => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({}));
+
+      await api.executeWorkspaceDevelopmentOperation('workspace/1', operation, arguments_);
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/indexes/userspace/development/workspaces/workspace%2F1/operations/${operation}`,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ arguments: arguments_ }),
+        }),
+      );
+    },
+  );
+});
 
 describe('git webhook client normalization', () => {
   const fetchMock = vi.fn<typeof fetch>();
@@ -1095,34 +1612,6 @@ describe('workspace bridge credential client requests', () => {
     expect(result.state).toBe('healthy');
     expect(result.token_session_id).toBe('session-new');
   });
-
-  it('reads and updates the bridge credential delivery mode with an encoded workspace id', async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse({ mode: 'env', requires_restart: false, supported: true }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({ mode: 'worker_file', requires_restart: true, supported: true }),
-      );
-
-    await api.getUserSpaceBridgeCredentialMode('workspace/123');
-    await api.updateUserSpaceBridgeCredentialMode('workspace/123', 'worker_file');
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      '/indexes/userspace/runtime/workspaces/workspace%2F123/bridge-credential-mode',
-      expect.objectContaining({ credentials: 'include' }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      '/indexes/userspace/runtime/workspaces/workspace%2F123/bridge-credential-mode',
-      expect.objectContaining({
-        method: 'PUT',
-        body: JSON.stringify({ mode: 'worker_file' }),
-        credentials: 'include',
-      }),
-    );
-  });
 });
 
 describe('OpenRouter credit monitor client requests', () => {
@@ -1195,6 +1684,73 @@ describe('workspace external API credential client requests', () => {
       detail: 'Only revoked credentials can be deleted',
       message: 'Only revoked credentials can be deleted',
     });
+  });
+});
+
+describe('public content-protection error details', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('uses the complete nested FastAPI detail message without stringifying the object', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          detail: {
+            code: 'content_access_denied',
+            message:
+              'This request is outside your access profile. Try rephrasing your question within your access profile.',
+            reason: 'This request is outside your access profile.',
+            next_step: 'Try rephrasing your question within your access profile.',
+            request_id: 'request-123',
+            reason_code: 'profile_mismatch',
+          },
+        },
+        403,
+      ),
+    );
+
+    await expect(
+      api.deleteWorkspaceExternalApiCredential('workspace-1', 'credential-1'),
+    ).rejects.toMatchObject({
+      message:
+        'This request is outside your access profile. Try rephrasing your question within your access profile.',
+      publicDetail: {
+        code: 'content_access_denied',
+        reason_code: 'profile_mismatch',
+        request_id: 'request-123',
+      },
+    });
+  });
+
+  it('keeps generic failures on their existing fallback path when structured reasons are absent', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: { code: 'validation_error' } }, 422));
+
+    await expect(
+      api.deleteWorkspaceExternalApiCredential('workspace-1', 'credential-1'),
+    ).rejects.toMatchObject({ message: 'Request failed', publicDetail: undefined });
+  });
+
+  it('formats SSE classifier fields for plain-text UI display without exposing unused markup', () => {
+    expect(
+      formatPublicErrorDetail(
+        {
+          code: 'content_access_denied',
+          message: 'This request is outside your access profile. Try a narrower request.',
+          reason: '<img src=x onerror=alert(1)>',
+          next_step: 'Try a narrower request.',
+          request_id: 'request-123',
+        },
+        'Generation failed',
+      ),
+    ).toBe('This request is outside your access profile. Try a narrower request.');
   });
 });
 

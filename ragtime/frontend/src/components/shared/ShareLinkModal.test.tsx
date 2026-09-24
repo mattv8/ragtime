@@ -97,7 +97,7 @@ afterEach(() => {
 });
 
 describe('ShareLinkModal', () => {
-  it('shows tabs only when api access content exists and selects Share Links by default', () => {
+  it('shows Share Links and API Access tabs and selects Share Links by default', () => {
     const { rerender } = renderModal();
 
     expect(screen.queryByRole('tablist')).toBeNull();
@@ -105,7 +105,6 @@ describe('ShareLinkModal', () => {
     rerender(
       <ShareLinkModal
         {...buildProps({
-          agentAccessSection: <div>Agent access</div>,
           apiAccessSection: <div>API access</div>,
         })}
       />,
@@ -165,13 +164,32 @@ describe('ShareLinkModal', () => {
     );
   });
 
-  it('keeps the modal untabbed when api access content is omitted', () => {
-    renderModal({
-      agentAccessSection: <div>Agent access</div>,
+  it('resets to Share Links after closing and reopening', async () => {
+    const user = userEvent.setup();
+    const { rerender } = renderModal({
+      apiAccessSection: <div>API access</div>,
     });
 
-    expect(screen.queryByRole('tablist')).toBeNull();
-    expect(screen.getByText('Agent access')).toBeDefined();
+    await user.click(getTab('API Access'));
+    expect(getTab('API Access').getAttribute('aria-selected')).toBe('true');
+
+    rerender(
+      <ShareLinkModal
+        {...buildProps({
+          isOpen: false,
+          apiAccessSection: <div>API access</div>,
+        })}
+      />,
+    );
+    rerender(
+      <ShareLinkModal
+        {...buildProps({
+          apiAccessSection: <div>API access</div>,
+        })}
+      />,
+    );
+
+    expect(getTab('Share Links').getAttribute('aria-selected')).toBe('true');
   });
 
   it('uses ArrowRight and Home to move focus and selection between tabs', async () => {
@@ -232,7 +250,6 @@ describe('ShareLinkModal', () => {
     rerender(
       <ShareLinkModal
         {...buildProps({
-          agentAccessSection: <div>Agent access</div>,
           apiAccessSection: undefined,
         })}
       />,
@@ -240,6 +257,5 @@ describe('ShareLinkModal', () => {
 
     expect(screen.queryByRole('tablist')).toBeNull();
     expect(screen.queryByRole('tab', { name: 'API Access' })).toBeNull();
-    expect(screen.getByText('Agent access')).toBeDefined();
   });
 });

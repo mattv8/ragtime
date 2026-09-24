@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { forwardRef } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UserDirectoryEntry } from '@/types';
 import type { UserSpaceWorkspaceShareLinkStatus } from '@/types';
@@ -38,6 +39,8 @@ const {
   diffHoverTimersMock,
   workspaceChatSearchMock,
   workspaceScmActivityMock,
+  shareLinkModalPropsMock,
+  agentAccessModalPropsMock,
 } = vi.hoisted(() => ({
   previewApiMock: {
     listUserSpaceWorkspaces: vi.fn(),
@@ -62,6 +65,9 @@ const {
     getLdapConfig: vi.fn(),
     discoverLdapWithStoredCredentials: vi.fn(),
     listUserSpaceWorkspaceShareLinks: vi.fn(),
+    listUserSpaceWorkspaceAgentGrants: vi.fn(),
+    upsertUserSpaceWorkspaceAgentGrant: vi.fn(),
+    revokeUserSpaceWorkspaceAgentGrant: vi.fn(),
     createUserSpaceWorkspaceShareLink: vi.fn(),
     deleteUserSpaceWorkspaceShareLink: vi.fn(),
     getUserSpaceWorkspacePreviewEntryUrl: vi.fn(),
@@ -86,6 +92,8 @@ const {
     clear: vi.fn(),
   },
   workspaceScmActivityMock: { hasActivity: false, syncState: null },
+  shareLinkModalPropsMock: vi.fn(),
+  agentAccessModalPropsMock: vi.fn(),
 }));
 
 let latestSqliteInspectorModalProps: unknown = null;
@@ -150,34 +158,51 @@ vi.mock('./shared/ExternalApiAccessSection', () => ({
     </div>
   ),
 }));
-vi.mock('./shared/ShareLinkModal', () => ({
-  ShareLinkModal: ({
-    isOpen,
-    loadingShareStatus,
-    shareLinks,
-    agentAccessSection,
-    apiAccessSection,
-    onCreateShareLink,
-    onOpenFullPreview,
-    onSaveShareAccess,
-    onDeleteSelectedShareLink,
+vi.mock('./shared/ConnectYourAgentPanel', () => ({
+  ConnectYourAgentPanel: ({
+    workspaceId,
+    canManage,
+    selectionRequest,
   }: {
+    workspaceId: string;
+    canManage: boolean;
+    selectionRequest?: { clientId: string };
+  }) => (
+    <div
+      data-testid="connect-your-agent"
+      data-workspace-id={workspaceId}
+      data-can-manage={canManage}
+      data-selection-client={selectionRequest?.clientId ?? ''}
+    />
+  ),
+}));
+vi.mock('./shared/ShareLinkModal', () => ({
+  ShareLinkModal: (props: {
     isOpen: boolean;
     loadingShareStatus: boolean;
     shareLinks: Array<{ id: string; label: string | null }>;
-    agentAccessSection?: React.ReactNode;
     apiAccessSection?: React.ReactNode;
     onCreateShareLink?: () => void;
     onOpenFullPreview?: () => void;
     onSaveShareAccess?: () => void;
     onDeleteSelectedShareLink: (shareId: string) => void;
-  }) =>
-    isOpen ? (
+  }) => {
+    const {
+      isOpen,
+      loadingShareStatus,
+      shareLinks,
+      apiAccessSection,
+      onCreateShareLink,
+      onOpenFullPreview,
+      onSaveShareAccess,
+      onDeleteSelectedShareLink,
+    } = props;
+    shareLinkModalPropsMock(props);
+    return isOpen ? (
       <div data-testid="share-link-modal">
         {shareLinks.map((link) => (
           <div key={link.id}>{link.label}</div>
         ))}
-        <div data-testid="share-link-modal-agent-access">{agentAccessSection}</div>
         <div data-testid="share-link-modal-api-access">{apiAccessSection}</div>
         <button type="button" onClick={() => onCreateShareLink?.()}>
           New Link
@@ -199,17 +224,59 @@ vi.mock('./shared/ShareLinkModal', () => ({
           Delete first share
         </button>
       </div>
-    ) : null,
+    ) : null;
+  },
 }));
 vi.mock('./WorkspaceScmWizard', () => ({
   useWorkspaceScmWizardActivity: () => workspaceScmActivityMock,
-  WorkspaceScmWizard: ({ workspace }: { workspace?: { sqlite_persistence_mode?: string } }) => (
-    <div data-testid="workspace-scm-mode">{workspace?.sqlite_persistence_mode ?? 'missing'}</div>
+  WorkspaceScmWizard: ({
+    workspace,
+    onAskAgent,
+  }: {
+    workspace?: { sqlite_persistence_mode?: string };
+    onAskAgent?: () => void;
+  }) => (
+    <div data-testid="workspace-scm-mode" data-has-agent-action={String(Boolean(onAskAgent))}>
+      {workspace?.sqlite_persistence_mode ?? 'missing'}
+    </div>
   ),
 }));
 vi.mock('./shared/AdminWorkspaceModal', () => ({ default: () => null }));
-vi.mock('./shared/AgentAccessButton', () => ({ AgentAccessButton: () => null }));
-vi.mock('./shared/AgentAccessModal', () => ({ AgentAccessModal: () => null }));
+vi.mock('./shared/AgentAccessButton', () => ({
+  AgentAccessButton: forwardRef<HTMLButtonElement, { onClick: () => void; title: string }>(
+    ({ onClick, title }, ref) => (
+      <button ref={ref} type="button" title={title} aria-label={title} onClick={onClick}>
+        Agent Access
+      </button>
+    ),
+  ),
+}));
+vi.mock('./shared/AgentAccessModal', () => ({
+  AgentAccessModal: ({
+    isOpen,
+    agentCollaborationSection,
+    connectAgentSection,
+    openRequest,
+    onClose,
+  }: {
+    isOpen: boolean;
+    agentCollaborationSection?: React.ReactNode;
+    connectAgentSection?: React.ReactNode;
+    openRequest?: { requestId: number; tabId: string } | null;
+    onClose: () => void;
+  }) => {
+    agentAccessModalPropsMock({ isOpen, openRequest, onClose });
+    return isOpen ? (
+      <div data-testid="agent-access-modal" data-open-request={openRequest?.tabId ?? ''}>
+        <div data-testid="agent-access-modal-collaboration">{agentCollaborationSection}</div>
+        <div data-testid="agent-access-modal-connect-agent">{connectAgentSection}</div>
+        <button type="button" onClick={onClose}>
+          Close agent modal
+        </button>
+      </div>
+    ) : null;
+  },
+}));
 vi.mock('./shared/MemberManagementButton', () => ({ MemberManagementButton: () => null }));
 vi.mock('./shared/MemberManagementModal', () => ({ MemberManagementModal: () => null }));
 vi.mock('./shared/MiniLoadingSpinner', () => ({
@@ -583,6 +650,7 @@ beforeEach(() => {
     owner_username: SHARE_LINKS_RESPONSE.owner_username,
     links: SHARE_LINKS_RESPONSE.links.map((link) => ({ ...link })),
   });
+  previewApiMock.listUserSpaceWorkspaceAgentGrants.mockResolvedValue([]);
   previewApiMock.getUserSpaceWorkspacePreviewEntryUrl.mockImplementation(
     (workspaceId: string, options?: { path?: string; autoStart?: boolean }) => {
       const params = new URLSearchParams();
@@ -605,6 +673,8 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.clearAllMocks();
+  shareLinkModalPropsMock.mockClear();
+  agentAccessModalPropsMock.mockClear();
   latestSqliteInspectorModalProps = null;
   sqliteInspectorModalRender = () => null;
 });
@@ -701,6 +771,60 @@ describe('UserSpacePanel workspace tool descriptions', () => {
 
     const previewSection = document.querySelector('.userspace-preview-section');
     expect(previewSection?.querySelector('.userspace-status-overlay')).toBeNull();
+  });
+
+  it('fills the editor when User Space generation is disabled', async () => {
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await waitFor(() => {
+      const editorSection = document.querySelector('.userspace-editor-section') as HTMLElement;
+      expect(editorSection).not.toBeNull();
+      expect(editorSection.style.flex).toBe('1 1 0%');
+      expect(editorSection.style.display).not.toBe('none');
+    });
+  });
+
+  it('ignores a saved editor-collapsed preference when User Space generation is disabled', async () => {
+    document.cookie = `userspace_layout_${encodeURIComponent(CURRENT_USER.id)}=${encodeURIComponent(
+      JSON.stringify({
+        sidebarWidth: 180,
+        sidebarCollapsed: false,
+        leftPaneFraction: 0.5,
+        rightPaneCollapsed: false,
+        editorFraction: 0.6,
+        editorChatCollapsedSide: 'before',
+      }),
+    )}; path=/`;
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await waitFor(() => {
+      const editorSection = document.querySelector('.userspace-editor-section') as HTMLElement;
+      expect(editorSection).not.toBeNull();
+      expect(editorSection.style.flex).toBe('1 1 0%');
+      expect(editorSection.style.display).not.toBe('none');
+    });
+  });
+
+  it('preserves saved editor sizing when User Space generation is enabled', async () => {
+    document.cookie = `userspace_layout_${encodeURIComponent(CURRENT_USER.id)}=${encodeURIComponent(
+      JSON.stringify({
+        sidebarWidth: 180,
+        sidebarCollapsed: false,
+        leftPaneFraction: 0.5,
+        rightPaneCollapsed: false,
+        editorFraction: 0.4,
+        editorChatCollapsedSide: null,
+      }),
+    )}; path=/`;
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} userspaceGenerationEnabled />);
+
+    await waitFor(() => {
+      const editorSection = document.querySelector('.userspace-editor-section') as HTMLElement;
+      expect(editorSection).not.toBeNull();
+      expect(editorSection.style.flex).toBe('0.4 1 0%');
+    });
   });
 
   it('removes the deleted share locally without reloading the share list', async () => {
@@ -910,6 +1034,113 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     expect(previewApiMock.createUserSpaceWorkspaceShareLink).not.toHaveBeenCalled();
   });
 
+  it('mounts Coding Agent Setup through Agent Access for the active workspace', async () => {
+    await renderPanelWithRuntimeOverlay(false);
+
+    expect(screen.queryByTestId('connect-your-agent')).toBeNull();
+
+    const manageAgentAccessButton = document.querySelector(
+      '[title="Manage cross-workspace agent access"]',
+    );
+    expect(manageAgentAccessButton).not.toBeNull();
+    await act(async () => {
+      (manageAgentAccessButton as HTMLButtonElement).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connect-your-agent')).toBeTruthy();
+    });
+    expect(screen.getByTestId('connect-your-agent').dataset.workspaceId).toBe(WORKSPACE.id);
+    expect(screen.getByTestId('connect-your-agent').dataset.canManage).toBe('true');
+  });
+
+  it('opens the requested client through the existing Agent Access grant-read path', async () => {
+    await renderPanelWithRuntimeOverlay(false);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Set up Claude Code' }));
+
+    await waitFor(() => {
+      expect(previewApiMock.listUserSpaceWorkspaceAgentGrants).toHaveBeenCalledWith(WORKSPACE.id);
+      expect(screen.getByTestId('agent-access-modal').dataset.openRequest).toBe(
+        'coding-agent-setup',
+      );
+    });
+    expect(screen.getByTestId('connect-your-agent').dataset.selectionClient).toBe('claude-code');
+    expect(previewApiMock.upsertUserSpaceWorkspaceAgentGrant).not.toHaveBeenCalled();
+    expect(previewApiMock.revokeUserSpaceWorkspaceAgentGrant).not.toHaveBeenCalled();
+  });
+
+  it('dismisses and restores the rail after the generation policy is toggled', async () => {
+    const { rerender } = render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Dismiss agent setup' })).toBeTruthy();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss agent setup' }));
+    expect(screen.queryByRole('button', { name: 'Dismiss agent setup' })).toBeNull();
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        screen.getByRole('button', { name: 'Manage cross-workspace agent access' }),
+      );
+    });
+
+    rerender(<UserSpacePanel currentUser={{ ...CURRENT_USER }} userspaceGenerationEnabled />);
+    expect(screen.queryByRole('button', { name: 'Connect your agent' })).toBeNull();
+    rerender(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    expect(await screen.findByRole('button', { name: 'Dismiss agent setup' })).toBeTruthy();
+  });
+
+  it('only renders the rail for a resolved workspace when embedded generation is disabled', async () => {
+    previewApiMock.listUserSpaceWorkspaces.mockResolvedValue({ items: [], total: 0 });
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await waitFor(() => {
+      expect(previewApiMock.listUserSpaceWorkspaces).toHaveBeenCalled();
+    });
+    expect(screen.queryByRole('button', { name: 'Connect your agent' })).toBeNull();
+  });
+
+  it('returns a rail-opened modal to Workspace Grants for an ordinary toolbar open', async () => {
+    await renderPanelWithRuntimeOverlay(false);
+    await userEvent.click(screen.getByRole('button', { name: 'Set up Codex' }));
+    await screen.findByTestId('agent-access-modal');
+    expect(screen.getByTestId('agent-access-modal').dataset.openRequest).toBe('coding-agent-setup');
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Manage cross-workspace agent access' }),
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('agent-access-modal').dataset.openRequest).toBe('');
+    });
+    expect(screen.getByTestId('connect-your-agent').dataset.selectionClient).toBe('');
+  });
+
+  it('passes read-only credential management to editors in Agent Access', async () => {
+    const editorWorkspace = buildWorkspaceForMember(EDITOR_USER.id, 'editor');
+    previewApiMock.listUserSpaceWorkspaces.mockResolvedValue({
+      items: [editorWorkspace],
+      total: 1,
+    });
+    previewApiMock.getUserSpaceWorkspace.mockResolvedValue(editorWorkspace);
+    render(<UserSpacePanel currentUser={{ ...EDITOR_USER }} />);
+
+    await waitFor(() => {
+      expect(
+        document.querySelector('[title="Manage cross-workspace agent access"]'),
+      ).not.toBeNull();
+    });
+    await act(async () => {
+      (
+        document.querySelector('[title="Manage cross-workspace agent access"]') as HTMLButtonElement
+      ).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('connect-your-agent').dataset.canManage).toBe('false');
+    });
+    expect(screen.getByTestId('agent-access-modal-collaboration').textContent).toBe('');
+  });
+
   it('disables public preview and save actions while share status loads', async () => {
     const { ShareLinkModal: RealShareLinkModal } =
       await vi.importActual<typeof import('./shared/ShareLinkModal')>('./shared/ShareLinkModal');
@@ -1023,22 +1254,33 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     expect(previewApiMock.listUserSpaceWorkspaceShareLinks).toHaveBeenCalledTimes(1);
   });
 
-  it('passes owner agent access and external api access to separate share modal props', async () => {
+  it('passes agent access sections to Agent Access and API access to Share Workspace', async () => {
     await renderPanelWithRuntimeOverlay(false);
 
+    const manageAgentAccessButton = document.querySelector(
+      '[title="Manage cross-workspace agent access"]',
+    );
     const manageShareButton = document.querySelector('[title="Manage share link"]');
+    expect(manageAgentAccessButton).not.toBeNull();
     expect(manageShareButton).not.toBeNull();
 
     await act(async () => {
+      (manageAgentAccessButton as HTMLButtonElement).click();
       (manageShareButton as HTMLButtonElement).click();
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId('share-link-modal-agent-access').textContent).toContain(
+      expect(screen.getAllByTestId('agent-access-modal-collaboration')[0].textContent).toContain(
         'agent:ws-1',
       );
+      expect(screen.getAllByTestId('agent-access-modal-connect-agent')[0]).toBeTruthy();
       expect(screen.getByTestId('share-link-modal-api-access').textContent).toContain('api:ws-1:');
     });
+    const shareModalProps = shareLinkModalPropsMock.mock.calls[
+      shareLinkModalPropsMock.mock.calls.length - 1
+    ]?.[0] as Record<string, unknown>;
+    expect(shareModalProps).not.toHaveProperty('agentAccessSection');
+    expect(shareModalProps).not.toHaveProperty('connectAgentSection');
   });
 
   it('treats linked databases with tables as activating the SQLite inspector toolbar state', async () => {

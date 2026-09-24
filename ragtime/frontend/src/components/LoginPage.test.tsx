@@ -40,6 +40,8 @@ function debugAuthStatus(overrides: Partial<AuthStatus> = {}): AuthStatus {
     api_key_configured: false,
     session_cookie_secure: false,
     allowed_origins_open: false,
+    chat_enabled: true,
+    userspace_generation_enabled: true,
     ...overrides,
   };
 }
@@ -106,6 +108,32 @@ describe('LoginCard debug TOTP pre-fill rotation', () => {
     expect(mfaInput).toHaveProperty('value', '444455');
   });
 
+  it('keeps a manually cleared MFA code empty during debug rotation', async () => {
+    apiMock.login.mockResolvedValue(mfaRequiredResponse);
+    apiMock.getDebugTotpCode.mockResolvedValue({ code: '999999' });
+
+    render(<LoginCard authStatus={debugAuthStatus()} onLoginSuccess={vi.fn()} />);
+    const mfaInput = await openMfaVerifyStep();
+    fireEvent.change(mfaInput, { target: { value: '' } });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+
+    expect(mfaInput).toHaveProperty('value', '');
+  });
+
+  it('clears the debug password when entering MFA', async () => {
+    apiMock.login.mockResolvedValue(mfaRequiredResponse);
+    render(<LoginCard authStatus={debugAuthStatus()} onLoginSuccess={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
+    await settleAsyncWork();
+
+    expect(screen.queryByLabelText('Password')).toBeNull();
+    expect(screen.getByLabelText('Authenticator or recovery code')).toBeTruthy();
+  });
+
   it('does not poll for debug codes on the credentials step', async () => {
     apiMock.login.mockResolvedValue(mfaRequiredResponse);
 
@@ -144,6 +172,64 @@ describe('LoginPage gradient shell', () => {
     expect(surface?.classList.contains('login-gradient-container')).toBe(true);
     expect(screen.getByTestId('webgl-gradient')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Sign In' })).toBeTruthy();
+  });
+
+  it('keeps mounted credential edits when status metadata changes', () => {
+    const { rerender } = render(
+      <LoginCard authStatus={debugAuthStatus()} onLoginSuccess={vi.fn()} />,
+    );
+    const username = screen.getByLabelText('Username');
+    const password = screen.getByLabelText('Password');
+    fireEvent.change(username, { target: { value: '' } });
+    fireEvent.change(password, { target: { value: '' } });
+
+    rerender(
+      <LoginCard
+        authStatus={debugAuthStatus({
+          debug_username: 'new-default',
+          debug_password: 'new-password',
+        })}
+        onLoginSuccess={vi.fn()}
+      />,
+    );
+
+    expect(username).toHaveProperty('value', '');
+    expect(password).toHaveProperty('value', '');
+  });
+
+  it('keeps production credentials empty', () => {
+    render(
+      <LoginCard
+        authStatus={debugAuthStatus({ debug_username: undefined, debug_password: undefined })}
+        onLoginSuccess={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText('Username')).toHaveProperty('value', '');
+    expect(screen.getByLabelText('Password')).toHaveProperty('value', '');
+  });
+
+  it('waits for asynchronous login completion before ending submission', async () => {
+    let resolveCompletion: (() => void) | undefined;
+    const onLoginSuccess = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCompletion = resolve;
+        }),
+    );
+    apiMock.login.mockResolvedValue({ success: true, user_id: 'user-1' });
+    apiMock.getCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    render(<LoginCard authStatus={debugAuthStatus()} onLoginSuccess={onLoginSuccess} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Sign In' }));
+    await settleAsyncWork();
+
+    expect(onLoginSuccess).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: 'Signing in...' })).toHaveProperty('disabled', true);
+
+    resolveCompletion?.();
+    await settleAsyncWork();
+    expect(screen.getByRole('button', { name: 'Sign In' })).toHaveProperty('disabled', false);
   });
 });
 

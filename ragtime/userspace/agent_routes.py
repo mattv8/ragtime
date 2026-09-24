@@ -10,12 +10,14 @@ endpoints the workspace UI uses to enable, disable, and rotate the token.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from ragtime.content_protection.external import authorize_external_content, public_error_detail
 from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.security import get_current_user
 from ragtime.userspace.agent_access import (
@@ -28,8 +30,11 @@ from ragtime.userspace.agent_access import (
 from ragtime.userspace.agent_briefs import BuildBriefInput
 from ragtime.userspace.agent_read_service import agent_read_service
 from ragtime.userspace.build_task_service import build_task_service
+from ragtime.userspace.development_access import DevelopmentPrincipal
+from ragtime.userspace.development_service import development_service
 from ragtime.userspace.planning_contract import build_recommended_workflow
 from ragtime.userspace.planning_service import planning_service
+from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
 agent_router = APIRouter(prefix="/agent/w", tags=["Workspace Agent Access"])
@@ -191,6 +196,39 @@ def _with_agent_url(status: dict[str, Any], request: Request) -> dict[str, Any]:
     return status
 
 
+def _agent_principal(ctx: Any) -> Any:
+    """Legacy credentials delegate only their live, verified creator."""
+    return type("LegacyAgentPrincipal", (), {"user_id": ctx.acting_user_id})()
+
+
+async def _guard_agent_content(ctx: Any, candidate: Any, *, direction: str, operation: str, execution_completed: bool = False) -> None:
+    try:
+        await authorize_external_content(
+            candidate,
+            direction=direction,
+            principal=_agent_principal(ctx),
+            surface="development",
+            resource_id=ctx.workspace_id,
+            operation=operation,
+            execution_completed=execution_completed,
+        )
+    except Exception as exc:
+        _raise_protection_error(exc)
+
+
+def _raise_protection_error(exc: Exception) -> NoReturn:
+    raise HTTPException(status_code=403, detail=public_error_detail(exc), headers=dict(_NO_STORE)) from exc
+
+
+async def _get_legacy_instruction_bundle(ctx: Any) -> dict[str, Any]:
+    """Use the same caller-authorized context path as direct development."""
+    principal = DevelopmentPrincipal(
+        user_id=ctx.acting_user_id,
+        is_admin=ctx.acting_user_is_admin,
+    )
+    return await development_service.execute(principal, ctx.workspace_id, "context", {})
+
+
 @agent_router.get("/{token}", response_class=PlainTextResponse)
 async def get_agent_manifest(token: str, request: Request) -> PlainTextResponse:
     try:
@@ -220,6 +258,13 @@ async def get_agent_manifest(token: str, request: Request) -> PlainTextResponse:
     )
     if not ctx.allow_task_submission:
         text += "\nNOTE: Task submission is disabled for this token; /tasks and /tasks/{task_id}/reply return 403.\n"
+    text += "\n## Current instruction bundle\n\n```json\n"
+    text += json.dumps(await _get_legacy_instruction_bundle(ctx), default=str, sort_keys=True)
+    text += "\n```\n"
+    try:
+        await _guard_agent_content(ctx, text, direction="outbound", operation="manifest", execution_completed=True)
+    except Exception as exc:
+        _raise_protection_error(exc)
     return PlainTextResponse(text, media_type="text/markdown", headers=dict(_NO_STORE))
 
 
@@ -228,7 +273,11 @@ async def get_agent_context(token: str, response: Response) -> dict[str, Any]:
     _set_no_store(response)
     try:
         ctx = await resolve_agent_access_token(token)
-        return await planning_service.get_workspace_context(ctx.workspace_id, ctx.acting_user_id)
+        # The legacy token remains hosted-mode only, but its context follows
+        # the same caller-authorized instruction path as direct development.
+        result = await _get_legacy_instruction_bundle(ctx)
+        await _guard_agent_content(ctx, result, direction="outbound", operation="context", execution_completed=True)
+        return result
     except HTTPException as exc:
         _reraise_no_store(exc)
 
@@ -244,13 +293,16 @@ async def list_agent_files(
     _set_no_store(response)
     try:
         ctx = await resolve_agent_access_token(token)
-        return await planning_service.list_files(
+        await _guard_agent_content(ctx, {"prefix": prefix, "offset": offset, "limit": limit}, direction="inbound", operation="files_list")
+        result = await planning_service.list_files(
             ctx.workspace_id,
             ctx.acting_user_id,
             prefix=prefix,
             offset=offset,
             limit=limit,
         )
+        await _guard_agent_content(ctx, result, direction="outbound", operation="files_list", execution_completed=True)
+        return result
     except HTTPException as exc:
         _reraise_no_store(exc)
 
@@ -267,7 +319,8 @@ async def read_agent_file(
     _set_no_store(response)
     try:
         ctx = await resolve_agent_access_token(token)
-        return await planning_service.read_file(
+        await _guard_agent_content(ctx, {"path": path, "start_line": start_line, "max_lines": max_lines}, direction="inbound", operation="file_read")
+        result = await planning_service.read_file(
             ctx.workspace_id,
             ctx.acting_user_id,
             path,
@@ -275,10 +328,14 @@ async def read_agent_file(
             max_lines=max_lines,
             max_chars=max_chars,
         )
+        await _guard_agent_content(ctx, result, direction="outbound", operation="file_read", execution_completed=True)
+        return result
     except HTTPException as exc:
         if exc.status_code == 415:
             _raise_http_exception(415, "file_not_text")
         _reraise_no_store(exc)
+    except Exception as exc:
+        _raise_protection_error(exc)
 
 
 @agent_router.get("/{token}/conversations")
@@ -291,13 +348,15 @@ async def list_agent_conversations(
     _set_no_store(response)
     try:
         ctx = await resolve_agent_access_token(token)
-        return await agent_read_service.list_conversations(
+        result = await agent_read_service.list_conversations(
             ctx.workspace_id,
             ctx.acting_user_id,
             is_admin=ctx.acting_user_is_admin,
             offset=offset,
             limit=limit,
         )
+        await _guard_agent_content(ctx, result, direction="outbound", operation="conversations_list", execution_completed=True)
+        return result
     except HTTPException as exc:
         _reraise_no_store(exc)
 
@@ -314,7 +373,7 @@ async def get_agent_conversation(
     _set_no_store(response)
     try:
         ctx = await resolve_agent_access_token(token)
-        return await agent_read_service.get_conversation_transcript(
+        result = await agent_read_service.get_conversation_transcript(
             ctx.workspace_id,
             ctx.acting_user_id,
             conversation_id,
@@ -323,6 +382,8 @@ async def get_agent_conversation(
             cursor=cursor,
             limit=limit,
         )
+        await _guard_agent_content(ctx, result, direction="outbound", operation="conversation_read", execution_completed=True)
+        return result
     except HTTPException as exc:
         _reraise_no_store(exc)
 
@@ -339,7 +400,8 @@ async def search_agent_workspace_code(
     _set_no_store(response)
     try:
         ctx = await resolve_agent_access_token(token)
-        return await agent_read_service.search_code(
+        await _guard_agent_content(ctx, {"query": query, "mode": mode}, direction="inbound", operation="code_search")
+        result = await agent_read_service.search_code(
             ctx.workspace_id,
             ctx.acting_user_id,
             is_admin=ctx.acting_user_is_admin,
@@ -348,6 +410,8 @@ async def search_agent_workspace_code(
             max_results=max_results,
             max_chars_per_result=max_chars_per_result,
         )
+        await _guard_agent_content(ctx, result, direction="outbound", operation="code_search", execution_completed=True)
+        return result
     except HTTPException as exc:
         _reraise_no_store(exc)
 
@@ -359,7 +423,10 @@ async def submit_agent_task(token: str, brief: BuildBriefInput, response: Respon
         ctx = await resolve_agent_access_token(token)
         if not ctx.allow_task_submission:
             _raise_http_exception(403, "Task submission is disabled for this agent access token")
-        return await build_task_service.start_build_task(ctx.workspace_id, ctx.acting_user_id, brief)
+        await _guard_agent_content(ctx, brief.model_dump(mode="json"), direction="inbound", operation="task_submit")
+        result = await build_task_service.start_build_task(ctx.workspace_id, ctx.acting_user_id, brief)
+        await _guard_agent_content(ctx, result, direction="outbound", operation="task_submit", execution_completed=True)
+        return result
     except HTTPException as exc:
         _reraise_no_store(exc)
 
@@ -374,12 +441,14 @@ async def get_agent_task(
     _set_no_store(response)
     try:
         ctx = await resolve_agent_access_token(token)
-        return await build_task_service.get_build_task(
+        result = await build_task_service.get_build_task(
             ctx.workspace_id,
             ctx.acting_user_id,
             task_id,
             max_result_chars=max_result_chars,
         )
+        await _guard_agent_content(ctx, result, direction="outbound", operation="task_read", execution_completed=True)
+        return result
     except HTTPException as exc:
         _reraise_no_store(exc)
 
@@ -396,13 +465,16 @@ async def reply_agent_task(
         ctx = await resolve_agent_access_token(token)
         if not ctx.allow_task_submission:
             _raise_http_exception(403, "Task submission is disabled for this agent access token")
-        return await build_task_service.reply_to_build_task(
+        await _guard_agent_content(ctx, body.model_dump(mode="json"), direction="inbound", operation="task_reply")
+        result = await build_task_service.reply_to_build_task(
             ctx.workspace_id,
             ctx.acting_user_id,
             task_id,
             body.message,
             body.idempotency_key,
         )
+        await _guard_agent_content(ctx, result, direction="outbound", operation="task_reply", execution_completed=True)
+        return result
     except HTTPException as exc:
         _reraise_no_store(exc)
 
@@ -424,9 +496,10 @@ async def restart_agent_runtime(token: str, body: AgentRuntimeRestartRequest, re
         if not ctx.allow_runtime_restart:
             _raise_http_exception(403, "Runtime restart is disabled for this agent access token")
         await _enforce_agent_runtime_access(ctx)
-        from ragtime.userspace.runtime_service import userspace_runtime_service
-
-        return await userspace_runtime_service.request_app_restart(ctx.workspace_id, ctx.acting_user_id, body.idempotency_key, reason=body.reason)
+        await _guard_agent_content(ctx, body.model_dump(mode="json"), direction="inbound", operation="runtime_restart")
+        result = await userspace_runtime_service.request_app_restart(ctx.workspace_id, ctx.acting_user_id, body.idempotency_key, reason=body.reason)
+        await _guard_agent_content(ctx, result, direction="outbound", operation="runtime_restart", execution_completed=True)
+        return result
     except HTTPException as exc:
         _reraise_no_store(exc)
 
@@ -439,9 +512,9 @@ async def get_agent_runtime_operation(token: str, operation_id: str, response: R
         if not ctx.allow_runtime_restart:
             _raise_http_exception(403, "Runtime restart is disabled for this agent access token")
         await _enforce_agent_runtime_access(ctx)
-        from ragtime.userspace.runtime_service import userspace_runtime_service
-
-        return await userspace_runtime_service.get_app_runtime_operation(ctx.workspace_id, ctx.acting_user_id, operation_id)
+        result = await userspace_runtime_service.get_app_runtime_operation(ctx.workspace_id, ctx.acting_user_id, operation_id)
+        await _guard_agent_content(ctx, result, direction="outbound", operation="runtime_operation", execution_completed=True)
+        return result
     except HTTPException as exc:
         _reraise_no_store(exc)
 

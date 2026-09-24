@@ -78,11 +78,10 @@ services:
       RUNTIME_AUTH_TOKEN: ${RUNTIME_AUTH_TOKEN:-}
       OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-http://runtime-s3:9000}
       OBJECT_STORAGE_CONTROL_URL: ${OBJECT_STORAGE_CONTROL_URL:-http://runtime-s3:9001}
-      OBJECT_STORAGE_KEY_EXPORT_PATH: /run/ragtime-storage-key/.encryption_key
     volumes:
       # Data persistence (indexes, SSL certs, etc.)
       - ./data:/data
-      - object-storage-key:/run/ragtime-storage-key
+      - keystore:/run/ragtime-keystore
       # Optional: mount docker.sock only if you need Docker tool execution.
       # The Docker API can control the host even when the socket is mounted read-only.
       # - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -114,14 +113,9 @@ services:
     image: hub.docker.visnovsky.us/library/ragtime-storage:main
     container_name: runtime-s3
     restart: unless-stopped
-    environment:
-      S3_PORT: "9000"
-      STORAGE_CONTROL_PORT: "9001"
-      STORAGE_ROOT: /data/_userspace/_object_storage
-      STORAGE_KEY_FILE: /run/ragtime-storage-key/.encryption_key
     volumes:
       - ./data/_userspace/_object_storage:/data/_userspace/_object_storage
-      - object-storage-key:/run/ragtime-storage-key:ro
+      - keystore:/run/ragtime-keystore:ro
     networks:
       - ragtime-network
     depends_on:
@@ -179,4 +173,4 @@ configs:
 volumes:
   ragtime-db-data:
   searxng-cache:
-  object-storage-key:
+  keystore:

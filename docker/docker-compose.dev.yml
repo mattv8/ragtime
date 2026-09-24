@@ -78,7 +78,6 @@ services:
       - RUNTIME_AUTH_TOKEN=${RUNTIME_AUTH_TOKEN:-dev-runtime-auth-token}
       - OBJECT_STORAGE_ENDPOINT=${OBJECT_STORAGE_ENDPOINT:-http://runtime-s3:9000}
       - OBJECT_STORAGE_CONTROL_URL=${OBJECT_STORAGE_CONTROL_URL:-http://runtime-s3:9001}
-      - OBJECT_STORAGE_KEY_EXPORT_PATH=/run/ragtime-storage-key/.encryption_key
       # Authentication settings (from .env file via env_file)
       - JWT_EXPIRE_HOURS=${JWT_EXPIRE_HOURS:-24}
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
@@ -97,7 +96,7 @@ services:
       - ../prisma:/ragtime/prisma:ro
       # Mount data directory (indexes, SSL certs, etc.)
       - ../.data:/data
-      - object-storage-key:/run/ragtime-storage-key
+      - keystore:/run/ragtime-keystore
       # Development-only Docker socket mount for container exec.
       # Linux/WSL default: /var/run/docker.sock
       # Colima/macOS: set DOCKER_SOCKET_PATH=$HOME/.colima/default/docker.sock
@@ -125,21 +124,16 @@ services:
       timeout: 10s
       retries: 3
 
-  # Internal persistent S3 gateway; it waits for Ragtime to create /data/.encryption_key.
+  # Internal persistent S3 gateway; it waits for Ragtime to publish its key projection.
   runtime-s3:
     build:
       context: ..
       dockerfile: docker/Dockerfile.storage
     container_name: runtime-s3-dev
     restart: unless-stopped
-    environment:
-      - S3_PORT=9000
-      - STORAGE_CONTROL_PORT=9001
-      - STORAGE_ROOT=/data/_userspace/_object_storage
-      - STORAGE_KEY_FILE=/run/ragtime-storage-key/.encryption_key
     volumes:
       - ../.data/_userspace/_object_storage:/data/_userspace/_object_storage
-      - object-storage-key:/run/ragtime-storage-key:ro
+      - keystore:/run/ragtime-keystore:ro
     networks:
       - default
     depends_on:
@@ -197,4 +191,4 @@ volumes:
   ragtime-db-data:
   ragtime-node-modules:  # Persist frontend node_modules across rebuilds
   searxng-cache:
-  object-storage-key:
+  keystore:

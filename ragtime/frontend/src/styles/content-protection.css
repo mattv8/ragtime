@@ -1,0 +1,328 @@
+.content-protection-section {
+  display: grid;
+  gap: var(--space-md);
+}
+.content-protection-status {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+.content-protection-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+.content-protection-summary,
+.content-protection-result {
+  display: grid;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+#settings-content-protection .content-protection-summary {
+  min-inline-size: 0;
+  margin: 0;
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.content-protection-summary legend,
+.content-protection-fieldset legend {
+  padding-inline: var(--space-xs);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.content-protection-summary legend span,
+.content-protection-fieldset legend button {
+  display: inline-flex;
+  vertical-align: middle;
+}
+.content-protection-summary p {
+  overflow-wrap: anywhere;
+}
+.content-protection-summary .btn {
+  justify-self: start;
+}
+.content-protection-summary h4,
+.content-protection-summary p,
+.content-protection-result p {
+  margin: 0;
+}
+.content-protection-dialog-controls {
+  display: grid;
+  gap: var(--space-sm);
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.content-protection-status-icon {
+  color: var(--color-text-muted);
+  width: 1rem;
+  height: 1rem;
+}
+.content-protection-modal-overlay {
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-md);
+}
+.modal-content.content-protection-dialog {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  width: min(60rem, 100%);
+  max-width: 60rem;
+  max-height: calc(100vh - var(--space-2xl));
+  overflow: hidden;
+}
+.content-protection-dialog .modal-body {
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: var(--space-md);
+}
+.content-protection-tabs {
+  display: flex;
+  align-items: flex-end;
+  overflow-x: auto;
+  gap: 0;
+  padding: 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.content-protection-tabs button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: var(--space-sm) var(--space-md);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+.content-protection-tabs button:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+.content-protection-tabs button[aria-selected='true'] {
+  border-bottom-color: var(--color-accent);
+  color: var(--color-text-primary);
+}
+.content-protection-tabs button:focus-visible {
+  outline: none;
+  border-bottom-color: var(--color-input-focus);
+  box-shadow: inset 0 -2px 0 var(--color-input-focus);
+  color: var(--color-text-primary);
+}
+.content-protection-dialog-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+.content-protection-dialog-grid > label,
+.content-protection-coverage-field {
+  display: grid;
+  gap: var(--space-xs);
+}
+.content-protection-coverage-label,
+.content-protection-policy-links {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.content-protection-coverage-label .content-protection-icon-action {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.content-protection-policy-links {
+  flex-wrap: wrap;
+  column-gap: var(--space-md);
+}
+.content-protection-policy-links a {
+  color: var(--color-primary);
+  text-underline-offset: 0.15em;
+}
+.content-protection-policy-links a:hover {
+  color: var(--color-primary-hover);
+}
+.content-protection-policy-links a:focus-visible {
+  outline: 2px solid var(--color-input-focus);
+  outline-offset: 2px;
+}
+.content-protection-policy-links-note {
+  flex-basis: 100%;
+}
+.content-protection-dialog .content-protection-fieldset {
+  display: grid;
+  gap: var(--space-sm);
+  min-inline-size: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  margin: 0;
+}
+.content-protection-fieldset legend {
+  width: auto;
+}
+.content-protection-dialog .content-protection-icon-action {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  padding: var(--space-xs);
+  line-height: 1;
+}
+.content-protection-icon-action svg {
+  width: 1rem;
+  height: 1rem;
+}
+.content-protection-dialog .content-protection-icon-action.is-ready,
+.content-protection-status-icon.is-ready {
+  color: var(--color-success);
+}
+.content-protection-dialog .content-protection-icon-action.is-error {
+  color: var(--color-error);
+}
+.content-protection-rows,
+.content-protection-profiles {
+  display: grid;
+  gap: var(--space-sm);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.content-protection-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+}
+/* Reuse ToolCard presentation; scope only profile-specific layout and editing. */
+.tool-card.content-protection-profile {
+  min-width: 0;
+}
+.content-protection-profile-level {
+  display: flex;
+  align-items: center;
+}
+.tool-badge.content-protection-profile-level-badge {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border);
+  cursor: pointer;
+}
+.tool-badge.content-protection-profile-level-badge:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary-border);
+  background: var(--color-primary-light);
+}
+.tool-badge.content-protection-profile-level-badge:focus-visible,
+.content-protection-profile .inline-edit-btn:focus-visible {
+  outline: 2px solid var(--color-input-focus);
+  outline-offset: 2px;
+}
+.content-protection-profile .content-protection-profile-level-input {
+  width: 4rem;
+  min-width: 0;
+  padding: var(--space-xs);
+  font-size: var(--text-sm);
+}
+.content-protection-profile .editable-field-wrapper:focus-within .inline-edit-btn {
+  opacity: 1;
+}
+.content-protection-profile .description-wrapper .tool-card-description {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.content-protection-profile .inline-edit-textarea {
+  resize: vertical !important;
+  overflow: auto !important;
+  min-height: 5rem;
+  max-height: 12rem;
+}
+.tool-card.content-protection-profile .tool-card-actions {
+  flex-direction: row;
+  justify-content: flex-end;
+}
+.tool-card.content-protection-profile .tool-card-actions .btn {
+  flex: 0 1 auto;
+}
+@media (hover: none) {
+  .content-protection-profile .editable-field-wrapper .inline-edit-btn {
+    opacity: 1;
+  }
+}
+.content-protection-dialog .modal-footer {
+  flex-wrap: wrap;
+}
+.content-protection-dialog-controls > .btn {
+  justify-self: start;
+}
+.content-protection-spinner {
+  animation: content-protection-spin 1s linear infinite;
+}
+@keyframes content-protection-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+#content-protection-sample {
+  min-height: 5rem;
+  width: 100%;
+  resize: vertical;
+}
+.content-protection-review {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-xs) var(--space-md);
+  margin: 0;
+}
+.content-protection-review dt {
+  color: var(--color-text-secondary);
+}
+.content-protection-review dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.content-protection-result {
+  margin-top: var(--space-md);
+}
+.content-protection-result span {
+  color: var(--color-text-secondary);
+}
+.content-protection-decisions {
+  margin: 0;
+  padding-inline-start: var(--space-lg);
+}
+@media (max-width: 680px) {
+  .content-protection-overview,
+  .content-protection-dialog-grid,
+  .content-protection-profiles,
+  .content-protection-rows,
+  .content-protection-row {
+    grid-template-columns: 1fr;
+  }
+
+  .content-protection-modal-overlay {
+    padding: var(--space-xs);
+  }
+  .content-protection-dialog {
+    max-height: calc(100vh - var(--space-md));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .content-protection-spinner {
+    animation: none;
+  }
+}

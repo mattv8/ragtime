@@ -123,6 +123,7 @@ async def generate_index_description(
     documents: List,
     source_type: str,
     source: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> str:
     """
     Auto-generate a description for an index using the configured LLM.
@@ -132,7 +133,14 @@ async def generate_index_description(
 
     Uses the LLM provider configured in app settings.
     """
+    # IndexJob has no initiating-user attribution. Do not let an unknown caller
+    # bypass a per-user policy through this optional generative convenience.
+    if not user_id:
+        logger.info("Skipping optional index description generation without initiating-user attribution")
+        return ""
     try:
+        # This optional indexing helper is not governed by either interactive
+        # generation surface; preserve the existing attributed-user skip only.
         app_settings = await get_app_settings()
         provider = app_settings.get("llm_provider", "openai").lower()
 

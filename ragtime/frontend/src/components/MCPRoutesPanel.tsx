@@ -1,5 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/api';
+import {
+  contentProtectionApi,
+  requirementModeFor,
+  type ContentProtectionConfig,
+  type ContentProtectionRequirementMode,
+  updateContentProtectionConfigSlice,
+  withRequirement,
+} from '@/api/contentProtection';
 import { Eye, EyeOff } from 'lucide-react';
 import { useToast, ToastContainer } from './shared/Toast';
 import { InlineCopyButton } from './shared/InlineCopyButton';
@@ -217,6 +225,7 @@ interface RouteWizardProps {
   ldapConfigured: boolean;
   ldapGroups: LdapGroup[];
   onCopySuccessToast: (message: string) => void;
+  onContentProtectionToast: (message: string, kind: 'success' | 'error') => void;
   onSave: (data: CreateMcpRouteRequest | UpdateMcpRouteRequest, routeId?: string) => Promise<void>;
   onCancel: () => void;
   saving: boolean;
@@ -232,6 +241,7 @@ function RouteWizard({
   ldapConfigured,
   ldapGroups,
   onCopySuccessToast,
+  onContentProtectionToast,
   onSave,
   onCancel,
   saving,
@@ -281,6 +291,37 @@ function RouteWizard({
   );
 
   const [error, setError] = useState<string | null>(null);
+  const [contentProtectionConfig, setContentProtectionConfig] =
+    useState<ContentProtectionConfig | null>(null);
+
+  useEffect(() => {
+    // Blank the previous snapshot so this form never shows stale policy data.
+    setContentProtectionConfig(null);
+    let active = true;
+    void contentProtectionApi.getConfig().then(
+      (config) => active && setContentProtectionConfig(config),
+      () => active && setContentProtectionConfig(null),
+    );
+    return () => {
+      active = false;
+    };
+  }, [editingRoute]);
+
+  const updateContentProtectionRequirement = async (mode: ContentProtectionRequirementMode) => {
+    if (!editingRoute) return;
+    try {
+      const nextConfig = await updateContentProtectionConfigSlice((config) =>
+        withRequirement(config, 'mcp_route', editingRoute.id, mode),
+      );
+      setContentProtectionConfig(nextConfig);
+      onContentProtectionToast('Content protection requirement saved', 'success');
+    } catch (caught) {
+      onContentProtectionToast(
+        caught instanceof Error ? caught.message : 'Failed to save content protection requirement',
+        'error',
+      );
+    }
+  };
 
   const effectiveAllowedLdapGroup = authMethod === 'oauth2' ? allowedLdapGroup.trim() : '';
   const hasConfiguredPassword = editingRoute?.has_password && !clearPassword;
@@ -519,6 +560,38 @@ function RouteWizard({
           />
           <p className="field-help">Optional description for documentation purposes.</p>
         </div>
+
+        {editingRoute ? (
+          contentProtectionConfig?.enabled && (
+            <div className="form-group" id="mcp-route-content-protection">
+              <label htmlFor={`mcp-route-require-classification-${editingRoute.id}`}>
+                Require classification
+              </label>
+              <select
+                id={`mcp-route-require-classification-${editingRoute.id}`}
+                value={requirementModeFor(contentProtectionConfig, 'mcp_route', editingRoute.id)}
+                onChange={(event) =>
+                  void updateContentProtectionRequirement(
+                    event.target.value as ContentProtectionRequirementMode,
+                  )
+                }
+              >
+                <option value="inherit">Inherit</option>
+                <option value="require">Require</option>
+              </select>
+              {contentProtectionConfig.coverage_mode === 'all_supported_traffic' && (
+                <p className="field-help">
+                  Coverage is currently All supported traffic; scope requirements apply when
+                  coverage is Selected scopes.
+                </p>
+              )}
+            </div>
+          )
+        ) : contentProtectionConfig?.enabled ? (
+          <p className="field-help">
+            Save the route first, then edit it to require classification.
+          </p>
+        ) : null}
 
         <fieldset>
           <legend>Authentication</legend>
@@ -1767,6 +1840,7 @@ export function MCPRoutesPanel({
                   ldapConfigured={ldapConfigured}
                   ldapGroups={ldapGroups}
                   onCopySuccessToast={(message) => toast.success(message)}
+                  onContentProtectionToast={(message, kind) => toast[kind](message)}
                   onSave={handleSaveRoute}
                   onCancel={() => {
                     setShowRouteWizard(false);

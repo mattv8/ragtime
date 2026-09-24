@@ -52,6 +52,7 @@ class RuntimeManagerMaintenanceTests(unittest.IsolatedAsyncioTestCase):
             return _worker_session_response(models_module, workspace_id=request.workspace_id)
 
         worker_service = SimpleNamespace(
+            health=mock.AsyncMock(return_value=SimpleNamespace(metadata={"runtime_capabilities": {"bridge_credential_file": True}})),
             start_session=mock.AsyncMock(side_effect=delayed_start),
             stop_session=mock.AsyncMock(
                 side_effect=lambda worker_session_id: _worker_session_response(
@@ -90,6 +91,7 @@ class RuntimeManagerMaintenanceTests(unittest.IsolatedAsyncioTestCase):
     async def test_acquire_reports_conflict_when_active_sessions_remain(self) -> None:
         service_module, models_module, _ = self._load_modules()
         worker_service = SimpleNamespace(
+            health=mock.AsyncMock(return_value=SimpleNamespace(metadata={"runtime_capabilities": {"bridge_credential_file": True}})),
             start_session=mock.AsyncMock(side_effect=lambda request: _worker_session_response(models_module, workspace_id=request.workspace_id)),
             stop_session=mock.AsyncMock(side_effect=TimeoutError),
             get_session=mock.AsyncMock(),
@@ -126,6 +128,7 @@ class RuntimeManagerMaintenanceTests(unittest.IsolatedAsyncioTestCase):
     async def test_maintenance_lease_expires_and_allows_launches_again(self) -> None:
         service_module, models_module, _ = self._load_modules()
         worker_service = SimpleNamespace(
+            health=mock.AsyncMock(return_value=SimpleNamespace(metadata={"runtime_capabilities": {"bridge_credential_file": True}})),
             start_session=mock.AsyncMock(side_effect=lambda request: _worker_session_response(models_module, workspace_id=request.workspace_id)),
             stop_session=mock.AsyncMock(),
             get_session=mock.AsyncMock(),
@@ -241,6 +244,7 @@ class RuntimeManagerMaintenanceTests(unittest.IsolatedAsyncioTestCase):
     async def test_acquire_lease_stops_sessions_and_blocks_new_launches(self) -> None:
         service_module, models_module, _ = self._load_modules()
         worker_service = SimpleNamespace(
+            health=mock.AsyncMock(return_value=SimpleNamespace(metadata={"runtime_capabilities": {"bridge_credential_file": True}})),
             start_session=mock.AsyncMock(side_effect=lambda request: _worker_session_response(models_module, workspace_id=request.workspace_id)),
             stop_session=mock.AsyncMock(
                 side_effect=lambda worker_session_id: _worker_session_response(

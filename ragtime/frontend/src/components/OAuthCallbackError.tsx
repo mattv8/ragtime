@@ -4,12 +4,22 @@ interface OAuthCallbackErrorProps {
   title: string;
   summary: string;
   nextSteps?: string[];
+  onRetry?: () => void;
+  onBack?: () => void;
+  busy?: boolean;
 }
 
-export function OAuthCallbackError({ title, summary, nextSteps = [] }: OAuthCallbackErrorProps) {
+export function OAuthCallbackError({
+  title,
+  summary,
+  nextSteps = [],
+  onRetry,
+  onBack,
+  busy = false,
+}: OAuthCallbackErrorProps) {
   return (
     <LoginGradientShell>
-      <div className="login-card" style={{ maxWidth: '560px' }}>
+      <div id="oauth-authorization-error" className="login-card" style={{ maxWidth: '560px' }}>
         <p
           style={{
             margin: '0 0 8px 0',
@@ -68,6 +78,20 @@ export function OAuthCallbackError({ title, summary, nextSteps = [] }: OAuthCall
                 </li>
               ))}
             </ol>
+          </div>
+        )}
+        {(onRetry || onBack) && (
+          <div className="button-group" style={{ marginTop: '20px' }}>
+            {onRetry && (
+              <button type="button" className="btn btn-primary" onClick={onRetry} disabled={busy}>
+                Retry authorization
+              </button>
+            )}
+            {onBack && (
+              <button type="button" className="btn btn-secondary" onClick={onBack} disabled={busy}>
+                Back to workspace
+              </button>
+            )}
           </div>
         )}
       </div>

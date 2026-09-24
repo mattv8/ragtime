@@ -1,11 +1,12 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMock = vi.hoisted(() => ({
   getAuthStatus: vi.fn(),
   getCurrentUser: vi.fn(),
   getSettings: vi.fn(),
+  logout: vi.fn(),
 }));
 const localStorageMock = vi.hoisted(() => ({
   getItem: vi.fn(() => null),
@@ -55,15 +56,32 @@ vi.mock('./components/PublicSharedChatView', async () => {
       shareToken,
       ownerUsername,
       shareSlug,
+      onLogout,
     }: {
       shareToken?: string;
       ownerUsername?: string;
       shareSlug?: string;
-    }) => <div>{shareToken ?? `${ownerUsername}/${shareSlug}`}</div>,
+      onLogout: () => Promise<void>;
+    }) => {
+      const [password, setPassword] = useState('');
+      return (
+        <div data-testid="shared-view-instance">
+          <span>{shareToken ?? `${ownerUsername}/${shareSlug}`}</span>
+          <button type="button" onClick={() => void onLogout()}>
+            Shared sign out
+          </button>
+          <label>
+            Share password
+            <input value={password} onChange={(event) => setPassword(event.target.value)} />
+          </label>
+        </div>
+      );
+    },
   };
 });
 
 import { App } from './App';
+import { sessionLifecycle } from './auth/sessionLifecycle';
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -75,8 +93,10 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 
 describe('App shared chat loading', () => {
   beforeEach(() => {
+    if (sessionLifecycle.signedOutIntent) sessionLifecycle.retrySignedOutSession();
     apiMock.getSettings.mockResolvedValue({ settings: {}, configuration_warnings: [] });
     apiMock.getCurrentUser.mockResolvedValue(null);
+    apiMock.logout.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -123,5 +143,99 @@ describe('App shared chat loading', () => {
     });
 
     expect(await screen.findByText('owner-a/shared-chat')).toBeTruthy();
+  });
+
+  it('keeps an already-mounted shared view and its local input mounted through expiry recovery failure', async () => {
+    apiMock.getAuthStatus.mockResolvedValueOnce({
+      authenticated: true,
+      chat_enabled: true,
+      userspace_generation_enabled: true,
+    });
+    apiMock.getCurrentUser.mockResolvedValueOnce({
+      id: 'shared-user',
+      username: 'shared-user',
+      display_name: 'Shared User',
+      email: null,
+      role: 'user',
+      auth_provider: 'local',
+      chat_enabled_effective: true,
+      userspace_generation_enabled_effective: true,
+    });
+    window.history.replaceState({}, '', '/shared/persistent-token');
+
+    render(<App />);
+    await act(async () => sharedViewModuleGate.resolve());
+    const password = (await screen.findByLabelText('Share password')) as HTMLInputElement;
+    fireEvent.change(password, { target: { value: 'kept-locally' } });
+
+    apiMock.getAuthStatus.mockRejectedValueOnce(new Error('offline'));
+    act(() => {
+      sessionLifecycle.expire(sessionLifecycle.capture('session'));
+    });
+
+    await waitFor(() => expect(apiMock.getAuthStatus).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('shared-view-instance')).toBeTruthy();
+    expect((screen.getByLabelText('Share password') as HTMLInputElement).value).toBe(
+      'kept-locally',
+    );
+    expect(document.querySelector('#auth-recovery-state')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Check session again' })).toBeTruthy();
+  });
+
+  it('retries a failed shared-route logout without remounting the share or dispatching twice', async () => {
+    const retryLogout = deferred<void>();
+    apiMock.getAuthStatus
+      .mockResolvedValueOnce({
+        authenticated: true,
+        chat_enabled: true,
+        userspace_generation_enabled: true,
+      })
+      .mockResolvedValueOnce({ authenticated: false });
+    apiMock.getCurrentUser.mockResolvedValueOnce({
+      id: 'shared-user',
+      username: 'shared-user',
+      display_name: 'Shared User',
+      email: null,
+      role: 'user',
+      auth_provider: 'local',
+      chat_enabled_effective: true,
+      userspace_generation_enabled_effective: true,
+    });
+    apiMock.logout
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockReturnValueOnce(retryLogout.promise);
+    window.history.replaceState({}, '', '/shared/logout-token');
+
+    render(<App />);
+    await act(async () => sharedViewModuleGate.resolve());
+    const sharedView = await screen.findByTestId('shared-view-instance');
+    const password = screen.getByLabelText('Share password') as HTMLInputElement;
+    fireEvent.change(password, { target: { value: 'preserve-me' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Shared sign out' }));
+
+    const retry = await screen.findByRole('button', { name: 'Retry sign out' });
+    const banner = document.querySelector('#public-shared-auth-recovery-banner') as HTMLElement;
+    const route = document.querySelector('#public-shared-route');
+    expect(banner).toBeTruthy();
+    expect(route).toBeTruthy();
+    expect(banner.parentElement).toBe(route?.parentElement);
+    expect(banner.parentElement).not.toBe(route);
+    expect(banner.style.position).toBe('fixed');
+    expect(banner.style.maxWidth).toBeTruthy();
+    expect(banner.style.background).toBe('var(--color-surface)');
+    expect(banner.style.zIndex).toBe('1000');
+    expect(sharedView.isConnected).toBe(true);
+
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+    expect(apiMock.logout).toHaveBeenCalledTimes(2);
+    expect(retry).toHaveProperty('disabled', true);
+
+    await act(async () => retryLogout.resolve());
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Retry sign out' })).toBeNull(),
+    );
+    expect(screen.getByTestId('shared-view-instance')).toBe(sharedView);
+    expect((screen.getByLabelText('Share password') as HTMLInputElement).value).toBe('preserve-me');
   });
 });

@@ -1,4 +1,17 @@
-export { api, ApiError, onAuthExpired } from './client';
+export {
+  api,
+  ApiError,
+  apiFetch,
+  beginResponseSessionEstablishment,
+  getResponseAuthContext,
+  isResponseAuthContextCurrent,
+} from './client';
+export type {
+  AuthPurpose,
+  RequestAuthContext,
+  SessionLifecycleEvent,
+  SessionPhase,
+} from '@/auth/sessionLifecycle';
 export type {
   ChatTaskStreamEvent,
   DockerContainer,

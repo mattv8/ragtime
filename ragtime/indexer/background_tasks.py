@@ -13,6 +13,7 @@ import contextvars
 import copy
 import json
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union, cast
 
@@ -27,9 +28,21 @@ try:
 except Exception:  # pragma: no cover - defensive import guard
     _LC_CHILD_RUNNABLE_CONFIG_VAR: contextvars.ContextVar[Any] | None = None  # type: ignore[no-redef]
 
+from ragtime.content_protection.hosted import (
+    authorize_auxiliary,
+    authorize_history,
+    authorize_inbound,
+)
+from ragtime.content_protection.hosted import (
+    bind_context as bind_content_protection_context,
+)
+from ragtime.content_protection.hosted import (
+    hosted_context as content_protection_context,
+)
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.datetimes import coerce_utc_datetime, utc_now
 from ragtime.core.event_bus import task_event_bus
+from ragtime.core.generation_policy import GenerationSurface, generation_context, require_generation
 from ragtime.core.logging import get_logger
 from ragtime.core.scheduling import is_anchored_schedule_due
 from ragtime.core.sql_utils import strip_table_metadata
@@ -874,6 +887,7 @@ class BackgroundTaskService:
         usage_attempt_id: Optional[str] = None,
         *,
         execution_policy: Optional[dict[str, Any]] = None,
+        protection_surface: str = "chat",
     ) -> str:
         """
         Start a background task for processing a chat message.
@@ -889,6 +903,17 @@ class BackgroundTaskService:
         """
         task_id = existing_task_id or ""
 
+        async def run_with_policy_context() -> None:
+            # Keep both identities bound for every nested provider boundary,
+            # including calls made after the request's ContextVar is gone.
+            conversation = await repository.get_conversation(conversation_id)
+            caller_user_id = str(current_user_context.get("user_id") or "").strip() if current_user_context else None
+            owner_user_id = getattr(conversation, "user_id", None)
+            protection_context = content_protection_context(user_id=caller_user_id, owner_user_id=owner_user_id, surface=protection_surface)
+            surface: GenerationSurface = "userspace" if getattr(conversation, "workspace_id", None) else "chat"
+            with generation_context(surface, caller_user_id, owner_user_id), bind_content_protection_context(protection_context):
+                await run()
+
         async def run() -> None:
             nonlocal task_id
             effective_execution_policy = execution_policy
@@ -898,6 +923,16 @@ class BackgroundTaskService:
             partial_message_persisted = False
             reasoning_block_started_at: Optional[datetime] = None
             try:
+                # Queued tasks may be created by non-HTTP callers.  Check the
+                # submitted body before a task row or message can retain it.
+                await authorize_inbound(
+                    user_message,
+                    context=content_protection_context(
+                        user_id=str(current_user_context.get("user_id") or "").strip() if current_user_context else None,
+                        owner_user_id=getattr(await repository.get_conversation(conversation_id), "user_id", None),
+                        surface=protection_surface,
+                    ),
+                )
                 # Create or get the task
                 if not task_id:
                     task = await repository.create_chat_task(conversation_id, user_message, execution_policy=execution_policy)
@@ -937,6 +972,13 @@ class BackgroundTaskService:
                     await repository.update_chat_task_status(task_id, ChatTaskStatus.failed, "Conversation not found")
                     return
 
+                # A queued task can outlive the request that created it. Resolve
+                # policy afresh before it prepares or starts any model work.
+                await require_generation(
+                    str(current_user_context.get("user_id") or "") if current_user_context else None,
+                    conv.user_id,
+                )
+
                 # Build chat history (exclude the user message we're about to process)
                 # Include tool call information so the LLM has full context
                 app_settings = await SettingsCache.get_instance().get_settings()
@@ -973,6 +1015,17 @@ class BackgroundTaskService:
                             chat_history.extend(rebuild_tool_messages_from_events(msg.events, msg_idx, max_tool_output_chars))
                         elif msg.content and msg.content.strip():
                             chat_history.append(AIMessage(content=msg.content))
+
+                # Releasing persisted history to either the ordinary model or
+                # a continuation is a protected read, not an implicit grant.
+                await authorize_history(
+                    chat_history,
+                    context=content_protection_context(
+                        user_id=str(current_user_context.get("user_id") or "").strip() if current_user_context else None,
+                        owner_user_id=conv.user_id,
+                        surface=protection_surface,
+                    ),
+                )
 
                 if not rag.is_ready:
                     await repository.update_chat_task_status(task_id, ChatTaskStatus.failed, "RAG service not ready")
@@ -1071,6 +1124,7 @@ class BackgroundTaskService:
                     chat_task_id=task_id,
                     message_index=len(conv.messages),
                     disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+                    protection_surface=protection_surface,
                 )
                 _stream_iter = _stream.__aiter__()
                 pending_streaming_flusher = asyncio.create_task(flush_pending_streaming_state())
@@ -1639,7 +1693,15 @@ class BackgroundTaskService:
                     logger.warning(f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}")
                 raise
             except Exception as e:
-                logger.exception(f"Background task {task_id} failed")
+                protection_detail = getattr(e, "public_detail", None)
+                is_protection_error = callable(protection_detail)
+                detail: dict[str, str] | None = None
+                if is_protection_error:
+                    # Do not include classifier/provider exception text in logs,
+                    # persisted state, or SSE.  A denied turn is terminal.
+                    logger.warning("Background task %s stopped by content protection", task_id)
+                else:
+                    logger.exception(f"Background task {task_id} failed")
                 try:
                     if reasoning_block_started_at is not None:
                         finalize_reasoning_block(events, reasoning_block_started_at)
@@ -1663,6 +1725,10 @@ class BackgroundTaskService:
                         termination_reason = None
                     warnings = []
                     error_message = str(e)
+                    if is_protection_error:
+                        detail = cast(Callable[[], dict[str, str]], protection_detail)()
+                        error_message = str(detail.get("message") or "This content is not available under your access profile.")
+                        termination_reason = str(detail.get("code") or "content_protection")
                     if termination_reason == "payment_required":
                         from ragtime.core.openrouter_credits import note_openrouter_payment_required
                         from ragtime.core.provider_errors import provider_error_message
@@ -1678,12 +1744,22 @@ class BackgroundTaskService:
                         # Only classified provider failures get a termination reason;
                         # an unclassified platform error must not be blamed on the provider.
                         termination_reason=termination_reason,
-                        outcome_summary={"activity": activity_summary(tool_calls), "warnings": warnings},
-                        response_content=full_response or None,
+                        outcome_summary={
+                            "activity": activity_summary(tool_calls),
+                            "warnings": warnings,
+                            **({"refusal": detail} if detail else {}),
+                        },
+                        response_content=(f"{full_response}\n\n{error_message}" if full_response else error_message) if detail else full_response or None,
                     )
                     await task_event_bus.publish(
                         task_id,
-                        {"completed": True, "status": "failed", "error": error_message},
+                        {
+                            "completed": True,
+                            "status": "failed",
+                            "error": error_message,
+                            **(detail or {}),
+                            **({"refusal": detail} if detail else {}),
+                        },
                     )
                     await task_event_bus.publish(
                         f"conversation:{conversation_id}",
@@ -1692,6 +1768,8 @@ class BackgroundTaskService:
                             "task_id": task_id,
                             "status": "failed",
                             "error": error_message,
+                            **(detail or {}),
+                            **({"refusal": detail} if detail else {}),
                         },
                     )
                     if usage_attempt_id:
@@ -1720,7 +1798,7 @@ class BackgroundTaskService:
         task_context = contextvars.copy_context()
         if _LC_CHILD_RUNNABLE_CONFIG_VAR is not None:
             task_context.run(_LC_CHILD_RUNNABLE_CONFIG_VAR.set, None)
-        asyncio_task = asyncio.create_task(run(), context=task_context)
+        asyncio_task = asyncio.create_task(run_with_policy_context(), context=task_context)
 
         # We need to get task_id synchronously, so we'll use a placeholder
         # The actual task ID will be set inside the coroutine
@@ -1743,6 +1821,7 @@ class BackgroundTaskService:
         snapshot_tail_message_id: Optional[str],
         snapshot_user_id: str,
         snapshot_parent_branch_id: Optional[str],
+        caller_user_id: Optional[str] = None,
         replace_message_id: Optional[str] = None,
         replace_message_index: Optional[int] = None,
     ) -> str:
@@ -1760,6 +1839,7 @@ class BackgroundTaskService:
                 snapshot_tail_message_id=snapshot_tail_message_id,
                 snapshot_user_id=snapshot_user_id,
                 snapshot_parent_branch_id=snapshot_parent_branch_id,
+                caller_user_id=caller_user_id,
                 replace_message_id=replace_message_id,
                 replace_message_index=replace_message_index,
             )
@@ -1779,10 +1859,16 @@ class BackgroundTaskService:
         snapshot_tail_message_id: Optional[str],
         snapshot_user_id: str,
         snapshot_parent_branch_id: Optional[str],
+        caller_user_id: Optional[str] = None,
         replace_message_id: Optional[str] = None,
         replace_message_index: Optional[int] = None,
     ) -> None:
         try:
+            conv = await repository.get_conversation(conversation_id)
+            protection_context = content_protection_context(user_id=caller_user_id, owner_user_id=getattr(conv, "user_id", None))
+            surface: GenerationSurface = "userspace" if getattr(conv, "workspace_id", None) else "chat"
+            await require_generation(caller_user_id, getattr(conv, "user_id", None), surface=surface)
+            await authorize_history(messages_to_summarize, context=protection_context)
             await repository.update_chat_task_status(task_id, ChatTaskStatus.running)
             await task_event_bus.publish(
                 f"conversation:{conversation_id}",
@@ -1794,7 +1880,12 @@ class BackgroundTaskService:
                 },
             )
 
-            summary = await rag.summarize_for_compaction(messages_to_summarize, model)
+            with (
+                generation_context(surface, caller_user_id, getattr(conv, "user_id", None)),
+                bind_content_protection_context(protection_context),
+            ):
+                summary = await rag.summarize_for_compaction(messages_to_summarize, model)
+                await authorize_auxiliary(summary, context=protection_context, operation="compaction")
             compacted = await repository.compact_conversation(
                 conversation_id,
                 compaction_index,
@@ -1844,11 +1935,33 @@ class BackgroundTaskService:
             )
             raise
         except Exception as e:
-            logger.warning(f"Compaction task {task_id} failed: {e}")
-            await repository.update_chat_task_status(task_id, ChatTaskStatus.failed, str(e))
+            public_detail = getattr(e, "public_detail", None)
+            error_message = str(e)
+            detail: dict[str, str] | None = None
+            if callable(public_detail):
+                logger.warning("Compaction task %s stopped by content protection", task_id)
+                detail = cast(Callable[[], dict[str, str]], public_detail)()
+                error_message = str(detail.get("message") or "This content is not available under your access profile.")
+            else:
+                logger.warning(f"Compaction task {task_id} failed: {e}")
+            await repository.update_chat_task_status(
+                task_id,
+                ChatTaskStatus.failed,
+                error_message,
+                response_content=error_message if detail else None,
+                termination_reason=str(detail.get("code") or "content_protection") if detail else None,
+                outcome_summary={"refusal": detail} if detail else None,
+            )
             await task_event_bus.publish(
                 task_id,
-                {"completed": True, "status": "failed", "error": str(e), "task_kind": "compaction"},
+                {
+                    "completed": True,
+                    "status": "failed",
+                    "error": error_message,
+                    "task_kind": "compaction",
+                    **(detail or {}),
+                    **({"refusal": detail} if detail else {}),
+                },
             )
             await task_event_bus.publish(
                 f"conversation:{conversation_id}",
@@ -1857,8 +1970,10 @@ class BackgroundTaskService:
                     "task_id": task_id,
                     "conversation_id": conversation_id,
                     "status": "failed",
-                    "error": str(e),
+                    "error": error_message,
                     "task_kind": "compaction",
+                    **(detail or {}),
+                    **({"refusal": detail} if detail else {}),
                 },
             )
         finally:
@@ -1877,6 +1992,7 @@ class BackgroundTaskService:
         usage_attempt_id: Optional[str] = None,
         *,
         execution_policy: Optional[dict[str, Any]] = None,
+        protection_surface: str = "chat",
     ) -> str:
         """
         Start a background task asynchronously.
@@ -1891,6 +2007,17 @@ class BackgroundTaskService:
         Returns:
             The task ID
         """
+        # A task row retains the submitted message, so authorize before it is
+        # created even for non-route callers.
+        conversation = await repository.get_conversation(conversation_id)
+        await authorize_inbound(
+            user_message,
+            context=content_protection_context(
+                user_id=str(current_user_context.get("user_id") or "").strip() if current_user_context else None,
+                owner_user_id=getattr(conversation, "user_id", None),
+                surface=protection_surface,
+            ),
+        )
         # Create the task record first
         task = await repository.create_chat_task(conversation_id, user_message, execution_policy=execution_policy)
 
@@ -1907,6 +2034,7 @@ class BackgroundTaskService:
             disabled_builtin_tool_ids=disabled_builtin_tool_ids,
             usage_attempt_id=usage_attempt_id,
             execution_policy=execution_policy,
+            protection_surface=protection_surface,
         )
 
         return task.id

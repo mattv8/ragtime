@@ -620,6 +620,14 @@ class AppSettings(BaseModel):
         default=DEFAULT_TOOL_SKILLS_ENABLED,
         description="If True, allow conversations to persist requested on-demand tool skills.",
     )
+    chat_enabled: bool = Field(
+        default=True,
+        description="Default Chat generation policy; explicit per-user overrides may enable or disable generation.",
+    )
+    userspace_generation_enabled: bool = Field(
+        default=True,
+        description="Default User Space generation policy; explicit per-user overrides may enable or disable generation.",
+    )
     userspace_build_model: Optional[str] = Field(
         default=None,
         description="Provider-scoped model used for new User Space build tasks; null uses normal defaults.",
@@ -1478,6 +1486,11 @@ class UpdateSettingsRequest(BaseModel):
     available_models_cache_enabled: Optional[bool] = None
     show_tool_card_footer_actions: Optional[bool] = None
     tool_skills_enabled: Optional[bool] = None
+    chat_enabled: Optional[bool] = Field(default=None, description="Default Chat generation policy; explicit per-user overrides take precedence.")
+    userspace_generation_enabled: Optional[bool] = Field(
+        default=None,
+        description="Default User Space generation policy; explicit per-user overrides take precedence.",
+    )
     userspace_build_model: Optional[str] = None
     openrouter_credit_monitor_enabled: Optional[bool] = None
     openrouter_low_credit_threshold_usd: Optional[float] = Field(default=None, ge=0)

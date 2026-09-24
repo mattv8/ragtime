@@ -8,7 +8,17 @@ from typing import Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
+from ragtime.content_protection.hosted import (
+    authorize_auxiliary,
+)
+from ragtime.content_protection.hosted import (
+    bind_context as bind_content_protection_context,
+)
+from ragtime.content_protection.hosted import (
+    hosted_context as content_protection_context,
+)
 from ragtime.core.event_bus import task_event_bus
+from ragtime.core.generation_policy import GenerationSurface, generation_context, require_generation
 from ragtime.core.logging import get_logger
 from ragtime.core.ollama import KEEP_ALIVE, NUM_GPU
 from ragtime.indexer.repository import repository
@@ -95,10 +105,11 @@ def _is_ollama_llm(llm: object) -> bool:
         return False
 
 
-async def _generate_title(question_text: str) -> Optional[str]:
+async def _generate_title(question_text: str, *, user_id: str | None = None, surface: GenerationSurface = "chat") -> Optional[str]:
     if not question_text.strip():
         return None
 
+    await require_generation(user_id, surface="userspace" if surface == "userspace" else "chat")
     llm = getattr(rag, "llm", None)
     if not llm or not getattr(rag, "is_ready", False):
         logger.debug("LLM not ready for title generation")
@@ -167,7 +178,9 @@ async def _generate_title(question_text: str) -> Optional[str]:
     return title or None
 
 
-async def update_conversation_title_from_question(conversation_id: str, user_message: str) -> None:
+async def update_conversation_title_from_question(
+    conversation_id: str, user_message: str, *, user_id: str | None = None, protection_surface: str = "chat"
+) -> None:
     """Update the conversation title if it is still the default."""
     conv = await repository.get_conversation(conversation_id)
     if not conv or conv.title != "Untitled Chat":
@@ -177,10 +190,27 @@ async def update_conversation_title_from_question(conversation_id: str, user_mes
     if not question_text:
         return
 
-    title = await _generate_title(question_text)
+    try:
+        context = content_protection_context(user_id=user_id or conv.user_id, owner_user_id=conv.user_id, surface=protection_surface)
+        surface: GenerationSurface = "userspace" if getattr(conv, "workspace_id", None) else "chat"
+        with generation_context(surface, user_id or conv.user_id, conv.user_id), bind_content_protection_context(context):
+            title = await _generate_title(
+                question_text,
+                user_id=user_id or conv.user_id,
+                surface=surface,
+            )
+            if title:
+                await authorize_auxiliary(title, context=context, operation="title_generation")
+    except Exception as exc:
+        # Disabled hosted execution must not turn into a deterministic title.
+        detail = getattr(exc, "detail", None)
+        if isinstance(detail, dict) and detail.get("code") in {"chat_generation_disabled", "userspace_generation_disabled"}:
+            return
+        raise
     if not title:
         # Fallback to truncated question if LLM is unavailable
         title = question_text[:50] + ("..." if len(question_text) > 50 else "")
+        await authorize_auxiliary(title, context=context, operation="title_generation")
 
     try:
         await repository.update_conversation_title(conversation_id, title)
@@ -193,12 +223,12 @@ async def update_conversation_title_from_question(conversation_id: str, user_mes
 _background_tasks: set[asyncio.Task] = set()
 
 
-def schedule_title_generation(conversation_id: str, user_message: str) -> None:
+def schedule_title_generation(conversation_id: str, user_message: str, *, user_id: str | None = None, protection_surface: str = "chat") -> None:
     """Fire-and-forget task to generate a chat title."""
 
     async def _runner() -> None:
         try:
-            await update_conversation_title_from_question(conversation_id, user_message)
+            await update_conversation_title_from_question(conversation_id, user_message, user_id=user_id, protection_surface=protection_surface)
         except Exception as exc:  # pragma: no cover - best effort
             logger.warning("Title generation task failed for %s: %s", conversation_id, exc)
 

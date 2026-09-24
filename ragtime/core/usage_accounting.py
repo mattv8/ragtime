@@ -13,6 +13,7 @@ from typing import Any, Optional, cast
 
 from prisma.enums import UsageAttemptStatus
 
+from ragtime.core._accounting_shared import build_where_clause_for_since, format_where_sql
 from ragtime.core.database import get_db
 from ragtime.core.datetimes import utc_now
 from ragtime.core.logging import get_logger
@@ -274,16 +275,16 @@ async def get_user_usage_summary(
         where_clauses.append(f"u.user_id = ${param_idx}")
         params.append(user_id)
         param_idx += 1
-    if since:
-        where_clauses.append(f"u.started_at >= ${param_idx}::timestamp")
-        params.append(since.isoformat())
-        param_idx += 1
-    if until:
-        where_clauses.append(f"u.started_at < ${param_idx}::timestamp")
-        params.append(until.isoformat())
-        param_idx += 1
+    timestamp_clauses, timestamp_params, _ = build_where_clause_for_since(
+        since,
+        "u.started_at",
+        until=until,
+        start_param_idx=param_idx,
+    )
+    where_clauses.extend(timestamp_clauses)
+    params.extend(timestamp_params)
 
-    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    where_sql = format_where_sql(where_clauses)
 
     query = f"""
         SELECT
@@ -317,20 +318,8 @@ async def get_provider_model_breakdown(
     """Get usage breakdown by provider and model."""
     db = await get_db()
 
-    where_clauses = []
-    params: list[Any] = []
-    param_idx = 1
-
-    if since:
-        where_clauses.append(f"started_at >= ${param_idx}::timestamp")
-        params.append(since.isoformat())
-        param_idx += 1
-    if until:
-        where_clauses.append(f"started_at < ${param_idx}::timestamp")
-        params.append(until.isoformat())
-        param_idx += 1
-
-    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    where_clauses, params, _ = build_where_clause_for_since(since, "started_at", until=until)
+    where_sql = format_where_sql(where_clauses)
 
     query = f"""
         SELECT
@@ -361,20 +350,8 @@ async def get_daily_usage_trend(
     """Get daily usage trend for the admin dashboard."""
     db = await get_db()
 
-    where_clauses = []
-    params: list[Any] = []
-    param_idx = 1
-
-    if since:
-        where_clauses.append(f"started_at >= ${param_idx}::timestamp")
-        params.append(since.isoformat())
-        param_idx += 1
-    if until:
-        where_clauses.append(f"started_at < ${param_idx}::timestamp")
-        params.append(until.isoformat())
-        param_idx += 1
-
-    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    where_clauses, params, _ = build_where_clause_for_since(since, "started_at", until=until)
+    where_sql = format_where_sql(where_clauses)
 
     query = f"""
         SELECT
@@ -403,20 +380,12 @@ async def get_user_daily_usage_series(
     """Get per-user daily usage series for the admin dashboard."""
     db = await get_db()
 
-    where_clauses = []
-    params: list[Any] = []
-    param_idx = 1
-
-    if since:
-        where_clauses.append(f"u.started_at >= ${param_idx}::timestamp")
-        params.append(since.isoformat())
-        param_idx += 1
-    if until:
-        where_clauses.append(f"u.started_at < ${param_idx}::timestamp")
-        params.append(until.isoformat())
-        param_idx += 1
-
-    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    where_clauses, params, _ = build_where_clause_for_since(
+        since,
+        "u.started_at",
+        until=until,
+    )
+    where_sql = format_where_sql(where_clauses)
 
     query = f"""
         SELECT
@@ -457,19 +426,9 @@ async def get_daily_provider_failures(
     db = await get_db()
 
     where_clauses = ["status IN ('failed', 'interrupted')"]
-    params: list[Any] = []
-    param_idx = 1
-
-    if since:
-        where_clauses.append(f"started_at >= ${param_idx}::timestamp")
-        params.append(since.isoformat())
-        param_idx += 1
-    if until:
-        where_clauses.append(f"started_at < ${param_idx}::timestamp")
-        params.append(until.isoformat())
-        param_idx += 1
-
-    where_sql = f"WHERE {' AND '.join(where_clauses)}"
+    timestamp_clauses, params, _ = build_where_clause_for_since(since, "started_at", until=until)
+    where_clauses.extend(timestamp_clauses)
+    where_sql = format_where_sql(where_clauses)
 
     query = f"""
         SELECT

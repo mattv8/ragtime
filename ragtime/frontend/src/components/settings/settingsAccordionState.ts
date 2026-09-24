@@ -1,6 +1,7 @@
 export const SETTINGS_ACCORDION_SECTION_IDS = [
-  'chat-models',
+  'chat',
   'agent-behavior',
+  'content-protection',
   'mcp',
   'userspace',
   'llm-providers',
@@ -17,7 +18,7 @@ export type SettingsAccordionSectionId = (typeof SETTINGS_ACCORDION_SECTION_IDS)
 export type SettingsAccordionState = Record<SettingsAccordionSectionId, boolean>;
 
 export const DEFAULT_OPEN_SETTINGS_SECTIONS: SettingsAccordionSectionId[] = [
-  'chat-models',
+  'chat',
   'mcp',
   'userspace',
 ];
@@ -47,5 +48,5 @@ export function restoreSettingsAccordionState(
   if (!snapshot) {
     return getDefaultSettingsAccordionState();
   }
-  return { ...snapshot };
+  return { ...getDefaultSettingsAccordionState(), ...snapshot };
 }

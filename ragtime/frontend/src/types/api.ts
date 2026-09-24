@@ -31,6 +31,17 @@ export interface User {
   mfa_enabled?: boolean;
   mfa_required?: boolean;
   recovery_codes_remaining?: number;
+  /** Null inherits the server-wide Chat generation policy. */
+  chat_enabled?: boolean | null;
+  chat_enabled_effective?: boolean;
+  /** Null inherits the server-wide User Space generation policy. */
+  userspace_generation_enabled?: boolean | null;
+  userspace_generation_enabled_effective?: boolean;
+}
+
+export interface UpdateUserGenerationPolicyRequest {
+  chat_enabled?: boolean | null;
+  userspace_generation_enabled?: boolean | null;
 }
 
 export type TotpPolicy = 'optional' | 'required_all' | 'required_admins_groups';
@@ -67,6 +78,22 @@ export interface UserDirectoryEntry {
   id: string;
   username: string;
   display_name: string | null;
+}
+
+export interface WorkspaceDevelopmentCredential {
+  id: string;
+  workspace_id: string;
+  user_id: string;
+  name: string;
+  scopes: string[];
+  expires_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceDevelopmentCredentialSecretResponse extends WorkspaceDevelopmentCredential {
+  token: string;
 }
 
 export interface AuthProviderConfig {
@@ -274,6 +301,10 @@ export interface AuthStatus {
   authenticated_webgl_background_enabled?: boolean;
   chat_compaction_threshold_percent?: number;
   chat_auto_compaction_threshold_percent?: number;
+  /** Effective current-user Chat generation capability. */
+  chat_enabled: boolean;
+  /** Effective current-user User Space generation capability. */
+  userspace_generation_enabled: boolean;
 }
 
 // =============================================================================
@@ -956,6 +987,8 @@ export interface AppSettings {
   server_name: string;
   default_theme_pack: string;
   authenticated_webgl_background_enabled: boolean;
+  chat_enabled: boolean;
+  userspace_generation_enabled: boolean;
   openapi_model_prefix_enabled: boolean;
   show_tool_card_footer_actions: boolean;
   export_password_min_length?: number;
@@ -1130,6 +1163,8 @@ export interface UpdateSettingsRequest {
   server_name?: string;
   default_theme_pack?: string;
   authenticated_webgl_background_enabled?: boolean;
+  chat_enabled?: boolean;
+  userspace_generation_enabled?: boolean;
   openapi_model_prefix_enabled?: boolean;
   show_tool_card_footer_actions?: boolean;
   export_password_min_length?: number;
@@ -2701,9 +2736,25 @@ export interface ErrorMessageEvent {
   type: 'error';
   channel?: 'final';
   content: string;
+  code?: string;
+  message?: string;
+  reason?: string;
+  next_step?: string;
+  request_id?: string;
+  reason_code?: string;
 }
 
 export type MessageEvent = ContentEvent | ToolCallEvent | ReasoningEvent | ErrorMessageEvent;
+
+/** Public, user-safe detail returned for a content-protection refusal. */
+export interface PublicErrorDetail {
+  code: string;
+  message: string;
+  reason: string;
+  next_step: string;
+  request_id: string;
+  reason_code?: string;
+}
 
 // Multimodal content types
 export interface TextContent {
@@ -4152,12 +4203,6 @@ export interface OpenRouterCreditStatus {
   checked_at: string | null;
   stale: boolean;
   warning: string | null;
-}
-
-export interface UserSpaceBridgeCredentialMode {
-  mode: 'env' | 'worker_file';
-  requires_restart: boolean;
-  supported: boolean;
 }
 
 export type WorkspaceExternalApiMethod = 'GET' | 'HEAD';

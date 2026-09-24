@@ -12,6 +12,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from ragtime.userspace.agent_access import AgentAccessContext
+from tests.content_protection_support import use_disabled_content_protection
 
 
 def _build_request(path: str = "/agent/w/tok-abc") -> Request:
@@ -49,7 +50,38 @@ def _ctx(allow_task_submission: bool = True, allow_runtime_restart: bool = False
     )
 
 
+def _instruction_context(workspace_name: str) -> dict[str, object]:
+    """Complete ACL-filtered context consumed by the manifest bundle."""
+    return {
+        "workspace": {
+            "id": "ws-1",
+            "name": workspace_name,
+            "description": "Workspace fixture",
+            "sqlite_persistence_mode": "exclude",
+            "caller_role": "owner",
+        },
+        "architecture": {
+            "entrypoint_state": "valid",
+            "framework": "node",
+            "framework_known": True,
+            "command": "node server.js",
+            "cwd": ".",
+            "file_count": 1,
+            "key_files": ["server.js"],
+        },
+        "snapshot_summary": {"last_message": "Initial snapshot"},
+        "selected_tools": [],
+        "authorized_indexes": [],
+        "authorized_resources": {"mounts": [], "object_storage_buckets": [], "shared_sqlite_databases": []},
+        "authorized_build_credentials": [],
+        "capabilities": {"tool_names": []},
+    }
+
+
 class AgentManifestTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_manifest_documents_api_and_hides_nothing_sensitive(self) -> None:
         from ragtime.userspace import agent_routes as module
         from ragtime.userspace.service import userspace_service
@@ -61,6 +93,7 @@ class AgentManifestTests(unittest.IsolatedAsyncioTestCase):
                 "enforce_workspace_role",
                 mock.AsyncMock(return_value=SimpleNamespace(id="ws-1", name="Sales Dashboard")),
             ),
+            mock.patch.object(module, "_get_legacy_instruction_bundle", mock.AsyncMock(return_value={"workspace": {"name": "Sales Dashboard"}})),
             mock.patch.object(
                 module,
                 "get_browser_matched_origin",
@@ -85,6 +118,7 @@ class AgentManifestTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("resolved_model", text)
         self.assertIn("partial_result", text)
         self.assertIn("termination_reason", text)
+        self.assertIn("context_revision", text)
         self.assertNotIn("/runtime/restart", text)
         self.assertNotIn("/runtime/operations", text)
         self.assertNotIn("session-preserving app restart", text)
@@ -97,6 +131,7 @@ class AgentManifestTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(module, "resolve_agent_access_token", mock.AsyncMock(return_value=_ctx(allow_runtime_restart=True))),
             mock.patch.object(userspace_service, "enforce_workspace_role", mock.AsyncMock(return_value=SimpleNamespace(id="ws-1", name="Sales"))),
+            mock.patch.object(module, "_get_legacy_instruction_bundle", mock.AsyncMock(return_value={"workspace": {"name": "Sales"}})),
             mock.patch.object(module, "get_browser_matched_origin", mock.Mock(return_value="https://ragtime.example.com")),
         ):
             response = await module.get_agent_manifest("tok-abc", _build_request())
@@ -117,8 +152,28 @@ class AgentManifestTests(unittest.IsolatedAsyncioTestCase):
                 await module.get_agent_manifest("bad", _build_request())
         self.assertEqual(ctx.exception.status_code, 404)
 
+    async def test_legacy_bundle_uses_direct_development_context(self) -> None:
+        from ragtime.userspace import agent_routes as module
+        from ragtime.userspace.development_service import development_service
+
+        expected = {"user": {"username": "ada", "display_name": "Ada Lovelace"}}
+        with mock.patch.object(development_service, "execute", mock.AsyncMock(return_value=expected)) as execute:
+            result = await module._get_legacy_instruction_bundle(_ctx())
+
+        self.assertEqual(result, expected)
+        await_args = execute.await_args
+        assert await_args is not None
+        principal, workspace_id, operation, arguments = await_args.args
+        self.assertEqual(principal.user_id, "user-1")
+        self.assertFalse(principal.is_admin)
+        self.assertEqual(workspace_id, "ws-1")
+        self.assertEqual((operation, arguments), ("context", {}))
+
 
 class AgentTaskRouteTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     def test_reply_request_requires_idempotency_key(self) -> None:
         from ragtime.userspace import agent_routes as module
 
@@ -200,6 +255,9 @@ class AgentTaskRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentReadRouteTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_list_conversations_resolves_token_forwards_args_and_sets_no_store(self) -> None:
         from ragtime.userspace import agent_routes as module
 

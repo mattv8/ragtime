@@ -11,6 +11,7 @@ from prisma.models import User
 from ragtime.indexer.models import Conversation
 from ragtime.indexer.repository import ConversationWindowStaleError, repository
 from ragtime.indexer.routes import get_conversation_latest_exchange
+from tests.content_protection_support import use_disabled_content_protection
 
 NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
 
@@ -30,6 +31,9 @@ def _user() -> User:
 
 
 class ConversationMessageWindowTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_latest_exchange_returns_latest_user_and_final_message_at_absolute_indexes(self) -> None:
         rows = [
             {
@@ -95,12 +99,14 @@ class ConversationMessageWindowTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(repository, "check_conversation_access", mock.AsyncMock(return_value=True)) as access_mock,
             mock.patch.object(repository, "get_latest_conversation_exchange", mock.AsyncMock(return_value=expected)) as window_mock,
+            mock.patch.object(repository, "get_conversation", mock.AsyncMock(return_value=SimpleNamespace(user_id="user-1"))) as conversation_mock,
         ):
             result = await get_conversation_latest_exchange("conversation-1", user=user)
 
         self.assertIs(result, expected)
         access_mock.assert_awaited_once_with("conversation-1", "user-1", is_admin=False, workspace_id=None)
         window_mock.assert_awaited_once_with("conversation-1")
+        conversation_mock.assert_awaited_once_with("conversation-1")
 
     async def test_stale_cursor_rejects_canonical_to_legacy_transition_before_hydration(self) -> None:
         stale_cursor = repository._encode_conversation_window_cursor("conversation-1", None, "old-revision", 2)

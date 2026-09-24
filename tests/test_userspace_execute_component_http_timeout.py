@@ -18,6 +18,7 @@ from ragtime.userspace.models import (
     UserSpaceWorkspace,
 )
 from ragtime.userspace.service import UserSpaceService
+from tests.content_protection_support import use_disabled_content_protection
 
 remove_fake_rag_prompts(inserted_fake_rag_prompts)
 
@@ -140,6 +141,9 @@ class _HangingSubprocess:
 
 
 class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_execute_component_returns_structured_timeout_before_524(self) -> None:
         service = _HangingExecuteService()
         request = ExecuteComponentRequest(component_id="tool-1", request={"query": "select pg_sleep(600)"})

@@ -24,6 +24,8 @@ import types
 import uuid
 import zipfile
 from collections import defaultdict
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Coroutine, Dict, List, Literal, Optional, cast
@@ -56,6 +58,16 @@ from ragtime.chat_runtime.payloads import (
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS, CHAT_DIAGNOSTIC_COMMAND_TOOL_ID, CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.chat_runtime.service import chat_runtime_service
 from ragtime.config.settings import settings
+from ragtime.content_protection.hosted import (
+    authorize_history,
+    authorize_inbound,
+)
+from ragtime.content_protection.hosted import (
+    bind_context as bind_content_protection_context,
+)
+from ragtime.content_protection.hosted import (
+    hosted_context as content_protection_context,
+)
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.app_settings import _apply_runtime_setting_hooks, invalidate_settings_cache
 from ragtime.core.auth import get_browser_matched_origin
@@ -94,6 +106,7 @@ from ragtime.core.encryption import (
 )
 from ragtime.core.encryption_health import recheck_encryption_key_health
 from ragtime.core.event_bus import task_event_bus
+from ragtime.core.generation_policy import GenerationSurface, generation_context, require_chat_generation, require_userspace_generation
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.http_timeouts import get_http_proxy_safe_timeout_seconds
@@ -405,6 +418,25 @@ def _sanitize_tool_connection_int_fields(connection_config: dict[str, Any]) -> d
             except (ValueError, TypeError):
                 pass
     return sanitized
+
+
+def _discovery_ssh_tunnel_config_dict(
+    request: PostgresDiscoverRequest | MssqlDiscoverRequest | MysqlDiscoverRequest | InfluxdbDiscoverRequest | PdmDiscoverRequest,
+    *,
+    host: str,
+    port: int,
+) -> dict[str, str | int | None]:
+    return {
+        "host": host,
+        "port": port,
+        "ssh_tunnel_host": request.ssh_tunnel_host,
+        "ssh_tunnel_port": request.ssh_tunnel_port,
+        "ssh_tunnel_user": request.ssh_tunnel_user,
+        "ssh_tunnel_password": request.ssh_tunnel_password,
+        "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
+        "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
+        "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
+    }
 
 
 def _get_model_preferences_module() -> Any:
@@ -3546,17 +3578,7 @@ async def discover_postgres_databases(request: PostgresDiscoverRequest, _user: U
 
         # Set up SSH tunnel if enabled
         if request.ssh_tunnel_enabled:
-            tunnel_config_dict = {
-                "host": request.host,
-                "port": request.port,
-                "ssh_tunnel_host": request.ssh_tunnel_host,
-                "ssh_tunnel_port": request.ssh_tunnel_port,
-                "ssh_tunnel_user": request.ssh_tunnel_user,
-                "ssh_tunnel_password": request.ssh_tunnel_password,
-                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
-                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
-                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
-            }
+            tunnel_config_dict = _discovery_ssh_tunnel_config_dict(request, host=request.host, port=request.port)
             tunnel_config = ssh_tunnel_config_from_dict(tunnel_config_dict, default_remote_port=5432)
             tunnel = SSHTunnel(tunnel_config)
             tunnel.start()
@@ -3754,17 +3776,7 @@ async def discover_mssql_databases(request: MssqlDiscoverRequest, _user: User = 
 
         # Set up SSH tunnel if enabled
         if request.ssh_tunnel_enabled:
-            tunnel_config_dict = {
-                "host": request.host,
-                "port": request.port,
-                "ssh_tunnel_host": request.ssh_tunnel_host,
-                "ssh_tunnel_port": request.ssh_tunnel_port,
-                "ssh_tunnel_user": request.ssh_tunnel_user,
-                "ssh_tunnel_password": request.ssh_tunnel_password,
-                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
-                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
-                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
-            }
+            tunnel_config_dict = _discovery_ssh_tunnel_config_dict(request, host=request.host, port=request.port)
             tunnel_config = ssh_tunnel_config_from_dict(tunnel_config_dict, default_remote_port=1433)
             tunnel = SSHTunnel(tunnel_config)
             tunnel.start()
@@ -4060,17 +4072,7 @@ async def discover_mysql_databases(request: MysqlDiscoverRequest, _user: User = 
 
         # Set up SSH tunnel if enabled
         if request.ssh_tunnel_enabled:
-            tunnel_config_dict = {
-                "host": request.host or "127.0.0.1",
-                "port": request.port,
-                "ssh_tunnel_host": request.ssh_tunnel_host,
-                "ssh_tunnel_port": request.ssh_tunnel_port,
-                "ssh_tunnel_user": request.ssh_tunnel_user,
-                "ssh_tunnel_password": request.ssh_tunnel_password,
-                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
-                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
-                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
-            }
+            tunnel_config_dict = _discovery_ssh_tunnel_config_dict(request, host=request.host or "127.0.0.1", port=request.port)
             tunnel_config = ssh_tunnel_config_from_dict(tunnel_config_dict, default_remote_port=3306)
             tunnel = SSHTunnel(tunnel_config)
             tunnel.start()
@@ -4207,17 +4209,7 @@ async def discover_influxdb_buckets(request: InfluxdbDiscoverRequest, _user: Use
         effective_url = f"{scheme}://{host}:{port}"
 
         if request.ssh_tunnel_enabled:
-            tunnel_config_dict = {
-                "host": host,
-                "port": port,
-                "ssh_tunnel_host": request.ssh_tunnel_host,
-                "ssh_tunnel_port": request.ssh_tunnel_port,
-                "ssh_tunnel_user": request.ssh_tunnel_user,
-                "ssh_tunnel_password": request.ssh_tunnel_password,
-                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
-                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
-                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
-            }
+            tunnel_config_dict = _discovery_ssh_tunnel_config_dict(request, host=host, port=port)
             tunnel_config = ssh_tunnel_config_from_dict(tunnel_config_dict, default_remote_port=port)
             tunnel = SSHTunnel(tunnel_config)
             tunnel.start()
@@ -4263,17 +4255,7 @@ async def discover_pdm_schema(request: PdmDiscoverRequest, _user: User = Depends
 
         # Start SSH tunnel if enabled
         if request.ssh_tunnel_enabled:
-            tunnel_config_dict = {
-                "host": request.host,  # Remote endpoint from SSH server's perspective
-                "port": request.port,
-                "ssh_tunnel_host": request.ssh_tunnel_host,
-                "ssh_tunnel_port": request.ssh_tunnel_port,
-                "ssh_tunnel_user": request.ssh_tunnel_user,
-                "ssh_tunnel_password": request.ssh_tunnel_password,
-                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
-                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
-                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
-            }
+            tunnel_config_dict = _discovery_ssh_tunnel_config_dict(request, host=request.host, port=request.port)
             tunnel_config = ssh_tunnel_config_from_dict(
                 tunnel_config_dict,
                 default_remote_port=1433,  # MSSQL default port
@@ -9059,10 +9041,13 @@ async def _validate_generation_ready_after_user_message(
     stored_model: str,
     *,
     user_id: Optional[str] = None,
+    caller_user_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> str:
     """Validate generation readiness after the submitted user message is saved."""
     try:
+        require_generation = require_userspace_generation if workspace_id else require_chat_generation
+        await require_generation(caller_user_id, user_id)
         if not rag.is_ready:
             raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
         return await _validate_conversation_model_before_send(
@@ -9102,6 +9087,7 @@ async def _create_background_chat_task_after_user_message(
     disabled_builtin_tool_ids: Optional[set[str]] = None,
     existing_task_id: Optional[str] = None,
     execution_policy: Optional[dict[str, Any]] = None,
+    protection_surface: str = "chat",
 ) -> Any:
     """Create a background chat task, persisting failed-generation state on errors."""
     try:
@@ -9129,6 +9115,7 @@ async def _create_background_chat_task_after_user_message(
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 usage_attempt_id=attempt_id,
                 execution_policy=execution_policy,
+                protection_surface=protection_surface,
             )
         else:
             task_id = await background_task_service.start_task_async(
@@ -9142,6 +9129,7 @@ async def _create_background_chat_task_after_user_message(
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 usage_attempt_id=attempt_id,
                 execution_policy=execution_policy,
+                protection_surface=protection_surface,
             )
         task = await repository.get_chat_task(task_id)
         if not task:
@@ -12125,6 +12113,43 @@ async def _build_chat_history_for_conversation(
     return chat_history
 
 
+def _conversation_protection_context(
+    *,
+    user_id: str | None,
+    owner_user_id: str | None,
+    workspace_id: str | None = None,
+    shared: bool = False,
+) -> Any:
+    """Create the protection scope from the actual conversation endpoint."""
+    return content_protection_context(
+        user_id=user_id,
+        owner_user_id=owner_user_id,
+        surface="shared_chat" if shared else ("workspace_chat" if workspace_id else "chat"),
+        public=shared and user_id is None,
+    )
+
+
+async def _authorize_conversation_release(
+    candidate: Any,
+    *,
+    user: User | None,
+    owner_user_id: str | None,
+    public: bool = False,
+) -> None:
+    """Authorize exactly the transcript/debug/search payload about to leave a route."""
+    dump = getattr(candidate, "model_dump", None)
+    if callable(dump):
+        candidate = dump(mode="python")
+    context = content_protection_context(
+        user_id=getattr(user, "id", None),
+        owner_user_id=owner_user_id,
+        surface="shared_chat" if public else "chat",
+        public=public,
+    )
+    with bind_content_protection_context(context):
+        await authorize_history(candidate, context=context)
+
+
 async def _to_shared_conversation_response(
     conv: Conversation,
     share_record: Any,
@@ -12199,6 +12224,13 @@ async def _to_shared_conversation_response(
                 conv.id,
                 current_user.id,
             )
+
+    await _authorize_conversation_release(
+        conv,
+        user=current_user,
+        owner_user_id=getattr(conv, "user_id", None),
+        public=current_user is None,
+    )
 
     return SharedConversationResponse(
         conversation=_to_conversation_response(conv),
@@ -12394,6 +12426,7 @@ async def _send_message_to_loaded_conversation(
     workspace_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     conversation_id = conv.id
+    protection_surface = "workspace_chat" if workspace_id else "chat"
     if blocked_tool_names is None:
         _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
             conv,
@@ -12406,12 +12439,22 @@ async def _send_message_to_loaded_conversation(
     if not user_message:
         raise HTTPException(status_code=400, detail="Message is required")
 
+    # The HTTP route is the first persistence boundary.  Background-task
+    # checks remain necessary for queued/internal callers, but must not be the
+    # first chance to reject a request accepted here.
+    await authorize_inbound(
+        user_message,
+        context=_conversation_protection_context(
+            user_id=user.id,
+            owner_user_id=conv.user_id,
+            workspace_id=workspace_id,
+        ),
+    )
     updated_conversation = await repository.add_message(
         conversation_id,
         "user",
         user_message,
     )
-    schedule_title_generation(conversation_id, user_message)
     if updated_conversation is None:
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
@@ -12420,70 +12463,77 @@ async def _send_message_to_loaded_conversation(
         conversation_id,
         conv.model,
         user_id=conv.user_id,
+        caller_user_id=user.id,
         workspace_id=conv.workspace_id,
     )
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
+    schedule_title_generation(conversation_id, user_message, user_id=user.id, protection_surface=protection_surface)
 
-    chat_history = await _build_chat_history_for_conversation(
-        conv.messages[:-1],
-        conversation_id=conversation_id,
-        user_id=user.id,
-        workspace_id=workspace_id,
-        model_id=conv.model,
-    )
-
-    current_user_message = parse_message_content(user_message)
-    if not isinstance(current_user_message, str):
-        current_user_message, _ = await rag.preprocess_message_content_async(
-            current_user_message,
+    generation_surface: GenerationSurface = "userspace" if conv.workspace_id else "chat"
+    with generation_context(generation_surface, user.id, conv.user_id):
+        chat_history = await _build_chat_history_for_conversation(
+            conv.messages[:-1],
             conversation_id=conversation_id,
             user_id=user.id,
-            workspace_id=workspace_id,
+            workspace_id=conv.workspace_id,
             model_id=conv.model,
         )
 
-    input_est = _estimate_input_tokens(user_message, chat_history)
-    attempt_id = await create_usage_attempt(
-        user_id=user.id,
-        request_source="ui",
-        provider=conv.model or "",
-        model=conv.model or "",
-        conversation_id=conversation_id,
-        input_tokens=input_est,
-    )
-    current_time_context = _build_current_time_prompt_context(request)
-    ui_theme_context = _build_ui_theme_prompt_context(request)
-    try:
-        current_user_context = _build_current_user_prompt_context(user)
-        answer = await rag.process_query(
-            current_user_message,
-            chat_history,
-            blocked_tool_names=blocked_tool_names,
-            workspace_context=workspace_context,
-            conversation_model=conv.model,
-            conversation_id=conversation_id,
+        current_user_message = parse_message_content(user_message)
+        if not isinstance(current_user_message, str):
+            current_user_message, _ = await rag.preprocess_message_content_async(
+                current_user_message,
+                conversation_id=conversation_id,
+                user_id=user.id,
+                owner_user_id=conv.user_id,
+                workspace_id=conv.workspace_id,
+                model_id=conv.model,
+            )
+
+        input_est = _estimate_input_tokens(user_message, chat_history)
+        attempt_id = await create_usage_attempt(
             user_id=user.id,
-            current_user_context=current_user_context,
-            current_time_context=current_time_context,
-            ui_theme_context=ui_theme_context,
-            message_index=len(conv.messages),
-            disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
-        )
-        output_est = _estimate_output_tokens(answer)
-        await finalize_usage_attempt(
-            attempt_id,
-            status="completed",
-            output_tokens=output_est,
+            request_source="ui",
+            provider=conv.model or "",
+            model=conv.model or "",
+            conversation_id=conversation_id,
             input_tokens=input_est,
         )
-    except Exception as e:
-        logger.exception("Error processing message")
-        await finalize_usage_attempt(
-            attempt_id,
-            status="failed",
-            failure_reason=str(e),
-        )
-        answer = f"Error: {str(e)}"
+        current_time_context = _build_current_time_prompt_context(request)
+        ui_theme_context = _build_ui_theme_prompt_context(request)
+        try:
+            current_user_context = _build_current_user_prompt_context(user)
+            answer = await rag.process_query(
+                current_user_message,
+                chat_history,
+                blocked_tool_names=blocked_tool_names,
+                workspace_context=workspace_context,
+                conversation_model=conv.model,
+                conversation_id=conversation_id,
+                user_id=user.id,
+                owner_user_id=conv.user_id,
+                current_user_context=current_user_context,
+                current_time_context=current_time_context,
+                ui_theme_context=ui_theme_context,
+                message_index=len(conv.messages),
+                disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
+                protection_surface=protection_surface,
+            )
+            output_est = _estimate_output_tokens(answer)
+            await finalize_usage_attempt(
+                attempt_id,
+                status="completed",
+                output_tokens=output_est,
+                input_tokens=input_est,
+            )
+        except Exception as e:
+            logger.exception("Error processing message")
+            await finalize_usage_attempt(
+                attempt_id,
+                status="failed",
+                failure_reason=str(e),
+            )
+            answer = f"Error: {str(e)}"
 
     updated_conversation = await repository.add_message(
         conversation_id,
@@ -12513,8 +12563,10 @@ async def _send_background_message_to_loaded_conversation(
     blocked_tool_names: Optional[set[str]] = None,
     workspace_context: Optional[dict[str, Any]] = None,
     execution_policy: Optional[dict[str, Any]] = None,
+    protection_surface: str | None = None,
 ) -> dict[str, Any]:
     conversation_id = conv.id
+    protection_surface = protection_surface or ("workspace_chat" if workspace_id else "chat")
     if blocked_tool_names is None:
         _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
             conv,
@@ -12544,7 +12596,6 @@ async def _send_background_message_to_loaded_conversation(
         "user",
         user_message,
     )
-    schedule_title_generation(conversation_id, user_message)
     if updated_conversation is None:
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
@@ -12553,9 +12604,11 @@ async def _send_background_message_to_loaded_conversation(
         conversation_id,
         conv.model,
         user_id=conv.user_id,
+        caller_user_id=user.id,
         workspace_id=conv.workspace_id,
     )
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
+    schedule_title_generation(conversation_id, user_message, user_id=user.id, protection_surface=protection_surface)
     current_time_context = _build_current_time_prompt_context(request)
     ui_theme_context = _build_ui_theme_prompt_context(request)
 
@@ -12570,6 +12623,7 @@ async def _send_background_message_to_loaded_conversation(
         ui_theme_context=ui_theme_context,
         disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
         execution_policy=execution_policy,
+        protection_surface=protection_surface,
     )
 
     return {
@@ -13090,6 +13144,8 @@ async def list_conversations(
         cursor_updated_at=cursor_updated_at_dt,
         cursor_id=cursor_id,
     )
+    for conversation in convs:
+        await _authorize_conversation_release(conversation, user=user, owner_user_id=conversation.user_id)
     return [_to_conversation_response(c) for c in convs]
 
 
@@ -13108,7 +13164,7 @@ async def list_conversation_summaries(
     await _assert_workspace_access(workspace_id, user, "viewer")
     cursor_updated_at_dt = _parse_conversation_time_filter(cursor_updated_at, "cursor_updated_at")
     _validate_conversation_cursor_pair(cursor_updated_at_dt, cursor_id)
-    return await repository.list_conversation_summaries(
+    summaries = await repository.list_conversation_summaries(
         user_id=user.id,
         include_all=user.role == "admin",
         workspace_id=workspace_id,
@@ -13119,6 +13175,8 @@ async def list_conversation_summaries(
         cursor_id=cursor_id,
         owner_scope=owner_scope,
     )
+    await _authorize_conversation_release(summaries, user=user, owner_user_id=None)
+    return summaries
 
 
 @router.get("/conversations/count", response_model=ConversationCountResponse)
@@ -13240,6 +13298,7 @@ async def search_workspaces_conversations(
     matches: list[WorkspaceConversationSearchMatch] = []
     seen: set[tuple[str, str]] = set()
     for row in rows:
+        await _authorize_conversation_release(row, user=user, owner_user_id=str(row.get("user_id") or "") or None)
         workspace_id = str(row.get("workspace_id") or "")
         conversation_id = str(row.get("conversation_id") or "")
         if not workspace_id or not conversation_id or (workspace_id, conversation_id) in seen:
@@ -13288,6 +13347,7 @@ async def search_conversation_branches(
     matches: list[ConversationBranchSearchMatch] = []
     seen: set[tuple[str, str]] = set()
     for row in rows:
+        await _authorize_conversation_release(row, user=user, owner_user_id=str(row.get("user_id") or "") or None)
         conversation_id = str(row.get("conversation_id") or "")
         branch_id = str(row.get("branch_id") or "")
         if not conversation_id or not branch_id or (conversation_id, branch_id) in seen:
@@ -13403,6 +13463,7 @@ async def get_conversation(
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    await _authorize_conversation_release(conv, user=user, owner_user_id=conv.user_id)
     return _to_conversation_response(conv)
 
 
@@ -13429,6 +13490,8 @@ async def get_conversation_latest_exchange(
     window = await repository.get_latest_conversation_exchange(conversation_id)
     if window is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    conv = await repository.get_conversation(conversation_id)
+    await _authorize_conversation_release(window, user=user, owner_user_id=getattr(conv, "user_id", None))
     return window
 
 
@@ -13450,6 +13513,8 @@ async def get_conversation_message_window(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if window is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    conv = await repository.get_conversation(conversation_id)
+    await _authorize_conversation_release(window, user=user, owner_user_id=getattr(conv, "user_id", None))
     return window
 
 
@@ -13471,6 +13536,8 @@ async def get_conversation_window_message(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if entry is None:
         raise HTTPException(status_code=404, detail="Conversation message not found")
+    conv = await repository.get_conversation(conversation_id)
+    await _authorize_conversation_release(entry, user=user, owner_user_id=getattr(conv, "user_id", None))
     return entry
 
 
@@ -13685,26 +13752,46 @@ async def resolve_public_share_target_by_slug(
     )
 
 
-async def _shared_conversation_event_stream(conversation_id: str):
+async def _shared_conversation_event_stream(
+    conversation_id: str,
+    *,
+    user: User | None,
+    owner_user_id: str | None,
+):
     """SSE generator forwarding `conversation:{id}` channel events.
 
     Used by anonymous and authenticated subscribers of a shared conversation
     so the public chat view can react to task lifecycle and progress events
     in real time instead of polling.
     """
-    channel = f"conversation:{conversation_id}"
-    queue = await task_event_bus.subscribe(channel)
-    try:
-        while True:
-            try:
-                data = await asyncio.wait_for(queue.get(), timeout=15.0)
-                yield f"data: {json.dumps(data)}\n\n"
-            except asyncio.TimeoutError:
-                yield ": keep-alive\n\n"
-    except asyncio.CancelledError:
-        pass
-    finally:
-        task_event_bus.unsubscribe(channel, queue)
+    context = content_protection_context(
+        user_id=getattr(user, "id", None),
+        owner_user_id=owner_user_id,
+        surface="shared_chat",
+        public=user is None,
+    )
+    with bind_content_protection_context(context):
+        channel = f"conversation:{conversation_id}"
+        queue = await task_event_bus.subscribe(channel)
+        try:
+            while True:
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    try:
+                        await authorize_history(data, context=context)
+                    except Exception as exc:
+                        detail = getattr(exc, "public_detail", None)
+                        if not callable(detail):
+                            raise
+                        yield f"data: {json.dumps({'event': 'error', **cast(Callable[[], dict[str, str]], detail)()})}\n\n"
+                        return
+                    yield f"data: {json.dumps(data)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            task_event_bus.unsubscribe(channel, queue)
 
 
 # IMPORTANT: The `/events` and `/join` routes must be registered BEFORE the slug-based
@@ -13732,7 +13819,11 @@ async def shared_conversation_events(
     if not conversation_id:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return StreamingResponse(
-        _shared_conversation_event_stream(conversation_id),
+        _shared_conversation_event_stream(
+            conversation_id,
+            user=user,
+            owner_user_id=str(getattr(share_record, "ownerUserId", "") or "") or None,
+        ),
         media_type="text/event-stream",
     )
 
@@ -13761,7 +13852,11 @@ async def shared_conversation_events_by_slug(
     if not conversation_id:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return StreamingResponse(
-        _shared_conversation_event_stream(conversation_id),
+        _shared_conversation_event_stream(
+            conversation_id,
+            user=user,
+            owner_user_id=str(getattr(share_record, "ownerUserId", "") or "") or None,
+        ),
         media_type="text/event-stream",
     )
 
@@ -14036,6 +14131,12 @@ async def list_conversation_provider_debug_prompts(
         limit=limit,
         before=before,
         message_index=message_index,
+    )
+    conversation = await repository.get_conversation(conversation_id)
+    await _authorize_conversation_release(
+        records,
+        user=user,
+        owner_user_id=getattr(conversation, "user_id", None),
     )
 
     def _content_to_text(content: Any) -> str:
@@ -14333,6 +14434,7 @@ async def compact_conversation(
         snapshot_tail_message_id=snapshot_tail_message_id,
         snapshot_user_id=user.id,
         snapshot_parent_branch_id=conv.active_branch_id,
+        caller_user_id=user.id,
         replace_message_id=request.replace_message_id,
         replace_message_index=replace_marker_index,
     )
@@ -14823,6 +14925,7 @@ async def edit_resend_conversation_branch(
             conversation_id,
             conv.model,
             user_id=conv.user_id,
+            caller_user_id=user.id,
             workspace_id=conv.workspace_id,
         )
         conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
@@ -14847,7 +14950,7 @@ async def edit_resend_conversation_branch(
         await repository.cancel_chat_task(claimed_task.id)
         raise
 
-    schedule_title_generation(conversation_id, user_message)
+    schedule_title_generation(conversation_id, user_message, user_id=user.id)
     branches = await repository.get_conversation_branches(conversation_id)
     branch_summary = next((candidate for candidate in branches if candidate.id == branch.id), None)
     if not branch_summary:
@@ -15039,8 +15142,11 @@ async def send_message_stream(
         raise HTTPException(status_code=400, detail="Message is required")
 
     # Add user message
+    await authorize_inbound(
+        user_message,
+        context=_conversation_protection_context(user_id=user.id, owner_user_id=conv.user_id, workspace_id=workspace_id),
+    )
     await repository.add_message(conversation_id, "user", user_message)
-    schedule_title_generation(conversation_id, user_message)
 
     # Refresh conversation to get updated messages
     conv = await repository.get_conversation(conversation_id)
@@ -15051,28 +15157,34 @@ async def send_message_stream(
         conversation_id,
         conv.model,
         user_id=conv.user_id,
+        caller_user_id=user.id,
         workspace_id=conv.workspace_id,
     )
     conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
+    schedule_title_generation(conversation_id, user_message, user_id=user.id)
 
-    # Build chat history for RAG
-    chat_history = await _build_chat_history_for_conversation(
-        conv.messages[:-1],
-        conversation_id=conversation_id,
-        user_id=user.id,
-        workspace_id=workspace_id,
-        model_id=conv.model,
-    )
-
-    current_user_message = parse_message_content(user_message)
-    if not isinstance(current_user_message, str):
-        current_user_message, _ = await rag.preprocess_message_content_async(
-            current_user_message,
+    generation_surface: GenerationSurface = "userspace" if conv.workspace_id else "chat"
+    # History expansion can invoke the configured model for attachments, so it
+    # must use the same persisted-conversation scope as the main turn.
+    with generation_context(generation_surface, user.id, conv.user_id):
+        chat_history = await _build_chat_history_for_conversation(
+            conv.messages[:-1],
             conversation_id=conversation_id,
             user_id=user.id,
-            workspace_id=workspace_id,
+            workspace_id=conv.workspace_id,
             model_id=conv.model,
         )
+
+        current_user_message = parse_message_content(user_message)
+        if not isinstance(current_user_message, str):
+            current_user_message, _ = await rag.preprocess_message_content_async(
+                current_user_message,
+                conversation_id=conversation_id,
+                user_id=user.id,
+                owner_user_id=conv.user_id,
+                workspace_id=conv.workspace_id,
+                model_id=conv.model,
+            )
 
     input_est = _estimate_input_tokens(user_message, chat_history)
     stream_attempt_id = await create_usage_attempt(
@@ -15086,7 +15198,7 @@ async def send_message_stream(
     current_time_context = _build_current_time_prompt_context(request)
     ui_theme_context = _build_ui_theme_prompt_context(request)
 
-    async def stream_response() -> AsyncIterator[str]:
+    async def _stream_response() -> AsyncGenerator[str, None]:
         """Generate streaming response tokens."""
         chunk_id = f"chatcmpl-{int(time.time())}"
         full_response = ""
@@ -15095,23 +15207,34 @@ async def send_message_stream(
         reasoning_block_started_at: datetime | None = None
         current_user_context = _build_current_user_prompt_context(user)
 
+        async def response_events() -> AsyncGenerator[Any, None]:
+            """Close the upstream generator when the SSE client disconnects."""
+            async with aclosing(
+                rag.process_query_stream(
+                    current_user_message,
+                    chat_history,
+                    is_ui=True,
+                    blocked_tool_names=blocked_tool_names,
+                    workspace_context=workspace_context,
+                    conversation_model=conv.model,
+                    conversation_id=conversation_id,
+                    user_id=user.id,
+                    owner_user_id=conv.user_id,
+                    current_user_context=current_user_context,
+                    current_time_context=current_time_context,
+                    ui_theme_context=ui_theme_context,
+                    message_index=len(conv.messages),
+                    disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
+                    protection_surface="workspace_chat" if workspace_id else "chat",
+                )
+            ) as stream:
+                async for event in stream:
+                    yield event
+
+        event_stream = response_events()
         try:
             # Use UI agent (with chart tool and enhanced prompt)
-            async for event in rag.process_query_stream(
-                current_user_message,
-                chat_history,
-                is_ui=True,
-                blocked_tool_names=blocked_tool_names,
-                workspace_context=workspace_context,
-                conversation_model=conv.model,
-                conversation_id=conversation_id,
-                user_id=user.id,
-                current_user_context=current_user_context,
-                current_time_context=current_time_context,
-                ui_theme_context=ui_theme_context,
-                message_index=len(conv.messages),
-                disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
-            ):
+            async for event in event_stream:
                 # Handle structured tool events
                 if isinstance(event, dict):
                     event_type = event.get("type")
@@ -15256,16 +15379,25 @@ async def send_message_stream(
             yield "data: [DONE]\n\n"
 
         except Exception as e:
-            logger.exception("Error in streaming response")
+            public_detail = getattr(e, "public_detail", None)
+            is_protection_error = callable(public_detail)
+            if is_protection_error:
+                logger.warning("Streaming response stopped by content protection")
+            else:
+                logger.exception("Error in streaming response")
 
             raw_error = str(e)
             friendly_error = "An error occurred while generating the response. Please try again."
+            if is_protection_error:
+                friendly_error = str(
+                    cast(Callable[[], dict[str, str]], public_detail)().get("message") or "This content is not available under your access profile."
+                )
 
             max_iters = None
             if rag and getattr(rag, "agent_executor", None):
                 max_iters = getattr(rag.agent_executor, "max_iterations", None)
 
-            if "iteration" in raw_error.lower() or "max iterations" in raw_error.lower():
+            if not is_protection_error and ("iteration" in raw_error.lower() or "max iterations" in raw_error.lower()):
                 limit_text = f" ({max_iters})" if max_iters else ""
                 friendly_error = f"Stopped after reaching the max_iterations limit{limit_text}. Please narrow the request or retry."
 
@@ -15300,7 +15432,9 @@ async def send_message_stream(
                 stream_attempt_id,
                 status="failed",
                 output_tokens=output_est,
-                failure_reason=raw_error[:500] if raw_error else None,
+                failure_reason=(str(cast(Callable[[], dict[str, str]], public_detail)().get("code")) if is_protection_error else raw_error[:500])
+                if raw_error
+                else None,
             )
 
             error_chunk = {
@@ -15316,8 +15450,25 @@ async def send_message_stream(
                     }
                 ],
             }
+            if is_protection_error:
+                error_chunk["error"] = cast(Callable[[], dict[str, str]], public_detail)()
             yield f"data: {json.dumps(error_chunk)}\n\n"
             yield "data: [DONE]\n\n"
+        finally:
+            await event_stream.aclose()
+
+    async def stream_response() -> AsyncGenerator[str, None]:
+        protection_context = _conversation_protection_context(
+            user_id=user.id,
+            owner_user_id=conv.user_id,
+            workspace_id=workspace_id,
+        )
+        # StreamingResponse consumes this generator after the route returns.
+        # Bind generation policy for the iterator lifetime, not response setup.
+        with generation_context(generation_surface, user.id, conv.user_id), bind_content_protection_context(protection_context):
+            async with aclosing(_stream_response()) as stream:
+                async for chunk in stream:
+                    yield chunk
 
     return StreamingResponse(stream_response(), media_type="text/event-stream")
 
@@ -15580,6 +15731,7 @@ async def create_conversation_export(
     await _assert_conversation_download_access(conversation_id, user, effective_workspace_id)
 
     source = _build_export_source_from_request(request)
+    await _authorize_conversation_release(source, user=user, owner_user_id=conversation.user_id)
     spec = create_export_spec(
         conversation_id=conversation_id,
         filename=request.filename,
@@ -15635,6 +15787,17 @@ async def download_conversation_export(
     except Exception as exc:
         logger.exception("Failed to render conversation export %s: %s", export_id, exc)
         raise HTTPException(status_code=500, detail="Failed to render export") from exc
+
+    try:
+        export_text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        # Binary document/image export is an explicit unsupported protected
+        # modality; never infer safety from a filename or MIME type.
+        from ragtime.content_protection.service import reject_unsupported_if_required
+
+        await reject_unsupported_if_required(content_protection_context(user_id=user.id, owner_user_id=conversation.user_id))
+    else:
+        await _authorize_conversation_release(export_text, user=user, owner_user_id=conversation.user_id)
 
     return StreamingResponse(
         io.BytesIO(data),
@@ -16101,16 +16264,17 @@ async def send_message_background(
         raise HTTPException(status_code=500, detail="Failed to add user message")
 
     conv = updated_conversation
-    schedule_title_generation(conversation_id, user_message)
 
     try:
         resolved_model = await _validate_generation_ready_after_user_message(
             conversation_id,
             conv.model,
             user_id=conv.user_id,
+            caller_user_id=user.id,
             workspace_id=conv.workspace_id,
         )
         conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
+        schedule_title_generation(conversation_id, user_message, user_id=user.id)
     except Exception:
         await repository.cancel_chat_task(claimed_task.id)
         raise

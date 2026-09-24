@@ -1,14 +1,43 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { McpSettingsSection } from './McpSettingsSection';
 import type { AppSettings, UpdateSettingsRequest } from '@/types';
 import type { LdapGroup } from '../LdapGroupSelect';
 
+const contentProtectionMock = vi.hoisted(() => ({
+  getConfig: vi.fn(),
+  updateContentProtectionConfigSlice: vi.fn(),
+}));
+vi.mock('@/api/contentProtection', async () => ({
+  ...(await vi.importActual<typeof import('@/api/contentProtection')>('@/api/contentProtection')),
+  contentProtectionApi: { getConfig: contentProtectionMock.getConfig },
+  updateContentProtectionConfigSlice: contentProtectionMock.updateContentProtectionConfigSlice,
+}));
+
+const CONTENT_PROTECTION_CONFIG = {
+  revision: 1,
+  enabled: true,
+  classifier_model: null,
+  coverage_mode: 'selected_scopes' as const,
+  profiles: [],
+  group_profiles: [],
+  requirements: [],
+  user_overrides: [],
+};
+
 afterEach(() => {
   cleanup();
+  vi.clearAllMocks();
+});
+
+beforeEach(() => {
+  contentProtectionMock.getConfig.mockResolvedValue(CONTENT_PROTECTION_CONFIG);
+  contentProtectionMock.updateContentProtectionConfigSlice.mockImplementation(async (mutate) =>
+    mutate(CONTENT_PROTECTION_CONFIG),
+  );
 });
 
 const ldapGroups: LdapGroup[] = [
@@ -25,6 +54,8 @@ function buildSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     server_name: 'Ragtime',
     default_theme_pack: 'default',
     authenticated_webgl_background_enabled: true,
+    chat_enabled: true,
+    userspace_generation_enabled: true,
     openapi_model_prefix_enabled: true,
     show_tool_card_footer_actions: false,
     embedding_provider: 'openai',
@@ -173,7 +204,7 @@ function renderSection({
         mcpSaving={false}
         handleSaveMcp={() => {}}
         setShowMcpRoutesPanel={() => {}}
-        toast={{ success: vi.fn() }}
+        toast={{ success: vi.fn(), error: vi.fn() }}
         generateMcpClientId={() => 'cid-generated'}
         generateMcpSecret={() => 'generated-secret'}
       />
@@ -184,6 +215,35 @@ function renderSection({
 }
 
 describe('McpSettingsSection', () => {
+  it('saves the default route classification requirement independently', async () => {
+    const user = userEvent.setup();
+
+    renderSection({});
+    const select = await screen.findByLabelText('Require classification');
+    await user.selectOptions(select, 'require');
+
+    expect(contentProtectionMock.updateContentProtectionConfigSlice).toHaveBeenCalledOnce();
+    expect(
+      contentProtectionMock.updateContentProtectionConfigSlice.mock.calls[0][0](
+        CONTENT_PROTECTION_CONFIG,
+      ).requirements,
+    ).toEqual([{ scope_kind: 'mcp_route', scope_key: 'default', mode: 'require' }]);
+  });
+
+  it('hides the default route classification requirement when protection is disabled', async () => {
+    contentProtectionMock.getConfig.mockResolvedValue({
+      ...CONTENT_PROTECTION_CONFIG,
+      enabled: false,
+    });
+
+    renderSection({});
+
+    const masterToggle = await screen.findByRole('switch', { name: /enable mcp server/i });
+    expect(masterToggle.getAttribute('aria-describedby')).toBe('mcp-enabled-help');
+    expect(screen.queryByLabelText('Require classification')).toBeNull();
+    expect(contentProtectionMock.updateContentProtectionConfigSlice).not.toHaveBeenCalled();
+  });
+
   it('shows OAuth2 as the default selectable auth method without LDAP', () => {
     renderSection({
       settings: buildSettings({

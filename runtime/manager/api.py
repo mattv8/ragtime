@@ -12,10 +12,14 @@ from runtime.manager.models import (
     RuntimeBridgeCredentialMetadata,
     RuntimeContentProbeRequest,
     RuntimeContentProbeResponse,
+    RuntimeExecJobRequest,
+    RuntimeExecJobResponse,
     RuntimeExecRequest,
     RuntimeExecResponse,
     RuntimeExternalBrowseRequest,
     RuntimeExternalBrowseResponse,
+    RuntimeFileDeleteRequest,
+    RuntimeFileMoveRequest,
     RuntimeFileReadResponse,
     RuntimeFileWriteRequest,
     RuntimeManagerHealthResponse,
@@ -235,15 +239,33 @@ def create_app() -> FastAPI:
             provider_session_id,
             file_path,
             payload.content,
+            expected_content_hash=payload.expected_content_hash,
+            require_content_hash=payload.require_content_hash,
+            artifact_metadata=payload.artifact_metadata,
         )
 
     @application.delete("/sessions/{provider_session_id}/fs/{file_path:path}")
     async def delete_file(
         provider_session_id: str,
         file_path: str,
+        payload: RuntimeFileDeleteRequest | None = None,
         _auth: None = ManagerAuth,
     ) -> dict[str, Any]:
-        return await manager.delete_file(provider_session_id, file_path)
+        payload = payload or RuntimeFileDeleteRequest()
+        return await manager.delete_file(
+            provider_session_id,
+            file_path,
+            expected_content_hash=payload.expected_content_hash,
+            require_content_hash=payload.require_content_hash,
+        )
+
+    @application.post("/sessions/{provider_session_id}/fs/move")
+    async def move_file(
+        provider_session_id: str,
+        payload: RuntimeFileMoveRequest,
+        _auth: None = ManagerAuth,
+    ) -> dict[str, Any]:
+        return await manager.move_file(provider_session_id, payload.old_path, payload.new_path)
 
     @application.post(
         "/sessions/{provider_session_id}/screenshot",
@@ -282,6 +304,30 @@ def create_app() -> FastAPI:
             timeout_seconds=payload.timeout_seconds,
             cwd=payload.cwd,
         )
+
+    @application.post("/sessions/{provider_session_id}/exec-jobs", response_model=RuntimeExecJobResponse)
+    async def start_exec_job(provider_session_id: str, payload: RuntimeExecJobRequest, _auth: None = ManagerAuth) -> RuntimeExecJobResponse:
+        return await manager.start_exec_job(
+            provider_session_id,
+            payload.command,
+            timeout_seconds=payload.timeout_seconds,
+            cwd=payload.cwd,
+            user_id=payload.user_id,
+            credential_id=payload.credential_id,
+            operation=payload.operation,
+        )
+
+    @application.get("/sessions/{provider_session_id}/exec-jobs", response_model=list[RuntimeExecJobResponse])
+    async def list_exec_jobs(provider_session_id: str, _auth: None = ManagerAuth) -> list[RuntimeExecJobResponse]:
+        return await manager.list_exec_jobs(provider_session_id)
+
+    @application.get("/sessions/{provider_session_id}/exec-jobs/{job_id}", response_model=RuntimeExecJobResponse)
+    async def get_exec_job(provider_session_id: str, job_id: str, cursor: int = 0, limit: int = 16384, _auth: None = ManagerAuth) -> RuntimeExecJobResponse:
+        return await manager.get_exec_job(provider_session_id, job_id, cursor=cursor, limit=limit)
+
+    @application.post("/sessions/{provider_session_id}/exec-jobs/{job_id}/cancel", response_model=RuntimeExecJobResponse)
+    async def cancel_exec_job(provider_session_id: str, job_id: str, _auth: None = ManagerAuth) -> RuntimeExecJobResponse:
+        return await manager.cancel_exec_job(provider_session_id, job_id)
 
     @application.post(
         "/sessions/{provider_session_id}/external-browse",

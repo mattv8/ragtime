@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { OAuthCallbackError } from './OAuthCallbackError';
@@ -22,5 +22,20 @@ describe('OAuthCallbackError gradient shell', () => {
     expect(screen.getByTestId('webgl-gradient')).toBeTruthy();
     expect(screen.getByText('OAuth Callback Error')).toBeTruthy();
     expect(screen.getByText('Bad redirect')).toBeTruthy();
+  });
+
+  it('renders optional authorization recovery actions', () => {
+    const onRetry = vi.fn();
+    const onBack = vi.fn();
+
+    render(
+      <OAuthCallbackError title="Failed" summary="Try again." onRetry={onRetry} onBack={onBack} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry authorization' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to workspace' }));
+    expect(onRetry).toHaveBeenCalledOnce();
+    expect(onBack).toHaveBeenCalledOnce();
+    expect(document.querySelector('#oauth-authorization-error')).toBeTruthy();
   });
 });

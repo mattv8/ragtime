@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -170,6 +171,144 @@ describe('AgentAccessModal', () => {
     expect(within(newGrantSection).queryByText('File/runtime')).toBeNull();
     expect(within(newGrantSection).queryByText('Shared SQLite')).toBeNull();
     expect(within(newGrantSection).queryByText(/choose the permissions/i)).toBeNull();
+  });
+
+  it('lazy mounts optional agent panels, preserves their state, and keeps grant actions on Workspace Grants', async () => {
+    const user = userEvent.setup();
+    let mounts = 0;
+    let unmounts = 0;
+
+    function StatefulSetupPanel() {
+      const [value, setValue] = useState('');
+      useEffect(() => {
+        mounts += 1;
+        return () => void (unmounts += 1);
+      }, []);
+      return (
+        <input
+          aria-label="Agent name"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
+      );
+    }
+
+    const { rerender } = render(
+      <AgentAccessModal
+        isOpen
+        onClose={vi.fn()}
+        sourceWorkspace={SOURCE_WORKSPACE}
+        availableWorkspaces={[{ id: 'ws-target', name: 'Target Workspace' }]}
+        grants={[]}
+        onUpsert={vi.fn().mockResolvedValue(undefined)}
+        onRevoke={vi.fn().mockResolvedValue(undefined)}
+        agentCollaborationSection={<div>Agent collaboration content</div>}
+        connectAgentSection={<StatefulSetupPanel />}
+      />,
+    );
+
+    expect(
+      screen.getByRole('tab', { name: 'Workspace Grants' }).getAttribute('aria-selected'),
+    ).toBe('true');
+    expect(screen.queryByText('Agent collaboration content')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Agent name' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add grant' })).toBeTruthy();
+
+    await user.click(screen.getByRole('tab', { name: 'Coding Agent Setup' }));
+    await user.type(screen.getByRole('textbox', { name: 'Agent name' }), 'persist me');
+    expect(screen.queryByRole('button', { name: 'Add grant' })).toBeNull();
+
+    await user.click(screen.getByRole('tab', { name: 'Workspace Grants' }));
+    await user.click(screen.getByRole('tab', { name: 'Coding Agent Setup' }));
+    expect((screen.getByRole('textbox', { name: 'Agent name' }) as HTMLInputElement).value).toBe(
+      'persist me',
+    );
+
+    rerender(
+      <AgentAccessModal
+        isOpen={false}
+        onClose={vi.fn()}
+        sourceWorkspace={SOURCE_WORKSPACE}
+        availableWorkspaces={[]}
+        grants={[]}
+        onUpsert={vi.fn().mockResolvedValue(undefined)}
+        onRevoke={vi.fn().mockResolvedValue(undefined)}
+        connectAgentSection={<StatefulSetupPanel />}
+      />,
+    );
+    expect(unmounts).toBe(1);
+
+    rerender(
+      <AgentAccessModal
+        isOpen
+        onClose={vi.fn()}
+        sourceWorkspace={SOURCE_WORKSPACE}
+        availableWorkspaces={[]}
+        grants={[]}
+        onUpsert={vi.fn().mockResolvedValue(undefined)}
+        onRevoke={vi.fn().mockResolvedValue(undefined)}
+        connectAgentSection={<StatefulSetupPanel />}
+      />,
+    );
+    expect(
+      screen.getByRole('tab', { name: 'Workspace Grants' }).getAttribute('aria-selected'),
+    ).toBe('true');
+    expect(screen.queryByRole('textbox', { name: 'Agent name' })).toBeNull();
+    expect(mounts).toBe(1);
+    await user.click(screen.getByRole('tab', { name: 'Coding Agent Setup' }));
+    expect(mounts).toBe(2);
+    expect((screen.getByRole('textbox', { name: 'Agent name' }) as HTMLInputElement).value).toBe(
+      '',
+    );
+  });
+
+  it('navigates optional tabs by keyboard and restores grant actions when the tabs disappear', async () => {
+    const user = userEvent.setup();
+    const props = {
+      isOpen: true,
+      onClose: vi.fn(),
+      sourceWorkspace: SOURCE_WORKSPACE,
+      availableWorkspaces: [],
+      grants: [],
+      onUpsert: vi.fn().mockResolvedValue(undefined),
+      onRevoke: vi.fn().mockResolvedValue(undefined),
+    };
+    const { rerender } = render(
+      <AgentAccessModal
+        {...props}
+        agentCollaborationSection={<div>Collaboration content</div>}
+        connectAgentSection={<div>Setup content</div>}
+      />,
+    );
+    expect(screen.getByRole('tablist', { name: 'Agent Access' })).toBeTruthy();
+    screen.getByRole('tab', { name: 'Workspace Grants' }).focus();
+    await user.keyboard('{ArrowRight}');
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Agent Collaboration' }));
+    expect(screen.getByRole('tabpanel', { name: 'Agent Collaboration' }).textContent).toBe(
+      'Collaboration content',
+    );
+    await user.keyboard('{End}');
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Coding Agent Setup' }));
+    await user.keyboard('{ArrowRight}');
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Workspace Grants' }));
+    await user.keyboard('{ArrowLeft}');
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Coding Agent Setup' }));
+    await user.keyboard('{Home}');
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Workspace Grants' }));
+    await user.keyboard('{End}');
+
+    rerender(
+      <AgentAccessModal {...props} agentCollaborationSection={<div>Collaboration content</div>} />,
+    );
+    expect(
+      screen.getByRole('tab', { name: 'Workspace Grants' }).getAttribute('aria-selected'),
+    ).toBe('true');
+    await user.click(screen.getByRole('tab', { name: 'Agent Collaboration' }));
+    rerender(<AgentAccessModal {...props} />);
+    expect(screen.queryByRole('tablist')).toBeNull();
+    expect(screen.queryByText('Collaboration content')).toBeNull();
+    expect(screen.queryByText('Setup content')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add grant' })).toBeTruthy();
   });
 
   it('keeps existing-grant edits local until Save is clicked and preserves the current file mode', async () => {
@@ -544,5 +683,83 @@ describe('AgentAccessModal', () => {
         .getByRole('button', { name: 'Read / Write' })
         .getAttribute('aria-pressed'),
     ).toBe('true');
+  });
+
+  it('opens requested Coding Agent Setup tabs repeatedly without overriding manual tab changes', async () => {
+    const user = userEvent.setup();
+    const props = {
+      isOpen: true,
+      onClose: vi.fn(),
+      sourceWorkspace: SOURCE_WORKSPACE,
+      availableWorkspaces: [],
+      grants: [],
+      onUpsert: vi.fn().mockResolvedValue(undefined),
+      onRevoke: vi.fn().mockResolvedValue(undefined),
+      connectAgentSection: <div>Setup content</div>,
+    };
+    const { rerender } = render(
+      <AgentAccessModal {...props} openRequest={{ requestId: 1, tabId: 'coding-agent-setup' }} />,
+    );
+
+    expect(
+      screen.getByRole('tab', { name: 'Coding Agent Setup' }).getAttribute('aria-selected'),
+    ).toBe('true');
+    await user.click(screen.getByRole('tab', { name: 'Workspace Grants' }));
+    rerender(
+      <AgentAccessModal {...props} openRequest={{ requestId: 1, tabId: 'coding-agent-setup' }} />,
+    );
+    expect(
+      screen.getByRole('tab', { name: 'Workspace Grants' }).getAttribute('aria-selected'),
+    ).toBe('true');
+
+    rerender(
+      <AgentAccessModal {...props} openRequest={{ requestId: 2, tabId: 'coding-agent-setup' }} />,
+    );
+    expect(
+      screen.getByRole('tab', { name: 'Coding Agent Setup' }).getAttribute('aria-selected'),
+    ).toBe('true');
+
+    rerender(<AgentAccessModal {...props} openRequest={null} />);
+    expect(
+      screen.getByRole('tab', { name: 'Workspace Grants' }).getAttribute('aria-selected'),
+    ).toBe('true');
+    await user.click(screen.getByRole('tab', { name: 'Coding Agent Setup' }));
+    rerender(<AgentAccessModal {...props} openRequest={null} />);
+    expect(
+      screen.getByRole('tab', { name: 'Coding Agent Setup' }).getAttribute('aria-selected'),
+    ).toBe('true');
+  });
+
+  it('uses Workspace Grants for legacy openings and exposes dialog semantics', () => {
+    renderModal();
+    expect(screen.getByRole('dialog', { name: 'Agent Access' }).getAttribute('aria-modal')).toBe(
+      'true',
+    );
+    expect(screen.getByRole('button', { name: 'Add grant' })).toBeTruthy();
+  });
+
+  it('closes with Escape unless a grant operation is locked', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const props = {
+      isOpen: true,
+      onClose,
+      sourceWorkspace: SOURCE_WORKSPACE,
+      availableWorkspaces: [],
+      grants: [],
+      onUpsert: vi.fn().mockResolvedValue(undefined),
+      onRevoke: vi.fn().mockResolvedValue(undefined),
+    };
+    const { rerender } = render(<AgentAccessModal {...props} />);
+
+    expect(screen.getByRole('button', { name: 'Close agent access' }).getAttribute('type')).toBe(
+      'button',
+    );
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledOnce();
+
+    rerender(<AgentAccessModal {...props} loading />);
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

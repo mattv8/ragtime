@@ -84,6 +84,16 @@ class FakeAsyncClient:
 
 
 class ModelResolutionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        """Isolate fallback grouping tests from the process-global live catalog."""
+        self._metadata_cache_patchers = [
+            mock.patch.dict(model_limits._model_family_labels_cache, {}, clear=True),
+            mock.patch.dict(model_limits._model_freshness_cache, {}, clear=True),
+        ]
+        for patcher in self._metadata_cache_patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_parse_model_identifier_cases(self) -> None:
         cases = [
             ("llama_cpp::my-chat-model", ("llama_cpp", "my-chat-model")),

@@ -1,0 +1,271 @@
+.userspace-connect-agent {
+  container-type: inline-size;
+}
+
+.userspace-connect-agent .coding-agent-setup-guide {
+  display: grid;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  font-family: var(--font-body);
+}
+
+.userspace-connect-agent .coding-agent-setup-endpoint,
+.userspace-connect-agent .coding-agent-client-guide {
+  min-width: 0;
+}
+
+.userspace-connect-agent .coding-agent-setup-endpoint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.userspace-connect-agent .coding-agent-setup-endpoint > div {
+  display: grid;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.userspace-connect-agent .coding-agent-setup-eyebrow {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.userspace-connect-agent .coding-agent-setup-endpoint code,
+.userspace-connect-agent .coding-agent-config-location {
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.userspace-connect-agent .coding-agent-setup-client-picker {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--space-xs);
+  min-width: 0;
+  overflow-x: auto;
+  padding-block-end: var(--space-xs);
+}
+
+.userspace-connect-agent .coding-agent-client-btn {
+  flex: 1 0 max-content;
+  min-width: max-content;
+  padding-inline: var(--space-sm);
+  min-height: 2rem;
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  white-space: nowrap;
+}
+
+.userspace-connect-agent .coding-agent-client-guide {
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.userspace-connect-agent
+  :is(.userspace-connect-agent-section-header h4, .userspace-connect-agent-setup h5) {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: var(--leading-normal);
+}
+
+.userspace-connect-agent .coding-agent-client-guide :is(p, li, summary, code) {
+  font-size: inherit;
+}
+
+.userspace-connect-agent .coding-agent-copyable-snippet pre {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.userspace-connect-agent .coding-agent-setup-client-picker [aria-pressed='true'] {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.userspace-connect-agent .coding-agent-setup-guide-copy,
+.userspace-connect-agent .coding-agent-client-guide {
+  display: grid;
+  gap: var(--space-sm);
+  color: var(--color-text-secondary);
+}
+
+.userspace-connect-agent .coding-agent-setup-guide-copy p,
+.userspace-connect-agent .coding-agent-guide-description,
+.userspace-connect-agent .coding-agent-guide-note {
+  margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.userspace-connect-agent .coding-agent-guide-section {
+  display: grid;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.userspace-connect-agent .coding-agent-guide-section > h5 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: var(--leading-normal);
+}
+
+.userspace-connect-agent .coding-agent-guide-steps,
+.userspace-connect-agent .coding-agent-config-locations {
+  display: grid;
+  gap: var(--space-xs);
+  margin: 0;
+  padding-inline-start: var(--space-lg);
+}
+
+.userspace-connect-agent .coding-agent-guide-steps li,
+.userspace-connect-agent .coding-agent-config-locations li {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.userspace-connect-agent .coding-agent-guide-alternative {
+  min-width: 0;
+  color: var(--color-text-secondary);
+}
+
+.userspace-connect-agent .coding-agent-guide-credential-prerequisite {
+  min-width: 0;
+  color: var(--color-text-secondary);
+}
+
+.userspace-connect-agent .coding-agent-guide-credential-prerequisite > summary {
+  cursor: pointer;
+  color: var(--color-text-primary);
+}
+
+.userspace-connect-agent .coding-agent-guide-credential-prerequisite > p {
+  margin: var(--space-xs) 0 0;
+}
+
+.userspace-connect-agent .coding-agent-guide-alternative > summary {
+  cursor: pointer;
+  color: var(--color-text-primary);
+}
+
+.userspace-connect-agent .coding-agent-copyable-snippet {
+  display: grid;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.userspace-connect-agent .coding-agent-copyable-snippet-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.userspace-connect-agent .coding-agent-copyable-snippet-label {
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.userspace-connect-agent .coding-agent-copyable-snippet pre {
+  min-width: 0;
+  max-width: 100%;
+  max-height: 18rem;
+  margin: 0;
+  padding: var(--space-sm);
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-terminal-surface);
+  color: var(--color-terminal-foreground);
+}
+
+.userspace-connect-agent .coding-agent-copyable-snippet code {
+  font-family: var(--font-mono);
+  overflow-wrap: normal;
+}
+
+.userspace-connect-agent .coding-agent-config-location {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.userspace-connect-agent .coding-agent-config-location-label {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.userspace-connect-agent .userspace-connect-agent-card-actions {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+@container (max-width: 28rem) {
+  .userspace-connect-agent .coding-agent-setup-endpoint {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .userspace-connect-agent .userspace-connect-agent-endpoint,
+  .userspace-connect-agent .userspace-connect-agent-token {
+    grid-template-columns: auto;
+    grid-auto-flow: row;
+  }
+
+  .userspace-connect-agent .userspace-connect-agent-endpoint > *:last-child,
+  .userspace-connect-agent .userspace-connect-agent-token > *:last-child {
+    justify-self: start;
+  }
+}
+
+[data-theme-pack='modern'] .userspace-connect-agent .coding-agent-setup-guide {
+  gap: var(--workbench-padding);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+[data-theme-pack='modern'] .userspace-connect-agent .coding-agent-setup-endpoint,
+[data-theme-pack='modern'] .userspace-connect-agent .coding-agent-client-guide {
+  padding: var(--workbench-padding);
+  border: var(--workbench-container-border);
+  border-radius: var(--workbench-surface-radius);
+  background: var(--color-panel);
+  box-shadow: none;
+}
+
+[data-theme-pack='modern'] .userspace-connect-agent .coding-agent-setup-client-picker,
+[data-theme-pack='modern'] .userspace-connect-agent .coding-agent-guide-section,
+[data-theme-pack='modern'] .userspace-connect-agent .coding-agent-guide-alternative {
+  border: 0;
+  background: transparent;
+}
+
+[data-theme-pack='modern']
+  .userspace-connect-agent
+  .coding-agent-setup-client-picker
+  [aria-pressed='true'] {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+}
+
+[data-theme-pack='modern'] .userspace-connect-agent .coding-agent-copyable-snippet pre {
+  border: 0;
+  border-radius: var(--workbench-control-radius);
+  background: var(--color-editor);
+}

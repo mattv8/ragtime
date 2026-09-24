@@ -18,7 +18,7 @@ COPY --from=build /work/storage/target/ragtime-storage.jar /app/ragtime-storage.
 ENV S3_PORT=9000 \
     STORAGE_CONTROL_PORT=9001 \
     STORAGE_ROOT=/data/_userspace/_object_storage \
-    STORAGE_KEY_FILE=/data/.encryption_key
+    STORAGE_KEY_FILE=/run/ragtime-keystore/.encryption_key
 EXPOSE 9000 9001
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD sh -ec 'curl -fsS http://localhost:${STORAGE_CONTROL_PORT}/health >/dev/null && test "$(curl -sS -o /dev/null -w "%{http_code}" http://localhost:${S3_PORT}/)" != 000'

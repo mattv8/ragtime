@@ -431,11 +431,10 @@ class SessionManager:
         request: StartSessionRequest,
     ) -> RuntimeSessionResponse:
         await self._cleanup_expired_sessions(utc_now())
-        if request.bridge_credential_mode == "worker_file":
-            health = await self._worker_service.health()
-            capabilities = dict((health.metadata or {}).get("runtime_capabilities") or {})
-            if not bool(capabilities.get("bridge_credential_file")):
-                raise HTTPException(status_code=409, detail="Runtime worker does not support file bridge credentials")
+        health = await self._worker_service.health()
+        capabilities = dict((health.metadata or {}).get("runtime_capabilities") or {})
+        if not bool(capabilities.get("bridge_credential_file")):
+            raise HTTPException(status_code=409, detail="Runtime worker does not support file bridge credentials")
 
         async with self._workspace_start_lock(request.workspace_id):
             existing_provider_id: str | None = None
@@ -843,21 +842,39 @@ class SessionManager:
         provider_session_id: str,
         file_path: str,
         content: str,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
+        artifact_metadata: dict[str, Any] | None = None,
     ) -> RuntimeFileReadResponse:
         session = self._get_session_or_raise(provider_session_id)
         return await self._worker_service.write_file(
             session.worker_session_id,
             file_path,
             content,
+            expected_content_hash=expected_content_hash,
+            require_content_hash=require_content_hash,
+            artifact_metadata=artifact_metadata,
         )
 
     async def delete_file(
         self,
         provider_session_id: str,
         file_path: str,
+        *,
+        expected_content_hash: str | None = None,
+        require_content_hash: bool = False,
     ) -> dict[str, Any]:
         session = self._get_session_or_raise(provider_session_id)
-        return await self._worker_service.delete_file(session.worker_session_id, file_path)
+        return await self._worker_service.delete_file(
+            session.worker_session_id,
+            file_path,
+            expected_content_hash=expected_content_hash,
+            require_content_hash=require_content_hash,
+        )
+
+    async def move_file(self, provider_session_id: str, old_path: str, new_path: str) -> dict[str, Any]:
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.move_file(session.worker_session_id, old_path, new_path)
 
     async def capture_screenshot(
         self,
@@ -940,6 +957,34 @@ class SessionManager:
                 leases.pop(lease_id)
                 if not leases:
                     self._workspace_sqlite_maintenance.pop(workspace_id, None)
+
+    async def start_exec_job(
+        self,
+        provider_session_id: str,
+        command: str,
+        *,
+        timeout_seconds: int = 120,
+        cwd: str | None = None,
+        user_id: str | None = None,
+        credential_id: str | None = None,
+        operation: str = "exec",
+    ):
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.start_exec_job(
+            session.worker_session_id, command, timeout_seconds=timeout_seconds, cwd=cwd, user_id=user_id, credential_id=credential_id, operation=operation
+        )
+
+    async def list_exec_jobs(self, provider_session_id: str):
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.list_exec_jobs(session.worker_session_id)
+
+    async def get_exec_job(self, provider_session_id: str, job_id: str, *, cursor: int = 0, limit: int = 16384):
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.get_exec_job(session.worker_session_id, job_id, cursor=cursor, limit=limit)
+
+    async def cancel_exec_job(self, provider_session_id: str, job_id: str):
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.cancel_exec_job(session.worker_session_id, job_id)
 
     async def external_browse(
         self,

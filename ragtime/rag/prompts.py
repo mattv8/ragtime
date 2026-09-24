@@ -148,6 +148,24 @@ When you call `spawn_subagents`:
 """
 
 
+USERSPACE_EXTERNAL_HARNESS_GUIDANCE_PROMPT = """
+
+## EXTERNAL HARNESS RESPONSIBILITIES
+
+- You are the harness responsible for this workspace. Use only the operations,
+  resources, and credentials explicitly supplied in the current instruction
+  bundle; server-side authorization remains authoritative.
+- Decompose independent work, choose any available execution/model capability,
+  and coordinate workers or review passes using your own facilities. Keep a
+  single owner for integration, validation, and snapshot creation.
+- Before mutations, read the supplied workspace facts and relevant files. Make
+  incremental changes, validate every changed source file, fix reported errors,
+  then create a snapshot when the workspace is stable.
+- Refresh this bundle when its context revision changes. Do not infer access to
+  tools, indexes, workspaces, or credentials absent from the bundle.
+"""
+
+
 def dedupe_subagent_model_ids(model_ids: Iterable[str] | None) -> list[str]:
     """Return exact allowed model IDs, preserving order and removing blanks/duplicates."""
     seen: set[str] = set()
@@ -435,6 +453,55 @@ def build_userspace_turn_reminder_with_env_vars(
         env_var_reminder_line=env_var_reminder_line,
         runtime_status_reminder_line=_normalize_optional_turn_line(runtime_status_reminder_line) + _normalize_optional_turn_line(diagnostics_reminder_line),
     )
+
+
+def build_userspace_instruction_sections(
+    *,
+    include_sqlite_persistence: bool,
+    has_live_data_tools: bool,
+    workspace_continuity: str,
+    entrypoint_status: EntrypointStatus,
+    is_default_static: bool,
+    username: str | None = None,
+    display_name: str | None = None,
+    available_tool_names: set[str] | None = None,
+    shared_sqlite_databases: list[dict[str, str]] | None = None,
+    mounts_enabled: bool = False,
+    mounts: list[dict[str, str]] | None = None,
+    object_storage_enabled: bool = False,
+    object_storage_buckets: list[dict[str, str]] | None = None,
+) -> dict[str, str]:
+    """Assemble the reusable User Space prompt sections from request facts.
+
+    This is deliberately pure so internal request assembly and external
+    instruction delivery can share the same prompt builders without a curated
+    second copy of platform constraints.
+    """
+
+    return {
+        "base": BASE_USERSPACE_SYSTEM_PROMPT,
+        "workspace": build_userspace_mode_prompt_addition(
+            include_sqlite_persistence=include_sqlite_persistence,
+            has_live_data_tools=has_live_data_tools,
+            workspace_continuity=workspace_continuity,
+            available_tool_names=available_tool_names,
+            shared_sqlite_databases=shared_sqlite_databases or [],
+        ),
+        "entrypoint": build_userspace_entrypoint_nudge(
+            entrypoint_status,
+            is_default_static=is_default_static,
+        ),
+        "identity": build_current_user_prompt_fragment(username, display_name),
+        "mounts": build_userspace_mounts_prompt_fragment(
+            mounts_enabled=mounts_enabled,
+            mounts=mounts,
+        ),
+        "object_storage": build_userspace_object_storage_prompt_fragment(
+            object_storage_enabled=object_storage_enabled,
+            buckets=object_storage_buckets,
+        ),
+        "external_harness": USERSPACE_EXTERNAL_HARNESS_GUIDANCE_PROMPT,
+    }
 
 
 def build_current_user_prompt_fragment(
@@ -1259,10 +1326,10 @@ _USERSPACE_RUNTIME_BRIDGE_BLOCK = """
 This workspace runs a real server entrypoint, so fetch live tool data from your
 SERVER code via the runtime bridge instead of wiring context.components[...] in
 browser modules:
-- Env vars available to the server process: `RAGTIME_BRIDGE_URL` plus either `RAGTIME_BRIDGE_TOKEN_FILE` or the legacy `RAGTIME_BRIDGE_TOKEN`.
-- Read the token for every bridge request: Node uses `fs.readFileSync(process.env.RAGTIME_BRIDGE_TOKEN_FILE, "utf8").trim()` when the file variable is set, otherwise `process.env.RAGTIME_BRIDGE_TOKEN`; Python uses `Path(os.environ["RAGTIME_BRIDGE_TOKEN_FILE"]).read_text().strip()` when set, otherwise `os.environ.get("RAGTIME_BRIDGE_TOKEN")`. Do not cache the token at app startup.
+- Env vars available to the server process: `RAGTIME_BRIDGE_URL` and `RAGTIME_BRIDGE_TOKEN_FILE`. The raw bridge token is never in the environment.
+- Read the token file for every bridge request: Node uses `fs.readFileSync(process.env.RAGTIME_BRIDGE_TOKEN_FILE, "utf8").trim()`; Python uses `Path(os.environ["RAGTIME_BRIDGE_TOKEN_FILE"]).read_text().strip()`. Do not cache the token at app startup.
 - Contract: POST `{RAGTIME_BRIDGE_URL}/execute-component` with header
-  `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN` and JSON body
+  `Authorization: Bearer <token read from RAGTIME_BRIDGE_TOKEN_FILE>` and JSON body
   `{"component_id": "<selected component id>", "request": {"query": "SELECT ... LIMIT 100"}}`.
 - For HTTP API-backed components, the same JSON body can instead be
   `{"component_id": "<selected component id>", "request": {"method": "GET", "path": "/customers"}}` (plus optional `query`, approved
@@ -1324,7 +1391,7 @@ def build_shared_sqlite_prompt_fragment(accessible_databases: list[dict[str, str
         "\n##### Shared SQLite target workspaces\n"
         "- Shared SQLite is not a third persistence lane and never substitutes for selected live-tool data.\n"
         "- `/sqlite/query` and `/sqlite/mutate` are only for cross-workspace access. Browser code must call an app-owned server route, and must never call bridge endpoints directly or receive `RAGTIME_BRIDGE_TOKEN`.\n"
-        "- Use Shared SQLite from server code only. Call `POST {RAGTIME_BRIDGE_URL}/sqlite/query` or `POST {RAGTIME_BRIDGE_URL}/sqlite/mutate` with `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN`. Never send the bridge token, raw credentials, or server bridge calls to browser code.\n"
+        "- Use Shared SQLite from server code only. Call `POST {RAGTIME_BRIDGE_URL}/sqlite/query` or `POST {RAGTIME_BRIDGE_URL}/sqlite/mutate` with `Authorization: Bearer <token read from RAGTIME_BRIDGE_TOKEN_FILE>`. Never send the bridge token, raw credentials, or server bridge calls to browser code.\n"
         "- A server-backed entrypoint is required for this access. Static or missing entrypoints cannot execute these server bridge calls until you add backend/server code.\n"
         '- Query contract: `POST {RAGTIME_BRIDGE_URL}/sqlite/query` with `target_workspace_id`, fixed `database_name: "app.sqlite3"`, parameterized SQL, positional-list or named-dict `parameters`, and `max_rows` up to 500. Responses include `columns`, `rows`, `row_count`, and `truncated`.\n'
         '- Example query: `{"target_workspace_id": "ws_target", "database_name": "app.sqlite3", "sql": "SELECT * FROM orders WHERE customer_id = :customer_id LIMIT 100", "parameters": {"customer_id": "<customer_id>"}, "max_rows": 100}`.\n'
@@ -1340,14 +1407,14 @@ def build_shared_sqlite_prompt_fragment(accessible_databases: list[dict[str, str
 
 def build_userspace_data_and_persistence_boundaries_fragment(
     *,
-    include_sqlite_persistence: bool,
-    has_live_data_tools: bool,
+    include_sqlite_persistence: bool | None,
+    has_live_data_tools: bool | None,
     shared_sqlite_databases: list[dict[str, str]],
 ) -> str:
     """Build the combined data/persistence guidance block when any relevant boundary applies."""
 
     shared_fragment = build_shared_sqlite_prompt_fragment(shared_sqlite_databases)
-    if not include_sqlite_persistence and not shared_fragment:
+    if include_sqlite_persistence is False and not shared_fragment:
         return ""
 
     sections = [
@@ -1355,7 +1422,7 @@ def build_userspace_data_and_persistence_boundaries_fragment(
         "- These sections define responsibilities, not mandatory work in every turn.\n",
     ]
 
-    if include_sqlite_persistence and has_live_data_tools:
+    if include_sqlite_persistence is not False and has_live_data_tools is not False:
         sections.extend(
             [
                 "\n##### Lane A - Live tool data\n",
@@ -1365,7 +1432,7 @@ def build_userspace_data_and_persistence_boundaries_fragment(
             ]
         )
 
-    if include_sqlite_persistence:
+    if include_sqlite_persistence is not False:
         sections.extend(
             [
                 "\n##### Lane B - Primary workspace SQLite\n",
@@ -1453,7 +1520,7 @@ USERSPACE_MODE_PROMPT_ADDITION = build_userspace_mode_prompt_addition(
 )
 
 
-def build_index_system_prompt(index_metadata: List[dict]) -> str:
+def build_index_system_prompt(index_metadata: List[dict], *, search_tool_name: str = "search_knowledge") -> str:
     """Build system prompt section describing available knowledge indexes.
 
     Args:
@@ -1501,7 +1568,7 @@ Available for search:
 
 Knowledge indexes are not searched automatically.
 Indexes may contain source code, documentation, business records, paperwork, manuals, or any other ingested content -- consult each one's listed description to judge what it covers.
-Use `search_knowledge` to run similarity search over these indexes whenever indexed background context could inform the answer (schemas, business logic, implementation details, policies, historical records, scanned documents, etc.) -- ideally before querying live systems.
+Use `{search_tool_name}` to run similarity search over these indexes whenever indexed background context could inform the answer (schemas, business logic, implementation details, policies, historical records, scanned documents, etc.) -- ideally before querying live systems.
 For broader recall, increase `k`. For full snippets when results are truncated, set `max_chars_per_result=0`.
 """
 

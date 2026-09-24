@@ -30,6 +30,7 @@ from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
 from ragtime.chat_runtime.presets import CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
+from ragtime.content_protection.hosted import authorize_persistence
 from ragtime.core.app_setting_defaults import (
     DEFAULT_AGGREGATE_SEARCH,
     DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
@@ -1403,6 +1404,8 @@ class IndexerRepository:
                 "toolSkillsEnabled",
                 DEFAULT_TOOL_SKILLS_ENABLED,
             ),
+            chat_enabled=getattr(settings, "chatEnabled", True),
+            userspace_generation_enabled=getattr(settings, "userspaceGenerationEnabled", True),
             # Embedding settings
             embedding_provider=getattr(settings, "embeddingProvider", DEFAULT_EMBEDDING_PROVIDER),
             embedding_model=getattr(settings, "embeddingModel", DEFAULT_EMBEDDING_MODEL),
@@ -1783,6 +1786,8 @@ class IndexerRepository:
             "available_models_cache_enabled": "availableModelsCacheEnabled",
             "show_tool_card_footer_actions": "showToolCardFooterActions",
             "tool_skills_enabled": "toolSkillsEnabled",
+            "chat_enabled": "chatEnabled",
+            "userspace_generation_enabled": "userspaceGenerationEnabled",
             "userspace_build_model": "userspaceBuildModel",
             "openrouter_credit_monitor_enabled": "openrouterCreditMonitorEnabled",
             "openrouter_low_credit_threshold_usd": "openrouterLowCreditThresholdUsd",
@@ -3826,6 +3831,11 @@ class IndexerRepository:
         events: Optional[List[dict]] = None,
     ) -> Optional[Conversation]:
         """Add a message to a conversation."""
+        await authorize_persistence(
+            {"role": role, "content": content, "events": events or []},
+            direction="assistant_response" if role == "assistant" else "inbound",
+            operation="conversation_persist",
+        )
         db = await self._get_db()
 
         # Sanitize content for PostgreSQL storage (remove null bytes)
@@ -6210,6 +6220,17 @@ class IndexerRepository:
         message_index: Optional[int] = None,
     ) -> Optional[ProviderPromptDebugRecord]:
         """Persist a DEBUG-only provider prompt record for a single API call."""
+        await authorize_persistence(
+            {
+                "rendered_system_prompt": rendered_system_prompt,
+                "rendered_user_input": rendered_user_input,
+                "rendered_provider_messages": rendered_provider_messages,
+                "rendered_chat_history": rendered_chat_history,
+                "debug_metadata": debug_metadata or {},
+            },
+            direction="stored_readback",
+            operation="debug_persist",
+        )
         db = await self._get_db()
 
         try:

@@ -45,7 +45,14 @@ import {
   parseStoredModelIdentifier,
 } from '@/utils/contextUsage';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
+import { UserPoliciesModal } from './shared/UserPoliciesModal';
 import { subscribeToThemeChanges } from '@/theme';
+import {
+  contentProtectionApi,
+  userOverrideMode,
+  type ContentProtectionConfig,
+  type ContentProtectionOverrideMode,
+} from '@/api/contentProtection';
 
 ChartJS.register(
   CategoryScale,
@@ -240,7 +247,8 @@ const ALL_DAY_RANGES = [7, 30, 90, 180, 240, 360] as const;
 interface UsersPanelProps {
   currentUser: User | null;
   onOpenWorkspace: (workspaceId: string) => void;
-  onOpenChat: (conversationId: string) => void;
+  onOpenChat?: (conversationId: string) => void;
+  onGenerationPolicyUpdated?: (user: User) => void | Promise<void>;
 }
 
 type ExpandedUserDetailMode = 'workspaces' | 'chats';
@@ -525,7 +533,12 @@ function UserEditModal({
   );
 }
 
-export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPanelProps) {
+export function UsersPanel({
+  currentUser,
+  onOpenWorkspace,
+  onOpenChat,
+  onGenerationPolicyUpdated,
+}: UsersPanelProps) {
   const [activeTab, setActiveTab] = useState<PanelTab>('management');
 
   const [users, setUsers] = useState<User[]>([]);
@@ -544,6 +557,10 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   const [toasts, toast] = useToast();
 
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [policiesUserId, setPoliciesUserId] = useState<string | null>(null);
+  const [contentProtectionConfig, setContentProtectionConfig] =
+    useState<ContentProtectionConfig | null>(null);
+  const [contentProtectionLoadFailed, setContentProtectionLoadFailed] = useState(false);
 
   const [usageSummary, setUsageSummary] = useState<UserUsageSummary[]>([]);
   const [providerBreakdown, setProviderBreakdown] = useState<ProviderModelBreakdown[]>([]);
@@ -560,8 +577,40 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   const [usageLoading, setUsageLoading] = useState(false);
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const handleGenerationPolicyChange = useCallback(
+    async (
+      userId: string,
+      policy: 'chat_enabled' | 'userspace_generation_enabled',
+      value: string,
+    ) => {
+      setActionLoading(`generation-policy-${userId}`);
+      try {
+        const updated = await api.updateUserGenerationPolicy(userId, {
+          [policy]: value === 'inherit' ? null : value === 'enabled',
+        });
+        setUsers((current) => current.map((user) => (user.id === updated.id ? updated : user)));
+        toast.success('Generation policy updated');
+        try {
+          await onGenerationPolicyUpdated?.(updated);
+        } catch (error) {
+          toast.error(
+            error instanceof Error
+              ? `Generation policy saved, but the authenticated state could not be refreshed: ${error.message}`
+              : 'Generation policy saved, but the authenticated state could not be refreshed.',
+          );
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Failed to update generation policy');
+      } finally {
+        setActionLoading(null);
+      }
+    },
+    [onGenerationPolicyUpdated, toast],
+  );
   const [showCreateLocalUserModal, setShowCreateLocalUserModal] = useState(false);
-  const [showManageAuthGroupsModal, setShowManageAuthGroupsModal] = useState(false);
+  const [showManageAuthGroupsModal, setShowManageAuthGroupsModal] = useState(
+    () => window.location.hash === '#manage-groups',
+  );
 
   const [trendTab, setTrendTab] = useState<TrendTab>('reliability');
   const [mcpUsageTab, setMcpUsageTab] = useState<McpUsageTab>('chart');
@@ -720,6 +769,19 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     }
   }, [loadAuthGroups, loadUsers, loadWorkspaces, toast]);
 
+  const policyLinkFocused = useRef(false);
+  useEffect(() => {
+    if (loading || policyLinkFocused.current || window.location.hash !== '#user-policies') {
+      return;
+    }
+
+    const policyColumn = document.getElementById('user-policies');
+    if (!policyColumn) return;
+    policyLinkFocused.current = true;
+    policyColumn?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    policyColumn?.focus();
+  }, [loading]);
+
   const loadUsageData = useCallback(
     async (d: number) => {
       const cached = usageCacheRef.current[d];
@@ -791,6 +853,15 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   useEffect(() => {
     void loadManagementData();
   }, [loadManagementData]);
+
+  useEffect(() => {
+    void contentProtectionApi
+      .getConfig()
+      .then(setContentProtectionConfig)
+      .catch(() => {
+        setContentProtectionLoadFailed(true);
+      });
+  }, []);
 
   // Poll workspace live/interrupted state while management tab is visible
   useEffect(() => {
@@ -2124,6 +2195,11 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   ).length;
 
   const isSelf = (userId: string) => currentUser?.id === userId;
+  const contentProtectionEnabled = contentProtectionConfig?.enabled ?? false;
+  const contentProtectionKnownDisabled =
+    contentProtectionConfig !== null && !contentProtectionEnabled;
+  const contentProtectionModeForUser = (userId: string): ContentProtectionOverrideMode =>
+    contentProtectionConfig ? userOverrideMode(contentProtectionConfig, userId) : 'inherit';
 
   const sortedManagementRows = useMemo(() => {
     const rows = [...userStatsRows];
@@ -2291,7 +2367,11 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       { key: 'role', label: 'Role' },
       {
         key: 'actions',
-        label: 'Actions',
+        label: (
+          <span id="user-policies" tabIndex={-1}>
+            Actions
+          </span>
+        ),
         headerClassName: 'num',
         cellClassName: 'num',
         sortable: false,
@@ -2626,37 +2706,74 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                 )}
                               </td>
                               <td className="num">
-                                {isRowSelf ? (
-                                  <span className="users-action-muted">-</span>
-                                ) : (
-                                  <div className="users-confirm-group">
-                                    <button
-                                      type="button"
-                                      className="btn btn-sm btn-secondary users-btn-inline"
-                                      title="Edit role and groups"
-                                      onClick={() => setEditingUserId(user.id)}
-                                    >
-                                      <Pencil size={13} />
-                                    </button>
-                                    {user.mfa_enabled && (
+                                <div
+                                  className="users-confirm-group"
+                                  data-user-policies-cell={user.id}
+                                >
+                                  <span className="users-subnum">
+                                    Chat:{' '}
+                                    {user.chat_enabled === null || user.chat_enabled === undefined
+                                      ? 'inherit'
+                                      : user.chat_enabled
+                                        ? 'enabled'
+                                        : 'disabled'}
+                                    {' · User Space: '}
+                                    {user.userspace_generation_enabled === null ||
+                                    user.userspace_generation_enabled === undefined
+                                      ? 'inherit'
+                                      : user.userspace_generation_enabled
+                                        ? 'enabled'
+                                        : 'disabled'}
+                                    {!contentProtectionKnownDisabled && (
+                                      <>
+                                        {' '}
+                                        ·{' '}
+                                        {contentProtectionLoadFailed
+                                          ? 'Protection: —'
+                                          : `Protection: ${contentProtectionModeForUser(user.id).replace('_classify', '')}`}
+                                      </>
+                                    )}
+                                  </span>
+                                  <button
+                                    id={`user-policies-button-${user.id}`}
+                                    type="button"
+                                    className="btn btn-sm btn-secondary users-btn-inline"
+                                    data-user-policies-button={user.id}
+                                    title="User policies"
+                                    onClick={() => setPoliciesUserId(user.id)}
+                                  >
+                                    <Shield size={13} /> User policies
+                                  </button>
+                                  {!isRowSelf && (
+                                    <>
                                       <button
                                         type="button"
                                         className="btn btn-sm btn-secondary users-btn-inline"
-                                        title="Reset MFA"
-                                        disabled={actionLoading === user.id}
-                                        onClick={() => void handleResetMfa(user.id)}
+                                        title="Edit role and groups"
+                                        onClick={() => setEditingUserId(user.id)}
                                       >
-                                        MFA
+                                        <Pencil size={13} />
                                       </button>
-                                    )}
-                                    <DeleteConfirmButton
-                                      onDelete={() => handleDelete(user.id)}
-                                      disabled={actionLoading === user.id}
-                                      deleting={actionLoading === user.id}
-                                      title="Delete user"
-                                    />
-                                  </div>
-                                )}
+                                      {user.mfa_enabled && (
+                                        <button
+                                          type="button"
+                                          className="btn btn-sm btn-secondary users-btn-inline"
+                                          title="Reset MFA"
+                                          disabled={actionLoading === user.id}
+                                          onClick={() => void handleResetMfa(user.id)}
+                                        >
+                                          MFA
+                                        </button>
+                                      )}
+                                      <DeleteConfirmButton
+                                        onDelete={() => handleDelete(user.id)}
+                                        disabled={actionLoading === user.id}
+                                        deleting={actionLoading === user.id}
+                                        title="Delete user"
+                                      />
+                                    </>
+                                  )}
+                                </div>
                               </td>
                             </tr>
                             {expandedUserDetail?.userId === user.id && (
@@ -2721,7 +2838,7 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                       <UserConversationRowList
                                         conversations={sortedStandaloneChats}
                                         loading={standaloneChatsLoadingUserId === user.id}
-                                        onSelect={(conversation) => onOpenChat(conversation.id)}
+                                        onSelect={(conversation) => onOpenChat?.(conversation.id)}
                                         onDelete={handleDeleteConversation}
                                         onCancelTask={handleCancelConversationTask}
                                         renderMeta={(conversation) => {
@@ -3194,6 +3311,26 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
               onLocalGroupsChange={handleLocalGroupsChange}
               onResetMfa={handleResetMfa}
               onClose={() => setEditingUserId(null)}
+            />
+          );
+        })()}
+
+      {policiesUserId !== null &&
+        (() => {
+          const policyUser = users.find((user) => user.id === policiesUserId);
+          if (!policyUser) return null;
+          return (
+            <UserPoliciesModal
+              user={policyUser}
+              actionLoading={actionLoading === `generation-policy-${policyUser.id}`}
+              contentProtectionAvailable={contentProtectionConfig !== null}
+              contentProtectionEnabled={contentProtectionEnabled}
+              contentProtectionMode={contentProtectionModeForUser(policyUser.id)}
+              onClose={() => setPoliciesUserId(null)}
+              onGenerationPolicyChange={handleGenerationPolicyChange}
+              onContentProtectionConfigChange={setContentProtectionConfig}
+              onSuccess={toast.success}
+              onError={toast.error}
             />
           );
         })()}

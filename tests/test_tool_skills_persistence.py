@@ -12,13 +12,13 @@ from tests.test_db_fixtures import FakeDb, FakeTx, make_settings_row
 
 
 class ToolSkillsPersistenceTests(unittest.IsolatedAsyncioTestCase):
-    async def test_settings_cache_fallback_enables_tool_skills_by_default(self) -> None:
+    async def test_settings_cache_fallback_disables_tool_skills_by_default(self) -> None:
         cache = SettingsCache()
 
         with mock.patch("ragtime.core.app_settings.get_db", mock.AsyncMock(side_effect=RuntimeError("db down"))):
             settings = await cache.get_settings()
 
-        self.assertTrue(settings["tool_skills_enabled"])
+        self.assertFalse(settings["tool_skills_enabled"])
 
     async def test_repository_get_settings_maps_tool_skills_enabled(self) -> None:
         repository = IndexerRepository()

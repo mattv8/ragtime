@@ -15,24 +15,387 @@ Features:
 
 import argparse
 import asyncio
+import contextvars
+import json
 import logging
 import sys
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any, cast
 
 from mcp.server import NotificationOptions, Server
 from mcp.server.session import ServerSession
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, TextContent, Tool
 
+from ragtime.content_protection.external import (
+    authorize_external_content,
+    external_protection_context,
+    public_error_detail,
+)
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, mcp_tool_adapter
 from ragtime.rag import rag
+from ragtime.userspace.development_bootstrap import (
+    build_compact_context,
+    read_context_facts,
+    read_document,
+    read_operation_contract,
+    read_resource_contract,
+    read_resource_description,
+    read_resources,
+    serialize_mcp_payload,
+)
+from ragtime.userspace.development_service import development_service
 
 logger = get_logger(__name__)
+
+_DOCUMENT_REVISION_SCHEMA = {
+    "type": "string",
+    "description": (
+        "Optional only for offset 0. For a continuation, pass THIS target document or contract sha256 "
+        "returned by the first page or context reference; never pass context_revision or guidance_revision."
+    ),
+}
+_DOCUMENT_OFFSET_SCHEMA = {
+    "type": "integer",
+    "minimum": 0,
+    "description": "UTF-8 byte offset. Start at 0; then pass the exact next_offset returned by the preceding page.",
+}
+
+# Server and tool definitions are shared; caller identity must not be. This
+# context is reset after every HTTP request and inherited only by that request's
+# MCP task.
+_development_principal: contextvars.ContextVar[Any | None] = contextvars.ContextVar("mcp_development_principal", default=None)
+_mcp_route_id: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_route_id", default="default")
+_session_request_contexts: weakref.WeakKeyDictionary[ServerSession, tuple[Any | None, str]] = weakref.WeakKeyDictionary()
+
+
+@contextmanager
+def development_principal_context(principal: Any | None) -> Iterator[None]:
+    """Bind an authenticated development principal for one MCP request."""
+    token = _development_principal.set(principal)
+    try:
+        yield
+    finally:
+        _development_principal.reset(token)
+
+
+def get_request_development_principal() -> Any | None:
+    """Return the request-local principal; never cache this value."""
+    return _development_principal.get()
+
+
+def _bind_session_request_context(server: Server) -> None:
+    """Recover the authenticated request context for stateful MCP callbacks.
+
+    Streamable-HTTP may invoke a later tool callback from the session task,
+    after the ASGI request's ContextVars have been reset.  The server is shared
+    but its session is not, so retain only the verified principal and route on
+    that session and rebind them at callback entry.
+    """
+    try:
+        session = server.request_context.session
+    except LookupError:
+        return
+    principal = _development_principal.get()
+    route_id = _mcp_route_id.get()
+    if principal is not None or route_id != "default":
+        _session_request_contexts[session] = (principal, route_id)
+        return
+    saved = _session_request_contexts.get(session)
+    if saved is not None:
+        _development_principal.set(saved[0])
+        _mcp_route_id.set(saved[1])
+
+
+@contextmanager
+def mcp_request_context(principal: Any | None, route_id: str = "default") -> Iterator[None]:
+    """Bind identity and canonical route for one request, never a cached server."""
+    principal_token = _development_principal.set(principal)
+    route_token = _mcp_route_id.set(route_id or "default")
+    try:
+        with external_protection_context(principal, surface="mcp", mcp_route=route_id or "default"):
+            yield
+    finally:
+        _mcp_route_id.reset(route_token)
+        _development_principal.reset(principal_token)
+
+
+async def _get_development_operations(principal: Any) -> list[dict[str, Any]]:
+    """Get only operations whose declared scope is present on this credential."""
+    operations = development_service.list_operations()
+    scopes = set(getattr(principal, "scopes", frozenset()))
+    return [operation for operation in operations if str(operation.get("scope", "read")) in scopes]
+
+
+async def _development_tools_for_principal(principal: Any) -> list[Tool]:
+    operations = await _get_development_operations(principal)
+    if not operations:
+        return []
+    operation_names = [str(operation["name"]) for operation in operations if operation.get("name")]
+    operation_descriptions = ", ".join(operation_names)
+    return [
+        Tool(
+            name="workspace_development",
+            description=(
+                "Perform an authorized workspace development operation. Operations are "
+                "authorized again when executed; pass only the arguments defined for the "
+                "selected operation. Use workspace_development_contract for the complete contract. "
+                f"Available operation names: {operation_descriptions}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workspace_id": {"type": "string", "description": "Authorized workspace identifier."},
+                    "operation": {
+                        "type": "string",
+                        "enum": operation_names,
+                        "description": "Development operation to perform.",
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "description": "Arguments for the selected operation, matching its documented input schema.",
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["workspace_id", "operation"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="workspace_development_document",
+            description="Read a canonical guidance document page. revision is optional only on the first page; continuation must use this document sha256, not context_revision.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workspace_id": {"type": "string"},
+                    "document_id": {"type": "string"},
+                    "revision": _DOCUMENT_REVISION_SCHEMA,
+                    "offset": _DOCUMENT_OFFSET_SCHEMA,
+                },
+                "required": ["workspace_id", "document_id"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="workspace_development_contract",
+            description="Read an operation contract page. revision is optional only on the first page; continuation must use this contract sha256, not context_revision.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workspace_id": {"type": "string"},
+                    "operation": {"type": "string"},
+                    "revision": _DOCUMENT_REVISION_SCHEMA,
+                    "offset": _DOCUMENT_OFFSET_SCHEMA,
+                },
+                "required": ["workspace_id", "operation"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="workspace_development_resources",
+            description="Page caller-authorized tools and indexes; long descriptions are explicitly referenced, never truncated.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workspace_id": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 0, "description": "Item offset; use next_offset from the preceding resource page."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "required": ["workspace_id"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="workspace_development_resource_description",
+            description="Read the complete hash-pinned configured description referenced by a resource page.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workspace_id": {"type": "string"},
+                    "resource_id": {"type": "string"},
+                    "revision": _DOCUMENT_REVISION_SCHEMA,
+                    "offset": _DOCUMENT_OFFSET_SCHEMA,
+                },
+                "required": ["workspace_id", "resource_id"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="workspace_development_resource_contract",
+            description="Read the complete hash-pinned schema and controls for one authorized resource.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workspace_id": {"type": "string"},
+                    "resource_id": {"type": "string"},
+                    "revision": _DOCUMENT_REVISION_SCHEMA,
+                    "offset": _DOCUMENT_OFFSET_SCHEMA,
+                },
+                "required": ["workspace_id", "resource_id"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="workspace_development_facts",
+            description="Read a hash-pinned page of authorized live workspace facts omitted from compact context.",
+            inputSchema={
+                "type": "object",
+                "properties": {"workspace_id": {"type": "string"}, "revision": _DOCUMENT_REVISION_SCHEMA, "offset": _DOCUMENT_OFFSET_SCHEMA},
+                "required": ["workspace_id"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="workspace_development_context",
+            description="Retrieve the current authorized workspace development context and instruction bundle.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workspace_id": {"type": "string", "description": "Authorized workspace identifier."},
+                },
+                "required": ["workspace_id"],
+                "additionalProperties": False,
+            },
+        ),
+    ]
+
+
+def _development_error(code: str, message: Any) -> CallToolResult:
+    # Error construction must remain safe even when the original error is huge.
+    safe_code = code if len(str(code).encode("utf-8")) <= 128 else "operation_failed"
+    try:
+        text = serialize_mcp_payload({"error": {"code": safe_code, "message": message}})
+    except Exception:
+        text = serialize_mcp_payload({"error": {"code": safe_code, "message": "Error response truncated", "truncated": True}})
+    return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+
+
+def _development_refusal_detail(exc: Exception) -> dict[str, str] | None:
+    """Recognize only the complete public refusal contract from an exception."""
+    public_detail = getattr(exc, "public_detail", None)
+    value = public_detail() if callable(public_detail) else getattr(exc, "detail", None)
+    if not isinstance(value, dict):
+        return None
+    required = ("code", "message", "reason", "next_step", "request_id")
+    if any(not isinstance(value.get(key), str) or not value[key].strip() for key in required):
+        return None
+    detail = {key: value[key] for key in required}
+    if isinstance(value.get("reason_code"), str) and value["reason_code"].strip():
+        detail["reason_code"] = value["reason_code"]
+    for key in ("recovery_action", "execution_status"):
+        if isinstance(value.get(key), str) and value[key].strip():
+            detail[key] = value[key]
+    return detail
+
+
+def _development_refusal_error(detail: dict[str, str]) -> CallToolResult:
+    """Serialize a public refusal unchanged without nesting it as a message."""
+    try:
+        text = serialize_mcp_payload({"error": detail})
+    except Exception:
+        text = serialize_mcp_payload({"error": {"code": "operation_failed", "message": "Error response truncated", "truncated": True}})
+    return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+
+
+async def _development_result(result: Any, *, operation: str) -> CallToolResult:
+    """Release development resource/context bundles only after authorization."""
+    await authorize_external_content(
+        result,
+        direction="outbound",
+        principal=get_request_development_principal(),
+        surface="development",
+        mcp_route=_mcp_route_id.get(),
+        tool_id=operation,
+        operation=operation,
+        execution_completed=True,
+    )
+    return CallToolResult(content=[TextContent(type="text", text=serialize_mcp_payload(result, limit=None))])
+
+
+async def _execute_development_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
+    """Dispatch a development MCP tool through the shared service layer."""
+    principal = get_request_development_principal()
+    if principal is None:
+        return _development_error("authentication_required", "A session, MCP OAuth user token, or workspace development credential is required.")
+
+    workspace_id = arguments.get("workspace_id")
+    if not isinstance(workspace_id, str) or not workspace_id:
+        return _development_error("invalid_arguments", "workspace_id is required.")
+    reader_names = {
+        "workspace_development_document",
+        "workspace_development_contract",
+        "workspace_development_resources",
+        "workspace_development_resource_description",
+        "workspace_development_resource_contract",
+        "workspace_development_facts",
+    }
+    operation = "context" if name == "workspace_development_context" else arguments.get("operation")
+    if name not in reader_names and (not isinstance(operation, str) or not operation):
+        return _development_error("invalid_arguments", "operation is required.")
+    operation_arguments = {} if name == "workspace_development_context" else arguments.get("arguments", {})
+    if not isinstance(operation_arguments, dict):
+        return _development_error("invalid_arguments", "arguments must be an object.")
+
+    try:
+        allowed_names = {str(item["name"]) for item in await _get_development_operations(principal) if item.get("name")}
+        if name in reader_names:
+            # Static readers need only a fresh ACL check; dynamic readers obtain
+            # the caller-filtered context needed for their material.
+            operations = await development_service.list_authorized_operations(principal, workspace_id)
+            if name in {"workspace_development_document", "workspace_development_contract"}:
+                full_context = {}
+            else:
+                full_context = await development_service.execute(principal, workspace_id, "context", {})
+            if name == "workspace_development_document":
+                result = read_document(str(arguments.get("document_id", "")), arguments.get("revision"), offset=int(arguments.get("offset", 0)))
+            elif name == "workspace_development_contract":
+                result = read_operation_contract(
+                    str(arguments.get("operation", "")), arguments.get("revision"), operations=operations, offset=int(arguments.get("offset", 0))
+                )
+            elif name == "workspace_development_resource_description":
+                result = read_resource_description(
+                    full_context, resource_id=str(arguments.get("resource_id", "")), revision=arguments.get("revision"), offset=int(arguments.get("offset", 0))
+                )
+            elif name == "workspace_development_resource_contract":
+                result = read_resource_contract(
+                    full_context, resource_id=str(arguments.get("resource_id", "")), revision=arguments.get("revision"), offset=int(arguments.get("offset", 0))
+                )
+            elif name == "workspace_development_facts":
+                result = read_context_facts(full_context, arguments.get("revision"), offset=int(arguments.get("offset", 0)))
+            else:
+                result = read_resources(full_context, offset=int(arguments.get("offset", 0)), limit=int(arguments.get("limit", 20)))
+            return await _development_result(result, operation=name)
+        if operation not in allowed_names:
+            return _development_error("operation_not_allowed", "The requested operation is not available for this credential.")
+        if operation == "resources":
+            full_context = await development_service.execute(principal, workspace_id, "context", {})
+            result = read_resources(full_context, offset=0, limit=20)
+            return await _development_result(result, operation=operation)
+        result = await development_service.execute(principal, workspace_id, operation, operation_arguments)
+        if operation == "context":
+            result = build_compact_context(result, operations=await _get_development_operations(principal), workspace_id=workspace_id)
+        return await _development_result(result, operation=operation)
+    except Exception as exc:
+        # The shared service remains the authorization boundary. Keep failures
+        # structured without returning a traceback through MCP.
+        refusal = _development_refusal_detail(exc)
+        if refusal is not None:
+            return _development_refusal_error(refusal)
+        status_code = getattr(exc, "status_code", None)
+        detail = getattr(exc, "detail", None)
+        message = detail if detail is not None else str(exc)
+        code = (
+            str(detail.get("code"))
+            if isinstance(detail, dict) and detail.get("code")
+            else ("operation_failed" if status_code is None else f"http_{status_code}")
+        )
+        return _development_error(code, message or "Workspace development operation failed.")
+
 
 # Default MCP server identity (brandable from settings)
 _DEFAULT_MCP_SERVER_ID = "ragtime"
@@ -205,20 +568,31 @@ def _register_handlers(
         Tools are dynamically discovered from the ToolConfig database.
         Only healthy tools (passing heartbeat check) are exposed.
         """
+        _bind_session_request_context(server)
         tools: list[Tool] = []
         _track_active_session(server)
 
         try:
-            tool_definitions = await tool_adapter.get_available_tools(route_filter=route_filter)
+            principal = get_request_development_principal()
+            # A workspace development credential is deliberately not a general
+            # MCP route credential. It can see only its workspace development
+            # tools, never the legacy global tool catalog.
+            if getattr(principal, "credential_id", None) is None:
+                tool_definitions = await tool_adapter.get_available_tools(route_filter=route_filter)
 
-            for tool_def in tool_definitions:
-                tools.append(
-                    Tool(
-                        name=tool_def.name,
-                        description=tool_def.description,
-                        inputSchema=tool_def.input_schema,
+                for tool_def in tool_definitions:
+                    tools.append(
+                        Tool(
+                            name=tool_def.name,
+                            description=tool_def.description,
+                            inputSchema=tool_def.input_schema,
+                        )
                     )
-                )
+
+            if principal is not None and route_filter is None:
+                # Definitions are rebuilt per request because the operation
+                # list is scope-dependent. The shared adapter remains cached.
+                tools.extend(await _development_tools_for_principal(principal))
 
             logger.debug(f"MCP list_tools: exposing {len(tools)} tools")
 
@@ -229,7 +603,7 @@ def _register_handlers(
         return tools
 
     @server.call_tool()
-    async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent] | CallToolResult:
         """
         Execute a tool and return the result.
 
@@ -240,11 +614,39 @@ def _register_handlers(
         Returns:
             List containing a single TextContent with the result
         """
+        _bind_session_request_context(server)
         _track_active_session(server)
         logger.info(f"MCP call_tool: {name}")
-        logger.debug(f"MCP call_tool arguments: {arguments}")
+        # Arguments are untrusted content and must not enter ordinary logs.
 
         try:
+            canonical_tool_id = await tool_adapter.resolve_canonical_tool_id(name)
+            await authorize_external_content(
+                arguments,
+                direction="inbound",
+                principal=get_request_development_principal(),
+                surface="mcp",
+                mcp_route=_mcp_route_id.get(),
+                tool_id=canonical_tool_id,
+                operation="tools/call",
+            )
+            if name in {
+                "workspace_development",
+                "workspace_development_context",
+                "workspace_development_document",
+                "workspace_development_contract",
+                "workspace_development_resources",
+                "workspace_development_resource_description",
+                "workspace_development_resource_contract",
+                "workspace_development_facts",
+            }:
+                if route_filter is not None:
+                    return _development_error("tool_not_available", "Workspace development tools are available only on the default MCP route.")
+                return await _execute_development_tool(name, arguments)
+
+            if getattr(get_request_development_principal(), "credential_id", None) is not None:
+                return _development_error("tool_not_available", "Workspace development credentials cannot call legacy MCP tools.")
+
             # If a route filter is active, validate the tool is allowed
             if route_filter is not None:
                 if not await tool_adapter.is_tool_allowed_by_route_filter(name, route_filter):
@@ -257,12 +659,25 @@ def _register_handlers(
                     ]
 
             result = await tool_adapter.execute_tool(name, arguments)
+            await authorize_external_content(
+                result,
+                direction="outbound",
+                principal=get_request_development_principal(),
+                surface="mcp",
+                mcp_route=_mcp_route_id.get(),
+                tool_id=canonical_tool_id,
+                operation="tools/call",
+                execution_completed=True,
+            )
 
             return [TextContent(type="text", text=result)]
 
         except Exception as e:
-            logger.exception(f"MCP tool execution error: {e}")
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            detail = public_error_detail(e)
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps({"error": detail}, sort_keys=True))],
+                isError=True,
+            )
 
 
 async def get_custom_route_server(
