@@ -196,6 +196,7 @@ fi
 print_banner() {
     local ui_port=$1
     local api_port=$2
+    local bind_protocol=${3:-$PROTOCOL}
 
     # ASCII Banner
     if [ -t 1 ]; then
@@ -219,22 +220,27 @@ print_banner() {
     done
     echo ""
 
-    # Get network IP for display
-    local network_ip
-    network_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-    network_ip=${network_ip:-"<unknown>"}
+    local external_base_url=${EXTERNAL_BASE_URL%/}
+    local external_url api_docs_url
+    if [ -n "$external_base_url" ]; then
+        external_url="$external_base_url"
+        api_docs_url="$external_base_url/docs"
+    else
+        external_url="not configured (EXTERNAL_BASE_URL)"
+        api_docs_url="/docs"
+    fi
 
     if [ "$ui_port" = "$api_port" ]; then
         # Production: single port serves both UI and API
-        log "NOTICE" "${GREEN}  ➜  Local:    $PROTOCOL://localhost:$api_port${NC}"
-        log "NOTICE" "${GREEN}  ➜  Network:  $PROTOCOL://$network_ip:$api_port${NC}"
-        log "NOTICE" "${GREEN}  ➜  API Docs: $PROTOCOL://localhost:$api_port/docs${NC}"
+        log "NOTICE" "${GREEN}  ➜  Bind:     $bind_protocol://0.0.0.0:$api_port${NC}"
+        log "NOTICE" "${GREEN}  ➜  External: $external_url${NC}"
+        log "NOTICE" "${GREEN}  ➜  API Docs: $api_docs_url${NC}"
     else
         # Development: separate ports for UI (Vite) and API (uvicorn)
-        log "NOTICE" "${GREEN}  ➜  UI Local:    $PROTOCOL://localhost:$ui_port${NC}"
-        log "NOTICE" "${GREEN}  ➜  UI Network:  $PROTOCOL://$network_ip:$ui_port${NC}"
-        log "NOTICE" "${GREEN}  ➜  API:         $PROTOCOL://localhost:$api_port${NC}"
-        log "NOTICE" "${GREEN}  ➜  API Docs:    $PROTOCOL://localhost:$api_port/docs${NC}"
+        log "NOTICE" "${GREEN}  ➜  UI Bind:  $bind_protocol://0.0.0.0:$ui_port${NC}"
+        log "NOTICE" "${GREEN}  ➜  API Bind: $bind_protocol://0.0.0.0:$api_port${NC}"
+        log "NOTICE" "${GREEN}  ➜  External: $external_url${NC}"
+        log "NOTICE" "${GREEN}  ➜  API Docs: $api_docs_url${NC}"
     fi
     echo ""
 
@@ -352,6 +358,6 @@ if [ "$DEBUG_MODE" = "true" ]; then
     ENABLE_HTTPS=$ENABLE_HTTPS SSL_CERT_FILE=$SSL_CERT_FILE SSL_KEY_FILE=$SSL_KEY_FILE exec npm run dev --silent -- --host 0.0.0.0 --logLevel warn
 else
     # Production mode - print banner then start server
-    print_banner "$PORT" "$PORT"
+    print_banner 8000 8000 http
     exec "$@"
 fi
