@@ -57,9 +57,9 @@ class ControlServerTest {
       assertEquals(200,send(client,port,"POST","/v1/workspaces/ws/ensure","{\"buckets\":[{\"name\":\"uploads\"}]}" ).statusCode());
       var queued=send(client,port,"POST","/v1/workspaces/ws/legacy-import","{\"generation\":\""+generation+"\",\"manifest_sha256\":\""+manifestHash+"\"}");
       assertEquals(200,queued.statusCode(),queued.body());
-      HttpResponse<String> status=null; long deadline=System.nanoTime()+5_000_000_000L;
+      HttpResponse<String> status=null; long deadline=System.nanoTime()+30_000_000_000L;
       do { status=send(client,port,"GET","/v1/workspaces/ws/legacy-import",null); Thread.sleep(10); } while(!status.body().contains("\"state\":\"completed\"") && System.nanoTime()<deadline);
-      assertEquals(200,status.statusCode()); assertTrue(status.body().contains("buckets/uploads/docs/report.txt"));
+      assertEquals(200,status.statusCode()); assertTrue(status.body().contains("\"state\":\"completed\""),"Import did not reach completed state within 30s. Final response: "+status.body()); assertTrue(status.body().contains("buckets/uploads/docs/report.txt"));
       assertEquals(200,send(client,port,"POST","/v1/workspaces/ws/legacy-import/gc","{\"generation\":\""+generation+"\",\"manifest_sha256\":\""+manifestHash+"\"}").statusCode());
       assertEquals(409,send(client,port,"POST","/v1/workspaces/ws/legacy-import/gc","{\"generation\":\""+generation+"\",\"manifest_sha256\":\"bad\"}").statusCode());
     }

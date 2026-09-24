@@ -30,7 +30,7 @@ jobs:
       ruff_scope: ${{ steps.selector.outputs.ruff_scope }}
       container_changed: ${{ steps.selector.outputs.container_changed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: {fetch-depth: 0}
       - id: selector
         shell: bash
@@ -51,7 +51,7 @@ jobs:
     needs: scope
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/sync-readme
         with: {fail-on-diff: 'true'}
       - name: Validate docker compose manifests
@@ -65,7 +65,7 @@ jobs:
         if: inputs.use_harbor
         uses: docker/login-action@v3
         with: {registry: hub.docker.visnovsky.us, username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
-      - uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile
@@ -83,7 +83,7 @@ jobs:
     needs: scope
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: buildx
         uses: ./.github/actions/managed-buildx
         with: {scope: backend-analysis}
@@ -92,7 +92,7 @@ jobs:
         uses: docker/login-action@v3
         with: {registry: hub.docker.visnovsky.us, username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
       - name: Build shared backend check image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile
@@ -186,7 +186,7 @@ jobs:
     runs-on: self-hosted
     outputs: {result: '${{ steps.result.outputs.value }}'}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/managed-buildx
         with: {scope: frontend}
       - name: Log in to Harbor Registry
@@ -194,7 +194,7 @@ jobs:
         uses: docker/login-action@v3
         with: {registry: hub.docker.visnovsky.us, username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
       - name: Frontend format check
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile
@@ -206,7 +206,7 @@ jobs:
             type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_scope }}
             type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_fallback }}
       - name: Frontend ESLint
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile
@@ -219,7 +219,7 @@ jobs:
             type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_scope }}
             type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_fallback }}
       - name: Frontend Vitest
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile
@@ -231,7 +231,7 @@ jobs:
             type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_scope }}
             type=registry,ref=hub.docker.visnovsky.us/library/ragtime:buildcache-frontend-${{ inputs.cache_fallback }}
       - name: Build frontend
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile
@@ -254,7 +254,7 @@ jobs:
     runs-on: self-hosted
     outputs: {result: '${{ steps.result.outputs.value }}'}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/managed-buildx
         with: {scope: storage}
       - name: Log in to Harbor Registry
@@ -262,7 +262,7 @@ jobs:
         uses: docker/login-action@v3
         with: {registry: hub.docker.visnovsky.us, username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
       - name: Storage Maven tests
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile.storage

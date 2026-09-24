@@ -29,7 +29,7 @@ runs:
         SCOPE: ${{ inputs.scope }}
         MIN_FREE_GIB: ${{ inputs.min-free-gib }}
       run: python3 docker/scripts/ci_docker_gc.py prepare --scope "$SCOPE" --min-free-gib "$MIN_FREE_GIB" >> "$GITHUB_OUTPUT"
-    - uses: docker/setup-buildx-action@v3
+    - uses: docker/setup-buildx-action@v4
       with:
         name: ${{ steps.prepare.outputs.builder_name }}
         cleanup: true
