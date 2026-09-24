@@ -295,7 +295,7 @@ describe('OAuthLoginPage gradient shell', () => {
   });
 
   it('announces a server failure, stays on credentials, and permits an MFA retry', async () => {
-    vi.mocked(fetch)
+    apiMock.apiFetch
       .mockResolvedValueOnce({
         ok: false,
         redirected: false,

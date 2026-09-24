@@ -1,31 +1,48 @@
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 import httpx
 from fastapi import FastAPI
+from prisma import Json
+from prisma.enums import AuthProvider, UserRole
+from prisma.models import User
 from starlette.requests import Request
 
 from ragtime.api import auth as api_auth
 from ragtime.core import generation_policy
 
+NOW = datetime(2026, 9, 22, tzinfo=timezone.utc)
 
-def _user(*, chat: bool | None, userspace: bool | None) -> SimpleNamespace:
-    return SimpleNamespace(
-        id="user-1",
-        username="alice",
+
+def _user(
+    *,
+    chat: bool | None,
+    userspace: bool | None,
+    user_id: str = "user-1",
+    username: str = "alice",
+    role: UserRole = UserRole.user,
+) -> User:
+    return User(
+        id=user_id,
+        username=username,
         displayName="Alice",
         email="alice@example.com",
-        role="user",
-        authProvider="local_managed",
+        role=role,
+        authProvider=AuthProvider.local_managed,
         themePack=None,
         roleManuallySet=False,
         sourceProvider=None,
         sourceSyncedAt=None,
         sourceExpiresAt=None,
-        cachedGroups=[],
+        cachedGroups=cast(Json, "[]"),
         chatEnabled=chat,
         userspaceGenerationEnabled=userspace,
+        createdAt=NOW,
+        updatedAt=NOW,
+        securityGeneration=0,
     )
 
 
@@ -90,10 +107,9 @@ class BulkUserGenerationPolicyTests(unittest.IsolatedAsyncioTestCase):
 class UserGenerationPolicyRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_admin_patch_serializes_explicit_enable_and_null_reset_with_global_default_off(self) -> None:
         user = _user(chat=None, userspace=None)
-        user.role = "user"
         db = _db(SimpleNamespace(chatEnabled=False, userspaceGenerationEnabled=False))
 
-        async def update_user(*, where: dict, data: dict) -> SimpleNamespace:
+        async def update_user(*, where: dict, data: dict) -> User:
             self.assertEqual(where, {"id": "user-1"})
             for field, value in data.items():
                 setattr(user, field, value)
@@ -103,7 +119,7 @@ class UserGenerationPolicyRouteTests(unittest.IsolatedAsyncioTestCase):
             find_many=mock.AsyncMock(return_value=[user]),
             update=mock.AsyncMock(side_effect=update_user),
         )
-        admin = SimpleNamespace(id="admin-1", username="admin", role="admin")
+        admin = _user(chat=None, userspace=None, user_id="admin-1", username="admin", role=UserRole.admin)
         patches = (
             mock.patch.object(api_auth, "get_db", mock.AsyncMock(return_value=db)),
             mock.patch.object(generation_policy, "get_db", mock.AsyncMock(return_value=db)),
@@ -131,7 +147,6 @@ class UserGenerationPolicyRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_auth_status_agrees_with_explicit_user_enable_under_global_default_off(self) -> None:
         user = _user(chat=True, userspace=True)
-        user.role = "user"
         db = _db(SimpleNamespace(chatEnabled=False, userspaceGenerationEnabled=False))
         db.user = SimpleNamespace(find_many=mock.AsyncMock(return_value=[user]))
         with (
