@@ -85,6 +85,7 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
                 },
             ),
             mock.patch("ragtime.userspace.sqlite_history.get_db", return_value=db),
+            mock.patch("ragtime.userspace.sqlite_history_confinement.confinement_available", return_value=True),
             mock.patch.object(service, "capture_workspace_databases", new_callable=mock.AsyncMock) as capture,
         ):
             asyncio.run(service.run_maintenance_once())
@@ -95,6 +96,49 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
         _, kwargs = queue.enqueue.await_args
         self.assertEqual("scheduled", kwargs["trigger"])
         self.assertEqual("scheduled:workspace:", kwargs["request_key"][:20])
+
+    def test_maintenance_cleans_up_but_does_not_enqueue_when_confinement_is_unavailable(self) -> None:
+        workspace_root = Path(self.temp.name) / "scheduled" / "workspaces" / "workspace"
+        files = workspace_root / "files"
+        files.mkdir(parents=True)
+        service = SqliteHistoryService(lambda _: files)
+        root = files.parent / "sqlite_backups"
+        service._cleanup_and_due_sync(root, "workspace")
+        candidate = root / "candidates" / "expired.sqlite3"
+        candidate.parent.mkdir()
+        candidate.write_bytes(b"expired")
+        manifest = service._load(root, "workspace")
+        due_at = (_now() - timedelta(seconds=1)).isoformat()
+        manifest["next_scheduled_at"] = due_at
+        manifest["previews"] = {
+            "expired": {"candidate": "candidates/expired.sqlite3", "expires_at": due_at},
+        }
+        service._save(root, manifest)
+        module = ModuleType("ragtime.userspace.service")
+        setattr(module, "userspace_service", SimpleNamespace(root_path=workspace_root.parent.parent))
+        queue = SimpleNamespace(enqueue=mock.AsyncMock())
+        queue_module = ModuleType("ragtime.userspace.sqlite_backup_queue")
+        setattr(queue_module, "get_sqlite_backup_queue_service", lambda: queue)
+        db = SimpleNamespace(query_raw=mock.AsyncMock(return_value=[{"id": "workspace"}]))
+        with (
+            mock.patch.dict(sys.modules, {"ragtime.userspace.service": module, "ragtime.userspace.sqlite_backup_queue": queue_module}),
+            mock.patch("ragtime.userspace.sqlite_history.get_db", return_value=db),
+            mock.patch("ragtime.userspace.sqlite_history_confinement.confinement_available", return_value=False),
+        ):
+            asyncio.run(service.run_maintenance_once())
+        queue.enqueue.assert_not_awaited()
+        unavailable_manifest = service._load(root, "workspace")
+        self.assertEqual(due_at, unavailable_manifest["next_scheduled_at"])
+        self.assertNotIn("scheduled_claim", unavailable_manifest)
+        self.assertNotIn("expired", unavailable_manifest["previews"])
+        self.assertFalse(candidate.exists())
+        with (
+            mock.patch.dict(sys.modules, {"ragtime.userspace.service": module, "ragtime.userspace.sqlite_backup_queue": queue_module}),
+            mock.patch("ragtime.userspace.sqlite_history.get_db", return_value=db),
+            mock.patch("ragtime.userspace.sqlite_history_confinement.confinement_available", return_value=True),
+        ):
+            asyncio.run(service.run_maintenance_once())
+        queue.enqueue.assert_awaited_once()
 
     def test_maintenance_only_schedules_catalog_workspaces(self) -> None:
         workspace_root = Path(self.temp.name) / "scheduled" / "workspaces"
@@ -121,6 +165,7 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
         with (
             mock.patch.dict(sys.modules, {"ragtime.userspace.service": module, "ragtime.userspace.sqlite_backup_queue": queue_module}),
             mock.patch("ragtime.userspace.sqlite_history.get_db", return_value=db),
+            mock.patch("ragtime.userspace.sqlite_history_confinement.confinement_available", return_value=True),
         ):
             asyncio.run(service.run_maintenance_once())
 

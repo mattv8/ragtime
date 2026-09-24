@@ -278,6 +278,48 @@ legend {
   opacity: 1;
 }
 
+.app-shell > [data-webgl-motion-warning='unavailable'] {
+  position: fixed;
+  right: max(calc(var(--space-md) + 2px), calc(env(safe-area-inset-right) + 2px));
+  bottom: max(calc(var(--space-md) + 2px), calc(env(safe-area-inset-bottom) + 2px));
+  z-index: calc(var(--z-tooltip) + 1);
+  display: inline-flex;
+}
+
+.webgl-motion-warning-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-bg-primary) 75%, transparent);
+  color: var(--color-warning);
+  box-shadow: var(--shadow-sm);
+  cursor: help;
+  opacity: 0.6;
+  backdrop-filter: blur(10px);
+  transition:
+    background 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.app-shell > [data-webgl-motion-warning='unavailable']:hover .webgl-motion-warning-trigger,
+.webgl-motion-warning-trigger:focus-visible {
+  opacity: 1;
+}
+
+.webgl-motion-warning-trigger:hover {
+  background: color-mix(in srgb, var(--color-bg-primary) 85%, transparent);
+}
+
+.webgl-motion-warning-trigger:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
 .app-shell-locked {
   height: calc(100dvh - var(--space-sm) - var(--space-lg));
   display: flex;

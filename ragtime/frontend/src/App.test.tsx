@@ -52,6 +52,9 @@ const toastApiMock = vi.hoisted(() => ({
 const toastContainerSpy = vi.hoisted(() => vi.fn());
 const oauthLoginPageSpy = vi.hoisted(() => vi.fn());
 const usersPanelSpy = vi.hoisted(() => vi.fn());
+const webglGradientMock = vi.hoisted(() => ({
+  onWebGLAvailabilityChange: null as null | ((available: boolean) => void),
+}));
 const authExpiredListenerMock = vi.hoisted(() => ({
   callback: null as null | (() => void),
 }));
@@ -82,7 +85,14 @@ vi.mock('./components/shared/Toast', () => ({
 }));
 
 vi.mock('@/components/WebGLGradient', () => ({
-  default: () => <div data-testid="webgl-gradient" />,
+  default: ({
+    onWebGLAvailabilityChange,
+  }: {
+    onWebGLAvailabilityChange?: (available: boolean) => void;
+  }) => {
+    webglGradientMock.onWebGLAvailabilityChange = onWebGLAvailabilityChange ?? null;
+    return <div data-testid="webgl-gradient" />;
+  },
 }));
 
 vi.mock('./components/ConfigurationBanner', () => ({
@@ -314,6 +324,7 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   localStorageMock.getItem.mockReturnValue(null);
+  webglGradientMock.onWebGLAvailabilityChange = null;
   window.history.replaceState({}, '', '/');
   authExpiredListenerMock.callback = null;
   consoleWarnSpy.mockRestore();
@@ -444,6 +455,58 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+describe('WebGL motion background availability', () => {
+  it('replaces the motion toggle with an accessible warning when WebGL cannot start', async () => {
+    mockAuthenticatedAdmin();
+    apiMock.getAuthStatus.mockResolvedValue({
+      authenticated: true,
+      ldap_configured: false,
+      local_admin_enabled: true,
+      debug_mode: false,
+      api_key_configured: true,
+      session_cookie_secure: false,
+      allowed_origins_open: false,
+      authenticated_webgl_background_enabled: true,
+      server_name: 'Ragtime',
+      chat_enabled: true,
+      userspace_generation_enabled: true,
+    });
+    apiMock.getSettings.mockResolvedValue({
+      settings: {
+        server_name: 'Ragtime',
+        authenticated_webgl_background_enabled: true,
+      },
+      configuration_warnings: [],
+    });
+
+    render(<App />);
+
+    await screen.findByRole('button', { name: 'Pause motion background' });
+    expect(webglGradientMock.onWebGLAvailabilityChange).toBeTypeOf('function');
+    act(() => webglGradientMock.onWebGLAvailabilityChange?.(false));
+
+    const warning = await screen.findByRole('button', { name: 'Motion background unavailable' });
+    expect(warning.getAttribute('aria-disabled')).toBe('true');
+    expect(screen.queryByRole('button', { name: 'Pause motion background' })).toBeNull();
+    expect(warning.classList.contains('webgl-motion-toggle')).toBe(true);
+
+    fireEvent.mouseEnter(warning);
+    expect(
+      await screen.findByRole('tooltip', {
+        name: 'Motion background unavailable. WebGL could not start; browser hardware acceleration may be disabled. Enable it in browser settings and reload.',
+      }),
+    ).toBeTruthy();
+
+    warning.focus();
+    expect(document.activeElement).toBe(warning);
+    expect(
+      await screen.findByRole('tooltip', {
+        name: 'Motion background unavailable. WebGL could not start; browser hardware acceleration may be disabled. Enable it in browser settings and reload.',
+      }),
+    ).toBeTruthy();
+  });
+});
 
 describe('generation capabilities', () => {
   it('refreshes both authenticated policy snapshots after a self policy save', async () => {

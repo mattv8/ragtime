@@ -441,6 +441,12 @@ flowchart LR
    Upgrading an existing deployment to the file-only bridge credential and
    keystore layout? Follow the [safe cutover guide](docker/bridge-credential-cutover.md).
 
+   **SQLite history host requirement:** Workspace SQLite history capture requires
+   Landlock ABI 3 or newer, enabled and accessible inside the Ragtime container.
+   ABI 3 is available in upstream Linux 6.2 and newer; Linux 6.1 provides ABI 2.
+   An unsupported host cannot capture SQLite history safely. Updating only the
+   container image does not update the host kernel.
+
 4. **Start the application:**
    ```bash
    docker compose up -d

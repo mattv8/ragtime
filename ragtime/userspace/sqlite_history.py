@@ -29,6 +29,7 @@ from fastapi import HTTPException
 
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
+from ragtime.userspace import sqlite_history_confinement
 from ragtime.userspace.sqlite_capture_admission import capture_request_admission, run_admitted_subprocess
 from ragtime.userspace.sqlite_runtime import (
     assert_sqlite_workspace_maintenance_held,
@@ -418,6 +419,12 @@ class SqliteHistoryService:
                         self._next_due_cache[workspace_id] = await run_sqlite_blocking(self._next_scheduled_due_sync, root, workspace_id, True)
                     else:
                         due = self._next_due_cache.get(workspace_id, now) <= now
+                    # Cleanup remains available on older hosts, but scheduled
+                    # work must not claim/enqueue a child known to fail setup.
+                    # Do not advance the due cache: a later capability recovery
+                    # should be eligible immediately rather than hourly.
+                    if due and not sqlite_history_confinement.confinement_available():
+                        continue
                     claim = await run_sqlite_blocking(self._claim_scheduled_due_sync, root, workspace_id, True, True) if due else None
                     if not claim:
                         self._next_due_cache[workspace_id] = await run_sqlite_blocking(self._next_scheduled_due_sync, root, workspace_id, True)
@@ -743,6 +750,10 @@ class SqliteHistoryService:
         capture_job_id: str | None = None,
     ) -> dict[str, Any]:
         _validate_database_name(name)
+        # This must precede catalog pruning/quota eviction and any source probe.
+        # The child repeats the real installation; this only avoids known-futile
+        # process storms when the host cannot create the required ruleset.
+        sqlite_history_confinement.require_confinement()
         backup_id = str(uuid4())
         blob_dir = _history_subdirectory(root, "blobs", create=True)
         destination = blob_dir / f"{backup_id}.sqlite3"
@@ -912,6 +923,7 @@ class SqliteHistoryService:
         in this process is insufficient.  The child inherits pinned directory
         descriptors and is filesystem-confined before SQLite opens any name.
         """
+        sqlite_history_confinement.require_confinement()
         try:
             with open_directory(files_dir, ".ragtime/db") as source_fd, open_directory(blob_dir.parent, "blobs", create=True) as destination_fd:
                 for fd in (source_fd, destination_fd):
@@ -952,6 +964,8 @@ class SqliteHistoryService:
     @staticmethod
     def _probe_confined(files_dir: Path, database_name: str) -> str | None:
         """Ask the confined child for a conservative source token only."""
+        if not sqlite_history_confinement.confinement_available():
+            return None
         try:
             with open_directory(files_dir, ".ragtime/db") as source_fd, open_directory(files_dir.parent, "sqlite_backups", create=True) as destination_fd:
                 for fd in (source_fd, destination_fd):
@@ -1138,6 +1152,7 @@ class SqliteHistoryService:
     def _preview_sync(
         self, workspace_id: str, root: Path, files_dir: Path, backup_id: str, mode: str, policy: str, table_policies: dict[str, str] | None, user_id: str
     ) -> dict[str, Any]:
+        sqlite_history_confinement.require_confinement()
         with _catalog_lock(root):
             manifest = self._load(root, workspace_id)
             row = next((item for item in manifest["backups"] if item["id"] == backup_id and item.get("status") == "ready"), None)
@@ -1213,6 +1228,7 @@ class SqliteHistoryService:
     def _preview_confined(
         files_dir: Path, root: Path, backup: str, database_name: str, candidate: str, mode: str, policy: str, table_policies: dict[str, str]
     ) -> dict[str, Any]:
+        sqlite_history_confinement.require_confinement()
         try:
             with open_directory(files_dir, ".ragtime/db") as source_fd, open_directory(root.parent, root.name) as destination_fd:
                 for fd in (source_fd, destination_fd):
@@ -1267,6 +1283,7 @@ class SqliteHistoryService:
     @staticmethod
     def _drift_confined(files_dir: Path, root: Path, database_name: str) -> dict[str, Any]:
         """Read live SQLite/migration fingerprints only in the Landlock child."""
+        sqlite_history_confinement.require_confinement()
         try:
             with open_directory(files_dir, ".ragtime/db") as source_fd, open_directory(root.parent, root.name) as destination_fd:
                 completed = run_admitted_subprocess(

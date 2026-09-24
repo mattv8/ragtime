@@ -68,3 +68,44 @@ describe('WebGLGradient battery warning', () => {
     });
   });
 });
+
+describe('WebGLGradient WebGL availability', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockReturnValue({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+    );
+
+    Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
+      configurable: true,
+      value: vi.fn().mockReturnValue(null),
+    });
+
+    Object.defineProperty(navigator, 'getBattery', {
+      configurable: true,
+      value: vi.fn().mockRejectedValue(new Error('Battery API not available')),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('reports false through onWebGLAvailabilityChange when WebGL context is null', async () => {
+    const onWebGLAvailabilityChange = vi.fn();
+    render(<WebGLGradient onWebGLAvailabilityChange={onWebGLAvailabilityChange} />);
+
+    await waitFor(() => {
+      expect(onWebGLAvailabilityChange).toHaveBeenCalledWith(false);
+    });
+  });
+});
