@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 STALE_AFTER = dt.timedelta(hours=1)
 GIB = 1024**3
@@ -277,6 +277,15 @@ class Collector:
             return None
         return parsed.group(2), parsed.group(3), volume
 
+    def _remove(self, resource: str, name: str, remove: Callable[[str], None], identifier: Optional[str] = None) -> bool:
+        """Attempt one optional removal without claiming success on uncertainty."""
+        try:
+            remove(identifier if identifier is not None else name)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            self.messages.append("removal uncertain {} {}: {}".format(resource, name, type(error).__name__))
+            return False
+        return True
+
     def collect(self, apply: bool = False) -> list[str]:
         mutable = apply and self.context.may_mutate
         if apply and not mutable:
@@ -302,12 +311,13 @@ class Collector:
                 if fresh != container or not self._owned_container(fresh):
                     self.messages.append("keep builder {}: changed during collection".format(container.name))
                     continue
-                self.docker.remove_container(container.id)
+                if not self._remove("builder", container.name, self.docker.remove_container, container.id):
+                    continue
                 try:
                     if self.docker.container_present(container.id):
                         self.messages.append("keep volume {}: builder still exists".format(volume))
                     elif volume not in {mount[0] for item in self.docker.containers() for mount in item.mounts}:
-                        self.docker.remove_volume(volume)
+                        self._remove("volume", volume, self.docker.remove_volume)
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired, IndexError, KeyError, json.JSONDecodeError):
                     self.messages.append("keep volume {}: builder absence uncertain".format(volume))
                 self.messages.append("removed stale builder {}".format(container.name))
@@ -332,8 +342,8 @@ class Collector:
                     self.messages.append("keep volume {}: reinspection failed".format(candidate_volume.name))
                     continue
                 if fresh_volume == candidate_volume and candidate_volume.name not in attached:
-                    self.docker.remove_volume(candidate_volume.name)
-                    self.messages.append("removed stale volume {}".format(candidate_volume.name))
+                    if self._remove("volume", candidate_volume.name, self.docker.remove_volume):
+                        self.messages.append("removed stale volume {}".format(candidate_volume.name))
                 else:
                     self.messages.append("keep volume {}: changed or attached during collection".format(candidate_volume.name))
             else:
@@ -366,8 +376,8 @@ class Collector:
                         self.messages.append("keep image tag {}: reinspection failed".format(tag))
                         continue
                     if fresh_image == image and image.id not in fresh_references:
-                        self.docker.remove_image_tag(tag)
-                        self.messages.append("removed stale image tag {}".format(tag))
+                        if self._remove("image tag", tag, self.docker.remove_image_tag):
+                            self.messages.append("removed stale image tag {}".format(tag))
                     else:
                         self.messages.append("keep image tag {}: changed or in use during collection".format(tag))
                 else:

@@ -1,5 +1,6 @@
 import datetime as dt
 import importlib.util
+import io
 import json
 import pathlib
 import shutil
@@ -78,6 +79,9 @@ class FakeDocker:
 
     def remove_image_tag(self, tag):
         self.removed.append(("image", tag))
+
+    def root_dir(self):
+        return pathlib.Path("/")
 
 
 class FakeResponse:
@@ -200,6 +204,77 @@ class CollectorTests(unittest.TestCase):
         gc.Collector(context(), docker, FakeGitHub(), NOW).collect(apply=True)
         self.assertEqual(docker.removed, [("image", tag)])
 
+    def test_container_removal_failure_is_uncertain_and_skips_dependent_volume(self):
+        item = container()
+        for error in (subprocess.CalledProcessError(1, "rm"), subprocess.TimeoutExpired("rm", 30)):
+            with self.subTest(error=type(error).__name__):
+                docker = FakeDocker([item], [gc.Volume(item.name + "_state", old())])
+                volume_remove = mock.Mock()
+
+                def fail_remove(container_id):
+                    if isinstance(error, subprocess.TimeoutExpired):
+                        docker._containers = [candidate for candidate in docker._containers if candidate.id != container_id]
+                    raise error
+
+                docker.remove_container = mock.Mock(side_effect=fail_remove)
+                docker.remove_volume = volume_remove
+                messages = gc.Collector(context(), docker, FakeGitHub(), NOW).collect(apply=True)
+                self.assertEqual(docker.removed, [])
+                self.assertIn("removal uncertain builder {}: {}".format(item.name, type(error).__name__), messages)
+                volume_remove.assert_not_called()
+                self.assertNotIn("removed stale builder {}".format(item.name), messages)
+
+    def test_dependent_volume_removal_failure_is_uncertain(self):
+        item = container()
+        for error in (subprocess.CalledProcessError(1, "volume rm"), subprocess.TimeoutExpired("volume rm", 30)):
+            with self.subTest(error=type(error).__name__):
+                docker = FakeDocker([item], [gc.Volume(item.name + "_state", old())])
+                docker.remove_volume = mock.Mock(side_effect=error)
+                messages = gc.Collector(context(), docker, FakeGitHub(), NOW).collect(apply=True)
+                self.assertIn(("container", "cid"), docker.removed)
+                self.assertIn("removal uncertain volume {}: {}".format(item.name + "_state", type(error).__name__), messages)
+
+    def test_orphan_volume_removal_failure_does_not_stop_other_candidates(self):
+        first = gc.Volume(container("8").name + "_state", old())
+        second = gc.Volume(container("7").name + "_state", old())
+        for error in (subprocess.CalledProcessError(1, "volume rm"), subprocess.TimeoutExpired("volume rm", 30)):
+            with self.subTest(error=type(error).__name__):
+                docker = FakeDocker(volumes=[first, second])
+                original_remove = docker.remove_volume
+
+                def remove_or_fail(name):
+                    if name == first.name:
+                        raise error
+                    original_remove(name)
+
+                docker.remove_volume = mock.Mock(side_effect=remove_or_fail)
+                messages = gc.Collector(context(), docker, FakeGitHub(), NOW).collect(apply=True)
+                self.assertIn("removal uncertain volume {}: {}".format(first.name, type(error).__name__), messages)
+                self.assertIn(("volume", second.name), docker.removed)
+                self.assertNotIn("removed stale volume {}".format(first.name), messages)
+
+    def test_image_tag_removal_failure_does_not_stop_other_candidates(self):
+        first_tag = gc.image_tag("owner/repo", "8", "1", "first")
+        second_tag = gc.image_tag("owner/repo", "7", "1", "second")
+        labels = {"org.ragtime.ci.repository": "owner/repo", "org.ragtime.ci.run-id": "8", "org.ragtime.ci.run-attempt": "1"}
+        first = gc.Image("first", (first_tag,), labels, old())
+        second = gc.Image("second", (second_tag,), {**labels, "org.ragtime.ci.run-id": "7"}, old())
+        for error in (subprocess.CalledProcessError(1, "image rm"), subprocess.TimeoutExpired("image rm", 30)):
+            with self.subTest(error=type(error).__name__):
+                docker = FakeDocker(images=[first, second])
+                original_remove = docker.remove_image_tag
+
+                def remove_or_fail(tag):
+                    if tag == first_tag:
+                        raise error
+                    original_remove(tag)
+
+                docker.remove_image_tag = mock.Mock(side_effect=remove_or_fail)
+                messages = gc.Collector(context(), docker, FakeGitHub(), NOW).collect(apply=True)
+                self.assertIn("removal uncertain image tag {}: {}".format(first_tag, type(error).__name__), messages)
+                self.assertIn(("image", second_tag), docker.removed)
+                self.assertNotIn("removed stale image tag {}".format(first_tag), messages)
+
 
 class ParsingAndGuardTests(unittest.TestCase):
     def test_parse_time_handles_z_fractional_and_invalid(self):
@@ -299,6 +374,78 @@ class ParsingAndGuardTests(unittest.TestCase):
             error.stderr = stderr
             with self.subTest(stderr=stderr):
                 self.assertEqual(gc.Docker._not_found(error), should_match)
+
+    def test_prepare_emits_outputs_after_successful_post_cleanup_headroom_check(self):
+        tag = gc.image_tag("owner/repo", "8", "1", "scope")
+        labels = {
+            "org.ragtime.ci.repository": "owner/repo",
+            "org.ragtime.ci.run-id": "8",
+            "org.ragtime.ci.run-attempt": "1",
+        }
+        docker = FakeDocker(images=[gc.Image("img", (tag,), labels, old())])
+        docker.remove_image_tag = mock.Mock(side_effect=subprocess.TimeoutExpired("image rm", 30))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.dict("os.environ", {"XDG_CACHE_HOME": directory}, clear=False),
+            mock.patch.object(gc.Context, "from_env", return_value=context()),
+            mock.patch.object(gc, "Docker", return_value=docker),
+            mock.patch.object(gc, "GitHubAttempts", return_value=FakeGitHub()),
+            mock.patch.object(gc, "_now", return_value=NOW),
+            mock.patch.object(gc, "disk_space", side_effect=[(20 * gc.GIB, 100 * gc.GIB), (16 * gc.GIB, 100 * gc.GIB)]) as disk_space,
+            mock.patch("sys.stdout", stdout),
+            mock.patch("sys.stderr", stderr),
+        ):
+            self.assertEqual(gc.main(["prepare", "--scope", "backend"]), 0)
+        self.assertEqual(disk_space.call_args_list, [mock.call(docker), mock.call(docker)])
+        self.assertIn("builder_name=", stdout.getvalue())
+        self.assertIn("image_tag=", stdout.getvalue())
+        self.assertIn("removal uncertain image tag {}: TimeoutExpired".format(tag), stderr.getvalue())
+
+    def test_prepare_with_low_post_cleanup_headroom_emits_no_outputs(self):
+        tag = gc.image_tag("owner/repo", "8", "1", "scope")
+        labels = {
+            "org.ragtime.ci.repository": "owner/repo",
+            "org.ragtime.ci.run-id": "8",
+            "org.ragtime.ci.run-attempt": "1",
+        }
+        docker = FakeDocker(images=[gc.Image("img", (tag,), labels, old())])
+        docker.remove_image_tag = mock.Mock(side_effect=subprocess.TimeoutExpired("image rm", 30))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.dict("os.environ", {"XDG_CACHE_HOME": directory}, clear=False),
+            mock.patch.object(gc.Context, "from_env", return_value=context()),
+            mock.patch.object(gc, "Docker", return_value=docker),
+            mock.patch.object(gc, "GitHubAttempts", return_value=FakeGitHub()),
+            mock.patch.object(gc, "_now", return_value=NOW),
+            mock.patch.object(gc, "disk_space", side_effect=[(20 * gc.GIB, 100 * gc.GIB), (14 * gc.GIB, 100 * gc.GIB)]) as disk_space,
+            mock.patch("sys.stdout", stdout),
+            mock.patch("sys.stderr", stderr),
+        ):
+            self.assertEqual(gc.main(["prepare", "--scope", "backend"]), 2)
+        self.assertEqual(disk_space.call_args_list, [mock.call(docker), mock.call(docker)])
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("requires 15 GiB", stderr.getvalue())
+
+    def test_prepare_listing_timeout_fails_without_outputs(self):
+        docker = FakeDocker()
+        docker.images = mock.Mock(side_effect=subprocess.TimeoutExpired("image ls", 30))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.dict("os.environ", {"XDG_CACHE_HOME": directory}, clear=False),
+            mock.patch.object(gc.Context, "from_env", return_value=context()),
+            mock.patch.object(gc, "Docker", return_value=docker),
+            mock.patch.object(gc, "GitHubAttempts", return_value=FakeGitHub()),
+            mock.patch.object(gc, "_now", return_value=NOW),
+            mock.patch.object(gc, "disk_space", return_value=(20 * gc.GIB, 100 * gc.GIB)),
+            mock.patch("sys.stdout", stdout),
+            mock.patch("sys.stderr", stderr),
+        ):
+            self.assertEqual(gc.main(["prepare", "--scope", "backend"]), 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("timed out", stderr.getvalue())
 
 
 if __name__ == "__main__":
