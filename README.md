@@ -465,6 +465,8 @@ flowchart LR
    docker compose up -d
    ```
 
+   The database, searxng, and runtime start in parallel. Ragtime waits until all three are healthy, then publishes the encryption key needed by runtime-s3. Storage starts after Ragtime's container starts; Ragtime's healthcheck requires its API and both storage endpoints to respond. The detached `up -d` command starts this sequence in the background. Use `docker compose ps` to see each service's health as startup progresses.
+
 5. **Access the application:**
    - Web UI: http://localhost:8000
    - API docs: http://localhost:8000/docs (available when `DEBUG_MODE=true`)
