@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { forwardRef, useEffect, useImperativeHandle } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatSettingsSectionProps } from './settings/ChatSettingsSection';
@@ -13,6 +13,7 @@ const toastErrorSpy = vi.hoisted(() => vi.fn());
 const toastInfoSpy = vi.hoisted(() => vi.fn());
 const toastClearSpy = vi.hoisted(() => vi.fn());
 const toastDismissSpy = vi.hoisted(() => vi.fn());
+const objectStorageSaveSpy = vi.hoisted(() => vi.fn());
 const toastActions = vi.hoisted(() => ({
   success: toastSuccessSpy,
   error: toastErrorSpy,
@@ -81,6 +82,13 @@ vi.mock('@/api', () => ({ api: apiMock }));
 
 vi.mock('@/contexts/AvailableModelsContext', () => ({
   useAvailableModels: () => ({ refresh: vi.fn() }),
+}));
+
+vi.mock('./shared/ObjectStorageSettings', () => ({
+  ObjectStorageSettings: forwardRef((_props, ref) => {
+    useImperativeHandle(ref, () => ({ save: objectStorageSaveSpy }));
+    return <div id="object-storage-settings" />;
+  }),
 }));
 
 vi.mock('./settings/ChatSettingsSection', () => ({
@@ -427,6 +435,8 @@ beforeEach(() => {
   toastInfoSpy.mockClear();
   toastClearSpy.mockClear();
   toastDismissSpy.mockClear();
+  objectStorageSaveSpy.mockReset();
+  objectStorageSaveSpy.mockResolvedValue(undefined);
 
   apiMock.getSettings.mockResolvedValue(buildSettingsResponse());
   apiMock.getUserSpacePreviewSettings.mockResolvedValue({});
@@ -596,6 +606,63 @@ async function renderAuthProvider(provider: 'github_copilot' | 'openai_codex' | 
 }
 
 describe('SettingsPanel', () => {
+  it('saves object storage before User Space settings for admins', async () => {
+    render(
+      <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
+    );
+
+    const userSpaceToggle = await screen.findByRole('button', { name: 'User Space' });
+    if (userSpaceToggle.getAttribute('aria-expanded') !== 'true') {
+      fireEvent.click(userSpaceToggle);
+    }
+    fireEvent.click(await screen.findByRole('button', { name: 'Save User Space Settings' }));
+
+    await waitFor(() => expect(objectStorageSaveSpy).toHaveBeenCalledOnce());
+    await waitFor(() => expect(apiMock.updateSettings).toHaveBeenCalledOnce());
+    expect(objectStorageSaveSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      apiMock.updateSettings.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('does not save User Space settings when object storage save fails', async () => {
+    objectStorageSaveSpy.mockRejectedValueOnce(new Error('Storage save failed'));
+    render(
+      <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
+    );
+
+    const userSpaceToggle = await screen.findByRole('button', { name: 'User Space' });
+    if (userSpaceToggle.getAttribute('aria-expanded') !== 'true') {
+      fireEvent.click(userSpaceToggle);
+    }
+    fireEvent.click(await screen.findByRole('button', { name: 'Save User Space Settings' }));
+
+    await waitFor(() => expect(objectStorageSaveSpy).toHaveBeenCalledOnce());
+    await waitFor(() => expect(toastErrorSpy).toHaveBeenCalledWith('Storage save failed'));
+    expect(apiMock.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('orders the User Space management column content consistently', async () => {
+    render(<SettingsPanel />);
+
+    const userSpaceToggle = await screen.findByRole('button', { name: 'User Space' });
+    if (userSpaceToggle.getAttribute('aria-expanded') !== 'true') {
+      fireEvent.click(userSpaceToggle);
+    }
+    await screen.findByRole('button', { name: 'Manage Global Env Vars' });
+
+    expect(document.getElementById('userspace-management-columns')).toBeTruthy();
+    for (const id of [
+      'userspace-global-env-settings',
+      'userspace-preview-sandbox-settings',
+      'userspace-code-index-settings',
+    ]) {
+      const column = document.getElementById(id);
+      expect(column?.children[0]?.tagName).toBe('H4');
+      expect(column?.children[1]?.classList.contains('form-group')).toBe(true);
+      expect(column?.children[2]?.classList.contains('field-help')).toBe(true);
+    }
+  });
+
   it('opens the MCP routes manager from its direct link', async () => {
     const previousHash = window.location.hash;
     window.location.hash = '#manage-mcp-routes';

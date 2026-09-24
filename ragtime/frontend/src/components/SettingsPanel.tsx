@@ -38,7 +38,10 @@ import { InlineCopyButton } from './shared/InlineCopyButton';
 import { UserSpaceCodeIndexesModal } from './shared/UserSpaceCodeIndexesModal';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
-import { ObjectStorageSettings } from './shared/ObjectStorageSettings';
+import {
+  ObjectStorageSettings,
+  type ObjectStorageSettingsHandle,
+} from './shared/ObjectStorageSettings';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
 import { ModelFilterModal } from './ModelFilterModal';
 import { ModelSelector } from './ModelSelector';
@@ -3654,10 +3657,12 @@ export function SettingsPanel({
   }, [effectiveUserSpacePreviewSandboxFlags, onSettingsSaved, toast]);
 
   const [staleBranchSaving, setStaleBranchSaving] = useState(false);
+  const objectStorageSettingsRef = useRef<ObjectStorageSettingsHandle>(null);
   const handleSaveStaleBranchThreshold = useCallback(async () => {
     setStaleBranchSaving(true);
 
     try {
+      await objectStorageSettingsRef.current?.save();
       const updated = await api.updateSettings({
         userspace_generation_enabled: formData.userspace_generation_enabled !== false,
         userspace_build_model: formData.userspace_build_model,
@@ -4848,9 +4853,10 @@ export function SettingsPanel({
                   </p>
                 </div>
               )}
-              {currentUser?.role === 'admin' && <ObjectStorageSettings />}
+              {isAdmin && <ObjectStorageSettings ref={objectStorageSettingsRef} />}
 
               <div
+                id="userspace-management-columns"
                 style={{
                   display: 'grid',
                   gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
@@ -4858,12 +4864,8 @@ export function SettingsPanel({
                   alignItems: 'start',
                 }}
               >
-                <div>
+                <div id="userspace-global-env-settings">
                   <h4 style={{ margin: '0 0 8px' }}>Global Environment Variables</h4>
-                  <p className="field-help">
-                    Define admin-managed environment variables that are inherited by every
-                    workspace.
-                  </p>
                   <div className="form-group">
                     <button
                       type="button"
@@ -4875,16 +4877,14 @@ export function SettingsPanel({
                       Manage Global Env Vars
                     </button>
                   </div>
+                  <p className="field-help">
+                    Define admin-managed environment variables that are inherited by every
+                    workspace.
+                  </p>
                 </div>
 
-                <div>
+                <div id="userspace-preview-sandbox-settings">
                   <h4 style={{ margin: '0 0 8px' }}>Preview Sandbox</h4>
-                  <p className="field-help">
-                    Control which HTML iframe sandbox flags are granted to User Space previews. Chat
-                    HTML components built by the assistant use the same flags, except
-                    allow-same-origin and top-navigation flags, which are always withheld for
-                    in-chat components.
-                  </p>
                   <div className="form-group">
                     <button
                       type="button"
@@ -4894,13 +4894,16 @@ export function SettingsPanel({
                       Configure Sandbox Flags
                     </button>
                   </div>
+                  <p className="field-help">
+                    Control which HTML iframe sandbox flags are granted to User Space previews. Chat
+                    HTML components built by the assistant use the same flags, except
+                    allow-same-origin and top-navigation flags, which are always withheld for
+                    in-chat components.
+                  </p>
                 </div>
 
-                <div>
+                <div id="userspace-code-index-settings">
                   <h4 style={{ margin: '0 0 8px' }}>Workspace Code Indexes</h4>
-                  <p className="field-help">
-                    Inspect and manage per-workspace code indexes used by User Space agents.
-                  </p>
                   <div className="form-group">
                     <button
                       type="button"
@@ -4910,6 +4913,9 @@ export function SettingsPanel({
                       Manage Code Indexes
                     </button>
                   </div>
+                  <p className="field-help">
+                    Inspect and manage per-workspace code indexes used by User Space agents.
+                  </p>
                 </div>
               </div>
 
