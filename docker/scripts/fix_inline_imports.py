@@ -148,28 +148,18 @@ def process_file(
     module_index: ModuleIndex,
 ) -> FileReport | None:
     original_text = path.read_text(encoding="utf-8")
-    text, tail_duplicates_removed = collapse_duplicate_tail_lines(original_text)
+    text = original_text
+    tail_duplicates_removed = 0
     try:
-        tree = ast.parse(text)
+        tree = ast.parse(original_text)
     except SyntaxError:
+        text, tail_duplicates_removed = collapse_duplicate_tail_lines(original_text)
         if tail_duplicates_removed == 0:
             return None
-
-        rewritten = False
-        if apply_changes and text != original_text:
-            path.write_text(text, encoding="utf-8")
-            rewritten = True
-
-        return FileReport(
-            path=path,
-            inline_count=0,
-            hoisted_count=0,
-            inline_promoted_count=0,
-            inline_kept_count=0,
-            skipped_guarded=0,
-            tail_duplicates_removed=tail_duplicates_removed,
-            rewritten=rewritten,
-        )
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return None
 
     parent_map = build_parent_map(tree)
     lines = text.splitlines(keepends=True)

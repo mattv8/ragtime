@@ -155,6 +155,25 @@ turn code or UI chrome into serif by accident.
 - `ToastContainer` combines a polite container with alert items. Review new
   announcements for duplication and choose urgency deliberately.
 
+## SQLite history and restore boundaries
+
+- Use `sqliteHistoryEventBus:subscribeHistoryEvents`, the shared workspace-only
+  subscription refcounted per workspace/tab. Subscribe before loading and
+  coalesce an invalidation received while a load is in flight into a refresh
+  afterward. The final unsubscribe or revoke closes the source.
+- An event invalidates data; it is not a channel for sensitive history content.
+  Revoke clears privileged state. A closed source reconnects with delayed,
+  jittered backoff; uncertainty is not permission for an immediate blind retry.
+- `buildSnapshotDatabaseWindows` and `isInDatabaseCaptureWindow` define temporal
+  ready-capture windows: start-inclusive, end-exclusive, UTC. They associate by
+  creation time only and do not establish an exact snapshot-to-database link.
+- Module-level `SnapshotRestorePanel.tsx:exactReadyBackups` selects the latest
+  per-database eligible candidate, unless `initialBackupId` overrides it; require
+  matching `snapshot_id`, `ready`, and `can_restore`. A combined restore restores
+  code first; database-only skips it. Both need explicit preview and confirmation.
+- Preserve partial receipts and uncertain results. User-initiated restores need
+  busy feedback (`aria-busy`, phase/status); event refresh is intentionally silent.
+
 ## Quick review checklist
 
 Mark each **Pass / Fail / N/A**:

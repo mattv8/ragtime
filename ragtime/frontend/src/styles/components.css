@@ -3097,19 +3097,34 @@ textarea:focus {
   margin-block: 2px;
 }
 
+.userspace-snapshots-header {
+  display: flex;
+  align-items: center;
+  background: var(--color-surface-hover);
+}
+
 .userspace-snapshots-toggle {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: var(--space-xs) var(--space-sm);
-  background: var(--color-surface-hover);
+  background: transparent;
   border: none;
   cursor: pointer;
   color: var(--color-text-secondary);
   font: inherit;
   font-size: var(--text-sm);
   font-weight: 500;
+}
+
+.userspace-snapshots-header-db-history {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: var(--space-xs);
+  border-left: 1px solid var(--color-border);
 }
 
 .userspace-snapshots-toggle:hover {
@@ -3305,11 +3320,7 @@ textarea:focus {
 }
 
 .userspace-snapshot-lane-line.active {
-  background: color-mix(
-    in srgb,
-    var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 58%,
-    transparent
-  );
+  background: var(--userspace-branch-color, var(--color-accent, var(--color-primary)));
 }
 
 .userspace-snapshot-lane-line.start {
@@ -3347,11 +3358,7 @@ textarea:focus {
   top: 50%;
   height: 2px;
   transform: translateY(-50%);
-  background: color-mix(
-    in srgb,
-    var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 64%,
-    transparent
-  );
+  background: var(--userspace-branch-color, var(--color-accent, var(--color-primary)));
   pointer-events: none;
   border-radius: var(--radius-full);
 }
@@ -3368,6 +3375,17 @@ textarea:focus {
 .userspace-snapshot-row-group {
   display: flex;
   flex-direction: column;
+}
+
+/* Brief highlight when navigated to from the database history panel. */
+@keyframes userspace-snapshot-target-pulse {
+  0%   { background: var(--color-primary-soft); }
+  100% { background: transparent; }
+}
+
+.userspace-snapshot-row-group--targeted {
+  animation: userspace-snapshot-target-pulse 1.5s ease-out forwards;
+  border-radius: var(--radius-sm);
 }
 
 .userspace-snapshot-expand-chevron {
@@ -3990,13 +4008,15 @@ textarea:focus {
   font-size: 11px;
   white-space: nowrap;
   flex-shrink: 0;
-  margin-left: auto;
   padding-left: 6px;
 }
 
 .userspace-snapshot-row-actions {
+  display: flex;
+  align-items: center;
   flex-shrink: 0;
-  margin-left: 4px;
+  gap: var(--space-xs);
+  margin-inline-start: auto;
 }
 
 .userspace-snapshot-current-badge {
@@ -4026,8 +4046,15 @@ textarea:focus {
   transition: opacity 0.1s;
 }
 
-.userspace-snapshot-graph-row:hover .userspace-snapshot-restore-btn {
+.userspace-snapshot-graph-row:hover .userspace-snapshot-restore-btn,
+.userspace-snapshot-graph-row:focus-within .userspace-snapshot-restore-btn {
   opacity: 1;
+}
+
+@media (hover: none) {
+  .userspace-snapshot-restore-btn {
+    opacity: 1;
+  }
 }
 
 .userspace-snapshot-restore-btn:hover {

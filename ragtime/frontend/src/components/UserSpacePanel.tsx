@@ -80,6 +80,8 @@ import {
   type UserSpaceToolSelection,
 } from '@/utils/userSpaceTools';
 import { useUserSpaceToolHealthEvents } from '@/utils/useUserSpaceToolHealthEvents';
+import { buildSnapshotDatabaseWindows } from '@/utils/snapshotDatabaseHistory';
+import { useSnapshotDatabaseHistory } from '@/utils/useSnapshotDatabaseHistory';
 import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { AgentAccessButton } from './shared/AgentAccessButton';
 import { AgentAccessModal } from './shared/AgentAccessModal';
@@ -185,6 +187,7 @@ import { useToast, ToastContainer } from './shared/Toast';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { WorkspaceSqliteInspectorModal } from './shared/WorkspaceSqliteInspectorModal';
 import { DatabaseHistoryPanel } from './shared/DatabaseHistoryPanel';
+import { SnapshotRestorePanel } from './shared/SnapshotRestorePanel';
 import { WorkspaceObjectStorageExplorer } from './shared/WorkspaceObjectStorageExplorer';
 import { AgentAccessSection } from './shared/AgentAccessSection';
 import { ExternalApiAccessSection } from './shared/ExternalApiAccessSection';
@@ -990,6 +993,13 @@ export function UserSpacePanel({
   const [navigatingSnapshots, setNavigatingSnapshots] = useState(false);
   const [restoringSnapshotId, setRestoringSnapshotId] = useState<string | null>(null);
   const [branchRestoreSnapshotId, setBranchRestoreSnapshotId] = useState<string | null>(null);
+  const [linkedSnapshotRestoreId, setLinkedSnapshotRestoreId] = useState<string | null>(null);
+  const [linkedSnapshotRestoreBusy, setLinkedSnapshotRestoreBusy] = useState(false);
+  const [snapshotNavigationTarget, setSnapshotNavigationTarget] = useState<{
+    workspaceId: string;
+    snapshotId: string;
+  } | null>(null);
+  const [snapshotNavigationNotice, setSnapshotNavigationNotice] = useState<string | null>(null);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
   const [toolGroups, setToolGroups] = useState<ToolGroupInfo[]>([]);
   const [workspaceBuiltInToolControls, setWorkspaceBuiltInToolControls] =
@@ -1277,6 +1287,8 @@ export function UserSpacePanel({
   const previewLaunchRequestIdRef = useRef(0);
   const snapshotDiffSummaryRequestIdsRef = useRef<Record<string, number>>({});
   const snapshotFileDiffRequestIdRef = useRef(0);
+  const snapshotRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const focusedSnapshotNavigationTargetRef = useRef<string | null>(null);
   const fileDirtyRef = useRef(false);
   const changedFileStateInFlightRef = useRef(false);
   const changedFileStateLastStartedAtRef = useRef(0);
@@ -2014,6 +2026,16 @@ export function UserSpacePanel({
     return canEditUserSpaceWorkspace(activeWorkspace, currentUser);
   }, [activeWorkspace, currentUser]);
   const isOwner = activeWorkspaceRole === 'owner';
+  const canManageDatabaseHistory = isOwner || currentUser.role === 'admin';
+  const snapshotDatabaseBackups = useSnapshotDatabaseHistory(
+    activeWorkspaceId,
+    showSnapshots,
+    canManageDatabaseHistory,
+  );
+  const snapshotDatabaseWindows = useMemo(
+    () => buildSnapshotDatabaseWindows(snapshots, snapshotDatabaseBackups),
+    [snapshots, snapshotDatabaseBackups],
+  );
   const showPersonalCloudDrives = currentUser.role === 'admin';
   const isAdminImpersonating =
     currentUser.role === 'admin' &&
@@ -2247,7 +2269,8 @@ export function UserSpacePanel({
     return colors;
   }, [snapshotsByBranch]);
 
-  const snapshotUiLocked = navigatingSnapshots || restoringSnapshotId !== null;
+  const snapshotUiLocked =
+    navigatingSnapshots || restoringSnapshotId !== null || linkedSnapshotRestoreBusy;
   const codeMirrorLanguageExtension = useCodeMirrorLanguageExtension(selectedFilePath);
   const codeMirrorThemeCompartment = useMemo(() => createCodeMirrorThemeCompartment(), []);
   const initialCodeMirrorThemeExtension = useMemo(
@@ -3140,6 +3163,64 @@ export function UserSpacePanel({
     },
     [],
   );
+
+  useEffect(() => {
+    setLinkedSnapshotRestoreId(null);
+    setLinkedSnapshotRestoreBusy(false);
+    setSnapshotNavigationNotice(null);
+    focusedSnapshotNavigationTargetRef.current = null;
+    setSnapshotNavigationTarget(null);
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
+    if (
+      !snapshotNavigationTarget ||
+      snapshotNavigationTarget.workspaceId !== activeWorkspaceId ||
+      !showSnapshots ||
+      !activeWorkspaceId
+    ) {
+      return;
+    }
+
+    if (snapshotsLoadedForWorkspace !== activeWorkspaceId) {
+      void loadSnapshots(activeWorkspaceId);
+      return;
+    }
+
+    if (!snapshots.some((snapshot) => snapshot.id === snapshotNavigationTarget.snapshotId)) {
+      setSnapshotNavigationNotice('The associated snapshot is no longer available.');
+      setSnapshotNavigationTarget(null);
+      return;
+    }
+
+    const targetKey = `${snapshotNavigationTarget.workspaceId}:${snapshotNavigationTarget.snapshotId}`;
+    if (focusedSnapshotNavigationTargetRef.current === targetKey) {
+      return;
+    }
+
+    const row = snapshotRowRefs.current.get(snapshotNavigationTarget.snapshotId);
+    const focusTarget = row?.querySelector<HTMLElement>('.userspace-snapshot-graph-row');
+    if (!focusTarget) {
+      return;
+    }
+
+    focusedSnapshotNavigationTargetRef.current = targetKey;
+    const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    focusTarget.focus({ preventScroll: true });
+    if (typeof focusTarget.scrollIntoView === 'function') {
+      focusTarget.scrollIntoView({
+        behavior: prefersReducedMotion ? 'auto' : 'smooth',
+        block: 'nearest',
+      });
+    }
+  }, [
+    activeWorkspaceId,
+    loadSnapshots,
+    showSnapshots,
+    snapshotNavigationTarget,
+    snapshots,
+    snapshotsLoadedForWorkspace,
+  ]);
 
   const loadSnapshotDiffSummary = useCallback(async (workspaceId: string, snapshotId: string) => {
     if (snapshotDiffSummariesRef.current[snapshotId]) {
@@ -4922,6 +5003,32 @@ export function UserSpacePanel({
     [activeWorkspaceId, loadChangedFileState, loadSnapshots, loadWorkspaceData],
   );
 
+  const handleSnapshotNavigate = useCallback(
+    (snapshotId: string) => {
+      if (!activeWorkspaceId) return;
+      setActiveSnapshotFileDiff(null);
+      setActiveSnapshotFileDiffKey(null);
+      setActiveSnapshotFileDiffLoading(false);
+      setActiveSnapshotFileDiffError(null);
+      focusedSnapshotNavigationTargetRef.current = null;
+      setSnapshotNavigationNotice(null);
+      setShowSnapshots(true);
+      setSnapshotNavigationTarget({ workspaceId: activeWorkspaceId, snapshotId });
+    },
+    [activeWorkspaceId],
+  );
+
+  const handleSnapshotRestoreChoice = useCallback(
+    (snapshot: UserSpaceSnapshot) => {
+      if (isOwner && snapshot.has_sqlite_history) {
+        setLinkedSnapshotRestoreId(snapshot.id);
+        return;
+      }
+      void handleRestoreSnapshot(snapshot.id, snapshot.branch_id);
+    },
+    [handleRestoreSnapshot, isOwner],
+  );
+
   const handleBranchSwitch = useCallback(
     (_branchId: string | null, associatedSnapshotId: string | null) => {
       // Switching branches MUST always prompt the user before restoring the
@@ -4933,8 +5040,11 @@ export function UserSpacePanel({
         return;
       }
       setBranchRestoreSnapshotId(associatedSnapshotId);
+      if (activeWorkspaceId && snapshotsLoadedForWorkspace !== activeWorkspaceId) {
+        void loadSnapshots(activeWorkspaceId);
+      }
     },
-    [],
+    [activeWorkspaceId, loadSnapshots, snapshotsLoadedForWorkspace],
   );
 
   // Triggered by the chat panel whenever something happens that may have
@@ -4950,10 +5060,15 @@ export function UserSpacePanel({
 
   const handleConfirmBranchRestore = useCallback(() => {
     if (branchRestoreSnapshotId) {
-      void handleRestoreSnapshot(branchRestoreSnapshotId);
+      const snapshot = snapshots.find((candidate) => candidate.id === branchRestoreSnapshotId);
+      if (snapshot) {
+        handleSnapshotRestoreChoice(snapshot);
+      } else {
+        void handleRestoreSnapshot(branchRestoreSnapshotId);
+      }
     }
     setBranchRestoreSnapshotId(null);
-  }, [branchRestoreSnapshotId, handleRestoreSnapshot]);
+  }, [branchRestoreSnapshotId, handleRestoreSnapshot, handleSnapshotRestoreChoice, snapshots]);
 
   const handleDismissBranchRestore = useCallback(() => {
     setBranchRestoreSnapshotId(null);
@@ -9612,7 +9727,21 @@ export function UserSpacePanel({
                     branchRestoreSnapshotId ? (
                       <div className="chat-branch-restore-banner">
                         <span>This branch has an associated code snapshot.</span>
-                        {canEditWorkspace ? (
+                        {isOwner &&
+                        snapshots.find((snapshot) => snapshot.id === branchRestoreSnapshotId)
+                          ?.has_sqlite_history ? (
+                          <SnapshotRestorePanel
+                            workspaceId={activeWorkspaceId}
+                            snapshotId={branchRestoreSnapshotId}
+                            defaultScope="code"
+                            allowCodeRestore={canEditWorkspace}
+                            allowDatabaseRestore={isOwner}
+                            disabled={navigatingSnapshots}
+                            onBusyChange={setLinkedSnapshotRestoreBusy}
+                            onCodeRestored={handleMessageSnapshotRestored}
+                            onClose={handleDismissBranchRestore}
+                          />
+                        ) : canEditWorkspace ? (
                           <button
                             className="chat-branch-restore-btn confirm"
                             onClick={handleConfirmBranchRestore}
@@ -9758,40 +9887,48 @@ export function UserSpacePanel({
 
           {/* Snapshots */}
           <div className="userspace-snapshots-section" style={{ marginTop: showSnapshots ? 0 : 8 }}>
-            <button
-              className="userspace-snapshots-toggle"
-              disabled={snapshotUiLocked}
-              onClick={() => {
-                const next = !showSnapshots;
-                setShowSnapshots(next);
-                if (
-                  next &&
-                  activeWorkspaceId &&
-                  snapshotsLoadedForWorkspace !== activeWorkspaceId
-                ) {
-                  void loadSnapshots(activeWorkspaceId);
-                }
-              }}
-            >
-              <History size={14} />
-              <span>
-                Snapshots
-                {snapshotsLoadedForWorkspace === activeWorkspaceId ? ` (${snapshots.length})` : ''}
-              </span>
-              <ChevronDown size={14} className={showSnapshots ? '' : 'rotated'} />
-            </button>
+            <div className="userspace-snapshots-header">
+              <button
+                className="userspace-snapshots-toggle"
+                disabled={snapshotUiLocked}
+                onClick={() => {
+                  const next = !showSnapshots;
+                  setShowSnapshots(next);
+                  if (
+                    next &&
+                    activeWorkspaceId &&
+                    snapshotsLoadedForWorkspace !== activeWorkspaceId
+                  ) {
+                    void loadSnapshots(activeWorkspaceId);
+                  }
+                }}
+              >
+                <History size={14} />
+                <span>
+                  Snapshots
+                  {snapshotsLoadedForWorkspace === activeWorkspaceId
+                    ? ` (${snapshotTimelineRows.length})`
+                    : ''}
+                </span>
+                <ChevronDown size={14} className={showSnapshots ? '' : 'rotated'} />
+              </button>
+              {activeWorkspaceId && canManageDatabaseHistory && (
+                <div className="userspace-snapshots-header-db-history">
+                  <DatabaseHistoryPanel
+                    workspaceId={activeWorkspaceId}
+                    ownerOrAdmin={canManageDatabaseHistory}
+                    triggerLabel="Database history"
+                    iconOnly
+                    hostId="workspace-snapshot-history"
+                    onSnapshotNavigate={handleSnapshotNavigate}
+                    onCodeRestored={handleMessageSnapshotRestored}
+                    triggerDisabled={snapshotUiLocked}
+                  />
+                </div>
+              )}
+            </div>
             {showSnapshots && (
               <div className="userspace-snapshots-list" style={{ height: snapshotsListHeight }}>
-                {activeWorkspaceId && (
-                  <div className="database-history-snapshot-host" data-history-host="workspace">
-                    <DatabaseHistoryPanel
-                      workspaceId={activeWorkspaceId}
-                      ownerOrAdmin={isOwner}
-                      triggerLabel="Database history"
-                      hostId="workspace"
-                    />
-                  </div>
-                )}
                 {restoringSnapshotId && (
                   <div
                     className="userspace-snapshot-busy-indicator"
@@ -9801,121 +9938,132 @@ export function UserSpacePanel({
                     Restoring snapshot {restoringSnapshotId.slice(0, 8)}...
                   </div>
                 )}
-                {snapshotsByBranch.length > 0 && snapshotTimelineRows.length > 0 ? (
+                {snapshotNavigationNotice && (
+                  <div className="userspace-snapshot-busy-indicator" role="status">
+                    {snapshotNavigationNotice}
+                  </div>
+                )}
+                {snapshotTimelineRows.length > 0 ? (
                   <div className="userspace-snapshot-graph">
-                    <div className="userspace-snapshot-graph-legend">
-                      {snapshotsByBranch.map(({ branch, snapshots: branchSnapshots }) => {
-                        const branchColor = snapshotBranchColorById.get(branch.id);
-                        const isMainBranch = branch.name === 'Main';
-                        return (
-                          <button
-                            key={`legend-${branch.id}`}
-                            type="button"
-                            className={`userspace-snapshot-branch-legend ${currentSnapshotBranchId === branch.id ? 'active' : ''}`}
-                            onClick={() => handleSwitchSnapshotBranch(branch.id)}
-                            disabled={!canEditWorkspace || snapshotUiLocked}
-                            title={branch.git_ref_name}
-                            style={{ '--userspace-branch-color': branchColor } as CSSProperties}
-                          >
-                            <span className="userspace-snapshot-branch-legend-name">
-                              {branch.name}
-                            </span>
-                            <span className="userspace-snapshot-branch-legend-count">
-                              {branchSnapshots.length}
-                            </span>
-                            {branch.branched_from_snapshot_id && (
-                              <span className="userspace-snapshot-branch-legend-fork">
-                                from {branch.branched_from_snapshot_id.slice(0, 8)}
+                    {snapshotTimelineRows.length > 0 && (
+                      <div className="userspace-snapshot-graph-legend">
+                        {snapshotsByBranch.map(({ branch, snapshots: branchSnapshots }) => {
+                          const branchColor = snapshotBranchColorById.get(branch.id);
+                          const isMainBranch = branch.name === 'Main';
+                          return (
+                            <button
+                              key={`legend-${branch.id}`}
+                              type="button"
+                              className={`userspace-snapshot-branch-legend ${currentSnapshotBranchId === branch.id ? 'active' : ''}`}
+                              onClick={() => handleSwitchSnapshotBranch(branch.id)}
+                              disabled={!canEditWorkspace || snapshotUiLocked}
+                              title={branch.git_ref_name}
+                              style={{ '--userspace-branch-color': branchColor } as CSSProperties}
+                            >
+                              <span className="userspace-snapshot-branch-legend-name">
+                                {branch.name}
                               </span>
-                            )}
-                            {!isMainBranch && canEditWorkspace && (
-                              <span
-                                role="button"
-                                tabIndex={0}
-                                className="userspace-snapshot-branch-promote"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handlePromoteBranchToMain(branch.id);
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' || e.key === ' ') {
-                                    e.preventDefault();
+                              <span className="userspace-snapshot-branch-legend-count">
+                                {branchSnapshots.length}
+                              </span>
+                              {branch.branched_from_snapshot_id && (
+                                <span className="userspace-snapshot-branch-legend-fork">
+                                  from {branch.branched_from_snapshot_id.slice(0, 8)}
+                                </span>
+                              )}
+                              {!isMainBranch && canEditWorkspace && (
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  className="userspace-snapshot-branch-promote"
+                                  onClick={(e) => {
                                     e.stopPropagation();
                                     handlePromoteBranchToMain(branch.id);
-                                  }
-                                }}
-                                title="Promote this branch to Main"
-                              >
-                                <Crown size={10} />
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })}
-                      <button
-                        type="button"
-                        className="userspace-snapshot-branch-legend"
-                        onClick={() => void handleCreateSnapshotBranch()}
-                        disabled={!canEditWorkspace || snapshotUiLocked || !currentSnapshotId}
-                        title="Create a new branch from the current snapshot"
-                      >
-                        <Plus size={12} />
-                      </button>
-                      {staleBranches.length > 0 && (
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      handlePromoteBranchToMain(branch.id);
+                                    }
+                                  }}
+                                  title="Promote this branch to Main"
+                                >
+                                  <Crown size={10} />
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
                         <button
                           type="button"
-                          className="userspace-snapshot-branch-legend stale-toggle"
-                          onClick={() => setShowStaleBranches((prev) => !prev)}
-                          title={showStaleBranches ? 'Hide stale branches' : 'Show stale branches'}
+                          className="userspace-snapshot-branch-legend"
+                          onClick={() => void handleCreateSnapshotBranch()}
+                          disabled={!canEditWorkspace || snapshotUiLocked || !currentSnapshotId}
+                          title="Create a new branch from the current snapshot"
                         >
-                          {showStaleBranches
-                            ? `Hide ${staleBranches.length} stale`
-                            : `${staleBranches.length} stale`}
-                          <ChevronDown size={10} className={showStaleBranches ? '' : 'rotated'} />
+                          <Plus size={12} />
                         </button>
-                      )}
-                      {showStaleBranches &&
-                        staleBranches.map((branch) => (
+                        {staleBranches.length > 0 && (
                           <button
-                            key={`stale-legend-${branch.id}`}
                             type="button"
-                            className="userspace-snapshot-branch-legend stale"
-                            onClick={() => handleSwitchSnapshotBranch(branch.id)}
-                            disabled={!canEditWorkspace || snapshotUiLocked}
-                            title={`${branch.git_ref_name} (${branch.commits_behind ?? 0} commits behind)`}
+                            className="userspace-snapshot-branch-legend stale-toggle"
+                            onClick={() => setShowStaleBranches((prev) => !prev)}
+                            title={
+                              showStaleBranches ? 'Hide stale branches' : 'Show stale branches'
+                            }
                           >
-                            <span className="userspace-snapshot-branch-legend-name">
-                              {branch.name}
-                            </span>
-                            <span className="userspace-snapshot-branch-legend-count">
-                              {branch.commits_behind ?? 0} behind
-                            </span>
-                            {canEditWorkspace && (
-                              <span
-                                role="button"
-                                tabIndex={0}
-                                className="userspace-snapshot-branch-promote"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handlePromoteBranchToMain(branch.id);
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' || e.key === ' ') {
-                                    e.preventDefault();
+                            {showStaleBranches
+                              ? `Hide ${staleBranches.length} stale`
+                              : `${staleBranches.length} stale`}
+                            <ChevronDown size={10} className={showStaleBranches ? '' : 'rotated'} />
+                          </button>
+                        )}
+                        {showStaleBranches &&
+                          staleBranches.map((branch) => (
+                            <button
+                              key={`stale-legend-${branch.id}`}
+                              type="button"
+                              className="userspace-snapshot-branch-legend stale"
+                              onClick={() => handleSwitchSnapshotBranch(branch.id)}
+                              disabled={!canEditWorkspace || snapshotUiLocked}
+                              title={`${branch.git_ref_name} (${branch.commits_behind ?? 0} commits behind)`}
+                            >
+                              <span className="userspace-snapshot-branch-legend-name">
+                                {branch.name}
+                              </span>
+                              <span className="userspace-snapshot-branch-legend-count">
+                                {branch.commits_behind ?? 0} behind
+                              </span>
+                              {canEditWorkspace && (
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  className="userspace-snapshot-branch-promote"
+                                  onClick={(e) => {
                                     e.stopPropagation();
                                     handlePromoteBranchToMain(branch.id);
-                                  }
-                                }}
-                                title="Promote this branch to Main"
-                              >
-                                <Crown size={10} />
-                              </span>
-                            )}
-                          </button>
-                        ))}
-                    </div>
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      handlePromoteBranchToMain(branch.id);
+                                    }
+                                  }}
+                                  title="Promote this branch to Main"
+                                >
+                                  <Crown size={10} />
+                                </span>
+                              )}
+                            </button>
+                          ))}
+                      </div>
+                    )}
 
-                    {snapshotTimelineRows.map(({ snapshot, laneIndex, laneStates, forkLinks }) => {
+                    {snapshotTimelineRows.map((timelineRow) => {
+                      const { snapshot, laneIndex, laneStates, forkLinks } = timelineRow;
+                      const databaseWindow = snapshotDatabaseWindows.get(snapshot.id);
                       const isCurrentSnapshot =
                         snapshot.is_current || currentSnapshotId === snapshot.id;
                       const branchColor = snapshotBranchColorById.get(snapshot.branch_id);
@@ -9928,7 +10076,19 @@ export function UserSpacePanel({
                       return (
                         <div
                           key={snapshot.id}
-                          className={`userspace-snapshot-row-group ${isExpanded ? 'expanded' : ''}`}
+                          ref={(element) => {
+                            if (element) {
+                              snapshotRowRefs.current.set(snapshot.id, element);
+                            } else {
+                              snapshotRowRefs.current.delete(snapshot.id);
+                            }
+                          }}
+                          className={`userspace-snapshot-row-group ${isExpanded ? 'expanded' : ''} ${
+                            snapshotNavigationTarget?.snapshotId === snapshot.id
+                              ? 'userspace-snapshot-row-group--targeted'
+                              : ''
+                          }`}
+                          data-snapshot-id={snapshot.id}
                         >
                           <div
                             className={`userspace-snapshot-graph-row ${isCurrentSnapshot ? 'current' : ''}`}
@@ -10004,7 +10164,14 @@ export function UserSpacePanel({
                                 className={`userspace-snapshot-expand-chevron ${isExpanded ? 'expanded' : ''}`}
                               />
                               <code className="userspace-snapshot-hash">
-                                {snapshot.id.slice(0, 8)}
+                                <SearchHighlightedText
+                                  text={snapshot.id.slice(0, 8)}
+                                  query={
+                                    snapshotNavigationTarget?.snapshotId === snapshot.id
+                                      ? snapshot.id.slice(0, 8)
+                                      : ''
+                                  }
+                                />
                               </code>
                               {renamingSnapshotId === snapshot.id ? (
                                 <input
@@ -10099,36 +10266,74 @@ export function UserSpacePanel({
                               <span className="userspace-snapshot-ts">
                                 {formatSnapshotTimestamp(snapshot.created_at)}
                               </span>
-                            </div>
-
-                            <div className="userspace-snapshot-row-actions">
-                              <DatabaseHistoryPanel
-                                workspaceId={activeWorkspaceId ?? ''}
-                                ownerOrAdmin={isOwner}
-                                snapshotId={snapshot.id}
-                                triggerLabel="Database history"
-                                hostId={`snapshot-${snapshot.id}`}
-                              />
-                              {isCurrentSnapshot ? (
-                                <span className="userspace-snapshot-current-badge">
-                                  You are here
-                                </span>
-                              ) : (
-                                <button
-                                  type="button"
-                                  className="userspace-snapshot-restore-btn"
-                                  onClick={(event) => {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                    void handleRestoreSnapshot(snapshot.id, snapshot.branch_id);
-                                  }}
-                                  disabled={!canEditWorkspace || snapshotUiLocked}
-                                >
-                                  Restore
-                                </button>
-                              )}
+                              <div
+                                className="userspace-snapshot-row-actions"
+                                data-snapshot-actions={snapshot.id}
+                                onClick={(event) => event.stopPropagation()}
+                              >
+                                {isCurrentSnapshot ? (
+                                  <span className="userspace-snapshot-current-badge">
+                                    You are here
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="userspace-snapshot-restore-btn"
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      handleSnapshotRestoreChoice(snapshot);
+                                    }}
+                                    disabled={!canEditWorkspace || snapshotUiLocked}
+                                  >
+                                    Restore
+                                  </button>
+                                )}
+                                {canManageDatabaseHistory &&
+                                  databaseWindow &&
+                                  databaseWindow.backups.length > 0 && (
+                                    <DatabaseHistoryPanel
+                                      workspaceId={activeWorkspaceId ?? ''}
+                                      ownerOrAdmin={canManageDatabaseHistory}
+                                      captureWindow={{
+                                        start: databaseWindow.start,
+                                        end: databaseWindow.end,
+                                      }}
+                                      contextLabel={
+                                        databaseWindow.end
+                                          ? `Database captures from ${formatSnapshotTimestamp(databaseWindow.start)} to ${formatSnapshotTimestamp(databaseWindow.end)}`
+                                          : `Database captures since ${formatSnapshotTimestamp(databaseWindow.start)}`
+                                      }
+                                      triggerLabel="Database history for this snapshot"
+                                      iconOnly
+                                      hostId={`snapshot-${snapshot.id}`}
+                                      onSnapshotNavigate={handleSnapshotNavigate}
+                                      onCodeRestored={handleMessageSnapshotRestored}
+                                      triggerDisabled={snapshotUiLocked}
+                                    />
+                                  )}
+                              </div>
                             </div>
                           </div>
+
+                          {linkedSnapshotRestoreId === snapshot.id && (
+                            <div
+                              className="userspace-snapshot-expanded-panel"
+                              data-userspace-snapshot-restore-panel={snapshot.id}
+                            >
+                              <SnapshotRestorePanel
+                                workspaceId={activeWorkspaceId ?? ''}
+                                snapshotId={snapshot.id}
+                                defaultScope="code"
+                                allowCodeRestore={canEditWorkspace}
+                                allowDatabaseRestore={isOwner}
+                                disabled={navigatingSnapshots}
+                                onBusyChange={setLinkedSnapshotRestoreBusy}
+                                onCodeRestored={handleMessageSnapshotRestored}
+                                onClose={() => setLinkedSnapshotRestoreId(null)}
+                              />
+                            </div>
+                          )}
 
                           {isExpanded && (
                             <>
@@ -10273,6 +10478,8 @@ export function UserSpacePanel({
         canManageHistory={isOwner}
         onClose={handleCloseSqliteInspector}
         onPersistencePromoted={handleSqlitePersistencePromoted}
+        onSnapshotNavigate={handleSnapshotNavigate}
+        onCodeRestored={handleMessageSnapshotRestored}
       />
 
       <UserSpaceEnvVarsModal

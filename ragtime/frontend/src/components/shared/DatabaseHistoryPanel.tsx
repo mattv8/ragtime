@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   DatabaseBackup,
@@ -11,6 +11,12 @@ import {
 } from 'lucide-react';
 
 import { api, ApiError } from '@/api/client';
+import { subscribeHistoryEvents } from '@/utils/sqliteHistoryEventBus';
+import { SnapshotRestorePanel } from '@/components/shared/SnapshotRestorePanel';
+import {
+  isInDatabaseCaptureWindow,
+  type DatabaseCaptureWindow,
+} from '@/utils/databaseCaptureWindow';
 import type {
   SqliteHistoryBackup,
   SqliteHistoryConflictPolicy,
@@ -27,8 +33,20 @@ interface DatabaseHistoryPanelProps {
   ownerOrAdmin: boolean;
   databaseName?: string;
   snapshotId?: string;
+  /** Chronological capture interval. The start is inclusive and the end is exclusive. */
+  captureWindow?: DatabaseCaptureWindow;
+  /** Describes a chronological capture interval in the dialog subtitle. */
+  contextLabel?: string;
   triggerLabel?: string;
+  /** Render the trigger as icon-only (no visible label text). */
+  iconOnly?: boolean;
+  /** Prevent opening the dialog while the surrounding snapshot UI is locked. */
+  triggerDisabled?: boolean;
   hostId: string;
+  /** Called when the user clicks a snapshot link in an activity row. Open the snapshot in the snapshots panel. */
+  onSnapshotNavigate?: (snapshotId: string) => void;
+  /** Refresh parent workspace state after a linked code restore completes. */
+  onCodeRestored?: () => void | Promise<void>;
 }
 
 type Receipt = { safety_backup_id: string | null; operation_id: string };
@@ -40,27 +58,17 @@ const TRIGGER_GROUP = {
   scheduled: 'hourly',
 } as const satisfies Record<SqliteHistoryBackupTrigger, string>;
 
-const GROUP_ORDER = ['checkpoint', 'safety', 'hourly'] as const;
-
-type GroupKey = (typeof GROUP_ORDER)[number];
-
-const GROUP_META: Record<GroupKey, { heading: string }> = {
-  checkpoint: { heading: 'Snapshot & manual backups' },
-  safety: { heading: 'Restore safety backups' },
-  hourly: { heading: 'Hourly backups' },
-};
-
 const TRIGGER_LABEL: Record<SqliteHistoryBackupTrigger, string> = {
   snapshot: 'Code snapshot',
-  manual: 'Manual backup',
+  manual: 'Manual',
   pre_restore: 'Before restore',
   scheduled: 'Hourly',
 };
 
-const JOB_TRIGGER_LABEL: Record<SqliteBackupJob['trigger'], string> = {
+const ACTIVITY_TITLE: Partial<Record<SqliteBackupJob['trigger'], string>> = {
+  scheduled: 'Hourly backup check',
+  snapshot: 'Code snapshot backup',
   manual: 'Manual backup',
-  snapshot: 'Code snapshot',
-  scheduled: 'Hourly backup',
 };
 
 const JOB_STATUS_LABEL: Record<SqliteBackupJobStatus, string> = {
@@ -78,17 +86,27 @@ function isActiveJob(job: SqliteBackupJob): boolean {
   return ACTIVE_JOB_STATUSES.has(job.status);
 }
 
-function groupBackups(
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function groupBackupsByDatabase(
   backups: SqliteHistoryBackup[],
-): Partial<Record<GroupKey, SqliteHistoryBackup[]>> {
-  const groups: Partial<Record<GroupKey, SqliteHistoryBackup[]>> = {};
-  for (const backup of [...backups].sort(
-    (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id.localeCompare(a.id),
-  )) {
-    const group = TRIGGER_GROUP[backup.trigger] as GroupKey;
-    (groups[group] ??= []).push(backup);
+): Array<[string, SqliteHistoryBackup[]]> {
+  const groups = new Map<string, SqliteHistoryBackup[]>();
+  for (const backup of backups) {
+    const group = groups.get(backup.database_name) ?? [];
+    group.push(backup);
+    groups.set(backup.database_name, group);
   }
-  return groups;
+  return [...groups.entries()]
+    .sort(([nameA], [nameB]) => nameA.localeCompare(nameB))
+    .map(([name, backupsForDatabase]) => [
+      name,
+      backupsForDatabase.sort(
+        (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id.localeCompare(a.id),
+      ),
+    ]);
 }
 
 function formatBytes(bytes: number): string {
@@ -105,9 +123,22 @@ function getFocusableElements(container: HTMLElement | null): HTMLElement[] {
   if (!container) return [];
   return Array.from(
     container.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
     ),
-  );
+  ).filter((element) => {
+    if (element.matches(':disabled')) return false;
+    let ancestor = element.parentElement;
+    while (ancestor) {
+      if (ancestor instanceof HTMLDetailsElement && !ancestor.open) {
+        const summary = Array.from(ancestor.children).find(
+          (child) => child instanceof HTMLElement && child.tagName === 'SUMMARY',
+        );
+        if (element !== summary) return false;
+      }
+      ancestor = ancestor.parentElement;
+    }
+    return true;
+  });
 }
 
 export function DatabaseHistoryPanel({
@@ -115,9 +146,28 @@ export function DatabaseHistoryPanel({
   ownerOrAdmin,
   databaseName,
   snapshotId,
+  captureWindow,
+  contextLabel,
   triggerLabel = 'Database history',
+  iconOnly = false,
+  triggerDisabled = false,
   hostId,
+  onSnapshotNavigate,
+  onCodeRestored,
 }: DatabaseHistoryPanelProps) {
+  const hasCaptureWindow = captureWindow !== undefined;
+  const captureWindowStart = captureWindow?.start;
+  const captureWindowEnd = captureWindow?.end;
+  const activeCaptureWindow = useMemo(
+    () =>
+      hasCaptureWindow
+        ? {
+            start: captureWindowStart ?? '',
+            ...(captureWindowEnd === undefined ? {} : { end: captureWindowEnd }),
+          }
+        : undefined,
+    [hasCaptureWindow, captureWindowStart, captureWindowEnd],
+  );
   const [open, setOpen] = useState(false);
   const [history, setHistory] = useState<SqliteHistoryListResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -135,25 +185,30 @@ export function DatabaseHistoryPanel({
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [capturingBackupId, setCapturingBackupId] = useState<string | null>(null);
   const [captureJobs, setCaptureJobs] = useState<SqliteBackupJob[]>([]);
-  const [loadingJobs, setLoadingJobs] = useState(false);
+  const [, setLoadingJobs] = useState(false);
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [cancellingJobIds, setCancellingJobIds] = useState<Set<string>>(() => new Set());
   const [deletingBackupIds, setDeletingBackupIds] = useState<Set<string>>(() => new Set());
   const [downloadingBackupIds, setDownloadingBackupIds] = useState<Set<string>>(() => new Set());
+  const [expandedDatabases, setExpandedDatabases] = useState<Set<string>>(() => new Set());
+  const [pairedBusy, setPairedBusy] = useState(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const generationRef = useRef(0);
   const captureJobsGenerationRef = useRef(0);
   const captureJobsRevisionRef = useRef(0);
+  const historyRevisionRef = useRef(0);
+  const historyLoadingRequestsRef = useRef(0);
+  const jobsLoadingRequestsRef = useRef(0);
   const captureJobsRef = useRef<SqliteBackupJob[]>([]);
   const previousActiveJobIdsRef = useRef<Set<string>>(new Set());
   const busyRef = useRef(false);
 
-  const key = `${safeId(hostId)}-${safeId(workspaceId)}-${safeId(snapshotId ?? 'workspace')}-${safeId(databaseName ?? 'all')}`;
+  const key = `${safeId(hostId)}-${safeId(workspaceId)}-${safeId(snapshotId ?? 'workspace')}-${safeId(databaseName ?? 'all')}-${safeId(captureWindowStart ?? 'all')}-${safeId(captureWindowEnd ?? 'latest')}`;
   const maintenance = history?.interrupted_maintenance ?? null;
   const maintenanceActive = maintenance?.state === 'active';
-  const busy = confirming || recovering || maintenanceActive;
+  const busy = confirming || recovering || maintenanceActive || pairedBusy;
   useEffect(() => {
     busyRef.current = busy;
   }, [busy]);
@@ -163,76 +218,137 @@ export function DatabaseHistoryPanel({
     setPreparing(false);
     setConfirming(false);
   }, []);
+  const selectBackup = useCallback(
+    (backup: SqliteHistoryBackup) => {
+      if (busyRef.current) return;
+      invalidatePreview();
+      setSelected(backup);
+      setMode('merge');
+      setPolicy('keep_current');
+      setTablePolicies({});
+      setReceipt(null);
+      setError(null);
+    },
+    [invalidatePreview],
+  );
   const close = useCallback(() => {
     invalidatePreview();
     captureJobsGenerationRef.current += 1;
     captureJobsRevisionRef.current += 1;
+    historyLoadingRequestsRef.current = 0;
+    jobsLoadingRequestsRef.current = 0;
+    setOpen(false);
+  }, [invalidatePreview]);
+
+  const clearRevokedHistory = useCallback(() => {
+    invalidatePreview();
+    historyRevisionRef.current += 1;
+    captureJobsGenerationRef.current += 1;
+    captureJobsRevisionRef.current += 1;
+    historyLoadingRequestsRef.current = 0;
+    jobsLoadingRequestsRef.current = 0;
+    captureJobsRef.current = [];
+    previousActiveJobIdsRef.current = new Set();
+    setHistory(null);
+    setCaptureJobs([]);
+    setLoading(false);
+    setLoadingJobs(false);
+    setSelected(null);
+    setReceipt(null);
+    setError(null);
+    setJobsError(null);
     setOpen(false);
   }, [invalidatePreview]);
 
   const load = useCallback(
-    async (options?: { preserveError?: boolean }) => {
+    async (options?: { preserveError?: boolean; silent?: boolean }) => {
       const generation = generationRef.current;
-      setLoading(true);
-      if (!options?.preserveError) setError(null);
+      const revision = ++historyRevisionRef.current;
+      if (!options?.silent) {
+        historyLoadingRequestsRef.current += 1;
+        setLoading(true);
+      }
+      if (!options?.preserveError && !options?.silent) setError(null);
       try {
         const result = await api.listUserSpaceSqliteHistory(workspaceId, {
           databaseName,
           snapshotId,
         });
-        if (generation === generationRef.current) setHistory(result);
+        if (generation === generationRef.current && revision === historyRevisionRef.current)
+          setHistory(result);
       } catch (caught) {
-        if (generation === generationRef.current)
+        if (
+          generation === generationRef.current &&
+          revision === historyRevisionRef.current &&
+          !options?.silent
+        )
           setError(caught instanceof Error ? caught.message : 'Unable to load database history.');
       } finally {
-        if (generation === generationRef.current) setLoading(false);
+        if (generation === generationRef.current && !options?.silent) {
+          historyLoadingRequestsRef.current = Math.max(0, historyLoadingRequestsRef.current - 1);
+          setLoading(historyLoadingRequestsRef.current > 0);
+        }
       }
     },
     [workspaceId, databaseName, snapshotId],
   );
 
-  const loadJobs = useCallback(async () => {
-    const generation = captureJobsGenerationRef.current;
-    const revision = captureJobsRevisionRef.current;
-    setLoadingJobs(true);
-    setJobsError(null);
-    try {
-      const result = await api.listUserSpaceSqliteBackupJobs(workspaceId, {
-        databaseName,
-        snapshotId,
-      });
-      if (
-        generation !== captureJobsGenerationRef.current ||
-        revision !== captureJobsRevisionRef.current
-      )
-        return;
-      const priorActiveIds = previousActiveJobIdsRef.current;
-      const completedActiveJob = result.jobs.some(
-        (job) => priorActiveIds.has(job.id) && !isActiveJob(job),
-      );
-      previousActiveJobIdsRef.current = new Set(
-        result.jobs.filter(isActiveJob).map((job) => job.id),
-      );
-      captureJobsRef.current = result.jobs;
-      setCaptureJobs(result.jobs);
-      if (completedActiveJob) void load({ preserveError: true });
-    } catch (caught) {
-      if (generation === captureJobsGenerationRef.current) {
-        if (caught instanceof ApiError && caught.status === 403) {
-          captureJobsRevisionRef.current += 1;
-          captureJobsRef.current = [];
-          previousActiveJobIdsRef.current = new Set();
-          setCaptureJobs([]);
-        }
-        setJobsError(caught instanceof Error ? caught.message : 'Unable to load capture jobs.');
+  const loadJobs = useCallback(
+    async (options?: { silent?: boolean }) => {
+      const generation = captureJobsGenerationRef.current;
+      const revision = ++captureJobsRevisionRef.current;
+      if (!options?.silent) {
+        jobsLoadingRequestsRef.current += 1;
+        setLoadingJobs(true);
+        setJobsError(null);
       }
-    } finally {
-      if (generation === captureJobsGenerationRef.current) setLoadingJobs(false);
-    }
-  }, [workspaceId, databaseName, snapshotId, load]);
+      try {
+        const result = await api.listUserSpaceSqliteBackupJobs(workspaceId, {
+          databaseName,
+          snapshotId,
+        });
+        if (
+          generation !== captureJobsGenerationRef.current ||
+          revision !== captureJobsRevisionRef.current
+        )
+          return;
+        const priorActiveIds = previousActiveJobIdsRef.current;
+        const completedActiveJob = result.jobs.some(
+          (job) => priorActiveIds.has(job.id) && !isActiveJob(job),
+        );
+        previousActiveJobIdsRef.current = new Set(
+          result.jobs.filter(isActiveJob).map((job) => job.id),
+        );
+        captureJobsRef.current = result.jobs;
+        setCaptureJobs(result.jobs);
+        if (completedActiveJob && !options?.silent) void load({ preserveError: true });
+      } catch (caught) {
+        if (
+          generation === captureJobsGenerationRef.current &&
+          revision === captureJobsRevisionRef.current
+        ) {
+          if (caught instanceof ApiError && caught.status === 403) {
+            captureJobsRevisionRef.current += 1;
+            captureJobsRef.current = [];
+            previousActiveJobIdsRef.current = new Set();
+            setCaptureJobs([]);
+          }
+          if (!options?.silent)
+            setJobsError(caught instanceof Error ? caught.message : 'Unable to load capture jobs.');
+        }
+      } finally {
+        if (generation === captureJobsGenerationRef.current && !options?.silent) {
+          jobsLoadingRequestsRef.current = Math.max(0, jobsLoadingRequestsRef.current - 1);
+          setLoadingJobs(jobsLoadingRequestsRef.current > 0);
+        }
+      }
+    },
+    [workspaceId, databaseName, snapshotId, load],
+  );
 
   useEffect(() => {
     invalidatePreview();
+    historyRevisionRef.current += 1;
     setSelected(null);
     setReceipt(null);
     setHistory(null);
@@ -241,6 +357,8 @@ export function DatabaseHistoryPanel({
     setCapturingBackupId(null);
     captureJobsGenerationRef.current += 1;
     captureJobsRevisionRef.current += 1;
+    historyLoadingRequestsRef.current = 0;
+    jobsLoadingRequestsRef.current = 0;
     previousActiveJobIdsRef.current = new Set();
     captureJobsRef.current = [];
     setCaptureJobs([]);
@@ -249,7 +367,16 @@ export function DatabaseHistoryPanel({
     setCancellingJobIds(new Set());
     setDeletingBackupIds(new Set());
     setDownloadingBackupIds(new Set());
-  }, [workspaceId, databaseName, snapshotId, invalidatePreview]);
+    setExpandedDatabases(new Set());
+    setPairedBusy(false);
+  }, [
+    workspaceId,
+    databaseName,
+    snapshotId,
+    captureWindowStart,
+    captureWindowEnd,
+    invalidatePreview,
+  ]);
 
   useEffect(
     () => () => {
@@ -270,24 +397,54 @@ export function DatabaseHistoryPanel({
   }, [history]);
 
   useEffect(() => {
-    if (open) void load();
-  }, [open, load]);
+    if (!open || !ownerOrAdmin) return;
+    let active = true;
+    let refreshing = false;
+    let refreshQueued = false;
+    const refresh = async () => {
+      if (!active) return;
+      if (refreshing) {
+        refreshQueued = true;
+        return;
+      }
+      refreshing = true;
+      do {
+        refreshQueued = false;
+        await Promise.all([
+          load({ preserveError: true, silent: true }),
+          loadJobs({ silent: true }),
+        ]);
+      } while (active && refreshQueued);
+      refreshing = false;
+    };
+    const revoke = () => {
+      if (!active) return;
+      active = false;
+      clearRevokedHistory();
+    };
+    const unsubscribe = subscribeHistoryEvents(workspaceId, {
+      onHistoryChanged: () => void refresh(),
+      onAccessRevoked: revoke,
+    });
+    void loadJobs();
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [
+    open,
+    ownerOrAdmin,
+    workspaceId,
+    databaseName,
+    snapshotId,
+    load,
+    loadJobs,
+    clearRevokedHistory,
+  ]);
 
   useEffect(() => {
-    if (!open || !ownerOrAdmin) return;
-    let cancelled = false;
-    let timer: number | null = null;
-    const poll = async () => {
-      await loadJobs();
-      if (!cancelled)
-        timer = window.setTimeout(poll, captureJobsRef.current.some(isActiveJob) ? 2_000 : 5_000);
-    };
-    void poll();
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [open, ownerOrAdmin, loadJobs]);
+    if (open) void load();
+  }, [open, load]);
 
   useEffect(() => {
     if (!open) return;
@@ -326,6 +483,29 @@ export function DatabaseHistoryPanel({
       returnFocusRef.current?.focus();
     };
   }, [open, close]);
+
+  const visibleBackups = (history?.backups ?? []).filter((backup) =>
+    isInDatabaseCaptureWindow(backup.created_at, activeCaptureWindow),
+  );
+  const visibleBackupIds = new Set(visibleBackups.map((backup) => backup.id));
+  const visibleCaptureJobs = hasCaptureWindow
+    ? captureJobs.filter((job) => job.backup_ids.some((backupId) => visibleBackupIds.has(backupId)))
+    : captureJobs;
+
+  useEffect(() => {
+    if (!selected || !history) return;
+    if (
+      !history.backups.some(
+        (backup) =>
+          backup.id === selected.id &&
+          isInDatabaseCaptureWindow(backup.created_at, activeCaptureWindow),
+      )
+    ) {
+      invalidatePreview();
+      setSelected(null);
+      setReceipt(null);
+    }
+  }, [history, selected, activeCaptureWindow, invalidatePreview]);
 
   if (!ownerOrAdmin) return null;
   const canManage = history?.can_manage === true;
@@ -377,17 +557,6 @@ export function DatabaseHistoryPanel({
     } finally {
       if (generation === generationRef.current) setConfirming(false);
     }
-  };
-
-  const selectBackup = (backup: SqliteHistoryBackup) => {
-    if (busy) return;
-    invalidatePreview();
-    setSelected(backup);
-    setMode('merge');
-    setPolicy('keep_current');
-    setTablePolicies({});
-    setReceipt(null);
-    setError(null);
   };
 
   const changeContext = (
@@ -448,7 +617,7 @@ export function DatabaseHistoryPanel({
   };
 
   const cancelCaptureJob = async (jobId: string) => {
-    if (cancellingJobIds.has(jobId)) return;
+    if (busy || cancellingJobIds.has(jobId)) return;
     const generation = captureJobsGenerationRef.current;
     captureJobsRevisionRef.current += 1;
     setCancellingJobIds((ids) => new Set(ids).add(jobId));
@@ -475,23 +644,28 @@ export function DatabaseHistoryPanel({
     }
   };
 
-  const activeCaptureJobs = captureJobs
+  const activeCaptureJobs = visibleCaptureJobs
     .filter(isActiveJob)
     .sort(
       (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.id.localeCompare(b.id),
     );
-  const terminalCaptureJobs = captureJobs
+  const terminalCaptureJobs = visibleCaptureJobs
     .filter((job) => !isActiveJob(job))
     .sort(
       (a, b) =>
         Date.parse(b.finished_at ?? b.updated_at) - Date.parse(a.finished_at ?? a.updated_at) ||
         b.id.localeCompare(a.id),
     );
-
+  const attentionCaptureJobs = terminalCaptureJobs.filter(
+    (job) => job.status === 'failed' || job.status === 'interrupted',
+  );
+  const activityCaptureJobs = terminalCaptureJobs.filter(
+    (job) => job.status === 'completed' || job.status === 'cancelled',
+  );
   const renderCaptureJob = (job: SqliteBackupJob) => {
     const requestedDatabases = job.database_names.length
       ? job.database_names.join(', ')
-      : 'All databases';
+      : 'All workspace databases';
     const hasProgress = job.total_databases > 0;
     const isCancelling = cancellingJobIds.has(job.id);
     return (
@@ -504,7 +678,7 @@ export function DatabaseHistoryPanel({
         <div>
           <strong>{requestedDatabases}</strong>
           <span>
-            {JOB_TRIGGER_LABEL[job.trigger]} · Requested {new Date(job.created_at).toLocaleString()}
+            {TRIGGER_LABEL[job.trigger]} · Requested {new Date(job.created_at).toLocaleString()}
             {job.started_at && ` · Started ${new Date(job.started_at).toLocaleString()}`}
             {job.finished_at && ` · Finished ${new Date(job.finished_at).toLocaleString()}`}
           </span>
@@ -520,8 +694,8 @@ export function DatabaseHistoryPanel({
           )}
           {job.backup_ids.length > 0 && job.status !== 'completed' && (
             <span className="userspace-muted">
-              Partial result: {job.backup_ids.length} backup record
-              {job.backup_ids.length === 1 ? '' : 's'} available in history.
+              Partial result: {pluralize(job.backup_ids.length, 'backup record')} available in
+              history.
             </span>
           )}
           {job.error_message && <span className="database-history-error">{job.error_message}</span>}
@@ -536,7 +710,7 @@ export function DatabaseHistoryPanel({
             <button
               type="button"
               className="btn btn-secondary btn-sm"
-              disabled={isCancelling}
+              disabled={busy || isCancelling}
               data-history-cancel-job={job.id}
               onClick={() => void cancelCaptureJob(job.id)}
             >
@@ -548,6 +722,65 @@ export function DatabaseHistoryPanel({
             </button>
           )}
         </div>
+      </article>
+    );
+  };
+
+  const renderActivityRow = (job: SqliteBackupJob) => {
+    const title = ACTIVITY_TITLE[job.trigger] ?? TRIGGER_LABEL[job.trigger];
+    const scope = job.database_names.length ? job.database_names.join(', ') : null;
+    const readyBackups = visibleBackups
+      .filter((backup) => backup.status === 'ready' && job.backup_ids.includes(backup.id))
+      .sort(
+        (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id.localeCompare(a.id),
+      );
+    const restorePointCount = readyBackups.length;
+    const snapshotTarget = job.snapshot_id && onSnapshotNavigate ? job.snapshot_id : null;
+    const restorePointLabel = pluralize(restorePointCount, 'restore point');
+    return (
+      <article
+        key={job.id}
+        className="database-history-activity database-history-backup"
+        data-history-activity-job={job.id}
+        data-history-activity-status={job.status}
+      >
+        <div className="database-history-activity-meta">
+          <div className="database-history-backup-meta">
+            <span className="database-history-backup-time">{title}</span>
+            {scope && <span className="database-history-backup-secondary">{scope}</span>}
+            <span className="database-history-backup-secondary">
+              {new Date(job.finished_at ?? job.updated_at).toLocaleString()}
+            </span>
+            {job.snapshot_id && (
+              <span className="badge database-history-trigger-badge database-history-trigger-badge--checkpoint">
+                Snapshot
+              </span>
+            )}
+          </div>
+        </div>
+        {restorePointCount > 0 &&
+          (snapshotTarget ? (
+            <button
+              type="button"
+              className="badge database-history-restore-point-badge"
+              data-history-restore-points={job.id}
+              title={`Show associated snapshot ${snapshotTarget.slice(0, 8)}`}
+              disabled={busy}
+              onClick={() => {
+                close();
+                onSnapshotNavigate!(snapshotTarget);
+              }}
+            >
+              {restorePointLabel}
+            </button>
+          ) : (
+            <span
+              className="badge database-history-restore-point-badge"
+              data-history-restore-points={job.id}
+            >
+              {restorePointLabel}
+            </span>
+          ))}
       </article>
     );
   };
@@ -603,15 +836,19 @@ export function DatabaseHistoryPanel({
     <>
       <button
         type="button"
-        className="btn btn-secondary btn-sm database-history-trigger"
+        className={`btn btn-secondary btn-sm database-history-trigger${iconOnly ? ' btn-icon' : ''}`}
         data-history-workspace={workspaceId}
         data-history-snapshot={snapshotId ?? 'workspace'}
         data-history-database={databaseName ?? 'all'}
         data-history-host={hostId}
         data-history-panel={key}
+        title={iconOnly ? triggerLabel : undefined}
+        aria-label={iconOnly ? triggerLabel : undefined}
+        disabled={triggerDisabled}
         onClick={() => setOpen(true)}
       >
-        <DatabaseBackup size={14} /> {triggerLabel}
+        <DatabaseBackup size={14} />
+        {!iconOnly && triggerLabel}
       </button>
       {open && (
         <div
@@ -632,11 +869,12 @@ export function DatabaseHistoryPanel({
               <div>
                 <h3 id={`database-history-title-${key}`}>Database history</h3>
                 <p className="userspace-muted">
-                  {snapshotId
-                    ? `Exact snapshot ${snapshotId}`
-                    : databaseName
-                      ? databaseName
-                      : 'All workspace databases'}
+                  {contextLabel ??
+                    (snapshotId
+                      ? `Exact snapshot ${snapshotId}`
+                      : databaseName
+                        ? `Restore points for ${databaseName}`
+                        : 'Restore points for all workspace databases')}
                 </p>
               </div>
               <button
@@ -672,175 +910,433 @@ export function DatabaseHistoryPanel({
                   {error}
                 </p>
               )}
+              {jobsError && (
+                <p className="database-history-error" role="alert">
+                  {jobsError}
+                </p>
+              )}
               {history && !canManage && (
                 <p className="database-history-error" role="alert">
                   History is available only to the workspace owner or an administrator.
                 </p>
               )}
-              {maintenance && !maintenanceActive && canManage && (
+              {((maintenance && !maintenanceActive && canManage) ||
+                attentionCaptureJobs.length > 0) && (
                 <section
-                  className="database-history-recovery"
-                  aria-label="Interrupted database maintenance"
-                  data-history-recovery
-                  data-history-maintenance-status={maintenance.state}
+                  className="database-history-band"
+                  aria-labelledby={`db-hist-band-attention-${key}`}
+                  data-history-band="attention"
                 >
-                  <AlertTriangle size={16} />
-                  <div>
-                    <strong>Interrupted database maintenance</strong>
-                    <p>
-                      {maintenance.detail ??
-                        'Runtime remains stopped until this operation is recovered.'}
-                    </p>
-                  </div>
-                  {maintenance.operation_id && maintenance.can_complete && (
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      disabled={busy}
-                      onClick={() => void recover(maintenance.operation_id, 'complete')}
+                  <h4
+                    id={`db-hist-band-attention-${key}`}
+                    className="database-history-band-heading"
+                  >
+                    Needs attention
+                  </h4>
+                  {maintenance && !maintenanceActive && canManage && (
+                    <section
+                      className="database-history-recovery"
+                      aria-label="Interrupted database maintenance"
+                      data-history-recovery
+                      data-history-maintenance-status={maintenance.state}
                     >
-                      Complete
-                    </button>
+                      <AlertTriangle size={16} />
+                      <div>
+                        <strong>Interrupted database maintenance</strong>
+                        <p>
+                          {maintenance.detail ??
+                            'Runtime remains stopped until this operation is recovered.'}
+                        </p>
+                      </div>
+                      {maintenance.operation_id && maintenance.can_complete && (
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm"
+                          disabled={busy}
+                          onClick={() => void recover(maintenance.operation_id, 'complete')}
+                        >
+                          Complete
+                        </button>
+                      )}
+                      {maintenance.operation_id && maintenance.can_abort && (
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          disabled={busy}
+                          onClick={() => void recover(maintenance.operation_id, 'abort')}
+                        >
+                          Abort
+                        </button>
+                      )}
+                    </section>
                   )}
-                  {maintenance.operation_id && maintenance.can_abort && (
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      disabled={busy}
-                      onClick={() => void recover(maintenance.operation_id, 'abort')}
-                    >
-                      Abort
-                    </button>
-                  )}
+                  {attentionCaptureJobs.map(renderCaptureJob)}
                 </section>
               )}
-              {canManage && databaseName && (
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  disabled={Boolean(capturingBackupId) || busy}
-                  onClick={() => void capture()}
+              {activeCaptureJobs.length > 0 && (
+                <section
+                  className="database-history-band database-history-capture-jobs"
+                  aria-labelledby={`db-hist-band-in-progress-${key}`}
+                  data-history-band="in-progress"
+                  data-history-capture-jobs
                 >
-                  <Plus size={14} /> {capturingBackupId ? 'Capturing…' : 'Capture now'}
-                </button>
-              )}
-              {ownerOrAdmin && (
-                <section className="database-history-capture-jobs" data-history-capture-jobs>
-                  {loadingJobs && <p className="userspace-muted">Loading capture jobs…</p>}
-                  {jobsError && (
-                    <p className="database-history-error" role="alert">
-                      {jobsError}
-                    </p>
-                  )}
-                  {activeCaptureJobs.length > 0 && (
-                    <>
-                      <h4 className="database-history-group-heading">Pending captures</h4>
-                      {activeCaptureJobs.map(renderCaptureJob)}
-                    </>
-                  )}
-                  {terminalCaptureJobs.length > 0 && (
-                    <details open={activeCaptureJobs.length === 0}>
-                      <summary className="database-history-group-heading">
-                        Recent captures ({terminalCaptureJobs.length})
-                      </summary>
-                      <div className="database-history-capture-job-list">
-                        {terminalCaptureJobs.slice(0, 3).map(renderCaptureJob)}
-                      </div>
-                    </details>
-                  )}
-                  {!loadingJobs && !activeCaptureJobs.length && !terminalCaptureJobs.length && (
-                    <p className="userspace-muted">No queued captures for this view.</p>
-                  )}
+                  <h4
+                    id={`db-hist-band-in-progress-${key}`}
+                    className="database-history-band-heading"
+                  >
+                    In progress
+                  </h4>
+                  {activeCaptureJobs.map(renderCaptureJob)}
                 </section>
               )}
               {canManage &&
                 history &&
                 (() => {
-                  const groups = groupBackups(history.backups);
-                  return GROUP_ORDER.map((group) => {
-                    const backups = groups[group];
-                    if (!backups?.length) return null;
-                    const headingId = `db-hist-group-${group}-${key}`;
-                    return (
-                      <section
-                        key={group}
-                        className={`database-history-group database-history-group--${group}`}
-                        aria-labelledby={headingId}
-                        data-history-group={group}
-                      >
-                        <h4 id={headingId} className="database-history-group-heading">
-                          {GROUP_META[group].heading}
-                          <span
-                            className={`badge database-history-trigger-badge database-history-trigger-badge--${group}`}
-                          >
-                            {backups.length}
-                          </span>
+                  const databaseGroups = groupBackupsByDatabase(visibleBackups);
+                  return (
+                    <section
+                      className="database-history-band"
+                      aria-labelledby={`db-hist-band-recoverable-${key}`}
+                      data-history-band="recoverable"
+                    >
+                      <div className="database-history-band-header">
+                        <h4
+                          id={`db-hist-band-recoverable-${key}`}
+                          className="database-history-band-heading"
+                        >
+                          Restore points
                         </h4>
-                        {backups.map((backup) => (
-                          <article
-                            key={backup.id}
-                            className="database-history-backup"
-                            data-history-backup={backup.id}
-                            data-history-trigger={backup.trigger}
+                        {databaseName && (
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            disabled={Boolean(capturingBackupId) || busy}
+                            onClick={() => void capture()}
                           >
-                            <div>
-                              <strong>{backup.database_name}</strong>
-                              <span>
-                                {new Date(backup.created_at).toLocaleString()} ·{' '}
-                                {TRIGGER_LABEL[backup.trigger]} · {formatBytes(backup.size_bytes)}
+                            <Plus size={14} /> {capturingBackupId ? 'Capturing…' : 'Capture now'}
+                          </button>
+                        )}
+                      </div>
+                      {databaseGroups.map(([name, backups]) => {
+                        const isExpanded = expandedDatabases.has(name);
+                        const initialBackups = backups.slice(0, 5);
+                        const selectedBackup =
+                          selected?.database_name === name
+                            ? (backups.find((backup) => backup.id === selected.id) ?? null)
+                            : null;
+                        const visibleBackups =
+                          isExpanded ||
+                          !selectedBackup ||
+                          initialBackups.some((backup) => backup.id === selectedBackup.id)
+                            ? isExpanded
+                              ? backups
+                              : initialBackups
+                            : [...initialBackups, selectedBackup];
+                        const olderCount = Math.max(0, backups.length - 5);
+                        const headingId = `db-hist-db-${safeId(name)}-${key}`;
+                        return (
+                          <section
+                            key={name}
+                            className="database-history-database-group"
+                            aria-labelledby={headingId}
+                            data-history-database-group={name}
+                          >
+                            <div className="database-history-database-header">
+                              <h4 id={headingId} className="database-history-database-heading">
+                                {name}
+                              </h4>
+                              <span className="database-history-database-count">
+                                {pluralize(
+                                  backups.filter((backup) => backup.status === 'ready').length,
+                                  'restore point',
+                                )}
                               </span>
-                              {backup.snapshot_id && <span>Snapshot {backup.snapshot_id}</span>}
-                              {backup.status === 'failed' && (
-                                <span className="database-history-error">
-                                  Capture failed: {backup.error ?? 'No recovery blob was captured.'}
-                                </span>
-                              )}
                             </div>
-                            <div
-                              className="database-history-actions"
-                              data-history-actions={backup.id}
-                            >
+                            {visibleBackups.map((backup) => (
+                              <article
+                                key={backup.id}
+                                className="database-history-backup"
+                                data-history-backup={backup.id}
+                                data-history-trigger={backup.trigger}
+                              >
+                                <div className="database-history-backup-row">
+                                  <div>
+                                    <div className="database-history-backup-meta">
+                                      <span className="database-history-backup-time">
+                                        {new Date(backup.created_at).toLocaleString()}
+                                      </span>
+                                      <span
+                                        className={`badge database-history-trigger-badge database-history-trigger-badge--${TRIGGER_GROUP[backup.trigger]}`}
+                                      >
+                                        {TRIGGER_LABEL[backup.trigger]}
+                                      </span>
+                                      <span className="database-history-backup-size">
+                                        {formatBytes(backup.size_bytes)}
+                                      </span>
+                                    </div>
+                                    {backup.snapshot_id && (
+                                      <span className="database-history-backup-secondary">
+                                        Snapshot {backup.snapshot_id}
+                                      </span>
+                                    )}
+                                    {backup.status === 'failed' && (
+                                      <span className="database-history-error">
+                                        Capture failed:{' '}
+                                        {backup.error ?? 'No recovery blob was captured.'}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div
+                                    className="database-history-actions"
+                                    data-history-actions={backup.id}
+                                  >
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary btn-sm"
+                                      disabled={busy || downloadingBackupIds.has(backup.id)}
+                                      onClick={() => void download(backup.id)}
+                                      aria-label={`Download ${backup.database_name} backup`}
+                                    >
+                                      <Download size={14} />
+                                    </button>
+                                    {backup.can_restore && (
+                                      <button
+                                        type="button"
+                                        className="btn btn-primary btn-sm"
+                                        disabled={busy}
+                                        onClick={() => selectBackup(backup)}
+                                        aria-label={`Restore ${backup.database_name} backup from ${backup.trigger}${backup.snapshot_id ? ` snapshot ${backup.snapshot_id}` : ''}`}
+                                      >
+                                        Restore
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary btn-sm"
+                                      disabled={
+                                        !backup.can_delete ||
+                                        busy ||
+                                        deletingBackupIds.has(backup.id)
+                                      }
+                                      onClick={() => void remove(backup.id)}
+                                      aria-label={`Delete ${backup.database_name} backup`}
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
+                                </div>
+                                {selected?.id === backup.id && backup.snapshot_id && !receipt && (
+                                  <div
+                                    className="database-history-inline-expand"
+                                    data-history-linked-restore={backup.id}
+                                  >
+                                    <SnapshotRestorePanel
+                                      workspaceId={workspaceId}
+                                      snapshotId={backup.snapshot_id}
+                                      initialBackupId={selected.id}
+                                      defaultScope="database"
+                                      allowCodeRestore={ownerOrAdmin}
+                                      allowDatabaseRestore={canManage}
+                                      disabled={maintenanceActive || confirming || recovering}
+                                      onBusyChange={setPairedBusy}
+                                      onCodeRestored={onCodeRestored}
+                                      onDatabaseRestored={() => load({ preserveError: true })}
+                                      onClose={() => setSelected(null)}
+                                    />
+                                  </div>
+                                )}
+                                {selected?.id === backup.id && !backup.snapshot_id && !receipt && (
+                                  <div
+                                    className="database-history-inline-expand"
+                                    aria-label="Restore database backup"
+                                    data-history-restore-wizard
+                                  >
+                                    <label>
+                                      Mode{' '}
+                                      <select
+                                        value={mode}
+                                        disabled={busy}
+                                        onChange={(event) =>
+                                          changeContext(
+                                            event.target.value as SqliteHistoryRestoreMode,
+                                          )
+                                        }
+                                      >
+                                        <option value="merge">Merge</option>
+                                        <option value="overwrite">Overwrite</option>
+                                      </select>
+                                    </label>
+                                    {mode === 'merge' && (
+                                      <label>
+                                        Default conflict policy{' '}
+                                        <select
+                                          value={policy}
+                                          disabled={busy}
+                                          onChange={(event) =>
+                                            changeContext(
+                                              undefined,
+                                              event.target.value as SqliteHistoryConflictPolicy,
+                                            )
+                                          }
+                                        >
+                                          <option value="keep_current">Keep current</option>
+                                          <option value="use_backup">Use backup</option>
+                                        </select>
+                                      </label>
+                                    )}
+                                    {mode === 'merge' ? (
+                                      <p className="database-history-warning">
+                                        Merge can resurrect rows deliberately deleted from the
+                                        current database.
+                                      </p>
+                                    ) : (
+                                      <p className="database-history-warning">
+                                        Overwrite removes current-only data.
+                                      </p>
+                                    )}
+                                    <button
+                                      type="button"
+                                      className="btn btn-primary"
+                                      disabled={preparing || busy}
+                                      onClick={() => void prepare()}
+                                    >
+                                      {preparing ? 'Preparing actual preview…' : 'Prepare preview'}
+                                    </button>
+                                    {preview && (
+                                      <div
+                                        className="database-history-preview"
+                                        data-history-preview={preview.preview_id ?? 'unavailable'}
+                                      >
+                                        <h4>Actual restore preview</h4>
+                                        <p>
+                                          Migrations:{' '}
+                                          {preview.migrations_applied.length
+                                            ? preview.migrations_applied.join(', ')
+                                            : 'none'}
+                                        </p>
+                                        {preview.warnings.map((warning) => (
+                                          <p key={warning} className="database-history-warning">
+                                            {warning}
+                                          </p>
+                                        ))}
+                                        {preview.blockers.map((blocker) => (
+                                          <p key={blocker} className="database-history-error">
+                                            {blocker}
+                                          </p>
+                                        ))}
+                                        {preview.tables.map((table) => (
+                                          <details key={table.name}>
+                                            <summary>
+                                              {table.name}: {table.inserted} inserted,{' '}
+                                              {table.updated} updated, {table.deleted} deleted,{' '}
+                                              {table.conflicts} conflicts
+                                            </summary>
+                                            {mode === 'merge' && (
+                                              <label>
+                                                Table conflict policy ({table.name}){' '}
+                                                <select
+                                                  value={tablePolicies[table.name] ?? policy}
+                                                  disabled={busy}
+                                                  onChange={(event) => {
+                                                    if (busy) return;
+                                                    invalidatePreview();
+                                                    setError(null);
+                                                    setTablePolicies((policies) => ({
+                                                      ...policies,
+                                                      [table.name]: event.target
+                                                        .value as SqliteHistoryConflictPolicy,
+                                                    }));
+                                                  }}
+                                                >
+                                                  <option value="keep_current">Keep current</option>
+                                                  <option value="use_backup">Use backup</option>
+                                                </select>
+                                              </label>
+                                            )}
+                                            {table.conflict_samples.slice(0, 20).map((sample) => (
+                                              <pre key={JSON.stringify([table.name, sample.key])}>
+                                                {JSON.stringify(sample, null, 2)}
+                                              </pre>
+                                            ))}
+                                          </details>
+                                        ))}
+                                        {preview.can_apply && preview.preview_id && (
+                                          <button
+                                            type="button"
+                                            className="btn btn-primary"
+                                            disabled={busy}
+                                            onClick={() => void restore()}
+                                          >
+                                            <RotateCcw size={14} />{' '}
+                                            {confirming ? 'Restoring…' : 'Confirm restore'}
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                {selected?.id === backup.id && receipt && (
+                                  <div
+                                    className="database-history-inline-expand"
+                                    role="status"
+                                    data-history-receipt
+                                  >
+                                    <h4>Database restored</h4>
+                                    {receipt.safety_backup_id ? (
+                                      <p>
+                                        Safety backup: {receipt.safety_backup_id}{' '}
+                                        <button
+                                          type="button"
+                                          className="btn btn-secondary btn-sm"
+                                          disabled={
+                                            busy ||
+                                            downloadingBackupIds.has(receipt.safety_backup_id)
+                                          }
+                                          onClick={() => void download(receipt.safety_backup_id!)}
+                                        >
+                                          Download safety backup
+                                        </button>
+                                      </p>
+                                    ) : (
+                                      <p>Safety backup: No safety backup created</p>
+                                    )}
+                                    <p>
+                                      The runtime is stopped. Start the preview when you are ready;
+                                      no bootstrap or migrations were run automatically.
+                                    </p>
+                                  </div>
+                                )}
+                              </article>
+                            ))}
+                            {olderCount > 0 && (
                               <button
                                 type="button"
                                 className="btn btn-secondary btn-sm"
-                                disabled={busy || downloadingBackupIds.has(backup.id)}
-                                onClick={() => void download(backup.id)}
-                                aria-label={`Download ${backup.database_name} backup`}
+                                data-history-show-older={name}
+                                onClick={() =>
+                                  setExpandedDatabases((names) => {
+                                    const next = new Set(names);
+                                    if (next.has(name)) next.delete(name);
+                                    else next.add(name);
+                                    return next;
+                                  })
+                                }
                               >
-                                <Download size={14} />
+                                {isExpanded
+                                  ? 'Show fewer restore points'
+                                  : `Show ${pluralize(olderCount, 'older restore point')}`}
                               </button>
-                              {backup.can_restore && (
-                                <button
-                                  type="button"
-                                  className="btn btn-primary btn-sm"
-                                  disabled={busy}
-                                  onClick={() => selectBackup(backup)}
-                                  aria-label={`Restore ${backup.database_name} backup from ${backup.trigger}${backup.snapshot_id ? ` snapshot ${backup.snapshot_id}` : ''}`}
-                                >
-                                  Restore
-                                </button>
-                              )}
-                              {backup.can_delete && (
-                                <button
-                                  type="button"
-                                  className="btn btn-secondary btn-sm"
-                                  disabled={busy || deletingBackupIds.has(backup.id)}
-                                  onClick={() => void remove(backup.id)}
-                                  aria-label={`Delete ${backup.database_name} backup`}
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              )}
-                            </div>
-                          </article>
-                        ))}
-                      </section>
-                    );
-                  });
+                            )}
+                          </section>
+                        );
+                      })}
+                    </section>
+                  );
                 })()}
               {history &&
                 canManage &&
-                history.backups.length === 0 &&
+                visibleBackups.length === 0 &&
+                !hasCaptureWindow &&
                 (snapshotId && activeCaptureJobs.length > 0 ? (
                   <p className="userspace-muted" data-history-snapshot-queue-notice>
                     A capture for this snapshot is queued. Database state is captured when the
@@ -853,151 +1349,23 @@ export function DatabaseHistoryPanel({
                       : 'No captured database backups. Missing live databases can still be recovered here once a backup exists.'}
                   </p>
                 ))}
-              {selected && !receipt && (
+              {activityCaptureJobs.length > 0 && (
                 <section
-                  className="database-history-wizard"
-                  aria-label="Restore database backup"
-                  data-history-restore-wizard
+                  className="database-history-band"
+                  aria-labelledby={`db-hist-band-activity-${key}`}
+                  data-history-band="activity"
                 >
-                  <h4>Restore {selected.database_name}</h4>
-                  <label>
-                    Mode{' '}
-                    <select
-                      value={mode}
-                      disabled={busy}
-                      onChange={(event) =>
-                        changeContext(event.target.value as SqliteHistoryRestoreMode)
-                      }
-                    >
-                      <option value="merge">Merge</option>
-                      <option value="overwrite">Overwrite</option>
-                    </select>
-                  </label>
-                  {mode === 'merge' && (
-                    <label>
-                      Default conflict policy{' '}
-                      <select
-                        value={policy}
-                        disabled={busy}
-                        onChange={(event) =>
-                          changeContext(
-                            undefined,
-                            event.target.value as SqliteHistoryConflictPolicy,
-                          )
-                        }
-                      >
-                        <option value="keep_current">Keep current</option>
-                        <option value="use_backup">Use backup</option>
-                      </select>
-                    </label>
-                  )}
-                  {mode === 'merge' ? (
-                    <p className="database-history-warning">
-                      Merge can resurrect rows deliberately deleted from the current database.
-                    </p>
-                  ) : (
-                    <p className="database-history-warning">Overwrite removes current-only data.</p>
-                  )}
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    disabled={preparing || busy}
-                    onClick={() => void prepare()}
-                  >
-                    {preparing ? 'Preparing actual preview…' : 'Prepare preview'}
-                  </button>
-                  {preview && (
-                    <div
-                      className="database-history-preview"
-                      data-history-preview={preview.preview_id ?? 'unavailable'}
-                    >
-                      <h4>Actual restore preview</h4>
-                      <p>
-                        Migrations:{' '}
-                        {preview.migrations_applied.length
-                          ? preview.migrations_applied.join(', ')
-                          : 'none'}
-                      </p>
-                      {preview.warnings.map((warning) => (
-                        <p key={warning} className="database-history-warning">
-                          {warning}
-                        </p>
-                      ))}
-                      {preview.blockers.map((blocker) => (
-                        <p key={blocker} className="database-history-error">
-                          {blocker}
-                        </p>
-                      ))}
-                      {preview.tables.map((table) => (
-                        <details key={table.name}>
-                          <summary>
-                            {table.name}: {table.inserted} inserted, {table.updated} updated,{' '}
-                            {table.deleted} deleted, {table.conflicts} conflicts
-                          </summary>
-                          {mode === 'merge' && (
-                            <label>
-                              Table conflict policy ({table.name}){' '}
-                              <select
-                                value={tablePolicies[table.name] ?? policy}
-                                disabled={busy}
-                                onChange={(event) => {
-                                  if (busy) return;
-                                  invalidatePreview();
-                                  setError(null);
-                                  setTablePolicies((policies) => ({
-                                    ...policies,
-                                    [table.name]: event.target.value as SqliteHistoryConflictPolicy,
-                                  }));
-                                }}
-                              >
-                                <option value="keep_current">Keep current</option>
-                                <option value="use_backup">Use backup</option>
-                              </select>
-                            </label>
-                          )}
-                          {table.conflict_samples.slice(0, 20).map((sample) => (
-                            <pre key={JSON.stringify([table.name, sample.key])}>
-                              {JSON.stringify(sample, null, 2)}
-                            </pre>
-                          ))}
-                        </details>
-                      ))}
-                      {preview.can_apply && preview.preview_id && (
-                        <button
-                          type="button"
-                          className="btn btn-primary"
-                          disabled={busy}
-                          onClick={() => void restore()}
-                        >
-                          <RotateCcw size={14} /> {confirming ? 'Restoring…' : 'Confirm restore'}
-                        </button>
-                      )}
+                  <h4 id={`db-hist-band-activity-${key}`} className="database-history-band-heading">
+                    Activity
+                  </h4>
+                  <details>
+                    <summary>
+                      Capture activity ({pluralize(activityCaptureJobs.length, 'run')})
+                    </summary>
+                    <div className="database-history-activity-list">
+                      {activityCaptureJobs.map(renderActivityRow)}
                     </div>
-                  )}
-                </section>
-              )}
-              {receipt && (
-                <section className="database-history-receipt" role="status" data-history-receipt>
-                  <h4>Database restored</h4>
-                  {receipt.safety_backup_id ? (
-                    <p>
-                      Safety backup: {receipt.safety_backup_id}{' '}
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        disabled={busy || downloadingBackupIds.has(receipt.safety_backup_id)}
-                        onClick={() => void download(receipt.safety_backup_id!)}
-                      >
-                        Download safety backup
-                      </button>
-                    </p>
-                  ) : (
-                    <p>Safety backup: No safety backup created</p>
-                  )}
-                  <p>
-                    The runtime is stopped. Start the preview when you are ready; no bootstrap or
-                    migrations were run automatically.
-                  </p>
+                  </details>
                 </section>
               )}
             </div>

@@ -27,6 +27,13 @@ class SqliteHistoryCapabilityTests(unittest.TestCase):
         (database_dir / "one.sqlite3").write_bytes(b"one")
         (database_dir / "two.sqlite3").write_bytes(b"two")
         self.service = SqliteHistoryService(lambda _: self.files)
+        runtime_active_patch = mock.patch.object(
+            SqliteHistoryService,
+            "runtime_history_active",
+            new=mock.AsyncMock(return_value=False),
+        )
+        runtime_active_patch.start()
+        self.addCleanup(runtime_active_patch.stop)
 
     def tearDown(self) -> None:
         self.temp.cleanup()

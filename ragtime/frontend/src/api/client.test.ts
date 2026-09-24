@@ -724,6 +724,21 @@ describe('SQLite history API client', () => {
     );
   });
 
+  it('subscribes to encoded scoped history events with credentials', () => {
+    const EventSourceMock = vi.fn();
+    vi.stubGlobal('EventSource', EventSourceMock);
+
+    api.subscribeUserSpaceSqliteHistoryEvents('ws/ 1', {
+      databaseName: 'app data.sqlite3',
+      snapshotId: 'snap/1',
+    });
+
+    expect(EventSourceMock).toHaveBeenCalledWith(
+      '/indexes/userspace/workspaces/ws%2F%201/sqlite-history/events?database_name=app+data.sqlite3&snapshot_id=snap%2F1',
+      { withCredentials: true },
+    );
+  });
+
   it('uses the capture, download, delete, restore, and recovery request contracts', async () => {
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     vi.stubGlobal('URL', {

@@ -45,6 +45,11 @@ const {
   toastMock: [[], { error: vi.fn(), success: vi.fn(), info: vi.fn(), dismiss: vi.fn() }],
 }));
 
+let databaseHistoryPanelProps: {
+  onSnapshotNavigate?: (snapshotId: string) => void;
+  onCodeRestored?: () => void | Promise<void>;
+} | null = null;
+
 vi.mock('@/api/client', () => ({
   api: apiMock,
 }));
@@ -52,6 +57,13 @@ vi.mock('@/api/client', () => ({
 vi.mock('./Toast', () => ({
   useToast: () => toastMock,
   ToastContainer: () => null,
+}));
+
+vi.mock('./DatabaseHistoryPanel', () => ({
+  DatabaseHistoryPanel: (props: typeof databaseHistoryPanelProps) => {
+    databaseHistoryPanelProps = props;
+    return <div data-testid="database-history-panel" />;
+  },
 }));
 
 import { WorkspaceSqliteInspectorModal } from './WorkspaceSqliteInspectorModal';
@@ -170,15 +182,16 @@ class MockEventSource {
   }
 }
 
-function renderModal() {
+function renderModal(onClose = vi.fn(), onSnapshotNavigate = vi.fn()) {
   return render(
     <WorkspaceSqliteInspectorModal
       isOpen
       workspaceId="source-ws"
       workspaceName="Source Workspace"
       canEdit
-      onClose={vi.fn()}
+      onClose={onClose}
       onPersistencePromoted={vi.fn()}
+      onSnapshotNavigate={onSnapshotNavigate}
     />,
   );
 }
@@ -187,6 +200,7 @@ describe('WorkspaceSqliteInspectorModal', () => {
   beforeEach(() => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource);
     eventSourceInstances.length = 0;
+    databaseHistoryPanelProps = null;
     Object.values(apiMock).forEach((mockFn) => mockFn.mockReset());
     apiMock.listUserSpaceSqliteDatabases.mockResolvedValue(listResponse);
     apiMock.listUserSpaceSqliteTables.mockResolvedValue(tableListResponse);
@@ -355,5 +369,17 @@ describe('WorkspaceSqliteInspectorModal', () => {
     expect(screen.getAllByText(/Not initialized/i).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: /Initialize app\.sqlite3/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Import database/i })).toBeTruthy();
+  });
+
+  it('closes before delegating inspector history snapshot navigation to the parent', async () => {
+    const onClose = vi.fn();
+    const onSnapshotNavigate = vi.fn();
+    renderModal(onClose, onSnapshotNavigate);
+
+    await waitFor(() => expect(databaseHistoryPanelProps).not.toBeNull());
+    databaseHistoryPanelProps?.onSnapshotNavigate?.('snapshot-1');
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onSnapshotNavigate).toHaveBeenCalledWith('snapshot-1');
   });
 });

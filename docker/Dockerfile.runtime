@@ -8,6 +8,8 @@ ARG RUNTIME_DEPS_IMAGE=runtime-deps
 
 FROM python:3.12-slim-trixie AS runtime-deps
 
+ARG TARGETARCH
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/runtime \
@@ -55,6 +57,10 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     yq \
     && rm -rf /var/lib/apt/lists/*
 
+COPY docker/scripts/install_restic.py /tmp/install_restic.py
+RUN python /tmp/install_restic.py --arch "${TARGETARCH}" \
+    && /opt/ragtime-backup/bin/restic version
+
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     npm install -g npm@10 corepack playwright esbuild \
     && corepack enable \
@@ -74,7 +80,7 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
     pip install poetry pipenv uv && \
     curl -fsSL https://bun.sh/install | bash
 
-FROM ${RUNTIME_DEPS_IMAGE} AS runtime
+FROM ${RUNTIME_DEPS_IMAGE} AS runtime-base
 
 COPY runtime/ /runtime/runtime/
 RUN mkdir -p /runtime/ragtime/core
@@ -93,3 +99,62 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD ["curl", "-f", "http://localhost:8090/health"]
 
 ENTRYPOINT ["tini", "--", "/entrypoint.runtime.sh"]
+
+FROM runtime-base AS runtime-history-test
+
+# Copy scripts directory (needed for benchmark fixture imports)
+COPY scripts/ /runtime/scripts/
+
+# Copy only runtime-independent test files (no Ragtime dependencies)
+COPY tests/test_runtime_restic_repository.py /runtime/tests/
+COPY tests/test_runtime_sqlite_history_operations.py /runtime/tests/
+COPY tests/test_runtime_sqlite_history_catalog.py /runtime/tests/
+COPY tests/test_runtime_sqlite_history_core.py /runtime/tests/
+COPY tests/test_runtime_sqlite_history_spill.py /runtime/tests/
+COPY tests/test_runtime_sqlite_history_api.py /runtime/tests/
+COPY tests/test_runtime_restic_maintenance.py /runtime/tests/
+COPY tests/test_runtime_history_migration.py /runtime/tests/
+COPY tests/test_runtime_history_migration_api.py /runtime/tests/
+COPY tests/test_runtime_history_manager_lifespan.py /runtime/tests/
+COPY tests/test_runtime_history_export.py /runtime/tests/
+COPY tests/test_runtime_history_transfers.py /runtime/tests/
+COPY tests/test_runtime_sqlite_history_integration.py /runtime/tests/
+COPY tests/test_runtime_guarded_restore_lifecycle.py /runtime/tests/
+COPY tests/test_runtime_sqlite_import.py /runtime/tests/
+COPY tests/test_runtime_history_benchmark_fixtures.py /runtime/tests/
+COPY tests/test_runtime_history_scratch.py /runtime/tests/
+COPY tests/test_runtime_history_conversion.py /runtime/tests/
+COPY tests/test_runtime_history_bootstrap.py /runtime/tests/
+COPY tests/test_runtime_sqlite_history_bootstrap_inventory.py /runtime/tests/
+COPY tests/test_runtime_history_bootstrap_cli.py /runtime/tests/
+COPY tests/test_runtime_package_imports.py /runtime/tests/
+COPY tests/test_runtime_history_core_remediation.py /runtime/tests/
+COPY tests/test_runtime_history_coordination_remediation.py /runtime/tests/
+RUN pip install --no-cache-dir pytest \
+    && /opt/ragtime-backup/bin/restic version | grep -F 'restic 0.19.1 ' \
+    && pytest -q tests/test_runtime_restic_repository.py \
+              tests/test_runtime_sqlite_history_operations.py \
+              tests/test_runtime_sqlite_history_catalog.py \
+              tests/test_runtime_sqlite_history_core.py \
+              tests/test_runtime_sqlite_history_spill.py \
+              tests/test_runtime_sqlite_history_api.py \
+              tests/test_runtime_restic_maintenance.py \
+               tests/test_runtime_history_migration.py \
+               tests/test_runtime_history_migration_api.py \
+               tests/test_runtime_history_manager_lifespan.py \
+               tests/test_runtime_history_export.py \
+               tests/test_runtime_history_transfers.py \
+               tests/test_runtime_sqlite_history_integration.py \
+               tests/test_runtime_guarded_restore_lifecycle.py \
+               tests/test_runtime_sqlite_import.py \
+               tests/test_runtime_history_benchmark_fixtures.py \
+               tests/test_runtime_history_scratch.py \
+               tests/test_runtime_history_conversion.py \
+               tests/test_runtime_history_bootstrap.py \
+               tests/test_runtime_sqlite_history_bootstrap_inventory.py \
+               tests/test_runtime_history_bootstrap_cli.py \
+               tests/test_runtime_package_imports.py \
+               tests/test_runtime_history_core_remediation.py \
+               tests/test_runtime_history_coordination_remediation.py
+
+FROM runtime-base AS runtime

@@ -189,6 +189,11 @@
   flex-direction: column;
 }
 
+/* Preview-to-snapshots gap: use section gap (12px) instead of the default 4px workbench gap. */
+[data-theme-pack='modern'] .userspace-right-pane {
+  gap: var(--workbench-section-gap);
+}
+
 [data-theme-pack='modern'] .userspace-file-sidebar,
 [data-theme-pack='modern'] .userspace-code-editor,
 [data-theme-pack='modern'] .userspace-chat-section,
@@ -216,6 +221,19 @@
   padding: 0 var(--space-sm);
   border-bottom: var(--workbench-container-border);
   background: var(--color-chrome);
+}
+
+[data-theme-pack='modern'] .userspace-snapshots-header {
+  background: var(--color-chrome);
+}
+
+[data-theme-pack='modern'] .userspace-snapshots-toggle {
+  min-height: unset;
+  border-radius: 0;
+}
+
+[data-theme-pack='modern'] .userspace-snapshots-header-db-history {
+  padding: 2px;
 }
 
 [data-theme-pack='modern'] .userspace-file-sidebar-header h4 {
@@ -509,11 +527,6 @@
 }
 
 /* Modern uses the workbench's panel/widget hierarchy. */
-[data-theme-pack='modern'] .database-history-snapshot-host {
-  border-bottom: var(--workbench-container-border);
-  background: var(--color-panel);
-}
-
 [data-theme-pack='modern'] .database-history-panel {
   border: var(--workbench-container-border);
   border-radius: var(--workbench-surface-radius);
@@ -528,4 +541,17 @@
   border: var(--workbench-container-border);
   border-radius: var(--workbench-surface-radius);
   background: var(--color-widget);
+}
+
+/* Activity rows are flat list items, not widget cards. */
+[data-theme-pack='modern'] .database-history-activity.database-history-backup,
+[data-theme-pack='modern'] .database-history-activity.database-history-backup:last-child {
+  border: none;
+  border-bottom: var(--workbench-container-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+[data-theme-pack='modern'] .database-history-activity.database-history-backup:last-child {
+  border-bottom: none;
 }

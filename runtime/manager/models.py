@@ -574,6 +574,10 @@ class RuntimeWorkspaceGitCommandRequest(BaseModel):
         default=None,
         description="Optional environment override for the git subprocess",
     )
+    sqlite_history_operation_id: str | None = Field(
+        default=None,
+        description="Trusted guarded SQLite-history restore operation authorizing this Git command",
+    )
 
 
 class RuntimeWorkspaceGitCommandResponse(BaseModel):

@@ -26,39 +26,50 @@ _BLOCKING_CHILD = "import os, sys; os.write(int(sys.argv[1]), b'1'); os.read(int
 
 
 def _run_blocking_child(
-    index_root: str,
-    wait_seconds: float,
+    index_data_path: str,
+    slot_wait_seconds: float,
     ready: Connection,
     release: Connection,
     result_queue: Queue[str],
 ) -> None:
     ready_fd = ready.fileno()
     release_fd = release.fileno()
-    with (
-        mock.patch.object(admission.settings, "index_data_path", index_root),
-        mock.patch.object(admission, "CAPTURE_SLOT_WAIT_SECONDS", wait_seconds),
-    ):
-        try:
+    try:
+        with (
+            mock.patch.object(admission.settings, "index_data_path", index_data_path),
+            mock.patch.object(admission, "CAPTURE_SLOT_WAIT_SECONDS", slot_wait_seconds),
+        ):
             admission.run_admitted_subprocess(
                 [sys.executable, "-c", _BLOCKING_CHILD, str(ready_fd), str(release_fd)],
                 pass_fds=(ready_fd, release_fd),
                 check=True,
             )
-        except HTTPException as exc:
-            result_queue.put(f"http-{exc.status_code}")
-        else:
-            result_queue.put("completed")
+    except HTTPException as exc:
+        result_queue.put(f"http-{exc.status_code}")
+    else:
+        result_queue.put("completed")
+    finally:
+        ready.close()
+        release.close()
 
 
-def _initialize_slot_directory(index_root: str, start: Barrier, result_queue: Queue[str]) -> None:
+def _initialize_slot_directory(
+    index_data_path: str,
+    slot_wait_seconds: float,
+    start: Barrier,
+    result_queue: Queue[str],
+) -> None:
     start.wait()
-    with mock.patch.object(admission.settings, "index_data_path", index_root):
-        try:
+    try:
+        with (
+            mock.patch.object(admission.settings, "index_data_path", index_data_path),
+            mock.patch.object(admission, "CAPTURE_SLOT_WAIT_SECONDS", slot_wait_seconds),
+        ):
             admission.run_admitted_subprocess([sys.executable, "-c", ""], check=True)
-        except HTTPException as exc:
-            result_queue.put(f"http-{exc.status_code}")
-        else:
-            result_queue.put("completed")
+    except HTTPException as exc:
+        result_queue.put(f"http-{exc.status_code}")
+    else:
+        result_queue.put("completed")
 
 
 class SqliteCaptureAdmissionTests(unittest.TestCase):
@@ -88,10 +99,16 @@ class SqliteCaptureAdmissionTests(unittest.TestCase):
         context = multiprocessing.get_context("spawn")
         start = context.Barrier(4)
         results: Queue[str] = context.Queue()
-        processes = [context.Process(target=_initialize_slot_directory, args=(str(self.index_root), start, results)) for _ in range(4)]
-        for process in processes:
-            process.start()
+        processes = [
+            context.Process(
+                target=_initialize_slot_directory,
+                args=(str(self.index_root), admission.CAPTURE_SLOT_WAIT_SECONDS, start, results),
+            )
+            for _ in range(4)
+        ]
         try:
+            for process in processes:
+                process.start()
             self.assertEqual(["completed"] * 4, sorted(results.get(timeout=5) for _ in processes))
             for process in processes:
                 process.join(timeout=5)
@@ -126,28 +143,23 @@ class SqliteCaptureAdmissionTests(unittest.TestCase):
         ready_read, ready_write = context.Pipe(duplex=False)
         release_read, release_write = context.Pipe(duplex=False)
         results: Queue[str] = context.Queue()
+        slot_wait_seconds = 0.2
         holders: list[BaseProcess] = []
         rejected: BaseProcess | None = None
         try:
-            holders = [
-                context.Process(
-                    target=_run_blocking_child,
-                    args=(str(self.index_root), 0.2, ready_write, release_read, results),
-                )
-                for _ in range(2)
-            ]
+            child_args = (str(self.index_root), slot_wait_seconds, ready_write, release_read, results)
+            holders = [context.Process(target=_run_blocking_child, args=child_args) for _ in range(2)]
             for holder in holders:
                 holder.start()
             for _ in holders:
                 self.assertTrue(select.select([ready_read.fileno()], [], [], 5)[0], "child never acquired its slot")
                 self.assertEqual(b"1", os.read(ready_read.fileno(), 1))
 
-            rejected_process = context.Process(
-                target=_run_blocking_child,
-                args=(str(self.index_root), 0.2, ready_write, release_read, results),
-            )
+            rejected_process = context.Process(target=_run_blocking_child, args=child_args)
             rejected_process.start()
             rejected = rejected_process
+            ready_write.close()
+            release_read.close()
             self.assertEqual("http-503", results.get(timeout=5))
 
             os.write(release_write.fileno(), b"12")

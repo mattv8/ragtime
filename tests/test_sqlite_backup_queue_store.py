@@ -89,6 +89,29 @@ class SqliteBackupQueueStoreTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "database unavailable"):
                 await SqliteBackupQueueStore().is_cancel_requested("job", "owner")
 
+    async def test_reconcilable_atomically_rotates_interrupted_and_terminal_observations(self):
+        class Db:
+            def __init__(self):
+                self.calls = []
+
+            async def query_raw(self, query, *params):
+                self.calls.append((query, params))
+                return []
+
+        db = Db()
+        with mock.patch("ragtime.userspace.sqlite_backup_queue_store.get_db", new=mock.AsyncMock(return_value=db)):
+            await SqliteBackupQueueStore().reconcilable(limit=50)
+        query, params = db.calls[0]
+        self.assertIn("WITH interrupted_candidates AS", query)
+        self.assertIn("status = 'interrupted'", query)
+        self.assertIn("ORDER BY updated_at, id LIMIT $2", query)
+        self.assertIn("observed_interrupted AS", query)
+        self.assertIn("terminal_candidates AS", query)
+        self.assertIn("ORDER BY updated_at, id LIMIT $4", query)
+        self.assertIn("SET updated_at = NOW()", query)
+        self.assertIn("RETURNING job.id", query)
+        self.assertEqual(10, params[3])
+
     async def test_explicit_empty_or_invalid_database_names_are_rejected(self):
         with self.assertRaises(HTTPException) as empty:
             await SqliteBackupQueueStore().enqueue("ws", trigger="manual", database_names=[], request_key="key")

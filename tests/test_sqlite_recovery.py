@@ -5,9 +5,11 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ragtime.userspace.templates.sqlite_migrate import _statements as template_statements
 from ragtime.userspace.templates.sqlite_migrate import apply_migrations
+from runtime.core import sqlite_recovery
 from runtime.core.sqlite_recovery import _connect_readonly, _schema_hash, _statements, capture_database, database_fingerprint, prepare_restore
 from runtime.core.workspace_ops import (
     is_managed_sqlite_artifact,
@@ -449,6 +451,40 @@ class SqliteRecoveryTests(unittest.TestCase):
         with sqlite3.connect(output) as conn:
             self.assertEqual(conn.execute("SELECT id, value FROM text_item").fetchone(), ("a", "backup"))
             self.assertEqual(conn.execute("SELECT id, value FROM numeric_item").fetchone(), (1, "backup"))
+
+    def test_merge_reuses_single_private_current_copy(self) -> None:
+        """Merge uses its inspected private current copy as the writable candidate."""
+        sql = "CREATE TABLE item (id TEXT PRIMARY KEY COLLATE NOCASE, value TEXT);"
+        backup = self._db("backup.sqlite3", sql + "INSERT INTO item VALUES ('A', 'backup');")
+        current = self._db("current.sqlite3", sql + "INSERT INTO item VALUES ('a', 'current');")
+        output = self.root / "candidate.sqlite3"
+
+        with mock.patch("runtime.core.sqlite_recovery._copy_input", wraps=sqlite_recovery._copy_input) as copy:
+            result = prepare_restore(backup, current, self.migrations, output, mode="merge", conflict_policy="use_backup")
+
+        self.assertTrue(result["can_apply"], result["blockers"])
+        self.assertEqual([call.args[0] for call in copy.call_args_list].count(current), 1)
+        with sqlite3.connect(output) as conn:
+            self.assertEqual(conn.execute("SELECT id, value FROM item").fetchone(), ("a", "backup"))
+
+    def test_merge_blocks_when_inspected_private_current_copy_disappears(self) -> None:
+        sql = "CREATE TABLE item (id INTEGER PRIMARY KEY, value TEXT);"
+        backup = self._db("backup.sqlite3", sql + "INSERT INTO item VALUES (1, 'backup');")
+        current = self._db("current.sqlite3", sql + "INSERT INTO item VALUES (1, 'current');")
+        original_schema_hash = sqlite_recovery._schema_hash
+
+        def remove_current_copy_after_inspection(connection: sqlite3.Connection) -> str:
+            schema_hash = original_schema_hash(connection)
+            database_path = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+            if database_path.name == "current.sqlite3":
+                database_path.unlink()
+            return schema_hash
+
+        with mock.patch("runtime.core.sqlite_recovery._schema_hash", side_effect=remove_current_copy_after_inspection):
+            result = prepare_restore(backup, current, self.migrations, self.root / "candidate.sqlite3", mode="merge")
+
+        self.assertFalse(result["can_apply"])
+        self.assertTrue(any("private current copy" in blocker for blocker in result["blockers"]))
 
     def test_merge_defers_child_before_parent_foreign_key_inserts(self) -> None:
         sql = "CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id)); CREATE TABLE parent (id INTEGER PRIMARY KEY);"

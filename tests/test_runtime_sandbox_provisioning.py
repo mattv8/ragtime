@@ -5,6 +5,8 @@ import inspect
 import json
 import os
 import select
+import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -334,6 +336,56 @@ class SandboxProvisioningTests(unittest.TestCase):
             self.assertFalse((rootfs / "workspace" / "dashboard" / "main.ts").exists())
             self.assertEqual(files.joinpath("dashboard", "restored.ts").read_text(encoding="utf-8"), "A")
 
+    def test_maintenance_archive_then_same_mode_provision_preserves_canonical_files_and_sqlite_database(self) -> None:
+        """Removing an intentionally retired mirror must not replay its absence as shell deletes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            files = root / "workspaces" / "workspace-1" / "files"
+            rootfs = files.parent / "rootfs"
+            mirror = rootfs / "workspace"
+            files.mkdir(parents=True)
+            mirror.mkdir(parents=True)
+            for workspace in (files, mirror):
+                (workspace / "notes.txt").write_text("keep me\n", encoding="utf-8")
+                (workspace / "restored.txt").write_text("before maintenance\n", encoding="utf-8")
+            database = files / ".ragtime" / "db" / "app.sqlite3"
+            database.parent.mkdir(parents=True)
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE entries (value TEXT)")
+                connection.execute("INSERT INTO entries VALUES ('preserved')")
+            mirror_database = mirror / ".ragtime" / "db" / "app.sqlite3"
+            mirror_database.parent.mkdir(parents=True)
+            shutil.copy2(database, mirror_database)
+            spec = self._chroot_spec(files, rootfs)
+            caps = self._chroot_caps_no_mount()
+            sandbox._write_workspace_mirror_hashes(spec)
+            sandbox._write_sandbox_layout_marker(spec, caps)
+            worker = WorkerService()
+            worker._root = root
+
+            with (
+                mock.patch("runtime.worker.service.detect_capabilities", return_value=caps),
+                mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+                mock.patch.object(sandbox, "_provision_etc"),
+                mock.patch.object(sandbox, "_provision_dev"),
+            ):
+                asyncio.run(worker.acquire_sqlite_workspace_access("workspace-1", "lease-1", maintenance=True))
+                (files / "restored.txt").write_text("restored during maintenance\n", encoding="utf-8")
+                asyncio.run(worker.release_sqlite_workspace_access("workspace-1", "lease-1"))
+                sandbox.provision_rootfs(spec)
+
+            self.assertEqual((files / "notes.txt").read_text(encoding="utf-8"), "keep me\n")
+            self.assertEqual((files / "restored.txt").read_text(encoding="utf-8"), "restored during maintenance\n")
+            with sqlite3.connect(files / ".ragtime" / "db" / "app.sqlite3") as connection:
+                self.assertEqual(connection.execute("SELECT value FROM entries").fetchone(), ("preserved",))
+            archives = list((files.parent / sandbox._WORKSPACE_LEGACY_RECOVERY_DIR).glob("sqlite-maintenance-*"))
+            self.assertEqual(len(archives), 1)
+            self.assertEqual((archives[0] / "notes.txt").read_text(encoding="utf-8"), "keep me\n")
+            self.assertEqual((archives[0] / "restored.txt").read_text(encoding="utf-8"), "before maintenance\n")
+            with sqlite3.connect(archives[0] / ".ragtime" / "db" / "app.sqlite3") as connection:
+                self.assertEqual(connection.execute("SELECT value FROM entries").fetchone(), ("preserved",))
+            self.assertEqual((mirror / "restored.txt").read_text(encoding="utf-8"), "restored during maintenance\n")
+
     def test_workspace_mirror_skips_exactly_identical_file_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -650,6 +702,46 @@ class SandboxProvisioningTests(unittest.TestCase):
             self.assertTrue(mirrored_file.is_file())
             archives = list((tmp / sandbox._WORKSPACE_LEGACY_RECOVERY_DIR).glob("chroot-workspace-cleanup-*"))
             self.assertEqual(archives, [])
+
+    def test_cleanup_sandbox_runs_resource_cleanup_when_conflict_retirement_rename_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            mirror = rootfs / "workspace"
+            files.mkdir()
+            mirror.mkdir(parents=True)
+            (files / "app.txt").write_text("base", encoding="utf-8")
+            (mirror / "app.txt").write_text("base", encoding="utf-8")
+            spec = self._chroot_spec(files, rootfs)
+            caps = self._chroot_caps_no_mount()
+            sandbox._write_workspace_mirror_hashes(spec)
+            baseline = sandbox._workspace_mirror_hash_path(spec)
+            baseline_contents = baseline.read_bytes()
+            (files / "app.txt").write_text("api", encoding="utf-8")
+            (mirror / "app.txt").write_text("shell", encoding="utf-8")
+            cgroup = tmp / "cgroup"
+            cgroup.mkdir()
+            rename = Path.rename
+
+            def reject_mirror_rename(path: Path, target: Path) -> Path:
+                if path == mirror:
+                    raise OSError("archive unavailable")
+                return rename(path, target)
+
+            with (
+                mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+                mock.patch.object(Path, "rename", new=reject_mirror_rename),
+                mock.patch.object(sandbox, "_terminate_sandbox_cgroup_processes") as terminate,
+                mock.patch.object(sandbox, "_sandbox_cgroup_path", return_value=cgroup),
+                self.assertRaisesRegex(OSError, "archive unavailable"),
+            ):
+                sandbox.cleanup_sandbox(spec)
+
+            terminate.assert_called_once_with(spec, caps)
+            self.assertFalse(cgroup.exists())
+            self.assertEqual(baseline.read_bytes(), baseline_contents)
+            self.assertEqual((mirror / "app.txt").read_text(encoding="utf-8"), "shell")
 
     def test_terminate_sandbox_cgroup_processes_sends_sigterm_to_lingering_processes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

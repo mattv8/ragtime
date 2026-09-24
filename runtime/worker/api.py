@@ -63,8 +63,14 @@ from runtime.worker.sandbox import (
     terminate_process_group,
 )
 from runtime.worker.service import get_worker_service
+from runtime.worker.sqlite_history.api import history_router
+from runtime.worker.sqlite_history.bootstrap_api import bootstrap_router
+from runtime.worker.sqlite_history.transfer_api import create_transfer_router
 
 router = APIRouter(tags=["Runtime Worker"])
+router.include_router(history_router("/worker", WorkerAuth, lambda: get_worker_service().sqlite_history_coordinator()))
+router.include_router(bootstrap_router("/worker", WorkerAuth, lambda: get_worker_service().sqlite_history_coordinator()))
+router.include_router(create_transfer_router(lambda: get_worker_service().sqlite_history_coordinator(), WorkerAuth, prefix="/worker"))
 
 _SANDBOX_BASHRC_TEMPLATE_PATH = Path(__file__).parent / "templates" / "sandbox_bashrc.sh"
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
@@ -1143,6 +1149,7 @@ async def shutdown_worker_resources() -> None:
 
 @contextlib.asynccontextmanager
 async def _worker_lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    await get_worker_service().sqlite_history_coordinator().start()
     yield
     # On shutdown (including WatchFiles reload), terminate all devserver
     # processes so orphaned children don't accumulate across reloads.

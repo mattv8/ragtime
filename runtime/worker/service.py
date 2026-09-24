@@ -427,6 +427,15 @@ class WorkerService:
         self._mcp_pools: dict[str, _McpServerPool] = {}
         self._mcp_pools_lock = asyncio.Lock()
         self._mcp_tool_catalog_cache: dict[str, list[RuntimeMcpToolInfo]] = {}
+        self._sqlite_history_coordinator: Any | None = None
+
+    def sqlite_history_coordinator(self) -> Any:
+        """Return the process-wide runtime-history coordinator for this worker."""
+        if self._sqlite_history_coordinator is None:
+            from runtime.worker.sqlite_history.coordinator import SqliteHistoryCoordinator
+
+            self._sqlite_history_coordinator = SqliteHistoryCoordinator(self._root, self)
+        return self._sqlite_history_coordinator
 
     def _normalize_file_path(
         self,
@@ -558,20 +567,48 @@ class WorkerService:
         *,
         args: list[str],
         env: dict[str, str] | None = None,
+        sqlite_history_operation_id: str | None = None,
     ) -> RuntimeWorkspaceGitCommandResponse:
-        # Snapshot and SCM commands operate on the active tree and cannot race
-        # another filesystem API mutation or a root transition.
-        async with self._workspace_file_lock(workspace_id):
-            returncode, stdout_bytes, stderr_bytes = await self._run_git_in_workspace_raw(
-                workspace_id,
-                args=args,
-                env=env,
-            )
-            return RuntimeWorkspaceGitCommandResponse(
-                returncode=returncode,
-                stdout_b64=base64.b64encode(stdout_bytes).decode("ascii"),
-                stderr_b64=base64.b64encode(stderr_bytes).decode("ascii"),
-            )
+        if sqlite_history_operation_id:
+            async with self.sqlite_history_coordinator().guarded_git_operation(workspace_id, sqlite_history_operation_id):
+                # Snapshot and SCM commands operate on the active tree and cannot race
+                # another filesystem API mutation or a root transition.
+                async with self._workspace_file_lock(workspace_id):
+                    # Shielding alone would let cancellation leave the guarded
+                    # context while Git still owns the workspace.  Drain the raw
+                    # execution before releasing guard authority so recovery never
+                    # republishes over a running child.
+                    git = asyncio.create_task(self._run_git_in_workspace_raw(workspace_id, args=args, env=env))
+                    try:
+                        returncode, stdout_bytes, stderr_bytes = await asyncio.shield(git)
+                    except asyncio.CancelledError:
+                        while not git.done():
+                            try:
+                                await asyncio.shield(git)
+                            except asyncio.CancelledError:
+                                continue
+                            except Exception:
+                                break
+                        if git.done() and not git.cancelled():
+                            with contextlib.suppress(Exception):
+                                git.result()
+                        raise
+        else:
+            # Snapshot and SCM commands operate on the active tree and cannot race
+            # another filesystem API mutation or a root transition.
+            async with self._workspace_file_lock(workspace_id):
+                if self._has_durable_sqlite_maintenance_marker(workspace_id):
+                    raise HTTPException(status_code=423, detail="Workspace SQLite maintenance is active")
+                returncode, stdout_bytes, stderr_bytes = await self._run_git_in_workspace_raw(
+                    workspace_id,
+                    args=args,
+                    env=env,
+                )
+        return RuntimeWorkspaceGitCommandResponse(
+            returncode=returncode,
+            stdout_b64=base64.b64encode(stdout_bytes).decode("ascii"),
+            stderr_b64=base64.b64encode(stderr_bytes).decode("ascii"),
+        )
 
     async def get_workspace_scm_status(
         self,
@@ -4489,6 +4526,8 @@ class WorkerService:
             return session
 
     async def shutdown(self) -> None:
+        if self._sqlite_history_coordinator is not None:
+            await self._sqlite_history_coordinator.shutdown()
         async with self._lock:
             startup_tasks = list(self._startup_tasks.values())
             self._startup_tasks.clear()
@@ -4524,9 +4563,14 @@ class WorkerService:
                 active_sessions=active_sessions,
                 metadata={
                     "worker_name": self._worker_name,
-                    "runtime_capabilities": {"bridge_credential_file": True, "sqlite_workspace_maintenance": True},
+                    "runtime_capabilities": {
+                        "bridge_credential_file": True,
+                        "sqlite_workspace_maintenance": True,
+                        "sqlite_history_v2": self.sqlite_history_coordinator().capability(),
+                    },
                     "bridge_credential_file": True,
                     "sqlite_workspace_maintenance": True,
+                    "sqlite_history_v2": self.sqlite_history_coordinator().capability(),
                     **sandbox_diagnostics(),
                 },
             )

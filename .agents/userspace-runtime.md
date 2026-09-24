@@ -2,6 +2,15 @@
 
 Scope: runtime execution, workspace file/mount I/O, and preview proxies.
 
+For runtime-owned SQLite history contracts, recovery, and backup boundaries, see
+`.agents/userspace-sqlite-history.md`. The manager API must explicitly start the
+embedded history coordinator because worker routes do not invoke worker lifespan;
+recover transfers before activation gating and reconcile non-live receipts before
+normal maintenance. Guarded Git uses admission/drain context state: do not consume
+an unvalidated finisher or release its fence before admitted Git and off-loop I/O
+drain. `AsyncRepositoryGate` owns async waits; synchronous `repository_gate`
+remains blocking off-loop export/import work.
+
 ## Product decisions
 
 - One shared runtime container is intentional. Per-workspace containers or

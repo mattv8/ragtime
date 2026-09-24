@@ -17,6 +17,13 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
         self.files = Path(self.temp.name) / "workspace" / "files"
         self.files.mkdir(parents=True)
         self.service = SqliteHistoryService(lambda _: self.files)
+        runtime_active_patch = mock.patch.object(
+            SqliteHistoryService,
+            "runtime_history_active",
+            new=mock.AsyncMock(return_value=False),
+        )
+        runtime_active_patch.start()
+        self.addCleanup(runtime_active_patch.stop)
         self.root = self.files.parent / "sqlite_backups"
 
     def tearDown(self) -> None:
@@ -228,3 +235,11 @@ class SqliteHistorySchedulerTests(unittest.TestCase):
                 self.service._cleanup_and_due_sync(self.root, "workspace")
         self.assertTrue(candidate.exists())
         self.assertIn("expired", self.service._load(self.root, "workspace")["previews"])
+
+    def test_unchanged_cleanup_does_not_save_catalog_again(self) -> None:
+        self.service._cleanup_and_due_sync(self.root, "workspace")
+
+        with mock.patch.object(self.service, "_save", wraps=self.service._save) as save:
+            self.service._cleanup_and_due_sync(self.root, "workspace")
+
+        save.assert_not_called()

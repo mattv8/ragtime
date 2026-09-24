@@ -51,6 +51,13 @@
   remain resumable backup data. Restores affecting initialized object storage
   require the gateway offline and `OBJECT_STORAGE_RESTORE_OFFLINE_CONFIRMED=true`.
   Recreate (not restart) `runtime-s3` after Ragtime republishes the managed key.
+  These exclusions and offline requirements are object-storage-specific. For
+  managed SQLite history, keep `_userspace/_sqlite_history` and workspace
+  `sqlite_backups` paths out of generic replacement and rollback. An active
+  runtime export replaces those inputs in the generic backup; runtime transfer
+  handles their portability. This does not exclude every capture-slot lock path.
+  See `.agents/userspace-sqlite-history.md`; do not generalize its runtime-install
+  replacement behavior to object storage.
 - Keyless FULL/FILES replacement restores preserve existing regular managed/JWT
   key files. Validated archived keys take precedence. A keyless initialized
   storage archive requires an existing authoritative key; reject unsafe key

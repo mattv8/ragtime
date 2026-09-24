@@ -4642,6 +4642,20 @@ export const api = {
     return handleResponse<SqliteHistoryListResponse>(response);
   },
 
+  subscribeUserSpaceSqliteHistoryEvents(
+    workspaceId: string,
+    options: { databaseName?: string; snapshotId?: string } = {},
+  ): EventSource {
+    const search = new URLSearchParams();
+    if (options.databaseName) search.set('database_name', options.databaseName);
+    if (options.snapshotId) search.set('snapshot_id', options.snapshotId);
+    const query = search.toString();
+    return new EventSource(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/sqlite-history/events${query ? `?${query}` : ''}`,
+      { withCredentials: true },
+    );
+  },
+
   async captureUserSpaceSqliteHistory(
     workspaceId: string,
     databaseName: string,

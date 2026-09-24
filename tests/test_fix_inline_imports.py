@@ -99,6 +99,68 @@ class InlineImportSuppressionTests(unittest.TestCase):
             self.assertEqual(module_path.read_text(encoding="utf-8"), source)
 
 
+class DuplicateTailRepairPolicyTests(unittest.TestCase):
+    def _run_script(self, source: str, mode: str) -> tuple[subprocess.CompletedProcess[str], str]:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            module_path = root / "sample.py"
+            module_path.write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(_SCRIPT_PATH), str(root), mode],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return result, module_path.read_text(encoding="utf-8")
+
+    def test_valid_nested_closing_parentheses_are_not_reported_or_rewritten(self) -> None:
+        source = """def value():
+    return call(
+        inner(
+            1,
+        )
+    )
+"""
+        for mode in ("--check", "--apply"):
+            with self.subTest(mode=mode):
+                result, unchanged = self._run_script(source, mode)
+
+                self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+                self.assertIn("No files needed updates.", result.stdout)
+                self.assertEqual(unchanged, source)
+
+    def test_valid_repeated_tail_calls_are_preserved(self) -> None:
+        source = """def notify():
+    print("done")
+    print("done")
+"""
+
+        result, unchanged = self._run_script(source, "--apply")
+
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("No files needed updates.", result.stdout)
+        self.assertEqual(unchanged, source)
+
+    def test_invalid_duplicate_tail_is_repaired_when_candidate_is_valid(self) -> None:
+        source = """def value():
+    return (
+        1
+    )
+    )
+"""
+        expected = """def value():
+    return (
+        1
+    )
+"""
+
+        result, rewritten = self._run_script(source, "--apply")
+
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("tail duplicates removed=1", result.stdout)
+        self.assertEqual(rewritten, expected)
+
+
 class CollapseDuplicateTailLinesTests(unittest.TestCase):
     def test_expected_tail_collapses_preserve_line_forms(self) -> None:
         cases = (
