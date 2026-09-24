@@ -19,7 +19,7 @@ type Manage2FATab = 'authenticator' | 'passkeys' | 'recovery';
 
 export function Manage2FAModal({ isOpen, onClose }: Manage2FAModalProps) {
   const [status, setStatus] = useState<MfaStatusResponse | null>(null);
-  const [statusLoading, setStatusLoading] = useState(false);
+  const [statusLoading, setStatusLoading] = useState(isOpen);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [displayedRecoveryCodes, setDisplayedRecoveryCodes] = useState<string[]>([]);
@@ -104,6 +104,7 @@ export function Manage2FAModal({ isOpen, onClose }: Manage2FAModalProps) {
     if (!isOpen) {
       resetTransientState();
       setStatus(null);
+      setStatusLoading(true);
       return;
     }
     resetTransientState();
@@ -597,7 +598,9 @@ export function Manage2FAModal({ isOpen, onClose }: Manage2FAModalProps) {
               </button>
             </>
           ) : statusLoading && !status ? (
-            <p className="field-help">Loading status...</p>
+            <p className="field-help" role="status">
+              Loading status...
+            </p>
           ) : (
             <>
               {/* Compact status summary + preferred method — replaces the tall status block */}

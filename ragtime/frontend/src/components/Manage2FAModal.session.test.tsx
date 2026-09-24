@@ -146,6 +146,17 @@ function installAuthenticatedFetch({
   return {
     releaseRenewalStatus: () => releaseStatus?.(json(authenticatedStatus)),
     releaseRenewalUser: () => releaseUser?.(json(renewedUser)),
+    releaseMfaStatus: () =>
+      releaseMfaStatus?.(
+        json({
+          enabled: false,
+          required: false,
+          recovery_codes_remaining: 0,
+          methods_enrolled: [],
+          allowed_methods: ['totp'],
+          webauthn_credential_count: 0,
+        }),
+      ),
     expireMfaStatus: () => releaseMfaStatus?.(json({ detail: 'expired session' }, 401)),
     releaseEnrollment: () =>
       releaseEnrollment?.(
@@ -172,6 +183,24 @@ afterEach(() => {
 });
 
 describe('Manage2FAModal account enrollment session lifecycle', () => {
+  it('waits for MFA status before mounting enrollment controls', async () => {
+    const { releaseMfaStatus } = installAuthenticatedFetch({ deferMfaStatus: true });
+    const { rerender } = render(<Manage2FAModal isOpen={false} onClose={() => undefined} />);
+
+    rerender(<Manage2FAModal isOpen onClose={() => undefined} />);
+
+    expect((await screen.findByRole('status')).textContent).toBe('Loading status...');
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([request]) => String(request).endsWith('/auth/mfa/enroll/start')),
+    ).toHaveLength(0);
+
+    releaseMfaStatus();
+    const verificationCode = await screen.findByLabelText('Verification code');
+    expect(verificationCode).toBeTruthy();
+  });
+
   it('keeps recovery codes mounted through a tokenless TOTP renewal until Done', async () => {
     const { releaseRenewalStatus, releaseRenewalUser } = installAuthenticatedFetch({
       deferRenewalPair: true,
@@ -179,10 +208,10 @@ describe('Manage2FAModal account enrollment session lifecycle', () => {
     render(<AuthenticatedMfaHarness />);
 
     await screen.findByText('Signed in as account-under-test');
-    await screen.findByLabelText('Verification code');
+    const verificationCode = await screen.findByLabelText('Verification code');
     const generationBeforeEnrollment = sessionLifecycle.generation;
 
-    fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '111111' } });
+    fireEvent.change(verificationCode, { target: { value: '111111' } });
     fireEvent.click(screen.getByRole('button', { name: 'Finish setup' }));
 
     await screen.findByText('Save these recovery codes now. They will not be shown again.');
@@ -229,7 +258,8 @@ describe('Manage2FAModal account enrollment session lifecycle', () => {
     render(<AuthenticatedMfaHarness />);
 
     await screen.findByText('Signed in as account-under-test');
-    fireEvent.change(screen.getByLabelText('Verification code'), { target: { value: '111111' } });
+    const verificationCode = await screen.findByLabelText('Verification code');
+    fireEvent.change(verificationCode, { target: { value: '111111' } });
     fireEvent.click(screen.getByRole('button', { name: 'Finish setup' }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh session' }));
 
