@@ -9887,7 +9887,6 @@ export function UserSpacePanel({
 
           {/* Snapshots */}
           <div className="userspace-snapshots-section" style={{ marginTop: showSnapshots ? 0 : 8 }}>
-          <div className="userspace-snapshots-section" style={{ marginTop: showSnapshots ? 0 : 8 }}>
             <div className="userspace-snapshots-header">
               <button
                 className="userspace-snapshots-toggle"
