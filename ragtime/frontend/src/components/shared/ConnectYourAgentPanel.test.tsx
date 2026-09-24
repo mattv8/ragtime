@@ -118,14 +118,23 @@ describe('ConnectYourAgentPanel', () => {
     });
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
-    await user.click(screen.getByRole('button', { name: /^codex$/i }));
     await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+    await user.click(await screen.findByRole('button', { name: /^codex$/i }));
     await user.click(screen.getByRole('button', { name: /^copy setup instructions$/i }));
 
     expect(await navigator.clipboard.readText()).toContain('**Profile ID:** codex');
   });
 
-  it('uses a matching rail selection before credentials are created', async () => {
+  it('hides the setup guide when no credentials exist yet', async () => {
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    await screen.findByRole('heading', { name: 'Development credentials' });
+    expect(screen.queryByText('MCP endpoint')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^opencode$/i })).toBeNull();
+  });
+
+  it('applies a matching rail selection when credentials exist', async () => {
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
     render(
       <ConnectYourAgentPanel
         workspaceId="workspace-1"
@@ -150,16 +159,13 @@ describe('ConnectYourAgentPanel', () => {
     });
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
-    await user.click(screen.getByRole('button', { name: /^codex$/i }));
     await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
-    await user.click(screen.getByRole('button', { name: /^codex$/i }));
+    const codexButton = await screen.findByRole('button', { name: /^codex$/i });
+    await user.click(codexButton);
+    await user.click(codexButton);
 
-    expect(screen.getByRole('button', { name: /^codex$/i }).getAttribute('aria-pressed')).toBe(
-      'false',
-    );
-    expect(screen.getByRole('button', { name: /^codex$/i }).getAttribute('aria-expanded')).toBe(
-      'false',
-    );
+    expect(codexButton.getAttribute('aria-pressed')).toBe('false');
+    expect(codexButton.getAttribute('aria-expanded')).toBe('false');
     expect(screen.getByRole('button', { name: /^copy setup instructions$/i })).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: /^copy setup instructions$/i }));
@@ -168,6 +174,7 @@ describe('ConnectYourAgentPanel', () => {
 
   it('reopens a collapsed matching client guide for a newer rail request', async () => {
     const user = userEvent.setup();
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
     const { rerender } = render(
       <ConnectYourAgentPanel
         workspaceId="workspace-1"
@@ -192,6 +199,7 @@ describe('ConnectYourAgentPanel', () => {
   });
 
   it('accepts a matching rail request after changing workspaces', async () => {
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
     const { rerender } = render(
       <ConnectYourAgentPanel
         workspaceId="workspace-1"
@@ -218,9 +226,10 @@ describe('ConnectYourAgentPanel', () => {
 
   it('does not reset a manual client selection during unrelated rerenders', async () => {
     const user = userEvent.setup();
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
     const { rerender } = render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
-    await user.click(screen.getByRole('button', { name: /^codex$/i }));
+    await user.click(await screen.findByRole('button', { name: /^codex$/i }));
     rerender(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
     expect(screen.getByRole('button', { name: /^codex$/i }).getAttribute('aria-pressed')).toBe(
@@ -229,6 +238,7 @@ describe('ConnectYourAgentPanel', () => {
   });
 
   it('ignores a rail selection request for a different workspace', async () => {
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
     render(
       <ConnectYourAgentPanel
         workspaceId="workspace-1"
@@ -242,20 +252,23 @@ describe('ConnectYourAgentPanel', () => {
     ).toBe('false');
   });
 
-  it('shows setup guidance without fetching credentials for nonmanagers', async () => {
+  it('hides setup guide for non-managers and skips fetching credentials', async () => {
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage={false} />);
 
-    expect(await screen.findByRole('button', { name: /^opencode$/i })).toBeTruthy();
+    expect(await screen.findByText(/only workspace owners and admins/i)).toBeTruthy();
+    expect(screen.queryByText('MCP endpoint')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^opencode$/i })).toBeNull();
     expect(apiMock.listWorkspaceDevelopmentCredentials).not.toHaveBeenCalled();
   });
 
   it('renders development credentials before MCP client setup', async () => {
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
     const credentialsHeading = await screen.findByRole('heading', {
       name: 'Development credentials',
     });
-    const endpointLabel = screen.getByText('MCP endpoint');
+    const endpointLabel = await screen.findByText('MCP endpoint');
 
     expect(
       credentialsHeading.compareDocumentPosition(endpointLabel) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -320,8 +333,8 @@ describe('ConnectYourAgentPanel', () => {
     });
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
-    await user.click(screen.getByRole('button', { name: /^cursor$/i }));
     await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+    await user.click(await screen.findByRole('button', { name: /^cursor$/i }));
 
     expect(screen.queryByText(/secret is only shown when created or rotated/i)).toBeNull();
     await user.click(screen.getByText('Manual connection details'));
@@ -337,8 +350,8 @@ describe('ConnectYourAgentPanel', () => {
     });
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
-    await user.click(screen.getByRole('button', { name: /^chatgpt$/i }));
     await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+    await user.click(await screen.findByRole('button', { name: /^chatgpt$/i }));
 
     expect(screen.getByText(/cannot connect ChatGPT/i)).toBeTruthy();
     expect(

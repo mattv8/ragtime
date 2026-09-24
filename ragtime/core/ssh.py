@@ -35,6 +35,7 @@ logger = get_logger(__name__)
 SSHSyncMode = Literal["merge", "source_authoritative", "target_authoritative"]
 SSHSyncProgressCallback = Callable[[int, Optional[int], Optional[str]], None]
 SSH_SYNC_PREVIEW_SAMPLE_LIMIT = 200
+SSH_NEGOTIATION_ERROR_GRACE_SECONDS = 1.0
 
 # Default scheduler values for userspace SSH mount auto-sync watch mode.
 USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS = 5.0
@@ -130,7 +131,17 @@ class SSHConfig:
 
 
 class _RagtimeTransport(paramiko.Transport):
-    """Keep Paramiko traceback logs together for Ragtime-created connections."""
+    """Keep Paramiko logs together and preserve asynchronous negotiation errors."""
+
+    def start_client(
+        self,
+        event: Optional[threading.Event] = None,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Leave time for the transport thread to store errors before timeout."""
+        if event is None and timeout is not None:
+            timeout += SSH_NEGOTIATION_ERROR_GRACE_SECONDS
+        super().start_client(event=event, timeout=timeout)
 
     def _log(self, level: int, msg: Any, *args: Any) -> None:
         if isinstance(msg, list):

@@ -700,57 +700,59 @@ export function ConnectYourAgentPanel({
             )}
           </>
         )}
-        <section className="coding-agent-setup-guide" aria-label="Coding agent connection guide">
-          <div className="coding-agent-setup-endpoint">
-            <div>
-              <span className="coding-agent-setup-eyebrow">MCP endpoint</span>
-              <code>{mcpUrl}</code>
-            </div>
-            <InlineCopyButton
-              copyText={mcpUrl}
-              className="btn btn-secondary btn-sm"
-              title="Copy MCP endpoint"
-              ariaLabel="Copy MCP endpoint"
-              label="Copy endpoint"
-            />
-          </div>
-          <div
-            className="coding-agent-setup-client-picker"
-            role="group"
-            aria-label="Coding agent client"
-          >
-            {CODING_AGENT_CLIENTS.map((client) => (
-              <button
-                key={client.id}
-                type="button"
-                className="btn btn-secondary btn-sm coding-agent-client-btn"
-                data-client-id={client.id}
-                aria-pressed={selectedClientId === client.id && instructionsExpanded}
-                aria-expanded={selectedClientId === client.id && instructionsExpanded}
-                aria-controls={`workspace-agent-client-guide-${workspaceId}`}
-                onClick={() => {
-                  if (selectedClientId === client.id && instructionsExpanded) {
-                    setInstructionsExpanded(false);
-                    return;
-                  }
-                  setSelectedClientId(client.id);
-                  setInstructionsExpanded(true);
-                }}
-              >
-                {client.label}
-              </button>
-            ))}
-          </div>
-          <div id={`workspace-agent-client-guide-${workspaceId}`}>
-            {instructionsExpanded && (
-              <CodingAgentClientGuide
-                clientId={selectedClientId}
-                mcpUrl={mcpUrl}
-                workspaceId={workspaceId}
+        {credentials.length > 0 && (
+          <section className="coding-agent-setup-guide" aria-label="Coding agent connection guide">
+            <div className="coding-agent-setup-endpoint">
+              <div>
+                <span className="coding-agent-setup-eyebrow">MCP endpoint</span>
+                <code>{mcpUrl}</code>
+              </div>
+              <InlineCopyButton
+                copyText={mcpUrl}
+                className="btn btn-secondary btn-sm"
+                title="Copy MCP endpoint"
+                ariaLabel="Copy MCP endpoint"
+                label="Copy endpoint"
               />
-            )}
-          </div>
-        </section>
+            </div>
+            <div
+              className="coding-agent-setup-client-picker"
+              role="group"
+              aria-label="Coding agent client"
+            >
+              {CODING_AGENT_CLIENTS.map((client) => (
+                <button
+                  key={client.id}
+                  type="button"
+                  className="btn btn-secondary btn-sm coding-agent-client-btn"
+                  data-client-id={client.id}
+                  aria-pressed={selectedClientId === client.id && instructionsExpanded}
+                  aria-expanded={selectedClientId === client.id && instructionsExpanded}
+                  aria-controls={`workspace-agent-client-guide-${workspaceId}`}
+                  onClick={() => {
+                    if (selectedClientId === client.id && instructionsExpanded) {
+                      setInstructionsExpanded(false);
+                      return;
+                    }
+                    setSelectedClientId(client.id);
+                    setInstructionsExpanded(true);
+                  }}
+                >
+                  {client.label}
+                </button>
+              ))}
+            </div>
+            <div id={`workspace-agent-client-guide-${workspaceId}`}>
+              {instructionsExpanded && (
+                <CodingAgentClientGuide
+                  clientId={selectedClientId}
+                  mcpUrl={mcpUrl}
+                  workspaceId={workspaceId}
+                />
+              )}
+            </div>
+          </section>
+        )}
       </div>
     </section>
   );

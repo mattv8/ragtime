@@ -1,7 +1,10 @@
 import logging
 import socket
 import threading
+import time
 import unittest
+from typing import Any
+from unittest import mock
 
 from ragtime.core import ssh
 from ragtime.core.ssh import SSHConfig, execute_ssh_command
@@ -65,11 +68,24 @@ class SshConnectionLoggingTests(unittest.TestCase):
         collector = _RecordCollector()
         transport_logger = logging.getLogger("paramiko.transport")
         transport_logger.addHandler(collector)
+        original_log = ssh._RagtimeTransport._log
+
+        def delayed_traceback_log(
+            transport: ssh._RagtimeTransport,
+            level: int,
+            message: Any,
+            *args: Any,
+        ) -> None:
+            if level == logging.ERROR and isinstance(message, list):
+                time.sleep(0.35)
+            original_log(transport, level, message, *args)
+
         try:
-            result = execute_ssh_command(
-                SSHConfig(host="127.0.0.1", port=server.port, user="user", password="pw", timeout=1),
-                "echo unused",
-            )
+            with mock.patch.object(ssh._RagtimeTransport, "_log", delayed_traceback_log):
+                result = execute_ssh_command(
+                    SSHConfig(host="127.0.0.1", port=server.port, user="user", password="pw", timeout=1),
+                    "echo unused",
+                )
 
             self.assertTrue(server.accepted.wait(1))
             self.assertIn("Error reading SSH protocol banner", result.stderr)

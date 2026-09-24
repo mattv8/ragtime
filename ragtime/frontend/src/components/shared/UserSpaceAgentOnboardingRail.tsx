@@ -52,10 +52,10 @@ export function UserSpaceAgentOnboardingRail({
         type="button"
         className="userspace-agent-onboarding-label"
         title="Set up OpenCode"
-        aria-label="Connect your agent"
+        aria-label="Connect your agent to build"
         onClick={(event) => onSelectClient('opencode', event.currentTarget)}
       >
-        Connect your agent
+        Connect your agent to build
       </button>
       <div className="userspace-agent-onboarding-actions">
         {CODING_AGENT_CLIENTS.map((client) => {
