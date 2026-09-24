@@ -1,7 +1,8 @@
 import { Suspense, lazy, useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
-import { MoreHorizontal, Waves } from 'lucide-react';
+import { AlertTriangle, MoreHorizontal, Waves } from 'lucide-react';
 import { api, apiFetch, isResponseAuthContextCurrent } from '@/api';
 import WebGLGradient from '@/components/WebGLGradient';
+import { Popover } from '@/components/Popover';
 import { ConfigurationBanner } from './components/ConfigurationBanner';
 import { LoginGradientShell } from './components/LoginGradientShell';
 import { LoginPage } from './components/LoginPage';
@@ -274,6 +275,7 @@ export function App() {
   const [authenticatedWebglBackgroundEnabled, setAuthenticatedWebglBackgroundEnabled] =
     useState(true);
   const [webglBackgroundPausedForBattery, setWebglBackgroundPausedForBattery] = useState(false);
+  const [webglAvailable, setWebglAvailable] = useState<boolean | null>(null);
   const [isNavOverflowOpen, setIsNavOverflowOpen] = useState(false);
 
   // Per-user motion background override (stored in localStorage)
@@ -1366,23 +1368,39 @@ export function App() {
             fullscreen
             ignorePointerSelector=".topnav, .container, .modal, .modal-overlay, [role='dialog'], button, input, textarea, select, a"
             onBatteryStatusChange={setWebglBackgroundPausedForBattery}
+            onWebGLAvailabilityChange={setWebglAvailable}
           />
         ) : null}
-        {authenticatedWebglBackgroundEnabled &&
-        currentUser &&
-        !hideChrome &&
-        !webglBackgroundPausedForBattery ? (
-          <button
-            className="webgl-motion-toggle"
-            data-active={effectiveWebglEnabled}
-            onClick={toggleWebglBackground}
-            aria-label={
-              effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'
-            }
-            title={effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'}
-          >
-            <Waves size={14} />
-          </button>
+        {authenticatedWebglBackgroundEnabled && currentUser && !hideChrome ? (
+          webglAvailable === false ? (
+            <Popover
+              className="webgl-motion-warning"
+              data-webgl-motion-warning="unavailable"
+              content="Motion background unavailable. WebGL could not start; browser hardware acceleration may be disabled. Enable it in browser settings and reload."
+              position="top"
+            >
+              <button
+                type="button"
+                className="webgl-motion-toggle webgl-motion-warning-trigger"
+                aria-label="Motion background unavailable"
+                aria-disabled="true"
+              >
+                <AlertTriangle size={14} aria-hidden="true" />
+              </button>
+            </Popover>
+          ) : !webglBackgroundPausedForBattery ? (
+            <button
+              className="webgl-motion-toggle"
+              data-active={effectiveWebglEnabled}
+              onClick={toggleWebglBackground}
+              aria-label={
+                effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'
+              }
+              title={effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'}
+            >
+              <Waves size={14} />
+            </button>
+          ) : null
         ) : null}
         <div id="workbench-shell-stack">
           <nav

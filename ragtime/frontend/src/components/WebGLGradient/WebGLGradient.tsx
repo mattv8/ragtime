@@ -34,6 +34,7 @@ interface WebGLGradientProps {
   fullscreen?: boolean;
   ignorePointerSelector?: string;
   onBatteryStatusChange?: (disabled: boolean) => void;
+  onWebGLAvailabilityChange?: (available: boolean) => void;
 }
 
 interface BatteryManagerLike extends EventTarget {
@@ -54,6 +55,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
   fullscreen = false,
   ignorePointerSelector,
   onBatteryStatusChange,
+  onWebGLAvailabilityChange,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationFrameRef = useRef<number | null>(null);
@@ -461,7 +463,9 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
   }, [updateBatteryFluidState]);
 
   useEffect(() => {
-    if (initWebGL()) {
+    const webglAvailable = initWebGL();
+    onWebGLAvailabilityChange?.(webglAvailable);
+    if (webglAvailable) {
       resize();
       render();
     }
@@ -619,7 +623,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
         zeroVelocityTextureRef.current = null;
       }
     };
-  }, [ignorePointerSelector, initWebGL, resize, render]);
+  }, [ignorePointerSelector, initWebGL, onWebGLAvailabilityChange, resize, render]);
 
   return (
     <>
@@ -629,7 +633,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
         className={className}
         style={{ display: fluidDisabledForBattery ? 'none' : 'block' }}
       />
-      {fluidDisabledForBattery ? (
+      {fluidDisabledForBattery && (glRef.current || !onWebGLAvailabilityChange) ? (
         <>
           <span role="status" aria-live="polite" style={SCREEN_READER_ONLY_STYLE}>
             {BATTERY_NOTICE_TEXT}
