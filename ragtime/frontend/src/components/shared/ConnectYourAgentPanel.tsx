@@ -700,6 +700,7 @@ export function ConnectYourAgentPanel({
             )}
           </>
         )}
+        {credentials.length > 0 && (
         <section className="coding-agent-setup-guide" aria-label="Coding agent connection guide">
           <div className="coding-agent-setup-endpoint">
             <div>
@@ -751,6 +752,7 @@ export function ConnectYourAgentPanel({
             )}
           </div>
         </section>
+        )}
       </div>
     </section>
   );
