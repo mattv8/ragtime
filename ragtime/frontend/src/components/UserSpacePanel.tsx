@@ -1155,8 +1155,9 @@ export function UserSpacePanel({
   } | null>(null);
   const [agentSelectionRequest, setAgentSelectionRequest] =
     useState<CodingAgentSelectionRequest | null>(null);
-  const [dismissedOnboardingIds, setDismissedOnboardingIds] =
-    useState<Set<string>>(readDismissedOnboardingCookie);
+  const [dismissedOnboardingIds, setDismissedOnboardingIds] = useState<Set<string>>(
+    readDismissedOnboardingCookie,
+  );
   const [showAdminWorkspacesModal, setShowAdminWorkspacesModal] = useState(false);
   const [allUsers, setAllUsers] = useState<UserDirectoryEntry[]>([]);
   const [pendingMembers, setPendingMembers] = useState<UserSpaceWorkspaceMember[]>([]);
