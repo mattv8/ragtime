@@ -144,6 +144,18 @@ class SqliteBackupQueueDatabaseTests(unittest.IsolatedAsyncioTestCase):
         recurrence = await self._call(self.first, "enqueue", workspace_id, trigger="scheduled", request_key=f"scheduled:{workspace_id}:claim-three")
         self.assertNotEqual(recurrence["id"], first["id"])
 
+    async def test_failed_scheduled_retry_does_not_create_a_retry_of_retry(self) -> None:
+        workspace_id = await self._workspace()
+        first = await self._call(self.first, "enqueue", workspace_id, trigger="scheduled", request_key=f"scheduled:{workspace_id}:claim-one")
+        claimed = await self._call(self.first, "claim_next", "scheduled-owner")
+        await self._finish(self.first, claimed, "scheduled-owner", status="failed")
+        retry = next(job for job in await self._call(self.first, "list_jobs", workspace_id, limit=10) if job["request_key"] == f"scheduled-retry:{first['id']}")
+        await self.first.execute_raw("UPDATE workspace_sqlite_backup_jobs SET available_at = NOW() WHERE id = $1", retry["id"])
+        retry_claim = await self._call(self.first, "claim_next", "scheduled-retry-owner")
+        await self._finish(self.first, retry_claim, "scheduled-retry-owner", status="failed")
+        jobs = await self._call(self.first, "list_jobs", workspace_id, limit=10)
+        self.assertEqual(2, len(jobs))
+
     async def test_cancel_claim_race_owner_fencing_and_workspace_scoped_history(self) -> None:
         workspace_id, other_workspace = await self._workspace(), await self._workspace()
         job, other = await self._enqueue(self.first, workspace_id, "race"), await self._enqueue(self.first, other_workspace, "other")

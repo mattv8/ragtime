@@ -187,7 +187,12 @@ class SqliteBackupQueueStore:
             )
             if not rows:
                 return False
-            if str(rows[0].get("status")) == "failed" and str(rows[0].get("trigger")) == "scheduled" and not bool(rows[0].get("cancel_requested")):
+            if (
+                str(rows[0].get("status")) == "failed"
+                and str(rows[0].get("trigger")) == "scheduled"
+                and not str(rows[0].get("request_key") or "").startswith("scheduled-retry:")
+                and not bool(rows[0].get("cancel_requested"))
+            ):
                 retry_key = f"scheduled-retry:{job_id}"
                 await tx.query_raw(
                     """INSERT INTO workspace_sqlite_backup_jobs
