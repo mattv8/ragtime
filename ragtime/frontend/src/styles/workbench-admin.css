@@ -528,7 +528,11 @@
 }
 
 [data-theme-pack='modern'] .appearance-swatches-compact {
-  margin-top: 0;
+  display: none;
+}
+
+[data-theme-pack='modern'] .appearance-theme-card-desc {
+  display: none;
 }
 
 [data-theme-pack='modern'] .appearance-swatch {
@@ -1099,7 +1103,7 @@
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] :is(.active, .is-selected, [aria-pressed='true'], [aria-selected='true'], [data-active='true'], .selected):hover:not(:disabled) {
+[data-theme-pack='modern'] :is(.active, .is-selected, [aria-pressed='true']:not(.appearance-theme-card), [aria-selected='true'], [data-active='true'], .selected):hover:not(:disabled) {
   background: var(--color-primary-hover);
   color: var(--color-primary-text);
 }
@@ -1114,7 +1118,7 @@
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] :is(.btn:not(.btn-secondary, .btn-danger, .btn-success), .btn-danger, .btn-success, .active, .is-selected, [aria-pressed='true'], [aria-selected='true'], [data-active='true'], .selected) {
+[data-theme-pack='modern'] :is(.btn:not(.btn-secondary, .btn-danger, .btn-success), .btn-danger, .btn-success, .active, .is-selected, [aria-pressed='true']:not(.appearance-theme-card), [aria-selected='true'], [data-active='true'], .selected) {
   background: var(--color-primary);
   border-color: transparent;
   color: var(--color-primary-text);

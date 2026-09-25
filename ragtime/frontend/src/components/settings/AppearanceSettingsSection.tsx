@@ -92,6 +92,7 @@ export function AppearanceSettingsSection(props: AppearanceSettingsSectionProps)
                         </span>
                       )}
                     </span>
+                    <span className="appearance-theme-card-desc">{pack.description}</span>
                     <span className="appearance-theme-card-preview" aria-hidden="true">
                       <span className="appearance-theme-card-preview-header">
                         <span className="appearance-theme-card-preview-dot" />
