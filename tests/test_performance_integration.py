@@ -10,6 +10,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import Message, Receive, Scope, Send
 
 from ragtime.core.logging import RequestCorrelationFilter
 from ragtime.core.performance import PerformanceSettings, SlowRequestMiddleware, get_request_id
@@ -17,9 +18,18 @@ from runtime.manager.api import create_app as create_manager_app
 from runtime.worker.api import create_app as create_worker_app
 
 
+class _ListHandler(logging.Handler):
+    def __init__(self, records: list[logging.LogRecord]) -> None:
+        super().__init__()
+        self.records = records
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
 class SlowRequestMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     async def test_completion_logs_route_template_without_raw_query_and_clears_correlation(self) -> None:
-        async def application(scope, receive, send) -> None:
+        async def application(scope: Scope, receive: Receive, send: Send) -> None:
             self.assertIsNotNone(get_request_id())
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b"", "more_body": False})
@@ -30,17 +40,16 @@ class SlowRequestMiddlewareTests(unittest.IsolatedAsyncioTestCase):
             settings=PerformanceSettings(0, 0, 0),
         )
         records: list[logging.LogRecord] = []
-        handler = logging.Handler()
-        handler.emit = records.append  # type: ignore[method-assign]
+        handler = _ListHandler(records)
         logger = logging.getLogger("ragtime.performance")
         previous_level = logger.level
         logger.addHandler(handler)
         logger.setLevel(logging.DEBUG)
 
-        async def receive() -> dict[str, object]:
+        async def receive() -> Message:
             return {"type": "http.disconnect"}
 
-        async def send(_message: object) -> None:
+        async def send(_message: Message) -> None:
             return None
 
         try:
@@ -82,8 +91,7 @@ class SlowRequestMiddlewareTests(unittest.IsolatedAsyncioTestCase):
                 return {"ok": True}
 
             records: list[logging.LogRecord] = []
-            handler = logging.Handler()
-            handler.emit = records.append  # type: ignore[method-assign]
+            handler = _ListHandler(records)
             logger = logging.getLogger("ragtime.performance")
             previous_level = logger.level
             logger.addHandler(handler)
@@ -112,9 +120,17 @@ for middleware in app.user_middleware:
     if middleware.cls is SlowRequestMiddleware:
         middleware.kwargs["settings"] = PerformanceSettings(0.001, 1.0, 0.0)
 
-records = []
-handler = logging.Handler()
-handler.emit = records.append
+records: list[logging.LogRecord] = []
+
+class ListHandler(logging.Handler):
+    def __init__(self, records: list[logging.LogRecord]) -> None:
+        super().__init__()
+        self.records = records
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+handler = ListHandler(records)
 logger = logging.getLogger("ragtime.performance")
 logger.addHandler(handler)
 logger.setLevel(logging.WARNING)
@@ -159,8 +175,7 @@ print("|".join(record.getMessage() for record in records))
             return Response()
 
         records: list[logging.LogRecord] = []
-        handler = logging.Handler()
-        handler.emit = records.append  # type: ignore[method-assign]
+        handler = _ListHandler(records)
         handler.addFilter(RequestCorrelationFilter())
         logger = logging.getLogger("ragtime.content_protection.service")
         previous_level = logger.level

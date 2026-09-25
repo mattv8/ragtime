@@ -37,7 +37,7 @@ class PerformanceSettingsTests(unittest.TestCase):
 
 
 class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
-    def _scope(self) -> dict[str, object]:
+    def _scope(self) -> Scope:
         return {"type": "http", "method": "PATCH", "path": "/private?secret=no", "headers": []}
 
     async def test_tracks_ttfb_final_body_operations_and_hides_raw_request_data(self) -> None:
@@ -47,13 +47,13 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         async def collect(message: Message) -> None:
             sent.append(message)
 
-        async def app(scope: object, receive: object, send: object) -> None:
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
             observed_ids.append(get_request_id())
             with track_operation("database.read"):
                 pass
-            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"one", "more_body": True})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"two", "more_body": False})  # type: ignore[misc]
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"one", "more_body": True})
+            await send({"type": "http.response.body", "body": b"two", "more_body": False})
 
         middleware = SlowRequestMiddleware(
             app,
@@ -104,7 +104,7 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     async def test_operation_threshold_independent_from_request_threshold(self) -> None:
         """Test that operation threshold uses request-level settings, independent from request threshold."""
 
-        async def app(scope: object, receive: object, send: object) -> None:
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
             with track_operation("slow-operation"):
                 pass
             try:
@@ -112,8 +112,8 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
                     raise ValueError("do not log this value")
             except ValueError:
                 pass
-            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"", "more_body": False})  # type: ignore[misc]
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
 
         times = iter((1.0, 1.0, 1.2, 1.2, 1.5, 1.5, 1.5, 1.5))
         with mock.patch("ragtime.core.performance.monotonic", side_effect=times), self.assertLogs("ragtime.performance", level="WARNING") as logs:
@@ -128,13 +128,13 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     async def test_zero_operation_threshold_disables_operation_warnings(self) -> None:
         """Test that zero operation threshold disables slow operation warnings."""
 
-        async def app(scope: object, receive: object, send: object) -> None:
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
             with track_operation("operation-1"):
                 pass
             with track_operation("operation-2"):
                 pass
-            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"", "more_body": False})  # type: ignore[misc]
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
 
         times_list = [1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6]
         with mock.patch("ragtime.core.performance.monotonic", side_effect=times_list), self.assertLogs("ragtime.performance", level="DEBUG") as logs:
@@ -148,9 +148,9 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     async def test_zero_request_threshold_disables_request_warnings(self) -> None:
         """Test that zero request threshold disables slow request warnings."""
 
-        async def app(scope: object, receive: object, send: object) -> None:
-            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"", "more_body": False})  # type: ignore[misc]
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
 
         times = iter((1.0, 1.5, 5.0))
         with mock.patch("ragtime.core.performance.monotonic", side_effect=times), self.assertLogs("ragtime.performance", level="DEBUG") as logs:
@@ -170,23 +170,23 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
             "req2_proceed": asyncio.Event(),
         }
 
-        async def app1(scope: object, receive: object, send: object) -> None:
+        async def app1(scope: Scope, receive: Receive, send: Send) -> None:
             request_ids.append(get_request_id())
             request_events["req1_enter"].set()
             await request_events["req1_proceed"].wait()
             with track_operation("operation-A"):
                 pass
-            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"", "more_body": False})  # type: ignore[misc]
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
 
-        async def app2(scope: object, receive: object, send: object) -> None:
+        async def app2(scope: Scope, receive: Receive, send: Send) -> None:
             request_ids.append(get_request_id())
             request_events["req2_enter"].set()
             await request_events["req2_proceed"].wait()
             with track_operation("operation-B"):
                 pass
-            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"", "more_body": False})  # type: ignore[misc]
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
 
         middleware1 = SlowRequestMiddleware(app1, settings=PerformanceSettings(0.0, 0.0, 0.0))
         middleware2 = SlowRequestMiddleware(app2, settings=PerformanceSettings(0.0, 0.0, 0.0))
@@ -219,7 +219,7 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         """Test that operations in detached child tasks after request closes don't mutate aggregates."""
         child_task_created = asyncio.Event()
 
-        async def app(scope: object, receive: object, send: object) -> None:
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
             async def child_operation() -> None:
                 child_task_created.set()
                 await asyncio.sleep(0.01)
@@ -227,8 +227,8 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
                     pass
 
             asyncio.create_task(child_operation())
-            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"", "more_body": False})  # type: ignore[misc]
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
 
         with self.assertLogs("ragtime.performance", level="DEBUG") as logs:
             await SlowRequestMiddleware(app, settings=PerformanceSettings(0.0, 0.0, 0.0))(self._scope(), _receive, _discard_send)
@@ -302,12 +302,12 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     async def test_operation_name_capped_at_32(self) -> None:
         """Test that operation names beyond 32 are not stored."""
 
-        async def app(scope: object, receive: object, send: object) -> None:
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
             for index in range(40):
                 with track_operation(f"operation-{index}"):
                     pass
-            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"", "more_body": False})  # type: ignore[misc]
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
 
         middleware = SlowRequestMiddleware(app, settings=PerformanceSettings(0.0, 0.0, 0.0))
         with self.assertLogs("ragtime.performance", level="DEBUG") as logs:
@@ -318,9 +318,9 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     async def test_sse_completion_is_debug_not_warning(self) -> None:
         """Test that SSE completion is logged at DEBUG level, not WARNING."""
 
-        async def streaming(scope: object, receive: object, send: object) -> None:
-            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/event-stream")]})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"data: test\n\n", "more_body": False})  # type: ignore[misc]
+        async def streaming(scope: Scope, receive: Receive, send: Send) -> None:
+            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/event-stream")]})
+            await send({"type": "http.response.body", "body": b"data: test\n\n", "more_body": False})
 
         times = iter((1.0, 1.1, 5.0))  # Large elapsed time
         with mock.patch("ragtime.core.performance.monotonic", side_effect=times), self.assertLogs("ragtime.performance", level="DEBUG") as logs:
@@ -352,7 +352,8 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.Event().wait()
 
         response = StreamingResponse(chunks(), media_type="text/event-stream")
-        scope = self._scope() | {"asgi": {"version": "3.0", "spec_version": "2.3"}}
+        scope = self._scope()
+        scope["asgi"] = {"version": "3.0", "spec_version": "2.3"}
         with (
             mock.patch("ragtime.core.performance.monotonic", side_effect=[0.0, 0.1, 5.0]),
             self.assertLogs("ragtime.performance", level="DEBUG") as logs,
@@ -368,8 +369,8 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     async def test_non_sse_incomplete_without_disconnect_warns(self) -> None:
         """Test that non-SSE incomplete response without client disconnect still warns."""
 
-        async def app(scope: object, receive: object, send: object) -> None:
-            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[misc]
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
+            await send({"type": "http.response.start", "status": 200, "headers": []})
             # App returns without sending final body and without disconnect
 
         with self.assertLogs("ragtime.performance", level="WARNING") as logs:
@@ -405,9 +406,9 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0)
                 clock[0] = 1.2
 
-        async def app(scope: object, receive: object, send: object) -> None:
-            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"", "more_body": False})  # type: ignore[misc]
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
 
         with mock.patch("ragtime.core.performance.monotonic", side_effect=lambda: clock[0]), self.assertLogs("ragtime.performance", level="DEBUG") as logs:
             await SlowRequestMiddleware(app, settings=PerformanceSettings(0.0, 0.0, 0.0))(self._scope(), _receive, slow_send)
@@ -419,9 +420,9 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     async def test_background_error_has_distinct_label_and_outcome(self) -> None:
         """Test that errors after body completion have distinct labels and outcomes."""
 
-        async def app(scope: object, receive: object, send: object) -> None:
-            await send({"type": "http.response.start", "status": 202, "headers": []})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"", "more_body": False})  # type: ignore[misc]
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
+            await send({"type": "http.response.start", "status": 202, "headers": []})
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
             raise RuntimeError("background error")
 
         async def blocked_send(message: Message) -> None:
@@ -444,9 +445,9 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         async def collect(message: Message) -> None:
             sent.append(message)
 
-        async def streaming(scope: object, receive: object, send: object) -> None:
-            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/event-stream")]})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"first", "more_body": False})  # type: ignore[misc]
+        async def streaming(scope: Scope, receive: Receive, send: Send) -> None:
+            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/event-stream")]})
+            await send({"type": "http.response.body", "body": b"first", "more_body": False})
             entered.set()
             await asyncio.Event().wait()
 
@@ -469,9 +470,9 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         async def collect(message: Message) -> None:
             sent.append(message)
 
-        async def streaming(scope: object, receive: object, send: object) -> None:
-            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/event-stream")]})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"first", "more_body": True})  # type: ignore[misc]
+        async def streaming(scope: Scope, receive: Receive, send: Send) -> None:
+            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/event-stream")]})
+            await send({"type": "http.response.body", "body": b"first", "more_body": True})
             entered.set()
             await asyncio.Event().wait()
 
@@ -487,7 +488,7 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(get_request_id())
 
         # Test app failure
-        async def failing(scope: object, receive: object, send: object) -> None:
+        async def failing(scope: Scope, receive: Receive, send: Send) -> None:
             raise RuntimeError("boom")
 
         with self.assertLogs("ragtime.performance", level="ERROR") as logs:
@@ -505,14 +506,14 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
 
         child_done = asyncio.Event()
 
-        async def app(scope: object, receive: object, send: object) -> None:
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
             async def child() -> None:
                 await decorated()
                 child_done.set()
 
             await asyncio.create_task(child())
-            await send({"type": "http.response.start", "status": 204, "headers": []})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"", "more_body": False})  # type: ignore[misc]
+            await send({"type": "http.response.start", "status": 204, "headers": []})
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
 
         with self.assertLogs("ragtime.performance", level="DEBUG") as logs:
             await SlowRequestMiddleware(app, settings=PerformanceSettings(0.0, 0.0, 0.0))(self._scope(), _receive, _discard_send)
@@ -536,11 +537,11 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
                 middleware._start_lag_monitor()
                 self.assertIs(middleware._lag_monitor_task, task)
 
-        async def lifespan_app(scope: object, receive: object, send: object) -> None:
-            self.assertEqual((await receive())["type"], "lifespan.startup")  # type: ignore[misc]
-            await send({"type": "lifespan.startup.complete"})  # type: ignore[misc]
-            self.assertEqual((await receive())["type"], "lifespan.shutdown")  # type: ignore[misc]
-            await send({"type": "lifespan.shutdown.complete"})  # type: ignore[misc]
+        async def lifespan_app(scope: Scope, receive: Receive, send: Send) -> None:
+            self.assertEqual((await receive())["type"], "lifespan.startup")
+            await send({"type": "lifespan.startup.complete"})
+            self.assertEqual((await receive())["type"], "lifespan.shutdown")
+            await send({"type": "lifespan.shutdown.complete"})
 
         async def receive() -> Message:
             return next(received)
@@ -563,11 +564,11 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         async def collect(message: Message) -> None:
             sent.append(message)
 
-        async def lifespan_app(scope: object, receive: object, send: object) -> None:
-            self.assertEqual((await receive())["type"], "lifespan.startup")  # type: ignore[misc]
-            await send({"type": "lifespan.startup.complete"})  # type: ignore[misc]
-            self.assertEqual((await receive())["type"], "lifespan.shutdown")  # type: ignore[misc]
-            await send({"type": "lifespan.shutdown.complete"})  # type: ignore[misc]
+        async def lifespan_app(scope: Scope, receive: Receive, send: Send) -> None:
+            self.assertEqual((await receive())["type"], "lifespan.startup")
+            await send({"type": "lifespan.startup.complete"})
+            self.assertEqual((await receive())["type"], "lifespan.shutdown")
+            await send({"type": "lifespan.shutdown.complete"})
 
         async def receive() -> Message:
             return next(received)
@@ -579,8 +580,12 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_lag_monitor_creates_task_when_threshold_positive(self) -> None:
         """Test that lag monitor creates a task when threshold is positive."""
+
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
+            return None
+
         middleware = SlowRequestMiddleware(
-            lambda scope, receive, send: None,  # type: ignore[misc]
+            app,
             settings=PerformanceSettings(0.0, 0.0, 0.1),
         )
         middleware._start_lag_monitor()
@@ -590,9 +595,9 @@ class PerformanceMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     async def test_debug_disabled_avoids_json_allocation(self) -> None:
         """Test that JSON payload is not built when DEBUG is disabled."""
 
-        async def app(scope: object, receive: object, send: object) -> None:
-            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[misc]
-            await send({"type": "http.response.body", "body": b"", "more_body": False})  # type: ignore[misc]
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
 
         with mock.patch("ragtime.core.performance.json.dumps") as dumps, self.assertNoLogs("ragtime.performance", level="WARNING"):
             await SlowRequestMiddleware(app, settings=PerformanceSettings(0.0, 0.0, 0.0))(self._scope(), _receive, _discard_send)
