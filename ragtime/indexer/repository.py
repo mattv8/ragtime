@@ -110,6 +110,7 @@ from ragtime.core.encryption import (
     encrypt_secret,
 )
 from ragtime.core.logging import get_logger
+from ragtime.core.performance import timed_operation
 from ragtime.core.sql import sql_quote_literal as _sql_quote_literal
 from ragtime.core.sql_utils import strip_table_metadata
 from ragtime.core.theme import canonicalize_theme_pack_id
@@ -1309,6 +1310,7 @@ class IndexerRepository:
     # Application Settings Operations
     # -------------------------------------------------------------------------
 
+    @timed_operation("repository.get_settings")
     async def get_settings(self) -> AppSettings:
         """Get application settings, creating defaults if needed."""
         db = await self._get_db()
@@ -2980,6 +2982,7 @@ class IndexerRepository:
             )
             return next_ids
 
+    @timed_operation("repository.get_conversation")
     async def get_conversation(self, conversation_id: str) -> Optional[Conversation]:
         """Get a conversation by ID."""
         db = await self._get_db()
@@ -3102,6 +3105,7 @@ class IndexerRepository:
             conversation=metadata, revision=revision, total_message_count=len(entries), entries=entries, legacy_conversation=conversation
         )
 
+    @timed_operation("repository.query_conversation_window")
     async def _query_conversation_window(
         self,
         conversation_id: str,
@@ -3189,6 +3193,7 @@ class IndexerRepository:
         """)
         return return_rows[0] if return_rows else None
 
+    @timed_operation("repository.build_conversation_window")
     async def _build_conversation_window(
         self,
         conversation_id: str,

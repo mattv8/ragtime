@@ -142,6 +142,7 @@ from ragtime.core.model_providers import (
     EMBEDDING_PROVIDER_NAMES,
     LLM_PROVIDER_NAMES,
     LOCAL_LLM_PROVIDER_NAMES,
+    MODEL_PROVIDERS,
     get_provider,
     get_provider_label,
     normalize_provider_name,
@@ -170,6 +171,7 @@ from ragtime.core.openai_codex_auth import (
     extract_openai_codex_account_id,
 )
 from ragtime.core.openrouter_credits import get_openrouter_credit_status
+from ragtime.core.performance import timed_operation, track_operation
 from ragtime.core.scheduling import normalize_timezone_name
 from ragtime.core.security import (
     get_current_user,
@@ -661,21 +663,29 @@ async def _get_or_build_available_models(
         if cached is not None:
             stored_at, stored_key, response = cached
             if stored_key == cache_key and (now - stored_at) < _AVAILABLE_MODELS_CACHE_TTL_SECONDS:
-                return response.model_copy(deep=True)
+                with track_operation("available_models.cache.hit"):
+                    return response.model_copy(deep=True)
+            if stored_key == cache_key:
+                with track_operation("available_models.cache.expired"):
+                    pass
 
         if _available_models_inflight is not None:
             inflight_key, inflight_task = _available_models_inflight
             if inflight_key == cache_key:
-                task = inflight_task
+                with track_operation("available_models.cache.joined_inflight"):
+                    task = inflight_task
             else:
+                with track_operation("available_models.cache.miss"):
+                    task = asyncio.create_task(builder())
+                    _available_models_inflight = (cache_key, task)
+        else:
+            with track_operation("available_models.cache.miss"):
                 task = asyncio.create_task(builder())
                 _available_models_inflight = (cache_key, task)
-        else:
-            task = asyncio.create_task(builder())
-            _available_models_inflight = (cache_key, task)
 
     try:
-        result = await task
+        with track_operation("available_models.cache.wait"):
+            result = await task
     finally:
         async with _available_models_lock:
             cur = _available_models_inflight
@@ -8874,8 +8884,10 @@ async def _safe_fetch_llm_models_task(
     normalized_provider = normalize_provider_name(provider)
     provider_label = get_provider(normalized_provider) or get_provider(provider)
     label = provider_label.label if provider_label else provider
+    operation_provider = normalized_provider if normalized_provider in MODEL_PROVIDERS else "other"
     try:
-        return (normalized_provider, await fetch)
+        with track_operation(f"model_discovery.provider_fetch.{operation_provider}"):
+            return (normalized_provider, await fetch)
     except Exception as e:
         logger.warning("Failed to fetch %s models: %s", label, e)
         if none_on_error:
@@ -11376,9 +11388,11 @@ async def get_available_chat_models() -> AvailableModelsResponse:
     """
     # Kick off Copilot refresh in the background to avoid blocking model
     # discovery when another request is already refreshing.
-    await ensure_copilot_token_fresh(mode="background")
+    with track_operation("available_models.copilot_preflight"):
+        await ensure_copilot_token_fresh(mode="background")
 
-    app_settings = await repository.get_settings()
+    with track_operation("available_models.settings"):
+        app_settings = await repository.get_settings()
     if not app_settings:
         return AvailableModelsResponse(
             copilot_refresh_in_progress=is_copilot_token_refresh_in_progress(),
@@ -11386,8 +11400,12 @@ async def get_available_chat_models() -> AvailableModelsResponse:
         )
 
     cache_key = _available_models_cache_key(app_settings)
-    if not cache_key or not bool(getattr(app_settings, "available_models_cache_enabled", True)):
-        return await _build_available_models_response(app_settings)
+    if not cache_key:
+        with track_operation("available_models.cache.empty_key"):
+            return await _build_available_models_response(app_settings)
+    if not bool(getattr(app_settings, "available_models_cache_enabled", True)):
+        with track_operation("available_models.cache.disabled"):
+            return await _build_available_models_response(app_settings)
     return await _get_or_build_available_models(
         cache_key,
         lambda: _build_available_models_response(app_settings),
@@ -11436,6 +11454,7 @@ async def put_chat_model_preferences(
     )
 
 
+@timed_operation("available_models.build")
 async def _build_available_models_response(app_settings: AppSettings) -> AvailableModelsResponse:
     all_models: List[AvailableModel] = []
     default_model = None
@@ -11513,7 +11532,8 @@ async def _build_available_models_response(app_settings: AppSettings) -> Availab
             )
         )
 
-    claude_code_status = await get_claude_code_status()
+    with track_operation("available_models.claude_code_status"):
+        claude_code_status = await get_claude_code_status()
     provider_states["claude_code"].configured = claude_code_status.installed or claude_code_status.has_oauth_token
     provider_states["claude_code"].connected = claude_code_status.available
     if claude_code_status.available:
@@ -11580,7 +11600,8 @@ async def _build_available_models_response(app_settings: AppSettings) -> Availab
     results: list[tuple[str, LLMModelsResponse]] = []
     successful_discovery_providers: set[str] = set()
     if tasks:
-        results = await asyncio.gather(*tasks)
+        with track_operation("available_models.provider_gather"):
+            results = await asyncio.gather(*tasks)
 
     # --- Process results in stable order ---
     for provider_key, result in results:
@@ -12129,6 +12150,7 @@ def _conversation_protection_context(
     )
 
 
+@timed_operation("conversation.authorize_release")
 async def _authorize_conversation_release(
     candidate: Any,
     *,
@@ -13467,6 +13489,7 @@ async def get_conversation(
     return _to_conversation_response(conv)
 
 
+@timed_operation("conversation.window_access")
 async def _require_conversation_window_access(conversation_id: str, workspace_id: Optional[str], user: User) -> None:
     """Apply the canonical conversation/window access gates without widening visibility."""
     await _assert_workspace_access(workspace_id, user, "viewer")
