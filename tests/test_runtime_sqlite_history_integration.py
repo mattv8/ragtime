@@ -20,6 +20,8 @@ from runtime.worker.sqlite_history.api import history_router
 from runtime.worker.sqlite_history.coordinator import SqliteHistoryCoordinator
 
 _RESTIC = Path("/opt/ragtime-backup/bin/restic")
+# Real Restic initialization/verification can exceed 10s on a loaded CI runner.
+_CAPTURE_TERMINAL_TIMEOUT_SECONDS = 60
 
 
 class _WorkerLeaseBoundary:
@@ -114,15 +116,27 @@ class RuntimeSqliteHistoryRouteIntegrationTests(unittest.IsolatedAsyncioTestCase
         )
         self.assertEqual(202, response.status_code, response.text)
         self.assertEqual("accepted", response.json()["phase"])
-        for _ in range(400):
-            observed = await self.client.get(f"/worker/workspaces/{self.workspace_id}/sqlite-history/captures/{operation_id}")
-            self.assertEqual(200, observed.status_code, observed.text)
-            receipt = observed.json()
-            if receipt["phase"] in {"completed", "failed", "cancelled", "interrupted"}:
-                self.assertEqual("completed", receipt["phase"], receipt)
-                return receipt
-            await asyncio.sleep(0.025)
-        self.fail(f"capture {operation_id} did not become terminal")
+        last_receipt: dict | None = None
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        try:
+            async with asyncio.timeout(_CAPTURE_TERMINAL_TIMEOUT_SECONDS):
+                while True:
+                    observed = await self.client.get(f"/worker/workspaces/{self.workspace_id}/sqlite-history/captures/{operation_id}")
+                    self.assertEqual(200, observed.status_code, observed.text)
+                    receipt = observed.json()
+                    last_receipt = receipt
+                    if receipt["phase"] in {"completed", "failed", "cancelled", "interrupted"}:
+                        self.assertEqual("completed", receipt["phase"], receipt)
+                        return receipt
+                    await asyncio.sleep(0.1)
+        except TimeoutError:
+            elapsed = loop.time() - started_at
+            self.fail(
+                f"capture {operation_id} did not become terminal after {elapsed:.1f}s; "
+                f"last phase={last_receipt.get('phase') if last_receipt else None}; "
+                f"receipt={last_receipt}"
+            )
 
     async def test_active_routes_capture_receipt_restic_download_and_safe_apply(self) -> None:
         manual = await self._capture("manual")
