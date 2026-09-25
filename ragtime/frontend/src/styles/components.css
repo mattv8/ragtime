@@ -10524,7 +10524,7 @@ fieldset legend.legend-with-status .legend-divider {
 
 .appearance-theme-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   gap: var(--space-md);
   margin-top: var(--space-sm);
 }
@@ -10583,6 +10583,11 @@ fieldset legend.legend-with-status .legend-divider {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
   line-height: var(--leading-normal);
+}
+
+/* The detailed workbench preview is enabled by the Modern theme. */
+.appearance-theme-card-preview {
+  display: none;
 }
 
 .appearance-swatches {
