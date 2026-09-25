@@ -221,6 +221,34 @@
     width: 100%;
   }
 
+  .settings-inline-actions,
+  .settings-credential-row,
+  .settings-summary-header,
+  .settings-mcp-route-row {
+    align-items: flex-start;
+  }
+
+  .settings-inline-actions-main,
+  .settings-credential-input {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  .settings-compaction-grid,
+  .settings-ldap-connection-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-panel .form-row,
+  .settings-panel .form-row-3,
+  .settings-panel .form-row-4 {
+    align-items: stretch;
+  }
+
+  .settings-panel .form-row-4 > .form-group-button {
+    align-self: stretch;
+  }
+
   /* Tables - Card layout */
   .jobs-table {
     display: block;

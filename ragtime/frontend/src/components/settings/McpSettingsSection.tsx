@@ -273,11 +273,8 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
               <>
                 <div className="form-group" style={{ marginTop: '1rem' }}>
                   <label htmlFor="mcp-client-id">Client ID</label>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <div
-                      className="settings-inline-copy-wrap"
-                      style={{ flex: 1, maxWidth: '400px' }}
-                    >
+                  <div className="settings-credential-row" data-settings-boundary="mcp-client-id">
+                    <div className="settings-inline-copy-wrap settings-credential-input">
                       <input
                         type="text"
                         id="mcp-client-id"
@@ -341,11 +338,11 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
 
                 <div className="form-group" style={{ marginTop: '1rem' }}>
                   <label htmlFor="mcp-client-secret">Client Secret</label>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <div
-                      className="settings-inline-copy-wrap"
-                      style={{ flex: 1, maxWidth: '400px' }}
-                    >
+                  <div
+                    className="settings-credential-row"
+                    data-settings-boundary="mcp-client-secret"
+                  >
+                    <div className="settings-inline-copy-wrap settings-credential-input">
                       <input
                         type={showMcpPassword ? 'text' : 'password'}
                         id="mcp-client-secret"
@@ -443,8 +440,8 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
                 <label htmlFor="mcp-password">
                   {authMethod === 'oauth2' ? 'MCP Password Fallback (Optional)' : 'MCP Password'}
                 </label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <div className="settings-inline-copy-wrap" style={{ flex: 1, maxWidth: '400px' }}>
+                <div className="settings-credential-row" data-settings-boundary="mcp-password">
+                  <div className="settings-inline-copy-wrap settings-credential-input">
                     <input
                       type={showMcpPassword ? 'text' : 'password'}
                       id="mcp-password"

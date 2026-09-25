@@ -555,7 +555,11 @@
 }
 
 [data-theme-pack='modern'] .settings-accordion-body {
-  padding: var(--space-md);
+  padding: var(--workbench-padding);
+}
+
+[data-theme-pack='modern'] .settings-panel > .api-info-box {
+  padding: var(--workbench-padding);
 }
 
 /* Make secondary buttons and model selectors visible against dark surfaces in Modern */
@@ -1114,6 +1118,33 @@
   background: var(--color-primary);
   border-color: transparent;
   color: var(--color-primary-text);
+}
+
+@media (min-width: 769px) and (pointer: fine) {
+  [data-theme-pack='modern']
+    #settings-form
+    :is(
+      input[type='text'],
+      input[type='password'],
+      input[type='number'],
+      select,
+      .model-selector-trigger,
+      .checkbox-dropdown-trigger,
+      .btn:not(.btn-link)
+    ) {
+    min-height: var(--workbench-control-height);
+    height: auto;
+    padding-block: var(--space-xs);
+    font-size: var(--text-sm);
+    line-height: var(--leading-tight);
+  }
+}
+
+[data-theme-pack='modern'] #workbench-settings-route .settings-auth-wizard {
+  padding: var(--workbench-padding);
+  border: var(--workbench-container-border);
+  border-radius: var(--workbench-control-radius);
+  background: var(--color-widget);
 }
 
 [data-theme-pack='modern'] .btn-danger {
