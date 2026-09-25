@@ -73,11 +73,13 @@ mcpServers:
       return JSON.stringify(
         {
           mcp: {
-            [name]: {
-              type: 'remote',
-              url: mcpUrl,
-              oauth: false,
-              headers: { Authorization: `Bearer {env:${envName}}` },
+            servers: {
+              [name]: {
+                type: 'remote',
+                url: mcpUrl,
+                oauth: false,
+                headers: { Authorization: `Bearer {env:${envName}}` },
+              },
             },
           },
         },
