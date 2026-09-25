@@ -46,16 +46,14 @@
 
 .userspace-connect-agent .coding-agent-setup-client-picker {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: var(--space-xs);
   min-width: 0;
-  overflow-x: auto;
-  padding-block-end: var(--space-xs);
+  overflow-x: hidden;
 }
 
 .userspace-connect-agent .coding-agent-client-btn {
-  flex: 1 0 max-content;
-  min-width: max-content;
+  flex: 0 0 auto;
   padding-inline: var(--space-sm);
   min-height: 2rem;
   font-size: var(--text-xs);
