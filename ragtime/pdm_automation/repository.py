@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import secrets
+from datetime import datetime
 from typing import Any
 
 from ragtime.core.database import get_db
-from ragtime.core.datetimes import utc_now
+from ragtime.core.datetimes import coerce_utc_datetime, parse_utc_iso_datetime, utc_now
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.sql import sql_quote_literal
 from ragtime.core.webhooks import constant_time_token_matches
@@ -200,9 +201,14 @@ class PdmAutomationRepository:
             f"UPDATE pdm_automation_state SET last_attempt_at=NOW(),last_error={sql_quote_literal(message[:1000])} WHERE tool_config_id={sql_quote_literal(tool_id)} AND claimed_generation={int(generation)}"
         )
 
-    async def last_attempt_at(self, tool_id: str):
+    async def last_attempt_at(self, tool_id: str) -> datetime | None:
         rows = await (await get_db()).query_raw(f"SELECT last_attempt_at FROM pdm_automation_state WHERE tool_config_id={sql_quote_literal(tool_id)}")
-        return rows[0].get("last_attempt_at") if rows else None
+        value = rows[0].get("last_attempt_at") if rows else None
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return coerce_utc_datetime(value)
+        return parse_utc_iso_datetime(value)
 
     async def reconcile(self) -> None:
         """Release stale/missing links after PDM stale-job cleanup."""
