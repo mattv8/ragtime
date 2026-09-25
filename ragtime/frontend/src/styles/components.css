@@ -11105,7 +11105,7 @@ fieldset legend.legend-with-status .legend-divider {
 .userspace-connect-agent-endpoint {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: start;
   gap: var(--space-xs);
   min-width: 0;
   max-width: 100%;
@@ -11132,7 +11132,7 @@ fieldset legend.legend-with-status .legend-divider {
 .userspace-connect-agent-token {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: start;
   gap: var(--space-xs);
   min-width: 0;
   max-width: 100%;
