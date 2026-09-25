@@ -2,13 +2,16 @@
 Logging configuration for the application.
 """
 
+import json
 import logging
+import math
 import re
 import shutil
 import sys
 from typing import Optional
 
 from ragtime.config import settings
+from ragtime.core.performance import get_request_id
 
 # Custom Log Level
 NOTICE = 25
@@ -23,6 +26,18 @@ BOLD_RED = "\033[1;31m"
 RESET = "\033[0m"
 
 _AGENT_ACCESS_PATH_RE = re.compile(r"(/agent/w/)([^/?#]+)")
+_SAFE_CONTENT_PROTECTION_FIELDS = (
+    "direction",
+    "outcome",
+    "initial_ms",
+    "queue_ms",
+    "provider_ms",
+    "release_recheck_ms",
+    "audit_ms",
+    "total_ms",
+    "boundary_count",
+)
+_SAFE_CONTENT_PROTECTION_TEXT_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 def redact_agent_access_path(value: str) -> str:
@@ -45,19 +60,21 @@ class ColoredFormatter(logging.Formatter):
     ]
 
     # Base format matching the previous configuration
-    FMT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    FMT = "%(asctime)s | %(levelname)-8s | %(name)s | request_id=%(request_id)s | %(message)s"
     DATE_FMT = "%Y-%m-%d %H:%M:%S"
 
     FORMATS = {
         logging.DEBUG: BLUE + FMT + RESET,
         logging.INFO: FMT,
-        NOTICE: "%(message)s",
+        NOTICE: "%(message)s",  # Message-only format: no timestamp, request_id, or prefix for startup banners
         logging.WARNING: YELLOW + FMT + RESET,
         logging.ERROR: RED + FMT + RESET,
         logging.CRITICAL: BOLD_RED + FMT + RESET,
     }
 
     def format(self, record: logging.LogRecord) -> str:
+        if not hasattr(record, "request_id"):
+            record.request_id = get_request_id() or "-"
         # Get standard formatted message
         log_fmt = self.FORMATS.get(record.levelno, self.FMT)
         formatter = logging.Formatter(log_fmt, datefmt=self.DATE_FMT)
@@ -69,6 +86,14 @@ class ColoredFormatter(logging.Formatter):
         record.stack_info = None
 
         formatted_message = formatter.format(record)
+
+        content_protection = getattr(record, "content_protection", None)
+        safe_content_protection = _safe_content_protection_timing(content_protection)
+        if safe_content_protection:
+            formatted_message += " content_protection=" + json.dumps(
+                safe_content_protection,
+                separators=(",", ":"),
+            )
 
         # Restore exception/stack info
         record.exc_info = record_exc_info
@@ -122,6 +147,33 @@ class ColoredFormatter(logging.Formatter):
         elif levelno >= logging.DEBUG:
             return BLUE
         return RESET
+
+
+def _safe_content_protection_timing(value: object) -> dict[str, str | float | int]:
+    """Return the small, payload-free timing subset allowed in console logs."""
+    if not isinstance(value, dict):
+        return {}
+
+    safe: dict[str, str | float | int] = {}
+    for field in _SAFE_CONTENT_PROTECTION_FIELDS:
+        candidate = value.get(field)
+        if field in {"direction", "outcome"}:
+            if isinstance(candidate, str) and _SAFE_CONTENT_PROTECTION_TEXT_RE.fullmatch(candidate):
+                safe[field] = candidate
+        elif field == "boundary_count":
+            if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate >= 0:
+                safe[field] = candidate
+        elif isinstance(candidate, (int, float)) and not isinstance(candidate, bool) and math.isfinite(candidate):
+            safe[field] = candidate
+    return safe
+
+
+class RequestCorrelationFilter(logging.Filter):
+    """Attach the generated request correlation ID to logs emitted in its context."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = get_request_id() or "-"
+        return True
 
 
 class UvicornAccessFilter(logging.Filter):
@@ -188,6 +240,7 @@ def setup_logging(name: Optional[str] = None) -> logging.Logger:
 
     # Create handler with colored formatter
     handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(RequestCorrelationFilter())
     handler.setFormatter(ColoredFormatter())
 
     # Configure root logger

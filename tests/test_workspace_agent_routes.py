@@ -2,15 +2,18 @@
 
 import inspect
 import unittest
+from itertools import count
 from types import SimpleNamespace
 from unittest import mock
 
-from fastapi import HTTPException
+import httpx
+from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from ragtime.core.performance import SlowRequestMiddleware
 from ragtime.userspace.agent_access import AgentAccessContext
 from tests.content_protection_support import use_disabled_content_protection
 
@@ -497,22 +500,25 @@ class AgentRouteLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tok-secret", logged_args[0])
 
     async def test_slow_request_log_redacts_agent_access_token(self) -> None:
-        from ragtime import main
+        app = FastAPI()
+        app.add_middleware(SlowRequestMiddleware)
 
-        request = Request(_build_http_scope("/agent/w/tok-secret/files"))
-
-        async def call_next(_: Request) -> Response:
+        @app.get("/agent/w/{token}/files")
+        async def files(token: str) -> Response:
             return Response(status_code=200)
 
         with (
-            mock.patch.object(main.time, "perf_counter", side_effect=[0.0, 1.5]),
-            mock.patch.object(main.logger, "warning") as warning_log,
+            mock.patch("ragtime.core.performance.monotonic", side_effect=count(0.0, 1.5).__next__),
+            self.assertLogs("ragtime.performance", level="WARNING") as logs,
         ):
-            response = await main._log_slow_requests(request, call_next)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.get("/agent/w/tok-secret/files?secret=private-query")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(warning_log.call_args.args[2], "/agent/w/[redacted]/files")
-        self.assertNotIn("tok-secret", warning_log.call_args.args[2])
+        rendered = "\n".join(logs.output)
+        self.assertIn("route=/agent/w/{token}/files", rendered)
+        self.assertNotIn("tok-secret", rendered)
+        self.assertNotIn("private-query", rendered)
 
 
 if __name__ == "__main__":

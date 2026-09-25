@@ -82,6 +82,7 @@ from ragtime.core.mfa import (
 )
 from ragtime.core.oauth_grants import cleanup_expired_grants
 from ragtime.core.openrouter_credits import start_openrouter_credit_monitor, stop_openrouter_credit_monitor
+from ragtime.core.performance import SlowRequestMiddleware
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.runtime_manager_client import close_runtime_manager_client
 from ragtime.core.ssl import setup_ssl
@@ -531,21 +532,7 @@ async def _apply_agent_route_no_store(request: Request, call_next):
     return response
 
 
-@app.middleware("http")
-async def _log_slow_requests(request: Request, call_next):
-    """Log requests that take longer than one second to start responding."""
-    start = time.perf_counter()
-    response = await call_next(request)
-    duration = time.perf_counter() - start
-    if duration > 1.0:
-        logger.warning(
-            "Slow request: %s %s took %.3fs (status %d)",
-            request.method,
-            redact_agent_access_path(request.url.path),
-            duration,
-            response.status_code,
-        )
-    return response
+app.add_middleware(SlowRequestMiddleware, service="ragtime")
 
 
 # Rate limiting

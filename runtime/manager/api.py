@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from ragtime.core.performance import SlowRequestMiddleware
 from runtime.auth import ManagerAuth, OptionalManagerAuth
 from runtime.manager.models import (
     BridgeCredentialRefreshRequest,
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    application.add_middleware(SlowRequestMiddleware, service="runtime-manager")
     # The manager embeds the worker in this deployment mode, so both surfaces
     # intentionally resolve the same durable coordinator instance.
     application.include_router(history_router("", ManagerAuth, lambda: get_worker_service().sqlite_history_coordinator()))

@@ -25,6 +25,7 @@ from ragtime.content_protection.provider import classify, security_classificatio
 from ragtime.content_protection.store import load_config_record, resolve_identities, save_config_record, validate_references
 from ragtime.core import database
 from ragtime.core.logging import get_logger
+from ragtime.core.performance import timed_operation
 
 _MAX_BYTES = 1024 * 1024
 _CACHE_TTL = 60.0
@@ -418,6 +419,7 @@ async def _physical_classify(config: ContentProtectionConfig, envelope: dict[str
         flights.queue.release()
 
 
+@timed_operation("content_protection.classifier_wait")
 async def _singleflight_classify(
     config: ContentProtectionConfig, envelope: dict[str, object], state: _TurnState, key: str, request_id: str
 ) -> tuple[dict[str, str], bool, float, float, float]:
@@ -504,6 +506,7 @@ def recovery_attempt(error: ContentProtectionError) -> Iterator[_TurnState]:
         raise
 
 
+@timed_operation("content_protection.classifier")
 async def _classify(config: ContentProtectionConfig, envelope: dict[str, object], *, include_reason: bool = False) -> dict[str, str]:
     """Use the provider only through the private security-classification path."""
     with security_classification_context():
