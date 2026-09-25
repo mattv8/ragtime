@@ -190,8 +190,11 @@ export function ChatSettingsSection(props: ChatSettingsSectionProps): JSX.Elemen
                     <MiniLoadingSpinner variant="icon" size={12} title="Loading models..." />
                   )}
                 </label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)' }}>
-                  <div style={{ flex: 1 }}>
+                <div
+                  className="settings-inline-actions"
+                  data-settings-boundary="default-chat-model"
+                >
+                  <div className="settings-inline-actions-main">
                     <ModelSelector
                       models={filteredChatModels}
                       selectedModelId={manualDefaultChatModel ?? automaticDefaultChatModel ?? ''}
@@ -243,7 +246,7 @@ export function ChatSettingsSection(props: ChatSettingsSectionProps): JSX.Elemen
           </div>
           <div className="form-group">
             <label>OpenAPI Models</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-md)' }}>
+            <div className="settings-inline-actions" data-settings-boundary="openapi-models">
               <label>
                 <input
                   type="checkbox"

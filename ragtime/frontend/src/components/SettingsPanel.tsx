@@ -4531,7 +4531,7 @@ export function SettingsPanel({
   );
 
   return (
-    <div ref={settingsPanelRef} className="card">
+    <div ref={settingsPanelRef} className="card settings-panel" id="settings-panel">
       <SearchFilterBar
         state={settingsFilter}
         inputRef={settingsFilterInputRef}
@@ -4571,7 +4571,7 @@ export function SettingsPanel({
         ) : null}
       </div>
 
-      <div className="api-info-box" data-settings-filter-card="true">
+      <div className="api-info-box" data-settings-filter-card="true" id="cloud-oauth-summary">
         <div
           style={{
             display: 'flex',
@@ -4625,8 +4625,8 @@ export function SettingsPanel({
       </div>
 
       {/* MCP Routes Summary */}
-      <div className="api-info-box" data-settings-filter-card="true">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="api-info-box" data-settings-filter-card="true" id="mcp-routes-summary">
+        <div className="settings-summary-header">
           <strong>MCP (Model Context Protocol)</strong>
           <button type="button" className="btn btn-sm" onClick={() => setShowMcpRoutesPanel(true)}>
             Manage Routes
@@ -4635,10 +4635,8 @@ export function SettingsPanel({
         <p style={{ marginTop: '0.5rem' }}>
           Connect AI assistants (Claude Desktop, VS Code, etc.) using:
         </p>
-        <div
-          style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginTop: '0.5rem' }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <div className="settings-mcp-route-list" data-settings-boundary="mcp-route-list">
+          <div className="settings-mcp-route-row">
             <code>{getDisplayUrl('/mcp')}</code>
             <span className="muted" style={{ fontSize: '0.85em' }}>
               (default - all tools)
@@ -4687,10 +4685,7 @@ export function SettingsPanel({
                     ? 'Client credentials'
                     : 'Password protected';
               return (
-                <div
-                  key={route.id}
-                  style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
-                >
+                <div key={route.id} className="settings-mcp-route-row" data-mcp-route={route.id}>
                   <code>{getDisplayUrl(`/mcp/${route.route_path}`)}</code>
                   <span className="muted" style={{ fontSize: '0.85em' }}>
                     ({route.name})
@@ -4726,6 +4721,7 @@ export function SettingsPanel({
       <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
 
       <form
+        id="settings-form"
         ref={settingsFormRef}
         onSubmit={handleSubmit}
         autoComplete="off"
@@ -4855,15 +4851,7 @@ export function SettingsPanel({
               )}
               {isAdmin && <ObjectStorageSettings ref={objectStorageSettingsRef} />}
 
-              <div
-                id="userspace-management-columns"
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-                  gap: '1rem',
-                  alignItems: 'start',
-                }}
-              >
+              <div id="userspace-management-columns" className="settings-userspace-management-grid">
                 <div id="userspace-global-env-settings">
                   <h4 style={{ margin: '0 0 8px' }}>Global Environment Variables</h4>
                   <div className="form-group">
@@ -4919,7 +4907,7 @@ export function SettingsPanel({
                 </div>
               </div>
 
-              <details style={{ marginBottom: '16px' }} id="setting-userspace_advanced">
+              <details className="settings-advanced-block" id="setting-userspace_advanced">
                 <summary className="settings-advanced-summary">Advanced Settings</summary>
 
                 <div className="form-group">
@@ -5809,7 +5797,7 @@ export function SettingsPanel({
                       placeholder="sk-lm-... (optional)"
                       autoComplete="off"
                     />
-                    <p className="form-help">
+                    <p className="field-help">
                       Optional. Leave blank if LM Studio is running without authentication.
                     </p>
                   </div>
@@ -5896,7 +5884,7 @@ export function SettingsPanel({
                       placeholder="optional"
                       autoComplete="off"
                     />
-                    <p className="form-help">
+                    <p className="field-help">
                       Optional. Leave blank if oMLX is running without authentication.
                     </p>
                   </div>
@@ -6182,16 +6170,7 @@ export function SettingsPanel({
                     copilotRequestId &&
                     copilotDeviceCode &&
                     copilotVerificationUri && (
-                      <div
-                        className="field-help"
-                        style={{
-                          marginTop: '0.75rem',
-                          border: '1px solid var(--color-border)',
-                          borderRadius: '8px',
-                          padding: '0.75rem',
-                          background: 'var(--color-bg-secondary)',
-                        }}
-                      >
+                      <div className="settings-auth-wizard" id="copilot-auth-wizard">
                         <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>
                           GitHub Authorization
                         </div>
@@ -6357,16 +6336,7 @@ export function SettingsPanel({
                     openAiCodexRequestId &&
                     openAiCodexDeviceCode &&
                     openAiCodexVerificationUri && (
-                      <div
-                        className="field-help"
-                        style={{
-                          marginTop: '0.75rem',
-                          border: '1px solid var(--color-border)',
-                          borderRadius: '8px',
-                          padding: '0.75rem',
-                          background: 'var(--color-bg-secondary)',
-                        }}
-                      >
+                      <div className="settings-auth-wizard" id="openai-codex-auth-wizard">
                         <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>
                           OpenAI Codex Authorization
                         </div>
@@ -6530,7 +6500,7 @@ export function SettingsPanel({
                     </button>
                   </div>
                   {claudeCodeWizardVisible && claudeCodeRequestId && claudeCodeAuthorizationUrl && (
-                    <div className="settings-auth-wizard" style={{ marginTop: '0.75rem' }}>
+                    <div className="settings-auth-wizard" id="claude-code-auth-wizard">
                       <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>
                         Claude Code Authorization
                       </div>
@@ -6743,13 +6713,7 @@ export function SettingsPanel({
 
                 <div className="form-row">
                   <div className="form-group" style={{ flex: 1 }}>
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                        gap: '1rem',
-                      }}
-                    >
+                    <div className="settings-compaction-grid">
                       <div>
                         <label
                           style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.9rem' }}
@@ -7349,7 +7313,7 @@ export function SettingsPanel({
                       placeholder="sk-lm-... (optional)"
                       autoComplete="off"
                     />
-                    <p className="form-help">
+                    <p className="field-help">
                       Optional. Leave blank if LM Studio is running without authentication.
                     </p>
                   </div>
@@ -7439,7 +7403,7 @@ export function SettingsPanel({
                       placeholder="optional"
                       autoComplete="off"
                     />
-                    <p className="form-help">
+                    <p className="field-help">
                       Optional. Leave blank if oMLX is running without authentication.
                     </p>
                   </div>
@@ -7650,14 +7614,7 @@ export function SettingsPanel({
                     from images during indexing.
                   </p>
 
-                  <div
-                    className="form-row"
-                    style={
-                      formData.default_ocr_mode === 'vision'
-                        ? { display: 'flex', flexWrap: 'nowrap', gap: 'var(--space-md)' }
-                        : undefined
-                    }
-                  >
+                  <div className="settings-ocr-grid" id="settings-ocr-controls">
                     <div className="form-group" style={{ flex: 1 }}>
                       <label>Default OCR Mode</label>
                       <select
@@ -7729,7 +7686,7 @@ export function SettingsPanel({
                     {formData.default_ocr_mode === 'vision' && (
                       <div className="form-group" style={{ flex: 1 }}>
                         <label>Vision Model</label>
-                        <div style={{ display: 'flex', gap: '8px' }}>
+                        <div className="input-with-button input-with-actions">
                           <select
                             value={formData.default_ocr_vision_model || ''}
                             onChange={(e) =>
@@ -7767,11 +7724,7 @@ export function SettingsPanel({
                             {visionModelsLoading ? 'Loading...' : 'Load'}
                           </button>
                         </div>
-                        {visionModelsError && (
-                          <p className="error-text" style={{ marginBottom: '8px' }}>
-                            {visionModelsError}
-                          </p>
-                        )}
+                        {visionModelsError && <p className="field-error">{visionModelsError}</p>}
                         <p className="field-help">
                           Select a {selectedOcrProviderLabel} vision model for semantic OCR. Load
                           checks provider metadata without running a vision request.
@@ -7780,7 +7733,7 @@ export function SettingsPanel({
                     )}
 
                     {formData.default_ocr_mode === 'vision' && (
-                      <div className="form-group" style={{ flex: '0 0 120px' }}>
+                      <div className="form-group">
                         <label>Concurrency</label>
                         <input
                           type="number"
@@ -8143,7 +8096,7 @@ export function SettingsPanel({
                   <h4 style={{ margin: '0 0 4px' }}>Server Connection</h4>
                   <p className="fieldset-help">Connect to your LDAP or Active Directory server.</p>
 
-                  <div className="form-row-4" style={{ gridTemplateColumns: '110px 1fr 90px' }}>
+                  <div className="form-row-4 settings-ldap-connection-grid">
                     <div className="form-group">
                       <label>Protocol</label>
                       <select

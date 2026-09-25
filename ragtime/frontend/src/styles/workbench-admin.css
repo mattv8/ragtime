@@ -528,7 +528,11 @@
 }
 
 [data-theme-pack='modern'] .appearance-swatches-compact {
-  margin-top: 0;
+  display: none;
+}
+
+[data-theme-pack='modern'] .appearance-theme-card-desc {
+  display: none;
 }
 
 [data-theme-pack='modern'] .appearance-swatch {
@@ -555,7 +559,11 @@
 }
 
 [data-theme-pack='modern'] .settings-accordion-body {
-  padding: var(--space-md);
+  padding: var(--workbench-padding);
+}
+
+[data-theme-pack='modern'] .settings-panel > .api-info-box {
+  padding: var(--workbench-padding);
 }
 
 /* Make secondary buttons and model selectors visible against dark surfaces in Modern */
@@ -1095,7 +1103,7 @@
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] :is(.active, .is-selected, [aria-pressed='true'], [aria-selected='true'], [data-active='true'], .selected):hover:not(:disabled) {
+[data-theme-pack='modern'] :is(.active, .is-selected, [aria-pressed='true']:not(.appearance-theme-card), [aria-selected='true'], [data-active='true'], .selected):hover:not(:disabled) {
   background: var(--color-primary-hover);
   color: var(--color-primary-text);
 }
@@ -1110,10 +1118,37 @@
 }
 
 /* prettier-ignore */
-[data-theme-pack='modern'] :is(.btn:not(.btn-secondary, .btn-danger, .btn-success), .btn-danger, .btn-success, .active, .is-selected, [aria-pressed='true'], [aria-selected='true'], [data-active='true'], .selected) {
+[data-theme-pack='modern'] :is(.btn:not(.btn-secondary, .btn-danger, .btn-success), .btn-danger, .btn-success, .active, .is-selected, [aria-pressed='true']:not(.appearance-theme-card), [aria-selected='true'], [data-active='true'], .selected) {
   background: var(--color-primary);
   border-color: transparent;
   color: var(--color-primary-text);
+}
+
+@media (min-width: 769px) and (pointer: fine) {
+  [data-theme-pack='modern']
+    #settings-form
+    :is(
+      input[type='text'],
+      input[type='password'],
+      input[type='number'],
+      select,
+      .model-selector-trigger,
+      .checkbox-dropdown-trigger,
+      .btn:not(.btn-link)
+    ) {
+    min-height: var(--workbench-control-height);
+    height: auto;
+    padding-block: var(--space-xs);
+    font-size: var(--text-sm);
+    line-height: var(--leading-tight);
+  }
+}
+
+[data-theme-pack='modern'] #workbench-settings-route .settings-auth-wizard {
+  padding: var(--workbench-padding);
+  border: var(--workbench-container-border);
+  border-radius: var(--workbench-control-radius);
+  background: var(--color-widget);
 }
 
 [data-theme-pack='modern'] .btn-danger {

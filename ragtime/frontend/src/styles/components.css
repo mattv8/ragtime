@@ -6458,6 +6458,143 @@ textarea {
   border-top: 1px solid var(--color-border);
 }
 
+/* Settings presentation layouts keep dense desktop forms usable at narrow widths. */
+.settings-appearance-layout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: var(--space-lg);
+  align-items: start;
+}
+
+.settings-branding-grid,
+.settings-userspace-management-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: var(--space-md);
+  align-items: start;
+}
+
+.settings-userspace-management-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  margin-bottom: var(--space-md);
+}
+
+#object-storage-settings {
+  margin-bottom: var(--space-md);
+}
+
+.settings-advanced-block {
+  margin-bottom: var(--space-md);
+}
+
+.settings-inline-actions,
+.settings-credential-row,
+.settings-summary-header,
+.settings-mcp-route-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.settings-summary-header {
+  justify-content: space-between;
+}
+
+.settings-inline-actions-main {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.settings-credential-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 400px;
+}
+
+.settings-panel .form-group,
+.settings-panel input,
+.settings-panel select {
+  min-width: 0;
+}
+
+.settings-panel .api-info-box code {
+  overflow-wrap: anywhere;
+}
+
+.settings-panel :where(.field-help) {
+  margin-top: var(--space-xs);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.settings-panel .field-error {
+  margin-block: var(--space-xs) var(--space-sm);
+  font-size: var(--text-xs);
+  color: var(--color-error);
+}
+
+.settings-panel .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.settings-panel .settings-accordion-header-status {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-panel .llm-provider-status-inline {
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-sm);
+}
+
+.settings-panel .llm-provider-status-item {
+  flex-shrink: 0;
+}
+
+.settings-ocr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: var(--space-md);
+  align-items: start;
+}
+
+.settings-mcp-route-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+}
+
+.settings-mcp-route-row code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-auth-wizard {
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.settings-compaction-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  gap: var(--space-md);
+}
+
+.settings-ldap-connection-grid {
+  grid-template-columns: 110px minmax(0, 1fr) 90px;
+}
+
 /* Checkbox & Radio */
 .checkbox-label {
   display: flex;
@@ -10387,7 +10524,7 @@ fieldset legend.legend-with-status .legend-divider {
 
 .appearance-theme-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   gap: var(--space-md);
   margin-top: var(--space-sm);
 }
@@ -10446,6 +10583,11 @@ fieldset legend.legend-with-status .legend-divider {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
   line-height: var(--leading-normal);
+}
+
+/* The detailed workbench preview is enabled by the Modern theme. */
+.appearance-theme-card-preview {
+  display: none;
 }
 
 .appearance-swatches {
@@ -10639,12 +10781,16 @@ fieldset legend.legend-with-status .legend-divider {
 
 .agent-behavior-settings-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   gap: var(--space-md);
 }
 
 .agent-behavior-settings-grid > .form-group {
   margin-bottom: 0;
+}
+
+.agent-behavior-settings-grid + .agent-behavior-settings-grid {
+  margin-top: var(--space-md);
 }
 
 .master-toggle {
