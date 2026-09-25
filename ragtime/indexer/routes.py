@@ -13513,8 +13513,7 @@ async def get_conversation_latest_exchange(
     window = await repository.get_latest_conversation_exchange(conversation_id)
     if window is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    conv = await repository.get_conversation(conversation_id)
-    await _authorize_conversation_release(window, user=user, owner_user_id=getattr(conv, "user_id", None))
+    await _authorize_conversation_release(window, user=user, owner_user_id=window.conversation.user_id)
     return window
 
 
@@ -13536,8 +13535,7 @@ async def get_conversation_message_window(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if window is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    conv = await repository.get_conversation(conversation_id)
-    await _authorize_conversation_release(window, user=user, owner_user_id=getattr(conv, "user_id", None))
+    await _authorize_conversation_release(window, user=user, owner_user_id=window.conversation.user_id)
     return window
 
 
