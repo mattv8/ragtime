@@ -55,14 +55,7 @@ export function AppearanceSettingsSection(props: AppearanceSettingsSectionProps)
           theme has matching light and dark modes.
         </p>
 
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-            gap: '1.5rem',
-            alignItems: 'start',
-          }}
-        >
+        <div className="settings-appearance-layout" id="settings-appearance-layout">
           <div className="form-group">
             <label>Default theme</label>
             <div
@@ -180,14 +173,7 @@ export function AppearanceSettingsSection(props: AppearanceSettingsSectionProps)
             id="setting-server_branding"
             className={highlightSetting === 'server_branding' ? 'highlight-setting' : ''}
           >
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: '1rem',
-                alignItems: 'start',
-              }}
-            >
+            <div className="settings-branding-grid" data-settings-boundary="branding-controls">
               <div className="form-group">
                 <label>Server Name</label>
                 <input
