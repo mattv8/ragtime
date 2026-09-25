@@ -119,10 +119,13 @@ services:
       searxng:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # Keep the local HTTP API probe and verify both required runtime-s3 listeners.
+      test: ["CMD-SHELL", "curl -fs --max-time 2 -o /dev/null http://localhost:8000/health && curl -fsS --max-time 2 -o /dev/null \"$${OBJECT_STORAGE_CONTROL_URL:-http://runtime-s3:9001}/health\" && curl -sS --max-time 2 -o /dev/null \"$${OBJECT_STORAGE_ENDPOINT:-http://runtime-s3:9000}\""]
       interval: 30s
       timeout: 10s
       retries: 3
+      # Initial settings creation publishes the storage encryption key.
+      start_period: 5m
 
   # Internal persistent S3 gateway; it waits for Ragtime to publish its key projection.
   runtime-s3:
@@ -138,7 +141,18 @@ services:
       - default
     depends_on:
       ragtime:
-        condition: service_healthy
+        # Start after Ragtime begins so it can publish the key; Ragtime health
+        # checks this gateway's readiness, so waiting for healthy would cycle.
+        condition: service_started
+    healthcheck:
+      # Make the image's control/S3 listener check explicit for Compose users.
+      # A 403 from the unauthenticated S3 listener is a valid reachability result.
+      test: ["CMD-SHELL", "curl -fsS --max-time 2 -o /dev/null \"http://localhost:$${STORAGE_CONTROL_PORT}/health\" && curl -sS --max-time 2 -o /dev/null \"http://localhost:$${S3_PORT}\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Allow Ragtime's key bootstrap and the gateway's startup wait.
+      start_period: 5m
 
   runtime:
     build:

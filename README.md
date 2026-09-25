@@ -353,15 +353,17 @@ flowchart LR
          ragtime-db:
            condition: service_healthy
          runtime:
-           condition: service_started
+           condition: service_healthy
          searxng:
            condition: service_healthy
        healthcheck:
-         test: ["CMD", "sh", "-c", "if [ \"$ENABLE_HTTPS\" = \"true\" ]; then curl -fsk https://localhost:8000/health; else curl -fs http://localhost:8000/health; fi"]
+         # Verify the API and both required runtime-s3 listeners after startup.
+         test: ["CMD-SHELL", "if [ \"$${ENABLE_HTTPS:-false}\" = \"true\" ]; then curl -fsk --max-time 2 -o /dev/null https://localhost:8000/health; else curl -fs --max-time 2 -o /dev/null http://localhost:8000/health; fi && curl -fsS --max-time 2 -o /dev/null \"$${OBJECT_STORAGE_CONTROL_URL:-http://runtime-s3:9001}/health\" && curl -sS --max-time 2 -o /dev/null \"$${OBJECT_STORAGE_ENDPOINT:-http://runtime-s3:9000}\""]
          interval: 30s
          timeout: 10s
          retries: 3
-         start_period: 15s
+         # Initial settings creation publishes the storage encryption key.
+         start_period: 5m
 
      # Internal, persistent workspace S3 gateway. It waits for Ragtime's managed
      # encryption key and intentionally has no host-published ports.
@@ -376,7 +378,18 @@ flowchart LR
          - ragtime-network
        depends_on:
          ragtime:
-           condition: service_healthy
+           # Start after Ragtime begins so it can publish the key; Ragtime health
+           # checks this gateway's readiness, so waiting for healthy would cycle.
+           condition: service_started
+       healthcheck:
+         # Make the image's control/S3 listener check explicit for Compose users.
+         # A 403 from the unauthenticated S3 listener is a valid reachability result.
+         test: ["CMD-SHELL", "curl -fsS --max-time 2 -o /dev/null \"http://localhost:$${STORAGE_CONTROL_PORT}/health\" && curl -sS --max-time 2 -o /dev/null \"http://localhost:$${S3_PORT}\""]
+         interval: 30s
+         timeout: 10s
+         retries: 3
+         # Allow Ragtime's key bootstrap and the gateway's startup wait.
+         start_period: 5m
 
      runtime:
        image: hub.docker.visnovsky.us/library/runtime:main
@@ -451,6 +464,8 @@ flowchart LR
    ```bash
    docker compose up -d
    ```
+
+   The database, searxng, and runtime start in parallel. Ragtime waits until all three are healthy, then publishes the encryption key needed by runtime-s3. Storage starts after Ragtime's container starts; Ragtime's healthcheck requires its API and both storage endpoints to respond. The detached `up -d` command starts this sequence in the background. Use `docker compose ps` to see each service's health as startup progresses.
 
 5. **Access the application:**
    - Web UI: http://localhost:8000

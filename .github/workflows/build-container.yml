@@ -37,7 +37,7 @@ jobs:
       runtime_tags: ${{ steps.plan.outputs.runtime_tags }}
       legacy_tag: ${{ steps.plan.outputs.legacy_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: plan
         env:
           BUILD_IMAGES: ${{ inputs.build_images || false }}
@@ -66,7 +66,7 @@ jobs:
       image: ${{ steps.meta.outputs.image }}
       branch: ${{ steps.meta.outputs.branch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/managed-buildx
         with: {scope: candidate-main}
       - name: Validate resolved base references
@@ -82,7 +82,7 @@ jobs:
       - uses: docker/login-action@v3
         with: {registry: '${{ env.REGISTRY }}', username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
       - id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile
@@ -110,7 +110,7 @@ jobs:
     permissions: {actions: read, contents: read, packages: write}
     outputs: {digest: '${{ steps.build.outputs.digest }}', image: '${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}'}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/managed-buildx
         with: {scope: candidate-runtime}
       - name: Validate resolved runtime base reference
@@ -122,7 +122,7 @@ jobs:
       - uses: docker/login-action@v3
         with: {registry: '${{ env.REGISTRY }}', username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
       - id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile.runtime
@@ -145,13 +145,13 @@ jobs:
     permissions: {actions: read, contents: read, packages: write}
     outputs: {digest: '${{ steps.build.outputs.digest }}', image: '${{ env.REGISTRY }}/${{ env.IMAGE_STORAGE_NAME }}'}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/managed-buildx
         with: {scope: candidate-storage}
       - uses: docker/login-action@v3
         with: {registry: '${{ env.REGISTRY }}', username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
       - id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile.storage
@@ -171,13 +171,13 @@ jobs:
     permissions: {actions: read, contents: read, packages: write}
     outputs: {digest: '${{ steps.build.outputs.digest }}'}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/managed-buildx
         with: {scope: candidate-legacy}
       - uses: docker/login-action@v3
         with: {registry: '${{ env.REGISTRY }}', username: '${{ secrets.HARBOR_USERNAME }}', password: '${{ secrets.HARBOR_PASSWORD }}'}
       - id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile
@@ -195,7 +195,7 @@ jobs:
     if: '!cancelled() && needs.candidate-main.result == ''success'''
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/managed-buildx
         with: {scope: sbom}
       - uses: docker/login-action@v3
@@ -220,7 +220,7 @@ jobs:
       cancel-in-progress: false
     permissions: {actions: read, contents: read, id-token: write, packages: write}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: {fetch-depth: 0}
       - uses: ./.github/actions/managed-buildx
         with: {scope: promote}

@@ -203,7 +203,7 @@ class CiWorkflowContractTests(unittest.TestCase):
         jobs = quality["jobs"]
         storage = jobs["storage"]
         self.assertEqual(storage["name"], "Storage Tests")
-        storage_build = next(step for step in storage["steps"] if step.get("uses") == "docker/build-push-action@v5")
+        storage_build = next(step for step in storage["steps"] if step.get("name") == "Storage Maven tests")
         self.assertEqual(storage_build["with"]["file"], "./docker/Dockerfile.storage")
         self.assertEqual(storage_build["with"]["target"], "storage-test")
         self.assertIn("MAVEN_SKIP_TESTS=1", storage_build["with"]["build-args"])
@@ -222,7 +222,7 @@ class CiWorkflowContractTests(unittest.TestCase):
             for step in job.get("steps", []):
                 if step.get("uses") == "docker/login-action@v3":
                     self.assertEqual(step.get("if"), "inputs.use_harbor")
-                if step.get("uses") == "docker/build-push-action@v5":
+                if step.get("uses", "").startswith("docker/build-push-action@"):
                     cache_from = step.get("with", {}).get("cache-from")
                     if cache_from:
                         self.assertNotIn("inputs.use_harbor", cache_from)
@@ -233,7 +233,7 @@ class CiWorkflowContractTests(unittest.TestCase):
     def test_backend_analysis_reads_the_published_python_ci_dependency_cache(self) -> None:
         base = _load_workflow("base-images.yml")
         publisher = next(entry for entry in base["jobs"]["build"]["strategy"]["matrix"]["include"] if entry["kind"] == "python-ci-deps")
-        publisher_build = next(step for step in base["jobs"]["build"]["steps"] if step.get("uses") == "docker/build-push-action@v5")
+        publisher_build = next(step for step in base["jobs"]["build"]["steps"] if step.get("name") == "Build and push missing or refreshed base")
         self.assertIn("buildcache-${{ matrix.kind }}", publisher_build["with"]["cache-to"])
 
         quality = _load_workflow("quality.yml")

@@ -66,7 +66,7 @@ jobs:
       production_tag: ${{ steps.tags.outputs.production_tag }}
       runtime_tag: ${{ steps.tags.outputs.runtime_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: tags
         run: python3 docker/scripts/base_image_tags.py --registry "$REGISTRY" >> "$GITHUB_OUTPUT"
 
@@ -94,7 +94,7 @@ jobs:
       cancel-in-progress: false
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/managed-buildx
         with: {scope: 'base-${{ matrix.kind }}'}
       - uses: docker/login-action@v3
@@ -117,7 +117,7 @@ jobs:
           fi
       - name: Build and push missing or refreshed base
         if: ${{ steps.manifest.outputs.missing == 'true' || inputs.refresh }}
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.file }}
@@ -140,7 +140,7 @@ jobs:
       production_image: ${{ steps.digest-images.outputs.production_image || steps.empty-images.outputs.production_image }}
       runtime_image: ${{ steps.digest-images.outputs.runtime_image || steps.empty-images.outputs.runtime_image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Registry manifest inspection uses the Buildx CLI but does not need a builder.
       - name: Verify Buildx CLI
         run: docker buildx version
