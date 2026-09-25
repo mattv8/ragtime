@@ -88,6 +88,7 @@ COPY ragtime/__init__.py /runtime/ragtime/__init__.py
 COPY ragtime/core/__init__.py /runtime/ragtime/core/__init__.py
 COPY ragtime/core/document_conversion.py /runtime/ragtime/core/document_conversion.py
 COPY ragtime/core/file_constants.py /runtime/ragtime/core/file_constants.py
+COPY ragtime/core/performance.py /runtime/ragtime/core/performance.py
 COPY docker/entrypoint.runtime.sh /entrypoint.runtime.sh
 
 RUN dos2unix /entrypoint.runtime.sh \

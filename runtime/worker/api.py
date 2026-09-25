@@ -27,6 +27,7 @@ from fastapi import (
 from fastapi.responses import Response, StreamingResponse
 from websockets.typing import Subprotocol
 
+from ragtime.core.performance import SlowRequestMiddleware
 from runtime.auth import OptionalWorkerAuth, WorkerAuth, get_runtime_auth_token
 from runtime.manager.models import (
     BridgeCredentialRefreshRequest,
@@ -1162,6 +1163,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=_worker_lifespan,
     )
+    application.add_middleware(SlowRequestMiddleware, service="runtime-worker")
     include_worker_routes(application)
 
     @application.get("/health", response_model=WorkerHealthResponse)
