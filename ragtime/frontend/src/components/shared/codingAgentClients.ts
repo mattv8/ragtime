@@ -19,7 +19,7 @@ export const CODING_AGENT_CLIENTS: readonly {
   id: CodingAgentClientId;
   label: string;
 }[] = [
-  { id: 'claude-desktop', label: 'Claude Desktop' },
+  { id: 'claude-desktop', label: 'Claude Cowork / Desktop' },
   { id: 'claude-code', label: 'Claude Code' },
   { id: 'cursor', label: 'Cursor' },
   { id: 'chatgpt', label: 'ChatGPT' },

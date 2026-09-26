@@ -92,6 +92,36 @@ function getScopeDescription(credential: WorkspaceDevelopmentCredential): string
     : 'Authorized workspace development access';
 }
 
+function buildFirstRequest(workspaceId: string): string {
+  return `Use workspace_development_context with workspace ID ${workspaceId} to inspect this workspace and summarize the current project and available capabilities. Do not change files or run commands.`;
+}
+
+/**
+ * Wraps children in optional details disclosure for OAuth clients.
+ * Returns uncontrolled details element or fragment based on isOptional.
+ * React state remains in parent; DOM node is stable for credential state preservation.
+ */
+function OptionalCredentialManagement({
+  isOptional,
+  children,
+}: {
+  isOptional: boolean;
+  children: React.ReactNode;
+}) {
+  if (isOptional) {
+    return (
+      <details
+        className="userspace-connect-agent-oauth-advanced"
+        data-userspace-disclosure="oauth-workspace-credentials"
+      >
+        <summary>Advanced: workspace credentials</summary>
+        {children}
+      </details>
+    );
+  }
+  return <>{children}</>;
+}
+
 function SetupSteps({ step }: { step: SetupStep }) {
   const steps: Array<{ id: SetupStep; label: string }> = [
     { id: 'create', label: 'Create access' },
@@ -285,6 +315,70 @@ export function ConnectYourAgentPanel({
   const mcpUrl = `${window.location.origin}/mcp`;
   const operationsUrl = `${window.location.origin}/indexes/userspace/development/workspaces/${workspaceId}/operations`;
 
+  const clientGuideSection = (
+    <section
+      id={`workspace-agent-client-guide-${workspaceId}`}
+      className="coding-agent-setup-guide"
+      aria-label="Coding agent connection guide"
+      data-userspace-panel="coding-agent-connection-guide"
+    >
+      <div className="coding-agent-setup-endpoint">
+        <div>
+          <span className="coding-agent-setup-eyebrow">MCP endpoint</span>
+          <code>{mcpUrl}</code>
+        </div>
+        <InlineCopyButton
+          copyText={mcpUrl}
+          className="btn btn-secondary btn-sm"
+          title="Copy MCP endpoint"
+          ariaLabel="Copy MCP endpoint"
+          label="Copy endpoint"
+        />
+      </div>
+      <h4>Choose your coding agent</h4>
+      <p className="muted">
+        Coding agents can connect to Ragtime and access your workspace. OAuth clients sign in
+        without a credential; other clients use workspace credentials for authentication.
+      </p>
+      <div
+        className="coding-agent-setup-client-picker"
+        role="group"
+        aria-label="Coding agent client"
+      >
+        {CODING_AGENT_CLIENTS.map((client) => (
+          <button
+            key={client.id}
+            type="button"
+            className="btn btn-secondary btn-sm coding-agent-client-btn"
+            data-client-id={client.id}
+            aria-pressed={selectedClientId === client.id && instructionsExpanded}
+            aria-expanded={selectedClientId === client.id && instructionsExpanded}
+            aria-controls={`workspace-agent-client-guide-content-${workspaceId}`}
+            onClick={() => {
+              if (selectedClientId === client.id && instructionsExpanded) {
+                setInstructionsExpanded(false);
+                return;
+              }
+              setSelectedClientId(client.id);
+              setInstructionsExpanded(true);
+            }}
+          >
+            {client.label}
+          </button>
+        ))}
+      </div>
+      <div id={`workspace-agent-client-guide-content-${workspaceId}`}>
+        {instructionsExpanded && (
+          <CodingAgentClientGuide
+            clientId={selectedClientId}
+            mcpUrl={mcpUrl}
+            workspaceId={workspaceId}
+          />
+        )}
+      </div>
+    </section>
+  );
+
   return (
     <section
       id={`workspace-connect-agent-${workspaceId}`}
@@ -297,12 +391,16 @@ export function ConnectYourAgentPanel({
         className="userspace-connect-agent-body"
         data-userspace-panel="connect-your-agent-content"
       >
-        {!canManage ? (
+        {clientGuideSection}
+        {!canManage && (
           <p className="muted">
             Only workspace owners and admins can manage development credentials.
           </p>
-        ) : (
-          <>
+        )}
+        {canManage && (
+          <OptionalCredentialManagement
+            isOptional={selectedClientId === 'claude-desktop' || selectedClientId === 'chatgpt'}
+          >
             <section
               className="userspace-connect-agent-section"
               aria-label="Development credentials"
@@ -331,6 +429,7 @@ export function ConnectYourAgentPanel({
                   id={`workspace-agent-create-${workspaceId}`}
                   className="userspace-connect-agent-create"
                   data-userspace-step="create"
+                  aria-busy={isCreating}
                 >
                   <div className="userspace-connect-agent-create-header">
                     <SetupSteps step="create" />
@@ -548,6 +647,21 @@ export function ConnectYourAgentPanel({
                                     </p>
                                   </div>
                                 )}
+                                {selectedClientId === 'claude-desktop' && (
+                                  <aside
+                                    id={`workspace-agent-claude-sharing-note-${credential.id}`}
+                                    className="userspace-connect-agent-recovery"
+                                    data-userspace-note="claude-credential-sharing"
+                                    role="note"
+                                  >
+                                    <p>
+                                      Claude Desktop request-header authentication is limited to the
+                                      organization beta. Members using its connector share this
+                                      Ragtime credential; create a dedicated connector credential
+                                      only when shared access is intended.
+                                    </p>
+                                  </aside>
+                                )}
                                 <details
                                   id={`workspace-agent-manual-details-${credential.id}`}
                                   className="userspace-connect-agent-manual-details"
@@ -631,9 +745,22 @@ export function ConnectYourAgentPanel({
                                   restart or a new session after setup.
                                 </p>
                                 <p>
-                                  <strong>Suggested first request:</strong> “Inspect this workspace
-                                  and summarize the current project state before making changes.”
+                                  <strong>Suggested first request:</strong>
                                 </p>
+                                <div
+                                  id={`workspace-agent-first-request-${credential.id}`}
+                                  className="userspace-connect-agent-endpoint"
+                                  data-userspace-action="first-request"
+                                >
+                                  <code>{buildFirstRequest(workspaceId)}</code>
+                                  <InlineCopyButton
+                                    copyText={() => buildFirstRequest(workspaceId)}
+                                    className="btn btn-secondary btn-sm"
+                                    title="Copy suggested first request"
+                                    ariaLabel="Copy suggested first request"
+                                    label="Copy request"
+                                  />
+                                </div>
                                 <div
                                   id={`workspace-agent-start-footer-${credential.id}`}
                                   className="userspace-connect-agent-footer-actions"
@@ -672,6 +799,16 @@ export function ConnectYourAgentPanel({
                   The old token stops working immediately. Update the trusted agent with the new
                   setup instructions.
                 </p>
+                {selectedClientId === 'claude-desktop' && (
+                  <p>
+                    Claude Desktop request headers change after rotation. Remove and re-add the
+                    connector with the new credential.
+                  </p>
+                )}
+                <p>
+                  Rotating this workspace credential does not disconnect OAuth sessions using the
+                  same workspace.
+                </p>
                 <div className="userspace-connect-agent-footer-actions">
                   <button
                     type="button"
@@ -698,60 +835,7 @@ export function ConnectYourAgentPanel({
                 {error}
               </p>
             )}
-          </>
-        )}
-        {credentials.length > 0 && (
-          <section className="coding-agent-setup-guide" aria-label="Coding agent connection guide">
-            <div className="coding-agent-setup-endpoint">
-              <div>
-                <span className="coding-agent-setup-eyebrow">MCP endpoint</span>
-                <code>{mcpUrl}</code>
-              </div>
-              <InlineCopyButton
-                copyText={mcpUrl}
-                className="btn btn-secondary btn-sm"
-                title="Copy MCP endpoint"
-                ariaLabel="Copy MCP endpoint"
-                label="Copy endpoint"
-              />
-            </div>
-            <div
-              className="coding-agent-setup-client-picker"
-              role="group"
-              aria-label="Coding agent client"
-            >
-              {CODING_AGENT_CLIENTS.map((client) => (
-                <button
-                  key={client.id}
-                  type="button"
-                  className="btn btn-secondary btn-sm coding-agent-client-btn"
-                  data-client-id={client.id}
-                  aria-pressed={selectedClientId === client.id && instructionsExpanded}
-                  aria-expanded={selectedClientId === client.id && instructionsExpanded}
-                  aria-controls={`workspace-agent-client-guide-${workspaceId}`}
-                  onClick={() => {
-                    if (selectedClientId === client.id && instructionsExpanded) {
-                      setInstructionsExpanded(false);
-                      return;
-                    }
-                    setSelectedClientId(client.id);
-                    setInstructionsExpanded(true);
-                  }}
-                >
-                  {client.label}
-                </button>
-              ))}
-            </div>
-            <div id={`workspace-agent-client-guide-${workspaceId}`}>
-              {instructionsExpanded && (
-                <CodingAgentClientGuide
-                  clientId={selectedClientId}
-                  mcpUrl={mcpUrl}
-                  workspaceId={workspaceId}
-                />
-              )}
-            </div>
-          </section>
+          </OptionalCredentialManagement>
         )}
       </div>
     </section>

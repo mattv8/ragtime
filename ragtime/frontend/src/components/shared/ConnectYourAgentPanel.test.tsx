@@ -125,12 +125,16 @@ describe('ConnectYourAgentPanel', () => {
     expect(await navigator.clipboard.readText()).toContain('**Profile ID:** codex');
   });
 
-  it('hides the setup guide when no credentials exist yet', async () => {
+  it('offers the ChatGPT OAuth guide before credential creation without token actions', async () => {
+    const user = userEvent.setup();
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
-    await screen.findByRole('heading', { name: 'Development credentials' });
-    expect(screen.queryByText('MCP endpoint')).toBeNull();
-    expect(screen.queryByRole('button', { name: /^opencode$/i })).toBeNull();
+    await user.click(screen.getByRole('button', { name: /^chatgpt$/i }));
+
+    expect(screen.getByRole('region', { name: 'ChatGPT setup guide' })).toBeTruthy();
+    expect(screen.queryByText('Manual connection details')).toBeNull();
+    expect(apiMock.createWorkspaceDevelopmentCredential).not.toHaveBeenCalled();
+    expect(apiMock.rotateWorkspaceDevelopmentCredential).not.toHaveBeenCalled();
   });
 
   it('applies a matching rail selection when credentials exist', async () => {
@@ -252,16 +256,17 @@ describe('ConnectYourAgentPanel', () => {
     ).toBe('false');
   });
 
-  it('hides setup guide for non-managers and skips fetching credentials', async () => {
+  it('shows setup guide to non-managers but hides credential management', async () => {
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage={false} />);
 
-    expect(await screen.findByText(/only workspace owners and admins/i)).toBeTruthy();
-    expect(screen.queryByText('MCP endpoint')).toBeNull();
-    expect(screen.queryByRole('button', { name: /^opencode$/i })).toBeNull();
+    expect(await screen.findByText('MCP endpoint')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^opencode$/i })).toBeTruthy();
+    expect(screen.getByText(/only workspace owners and admins/i)).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /^development credentials$/i })).toBeNull();
     expect(apiMock.listWorkspaceDevelopmentCredentials).not.toHaveBeenCalled();
   });
 
-  it('renders development credentials before MCP client setup', async () => {
+  it('renders MCP client setup before development credentials', async () => {
     apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
@@ -271,7 +276,7 @@ describe('ConnectYourAgentPanel', () => {
     const endpointLabel = await screen.findByText('MCP endpoint');
 
     expect(
-      credentialsHeading.compareDocumentPosition(endpointLabel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      endpointLabel.compareDocumentPosition(credentialsHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 
@@ -342,6 +347,28 @@ describe('ConnectYourAgentPanel', () => {
     expect(await navigator.clipboard.readText()).toBe('cursor-token');
   });
 
+  it('shows the Claude sharing warning before its manual credential details', async () => {
+    const user = userEvent.setup();
+    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
+      ...credential(),
+      token: 'claude-desktop-token',
+    });
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    await user.click(await screen.findByRole('button', { name: /^claude cowork \/ desktop$/i }));
+    await user.click(screen.getByText(/advanced: workspace credentials/i));
+    await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+
+    const sharingNote = screen.getByText(/Members using its connector share/i);
+    const manualDetails = screen.getByText('Manual connection details');
+    expect(
+      sharingNote.compareDocumentPosition(manualDetails) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await user.click(manualDetails);
+    expect(screen.getByRole('button', { name: /copy development credential/i })).toBeTruthy();
+  });
+
   it('does not offer credential recovery for ChatGPT', async () => {
     const user = userEvent.setup();
     apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
@@ -350,6 +377,8 @@ describe('ConnectYourAgentPanel', () => {
     });
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
+    await user.click(await screen.findByRole('button', { name: /^chatgpt$/i }));
+    await user.click(screen.getByText(/advanced: workspace credentials/i));
     await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
     await user.click(await screen.findByRole('button', { name: /^chatgpt$/i }));
 
@@ -438,6 +467,44 @@ describe('ConnectYourAgentPanel', () => {
     expect(await navigator.clipboard.readText()).toContain('**Profile ID:** claude-code');
   });
 
+  it('warns that Claude Desktop must reconnect before rotating its credential', async () => {
+    const user = userEvent.setup();
+    apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    await user.click(await screen.findByRole('button', { name: /^claude cowork \/ desktop$/i }));
+    const advancedSummary = screen.getByText(/advanced: workspace credentials/i);
+    await user.click(advancedSummary);
+
+    const card = await screen.findByRole('article', { name: 'External agent credential' });
+    await user.click(within(card).getByRole('button', { name: /rotate credential/i }));
+
+    expect(screen.getByText(/remove and re-add the connector/i)).toBeTruthy();
+  });
+
+  it('copies the current workspace read-only first request after switching workspaces', async () => {
+    const user = userEvent.setup();
+    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
+      ...credential(),
+      token: 'fresh-token-value',
+    });
+    const { rerender } = render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+    await user.click(screen.getByRole('button', { name: /^next: start working$/i }));
+    await user.click(screen.getByRole('button', { name: /copy suggested first request/i }));
+    expect(await navigator.clipboard.readText()).toContain('workspace ID workspace-1');
+
+    rerender(<ConnectYourAgentPanel workspaceId="workspace-2" canManage />);
+    await user.click(
+      await screen.findByRole('button', { name: /create credential and continue/i }),
+    );
+    await user.click(screen.getByRole('button', { name: /^next: start working$/i }));
+    await user.click(screen.getByRole('button', { name: /copy suggested first request/i }));
+
+    expect(await navigator.clipboard.readText()).toContain('workspace ID workspace-2');
+  });
+
   it('shows Delete button on revoked credentials and deletes via callback', async () => {
     const user = userEvent.setup();
     const revokedCred = credential({ revoked_at: '2026-09-19T00:00:01Z' });
@@ -497,5 +564,94 @@ describe('ConnectYourAgentPanel', () => {
     rerender(<ConnectYourAgentPanel workspaceId="workspace-2" canManage={false} />);
     expect(await screen.findByText(/only workspace owners and admins/i)).toBeTruthy();
     expect(screen.queryByRole('article')).toBeNull();
+  });
+
+  it('shows advanced disclosure closed for virgin Claude Desktop selection', async () => {
+    const user = userEvent.setup();
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    await user.click(await screen.findByRole('button', { name: /^claude cowork \/ desktop$/i }));
+
+    // Advanced section exists and is closed
+    const advancedSummary = screen.getByText(/advanced: workspace credentials/i);
+    const advancedDetails = advancedSummary.closest('details');
+    expect(advancedDetails).toBeTruthy();
+    expect(advancedDetails?.open).toBe(false);
+    // Create button exists but is inside the closed details (JSDOM cannot hide it)
+    // Real browsers would prevent access; here we verify it's structurally inside the closed disclosure
+    const createButton = screen.getByRole('button', { name: /create credential and continue/i });
+    expect(createButton).toBeTruthy();
+    expect(advancedDetails?.contains(createButton)).toBe(true);
+    // Guide is visible above the disclosure
+    expect(screen.getByRole('region', { name: /claude cowork.*setup guide/i })).toBeTruthy();
+  });
+
+  it('shows advanced disclosure closed for virgin ChatGPT selection', async () => {
+    const user = userEvent.setup();
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    await user.click(await screen.findByRole('button', { name: /^chatgpt$/i }));
+
+    // Advanced section exists and is closed
+    const advancedSummary = screen.getByText(/advanced: workspace credentials/i);
+    const advancedDetails = advancedSummary.closest('details');
+    expect(advancedDetails).toBeTruthy();
+    expect(advancedDetails?.open).toBe(false);
+    // Create button exists but is inside the closed details (JSDOM cannot hide it)
+    // Real browsers would prevent access; here we verify it's structurally inside the closed disclosure
+    const createButton = screen.getByRole('button', { name: /create credential and continue/i });
+    expect(createButton).toBeTruthy();
+    expect(advancedDetails?.contains(createButton)).toBe(true);
+    // Guide is visible above the disclosure
+    expect(screen.getByRole('region', { name: 'ChatGPT setup guide' })).toBeTruthy();
+  });
+
+  it('expands advanced section and creates credential for Claude Desktop', async () => {
+    const user = userEvent.setup();
+    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
+      ...credential({ name: 'Claude Desktop Agent' }),
+      token: 'claude-desktop-token',
+    });
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    await user.click(await screen.findByRole('button', { name: /^claude cowork \/ desktop$/i }));
+    const advancedSummary = screen.getByText(/advanced: workspace credentials/i);
+    await user.click(advancedSummary);
+
+    expect(screen.getByRole('button', { name: /create credential and continue/i })).toBeTruthy();
+    await user.type(screen.getByLabelText('Credential name'), 'Claude Desktop Agent');
+    await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+
+    const card = await screen.findByRole('article', { name: /claude desktop agent credential/i });
+    expect(within(card).getByText('Active')).toBeTruthy();
+  });
+
+  it('preserves credential card when switching between clients', async () => {
+    const user = userEvent.setup();
+    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
+      ...credential(),
+      token: 'shared-token-value',
+    });
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    // Create credential with Claude Desktop
+    await user.click(await screen.findByRole('button', { name: /^claude cowork \/ desktop$/i }));
+    const claudeAdvanced = screen.getByText(/advanced: workspace credentials/i);
+    await user.click(claudeAdvanced);
+    await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+    await user.click(screen.getByRole('button', { name: /^next: start working$/i }));
+    await user.click(screen.getByRole('button', { name: /^done$/i }));
+
+    // Switch to Cursor (non-OAuth native) - verify credential is still there
+    await user.click(screen.getByRole('button', { name: /^cursor$/i }));
+    const cursorCard = await screen.findByRole('article', { name: /external agent credential/i });
+    // Verify the card exists (token is preserved when switching clients)
+    expect(within(cursorCard).getByText(/active/i)).toBeTruthy();
+
+    // Switch back to Claude Desktop and verify credential still exists
+    await user.click(screen.getByRole('button', { name: /^claude cowork \/ desktop$/i }));
+    const claudeCard = await screen.findByRole('article', { name: /external agent credential/i });
+    // Verify the card exists and credential is intact (Claude Desktop doesn't have native setup instructions)
+    expect(within(claudeCard).getByText(/active/i)).toBeTruthy();
   });
 });
