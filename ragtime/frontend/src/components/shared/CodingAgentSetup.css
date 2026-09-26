@@ -66,6 +66,47 @@
   line-height: var(--leading-normal);
 }
 
+.userspace-connect-agent .coding-agent-client-guide a:not(.btn) {
+  color: var(--color-link);
+  text-underline-offset: 0.15em;
+}
+
+.userspace-connect-agent .coding-agent-client-guide a:not(.btn):focus-visible {
+  outline: 2px solid var(--color-input-focus);
+  outline-offset: 2px;
+}
+
+/* Default light's accent and Serif light's accent do not meet link text contrast. */
+:root:not([data-theme-pack])[data-theme='light']
+  .userspace-connect-agent
+  .coding-agent-client-guide
+  a:not(.btn) {
+  color: var(--color-primary);
+}
+
+[data-theme-pack='serif'][data-theme='light']
+  .userspace-connect-agent
+  .coding-agent-client-guide
+  a:not(.btn) {
+  color: var(--color-primary-hover);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme-pack]):not([data-theme='dark'])
+    .userspace-connect-agent
+    .coding-agent-client-guide
+    a:not(.btn) {
+    color: var(--color-primary);
+  }
+
+  [data-theme-pack='serif']:not([data-theme='dark'])
+    .userspace-connect-agent
+    .coding-agent-client-guide
+    a:not(.btn) {
+    color: var(--color-primary-hover);
+  }
+}
+
 .userspace-connect-agent
   :is(.userspace-connect-agent-section-header h4, .userspace-connect-agent-setup h5) {
   font-size: var(--text-sm);
@@ -75,6 +116,16 @@
 
 .userspace-connect-agent .coding-agent-client-guide :is(p, li, summary, code) {
   font-size: inherit;
+}
+
+.userspace-connect-agent .coding-agent-client-guide p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.userspace-connect-agent .coding-agent-client-guide p code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .userspace-connect-agent .coding-agent-copyable-snippet pre {
@@ -101,6 +152,15 @@
   margin: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.userspace-connect-agent .coding-agent-guide-note,
+.userspace-connect-agent [data-userspace-note='claude-credential-sharing'] {
+  padding: var(--space-sm);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-light);
+  color: var(--color-text-primary);
 }
 
 .userspace-connect-agent .coding-agent-guide-section {
@@ -131,6 +191,12 @@
   word-break: break-word;
 }
 
+.userspace-connect-agent .coding-agent-guide-steps li code,
+.userspace-connect-agent .coding-agent-config-locations li code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .userspace-connect-agent .coding-agent-guide-alternative {
   min-width: 0;
   color: var(--color-text-secondary);
@@ -153,6 +219,25 @@
 .userspace-connect-agent .coding-agent-guide-alternative > summary {
   cursor: pointer;
   color: var(--color-text-primary);
+}
+
+.userspace-connect-agent .coding-agent-guide-image {
+  display: grid;
+  gap: var(--space-xs);
+  margin: 0;
+}
+
+.userspace-connect-agent .coding-agent-guide-image img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.userspace-connect-agent .coding-agent-guide-image figcaption,
+.userspace-connect-agent .coding-agent-guide-completion {
+  margin: 0;
+  color: var(--color-text-secondary);
 }
 
 .userspace-connect-agent .coding-agent-copyable-snippet {
@@ -226,6 +311,12 @@
   .userspace-connect-agent .userspace-connect-agent-endpoint > *:last-child,
   .userspace-connect-agent .userspace-connect-agent-token > *:last-child {
     justify-self: start;
+  }
+}
+
+@media (pointer: coarse) {
+  .userspace-connect-agent .coding-agent-client-btn {
+    min-height: 2.75rem;
   }
 }
 

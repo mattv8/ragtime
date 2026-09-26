@@ -25,6 +25,7 @@ describe('coding agent configuration templates', () => {
     });
     expect(buildClientConfig('cline', url, workspaceId)).toContain('"streamableHttp"');
     expect(buildClientConfig('continue', url, workspaceId)).toContain('requestOptions:');
+    expect(buildClientConfig('opencode', url, workspaceId)).toContain('"servers"');
     expect(buildClientConfig('opencode', url, workspaceId)).toContain('"oauth": false');
     expect(buildClientConfig('hermes', url, workspaceId)).toContain('mcp_servers:');
     expect(buildClientConfig('codex', url, workspaceId)).toContain('bearer_token_env_var');

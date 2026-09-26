@@ -11,7 +11,7 @@ describe('UserSpaceAgentOnboardingRail', () => {
     render(<UserSpaceAgentOnboardingRail onSelectClient={onSelectClient} onDismiss={vi.fn()} />);
 
     for (const [label, clientId] of [
-      ['Claude Desktop', 'claude-desktop'],
+      ['Claude Cowork / Desktop', 'claude-desktop'],
       ['Claude Code', 'claude-code'],
       ['Cursor', 'cursor'],
       ['ChatGPT', 'chatgpt'],
