@@ -3,11 +3,40 @@ from unittest import mock
 
 from ragtime.content_protection import service
 from ragtime.content_protection.models import ContentProtectionConfig, ContentProtectionError, ProtectionContext
+from ragtime.core import performance
 
 
 class ContentProtectionObservabilityTests(unittest.IsolatedAsyncioTestCase):
     def _policy(self):
         return service._ResolvedPolicy(True, "all", {"u"}, {"u": set()}, {"u": None}, [[{"id": "standard", "scope": "ordinary"}]])
+
+    async def test_failed_classifier_wait_is_timed_without_logging_candidate_or_error_details(self) -> None:
+        config = ContentProtectionConfig(enabled=True, classifier_model="openai::classifier")
+        clock = [0.0]
+        service._decision_cache.clear()
+
+        async def fail_classification(*args, **kwargs):
+            clock[0] = 2.0
+            raise ContentProtectionError("classifier_unavailable", "PRIVATE-PROVIDER-DETAIL")
+
+        with (
+            mock.patch.object(service, "load_config", mock.AsyncMock(return_value=config)),
+            mock.patch.object(service, "_resolve", mock.AsyncMock(return_value=self._policy())),
+            mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
+            mock.patch.object(service, "classify", fail_classification),
+            mock.patch.object(service, "_audit", mock.AsyncMock()),
+            mock.patch.object(performance, "monotonic", side_effect=lambda: clock[0]),
+            self.assertLogs("ragtime.performance", level="WARNING") as logs,
+        ):
+            with self.assertRaisesRegex(ContentProtectionError, "classifier_unavailable"):
+                await service.authorize_content("PRIVATE-CANDIDATE", direction="inbound", context=ProtectionContext(user_id="u"))
+
+        rendered = "\n".join(logs.output)
+        self.assertIn("content_protection.classifier", rendered)
+        self.assertIn("content_protection.classifier_wait", rendered)
+        self.assertIn("elapsed=2.000s", rendered)
+        self.assertNotIn("PRIVATE-CANDIDATE", rendered)
+        self.assertNotIn("PRIVATE-PROVIDER-DETAIL", rendered)
 
     async def test_finalized_log_is_payload_free_for_allowed_and_denied_content(self) -> None:
         config = ContentProtectionConfig(enabled=True, classifier_model="openai::classifier")

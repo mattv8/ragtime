@@ -81,6 +81,32 @@ bash tests/run_all_tests.sh
 
 Vitest also runs with `npm test` in `ragtime/frontend/` for local iteration.
 
+### Request timing diagnostics
+
+All three Python HTTP surfaces (Ragtime, runtime manager, and runtime worker)
+track response-start and final-body completion with method, route template,
+elapsed time, TTFB (response-start latency), status, outcome, and bounded
+operation totals. Logs omit request payloads and query strings.
+Thresholds are source constants in `ragtime/core/performance.py`: 1 second for
+requests and operations, and 0.5 seconds for event-loop delay.
+Failures and cancellations are still logged. Fast request completion and SSE
+completion are debug-only. Request IDs correlate records within each process.
+
+Database spans cover the managed Prisma client's operations and transaction
+copies; batch commits and separately constructed clients need their own spans.
+Model discovery, conversation reads, and content classification also have named
+spans. Import `track_operation` or `timed_operation` from
+`ragtime.core.performance` to instrument another shared boundary:
+
+```python
+with track_operation("catalog.load"):
+    result = await load_catalog()
+```
+
+Use static operation names without user input or credentials. Aggregate operation
+times can overlap and do not sum to request wall time. Up to 32 distinct operation
+names are retained per request; individual slow operations still emit warnings.
+
 ### Pull Request Checklist
 
 - Keep the PR focused on one bug fix, feature, or cleanup.

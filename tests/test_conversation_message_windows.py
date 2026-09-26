@@ -8,9 +8,9 @@ from prisma import Json
 from prisma.enums import AuthProvider, UserRole
 from prisma.models import User
 
-from ragtime.indexer.models import Conversation
+from ragtime.indexer.models import Conversation, ConversationMessageWindow, ConversationWindowMetadata
 from ragtime.indexer.repository import ConversationWindowStaleError, repository
-from ragtime.indexer.routes import get_conversation_latest_exchange
+from ragtime.indexer.routes import get_conversation_latest_exchange, get_conversation_message_window
 from tests.content_protection_support import use_disabled_content_protection
 
 NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
@@ -27,6 +27,24 @@ def _user() -> User:
         createdAt=NOW,
         updatedAt=NOW,
         securityGeneration=0,
+    )
+
+
+def _window(*, owner_user_id: str = "owner-1", legacy: bool = False) -> ConversationMessageWindow:
+    return ConversationMessageWindow(
+        conversation=ConversationWindowMetadata(
+            id="conversation-1",
+            title="Windowed chat",
+            model="model-1",
+            user_id=owner_user_id,
+            created_at=NOW,
+            updated_at=NOW,
+        ),
+        revision="revision-1",
+        total_message_count=0,
+        legacy_conversation=(
+            Conversation(id="conversation-1", title="Legacy", model="model-1", user_id=owner_user_id, created_at=NOW, updated_at=NOW) if legacy else None
+        ),
     )
 
 
@@ -94,19 +112,72 @@ class ConversationMessageWindowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("SELECT c.id, c.title", sql)
 
     async def test_latest_exchange_route_reuses_access_gate_before_window_query(self) -> None:
-        expected = object()
+        expected = _window(owner_user_id="owner-2")
         user = _user()
         with (
             mock.patch.object(repository, "check_conversation_access", mock.AsyncMock(return_value=True)) as access_mock,
             mock.patch.object(repository, "get_latest_conversation_exchange", mock.AsyncMock(return_value=expected)) as window_mock,
-            mock.patch.object(repository, "get_conversation", mock.AsyncMock(return_value=SimpleNamespace(user_id="user-1"))) as conversation_mock,
+            mock.patch.object(
+                repository, "get_conversation", mock.AsyncMock(side_effect=AssertionError("bounded window must not hydrate conversation"))
+            ) as conversation_mock,
+            mock.patch("ragtime.indexer.routes._authorize_conversation_release", mock.AsyncMock()) as authorize_mock,
         ):
             result = await get_conversation_latest_exchange("conversation-1", user=user)
 
         self.assertIs(result, expected)
         access_mock.assert_awaited_once_with("conversation-1", "user-1", is_admin=False, workspace_id=None)
         window_mock.assert_awaited_once_with("conversation-1")
-        conversation_mock.assert_awaited_once_with("conversation-1")
+        conversation_mock.assert_not_awaited()
+        authorize_mock.assert_awaited_once_with(expected, user=user, owner_user_id="owner-2")
+
+    async def test_older_window_uses_legacy_metadata_owner_without_full_hydration(self) -> None:
+        expected = _window(owner_user_id="owner-2", legacy=True)
+        user = _user()
+        with (
+            mock.patch.object(repository, "check_conversation_access", mock.AsyncMock(return_value=True)),
+            mock.patch.object(repository, "get_conversation_message_window", mock.AsyncMock(return_value=expected)) as window_mock,
+            mock.patch.object(
+                repository, "get_conversation", mock.AsyncMock(side_effect=AssertionError("bounded window must not hydrate conversation"))
+            ) as conversation_mock,
+            mock.patch("ragtime.indexer.routes._authorize_conversation_release", mock.AsyncMock()) as authorize_mock,
+        ):
+            result = await get_conversation_message_window("conversation-1", "cursor", 20, user=user)
+
+        self.assertIs(result, expected)
+        window_mock.assert_awaited_once_with("conversation-1", "cursor", 20)
+        conversation_mock.assert_not_awaited()
+        authorize_mock.assert_awaited_once_with(expected, user=user, owner_user_id="owner-2")
+
+    async def test_window_access_denial_prevents_bounded_query(self) -> None:
+        user = _user()
+        with (
+            mock.patch.object(repository, "check_conversation_access", mock.AsyncMock(return_value=False)),
+            mock.patch.object(repository, "get_latest_conversation_exchange", mock.AsyncMock()) as window_mock,
+        ):
+            with self.assertRaisesRegex(Exception, "Conversation not found"):
+                await get_conversation_latest_exchange("conversation-1", user=user)
+        window_mock.assert_not_awaited()
+
+    async def test_missing_window_does_not_release_content(self) -> None:
+        user = _user()
+        with (
+            mock.patch.object(repository, "check_conversation_access", mock.AsyncMock(return_value=True)),
+            mock.patch.object(repository, "get_latest_conversation_exchange", mock.AsyncMock(return_value=None)),
+            mock.patch("ragtime.indexer.routes._authorize_conversation_release", mock.AsyncMock()) as authorize_mock,
+        ):
+            with self.assertRaisesRegex(Exception, "Conversation not found"):
+                await get_conversation_latest_exchange("conversation-1", user=user)
+        authorize_mock.assert_not_awaited()
+
+    async def test_window_release_protection_failure_is_not_bypassed(self) -> None:
+        user = _user()
+        with (
+            mock.patch.object(repository, "check_conversation_access", mock.AsyncMock(return_value=True)),
+            mock.patch.object(repository, "get_latest_conversation_exchange", mock.AsyncMock(return_value=_window())),
+            mock.patch("ragtime.indexer.routes._authorize_conversation_release", mock.AsyncMock(side_effect=RuntimeError("blocked"))),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "blocked"):
+                await get_conversation_latest_exchange("conversation-1", user=user)
 
     async def test_stale_cursor_rejects_canonical_to_legacy_transition_before_hydration(self) -> None:
         stale_cursor = repository._encode_conversation_window_cursor("conversation-1", None, "old-revision", 2)
