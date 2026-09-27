@@ -189,9 +189,9 @@
   flex-direction: column;
 }
 
-/* Preview-to-snapshots gap: use section gap (12px) instead of the default 4px workbench gap. */
+/* Preview-to-snapshots flex gap on each side of the snapshots sash. */
 [data-theme-pack='modern'] .userspace-right-pane {
-  gap: var(--workbench-section-gap);
+  gap: var(--userspace-preview-snapshots-gap);
 }
 
 [data-theme-pack='modern'] .userspace-file-sidebar,
