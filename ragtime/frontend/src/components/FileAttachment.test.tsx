@@ -11,7 +11,10 @@ const attachment: AttachmentFile = {
   mimeType: 'text/plain',
 };
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('AttachmentPreviewList', () => {
   it('removes an attachment through its supplied callback and respects disabled state', () => {
@@ -40,5 +43,58 @@ describe('AttachmentPreviewList', () => {
 
     expect(document.querySelector('.attachment-preview-list')).toBeNull();
     expect(screen.getByTitle('Attach files or images')).toBeDefined();
+  });
+});
+
+describe('FileAttachment', () => {
+  const oversized = (name: string) => {
+    const file = new File(['content'], name, { type: 'text/plain' });
+    Object.defineProperty(file, 'size', { value: 20 * 1024 * 1024 + 1 });
+    return file;
+  };
+
+  it('shows one dialog listing failed files from the same batch without using window.alert', async () => {
+    const alertSpy = vi.spyOn(window, 'alert');
+    const { container } = render(
+      <FileAttachment
+        attachments={[]}
+        onAttachmentsChange={() => undefined}
+        conversationId="chat-1"
+      />,
+    );
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+
+    fireEvent.change(fileInput, {
+      target: { files: [oversized('first.txt'), oversized('second.txt')] },
+    });
+
+    expect(
+      await screen.findByRole('alertdialog', { name: 'Some files could not be attached' }),
+    ).toBeTruthy();
+    expect(screen.getByText('File "first.txt" is too large. Maximum size is 20MB.')).toBeTruthy();
+    expect(screen.getByText('File "second.txt" is too large. Maximum size is 20MB.')).toBeTruthy();
+    expect(alertSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps failures from an earlier batch when a later batch also fails', async () => {
+    const { container } = render(
+      <FileAttachment
+        attachments={[]}
+        onAttachmentsChange={() => undefined}
+        conversationId="chat-1"
+      />,
+    );
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+
+    fireEvent.change(fileInput, { target: { files: [oversized('first.txt')] } });
+    expect(await screen.findByRole('alertdialog', { name: 'File too large' })).toBeTruthy();
+
+    fireEvent.change(fileInput, { target: { files: [oversized('second.txt')] } });
+
+    expect(
+      await screen.findByRole('alertdialog', { name: 'Some files could not be attached' }),
+    ).toBeTruthy();
+    expect(screen.getByText('File "first.txt" is too large. Maximum size is 20MB.')).toBeTruthy();
+    expect(screen.getByText('File "second.txt" is too large. Maximum size is 20MB.')).toBeTruthy();
   });
 });

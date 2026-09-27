@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { X, Upload, Link } from 'lucide-react';
 import { FileTypeIcon } from '@/components/shared/FileTypeIcon';
+import { NoticeDialog } from '@/components/shared/NoticeDialog';
 import { api } from '@/api/client';
 import type { ContentPart } from '@/types';
 
@@ -148,6 +149,9 @@ export function FileAttachment({
   const [dragActive, setDragActive] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const [uploadingCount, setUploadingCount] = useState(0);
+  const [attachmentFailures, setAttachmentFailures] = useState<
+    Array<{ title: string; message: string }>
+  >([]);
 
   // Handle click outside to close dropdown
   useEffect(() => {
@@ -208,11 +212,15 @@ export function FileAttachment({
 
   const handleFiles = async (files: File[]) => {
     const newAttachments: AttachmentFile[] = [];
+    const failures: Array<{ title: string; message: string }> = [];
 
     for (const file of files) {
       // Validate file size
       if (file.size > MAX_FILE_SIZE) {
-        alert(`File "${file.name}" is too large. Maximum size is 20MB.`);
+        failures.push({
+          title: 'File too large',
+          message: `File "${file.name}" is too large. Maximum size is 20MB.`,
+        });
         continue;
       }
 
@@ -234,7 +242,10 @@ export function FileAttachment({
       }
 
       if (!conversationId) {
-        alert(`Create or select a conversation before attaching "${file.name}".`);
+        failures.push({
+          title: 'No conversation selected',
+          message: `Create or select a conversation before attaching "${file.name}".`,
+        });
         continue;
       }
 
@@ -257,7 +268,7 @@ export function FileAttachment({
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to upload attachment';
-        alert(`${message}: ${file.name}`);
+        failures.push({ title: 'Upload failed', message: `${message}: ${file.name}` });
       } finally {
         setUploadingCount((count) => Math.max(0, count - 1));
       }
@@ -265,6 +276,10 @@ export function FileAttachment({
 
     if (newAttachments.length > 0) {
       onAttachmentsChange([...attachments, ...newAttachments]);
+    }
+    if (failures.length > 0) {
+      // Concurrent drops/pastes can finish while an earlier notice is still open.
+      setAttachmentFailures((current) => [...current, ...failures]);
     }
   };
 
@@ -395,6 +410,23 @@ export function FileAttachment({
             <p>Drop files here</p>
           </div>
         </div>
+      )}
+      {attachmentFailures.length > 0 && (
+        <NoticeDialog
+          title={
+            attachmentFailures.length > 1
+              ? 'Some files could not be attached'
+              : attachmentFailures[0].title
+          }
+          message={attachmentFailures.length === 1 ? attachmentFailures[0].message : undefined}
+          items={
+            attachmentFailures.length > 1
+              ? attachmentFailures.map((failure) => failure.message)
+              : undefined
+          }
+          dialogKey="file-attachment-failures"
+          onClose={() => setAttachmentFailures([])}
+        />
       )}
     </>
   );
