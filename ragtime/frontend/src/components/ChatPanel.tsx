@@ -101,6 +101,7 @@ import type {
 import { useConversationWindow } from '@/hooks/useConversationWindow';
 import { useConversationSummaryScopes } from '@/hooks/useConversationSummaryScopes';
 import { ChatLoadingState } from './ChatLoadingState';
+import { ReceivedConversationShares } from './ReceivedConversationShares';
 import {
   FileAttachment,
   attachmentsToContentParts,
@@ -18270,302 +18271,298 @@ export function ChatPanel({
       {/* Conversations Sidebar */}
       {!embedded && showSidebar && (
         <div id="chat-workbench-sidebar" className="chat-sidebar open">
-          {isStandaloneSidebarLoading ? (
-            <ChatLoadingState id="chat-workbench-sidebar-loading" kind="sidebar" />
-          ) : (
-            <>
-              {!workspaceId && (
-                <div className="chat-conversation-search chat-search-with-branches">
-                  <input
-                    type="text"
-                    className="chat-conversation-search-input"
-                    placeholder="Search chats..."
-                    value={conversationSearchQuery}
-                    onChange={(e) => setConversationSearchQuery(e.target.value)}
-                    aria-label="Search conversations by title or content"
-                  />
-                  {conversationSearchQuery && (
-                    <button
-                      type="button"
-                      className="chat-conversation-search-clear"
-                      onClick={() => setConversationSearchQuery('')}
-                      title="Clear search"
-                      aria-label="Clear search"
-                    >
-                      <X size={12} />
-                    </button>
-                  )}
-                  <BranchSearchToggle
-                    enabled={sidebarBranchSearchEnabled}
-                    onToggle={() => setSidebarBranchSearchEnabled((enabled) => !enabled)}
-                  />
-                  {standaloneSummaryScopes.loading ||
-                  searchHydrationLoading ||
-                  (archiveLoading && conversationSearchQuery) ||
-                  conversations.some((c) => c.active_task_id) ? (
-                    <span
-                      data-chat-sidebar-summary-loading={
-                        standaloneSummaryScopes.loading || undefined
-                      }
-                      className="chat-conversation-search-spinner"
-                      title={
-                        searchHydrationLoading
-                          ? 'Searching remaining chat history'
-                          : standaloneSummaryScopes.loading
-                            ? 'Loading chats'
-                            : archiveLoading && conversationSearchQuery
-                              ? 'Loading older chats'
-                              : 'Processing in background'
-                      }
-                    >
-                      <MiniLoadingSpinner variant="icon" size={12} />
-                    </span>
-                  ) : null}
-                  {conversationSearchQuery &&
-                    (!searchHydrationComplete || searchHydrationError) && (
-                      <span
-                        data-chat-search-hydration-status
-                        title={searchHydrationError || 'Searching remaining chat history'}
-                      >
-                        {searchHydrationError ? 'Search incomplete' : 'Searching'}
-                      </span>
-                    )}
-                  {(standaloneSummaryScopes.scopeStates.self.error ||
-                    standaloneSummaryScopes.scopeStates.others.error) && (
-                    <button
-                      type="button"
-                      data-chat-sidebar-summary-retry
-                      className="chat-conversation-search-clear"
-                      onClick={() => void standaloneSummaryScopes.retryFailed()}
-                      title={
-                        standaloneSummaryScopes.scopeStates.self.error?.message ||
-                        standaloneSummaryScopes.scopeStates.others.error?.message
-                      }
-                    >
-                      Retry chats
-                    </button>
-                  )}
-                  {initialConversationLoadError && (
-                    <button
-                      type="button"
-                      data-chat-initial-load-error
-                      className="chat-conversation-search-clear"
-                      onClick={() => void loadConversations()}
-                      title={initialConversationLoadError}
-                    >
-                      Retry conversation
-                    </button>
-                  )}
-                </div>
+          {!workspaceId && !isStandaloneSidebarLoading && (
+            <div className="chat-conversation-search chat-search-with-branches">
+              <input
+                type="text"
+                className="chat-conversation-search-input"
+                placeholder="Search chats..."
+                value={conversationSearchQuery}
+                onChange={(e) => setConversationSearchQuery(e.target.value)}
+                aria-label="Search conversations by title or content"
+              />
+              {conversationSearchQuery && (
+                <button
+                  type="button"
+                  className="chat-conversation-search-clear"
+                  onClick={() => setConversationSearchQuery('')}
+                  title="Clear search"
+                  aria-label="Clear search"
+                >
+                  <X size={12} />
+                </button>
               )}
+              <BranchSearchToggle
+                enabled={sidebarBranchSearchEnabled}
+                onToggle={() => setSidebarBranchSearchEnabled((enabled) => !enabled)}
+              />
+              {standaloneSummaryScopes.loading ||
+              searchHydrationLoading ||
+              (archiveLoading && conversationSearchQuery) ||
+              conversations.some((c) => c.active_task_id) ? (
+                <span
+                  data-chat-sidebar-summary-loading={standaloneSummaryScopes.loading || undefined}
+                  className="chat-conversation-search-spinner"
+                  title={
+                    searchHydrationLoading
+                      ? 'Searching remaining chat history'
+                      : standaloneSummaryScopes.loading
+                        ? 'Loading chats'
+                        : archiveLoading && conversationSearchQuery
+                          ? 'Loading older chats'
+                          : 'Processing in background'
+                  }
+                >
+                  <MiniLoadingSpinner variant="icon" size={12} />
+                </span>
+              ) : null}
+              {conversationSearchQuery && (!searchHydrationComplete || searchHydrationError) && (
+                <span
+                  data-chat-search-hydration-status
+                  title={searchHydrationError || 'Searching remaining chat history'}
+                >
+                  {searchHydrationError ? 'Search incomplete' : 'Searching'}
+                </span>
+              )}
+              {(standaloneSummaryScopes.scopeStates.self.error ||
+                standaloneSummaryScopes.scopeStates.others.error) && (
+                <button
+                  type="button"
+                  data-chat-sidebar-summary-retry
+                  className="chat-conversation-search-clear"
+                  onClick={() => void standaloneSummaryScopes.retryFailed()}
+                  title={
+                    standaloneSummaryScopes.scopeStates.self.error?.message ||
+                    standaloneSummaryScopes.scopeStates.others.error?.message
+                  }
+                >
+                  Retry chats
+                </button>
+              )}
+              {initialConversationLoadError && (
+                <button
+                  type="button"
+                  data-chat-initial-load-error
+                  className="chat-conversation-search-clear"
+                  onClick={() => void loadConversations()}
+                  title={initialConversationLoadError}
+                >
+                  Retry conversation
+                </button>
+              )}
+            </div>
+          )}
 
-              <div
-                className={`chat-conversation-list ${!isAdmin ? 'chat-conversation-list-non-admin' : ''}`}
-                aria-busy={isConversationListLoading}
-              >
-                {isConversationListLoading ? (
-                  <div className="chat-conversation-skeleton-list" aria-hidden="true">
-                    {Array.from({ length: isAdmin ? 6 : 8 }).map((_, index) => (
-                      <div key={index} className="chat-conversation-skeleton">
-                        <div className="chat-skeleton-line chat-conversation-skeleton-title"></div>
-                        <div className="chat-skeleton-line chat-conversation-skeleton-meta"></div>
-                      </div>
-                    ))}
+          <div
+            className={`chat-conversation-list ${!isAdmin ? 'chat-conversation-list-non-admin' : ''}`}
+            aria-busy={isConversationListLoading}
+          >
+            {isStandaloneSidebarLoading ? (
+              <ChatLoadingState id="chat-workbench-sidebar-loading" kind="sidebar" />
+            ) : isConversationListLoading ? (
+              <div className="chat-conversation-skeleton-list" aria-hidden="true">
+                {Array.from({ length: isAdmin ? 6 : 8 }).map((_, index) => (
+                  <div key={index} className="chat-conversation-skeleton">
+                    <div className="chat-skeleton-line chat-conversation-skeleton-title"></div>
+                    <div className="chat-skeleton-line chat-conversation-skeleton-meta"></div>
                   </div>
-                ) : (
-                  (() => {
-                    const trimmedQuery = deferredConversationSearchQuery.trim();
-                    // While searching, fold archived hits into the visible list so
-                    // matches across older chats surface inline.
-                    const baseConversations: Array<Conversation | ConversationSummary> =
-                      !workspaceId
-                        ? (() => {
-                            const hydratedById = new Map(
-                              conversations.map((conversation) => [conversation.id, conversation]),
-                            );
-                            const summaryIds = new Set(
-                              conversationSummaries.map((summary) => summary.id),
-                            );
-                            const rows = conversationSummaries.map(
-                              (summary) => hydratedById.get(summary.id) ?? summary,
-                            );
-                            if (
-                              activeConversationMetadata &&
-                              !deletedConversationIdsRef.current.has(
-                                activeConversationMetadata.id,
-                              ) &&
-                              !rows.some((row) => row.id === activeConversationMetadata.id)
-                            ) {
-                              rows.unshift(activeConversationMetadata as ConversationSummary);
-                              summaryIds.add(activeConversationMetadata.id);
-                            }
-                            for (const conversation of conversations) {
-                              if (
-                                !summaryIds.has(conversation.id) &&
-                                !isConversationOlderThanWindow(conversation, archiveAgeDays)
-                              ) {
-                                rows.unshift(conversation);
-                              }
-                            }
-                            if (trimmedQuery) {
-                              const knownIds = new Set(rows.map((row) => row.id));
-                              rows.push(
-                                ...archivedConversations.filter(
-                                  (conversation) => !knownIds.has(conversation.id),
-                                ),
-                              );
-                            }
-                            return rows.sort((left, right) => {
-                              if (left.updated_at !== right.updated_at) {
-                                return left.updated_at > right.updated_at ? -1 : 1;
-                              }
-                              return left.id > right.id ? -1 : left.id < right.id ? 1 : 0;
-                            });
-                          })()
-                        : conversations;
-                    const filteredConversations = trimmedQuery
-                      ? baseConversations.filter(
-                          (c) =>
-                            conversationMatchesCachedQuery(c, trimmedQuery) ||
-                            Boolean(sidebarBranchSearchMatches[c.id]),
-                        )
-                      : baseConversations;
-
-                    if (filteredConversations.length === 0) {
-                      if (trimmedQuery) {
-                        return (
-                          <div className="chat-empty-state chat-empty-state-search">
-                            <p>No chats match "{trimmedQuery}".</p>
-                            {!workspaceId && !archiveLoaded && !archiveLoading && (
-                              <button
-                                className="btn btn-secondary btn-sm"
-                                onClick={() => void loadArchivedConversations()}
-                              >
-                                Search older chats
-                              </button>
-                            )}
-                          </div>
-                        );
-                      }
-                      return (
-                        <div className="chat-empty-state">
-                          <p>No conversations yet</p>
-                          <button className="btn" onClick={createNewConversation}>
-                            Start a conversation
-                          </button>
-                        </div>
-                      );
-                    }
-
-                    const renderItem = (conv: Conversation | ConversationSummary) => {
-                      const row = renderConversationItem(conv, {
-                        searchQuery: trimmedQuery,
-                        branchSearchMatch: sidebarBranchSearchMatches[conv.id],
-                      });
-                      const expanded = expandedSubagentParents[conv.id] && !trimmedQuery;
-                      const childIds = conv.subagent_conversation_ids || [];
-                      const children = subagentConversationsByParent[conv.id] || [];
-                      if (!expanded) return row;
-                      return (
-                        <div key={`parent-${conv.id}`} className="chat-subagent-parent-group">
-                          {row}
-                          <div className="chat-subagent-child-list">
-                            {renderSubagentChildState(conv.id, childIds, children, 'sidebar')}
-                          </div>
-                        </div>
-                      );
-                    };
-
-                    if (isAdmin) {
-                      // Re-group filtered list so admin grouping still works while searching.
-                      const groups = new Map<
-                        string,
-                        {
-                          key: string;
-                          label: string;
-                          conversations: Array<Conversation | ConversationSummary>;
-                          isCurrentUserGroup: boolean;
-                        }
-                      >();
-                      for (const conv of filteredConversations) {
-                        const key = getOwnerKey(conv);
-                        const label = getOwnerLabel(conv);
-                        const existing = groups.get(key);
-                        if (existing) {
-                          existing.conversations.push(conv);
-                          existing.isCurrentUserGroup =
-                            existing.isCurrentUserGroup || conv.user_id === currentUser.id;
-                        } else {
-                          groups.set(key, {
-                            key,
-                            label,
-                            conversations: [conv],
-                            isCurrentUserGroup: conv.user_id === currentUser.id,
-                          });
-                        }
-                      }
-                      const groupList = Array.from(groups.values()).sort((a, b) => {
-                        if (a.isCurrentUserGroup !== b.isCurrentUserGroup)
-                          return a.isCurrentUserGroup ? -1 : 1;
-                        return a.label.localeCompare(b.label);
-                      });
-                      return groupList.map((group) => {
-                        // When searching, expand groups so matches are visible.
-                        const isCollapsed = trimmedQuery
-                          ? false
-                          : (collapsedGroups[group.key] ??
-                            (!group.isCurrentUserGroup &&
-                              !group.conversations.some(
-                                (conversation) => conversation.id === activeConversation?.id,
-                              )));
-                        return (
-                          <div key={group.key} className="chat-conversation-group">
-                            <button
-                              className="chat-group-header"
-                              onClick={() => toggleGroup(group.key)}
-                            >
-                              <span className="chat-group-name">{group.label}</span>
-                              <span className="chat-group-count">{group.conversations.length}</span>
-                              <span className="chat-group-toggle">{isCollapsed ? '▶' : '▼'}</span>
-                            </button>
-                            {!isCollapsed && (
-                              <div className="chat-group-list">
-                                {group.conversations.map(renderItem)}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      });
-                    }
-                    return filteredConversations.map(renderItem);
-                  })()
-                )}
+                ))}
               </div>
+            ) : (
+              (() => {
+                const trimmedQuery = deferredConversationSearchQuery.trim();
+                // While searching, fold archived hits into the visible list so
+                // matches across older chats surface inline.
+                const baseConversations: Array<Conversation | ConversationSummary> = !workspaceId
+                  ? (() => {
+                      const hydratedById = new Map(
+                        conversations.map((conversation) => [conversation.id, conversation]),
+                      );
+                      const summaryIds = new Set(
+                        conversationSummaries.map((summary) => summary.id),
+                      );
+                      const rows = conversationSummaries.map(
+                        (summary) => hydratedById.get(summary.id) ?? summary,
+                      );
+                      if (
+                        activeConversationMetadata &&
+                        !deletedConversationIdsRef.current.has(activeConversationMetadata.id) &&
+                        !rows.some((row) => row.id === activeConversationMetadata.id)
+                      ) {
+                        rows.unshift(activeConversationMetadata as ConversationSummary);
+                        summaryIds.add(activeConversationMetadata.id);
+                      }
+                      for (const conversation of conversations) {
+                        if (
+                          !summaryIds.has(conversation.id) &&
+                          !isConversationOlderThanWindow(conversation, archiveAgeDays)
+                        ) {
+                          rows.unshift(conversation);
+                        }
+                      }
+                      if (trimmedQuery) {
+                        const knownIds = new Set(rows.map((row) => row.id));
+                        rows.push(
+                          ...archivedConversations.filter(
+                            (conversation) => !knownIds.has(conversation.id),
+                          ),
+                        );
+                      }
+                      return rows.sort((left, right) => {
+                        if (left.updated_at !== right.updated_at) {
+                          return left.updated_at > right.updated_at ? -1 : 1;
+                        }
+                        return left.id > right.id ? -1 : left.id < right.id ? 1 : 0;
+                      });
+                    })()
+                  : conversations;
+                const filteredConversations = trimmedQuery
+                  ? baseConversations.filter(
+                      (c) =>
+                        conversationMatchesCachedQuery(c, trimmedQuery) ||
+                        Boolean(sidebarBranchSearchMatches[c.id]),
+                    )
+                  : baseConversations;
 
-              {!workspaceId && !isConversationListLoading && (
-                <div className="chat-sidebar-footer">
-                  <button
-                    type="button"
-                    className="chat-show-older-btn"
-                    onClick={() => {
-                      setShowArchiveModal(true);
-                      setArchiveSearchQuery('');
-                      if (!archiveLoaded && !archiveLoading) void loadArchivedConversations();
-                    }}
-                    title={`Show chats older than ${getArchiveAgeLabel(archiveAgeDays)}`}
-                  >
-                    <Clock size={13} aria-hidden="true" />
-                    <span>Show Older</span>
-                    {archivedConversationDisplayCount !== null &&
-                      archivedConversationDisplayCount > 0 && (
-                        <span className="chat-show-older-count">
-                          {archivedConversationDisplayCount}
-                        </span>
-                      )}
-                  </button>
-                </div>
-              )}
-            </>
+                if (filteredConversations.length === 0) {
+                  if (trimmedQuery) {
+                    return (
+                      <div className="chat-empty-state chat-empty-state-search">
+                        <p>No chats match "{trimmedQuery}".</p>
+                        {!workspaceId && !archiveLoaded && !archiveLoading && (
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => void loadArchivedConversations()}
+                          >
+                            Search older chats
+                          </button>
+                        )}
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="chat-empty-state">
+                      <p>No conversations yet</p>
+                      <button className="btn" onClick={createNewConversation}>
+                        Start a conversation
+                      </button>
+                    </div>
+                  );
+                }
+
+                const renderItem = (conv: Conversation | ConversationSummary) => {
+                  const row = renderConversationItem(conv, {
+                    searchQuery: trimmedQuery,
+                    branchSearchMatch: sidebarBranchSearchMatches[conv.id],
+                  });
+                  const expanded = expandedSubagentParents[conv.id] && !trimmedQuery;
+                  const childIds = conv.subagent_conversation_ids || [];
+                  const children = subagentConversationsByParent[conv.id] || [];
+                  if (!expanded) return row;
+                  return (
+                    <div key={`parent-${conv.id}`} className="chat-subagent-parent-group">
+                      {row}
+                      <div className="chat-subagent-child-list">
+                        {renderSubagentChildState(conv.id, childIds, children, 'sidebar')}
+                      </div>
+                    </div>
+                  );
+                };
+
+                if (isAdmin) {
+                  // Re-group filtered list so admin grouping still works while searching.
+                  const groups = new Map<
+                    string,
+                    {
+                      key: string;
+                      label: string;
+                      conversations: Array<Conversation | ConversationSummary>;
+                      isCurrentUserGroup: boolean;
+                    }
+                  >();
+                  for (const conv of filteredConversations) {
+                    const key = getOwnerKey(conv);
+                    const label = getOwnerLabel(conv);
+                    const existing = groups.get(key);
+                    if (existing) {
+                      existing.conversations.push(conv);
+                      existing.isCurrentUserGroup =
+                        existing.isCurrentUserGroup || conv.user_id === currentUser.id;
+                    } else {
+                      groups.set(key, {
+                        key,
+                        label,
+                        conversations: [conv],
+                        isCurrentUserGroup: conv.user_id === currentUser.id,
+                      });
+                    }
+                  }
+                  const groupList = Array.from(groups.values()).sort((a, b) => {
+                    if (a.isCurrentUserGroup !== b.isCurrentUserGroup)
+                      return a.isCurrentUserGroup ? -1 : 1;
+                    return a.label.localeCompare(b.label);
+                  });
+                  return groupList.map((group) => {
+                    // When searching, expand groups so matches are visible.
+                    const isCollapsed = trimmedQuery
+                      ? false
+                      : (collapsedGroups[group.key] ??
+                        (!group.isCurrentUserGroup &&
+                          !group.conversations.some(
+                            (conversation) => conversation.id === activeConversation?.id,
+                          )));
+                    return (
+                      <div key={group.key} className="chat-conversation-group">
+                        <button
+                          className="chat-group-header"
+                          onClick={() => toggleGroup(group.key)}
+                        >
+                          <span className="chat-group-name">{group.label}</span>
+                          <span className="chat-group-count">{group.conversations.length}</span>
+                          <span className="chat-group-toggle">{isCollapsed ? '▶' : '▼'}</span>
+                        </button>
+                        {!isCollapsed && (
+                          <div className="chat-group-list">
+                            {group.conversations.map(renderItem)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  });
+                }
+                return filteredConversations.map(renderItem);
+              })()
+            )}
+            {!embedded && showSidebar && !workspaceId ? (
+              <ReceivedConversationShares
+                currentUserId={currentUser.id}
+                searchQuery={deferredConversationSearchQuery}
+              />
+            ) : null}
+          </div>
+
+          {!workspaceId && !isConversationListLoading && !isStandaloneSidebarLoading && (
+            <div className="chat-sidebar-footer">
+              <button
+                type="button"
+                className="chat-show-older-btn"
+                onClick={() => {
+                  setShowArchiveModal(true);
+                  setArchiveSearchQuery('');
+                  if (!archiveLoaded && !archiveLoading) void loadArchivedConversations();
+                }}
+                title={`Show chats older than ${getArchiveAgeLabel(archiveAgeDays)}`}
+              >
+                <Clock size={13} aria-hidden="true" />
+                <span>Show Older</span>
+                {archivedConversationDisplayCount !== null &&
+                  archivedConversationDisplayCount > 0 && (
+                    <span className="chat-show-older-count">
+                      {archivedConversationDisplayCount}
+                    </span>
+                  )}
+              </button>
+            </div>
           )}
         </div>
       )}

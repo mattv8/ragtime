@@ -29,6 +29,12 @@ import {
 } from './ChatPanel';
 import type { ChatMessageNavigationEntry } from './ChatMessageNavigator';
 
+const receivedConversationSharesMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@/hooks/useReceivedConversationShares', () => ({
+  useReceivedConversationShares: receivedConversationSharesMock,
+}));
+
 const apiMock = vi.hoisted(() => {
   const mock = {
     getConversation: vi.fn().mockResolvedValue(null),
@@ -144,6 +150,13 @@ const apiMock = vi.hoisted(() => {
 const chatMessageNavigatorMock = vi.hoisted(() => ({
   renderSpy: vi.fn(),
 }));
+
+receivedConversationSharesMock.mockReturnValue({
+  shares: [],
+  loading: false,
+  error: null,
+  refresh: vi.fn().mockResolvedValue(undefined),
+});
 
 vi.mock('@/api', () => ({ api: apiMock }));
 
@@ -726,6 +739,12 @@ function setChatLayoutCookie(userId: string, layout: Record<string, unknown>) {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  receivedConversationSharesMock.mockReturnValue({
+    shares: [],
+    loading: false,
+    error: null,
+    refresh: vi.fn().mockResolvedValue(undefined),
+  });
   document.cookie
     .split(';')
     .map((entry) => entry.trim())
@@ -743,6 +762,56 @@ afterEach(() => {
 });
 
 describe('ChatPanel standalone first-paint loading', () => {
+  it('keeps received shares visible for a recipient with no personal chats during bootstrap', async () => {
+    let releaseBootstrap: ((rows: ConversationSummary[]) => void) | undefined;
+    apiMock.listConversationSummaries.mockImplementation(
+      (_workspaceId: unknown, options: { limit?: number; owner_scope?: string }) => {
+        if (options.owner_scope === 'self' && options.limit === 1) {
+          return new Promise<ConversationSummary[]>((resolve) => (releaseBootstrap = resolve));
+        }
+        return Promise.resolve([]);
+      },
+    );
+    receivedConversationSharesMock.mockReturnValue({
+      shares: [
+        {
+          id: 'received-share-1',
+          conversation_id: 'owner-conversation',
+          title: 'Shared planning',
+          owner_username: 'owner',
+          owner_display_name: 'Owner Example',
+          share_token: 'share-token',
+          label: null,
+          granted_role: 'viewer',
+          scope_anchor_message_idx: null,
+          scope_direction: null,
+          created_at: '2026-09-27T12:00:00Z',
+        },
+      ],
+      loading: false,
+      error: null,
+      refresh: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderChatPanel(
+      <ChatPanel currentUser={{ ...currentUser, id: 'recipient-1', role: 'user' }} />,
+    );
+
+    const sidebar = document.querySelector('#chat-workbench-sidebar');
+    expect(sidebar).not.toBeNull();
+    expect(await screen.findByRole('heading', { name: 'Shared with you' })).toBeDefined();
+    const shareLink = screen.getByRole('link', { name: /shared planning.*opens in a new tab/i });
+    expect(shareLink.getAttribute('href')).toBe('/shared/share-token');
+    expect(shareLink.closest('#chat-workbench-sidebar')).toBe(sidebar);
+    expect(screen.queryByText('Start a conversation')).toBeNull();
+
+    releaseBootstrap?.([]);
+    expect(await screen.findByText('Start a conversation')).toBeDefined();
+    expect(
+      screen.getByRole('link', { name: /shared planning.*opens in a new tab/i }),
+    ).toBeDefined();
+  });
+
   it('shows the main loading state instead of the welcome screen while bootstrap selection is pending', async () => {
     let releaseBootstrap: ((rows: ConversationSummary[]) => void) | undefined;
     apiMock.listConversationSummaries.mockImplementation(

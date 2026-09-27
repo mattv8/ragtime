@@ -61,6 +61,7 @@ import type {
   ConversationMessageWindow,
   ConversationWindowEntry,
   ConversationSummary,
+  ReceivedConversationShare,
   ConversationCountResponse,
   CreateConversationRequest,
   SendMessageRequest,
@@ -3044,6 +3045,25 @@ export const api = {
     }
     const response = await apiFetch(url, signal ? { signal } : {});
     return handleResponse<ConversationSummary[]>(response);
+  },
+
+  async listReceivedConversationShares(
+    options?: {
+      limit?: number | null;
+      cursorCreatedAt?: string | null;
+      cursorId?: string | null;
+    },
+    signal?: AbortSignal,
+  ): Promise<ReceivedConversationShare[]> {
+    const params: string[] = [];
+    if (typeof options?.limit === 'number')
+      params.push(`limit=${encodeURIComponent(String(options.limit))}`);
+    if (options?.cursorCreatedAt)
+      params.push(`cursor_created_at=${encodeURIComponent(options.cursorCreatedAt)}`);
+    if (options?.cursorId) params.push(`cursor_id=${encodeURIComponent(options.cursorId)}`);
+    const url = `${API_BASE}/conversations/shared-with-me${params.length ? `?${params.join('&')}` : ''}`;
+    const response = await apiFetch(url, signal ? { signal } : {});
+    return handleResponse<ReceivedConversationShare[]>(response);
   },
 
   async countConversations(
