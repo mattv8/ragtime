@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Shield, UserPlus } from 'lucide-react';
+import { ArrowDown, ArrowUp, Shield, UserPlus } from 'lucide-react';
 import { api, ApiError } from '@/api';
 import type {
   AvailableModel,
@@ -41,6 +41,12 @@ import {
 } from '@/utils/contextUsage';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
 import { UserManagementModal } from './users/UserManagementModal';
+import { JobsTableFrame } from './shared/JobsTableFrame';
+import {
+  getUserManagementRowsPreference,
+  setUserManagementRowsPreference,
+} from '@/utils/userManagementPreferences';
+import '@/styles/users-directory.css';
 import { subscribeToThemeChanges } from '@/theme';
 import {
   contentProtectionApi,
@@ -308,6 +314,10 @@ function TablePager({
   );
 }
 
+function accessState(value: boolean | undefined): 'enabled' | 'disabled' | 'unknown' {
+  return value === undefined ? 'unknown' : value ? 'enabled' : 'disabled';
+}
+
 export function UsersPanel({
   currentUser,
   onOpenWorkspace,
@@ -325,6 +335,10 @@ export function UsersPanel({
   const [workspaceStateById, setWorkspaceStateById] = useState<
     Record<string, WorkspaceConversationStateSummaryItem>
   >({});
+  const [workspaceStateLoadState, setWorkspaceStateLoadState] = useState<
+    'loading' | 'loaded' | 'error'
+  >('loading');
+  const [workspaceStateRefreshFailed, setWorkspaceStateRefreshFailed] = useState(false);
   const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<
     Record<string, UserSpaceWorkspaceDeleteTask>
   >({});
@@ -404,7 +418,9 @@ export function UsersPanel({
   const [dailyPage, setDailyPage] = useState(1);
   const [mcpUsersPage, setMcpUsersPage] = useState(1);
 
-  const [managementPageSize, setManagementPageSize] = useState(10);
+  const [managementPageSize, setManagementPageSize] = useState(() =>
+    getUserManagementRowsPreference(currentUser?.id),
+  );
   const [usagePageSize, setUsagePageSize] = useState(10);
   const [providerPageSize, setProviderPageSize] = useState(10);
   const [dailyPageSize, setDailyPageSize] = useState(10);
@@ -454,6 +470,7 @@ export function UsersPanel({
   const usageCacheRef = useRef<Record<number, UsageDataSnapshot>>({});
   const usageRequestIdRef = useRef(0);
   const workspaceStateRequestIdRef = useRef(0);
+  const workspaceStateHasSucceededRef = useRef(false);
 
   const [storageByWorkspaceId, setStorageByWorkspaceId] = useState<Record<string, number>>({});
   const [storageFailuresByWorkspaceId, setStorageFailuresByWorkspaceId] = useState<
@@ -509,8 +526,16 @@ export function UsersPanel({
         {},
       );
       setWorkspaceStateById(byId);
+      setWorkspaceStateLoadState('loaded');
+      setWorkspaceStateRefreshFailed(false);
+      workspaceStateHasSucceededRef.current = true;
     } catch (err) {
       // Keep management table responsive even if state summaries fail.
+      if (workspaceStateHasSucceededRef.current) {
+        setWorkspaceStateRefreshFailed(true);
+      } else {
+        setWorkspaceStateLoadState('error');
+      }
       console.warn('Failed to load workspace state summary:', err);
     }
   }, []);
@@ -536,12 +561,18 @@ export function UsersPanel({
 
       if (all.length === 0) {
         setWorkspaceStateById({});
+        setWorkspaceStateLoadState('loaded');
+        setWorkspaceStateRefreshFailed(false);
+        workspaceStateHasSucceededRef.current = true;
         return;
       }
 
       void loadWorkspaceStateSummary(all.map((w) => w.id));
     } catch (error) {
       setWorkspacesLoadState('error');
+      setWorkspaceStateLoadState('error');
+      setWorkspaceStateRefreshFailed(false);
+      workspaceStateHasSucceededRef.current = false;
       throw error;
     }
   }, [loadWorkspaceStateSummary]);
@@ -643,6 +674,11 @@ export function UsersPanel({
   useEffect(() => {
     void loadManagementData();
   }, [loadManagementData]);
+
+  useEffect(() => {
+    setManagementPageSize(getUserManagementRowsPreference(currentUser?.id));
+    setManagementPage(1);
+  }, [currentUser?.id]);
 
   useEffect(() => {
     void contentProtectionApi
@@ -2218,7 +2254,6 @@ export function UsersPanel({
   void handleResetRoleOverride;
   void handleLocalGroupsChange;
   void totalWorkspaces;
-  void liveWorkspaces;
   void interruptedWorkspaces;
   void contentProtectionKnownDisabled;
   void contentProtectionModeForUser;
@@ -2270,6 +2305,58 @@ export function UsersPanel({
         </div>
       ) : activeTab === 'management' ? (
         <>
+          <section
+            className="users-directory-live-summary"
+            aria-label="Directory summary"
+            data-users-live-sessions
+          >
+            <div
+              id="users-total-summary"
+              className="users-summary-card"
+              data-users-summary-card="users"
+            >
+              <div className="users-summary-value">{users.length}</div>
+              <div className="users-summary-label">Users</div>
+            </div>
+            <div
+              id="users-workspaces-summary"
+              className="users-summary-card"
+              data-users-summary-card="workspaces"
+            >
+              <div className="users-summary-value" aria-live="polite">
+                {workspacesLoadState === 'loading'
+                  ? 'Loading…'
+                  : workspacesLoadState === 'error'
+                    ? 'Unavailable'
+                    : workspaces.length}
+              </div>
+              <div className="users-summary-label">Workspaces</div>
+            </div>
+            <div
+              id="users-live-sessions-summary"
+              className="users-summary-card"
+              data-users-live-sessions-card
+            >
+              <div
+                className="users-summary-value"
+                data-live-workspaces-state={workspaceStateLoadState}
+                aria-live="polite"
+              >
+                {workspaceStateLoadState === 'loading'
+                  ? 'Loading…'
+                  : workspaceStateLoadState === 'error'
+                    ? 'Unavailable'
+                    : liveWorkspaces}
+              </div>
+              <div className="users-summary-label">Live sessions</div>
+              <div className="users-subnum">Workspaces with active tasks</div>
+              {workspaceStateRefreshFailed && (
+                <div className="users-subnum">
+                  Refresh unavailable. Showing the last known count.
+                </div>
+              )}
+            </div>
+          </section>
           <section id="users-directory" className="card" data-users-directory>
             <div className="card-header">
               <h3 id="user-policies" tabIndex={-1}>
@@ -2277,86 +2364,75 @@ export function UsersPanel({
               </h3>
             </div>
             <div className="card-body users-compact-card-body">
-              <div className="users-admin-table-actions" data-users-directory-toolbar>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setShowCreateLocalUserModal(true)}
-                >
-                  <UserPlus size={16} />
-                  Create internal user
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setShowManageAuthGroupsModal(true)}
-                >
-                  <Shield size={16} />
-                  Manage groups
-                </button>
-                <input
-                  aria-label="Search users"
-                  placeholder="Search name, username, or email"
-                  value={directorySearch}
-                  onChange={(e) => {
-                    setDirectorySearch(e.target.value);
-                    setManagementPage(1);
-                  }}
-                />
-                <select
-                  aria-label="Provider filter"
-                  value={directoryProvider}
-                  onChange={(e) => {
-                    setDirectoryProvider(e.target.value);
-                    setManagementPage(1);
-                  }}
-                >
-                  <option value="all">All providers</option>
-                  <option value="local_managed">Internal</option>
-                  <option value="local">Local admin</option>
-                  <option value="ldap">LDAP</option>
-                </select>
-                <select
-                  aria-label="Role filter"
-                  value={directoryRole}
-                  onChange={(e) => {
-                    setDirectoryRole(e.target.value);
-                    setManagementPage(1);
-                  }}
-                >
-                  <option value="all">All roles</option>
-                  <option value="admin">Admins</option>
-                  <option value="user">Users</option>
-                </select>
-                <select
-                  aria-label="MFA filter"
-                  value={directoryMfa}
-                  onChange={(e) => {
-                    setDirectoryMfa(e.target.value);
-                    setManagementPage(1);
-                  }}
-                >
-                  <option value="all">Any MFA</option>
-                  <option value="enabled">MFA enabled</option>
-                  <option value="disabled">MFA not enrolled</option>
-                </select>
-              </div>
-              <div className="users-summary-row" data-users-directory-summary>
-                <div className="users-summary-card">
-                  <div className="users-summary-value">{users.length}</div>
-                  <div className="users-summary-label">Users</div>
+              <div className="users-directory-toolbar" data-users-directory-toolbar>
+                <div className="users-directory-toolbar-actions">
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => setShowCreateLocalUserModal(true)}
+                  >
+                    <UserPlus size={16} />
+                    Create internal user
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => setShowManageAuthGroupsModal(true)}
+                  >
+                    <Shield size={16} />
+                    Manage groups
+                  </button>
                 </div>
-                <div className="users-summary-card">
-                  <div className="users-summary-value">
-                    {users.filter((u) => u.role === 'admin').length}
-                  </div>
-                  <div className="users-summary-label">Admins</div>
-                </div>
-                <div className="users-summary-card">
-                  <div className="users-summary-value">
-                    {users.filter((u) => u.mfa_required && !u.mfa_enabled).length}
-                  </div>
-                  <div className="users-summary-label">MFA enrollment pending</div>
+                <div className="users-directory-toolbar-filters">
+                  <input
+                    type="text"
+                    role="searchbox"
+                    className="form-input users-directory-search"
+                    aria-label="Search users"
+                    placeholder="Search name, username, or email"
+                    value={directorySearch}
+                    onChange={(e) => {
+                      setDirectorySearch(e.target.value);
+                      setManagementPage(1);
+                    }}
+                  />
+                  <select
+                    aria-label="Provider filter"
+                    value={directoryProvider}
+                    onChange={(e) => {
+                      setDirectoryProvider(e.target.value);
+                      setManagementPage(1);
+                    }}
+                  >
+                    <option value="all">All providers</option>
+                    <option value="local_managed">Internal</option>
+                    <option value="local">Local admin</option>
+                    <option value="ldap">LDAP</option>
+                  </select>
+                  <select
+                    aria-label="Role filter"
+                    value={directoryRole}
+                    onChange={(e) => {
+                      setDirectoryRole(e.target.value);
+                      setManagementPage(1);
+                    }}
+                  >
+                    <option value="all">All roles</option>
+                    <option value="admin">Admins</option>
+                    <option value="user">Users</option>
+                  </select>
+                  <select
+                    aria-label="MFA filter"
+                    value={directoryMfa}
+                    onChange={(e) => {
+                      setDirectoryMfa(e.target.value);
+                      setManagementPage(1);
+                    }}
+                  >
+                    <option value="all">Any MFA</option>
+                    <option value="enabled">MFA enabled</option>
+                    <option value="disabled">MFA not enrolled</option>
+                  </select>
                 </div>
               </div>
               {filteredManagementRows.length === 0 ? (
@@ -2365,41 +2441,26 @@ export function UsersPanel({
                 </p>
               ) : (
                 <>
-                  <div className="users-table-wrap">
-                    <table className="users-table users-table-compact">
-                      <thead>
-                        <tr>
-                          {(
-                            [
-                              ['user', 'User'],
-                              ['role', 'Role'],
-                              ['mfa', 'MFA'],
-                            ] as const
-                          ).map(([key, label]) => (
-                            <th
-                              key={key}
-                              aria-sort={
-                                managementSort.key === key
-                                  ? managementSort.direction === 'asc'
-                                    ? 'ascending'
-                                    : 'descending'
-                                  : 'none'
-                              }
-                            >
-                              <button
-                                type="button"
-                                className="users-directory-sort"
-                                aria-label={`Sort by ${label}`}
-                                onClick={() => toggleManagementSort(key)}
-                              >
-                                {label}
-                              </button>
-                            </th>
-                          ))}
-                          <th>AI access</th>
+                  <p className="field-help users-directory-scroll-hint">
+                    All columns are available by scrolling horizontally.
+                  </p>
+                  <JobsTableFrame
+                    id="users-directory-table"
+                    tableClassName="users-directory-table users-table-compact"
+                  >
+                    <thead>
+                      <tr>
+                        {(
+                          [
+                            ['user', 'User'],
+                            ['role', 'Role'],
+                            ['mfa', 'MFA'],
+                          ] as const
+                        ).map(([key, label]) => (
                           <th
+                            key={key}
                             aria-sort={
-                              managementSort.key === 'resources'
+                              managementSort.key === key
                                 ? managementSort.direction === 'asc'
                                   ? 'ascending'
                                   : 'descending'
@@ -2409,80 +2470,153 @@ export function UsersPanel({
                             <button
                               type="button"
                               className="users-directory-sort"
-                              aria-label="Sort by Resources"
-                              onClick={() => toggleManagementSort('resources')}
+                              aria-label={`Sort by ${label}`}
+                              onClick={() => toggleManagementSort(key)}
                             >
-                              Resources
+                              {label}
+                              {managementSort.key === key &&
+                                (managementSort.direction === 'asc' ? (
+                                  <ArrowUp size={12} aria-hidden="true" />
+                                ) : (
+                                  <ArrowDown size={12} aria-hidden="true" />
+                                ))}
                             </button>
                           </th>
-                          <th>Manage</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {managementPaging.pageItems.map((row) => {
-                          const u = row.user;
-                          return (
-                            <tr key={u.id} data-user-directory-row={u.id}>
-                              <td>
-                                <div className="users-cell-identity">
-                                  <span className="users-username">
-                                    {u.display_name || u.username}
-                                    {isSelf(u.id) && <span className="users-you-badge">you</span>}
+                        ))}
+                        <th>Chat</th>
+                        <th>User Space</th>
+                        <th
+                          aria-sort={
+                            managementSort.key === 'resources'
+                              ? managementSort.direction === 'asc'
+                                ? 'ascending'
+                                : 'descending'
+                              : 'none'
+                          }
+                        >
+                          <button
+                            type="button"
+                            className="users-directory-sort"
+                            aria-label="Sort by Resources"
+                            onClick={() => toggleManagementSort('resources')}
+                          >
+                            Resources
+                            {managementSort.key === 'resources' &&
+                              (managementSort.direction === 'asc' ? (
+                                <ArrowUp size={12} aria-hidden="true" />
+                              ) : (
+                                <ArrowDown size={12} aria-hidden="true" />
+                              ))}
+                          </button>
+                        </th>
+                        <th className="sticky-action-header">Manage</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {managementPaging.pageItems.map((row) => {
+                        const u = row.user;
+                        return (
+                          <tr key={u.id} data-user-directory-row={u.id}>
+                            <td>
+                              <div className="users-cell-identity">
+                                <span
+                                  className="users-username users-truncate"
+                                  title={u.display_name || u.username}
+                                >
+                                  {u.display_name || u.username}
+                                </span>
+                                {isSelf(u.id) && <span className="users-you-badge">you</span>}
+                                <span className="users-identity-handle">
+                                  <span
+                                    className="users-handle users-truncate"
+                                    title={`@${u.username}`}
+                                  >
+                                    @{u.username}
                                   </span>
-                                  <span className="users-handle">
-                                    @{u.username} · {u.auth_provider}
-                                  </span>
-                                </div>
-                              </td>
-                              <td>
-                                <span className="users-role-badge">{u.role}</span>
-                                {u.role_manually_set && (
-                                  <div className="users-subnum">manual override</div>
-                                )}
-                              </td>
-                              <td>
+                                </span>
+                                <span className="badge badge-muted users-provider-badge">
+                                  {u.auth_provider}
+                                </span>
+                              </div>
+                            </td>
+                            <td>
+                              <span className="badge badge-muted users-role-badge">{u.role}</span>
+                              {u.role_manually_set && (
+                                <span className="badge badge-muted users-role-override-badge">
+                                  Override
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              <span
+                                className="badge users-state-badge"
+                                data-state={
+                                  u.mfa_enabled
+                                    ? 'enabled'
+                                    : u.mfa_required
+                                      ? 'unknown'
+                                      : 'disabled'
+                                }
+                              >
                                 {u.mfa_enabled
                                   ? 'Enrolled'
                                   : u.mfa_required
                                     ? 'Required'
                                     : 'Not enrolled'}
-                              </td>
-                              <td>
-                                <span className="users-subnum">
-                                  Chat:{' '}
-                                  {u.chat_enabled_effective === undefined
-                                    ? 'unknown'
-                                    : u.chat_enabled_effective
-                                      ? 'enabled'
-                                      : 'disabled'}{' '}
-                                  · Space:{' '}
-                                  {u.userspace_generation_enabled_effective === undefined
-                                    ? 'unknown'
-                                    : u.userspace_generation_enabled_effective
-                                      ? 'enabled'
-                                      : 'disabled'}
+                              </span>
+                            </td>
+                            <td>
+                              <span
+                                className="badge users-state-badge"
+                                data-state={accessState(u.chat_enabled_effective)}
+                              >
+                                {accessState(u.chat_enabled_effective).replace(/^./, (value) =>
+                                  value.toUpperCase(),
+                                )}
+                              </span>
+                            </td>
+                            <td>
+                              <span
+                                className="badge users-state-badge"
+                                data-state={accessState(u.userspace_generation_enabled_effective)}
+                              >
+                                {accessState(u.userspace_generation_enabled_effective).replace(
+                                  /^./,
+                                  (value) => value.toUpperCase(),
+                                )}
+                              </span>
+                            </td>
+                            <td>
+                              {workspacesLoadState === 'loaded' && standaloneChatsLoaded ? (
+                                <span className="users-resource-counts">
+                                  <span className="users-resource-count">
+                                    {row.ownedWorkspaceCount} owned
+                                  </span>
+                                  <span className="users-resource-count">
+                                    {standaloneChatCountsByUserId[u.id] ?? 0} chats
+                                  </span>
+                                  <span className="users-resource-count">
+                                    {row.memberWorkspaceCount} member
+                                  </span>
                                 </span>
-                              </td>
-                              <td>
-                                {workspacesLoadState === 'loaded' && standaloneChatsLoaded
-                                  ? `${row.ownedWorkspaceCount} owned · ${standaloneChatCountsByUserId[u.id] ?? 0} chats · ${row.memberWorkspaceCount} member`
-                                  : 'Resources unknown'}
-                              </td>
-                              <td>
-                                <button
-                                  type="button"
-                                  className="btn btn-sm btn-secondary"
-                                  onClick={() => setEditingUserId(u.id)}
-                                >
-                                  Manage
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                              ) : (
+                                'Resources unknown'
+                              )}
+                            </td>
+                            <td className="sticky-action-cell">
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-secondary"
+                                onClick={() => setEditingUserId(u.id)}
+                              >
+                                Manage
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </JobsTableFrame>
                   <TablePager
                     page={managementPaging.safePage}
                     totalPages={managementPaging.totalPages}
@@ -2491,6 +2625,7 @@ export function UsersPanel({
                     onPageChange={setManagementPage}
                     onPageSizeChange={(size) => {
                       setManagementPageSize(size);
+                      if (currentUser?.id) setUserManagementRowsPreference(currentUser.id, size);
                       setManagementPage(1);
                     }}
                   />

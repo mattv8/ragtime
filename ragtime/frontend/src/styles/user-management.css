@@ -4,33 +4,17 @@
   display: flex;
   flex-direction: column;
 }
-.user-management-tabs {
-  display: flex;
-  gap: var(--space-xs);
-  padding: 0 var(--space-md);
-  border-bottom: 1px solid var(--color-border);
-  overflow-x: auto;
-}
-.user-management-tabs button {
-  min-height: 36px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--color-text-secondary);
-  padding: var(--space-sm);
-  white-space: nowrap;
-}
-.user-management-tabs button[aria-selected='true'] {
-  color: var(--color-text-primary);
-  border-color: var(--color-primary);
-}
-.user-management-tabs button:focus-visible,
 .user-management-actions button:focus-visible {
   outline: 2px solid var(--color-focus, var(--color-primary));
   outline-offset: 2px;
 }
 .user-management-modal .modal-body {
   overflow: auto;
+}
+.user-management-identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
 }
 .user-management-actions {
   display: flex;
@@ -70,38 +54,11 @@
   padding: var(--space-md);
   background: var(--color-surface);
 }
-.users-directory-sort {
-  border: 0;
-  padding: 0;
-  color: inherit;
-  background: transparent;
-  font: inherit;
-  font-weight: inherit;
-  cursor: pointer;
-}
-.users-directory-sort:focus-visible {
-  outline: 2px solid var(--color-focus, var(--color-primary));
-  outline-offset: 2px;
-}
-@media (min-width: 641px) {
-  .users-admin-table-actions {
-    justify-content: flex-start;
-  }
-  .users-admin-table-actions select {
-    width: auto;
-  }
-}
 @media (max-width: 640px) {
   .user-management-modal {
     width: 100vw;
     max-height: 100vh;
     height: 100vh;
     border-radius: 0;
-  }
-  .user-management-tabs {
-    flex-wrap: wrap;
-  }
-  .user-management-tabs button {
-    min-height: 44px;
   }
 }

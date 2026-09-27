@@ -9,6 +9,7 @@ const apiMock = vi.hoisted(() => ({
   getUser: vi.fn(),
   listAuthGroups: vi.fn(),
   listUserSpaceWorkspaces: vi.fn(),
+  getWorkspacesConversationStateSummaryLite: vi.fn(),
   updateUserGenerationPolicy: vi.fn(),
   updateUserRole: vi.fn(),
   setUserGroups: vi.fn(),
@@ -69,6 +70,7 @@ describe('UsersPanel directory and modal', () => {
     apiMock.getUser.mockResolvedValue(user('user-1'));
     apiMock.listAuthGroups.mockResolvedValue([]);
     apiMock.listUserSpaceWorkspaces.mockResolvedValue({ items: [], total: 0 });
+    apiMock.getWorkspacesConversationStateSummaryLite.mockResolvedValue([]);
     apiMock.listConversationSummaries.mockResolvedValue([]);
     apiMock.getUsageSummary.mockResolvedValue({ users: [] });
     apiMock.getUsageProviders.mockResolvedValue({ providers: [] });
@@ -102,11 +104,100 @@ describe('UsersPanel directory and modal', () => {
     expect(screen.getByText('Alex')).toBeTruthy();
     expect(screen.queryByText('Sam')).toBeNull();
   });
+  it('renders separate Chat and User Space state badges', async () => {
+    apiMock.listUsers.mockResolvedValue([
+      {
+        ...user('user-1'),
+        chat_enabled_effective: true,
+        userspace_generation_enabled_effective: false,
+      },
+    ]);
+    render(<UsersPanel currentUser={user('user-1')} onOpenWorkspace={vi.fn()} />);
+    await screen.findByText('Alex');
+    expect(screen.getByRole('columnheader', { name: 'Chat' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: 'User Space' })).toBeTruthy();
+    expect(screen.getByText('Enabled').getAttribute('data-state')).toBe('enabled');
+    expect(screen.getByText('Disabled').getAttribute('data-state')).toBe('disabled');
+    const row = screen.getByRole('row', { name: /Alex/ });
+    expect(row.querySelector('.users-cell-identity')?.textContent).toContain('@alex');
+  });
   it('keeps resource counts unknown until chats load and after a workspace load failure', async () => {
     apiMock.listUserSpaceWorkspaces.mockRejectedValueOnce(new Error('offline'));
     render(<UsersPanel currentUser={user('user-1')} onOpenWorkspace={vi.fn()} />);
     await screen.findByText('Alex');
     expect(screen.getAllByText('Resources unknown')).toHaveLength(2);
+    const liveSessionCard = screen
+      .getByRole('region', { name: 'Directory summary' })
+      .querySelector('[data-users-live-sessions-card]');
+    expect(liveSessionCard?.textContent).toContain('Unavailable');
+  });
+  it('shows a loading live-session state while the first summary is deferred', async () => {
+    apiMock.listUserSpaceWorkspaces.mockResolvedValue({
+      items: [{ id: 'workspace-1', owner_user_id: 'user-1', members: [], conversation_ids: [] }],
+      total: 1,
+    });
+    apiMock.getWorkspacesConversationStateSummaryLite.mockImplementationOnce(
+      () => new Promise(() => undefined),
+    );
+    render(<UsersPanel currentUser={user('user-1')} onOpenWorkspace={vi.fn()} />);
+    await screen.findByText('Alex');
+    const liveSessionCard = screen
+      .getByRole('region', { name: 'Directory summary' })
+      .querySelector('[data-users-live-sessions-card]');
+    expect(liveSessionCard?.textContent).toContain('Loading…');
+  });
+  it('retains the last live session count when a state poll fails', async () => {
+    apiMock.listUserSpaceWorkspaces.mockResolvedValue({
+      items: [{ id: 'workspace-1', owner_user_id: 'user-1', members: [], conversation_ids: [] }],
+      total: 1,
+    });
+    apiMock.getWorkspacesConversationStateSummaryLite
+      .mockResolvedValueOnce([
+        { workspace_id: 'workspace-1', has_live_task: true, has_interrupted_task: false },
+      ])
+      .mockRejectedValueOnce(new Error('offline'));
+    vi.useFakeTimers();
+    try {
+      render(<UsersPanel currentUser={user('user-1')} onOpenWorkspace={vi.fn()} />);
+      await vi.advanceTimersByTimeAsync(0);
+      const liveSessionCard = screen
+        .getByRole('region', { name: 'Directory summary' })
+        .querySelector('[data-users-live-sessions-card]');
+      expect(liveSessionCard?.textContent).toContain('1');
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(liveSessionCard?.textContent).toContain('1');
+      expect(screen.getByText(/Refresh unavailable.*last known count/i)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('displays directory summary cards with user count and workspace count', async () => {
+    apiMock.listUserSpaceWorkspaces.mockResolvedValue({
+      items: [{ id: 'workspace-1', owner_user_id: 'user-1', members: [], conversation_ids: [] }],
+      total: 1,
+    });
+    render(<UsersPanel currentUser={user('user-1')} onOpenWorkspace={vi.fn()} />);
+    await screen.findByText('Alex');
+    const summarySection = screen.getByRole('region', { name: 'Directory summary' });
+    expect(summarySection).toBeTruthy();
+    const usersCard = summarySection.querySelector('[data-users-summary-card="users"]');
+    expect(usersCard?.textContent).toContain('2');
+    expect(usersCard?.textContent).toContain('Users');
+    const workspacesCard = summarySection.querySelector('[data-users-summary-card="workspaces"]');
+    expect(workspacesCard?.textContent).toContain('1');
+    expect(workspacesCard?.textContent).toContain('Workspaces');
+  });
+
+  it('restores management rows per admin and clears the default preference', async () => {
+    document.cookie = 'users_management_rows_user-1=20; path=/';
+    const view = render(<UsersPanel currentUser={user('user-1')} onOpenWorkspace={vi.fn()} />);
+    await screen.findByText('Alex');
+    expect((screen.getByLabelText('Rows') as HTMLSelectElement).value).toBe('20');
+    fireEvent.change(screen.getByLabelText('Rows'), { target: { value: '10' } });
+    expect(document.cookie).not.toContain('users_management_rows_user-1');
+    view.rerender(<UsersPanel currentUser={user('user-2')} onOpenWorkspace={vi.fn()} />);
+    expect((screen.getByLabelText('Rows') as HTMLSelectElement).value).toBe('10');
   });
   it('keeps default management ordering independent of usage values', async () => {
     const zeta = { ...user('user-1'), username: 'zeta', display_name: 'Same' };

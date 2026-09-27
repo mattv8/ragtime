@@ -167,6 +167,7 @@ describe('UserManagementModal', () => {
   it('uses roving tabs and traps focus without intercepting field arrows', async () => {
     render(<UserManagementModal {...props()} />);
     const account = screen.getByRole('tab', { name: 'Account & access' });
+    expect(account.getAttribute('aria-controls')).toBe('user-management-u1-panel-account');
     fireEvent.keyDown(account, { key: 'ArrowRight' });
     await waitFor(() =>
       expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Policies' })),
@@ -179,12 +180,75 @@ describe('UserManagementModal', () => {
     );
     expect(document.activeElement).toBe(name);
   });
-  it('loads resource details only when the Resources tab is opened', () => {
+  it('traps focus through the selected tab when a self-managed account has no controls', () => {
+    const originalOffsetParent = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'offsetParent',
+    );
+    Object.defineProperty(HTMLElement.prototype, 'offsetParent', {
+      configurable: true,
+      get: function (this: HTMLElement) {
+        return this.closest('[hidden]') ? null : document.body;
+      },
+    });
+
+    try {
+      const self = { ...user, auth_provider: 'local' } as User;
+      render(
+        <UserManagementModal
+          {...{
+            ...props(),
+            user: self,
+            currentUser: self,
+            users: [self],
+          }}
+        />,
+      );
+
+      const dialog = screen.getByRole('dialog');
+      const close = screen.getByLabelText('Close manage user');
+      const account = screen.getByRole('tab', { name: 'Account & access' });
+      const policies = screen.getByRole('tab', { name: 'Policies' });
+      const resources = screen.getByRole('tab', { name: 'Resources' });
+
+      expect(account.getAttribute('tabindex')).toBe('0');
+      expect(policies.getAttribute('tabindex')).toBe('-1');
+      expect(resources.getAttribute('tabindex')).toBe('-1');
+
+      close.focus();
+      const forwardTab = new KeyboardEvent('keydown', {
+        key: 'Tab',
+        bubbles: true,
+        cancelable: true,
+      });
+      expect(close.dispatchEvent(forwardTab)).toBe(true);
+      account.focus(); // Native forward Tab moves from Close to the selected Account tab.
+      fireEvent.keyDown(dialog, { key: 'Tab' });
+      expect(document.activeElement).toBe(close);
+
+      fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+      expect(document.activeElement).toBe(account);
+      expect(document.activeElement).not.toBe(policies);
+      expect(document.activeElement).not.toBe(resources);
+    } finally {
+      if (originalOffsetParent) {
+        Object.defineProperty(HTMLElement.prototype, 'offsetParent', originalOffsetParent);
+      } else {
+        delete (HTMLElement.prototype as { offsetParent?: HTMLElement | null }).offsetParent;
+      }
+    }
+  });
+  it('loads resource details once per Resources tab activation', () => {
     const p = { ...props(), chatsLoaded: false };
     render(<UserManagementModal {...p} />);
     expect(p.onResourcesOpen).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
     expect(p.onResourcesOpen).toHaveBeenCalledOnce();
     expect(screen.getByText('Loading chats...')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
+    expect(p.onResourcesOpen).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('tab', { name: 'Account & access' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
+    expect(p.onResourcesOpen).toHaveBeenCalledTimes(2);
   });
 });

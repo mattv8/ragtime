@@ -15,6 +15,7 @@ import type {
   UserSpaceWorkspace,
 } from '@/types';
 import { CheckboxDropdown } from '../shared/CheckboxDropdown';
+import { ModalTabs, type ModalTab } from '../shared/ModalTabs';
 import { UserSecurityTab } from './UserSecurityTab';
 import { UserResourcesTab } from './UserResourcesTab';
 
@@ -27,12 +28,6 @@ type DirtySection =
   | 'protection'
   | 'security'
   | 'delete';
-const tabs: Array<[Tab, string]> = [
-  ['account', 'Account & access'],
-  ['policies', 'Policies'],
-  ['security', 'Security'],
-  ['resources', 'Resources'],
-];
 const manualIds = (user: User) => user.manual_group_ids ?? user.local_group_ids ?? [];
 const profileProvider = (user: User) => user.auth_provider === 'local_managed';
 const policyValue = (value: boolean | null | undefined) =>
@@ -106,12 +101,6 @@ export function UserManagementModal(props: Props) {
   const deleteTrigger = useRef<HTMLButtonElement | null>(null);
   const discardCancel = useRef<HTMLButtonElement | null>(null);
   const dialog = useRef<HTMLDivElement>(null);
-  const tabRefs = useRef<Record<Tab, HTMLButtonElement | null>>({
-    account: null,
-    policies: null,
-    security: null,
-    resources: null,
-  });
   const hasDirty = Object.values(dirty).some(Boolean);
 
   const markDirty = (section: DirtySection, value = true) =>
@@ -203,11 +192,6 @@ export function UserManagementModal(props: Props) {
       origin ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     setDeleteConfirm(true);
   };
-  const selectTab = (next: Tab, focus = false) => {
-    setTab(next);
-    if (next === 'resources') props.onResourcesOpen();
-    if (focus) requestAnimationFrame(() => tabRefs.current[next]?.focus());
-  };
   const onDialogKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -219,7 +203,9 @@ export function UserManagementModal(props: Props) {
         dialog.current?.querySelectorAll<HTMLElement>(
           'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
         ) ?? [],
-      ).filter((element) => !element.hidden && element.offsetParent !== null);
+      ).filter(
+        (element) => !element.hidden && element.offsetParent !== null && element.tabIndex >= 0,
+      );
       if (!focusable.length) return;
       const index = focusable.indexOf(document.activeElement as HTMLElement);
       if (event.shiftKey && (index <= 0 || document.activeElement === dialog.current)) {
@@ -231,25 +217,6 @@ export function UserManagementModal(props: Props) {
       }
     }
   };
-  const onTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (
-      event.key !== 'ArrowRight' &&
-      event.key !== 'ArrowLeft' &&
-      event.key !== 'Home' &&
-      event.key !== 'End'
-    )
-      return;
-    event.preventDefault();
-    const index = tabs.findIndex(([id]) => id === tab);
-    const nextIndex =
-      event.key === 'Home'
-        ? 0
-        : event.key === 'End'
-          ? tabs.length - 1
-          : (index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
-    selectTab(tabs[nextIndex][0], true);
-  };
-
   const groupOptions = useMemo(
     () =>
       props.authGroups.map((group) => ({
@@ -272,6 +239,410 @@ export function UserManagementModal(props: Props) {
       </p>
     ) : null;
 
+  const modalTabs: ModalTab[] = [
+    {
+      id: 'account',
+      label: 'Account & access',
+      content: (
+        <div data-user-management-section="account">
+          {profileProvider(user) ? (
+            <>
+              <div className="form-group">
+                <label htmlFor={`user-name-${user.id}`}>Display name</label>
+                <input
+                  id={`user-name-${user.id}`}
+                  value={name}
+                  onChange={(event) => {
+                    setName(event.target.value);
+                    markDirty('profile');
+                  }}
+                />
+              </div>
+              <div className="form-group">
+                <label htmlFor={`user-email-${user.id}`}>Email</label>
+                <input
+                  id={`user-email-${user.id}`}
+                  value={email}
+                  onChange={(event) => {
+                    setEmail(event.target.value);
+                    markDirty('profile');
+                  }}
+                />
+              </div>
+              {renderError('profile')}
+              <div className="user-management-actions">
+                <button
+                  className="btn btn-primary"
+                  disabled={busy.profile || !dirty.profile}
+                  onClick={() =>
+                    void run('profile', async () => {
+                      const updated = await api.updateLocalUser(user.id, {
+                        display_name: name || null,
+                        email: email || null,
+                      });
+                      props.onUserUpdated(updated);
+                      setName(updated.display_name ?? updated.username);
+                      setEmail(updated.email ?? '');
+                    })
+                  }
+                >
+                  Save profile
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  disabled={!dirty.profile}
+                  onClick={() => {
+                    setName(user.display_name ?? '');
+                    setEmail(user.email ?? '');
+                    markDirty('profile', false);
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="field-help">
+              Profile fields are managed by this account&apos;s identity provider.
+            </p>
+          )}
+          {!isSelf && (
+            <>
+              <div className="form-group">
+                <label htmlFor={`user-role-${user.id}`}>Role</label>
+                <select
+                  id={`user-role-${user.id}`}
+                  value={role}
+                  onChange={(event) => {
+                    setRole(event.target.value as User['role']);
+                    markDirty('role');
+                  }}
+                >
+                  <option value="user">user</option>
+                  <option value="admin">admin</option>
+                </select>
+                {user.auth_provider !== 'ldap' && (
+                  <p className="field-help">Role reset is supported only for LDAP users.</p>
+                )}
+              </div>
+              {renderError('role')}
+              <div className="user-management-actions">
+                <button
+                  className="btn btn-primary"
+                  disabled={busy.role || !dirty.role}
+                  onClick={() =>
+                    void run('role', async () => {
+                      await api.updateUserRole(user.id, role);
+                      props.onUserUpdated(await refreshUser());
+                    })
+                  }
+                >
+                  Save role
+                </button>
+                {user.auth_provider === 'ldap' && user.role_manually_set && (
+                  <button
+                    className="btn btn-secondary"
+                    disabled={busy.role}
+                    onClick={() =>
+                      void run('role', async () => {
+                        await api.resetUserRoleOverride(user.id);
+                        props.onUserUpdated(await refreshUser());
+                      })
+                    }
+                  >
+                    Reset LDAP role override
+                  </button>
+                )}
+                <button
+                  className="btn btn-secondary"
+                  disabled={!dirty.role}
+                  onClick={() => {
+                    setRole(user.role);
+                    markDirty('role', false);
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
+              <div className="form-group">
+                <label>Manual groups</label>
+                <CheckboxDropdown
+                  options={groupOptions}
+                  selectedIds={groups}
+                  onChange={(ids) => {
+                    setGroups(ids);
+                    markDirty('groups');
+                  }}
+                  placeholder="No manual groups"
+                />
+                <p className="field-help">
+                  Directory groups are read-only. Manual group changes are saved separately.
+                </p>
+              </div>
+              {renderError('groups')}
+              <div className="user-management-actions">
+                <button
+                  className="btn btn-primary"
+                  disabled={busy.groups || !dirty.groups}
+                  onClick={() =>
+                    void run('groups', async () => {
+                      props.onUserUpdated(await api.setUserGroups(user.id, { group_ids: groups }));
+                    })
+                  }
+                >
+                  Save groups
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  disabled={!dirty.groups}
+                  onClick={() => {
+                    setGroups(manualIds(user));
+                    markDirty('groups', false);
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
+              <div className="user-management-danger">
+                <h4>Delete user</h4>
+                <p>
+                  Deleting this account permanently deletes owned workspaces and their database
+                  rows. Chats are retained but their user ownership is cleared. Transfer or delete
+                  resources first if they must be preserved.
+                </p>
+                {deleteConfirm ? (
+                  <div
+                    role="alertdialog"
+                    aria-label="Confirm delete user"
+                    onKeyDown={(event) => onConfirmationKeyDown(event, 'delete')}
+                  >
+                    <p>Delete {user.username}? This cannot be undone.</p>
+                    <button
+                      className="btn btn-danger"
+                      disabled={busy.delete}
+                      onClick={() =>
+                        void run('delete', async () => {
+                          await props.onDelete(user.id);
+                          props.onClose();
+                        })
+                      }
+                    >
+                      Delete user
+                    </button>
+                    {renderError('delete')}
+                    <button
+                      className="btn btn-secondary"
+                      disabled={busy.delete}
+                      ref={deleteCancel}
+                      onClick={() => cancelConfirmation('delete')}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="btn btn-danger"
+                    ref={deleteTrigger}
+                    onClick={(event) => openDeleteConfirmation(event.currentTarget)}
+                  >
+                    Delete user
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      ),
+    },
+    {
+      id: 'policies',
+      label: 'Policies',
+      content: (
+        <div data-user-management-section="policies">
+          <div className="form-group">
+            <label htmlFor={`chat-policy-${user.id}`}>Chat generation</label>
+            <select
+              id={`chat-policy-${user.id}`}
+              value={chat}
+              onChange={(event) => {
+                setChat(event.target.value);
+                markDirty('generation');
+              }}
+            >
+              <option value="inherit">Use instance default</option>
+              <option value="enabled">Enabled</option>
+              <option value="disabled">Disabled</option>
+            </select>
+            <p className="field-help">
+              {effective(user.chat_enabled, user.chat_enabled_effective)}
+            </p>
+          </div>
+          <div className="form-group">
+            <label htmlFor={`generation-policy-${user.id}`}>User Space AI generation</label>
+            <select
+              id={`generation-policy-${user.id}`}
+              value={generation}
+              onChange={(event) => {
+                setGeneration(event.target.value);
+                markDirty('generation');
+              }}
+            >
+              <option value="inherit">Use instance default</option>
+              <option value="enabled">Enabled</option>
+              <option value="disabled">Disabled</option>
+            </select>
+            <p className="field-help">
+              {effective(
+                user.userspace_generation_enabled,
+                user.userspace_generation_enabled_effective,
+              )}
+            </p>
+          </div>
+          {renderError('generation')}
+          <div className="user-management-actions">
+            <button
+              className="btn btn-primary"
+              disabled={busy.generation || !dirty.generation}
+              onClick={() =>
+                void run('generation', async () => {
+                  const updated = await api.updateUserGenerationPolicy(user.id, {
+                    chat_enabled: chat === 'inherit' ? null : chat === 'enabled',
+                    userspace_generation_enabled:
+                      generation === 'inherit' ? null : generation === 'enabled',
+                  });
+                  props.onUserUpdated(updated);
+                  if (isSelf) {
+                    try {
+                      await props.onGenerationPolicyUpdated?.(updated);
+                    } catch (error) {
+                      setNotices((current) => ({
+                        ...current,
+                        generation: `Saved, but authenticated state could not be refreshed: ${error instanceof Error ? error.message : 'unknown error'}`,
+                      }));
+                    }
+                  }
+                })
+              }
+            >
+              Save generation settings
+            </button>
+            <button
+              className="btn btn-secondary"
+              disabled={!dirty.generation}
+              onClick={() => {
+                setChat(policyValue(user.chat_enabled));
+                setGeneration(policyValue(user.userspace_generation_enabled));
+                markDirty('generation', false);
+              }}
+            >
+              Discard
+            </button>
+          </div>
+          {notices.generation && (
+            <p className="field-help" role="status">
+              {notices.generation}
+            </p>
+          )}
+          {props.contentProtectionLoadFailed ? (
+            <div className="user-management-inline-state" role="alert">
+              Content protection settings could not be loaded.{' '}
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => void props.onRetryContentProtectionConfig()}
+              >
+                Retry
+              </button>
+            </div>
+          ) : props.contentProtectionConfig === null ? (
+            <p className="field-help" role="status">
+              Loading content protection settings…
+            </p>
+          ) : !props.contentProtectionConfig.enabled ? (
+            <p className="field-help">Content protection is disabled for this instance.</p>
+          ) : (
+            <>
+              <div className="form-group">
+                <label htmlFor={`protection-policy-${user.id}`}>Content protection override</label>
+                <select
+                  id={`protection-policy-${user.id}`}
+                  value={protection}
+                  onChange={(event) => {
+                    setProtection(event.target.value as ContentProtectionOverrideMode);
+                    markDirty('protection');
+                  }}
+                >
+                  <option value="inherit">Inherit contextual policy</option>
+                  <option value="always_classify">Always classify</option>
+                  <option value="never_classify">Never classify</option>
+                </select>
+                <p className="field-help">
+                  This setting is contextual; there is no single universal effective protection
+                  state.
+                </p>
+              </div>
+              {renderError('protection')}
+              <div className="user-management-actions">
+                <button
+                  className="btn btn-primary"
+                  disabled={busy.protection || !dirty.protection}
+                  onClick={() =>
+                    void run('protection', async () => {
+                      const updated = await updateContentProtectionConfigSlice((config) =>
+                        withUserOverride(config, user.id, protection),
+                      );
+                      props.onContentProtectionConfigChange(updated);
+                    })
+                  }
+                >
+                  Save content protection
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  disabled={!dirty.protection}
+                  onClick={() => {
+                    setProtection(
+                      props.contentProtectionConfig
+                        ? userOverrideMode(props.contentProtectionConfig, user.id)
+                        : 'inherit',
+                    );
+                    markDirty('protection', false);
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      ),
+    },
+    {
+      id: 'security',
+      label: 'Security',
+      content: (
+        <div data-user-management-section="security">
+          <UserSecurityTab
+            user={user}
+            isSelf={isSelf}
+            onUserUpdated={props.onUserUpdated}
+            onDirtyChange={(value) => markDirty('security', value)}
+            onBusyChange={(value) => setBusy((current) => ({ ...current, security: value }))}
+          />
+        </div>
+      ),
+    },
+    {
+      id: 'resources',
+      label: 'Resources',
+      content: (
+        <div data-user-management-section="resources">
+          <UserResourcesTab {...props} onLoad={props.onResourcesOpen} />
+        </div>
+      ),
+    },
+  ];
+
   return (
     <div
       id="user-management-modal-overlay"
@@ -280,7 +651,7 @@ export function UserManagementModal(props: Props) {
     >
       <div
         id={`user-management-modal-${user.id}`}
-        className="modal-content user-management-modal"
+        className="modal-content modal-with-tabs user-management-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby={`user-management-title-${user.id}`}
@@ -292,9 +663,10 @@ export function UserManagementModal(props: Props) {
         <header className="modal-header">
           <div>
             <h3 id={`user-management-title-${user.id}`}>{user.display_name || user.username}</h3>
-            <p className="users-subnum">
-              @{user.username} · {user.auth_provider}
-              {isSelf ? ' · you' : ''}
+            <p className="users-subnum user-management-identity">
+              <span data-user-management-identity="username">@{user.username}</span>
+              <span data-user-management-identity="provider">{user.auth_provider}</span>
+              {isSelf && <span data-user-management-identity="self">You</span>}
             </p>
           </div>
           <button
@@ -306,433 +678,17 @@ export function UserManagementModal(props: Props) {
             &times;
           </button>
         </header>
-        <div className="user-management-tabs" role="tablist" aria-label="Manage user">
-          {tabs.map(([id, label]) => (
-            <button
-              key={id}
-              ref={(element) => {
-                tabRefs.current[id] = element;
-              }}
-              id={`user-tab-${id}-${user.id}`}
-              type="button"
-              role="tab"
-              tabIndex={tab === id ? 0 : -1}
-              aria-selected={tab === id}
-              aria-controls={`user-panel-${id}-${user.id}`}
-              className={tab === id ? 'active' : ''}
-              onKeyDown={onTabKeyDown}
-              onClick={() => selectTab(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
         <div className="modal-body">
-          <section
-            id={`user-panel-account-${user.id}`}
-            role="tabpanel"
-            aria-labelledby={`user-tab-account-${user.id}`}
-            hidden={tab !== 'account'}
-            data-user-management-section="account"
-          >
-            {profileProvider(user) ? (
-              <>
-                <div className="form-group">
-                  <label htmlFor={`user-name-${user.id}`}>Display name</label>
-                  <input
-                    id={`user-name-${user.id}`}
-                    value={name}
-                    onChange={(event) => {
-                      setName(event.target.value);
-                      markDirty('profile');
-                    }}
-                  />
-                </div>
-                <div className="form-group">
-                  <label htmlFor={`user-email-${user.id}`}>Email</label>
-                  <input
-                    id={`user-email-${user.id}`}
-                    value={email}
-                    onChange={(event) => {
-                      setEmail(event.target.value);
-                      markDirty('profile');
-                    }}
-                  />
-                </div>
-                {renderError('profile')}
-                <div className="user-management-actions">
-                  <button
-                    className="btn btn-primary"
-                    disabled={busy.profile || !dirty.profile}
-                    onClick={() =>
-                      void run('profile', async () => {
-                        const updated = await api.updateLocalUser(user.id, {
-                          display_name: name || null,
-                          email: email || null,
-                        });
-                        props.onUserUpdated(updated);
-                        setName(updated.display_name ?? updated.username);
-                        setEmail(updated.email ?? '');
-                      })
-                    }
-                  >
-                    Save profile
-                  </button>
-                  <button
-                    className="btn btn-secondary"
-                    disabled={!dirty.profile}
-                    onClick={() => {
-                      setName(user.display_name ?? '');
-                      setEmail(user.email ?? '');
-                      markDirty('profile', false);
-                    }}
-                  >
-                    Discard
-                  </button>
-                </div>
-              </>
-            ) : (
-              <p className="field-help">
-                Profile fields are managed by this account&apos;s identity provider.
-              </p>
-            )}
-            {!isSelf && (
-              <>
-                <div className="form-group">
-                  <label htmlFor={`user-role-${user.id}`}>Role</label>
-                  <select
-                    id={`user-role-${user.id}`}
-                    value={role}
-                    onChange={(event) => {
-                      setRole(event.target.value as User['role']);
-                      markDirty('role');
-                    }}
-                  >
-                    <option value="user">user</option>
-                    <option value="admin">admin</option>
-                  </select>
-                  {user.auth_provider !== 'ldap' && (
-                    <p className="field-help">Role reset is supported only for LDAP users.</p>
-                  )}
-                </div>
-                {renderError('role')}
-                <div className="user-management-actions">
-                  <button
-                    className="btn btn-primary"
-                    disabled={busy.role || !dirty.role}
-                    onClick={() =>
-                      void run('role', async () => {
-                        await api.updateUserRole(user.id, role);
-                        props.onUserUpdated(await refreshUser());
-                      })
-                    }
-                  >
-                    Save role
-                  </button>
-                  {user.auth_provider === 'ldap' && user.role_manually_set && (
-                    <button
-                      className="btn btn-secondary"
-                      disabled={busy.role}
-                      onClick={() =>
-                        void run('role', async () => {
-                          await api.resetUserRoleOverride(user.id);
-                          props.onUserUpdated(await refreshUser());
-                        })
-                      }
-                    >
-                      Reset LDAP role override
-                    </button>
-                  )}
-                  <button
-                    className="btn btn-secondary"
-                    disabled={!dirty.role}
-                    onClick={() => {
-                      setRole(user.role);
-                      markDirty('role', false);
-                    }}
-                  >
-                    Discard
-                  </button>
-                </div>
-                <div className="form-group">
-                  <label>Manual groups</label>
-                  <CheckboxDropdown
-                    options={groupOptions}
-                    selectedIds={groups}
-                    onChange={(ids) => {
-                      setGroups(ids);
-                      markDirty('groups');
-                    }}
-                    placeholder="No manual groups"
-                  />
-                  <p className="field-help">
-                    Directory groups are read-only. Manual group changes are saved separately.
-                  </p>
-                </div>
-                {renderError('groups')}
-                <div className="user-management-actions">
-                  <button
-                    className="btn btn-primary"
-                    disabled={busy.groups || !dirty.groups}
-                    onClick={() =>
-                      void run('groups', async () => {
-                        props.onUserUpdated(
-                          await api.setUserGroups(user.id, { group_ids: groups }),
-                        );
-                      })
-                    }
-                  >
-                    Save groups
-                  </button>
-                  <button
-                    className="btn btn-secondary"
-                    disabled={!dirty.groups}
-                    onClick={() => {
-                      setGroups(manualIds(user));
-                      markDirty('groups', false);
-                    }}
-                  >
-                    Discard
-                  </button>
-                </div>
-                <div className="user-management-danger">
-                  <h4>Delete user</h4>
-                  <p>
-                    Deleting this account permanently deletes owned workspaces and their database
-                    rows. Chats are retained but their user ownership is cleared. Transfer or delete
-                    resources first if they must be preserved.
-                  </p>
-                  {deleteConfirm ? (
-                    <div
-                      role="alertdialog"
-                      aria-label="Confirm delete user"
-                      onKeyDown={(event) => onConfirmationKeyDown(event, 'delete')}
-                    >
-                      <p>Delete {user.username}? This cannot be undone.</p>
-                      <button
-                        className="btn btn-danger"
-                        disabled={busy.delete}
-                        onClick={() =>
-                          void run('delete', async () => {
-                            await props.onDelete(user.id);
-                            props.onClose();
-                          })
-                        }
-                      >
-                        Delete user
-                      </button>
-                      {renderError('delete')}
-                      <button
-                        className="btn btn-secondary"
-                        disabled={busy.delete}
-                        ref={deleteCancel}
-                        onClick={() => cancelConfirmation('delete')}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      className="btn btn-danger"
-                      ref={deleteTrigger}
-                      onClick={(event) => openDeleteConfirmation(event.currentTarget)}
-                    >
-                      Delete user
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
-          </section>
-          <section
-            id={`user-panel-policies-${user.id}`}
-            role="tabpanel"
-            aria-labelledby={`user-tab-policies-${user.id}`}
-            hidden={tab !== 'policies'}
-            data-user-management-section="policies"
-          >
-            <div className="form-group">
-              <label htmlFor={`chat-policy-${user.id}`}>Chat generation</label>
-              <select
-                id={`chat-policy-${user.id}`}
-                value={chat}
-                onChange={(event) => {
-                  setChat(event.target.value);
-                  markDirty('generation');
-                }}
-              >
-                <option value="inherit">Use instance default</option>
-                <option value="enabled">Enabled</option>
-                <option value="disabled">Disabled</option>
-              </select>
-              <p className="field-help">
-                {effective(user.chat_enabled, user.chat_enabled_effective)}
-              </p>
-            </div>
-            <div className="form-group">
-              <label htmlFor={`generation-policy-${user.id}`}>User Space AI generation</label>
-              <select
-                id={`generation-policy-${user.id}`}
-                value={generation}
-                onChange={(event) => {
-                  setGeneration(event.target.value);
-                  markDirty('generation');
-                }}
-              >
-                <option value="inherit">Use instance default</option>
-                <option value="enabled">Enabled</option>
-                <option value="disabled">Disabled</option>
-              </select>
-              <p className="field-help">
-                {effective(
-                  user.userspace_generation_enabled,
-                  user.userspace_generation_enabled_effective,
-                )}
-              </p>
-            </div>
-            {renderError('generation')}
-            <div className="user-management-actions">
-              <button
-                className="btn btn-primary"
-                disabled={busy.generation || !dirty.generation}
-                onClick={() =>
-                  void run('generation', async () => {
-                    const updated = await api.updateUserGenerationPolicy(user.id, {
-                      chat_enabled: chat === 'inherit' ? null : chat === 'enabled',
-                      userspace_generation_enabled:
-                        generation === 'inherit' ? null : generation === 'enabled',
-                    });
-                    props.onUserUpdated(updated);
-                    if (isSelf) {
-                      try {
-                        await props.onGenerationPolicyUpdated?.(updated);
-                      } catch (error) {
-                        setNotices((current) => ({
-                          ...current,
-                          generation: `Saved, but authenticated state could not be refreshed: ${error instanceof Error ? error.message : 'unknown error'}`,
-                        }));
-                      }
-                    }
-                  })
-                }
-              >
-                Save generation settings
-              </button>
-              <button
-                className="btn btn-secondary"
-                disabled={!dirty.generation}
-                onClick={() => {
-                  setChat(policyValue(user.chat_enabled));
-                  setGeneration(policyValue(user.userspace_generation_enabled));
-                  markDirty('generation', false);
-                }}
-              >
-                Discard
-              </button>
-            </div>
-            {notices.generation && (
-              <p className="field-help" role="status">
-                {notices.generation}
-              </p>
-            )}
-            {props.contentProtectionLoadFailed ? (
-              <div className="user-management-inline-state" role="alert">
-                Content protection settings could not be loaded.{' '}
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => void props.onRetryContentProtectionConfig()}
-                >
-                  Retry
-                </button>
-              </div>
-            ) : props.contentProtectionConfig === null ? (
-              <p className="field-help" role="status">
-                Loading content protection settings…
-              </p>
-            ) : !props.contentProtectionConfig.enabled ? (
-              <p className="field-help">Content protection is disabled for this instance.</p>
-            ) : (
-              <>
-                <div className="form-group">
-                  <label htmlFor={`protection-policy-${user.id}`}>
-                    Content protection override
-                  </label>
-                  <select
-                    id={`protection-policy-${user.id}`}
-                    value={protection}
-                    onChange={(event) => {
-                      setProtection(event.target.value as ContentProtectionOverrideMode);
-                      markDirty('protection');
-                    }}
-                  >
-                    <option value="inherit">Inherit contextual policy</option>
-                    <option value="always_classify">Always classify</option>
-                    <option value="never_classify">Never classify</option>
-                  </select>
-                  <p className="field-help">
-                    This setting is contextual; there is no single universal effective protection
-                    state.
-                  </p>
-                </div>
-                {renderError('protection')}
-                <div className="user-management-actions">
-                  <button
-                    className="btn btn-primary"
-                    disabled={busy.protection || !dirty.protection}
-                    onClick={() =>
-                      void run('protection', async () => {
-                        const updated = await updateContentProtectionConfigSlice((config) =>
-                          withUserOverride(config, user.id, protection),
-                        );
-                        props.onContentProtectionConfigChange(updated);
-                      })
-                    }
-                  >
-                    Save content protection
-                  </button>
-                  <button
-                    className="btn btn-secondary"
-                    disabled={!dirty.protection}
-                    onClick={() => {
-                      setProtection(
-                        props.contentProtectionConfig
-                          ? userOverrideMode(props.contentProtectionConfig, user.id)
-                          : 'inherit',
-                      );
-                      markDirty('protection', false);
-                    }}
-                  >
-                    Discard
-                  </button>
-                </div>
-              </>
-            )}
-          </section>
-          <section
-            id={`user-panel-security-${user.id}`}
-            role="tabpanel"
-            aria-labelledby={`user-tab-security-${user.id}`}
-            hidden={tab !== 'security'}
-            data-user-management-section="security"
-          >
-            <UserSecurityTab
-              user={user}
-              isSelf={isSelf}
-              onUserUpdated={props.onUserUpdated}
-              onDirtyChange={(value) => markDirty('security', value)}
-              onBusyChange={(value) => setBusy((current) => ({ ...current, security: value }))}
-            />
-          </section>
-          <section
-            id={`user-panel-resources-${user.id}`}
-            role="tabpanel"
-            aria-labelledby={`user-tab-resources-${user.id}`}
-            hidden={tab !== 'resources'}
-            data-user-management-section="resources"
-          >
-            <UserResourcesTab {...props} onLoad={props.onResourcesOpen} />
-          </section>
+          <ModalTabs
+            idPrefix={`user-management-${user.id}`}
+            label="Manage user"
+            tabs={modalTabs}
+            activeTabId={tab}
+            onChange={(nextTab) => {
+              if (nextTab === 'resources' && tab !== 'resources') props.onResourcesOpen();
+              setTab(nextTab as Tab);
+            }}
+          />
         </div>
         {confirmClose && (
           <div
