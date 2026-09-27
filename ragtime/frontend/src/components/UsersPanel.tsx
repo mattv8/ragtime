@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
-import { Pencil, Shield, UserPlus } from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Shield, UserPlus } from 'lucide-react';
 import { api, ApiError } from '@/api';
 import type {
   AvailableModel,
@@ -32,20 +32,15 @@ import {
   type ChartOptions,
 } from 'chart.js';
 import { Bar, Chart, Line } from 'react-chartjs-2';
-import { WorkspaceRowList } from './shared/WorkspaceRowList';
-import { UserConversationRowList } from './shared/UserConversationRowList';
 import { DataTable, type DataTableColumn, type TableSortConfig } from './shared/DataTable';
-import { DeleteConfirmButton } from './DeleteConfirmButton';
-import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { useToast, ToastContainer } from './shared/Toast';
-import { CheckboxDropdown } from './shared/CheckboxDropdown';
 import { formatProviderDisplayName, formatModelDisplayName } from '@/utils/modelDisplay';
 import {
   calculateConversationContextUsage,
   parseStoredModelIdentifier,
 } from '@/utils/contextUsage';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
-import { UserPoliciesModal } from './shared/UserPoliciesModal';
+import { UserManagementModal } from './users/UserManagementModal';
 import { subscribeToThemeChanges } from '@/theme';
 import {
   contentProtectionApi,
@@ -109,6 +104,13 @@ function formatDateTime(value: string | null | undefined): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'n/a';
   return date.toLocaleString();
+}
+
+function compareUsersByIdentity(a: User, b: User): number {
+  const name = (a.display_name || a.username).localeCompare(b.display_name || b.username);
+  if (name !== 0) return name;
+  const username = a.username.localeCompare(b.username);
+  return username !== 0 ? username : a.id.localeCompare(b.id);
 }
 
 function toEpochMs(value: string | null | undefined): number {
@@ -186,37 +188,11 @@ function paginate<T>(
   return { pageItems: items.slice(start, start + pageSize), totalPages, safePage };
 }
 
-function isInternalAuthGroup(group: AuthGroup): boolean {
-  return group.provider === 'local_managed';
-}
-
-function getUserManualGroupIds(user: User): string[] {
-  return user.manual_group_ids ?? user.local_group_ids ?? [];
-}
-
-function formatGroupIdentifierForDisplay(identifier: string): string {
-  const firstPart = identifier.split(',', 1)[0] || identifier;
-  if (firstPart.includes('=')) {
-    return firstPart.split('=').slice(1).join('=') || identifier;
-  }
-  return firstPart;
-}
-
 type PanelTab = 'management' | 'usage';
 type TrendTab = 'reliability' | 'daily-chart' | 'daily-table';
 type UsageMetric = 'requests' | 'tokens';
 type McpUsageTab = 'chart' | 'table';
-type ManagementSortKey =
-  | 'user'
-  | 'auth'
-  | 'chats'
-  | 'workspaces'
-  | 'memberships'
-  | 'workspaceChats'
-  | 'liveInterrupted'
-  | 'storage'
-  | 'role'
-  | 'actions';
+type ManagementSortKey = 'user' | 'role' | 'mfa' | 'resources';
 type UsageSortKey = 'user' | 'requests' | 'input' | 'output' | 'total' | 'completed' | 'failed';
 type ProviderSortKey = 'provider' | 'model' | 'source' | 'requests' | 'input' | 'output' | 'total';
 type DailySortKey =
@@ -250,8 +226,6 @@ interface UsersPanelProps {
   onOpenChat?: (conversationId: string) => void;
   onGenerationPolicyUpdated?: (user: User) => void | Promise<void>;
 }
-
-type ExpandedUserDetailMode = 'workspaces' | 'chats';
 
 interface DerivedUserStats {
   user: User;
@@ -334,205 +308,6 @@ function TablePager({
   );
 }
 
-interface UserEditModalProps {
-  user: User;
-  authGroups: AuthGroup[];
-  actionLoading: string | null;
-  onRoleChange: (userId: string, role: 'admin' | 'user') => Promise<void>;
-  onResetRoleOverride: (userId: string) => Promise<void>;
-  onLocalGroupsChange: (userId: string, groupIds: string[]) => Promise<void>;
-  onResetMfa: (userId: string) => Promise<void>;
-  onClose: () => void;
-}
-
-type UserEditTab = 'overrides' | 'mfa';
-
-function UserEditModal({
-  user,
-  authGroups,
-  actionLoading,
-  onRoleChange,
-  onResetRoleOverride,
-  onLocalGroupsChange,
-  onResetMfa,
-  onClose,
-}: UserEditModalProps) {
-  const [tab, setTab] = useState<UserEditTab>('overrides');
-  const internalAuthGroups = authGroups.filter(isInternalAuthGroup);
-  const manualGroupIds = getUserManualGroupIds(user);
-  const ldapGroupIds = new Set(user.ldap_group_ids ?? []);
-  const ldapAuthGroups = authGroups.filter((group) => group.provider === 'ldap');
-  const ldapGroups = ldapAuthGroups.filter((group) => ldapGroupIds.has(group.id));
-  const ldapGroupDns = new Set(ldapGroups.map((group) => group.source_dn).filter(Boolean));
-  const groupOptions = [
-    ...internalAuthGroups.map((group) => {
-      const badges: string[] = [];
-      if (group.is_logon_group) badges.push('Logon');
-      if (group.role === 'admin') badges.push('Admin');
-      return {
-        id: group.id,
-        label: group.display_name,
-        badge: badges.length ? badges : undefined,
-      };
-    }),
-    ...ldapAuthGroups.map((group) => {
-      const badges: string[] = ['LDAP'];
-      if (group.is_logon_group) badges.push('Logon');
-      if (group.role === 'admin') badges.push('Admin');
-      return {
-        id: group.id,
-        label: group.display_name,
-        badge: badges,
-        disabled: true,
-        checked: ldapGroupIds.has(group.id),
-      };
-    }),
-    ...(user.cached_groups ?? [])
-      .filter((groupDn) => !ldapGroupDns.has(groupDn))
-      .map((groupDn) => ({
-        id: `cached-ldap:${groupDn}`,
-        label: formatGroupIdentifierForDisplay(groupDn),
-        badge: 'LDAP',
-        disabled: true,
-        checked: true,
-      })),
-  ];
-
-  const mfaEnabled = Boolean(user.mfa_enabled);
-  const mfaRequired = Boolean(user.mfa_required);
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>{user.display_name || user.username}</h3>
-          <button className="modal-close" onClick={onClose}>
-            &times;
-          </button>
-        </div>
-        <div className="modal-body">
-          <div
-            className="wizard-tabs"
-            role="tablist"
-            aria-label="Edit user"
-            style={{ display: 'flex', marginBottom: 'var(--space-lg)' }}
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'overrides'}
-              className={`wizard-tab ${tab === 'overrides' ? 'active' : ''}`}
-              style={{ flex: 1 }}
-              onClick={() => setTab('overrides')}
-            >
-              Overrides
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'mfa'}
-              className={`wizard-tab ${tab === 'mfa' ? 'active' : ''}`}
-              style={{ flex: 1 }}
-              onClick={() => setTab('mfa')}
-            >
-              Two-factor
-            </button>
-          </div>
-
-          {tab === 'overrides' ? (
-            <>
-              <div className="form-group">
-                <label>Role</label>
-                <select
-                  value={user.role}
-                  disabled={actionLoading === user.id}
-                  onChange={(e) => void onRoleChange(user.id, e.target.value as 'admin' | 'user')}
-                >
-                  <option value="user">user</option>
-                  <option value="admin">admin</option>
-                </select>
-                {user.role_manually_set && (
-                  <div className="users-role-override-row" style={{ marginTop: 6 }}>
-                    <span className="users-role-override-badge">Role overridden.</span>
-                    <button
-                      type="button"
-                      className="users-role-reset-btn"
-                      disabled={actionLoading === user.id}
-                      onClick={() => void onResetRoleOverride(user.id)}
-                    >
-                      Reset to default
-                    </button>
-                  </div>
-                )}
-              </div>
-              {groupOptions.length > 0 ? (
-                <div className="form-group">
-                  <label>Group Memberships</label>
-                  <CheckboxDropdown
-                    options={groupOptions}
-                    selectedIds={manualGroupIds}
-                    onChange={(ids) => void onLocalGroupsChange(user.id, ids)}
-                    placeholder="No manual groups assigned"
-                    searchPlaceholder="Search Group Memberships..."
-                    disabled={actionLoading === user.id}
-                  />
-                  <p className="field-help">
-                    Internal groups can be assigned manually. LDAP groups are read-only here and
-                    stay controlled by directory sync.
-                  </p>
-                </div>
-              ) : (
-                user.auth_provider === 'ldap' && (
-                  <div className="form-group">
-                    <label>Group Memberships</label>
-                    <p className="field-help">
-                      No LDAP group memberships are currently cached for this user.
-                    </p>
-                  </div>
-                )
-              )}
-            </>
-          ) : (
-            <div className="form-group">
-              <label>Two-factor authentication</label>
-              {mfaEnabled ? (
-                <>
-                  <p className="field-help" style={{ marginTop: 0 }}>
-                    Enabled · {user.recovery_codes_remaining ?? 0} recovery code
-                    {(user.recovery_codes_remaining ?? 0) === 1 ? '' : 's'} remaining.
-                    {mfaRequired ? ' Required by policy.' : ''}
-                  </p>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-danger"
-                    disabled={actionLoading === user.id}
-                    onClick={() => void onResetMfa(user.id)}
-                  >
-                    {actionLoading === user.id ? 'Resetting...' : 'Reset MFA'}
-                  </button>
-                  <p className="field-help">
-                    Resetting removes this user's authenticator apps, passkeys, and recovery codes.
-                    They must enroll again{mfaRequired ? ' on next login' : ''}.
-                  </p>
-                </>
-              ) : mfaRequired ? (
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Not enrolled. Two-factor is required by policy, so this user must enroll on next
-                  login.
-                </p>
-              ) : (
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Two-factor authentication is not enabled for this user.
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function UsersPanel({
   currentUser,
   onOpenWorkspace,
@@ -544,6 +319,9 @@ export function UsersPanel({
   const [users, setUsers] = useState<User[]>([]);
   const [authGroups, setAuthGroups] = useState<AuthGroup[]>([]);
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
+  const [workspacesLoadState, setWorkspacesLoadState] = useState<'loading' | 'loaded' | 'error'>(
+    'loading',
+  );
   const [workspaceStateById, setWorkspaceStateById] = useState<
     Record<string, WorkspaceConversationStateSummaryItem>
   >({});
@@ -557,7 +335,10 @@ export function UsersPanel({
   const [toasts, toast] = useToast();
 
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
-  const [policiesUserId, setPoliciesUserId] = useState<string | null>(null);
+  const [directorySearch, setDirectorySearch] = useState('');
+  const [directoryProvider, setDirectoryProvider] = useState('all');
+  const [directoryRole, setDirectoryRole] = useState('all');
+  const [directoryMfa, setDirectoryMfa] = useState('all');
   const [contentProtectionConfig, setContentProtectionConfig] =
     useState<ContentProtectionConfig | null>(null);
   const [contentProtectionLoadFailed, setContentProtectionLoadFailed] = useState(false);
@@ -630,8 +411,8 @@ export function UsersPanel({
   const [mcpUsersPageSize, setMcpUsersPageSize] = useState(10);
 
   const [managementSort, setManagementSort] = useState<TableSortConfig<ManagementSortKey>>({
-    key: 'chats',
-    direction: 'desc',
+    key: 'user',
+    direction: 'asc',
   });
   const [usageSort, setUsageSort] = useState<TableSortConfig<UsageSortKey>>({
     key: 'requests',
@@ -650,10 +431,6 @@ export function UsersPanel({
     direction: 'desc',
   });
 
-  const [expandedUserDetail, setExpandedUserDetail] = useState<{
-    userId: string;
-    mode: ExpandedUserDetailMode;
-  } | null>(null);
   const [standaloneChatsByUserId, setStandaloneChatsByUserId] = useState<
     Record<string, ConversationSummary[]>
   >({});
@@ -661,6 +438,7 @@ export function UsersPanel({
   const [standaloneChatsLoadingUserId, setStandaloneChatsLoadingUserId] = useState<string | null>(
     null,
   );
+  const [standaloneChatsError, setStandaloneChatsError] = useState<string | null>(null);
   const [workspaceLastMessageAtById, setWorkspaceLastMessageAtById] = useState<
     Record<string, string | null>
   >({});
@@ -678,6 +456,9 @@ export function UsersPanel({
   const workspaceStateRequestIdRef = useRef(0);
 
   const [storageByWorkspaceId, setStorageByWorkspaceId] = useState<Record<string, number>>({});
+  const [storageFailuresByWorkspaceId, setStorageFailuresByWorkspaceId] = useState<
+    Record<string, string>
+  >({});
   const [storageLoadingByUserId, setStorageLoadingByUserId] = useState<Record<string, boolean>>({});
 
   const loadUsers = useCallback(async () => {
@@ -735,27 +516,34 @@ export function UsersPanel({
   }, []);
 
   const loadWorkspaces = useCallback(async () => {
-    const all: UserSpaceWorkspace[] = [];
-    let offset = 0;
-    const limit = 50;
+    setWorkspacesLoadState('loading');
+    try {
+      const all: UserSpaceWorkspace[] = [];
+      let offset = 0;
+      const limit = 50;
 
-    while (true) {
-      const page = await api.listUserSpaceWorkspaces(offset, limit, true);
-      all.push(...page.items);
-      offset += page.items.length;
-      if (all.length >= page.total || page.items.length === 0) {
-        break;
+      while (true) {
+        const page = await api.listUserSpaceWorkspaces(offset, limit, true);
+        all.push(...page.items);
+        offset += page.items.length;
+        if (all.length >= page.total || page.items.length === 0) {
+          break;
+        }
       }
+
+      setWorkspaces(all);
+      setWorkspacesLoadState('loaded');
+
+      if (all.length === 0) {
+        setWorkspaceStateById({});
+        return;
+      }
+
+      void loadWorkspaceStateSummary(all.map((w) => w.id));
+    } catch (error) {
+      setWorkspacesLoadState('error');
+      throw error;
     }
-
-    setWorkspaces(all);
-
-    if (all.length === 0) {
-      setWorkspaceStateById({});
-      return;
-    }
-
-    void loadWorkspaceStateSummary(all.map((w) => w.id));
   }, [loadWorkspaceStateSummary]);
 
   const loadManagementData = useCallback(async () => {
@@ -778,7 +566,9 @@ export function UsersPanel({
     const policyColumn = document.getElementById('user-policies');
     if (!policyColumn) return;
     policyLinkFocused.current = true;
-    policyColumn?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (typeof policyColumn.scrollIntoView === 'function') {
+      policyColumn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
     policyColumn?.focus();
   }, [loading]);
 
@@ -863,6 +653,15 @@ export function UsersPanel({
       });
   }, []);
 
+  const retryContentProtectionConfig = useCallback(async () => {
+    setContentProtectionLoadFailed(false);
+    try {
+      setContentProtectionConfig(await contentProtectionApi.getConfig());
+    } catch {
+      setContentProtectionLoadFailed(true);
+    }
+  }, []);
+
   // Poll workspace live/interrupted state while management tab is visible
   useEffect(() => {
     if (activeTab !== 'management') return;
@@ -933,30 +732,7 @@ export function UsersPanel({
       setUsers((prev) => prev.filter((u) => u.id !== userId));
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Failed to delete user');
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const handleResetMfa = async (userId: string) => {
-    if (
-      !window.confirm(
-        'Reset MFA for this user? They will need to enroll again if policy requires it.',
-      )
-    ) {
-      return;
-    }
-    setActionLoading(userId);
-    try {
-      await api.resetUserMfa(userId);
-      setUsers((prev) =>
-        prev.map((u) =>
-          u.id === userId ? { ...u, mfa_enabled: false, recovery_codes_remaining: 0 } : u,
-        ),
-      );
-      toast.success('MFA reset');
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Failed to reset MFA');
+      throw e;
     } finally {
       setActionLoading(null);
     }
@@ -1080,6 +856,11 @@ export function UsersPanel({
             }
             return next;
           });
+          setStorageFailuresByWorkspaceId((prev) => {
+            const next = { ...prev };
+            for (const workspaceId of completedWorkspaceIds) delete next[workspaceId];
+            return next;
+          });
         }
 
         if (nextError) {
@@ -1129,12 +910,22 @@ export function UsersPanel({
       );
 
       const updates: Record<string, number> = {};
+      const failures: Record<string, string> = {};
       for (const item of settled) {
         if (item.status === 'fulfilled') {
           updates[item.value.workspaceId] = item.value.total;
+        } else {
+          const workspaceId = missing[settled.indexOf(item)];
+          failures[workspaceId] =
+            item.reason instanceof Error ? item.reason.message : 'Storage sampling failed';
         }
       }
       setStorageByWorkspaceId((prev) => ({ ...prev, ...updates }));
+      setStorageFailuresByWorkspaceId((prev) => {
+        const next = { ...prev, ...failures };
+        for (const workspaceId of Object.keys(updates)) delete next[workspaceId];
+        return next;
+      });
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Failed to compute workspace storage usage');
     } finally {
@@ -1163,6 +954,7 @@ export function UsersPanel({
     setStandaloneChatsByUserId({});
     setStandaloneChatsLoaded(false);
     setStandaloneChatsLoadingUserId(null);
+    setStandaloneChatsError(null);
   }, [workspaceConversationIdSet]);
 
   const loadStandaloneChatsSnapshot = useCallback(async () => {
@@ -1199,6 +991,7 @@ export function UsersPanel({
 
     setStandaloneChatsByUserId(grouped);
     setStandaloneChatsLoaded(true);
+    setStandaloneChatsError(null);
   }, [standaloneChatsLoaded, workspaceConversationIdSet]);
 
   const loadStandaloneChatsForUser = useCallback(
@@ -1215,25 +1008,16 @@ export function UsersPanel({
           [userId]: prev[userId] ?? [],
         }));
       } catch (e: unknown) {
-        toast.error(e instanceof Error ? e.message : 'Failed to load user chats');
+        const message = e instanceof Error ? e.message : 'Failed to load user chats';
+        setStandaloneChatsError(message);
+        toast.error(message);
+        throw e;
       } finally {
         setStandaloneChatsLoadingUserId((prev) => (prev === userId ? null : prev));
       }
     },
     [loadStandaloneChatsSnapshot, standaloneChatsByUserId, toast],
   );
-
-  useEffect(() => {
-    if (activeTab !== 'management') {
-      return;
-    }
-    if (standaloneChatsLoaded) {
-      return;
-    }
-    void loadStandaloneChatsSnapshot().catch((e: unknown) => {
-      toast.error(e instanceof Error ? e.message : 'Failed to load user chats');
-    });
-  }, [activeTab, loadStandaloneChatsSnapshot, standaloneChatsLoaded, toast]);
 
   const standaloneChatCountsByUserId = useMemo(
     () =>
@@ -1246,12 +1030,6 @@ export function UsersPanel({
       ),
     [standaloneChatsByUserId],
   );
-
-  const toggleUserWorkspaceDetails = useCallback((userId: string) => {
-    setExpandedUserDetail((prev) =>
-      prev?.userId === userId && prev.mode === 'workspaces' ? null : { userId, mode: 'workspaces' },
-    );
-  }, []);
 
   useEffect(() => {
     setWorkspaceLastMessageAtById((prev) => {
@@ -1388,29 +1166,13 @@ export function UsersPanel({
     [toast, workspaceLastMessageAtById, workspaces],
   );
 
-  const toggleUserChatDetails = useCallback(
-    async (userId: string) => {
-      const isAlreadyExpanded =
-        expandedUserDetail?.userId === userId && expandedUserDetail.mode === 'chats';
-      if (isAlreadyExpanded) {
-        setExpandedUserDetail(null);
-        return;
-      }
-
-      setExpandedUserDetail({ userId, mode: 'chats' });
-      if (!standaloneChatsByUserId[userId]) {
-        await loadStandaloneChatsForUser(userId);
-      }
+  const loadResourcesForUser = useCallback(
+    (userId: string) => {
+      void loadStandaloneChatsForUser(userId).catch(() => undefined);
+      void loadWorkspaceLastMessageTimesForUser(userId);
     },
-    [expandedUserDetail, loadStandaloneChatsForUser, standaloneChatsByUserId],
+    [loadStandaloneChatsForUser, loadWorkspaceLastMessageTimesForUser],
   );
-
-  useEffect(() => {
-    if (!expandedUserDetail || expandedUserDetail.mode !== 'workspaces') {
-      return;
-    }
-    void loadWorkspaceLastMessageTimesForUser(expandedUserDetail.userId);
-  }, [expandedUserDetail, loadWorkspaceLastMessageTimesForUser]);
 
   const handleDeleteConversation = useCallback(
     async (conversationId: string) => {
@@ -1513,12 +1275,7 @@ export function UsersPanel({
           storageCoverage: owned.length === 0 ? 1 : storageKnownCount / owned.length,
         };
       })
-      .sort((a, b) => {
-        const aChats = a.usage?.total_requests || 0;
-        const bChats = b.usage?.total_requests || 0;
-        if (bChats !== aChats) return bChats - aChats;
-        return a.user.username.localeCompare(b.user.username);
-      });
+      .sort((a, b) => compareUsersByIdentity(a.user, b.user));
   }, [users, usageByUserId, workspaces, workspaceStateById, storageByWorkspaceId]);
 
   const availableRanges = useMemo(() => {
@@ -2204,32 +1961,27 @@ export function UsersPanel({
   const sortedManagementRows = useMemo(() => {
     const rows = [...userStatsRows];
     return rows.sort((a, b) => {
-      const aFail = (a.usage?.failed_count || 0) + (a.usage?.interrupted_count || 0);
-      const bFail = (b.usage?.failed_count || 0) + (b.usage?.interrupted_count || 0);
-
       const sortValueA: Record<ManagementSortKey, string | number | null> = {
         user: a.user.display_name || a.user.username,
-        auth: a.user.auth_provider,
-        chats: standaloneChatCountsByUserId[a.user.id] ?? 0,
-        workspaces: a.ownedWorkspaceCount,
-        memberships: a.memberWorkspaceCount,
-        workspaceChats: a.workspaceConversationCount,
-        liveInterrupted: a.liveWorkspaceCount + a.interruptedWorkspaceCount,
-        storage: a.storageBytesKnown,
         role: a.user.role,
-        actions: null,
+        mfa: a.user.mfa_enabled ? 0 : a.user.mfa_required ? 1 : 2,
+        resources:
+          workspacesLoadState === 'loaded' && standaloneChatsLoaded
+            ? a.ownedWorkspaceCount +
+              a.memberWorkspaceCount +
+              (standaloneChatCountsByUserId[a.user.id] ?? 0)
+            : null,
       };
       const sortValueB: Record<ManagementSortKey, string | number | null> = {
         user: b.user.display_name || b.user.username,
-        auth: b.user.auth_provider,
-        chats: standaloneChatCountsByUserId[b.user.id] ?? 0,
-        workspaces: b.ownedWorkspaceCount,
-        memberships: b.memberWorkspaceCount,
-        workspaceChats: b.workspaceConversationCount,
-        liveInterrupted: b.liveWorkspaceCount + b.interruptedWorkspaceCount,
-        storage: b.storageBytesKnown,
         role: b.user.role,
-        actions: null,
+        mfa: b.user.mfa_enabled ? 0 : b.user.mfa_required ? 1 : 2,
+        resources:
+          workspacesLoadState === 'loaded' && standaloneChatsLoaded
+            ? b.ownedWorkspaceCount +
+              b.memberWorkspaceCount +
+              (standaloneChatCountsByUserId[b.user.id] ?? 0)
+            : null,
       };
 
       const result = compareSortValues(
@@ -2238,14 +1990,16 @@ export function UsersPanel({
         managementSort.direction,
       );
       if (result !== 0) return result;
-      // Preserve previous relevance as deterministic tiebreaker
-      if ((b.usage?.total_requests || 0) !== (a.usage?.total_requests || 0)) {
-        return (b.usage?.total_requests || 0) - (a.usage?.total_requests || 0);
-      }
-      if (bFail !== aFail) return bFail - aFail;
-      return a.user.username.localeCompare(b.user.username);
+      return compareUsersByIdentity(a.user, b.user);
     });
-  }, [managementSort.direction, managementSort.key, standaloneChatCountsByUserId, userStatsRows]);
+  }, [
+    managementSort.direction,
+    managementSort.key,
+    standaloneChatCountsByUserId,
+    standaloneChatsLoaded,
+    userStatsRows,
+    workspacesLoadState,
+  ]);
 
   const sortedUsageRows = useMemo(() => {
     const rows = [...usageSummary];
@@ -2344,42 +2098,6 @@ export function UsersPanel({
     });
   }, [dailyCombinedRows, dailySort.direction, dailySort.key]);
 
-  const managementColumns = useMemo<DataTableColumn<DerivedUserStats, ManagementSortKey>[]>(
-    () => [
-      { key: 'user', label: 'User' },
-      { key: 'auth', label: 'Auth' },
-      { key: 'chats', label: 'Chats', headerClassName: 'num', cellClassName: 'num' },
-      { key: 'workspaces', label: 'Workspaces', headerClassName: 'num', cellClassName: 'num' },
-      { key: 'memberships', label: 'Memberships', headerClassName: 'num', cellClassName: 'num' },
-      {
-        key: 'workspaceChats',
-        label: 'Workspace Chats',
-        headerClassName: 'num',
-        cellClassName: 'num',
-      },
-      {
-        key: 'liveInterrupted',
-        label: 'Live/Interrupted',
-        headerClassName: 'num',
-        cellClassName: 'num',
-      },
-      { key: 'storage', label: 'Storage', headerClassName: 'num', cellClassName: 'num' },
-      { key: 'role', label: 'Role' },
-      {
-        key: 'actions',
-        label: (
-          <span id="user-policies" tabIndex={-1}>
-            Actions
-          </span>
-        ),
-        headerClassName: 'num',
-        cellClassName: 'num',
-        sortable: false,
-      },
-    ],
-    [],
-  );
-
   const usageColumns = useMemo<DataTableColumn<UserUsageSummary, UsageSortKey>[]>(
     () => [
       { key: 'user', label: 'User' },
@@ -2442,7 +2160,26 @@ export function UsersPanel({
     setter({ key, direction });
   };
 
-  const managementPaging = paginate(sortedManagementRows, managementPage, managementPageSize);
+  const filteredManagementRows = useMemo(
+    () =>
+      sortedManagementRows.filter(({ user }) => {
+        const query = directorySearch.trim().toLowerCase();
+        const matchesQuery =
+          !query ||
+          [user.display_name, user.username, user.email].some((value) =>
+            value?.toLowerCase().includes(query),
+          );
+        return (
+          matchesQuery &&
+          (directoryProvider === 'all' || user.auth_provider === directoryProvider) &&
+          (directoryRole === 'all' || user.role === directoryRole) &&
+          (directoryMfa === 'all' ||
+            (directoryMfa === 'enabled' ? Boolean(user.mfa_enabled) : !user.mfa_enabled))
+        );
+      }),
+    [sortedManagementRows, directorySearch, directoryProvider, directoryRole, directoryMfa],
+  );
+  const managementPaging = paginate(filteredManagementRows, managementPage, managementPageSize);
   const usagePaging = paginate(sortedUsageRows, usagePage, usagePageSize);
   const providerPaging = paginate(sortedProviderRows, providerPage, providerPageSize);
   const dailyPaging = paginate(sortedDailyRows, dailyPage, dailyPageSize);
@@ -2467,6 +2204,24 @@ export function UsersPanel({
   useEffect(() => {
     if (mcpUsersPage !== mcpUsersPaging.safePage) setMcpUsersPage(mcpUsersPaging.safePage);
   }, [mcpUsersPage, mcpUsersPaging.safePage]);
+
+  void actionLoading;
+  void handleGenerationPolicyChange;
+  const toggleManagementSort = (key: ManagementSortKey) => {
+    setManagementSort((current) => ({
+      key,
+      direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc',
+    }));
+    setManagementPage(1);
+  };
+  void handleRoleChange;
+  void handleResetRoleOverride;
+  void handleLocalGroupsChange;
+  void totalWorkspaces;
+  void liveWorkspaces;
+  void interruptedWorkspaces;
+  void contentProtectionKnownDisabled;
+  void contentProtectionModeForUser;
 
   return (
     <div id="users-admin-panel" className="users-panel" data-workbench-boundary="users-panel">
@@ -2515,376 +2270,223 @@ export function UsersPanel({
         </div>
       ) : activeTab === 'management' ? (
         <>
-          <div className="users-summary-row">
-            <div className="users-summary-card">
-              <div className="users-summary-value">{users.length}</div>
-              <div className="users-summary-label">Users</div>
-            </div>
-            <div className="users-summary-card">
-              <div className="users-summary-value">{totalWorkspaces}</div>
-              <div className="users-summary-label">Workspaces</div>
-            </div>
-            <div className="users-summary-card">
-              <div className="users-summary-value">
-                {liveWorkspaces}
-                {liveWorkspaces > 0 && (
-                  <MiniLoadingSpinner variant="icon" size={14} className="users-live-spin" />
-                )}
-              </div>
-              <div className="users-summary-label">Live Task Workspaces</div>
-            </div>
-            <div className="users-summary-card">
-              <div className="users-summary-value">{interruptedWorkspaces}</div>
-              <div className="users-summary-label">Interrupted Workspaces</div>
-            </div>
-          </div>
-
-          <div className="card">
+          <section id="users-directory" className="card" data-users-directory>
             <div className="card-header">
-              <h3>User Accounts</h3>
+              <h3 id="user-policies" tabIndex={-1}>
+                User directory
+              </h3>
             </div>
             <div className="card-body users-compact-card-body">
-              {userStatsRows.length === 0 ? (
-                <p className="muted-text">No users found.</p>
+              <div className="users-admin-table-actions" data-users-directory-toolbar>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowCreateLocalUserModal(true)}
+                >
+                  <UserPlus size={16} />
+                  Create internal user
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowManageAuthGroupsModal(true)}
+                >
+                  <Shield size={16} />
+                  Manage groups
+                </button>
+                <input
+                  aria-label="Search users"
+                  placeholder="Search name, username, or email"
+                  value={directorySearch}
+                  onChange={(e) => {
+                    setDirectorySearch(e.target.value);
+                    setManagementPage(1);
+                  }}
+                />
+                <select
+                  aria-label="Provider filter"
+                  value={directoryProvider}
+                  onChange={(e) => {
+                    setDirectoryProvider(e.target.value);
+                    setManagementPage(1);
+                  }}
+                >
+                  <option value="all">All providers</option>
+                  <option value="local_managed">Internal</option>
+                  <option value="local">Local admin</option>
+                  <option value="ldap">LDAP</option>
+                </select>
+                <select
+                  aria-label="Role filter"
+                  value={directoryRole}
+                  onChange={(e) => {
+                    setDirectoryRole(e.target.value);
+                    setManagementPage(1);
+                  }}
+                >
+                  <option value="all">All roles</option>
+                  <option value="admin">Admins</option>
+                  <option value="user">Users</option>
+                </select>
+                <select
+                  aria-label="MFA filter"
+                  value={directoryMfa}
+                  onChange={(e) => {
+                    setDirectoryMfa(e.target.value);
+                    setManagementPage(1);
+                  }}
+                >
+                  <option value="all">Any MFA</option>
+                  <option value="enabled">MFA enabled</option>
+                  <option value="disabled">MFA not enrolled</option>
+                </select>
+              </div>
+              <div className="users-summary-row" data-users-directory-summary>
+                <div className="users-summary-card">
+                  <div className="users-summary-value">{users.length}</div>
+                  <div className="users-summary-label">Users</div>
+                </div>
+                <div className="users-summary-card">
+                  <div className="users-summary-value">
+                    {users.filter((u) => u.role === 'admin').length}
+                  </div>
+                  <div className="users-summary-label">Admins</div>
+                </div>
+                <div className="users-summary-card">
+                  <div className="users-summary-value">
+                    {users.filter((u) => u.mfa_required && !u.mfa_enabled).length}
+                  </div>
+                  <div className="users-summary-label">MFA enrollment pending</div>
+                </div>
+              </div>
+              {filteredManagementRows.length === 0 ? (
+                <p className="muted-text">
+                  {users.length === 0 ? 'No users found.' : 'No users match these filters.'}
+                </p>
               ) : (
                 <>
-                  <div className="users-table-wrap users-table-compact-wrap">
-                    <DataTable
-                      rows={managementPaging.pageItems}
-                      columns={managementColumns}
-                      sortConfig={managementSort}
-                      onSort={(key) => {
-                        if (key === 'actions') return;
-                        handleSort(managementSort, key as ManagementSortKey, setManagementSort);
-                      }}
-                      renderRow={(row) => {
-                        const user = row.user;
-                        const chatCount = standaloneChatCountsByUserId[user.id] ?? 0;
-                        const failedCount =
-                          (row.usage?.failed_count || 0) + (row.usage?.interrupted_count || 0);
-                        const isRowSelf = isSelf(user.id);
-                        const sortedOwnedWorkspaces = [...row.ownedWorkspaces].sort(
-                          (left, right) => {
-                            const leftLast = toEpochMs(workspaceLastMessageAtById[left.id]);
-                            const rightLast = toEpochMs(workspaceLastMessageAtById[right.id]);
-                            if (rightLast !== leftLast) {
-                              return rightLast - leftLast;
+                  <div className="users-table-wrap">
+                    <table className="users-table users-table-compact">
+                      <thead>
+                        <tr>
+                          {(
+                            [
+                              ['user', 'User'],
+                              ['role', 'Role'],
+                              ['mfa', 'MFA'],
+                            ] as const
+                          ).map(([key, label]) => (
+                            <th
+                              key={key}
+                              aria-sort={
+                                managementSort.key === key
+                                  ? managementSort.direction === 'asc'
+                                    ? 'ascending'
+                                    : 'descending'
+                                  : 'none'
+                              }
+                            >
+                              <button
+                                type="button"
+                                className="users-directory-sort"
+                                aria-label={`Sort by ${label}`}
+                                onClick={() => toggleManagementSort(key)}
+                              >
+                                {label}
+                              </button>
+                            </th>
+                          ))}
+                          <th>AI access</th>
+                          <th
+                            aria-sort={
+                              managementSort.key === 'resources'
+                                ? managementSort.direction === 'asc'
+                                  ? 'ascending'
+                                  : 'descending'
+                                : 'none'
                             }
-                            return left.name.localeCompare(right.name);
-                          },
-                        );
-                        const sortedStandaloneChats = [
-                          ...(standaloneChatsByUserId[user.id] ?? []),
-                        ].sort((left, right) => {
-                          const updatedDiff =
-                            toEpochMs(right.updated_at) - toEpochMs(left.updated_at);
-                          if (updatedDiff !== 0) {
-                            return updatedDiff;
-                          }
-                          return (left.title ?? '').localeCompare(right.title ?? '');
-                        });
-
-                        return (
-                          <Fragment key={user.id}>
-                            <tr className={isRowSelf ? 'users-row-self' : ''}>
+                          >
+                            <button
+                              type="button"
+                              className="users-directory-sort"
+                              aria-label="Sort by Resources"
+                              onClick={() => toggleManagementSort('resources')}
+                            >
+                              Resources
+                            </button>
+                          </th>
+                          <th>Manage</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {managementPaging.pageItems.map((row) => {
+                          const u = row.user;
+                          return (
+                            <tr key={u.id} data-user-directory-row={u.id}>
                               <td>
                                 <div className="users-cell-identity">
                                   <span className="users-username">
-                                    {user.display_name || user.username}
-                                    {isRowSelf && <span className="users-you-badge">you</span>}
+                                    {u.display_name || u.username}
+                                    {isSelf(u.id) && <span className="users-you-badge">you</span>}
                                   </span>
-                                  <span className="users-handle">@{user.username}</span>
+                                  <span className="users-handle">
+                                    @{u.username} · {u.auth_provider}
+                                  </span>
                                 </div>
                               </td>
                               <td>
-                                <span
-                                  className={`users-auth-badge users-auth-${user.auth_provider}`}
-                                >
-                                  {user.auth_provider}
-                                </span>
-                                {user.source_provider &&
-                                  user.source_provider !== user.auth_provider && (
-                                    <div className="users-subnum">
-                                      source: {user.source_provider}
-                                    </div>
-                                  )}
-                                {user.source_synced_at && (
-                                  <div className="users-subnum">
-                                    synced {new Date(user.source_synced_at).toLocaleDateString()}
-                                  </div>
-                                )}
-                              </td>
-                              <td className="num">
-                                <button
-                                  type="button"
-                                  className="users-link-btn"
-                                  onClick={() => {
-                                    void toggleUserChatDetails(user.id);
-                                  }}
-                                  title="Show non-workspace chats"
-                                >
-                                  {formatNumber(chatCount)}
-                                </button>
-                                {failedCount > 0 && (
-                                  <div className="users-subnum">{failedCount} fail/int</div>
-                                )}
-                              </td>
-                              <td className="num">
-                                <button
-                                  type="button"
-                                  className="users-link-btn"
-                                  onClick={() => toggleUserWorkspaceDetails(user.id)}
-                                  title="Show workspace operations"
-                                >
-                                  {row.ownedWorkspaceCount}
-                                </button>
-                              </td>
-                              <td className="num">{row.memberWorkspaceCount}</td>
-                              <td className="num">{row.workspaceConversationCount}</td>
-                              <td className="num">
-                                {row.liveWorkspaceCount > 0 && (
-                                  <MiniLoadingSpinner
-                                    variant="icon"
-                                    size={12}
-                                    className="users-live-spin"
-                                    title="Live task running"
-                                  />
-                                )}
-                                {row.liveWorkspaceCount}/{row.interruptedWorkspaceCount}
-                              </td>
-                              <td className="num">
-                                {row.ownedWorkspaceCount === 0 ? (
-                                  <span className="users-action-muted">-</span>
-                                ) : row.storageCoverage > 0 ? (
-                                  <div>
-                                    <div>{formatBytes(row.storageBytesKnown)}</div>
-                                    {row.storageCoverage < 1 && (
-                                      <div className="users-subnum">
-                                        {Math.round(row.storageCoverage * 100)}% sampled
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className="btn btn-sm btn-secondary users-btn-inline"
-                                    disabled={storageLoadingByUserId[user.id]}
-                                    onClick={() => handleComputeStorageForUser(user.id)}
-                                  >
-                                    {storageLoadingByUserId[user.id] ? '...' : 'Compute'}
-                                  </button>
+                                <span className="users-role-badge">{u.role}</span>
+                                {u.role_manually_set && (
+                                  <div className="users-subnum">manual override</div>
                                 )}
                               </td>
                               <td>
-                                <span
-                                  className={`users-role-badge${user.role === 'admin' ? ' users-role-admin' : ''}`}
-                                >
-                                  {user.role}
-                                </span>
-                                {user.role_manually_set && (
-                                  <div className="users-subnum">overridden</div>
-                                )}
-                                {getUserManualGroupIds(user).length > 0 && (
-                                  <div className="users-subnum">
-                                    {getUserManualGroupIds(user).length} manual group
-                                    {getUserManualGroupIds(user).length !== 1 ? 's' : ''}
-                                  </div>
-                                )}
-                                {(user.ldap_group_ids?.length ?? 0) > 0 && (
-                                  <div className="users-subnum">
-                                    {user.ldap_group_ids!.length} LDAP group
-                                    {user.ldap_group_ids!.length !== 1 ? 's' : ''}
-                                  </div>
-                                )}
-                                {user.mfa_enabled && (
-                                  <div className="users-subnum">
-                                    MFA enabled ({user.recovery_codes_remaining ?? 0} recovery)
-                                  </div>
-                                )}
-                                {!user.mfa_enabled && user.mfa_required && (
-                                  <div className="users-subnum">MFA required on next login</div>
-                                )}
+                                {u.mfa_enabled
+                                  ? 'Enrolled'
+                                  : u.mfa_required
+                                    ? 'Required'
+                                    : 'Not enrolled'}
                               </td>
-                              <td className="num">
-                                <div
-                                  className="users-confirm-group"
-                                  data-user-policies-cell={user.id}
+                              <td>
+                                <span className="users-subnum">
+                                  Chat:{' '}
+                                  {u.chat_enabled_effective === undefined
+                                    ? 'unknown'
+                                    : u.chat_enabled_effective
+                                      ? 'enabled'
+                                      : 'disabled'}{' '}
+                                  · Space:{' '}
+                                  {u.userspace_generation_enabled_effective === undefined
+                                    ? 'unknown'
+                                    : u.userspace_generation_enabled_effective
+                                      ? 'enabled'
+                                      : 'disabled'}
+                                </span>
+                              </td>
+                              <td>
+                                {workspacesLoadState === 'loaded' && standaloneChatsLoaded
+                                  ? `${row.ownedWorkspaceCount} owned · ${standaloneChatCountsByUserId[u.id] ?? 0} chats · ${row.memberWorkspaceCount} member`
+                                  : 'Resources unknown'}
+                              </td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-secondary"
+                                  onClick={() => setEditingUserId(u.id)}
                                 >
-                                  <span className="users-subnum">
-                                    Chat:{' '}
-                                    {user.chat_enabled === null || user.chat_enabled === undefined
-                                      ? 'inherit'
-                                      : user.chat_enabled
-                                        ? 'enabled'
-                                        : 'disabled'}
-                                    {' · User Space: '}
-                                    {user.userspace_generation_enabled === null ||
-                                    user.userspace_generation_enabled === undefined
-                                      ? 'inherit'
-                                      : user.userspace_generation_enabled
-                                        ? 'enabled'
-                                        : 'disabled'}
-                                    {!contentProtectionKnownDisabled && (
-                                      <>
-                                        {' '}
-                                        ·{' '}
-                                        {contentProtectionLoadFailed
-                                          ? 'Protection: —'
-                                          : `Protection: ${contentProtectionModeForUser(user.id).replace('_classify', '')}`}
-                                      </>
-                                    )}
-                                  </span>
-                                  <button
-                                    id={`user-policies-button-${user.id}`}
-                                    type="button"
-                                    className="btn btn-sm btn-secondary users-btn-inline"
-                                    data-user-policies-button={user.id}
-                                    title="User policies"
-                                    onClick={() => setPoliciesUserId(user.id)}
-                                  >
-                                    <Shield size={13} /> User policies
-                                  </button>
-                                  {!isRowSelf && (
-                                    <>
-                                      <button
-                                        type="button"
-                                        className="btn btn-sm btn-secondary users-btn-inline"
-                                        title="Edit role and groups"
-                                        onClick={() => setEditingUserId(user.id)}
-                                      >
-                                        <Pencil size={13} />
-                                      </button>
-                                      {user.mfa_enabled && (
-                                        <button
-                                          type="button"
-                                          className="btn btn-sm btn-secondary users-btn-inline"
-                                          title="Reset MFA"
-                                          disabled={actionLoading === user.id}
-                                          onClick={() => void handleResetMfa(user.id)}
-                                        >
-                                          MFA
-                                        </button>
-                                      )}
-                                      <DeleteConfirmButton
-                                        onDelete={() => handleDelete(user.id)}
-                                        disabled={actionLoading === user.id}
-                                        deleting={actionLoading === user.id}
-                                        title="Delete user"
-                                      />
-                                    </>
-                                  )}
-                                </div>
+                                  Manage
+                                </button>
                               </td>
                             </tr>
-                            {expandedUserDetail?.userId === user.id && (
-                              <tr key={`${user.id}-details`} className="users-workspace-detail-row">
-                                <td colSpan={10}>
-                                  <div className="users-detail-list-shell">
-                                    {expandedUserDetail.mode === 'workspaces' ? (
-                                      <WorkspaceRowList
-                                        workspaces={sortedOwnedWorkspaces}
-                                        users={users}
-                                        deletingWorkspaceIds={deletingWorkspaceIds}
-                                        onTransfer={handleTransferWorkspace}
-                                        onDelete={handleDeleteWorkspace}
-                                        onSelect={(workspace) => onOpenWorkspace(workspace.id)}
-                                        emptyMessage="No owned workspaces."
-                                        renderMeta={(ws) => {
-                                          const state = workspaceStateById[ws.id];
-                                          const wsStorage = storageByWorkspaceId[ws.id];
-                                          const lastMessageAt =
-                                            workspaceLastMessageAtById[ws.id] ?? null;
-                                          const latestConversation =
-                                            workspaceLastConversationById[ws.id] ?? null;
-                                          const stateLabel = state?.has_live_task
-                                            ? 'live'
-                                            : state?.has_interrupted_task
-                                              ? 'interrupted'
-                                              : 'idle';
-                                          return (
-                                            <span className="users-detail-meta users-detail-meta-workspace admin-ws-item-date">
-                                              <span className="users-detail-col">
-                                                Chats {ws.conversation_ids.length}
-                                              </span>
-                                              <span className="users-detail-col">
-                                                {workspaceLastMessageLoadingByUserId[user.id]
-                                                  ? 'Last message loading'
-                                                  : formatDateTime(lastMessageAt)}
-                                              </span>
-                                              <span className="users-detail-col">
-                                                Context{' '}
-                                                {getConversationContextMeta(latestConversation)}
-                                              </span>
-                                              <span className="users-detail-col">
-                                                Model{' '}
-                                                {latestConversation
-                                                  ? formatModelDisplayName(latestConversation.model)
-                                                  : 'n/a'}
-                                              </span>
-                                              <span className="users-detail-col">
-                                                Status {stateLabel}
-                                              </span>
-                                              <span className="users-detail-col">
-                                                Storage{' '}
-                                                {typeof wsStorage === 'number'
-                                                  ? formatBytes(wsStorage)
-                                                  : 'not sampled'}
-                                              </span>
-                                            </span>
-                                          );
-                                        }}
-                                      />
-                                    ) : (
-                                      <UserConversationRowList
-                                        conversations={sortedStandaloneChats}
-                                        loading={standaloneChatsLoadingUserId === user.id}
-                                        onSelect={(conversation) => onOpenChat?.(conversation.id)}
-                                        onDelete={handleDeleteConversation}
-                                        onCancelTask={handleCancelConversationTask}
-                                        renderMeta={(conversation) => {
-                                          const messageCount =
-                                            'message_count' in conversation
-                                              ? conversation.message_count
-                                              : (conversation.messages?.length ?? 0);
-                                          const taskState = conversation.active_task_id
-                                            ? 'running'
-                                            : 'idle';
-                                          return (
-                                            <span className="users-detail-meta users-detail-meta-chat admin-ws-item-date">
-                                              <span className="users-detail-col">
-                                                Messages {messageCount}
-                                              </span>
-                                              <span className="users-detail-col">
-                                                {formatDateTime(conversation.updated_at)}
-                                              </span>
-                                              <span className="users-detail-col">
-                                                Context {getConversationContextMeta(conversation)}
-                                              </span>
-                                              <span className="users-detail-col">
-                                                Model {formatModelDisplayName(conversation.model)}
-                                              </span>
-                                              <span className="users-detail-col">
-                                                Task {taskState}
-                                              </span>
-                                            </span>
-                                          );
-                                        }}
-                                        emptyMessage="No non-workspace chats for this user."
-                                      />
-                                    )}
-                                  </div>
-                                </td>
-                              </tr>
-                            )}
-                          </Fragment>
-                        );
-                      }}
-                    />
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                   <TablePager
                     page={managementPaging.safePage}
                     totalPages={managementPaging.totalPages}
-                    totalItems={userStatsRows.length}
+                    totalItems={filteredManagementRows.length}
                     pageSize={managementPageSize}
                     onPageChange={setManagementPage}
                     onPageSizeChange={(size) => {
@@ -2892,28 +2494,10 @@ export function UsersPanel({
                       setManagementPage(1);
                     }}
                   />
-                  <div className="users-admin-table-actions">
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() => setShowCreateLocalUserModal(true)}
-                    >
-                      <UserPlus size={16} />
-                      Create Internal User
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() => setShowManageAuthGroupsModal(true)}
-                    >
-                      <Shield size={16} />
-                      Manage Group Memberships
-                    </button>
-                  </div>
                 </>
               )}
             </div>
-          </div>
+          </section>
         </>
       ) : usageLoadedDays === null ? (
         <div className="card">
@@ -3299,38 +2883,48 @@ export function UsersPanel({
 
       {editingUserId !== null &&
         (() => {
-          const editUser = users.find((u) => u.id === editingUserId);
-          if (!editUser) return null;
+          const managedUser = users.find((u) => u.id === editingUserId);
+          if (!managedUser) return null;
           return (
-            <UserEditModal
-              user={editUser}
+            <UserManagementModal
+              user={managedUser}
+              currentUser={currentUser}
               authGroups={authGroups}
-              actionLoading={actionLoading}
-              onRoleChange={handleRoleChange}
-              onResetRoleOverride={handleResetRoleOverride}
-              onLocalGroupsChange={handleLocalGroupsChange}
-              onResetMfa={handleResetMfa}
+              users={users}
+              workspaces={workspaces}
+              chats={standaloneChatsByUserId[managedUser.id] ?? []}
+              chatsLoaded={standaloneChatsLoaded}
+              chatsLoading={standaloneChatsLoadingUserId === managedUser.id}
+              chatsError={standaloneChatsError}
+              workspaceStateById={workspaceStateById}
+              workspaceLastMessageAtById={workspaceLastMessageAtById}
+              workspaceLastConversationById={workspaceLastConversationById}
+              workspaceMetaLoading={workspaceLastMessageLoadingByUserId[managedUser.id] === true}
+              storageByWorkspaceId={storageByWorkspaceId}
+              storageFailuresByWorkspaceId={storageFailuresByWorkspaceId}
+              storageLoading={storageLoadingByUserId[managedUser.id] === true}
+              deletingWorkspaceIds={deletingWorkspaceIds}
+              contentProtectionConfig={contentProtectionConfig}
+              contentProtectionLoadFailed={contentProtectionLoadFailed}
+              onRetryContentProtectionConfig={retryContentProtectionConfig}
               onClose={() => setEditingUserId(null)}
-            />
-          );
-        })()}
-
-      {policiesUserId !== null &&
-        (() => {
-          const policyUser = users.find((user) => user.id === policiesUserId);
-          if (!policyUser) return null;
-          return (
-            <UserPoliciesModal
-              user={policyUser}
-              actionLoading={actionLoading === `generation-policy-${policyUser.id}`}
-              contentProtectionAvailable={contentProtectionConfig !== null}
-              contentProtectionEnabled={contentProtectionEnabled}
-              contentProtectionMode={contentProtectionModeForUser(policyUser.id)}
-              onClose={() => setPoliciesUserId(null)}
-              onGenerationPolicyChange={handleGenerationPolicyChange}
+              onUserUpdated={(updated) =>
+                setUsers((current) => current.map((u) => (u.id === updated.id ? updated : u)))
+              }
+              onDelete={handleDelete}
+              onWorkspaceDelete={handleDeleteWorkspace}
+              onWorkspaceTransfer={handleTransferWorkspace}
+              onOpenWorkspace={onOpenWorkspace}
+              onOpenChat={onOpenChat}
+              onDeleteChat={handleDeleteConversation}
+              onCancelChat={handleCancelConversationTask}
+              onResourcesOpen={() => loadResourcesForUser(managedUser.id)}
+              onComputeStorage={() => void handleComputeStorageForUser(managedUser.id)}
+              formatBytes={formatBytes}
+              formatDateTime={formatDateTime}
+              getConversationContextMeta={getConversationContextMeta}
+              onGenerationPolicyUpdated={onGenerationPolicyUpdated}
               onContentProtectionConfigChange={setContentProtectionConfig}
-              onSuccess={toast.success}
-              onError={toast.error}
             />
           );
         })()}

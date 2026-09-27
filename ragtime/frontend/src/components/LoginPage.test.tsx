@@ -10,10 +10,12 @@ const apiMock = vi.hoisted(() => ({
   getCurrentUser: vi.fn(),
   getDebugTotpCode: vi.fn(),
 }));
+const recoveryMock = vi.hoisted(() => ({ redeem: vi.fn() }));
 
 vi.mock('@/api', () => ({
   api: apiMock,
 }));
+vi.mock('@/api/userRecovery', () => ({ userRecoveryApi: recoveryMock }));
 
 vi.mock('./WebGLGradient', () => ({
   default: () => <div data-testid="webgl-gradient" />,
@@ -264,5 +266,35 @@ describe('LoginCard authentication errors', () => {
 
     expect(apiMock.getCurrentUser).toHaveBeenCalledOnce();
     expect(onLoginSuccess).toHaveBeenCalledWith({ id: 'user-1', username: 'ldap-user' });
+  });
+});
+
+describe('LoginCard restricted administrator recovery', () => {
+  it('redeems only against the existing MFA challenge and does not establish a session', async () => {
+    apiMock.login.mockResolvedValue(mfaRequiredResponse);
+    recoveryMock.redeem.mockResolvedValue({
+      recovery_token: 'restricted-token',
+      expires_at: '2026-01-01T00:00:00Z',
+      allowed_methods: ['totp', 'webauthn'],
+    });
+    const onLoginSuccess = vi.fn();
+    render(<LoginCard authStatus={debugAuthStatus()} onLoginSuccess={onLoginSuccess} />);
+
+    await openMfaVerifyStep();
+    fireEvent.click(screen.getByRole('button', { name: 'Use administrator recovery pass' }));
+    const recoveryPass = screen.getByLabelText('Administrator recovery pass');
+    expect(recoveryPass).toHaveProperty('type', 'password');
+    fireEvent.change(recoveryPass, {
+      target: { value: 'one-time-pass' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await settleAsyncWork();
+
+    expect(recoveryMock.redeem).toHaveBeenCalledWith({
+      mfa_challenge_token: 'challenge-token',
+      pass: 'one-time-pass',
+    });
+    expect(onLoginSuccess).not.toHaveBeenCalled();
+    expect(screen.getByText('Choose a replacement verification method.')).toBeTruthy();
   });
 });

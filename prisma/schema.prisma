@@ -1128,11 +1128,32 @@ model User {
   workspaceDevelopmentCredentials      WorkspaceDevelopmentCredential[]      @relation("WorkspaceDevelopmentCredentialUser")
   createdWorkspaceIndexGrants          WorkspaceIndexGrant[]                 @relation("WorkspaceIndexGrantCreator")
   oauthGrants                          OAuthGrant[]
+  mfaRecoveryPass                      UserMfaRecoveryPass?
 
   @@index([authProvider])
   @@index([sourceProvider, sourceId])
   @@index([sourceExpiresAt])
   @@map("users")
+}
+
+/// Administrator-issued, hash-only temporary MFA recovery pass.  The raw pass
+/// is deliberately never persisted and the unique user relation serializes reissue.
+model UserMfaRecoveryPass {
+  id                  String    @id @default(uuid())
+  userId              String    @unique @map("user_id")
+  passHash            String    @map("pass_hash")
+  securityGeneration  Int       @map("security_generation")
+  attempts            Int       @default(0)
+  createdAt           DateTime  @default(now()) @map("created_at")
+  expiresAt           DateTime  @map("expires_at")
+  redeemedAt          DateTime? @map("redeemed_at")
+  completedAt         DateTime? @map("completed_at")
+  revokedAt           DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("user_mfa_recovery_passes")
 }
 
 model WorkspaceUserPreference {

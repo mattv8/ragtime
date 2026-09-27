@@ -29,6 +29,8 @@ export interface User {
   /** Deprecated alias for manual_group_ids. */
   local_group_ids?: string[];
   mfa_enabled?: boolean;
+  /** Enrolled factors when supplied by newer auth servers. */
+  mfa_methods?: MfaMethod[];
   mfa_required?: boolean;
   recovery_codes_remaining?: number;
   /** Null inherits the server-wide Chat generation policy. */
@@ -137,6 +139,8 @@ export interface LocalUserCreateRequest {
 
 export interface LocalUserUpdateRequest {
   password?: string;
+  /** Fresh admin security verification required when changing a password. */
+  verification_token?: string;
   display_name?: string | null;
   email?: string | null;
   role?: UserRole;
@@ -254,6 +258,33 @@ export interface MfaStatusResponse {
   webauthn_credential_count?: number;
   preferred_method?: MfaMethod | null;
   default_method?: MfaMethod | null;
+}
+
+export type RecoveryPassState = 'issued' | 'redeemed' | 'completed' | 'revoked' | 'expired';
+
+export interface RecoveryPassStatus {
+  id: string;
+  status: RecoveryPassState;
+  created_at: string;
+  expires_at: string;
+  redeemed_at: string | null;
+  completed_at: string | null;
+}
+
+export interface AdminSecurityVerification {
+  verification_token: string;
+  expires_at: string;
+}
+
+export interface RecoveryPassRedeemResponse {
+  recovery_token: string;
+  expires_at: string;
+  allowed_methods: MfaMethod[];
+}
+
+export interface RecoveryWebauthnStartResponse {
+  options: Record<string, unknown>;
+  registration_token: string;
 }
 
 export interface ModelPreferenceRequest {

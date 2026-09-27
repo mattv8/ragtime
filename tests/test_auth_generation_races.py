@@ -13,7 +13,7 @@ from starlette.responses import Response
 from ragtime.api import auth as api_auth
 from ragtime.core import mfa, webauthn_mfa
 from ragtime.core.database import connect_db, disconnect_db, get_db
-from ragtime.core.oauth_grants import OAuthGrantError, revoke_user_auth
+from ragtime.core.oauth_grants import OAuthGrantError, revoke_user_auth, revoke_user_auth_in_transaction
 
 
 @unittest.skipUnless(
@@ -128,3 +128,17 @@ class AuthGenerationRaceIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await revoke_user_auth(self.user_id, expected_generation=7)
         rows = await self.db.query_raw('SELECT "security_generation" FROM "users" WHERE "id" = $1', self.user_id)
         self.assertEqual(int(rows[0]["security_generation"]), 8)
+
+    async def test_transaction_revocation_helper_joins_caller_commit_and_rollback(self) -> None:
+        async with self.db.tx() as tx:
+            written = await revoke_user_auth_in_transaction(tx, self.user_id, expected_generation=0)
+            self.assertEqual(written, 1)
+        rows = await self.db.query_raw('SELECT "security_generation" FROM "users" WHERE "id" = $1', self.user_id)
+        self.assertEqual(int(rows[0]["security_generation"]), 1)
+
+        with self.assertRaisesRegex(RuntimeError, "force rollback"):
+            async with self.db.tx() as tx:
+                await revoke_user_auth_in_transaction(tx, self.user_id, expected_generation=1)
+                raise RuntimeError("force rollback")
+        rows = await self.db.query_raw('SELECT "security_generation" FROM "users" WHERE "id" = $1', self.user_id)
+        self.assertEqual(int(rows[0]["security_generation"]), 1)
