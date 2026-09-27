@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { Settings, ChevronRight, X, Globe2 } from 'lucide-react';
 import { ContextMenu } from './ContextMenu';
 import { Popover } from '../Popover';
+import { useAnchoredMenuPosition } from '@/hooks/useAnchoredMenuPosition';
 import {
   getEffectiveUserSpaceToolIdSet,
   getSelectableUserSpaceToolIds,
@@ -130,12 +131,6 @@ export function ToolSelectorDropdown({
   const [searchQuery, setSearchQuery] = useState('');
   const [highlightedFocusRequestId, setHighlightedFocusRequestId] = useState<number | null>(null);
   const [focusRetryTick, setFocusRetryTick] = useState(0);
-  const [dropdownPosition, setDropdownPosition] = useState<{
-    top: number;
-    left: number;
-    minWidth: number;
-    maxHeight: number;
-  } | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -149,6 +144,13 @@ export function ToolSelectorDropdown({
     x: number;
     y: number;
   } | null>(null);
+  const dropdownPosition = useAnchoredMenuPosition({
+    open: showDropdown,
+    triggerRef: dropdownRef,
+    menuRef,
+    placement: openDirection === 'up' ? 'top-end' : 'bottom-end',
+    measureKey: `${searchQuery}:${expandedGroupId ?? ''}`,
+  });
 
   // Build grouped structure
   const { groups, ungroupedTools } = useMemo(() => {
@@ -206,31 +208,6 @@ export function ToolSelectorDropdown({
     setExpandedGroupId(null);
     setSearchQuery('');
   }, [markFocusRequestHandled]);
-
-  // Compute fixed position so the dropdown draws over iframes without layout shift
-  const computeDropdownPosition = useCallback(() => {
-    if (!dropdownRef.current) return;
-    const rect = dropdownRef.current.getBoundingClientRect();
-    const MARGIN = 8;
-    if (openDirection === 'up') {
-      const maxHeight = Math.max(80, rect.top - MARGIN);
-      setDropdownPosition({ top: rect.top, left: rect.right, minWidth: rect.width, maxHeight });
-    } else {
-      const maxHeight = Math.max(80, window.innerHeight - rect.bottom - MARGIN);
-      setDropdownPosition({ top: rect.bottom, left: rect.right, minWidth: rect.width, maxHeight });
-    }
-  }, [openDirection]);
-
-  useEffect(() => {
-    if (!showDropdown) return;
-    computeDropdownPosition();
-    window.addEventListener('scroll', computeDropdownPosition, true);
-    window.addEventListener('resize', computeDropdownPosition);
-    return () => {
-      window.removeEventListener('scroll', computeDropdownPosition, true);
-      window.removeEventListener('resize', computeDropdownPosition);
-    };
-  }, [showDropdown, computeDropdownPosition]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -631,7 +608,6 @@ export function ToolSelectorDropdown({
         <span className="tool-count-badge">{effectiveSelectedCount}</span>
       </button>
       {showDropdown &&
-        dropdownPosition &&
         createPortal(
           <Popover
             content="Right-click a tool for more options"
@@ -644,13 +620,11 @@ export function ToolSelectorDropdown({
             disabled={!hasRightClickOptions || contextMenu !== null}
             className="userspace-tool-dropdown"
             style={{
-              top: openDirection === 'up' ? undefined : dropdownPosition.top,
-              bottom:
-                openDirection === 'up' ? `calc(100vh - ${dropdownPosition.top}px)` : undefined,
-              left: dropdownPosition.left,
-              minWidth: dropdownPosition.minWidth,
-              maxHeight: dropdownPosition.maxHeight,
-              transform: 'translateX(-100%)',
+              top: dropdownPosition?.top,
+              left: dropdownPosition?.left,
+              maxHeight: dropdownPosition?.maxHeight,
+              maxWidth: dropdownPosition?.maxWidth,
+              visibility: dropdownPosition ? 'visible' : 'hidden',
             }}
           >
             <div ref={menuRef} className="userspace-tool-dropdown-surface">

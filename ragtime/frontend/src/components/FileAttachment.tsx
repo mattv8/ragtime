@@ -31,6 +31,8 @@ interface FileAttachmentProps {
   disabled?: boolean;
   conversationId?: string;
   workspaceId?: string;
+  /** Render attachment previews separately while retaining the attachment trigger. */
+  showPreviews?: boolean;
 }
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
@@ -84,12 +86,62 @@ export async function resizeAttachmentImageDataUrl(
   }
 }
 
+export function AttachmentPreviewList({
+  attachments,
+  onRemove,
+  disabled,
+}: {
+  attachments: AttachmentFile[];
+  onRemove: (id: string) => void;
+  disabled?: boolean;
+}) {
+  if (attachments.length === 0) return null;
+
+  return (
+    <div className="attachment-preview-list" data-attachment-preview-list>
+      {attachments.map((attachment) => (
+        <div key={attachment.id} className="attachment-item" data-attachment-id={attachment.id}>
+          {attachment.type === 'image' && attachment.preview ? (
+            <div className="attachment-image-preview">
+              <img src={attachment.preview} alt={attachment.name} />
+            </div>
+          ) : (
+            <div className="attachment-file-preview">
+              {attachment.filePath ? (
+                <Link size={20} />
+              ) : (
+                <FileTypeIcon path={attachment.name} size={20} />
+              )}
+            </div>
+          )}
+          <div className="attachment-info">
+            <span className="attachment-name" title={attachment.name}>
+              {attachment.name}
+            </span>
+            <span className="attachment-size">{formatAttachmentSize(attachment.size)}</span>
+          </div>
+          <button
+            type="button"
+            className="attachment-remove"
+            onClick={() => onRemove(attachment.id)}
+            disabled={disabled}
+            aria-label="Remove attachment"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function FileAttachment({
   attachments,
   onAttachmentsChange,
   disabled,
   conversationId,
   workspaceId,
+  showPreviews = true,
 }: FileAttachmentProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -274,45 +326,14 @@ export function FileAttachment({
     onAttachmentsChange(attachments.filter((a) => a.id !== id));
   };
 
-  const formatFileSize = formatAttachmentSize;
-
   return (
     <>
-      {attachments.length > 0 && (
-        <div className="attachment-preview-list">
-          {attachments.map((attachment) => (
-            <div key={attachment.id} className="attachment-item">
-              {attachment.type === 'image' && attachment.preview ? (
-                <div className="attachment-image-preview">
-                  <img src={attachment.preview} alt={attachment.name} />
-                </div>
-              ) : (
-                <div className="attachment-file-preview">
-                  {attachment.filePath ? (
-                    <Link size={20} />
-                  ) : (
-                    <FileTypeIcon path={attachment.name} size={20} />
-                  )}
-                </div>
-              )}
-              <div className="attachment-info">
-                <span className="attachment-name" title={attachment.name}>
-                  {attachment.name}
-                </span>
-                <span className="attachment-size">{formatFileSize(attachment.size)}</span>
-              </div>
-              <button
-                type="button"
-                className="attachment-remove"
-                onClick={() => removeAttachment(attachment.id)}
-                disabled={disabled}
-                aria-label="Remove attachment"
-              >
-                <X size={16} />
-              </button>
-            </div>
-          ))}
-        </div>
+      {showPreviews && (
+        <AttachmentPreviewList
+          attachments={attachments}
+          onRemove={removeAttachment}
+          disabled={disabled}
+        />
       )}
 
       <div className="file-attachment">

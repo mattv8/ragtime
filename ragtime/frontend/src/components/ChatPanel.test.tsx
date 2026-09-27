@@ -94,6 +94,7 @@ const apiMock = vi.hoisted(() => {
       id: 'task-window-compaction',
       status: 'running',
     }),
+    editResendConversationMessage: vi.fn(),
   };
   mock.getConversationMessageWindow.mockImplementation(async (conversationId: string) => {
     const latestResult = [...mock.getConversationLatestExchange.mock.results]
@@ -236,14 +237,50 @@ class MockEventSource {
 }
 
 vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource);
-vi.stubGlobal(
-  'ResizeObserver',
-  class ResizeObserverMock {
-    observe() {}
-    disconnect() {}
-    unobserve() {}
-  },
-);
+class ResizeObserverMock {
+  static instances: ResizeObserverMock[] = [];
+
+  private readonly callback: ResizeObserverCallback;
+  private readonly observed = new Set<Element>();
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    ResizeObserverMock.instances.push(this);
+  }
+
+  observe(target: Element) {
+    this.observed.add(target);
+  }
+
+  disconnect() {
+    this.observed.clear();
+  }
+
+  unobserve(target: Element) {
+    this.observed.delete(target);
+  }
+
+  static notify(target?: Element) {
+    for (const observer of ResizeObserverMock.instances) {
+      const targets = target
+        ? observer.observed.has(target)
+          ? [target]
+          : []
+        : Array.from(observer.observed);
+      if (targets.length === 0) continue;
+      observer.callback(
+        targets.map((element) => ({ target: element }) as ResizeObserverEntry),
+        observer as unknown as ResizeObserver,
+      );
+    }
+  }
+
+  static reset() {
+    ResizeObserverMock.instances = [];
+  }
+}
+
+vi.stubGlobal('ResizeObserver', ResizeObserverMock);
 vi.stubGlobal('localStorage', {
   getItem: vi.fn().mockReturnValue(null),
   setItem: vi.fn(),
@@ -736,6 +773,17 @@ function setChatLayoutCookie(userId: string, layout: Record<string, unknown>) {
   document.cookie = `${encodeURIComponent(`chat_layout_${userId}`)}=${encodeURIComponent(JSON.stringify(layout))}; path=/`;
 }
 
+function getChatLayoutCookie(userId: string): Record<string, unknown> | null {
+  const name = `${encodeURIComponent(`chat_layout_${userId}`)}=`;
+  const entry = document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(name));
+  return entry
+    ? (JSON.parse(decodeURIComponent(entry.slice(name.length))) as Record<string, unknown>)
+    : null;
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -759,6 +807,7 @@ afterEach(() => {
   window.requestAnimationFrame = originalRequestAnimationFrame;
   window.cancelAnimationFrame = originalCancelAnimationFrame;
   MockEventSource.reset();
+  ResizeObserverMock.reset();
 });
 
 describe('ChatPanel standalone first-paint loading', () => {
@@ -2010,6 +2059,55 @@ describe('ChatPanel standalone first-paint loading', () => {
         conversation.id,
         undefined,
         expect.any(AbortSignal),
+      ),
+    );
+  });
+
+  it('uses Ctrl+Enter, but not bare or Shift+Enter, to resend an edited message', async () => {
+    const conversation = makeConversation('edit-send-mode', 'Existing assistant reply');
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(makeWindow(conversation));
+    apiMock.getConversation.mockResolvedValue(conversation);
+    apiMock.editResendConversationMessage.mockResolvedValue({
+      conversation,
+      task: {
+        id: 'task-edit-resend',
+        conversation_id: conversation.id,
+        status: 'running',
+        user_message: 'Do the work.',
+        streaming_state: null,
+        response_content: null,
+        error_message: null,
+        created_at: new Date().toISOString(),
+        started_at: new Date().toISOString(),
+        completed_at: null,
+        last_update_at: new Date().toISOString(),
+      },
+    });
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    const user = userEvent.setup();
+    await user.selectOptions(await screen.findByLabelText('Send behavior'), 'ctrl-enter');
+    await user.click(await screen.findByTitle('Edit and resend'));
+    const editInput = await screen.findByLabelText('Edit message');
+
+    fireEvent.keyDown(editInput, { key: 'Enter' });
+    fireEvent.keyDown(editInput, { key: 'Enter', shiftKey: true });
+    expect(apiMock.editResendConversationMessage).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(editInput, { key: 'Enter', ctrlKey: true });
+    await waitFor(() =>
+      expect(apiMock.editResendConversationMessage).toHaveBeenCalledWith(
+        conversation.id,
+        expect.objectContaining({
+          message: 'Do the work.',
+          from_message_index: 0,
+          branch_kind: 'edit',
+        }),
+        undefined,
       ),
     );
   });
@@ -4278,7 +4376,503 @@ describe('ChatPanel user message navigator integration', () => {
   });
 });
 
+type ComposerGeometry = {
+  editorHeight: number;
+  footerHeight: number;
+  previewHeight: number;
+};
+
+function configureComposerGeometry(availableHeight = 800) {
+  const main = document.getElementById('chat-main') as HTMLElement;
+  const area = document.getElementById('chat-workbench-composer') as HTMLElement;
+  const card = area.querySelector('.chat-composer-card') as HTMLElement;
+  const field = area.querySelector('.chat-input-field') as HTMLElement;
+  const editor = screen.getByLabelText('Message') as HTMLElement;
+  const footer = area.querySelector('[data-chat-composer-footer]') as HTMLElement;
+  const previews = area.querySelector('.chat-composer-attachments') as HTMLElement;
+  const geometry: ComposerGeometry = { editorHeight: 24, footerHeight: 41, previewHeight: 0 };
+
+  Object.defineProperty(main, 'clientHeight', { configurable: true, value: availableHeight });
+  area.style.padding = '8px 0';
+  area.style.borderWidth = '0';
+  area.style.rowGap = '4px';
+  card.style.padding = '0';
+  card.style.borderTopWidth = '1px';
+  card.style.borderBottomWidth = '1px';
+  card.style.rowGap = '8px';
+  field.style.padding = '12px 0';
+  field.style.borderWidth = '0';
+  editor.style.minHeight = '24px';
+  Object.defineProperty(editor, 'scrollHeight', {
+    configurable: true,
+    get: () => geometry.editorHeight,
+  });
+  footer.getBoundingClientRect = () => ({ width: 300, height: geometry.footerHeight }) as DOMRect;
+  previews.getBoundingClientRect = () =>
+    ({ width: 300, height: geometry.previewHeight }) as DOMRect;
+
+  return { area, editor, footer, geometry };
+}
+
+function notifyComposerResize(target?: Element) {
+  act(() => ResizeObserverMock.notify(target));
+}
+
+function pastePlainText(editor: HTMLElement, text: string) {
+  editor.focus();
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  window.getSelection()?.removeAllRanges();
+  window.getSelection()?.addRange(range);
+  fireEvent.paste(editor, { clipboardData: { getData: () => text } });
+}
+
 describe('ChatPanel resize and mobile sidebar integration', () => {
+  function renderEmbeddedComposer(id: string) {
+    const conversation = makeConversation(id, 'Transcript remains', {
+      workspace_id: 'ws-compose',
+      active_task_id: null,
+    });
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-compose"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+  }
+
+  it('sizes the post-load composer to its natural editor, footer, gaps, and borders', async () => {
+    renderEmbeddedComposer('natural-initial-height');
+    await screen.findByLabelText('Message');
+    const { area } = configureComposerGeometry();
+
+    notifyComposerResize();
+
+    await waitFor(() => expect(area.style.height).toBe('115px'));
+  });
+
+  it('shrinks back to the one-line natural height after the draft is cleared', async () => {
+    renderEmbeddedComposer('natural-shrink-height');
+    await screen.findByLabelText('Message');
+    const { area, editor, geometry } = configureComposerGeometry();
+    const user = userEvent.setup();
+
+    geometry.editorHeight = 120;
+    await user.type(editor, 'A draft that wraps onto several measured lines');
+    notifyComposerResize();
+    await waitFor(() => expect(area.style.height).toBe('211px'));
+
+    geometry.editorHeight = 24;
+    await user.clear(editor);
+    notifyComposerResize();
+    await waitFor(() => expect(area.style.height).toBe('115px'));
+  });
+
+  it('remeasures when the composer footer wraps', async () => {
+    renderEmbeddedComposer('natural-footer-wrap');
+    await screen.findByLabelText('Message');
+    const { area, footer, geometry } = configureComposerGeometry();
+    notifyComposerResize();
+    await waitFor(() => expect(area.style.height).toBe('115px'));
+
+    geometry.footerHeight = 80;
+    notifyComposerResize(footer);
+
+    await waitFor(() => expect(area.style.height).toBe('154px'));
+  });
+
+  it('persists an autosized structural baseline as automatic and keeps growing after reload', async () => {
+    const clientHeightSpy = vi
+      .spyOn(window.HTMLElement.prototype, 'clientHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.id === 'chat-main' ? 800 : 0;
+      });
+    renderEmbeddedComposer('automatic-baseline-persistence');
+    await screen.findByLabelText('Message');
+    let geometry = configureComposerGeometry();
+    geometry.geometry.footerHeight = 45;
+    notifyComposerResize();
+    await waitFor(() => expect(geometry.area.style.height).toBe('119px'));
+    await waitFor(() =>
+      expect(getChatLayoutCookie(currentUser.id)).toEqual(
+        expect.objectContaining({ inputAreaHeight: 119, isManualResize: false }),
+      ),
+    );
+
+    cleanup();
+    renderEmbeddedComposer('automatic-baseline-persistence');
+    await screen.findByLabelText('Message');
+    geometry = configureComposerGeometry();
+    geometry.geometry.footerHeight = 45;
+    geometry.geometry.editorHeight = 120;
+    notifyComposerResize();
+
+    await waitFor(() => expect(geometry.area.style.height).toBe('215px'));
+    clientHeightSpy.mockRestore();
+  });
+
+  it('raises a saved manual height to the wrapped footer structural minimum', async () => {
+    setChatLayoutCookie(currentUser.id, {
+      showSidebar: false,
+      sidebarWidth: 280,
+      inputAreaHeight: 103,
+      isInputAreaCollapsed: false,
+      isMessagesCollapsed: false,
+    });
+    const clientHeightSpy = vi
+      .spyOn(window.HTMLElement.prototype, 'clientHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.id === 'chat-main' ? 800 : 0;
+      });
+    renderEmbeddedComposer('saved-manual-structural-minimum');
+    await screen.findByLabelText('Message');
+    const { area, geometry } = configureComposerGeometry();
+    geometry.footerHeight = 45;
+
+    notifyComposerResize();
+
+    await waitFor(() => expect(area.style.height).toBe('119px'));
+    clientHeightSpy.mockRestore();
+  });
+
+  it('keeps manual sash sizing above the structural minimum', async () => {
+    setChatLayoutCookie(currentUser.id, {
+      showSidebar: false,
+      sidebarWidth: 280,
+      inputAreaHeight: 200,
+      isInputAreaCollapsed: false,
+      isMessagesCollapsed: false,
+      isManualResize: true,
+    });
+    const clientHeightSpy = vi
+      .spyOn(window.HTMLElement.prototype, 'clientHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.id === 'chat-main' ? 800 : 0;
+      });
+    renderEmbeddedComposer('manual-sash-structural-minimum');
+    await screen.findByLabelText('Message');
+    const { area, geometry } = configureComposerGeometry();
+    geometry.footerHeight = 45;
+    notifyComposerResize();
+    await waitFor(() => expect(area.style.height).toBe('200px'));
+
+    geometry.editorHeight = 300;
+    notifyComposerResize();
+    expect(area.style.height).toBe('200px');
+
+    fireEvent.keyDown(
+      screen.getByRole('separator', { name: 'Resize chat messages and composer' }),
+      { key: 'Home' },
+    );
+
+    await waitFor(() => expect(area.style.height).toBe('119px'));
+    clientHeightSpy.mockRestore();
+  });
+
+  it('resets manual resize state when clearing and reloading layout for different user', async () => {
+    // Setup: user with manual resize stored
+    setChatLayoutCookie(currentUser.id, {
+      showSidebar: false,
+      sidebarWidth: 280,
+      inputAreaHeight: 200,
+      isInputAreaCollapsed: false,
+      isMessagesCollapsed: false,
+      isManualResize: true,
+    });
+    const clientHeightSpy = vi
+      .spyOn(window.HTMLElement.prototype, 'clientHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.id === 'chat-main' ? 800 : 0;
+      });
+    renderEmbeddedComposer('manual-resize-state-reset-test');
+    await screen.findByLabelText('Message');
+    const { area } = configureComposerGeometry();
+
+    // Verify manual resize is active (height locked at 200px)
+    notifyComposerResize();
+    await waitFor(() => expect(area.style.height).toBe('200px'));
+
+    // Clear the cookie (simulating a different user with no layout)
+    document.cookie = `${encodeURIComponent(`chat_layout_${currentUser.id}`)}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+
+    // Verify the cookie is cleared
+    expect(getChatLayoutCookie(currentUser.id)).toBeNull();
+
+    // Re-render same user but now with no stored layout
+    // This should trigger the no-stored-layout branch and reset isManualResize to false
+    cleanup();
+    receivedConversationSharesMock.mockReturnValue({
+      shares: [],
+      loading: false,
+      error: null,
+      refresh: vi.fn().mockResolvedValue(undefined),
+    });
+
+    renderEmbeddedComposer('manual-resize-state-reset-test-2');
+    await screen.findByLabelText('Message');
+    const { area: newArea } = configureComposerGeometry();
+
+    // After reload with no stored layout, height should be the default natural height (115px)
+    // not the previously stored manual 200px
+    notifyComposerResize();
+    await waitFor(() => expect(newArea.style.height).toBe('115px'));
+
+    clientHeightSpy.mockRestore();
+  });
+
+  it('uses about three quarters of the panel for compose mode and retains it while typing', async () => {
+    renderEmbeddedComposer('compose-target-retention');
+    await screen.findByLabelText('Message');
+    const { area, editor, geometry } = configureComposerGeometry();
+    notifyComposerResize();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand composer' }));
+    await waitFor(() => expect(area.style.height).toBe('600px'));
+    await waitFor(() =>
+      expect(getChatLayoutCookie(currentUser.id)).toEqual(
+        expect.objectContaining({ inputAreaHeight: 115, isManualResize: false }),
+      ),
+    );
+
+    geometry.editorHeight = 180;
+    await userEvent.setup().type(editor, 'Retained compose draft');
+    notifyComposerResize();
+
+    expect(area.style.height).toBe('600px');
+    expect(editor.textContent).toContain('Retained compose draft');
+    expect(screen.getByText('Transcript remains')).toBeDefined();
+  });
+
+  it('auto-expands the embedded composer when a pasted draft would overflow', async () => {
+    renderEmbeddedComposer('paste-auto-expand');
+    await screen.findByLabelText('Message');
+    const { area, editor, geometry } = configureComposerGeometry();
+    notifyComposerResize();
+    geometry.editorHeight = 600;
+
+    pastePlainText(editor, 'A large pasted draft');
+
+    await waitFor(() => expect(area.style.height).toBe('691px'));
+    expect(
+      screen.getByRole('button', { name: 'Restore composer' }).getAttribute('aria-pressed'),
+    ).toBe('true');
+    expect(editor.textContent).toContain('A large pasted draft');
+  });
+
+  it('caps a huge pasted draft at the compose transcript ceiling', async () => {
+    renderEmbeddedComposer('paste-compose-ceiling');
+    await screen.findByLabelText('Message');
+    const { area, editor, geometry } = configureComposerGeometry();
+    notifyComposerResize();
+    geometry.editorHeight = 700;
+
+    pastePlainText(editor, 'A huge pasted draft');
+
+    await waitFor(() => expect(area.style.height).toBe('720px'));
+  });
+
+  it('keeps the embedded composer at its normal size when a pasted draft fits', async () => {
+    renderEmbeddedComposer('paste-stays-normal');
+    await screen.findByLabelText('Message');
+    const { area, editor } = configureComposerGeometry();
+    notifyComposerResize();
+
+    pastePlainText(editor, 'A short pasted draft');
+
+    await waitFor(() => expect(area.style.height).toBe('115px'));
+    expect(
+      screen.getByRole('button', { name: 'Expand composer' }).getAttribute('aria-pressed'),
+    ).toBe('false');
+  });
+
+  it('restores the normal composer size after sending an auto-expanded draft', async () => {
+    renderEmbeddedComposer('paste-auto-restore');
+    await screen.findByLabelText('Message');
+    const { area, editor, geometry } = configureComposerGeometry();
+    notifyComposerResize();
+    geometry.editorHeight = 700;
+    pastePlainText(editor, 'A large pasted draft');
+    await screen.findByRole('button', { name: 'Restore composer' });
+
+    geometry.editorHeight = 24;
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => expect(area.style.height).toBe('115px'));
+    expect(screen.getByRole('button', { name: 'Expand composer' })).toBeDefined();
+  });
+
+  it('keeps manually expanded composer mode when its draft is cleared', async () => {
+    renderEmbeddedComposer('manual-compose-stays-expanded');
+    await screen.findByLabelText('Message');
+    const { area, editor } = configureComposerGeometry();
+    notifyComposerResize();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand composer' }));
+    await waitFor(() => expect(area.style.height).toBe('600px'));
+
+    await userEvent.setup().type(editor, 'Manual compose draft');
+    await userEvent.setup().clear(editor);
+
+    expect(area.style.height).toBe('600px');
+    expect(screen.getByRole('button', { name: 'Restore composer' })).toBeDefined();
+  });
+
+  it('grows a manually expanded composer to fit typing without shrinking below its base', async () => {
+    renderEmbeddedComposer('manual-compose-grow');
+    await screen.findByLabelText('Message');
+    const { area, editor, geometry } = configureComposerGeometry();
+    notifyComposerResize();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand composer' }));
+    await waitFor(() => expect(area.style.height).toBe('600px'));
+
+    geometry.editorHeight = 650;
+    await userEvent.setup().type(editor, 'Long manual compose draft');
+    await waitFor(() => expect(area.style.height).toBe('720px'));
+
+    geometry.editorHeight = 24;
+    await userEvent.setup().clear(editor);
+    await waitFor(() => expect(area.style.height).toBe('600px'));
+  });
+
+  it('does not auto-expand the main composer when pasting into an edited message', async () => {
+    const conversation = makeConversation('edit-paste-no-expand', 'Assistant reply', {
+      workspace_id: 'ws-compose',
+      active_task_id: null,
+      messages: [
+        {
+          role: 'user',
+          content: 'Editable user message',
+          timestamp: '2026-09-01T12:00:00.000Z',
+          message_id: 'editable-user-message',
+        },
+        {
+          role: 'assistant',
+          content: 'Assistant reply',
+          timestamp: '2026-09-01T12:00:01.000Z',
+          message_id: 'assistant-reply',
+        },
+      ],
+    });
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-compose"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+    await userEvent.setup().click(await screen.findByTitle('Edit and resend'));
+    const editInput = await screen.findByLabelText('Edit message');
+
+    pastePlainText(editInput, ' edited text');
+
+    expect(screen.getByRole('button', { name: 'Expand composer' })).toBeDefined();
+  });
+
+  it('keeps the embedded transcript and draft mounted while composer mode toggles', async () => {
+    const conversation = makeConversation('compose-retention', 'Transcript remains', {
+      workspace_id: 'ws-compose',
+      active_task_id: null,
+    });
+
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-compose"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    const input = await screen.findByLabelText('Message');
+    await userEvent.setup().type(input, 'Retained draft');
+    const expand = screen.getByRole('button', { name: 'Expand composer' });
+    fireEvent.click(expand);
+
+    expect(screen.getByText('Transcript remains')).toBeDefined();
+    expect(screen.getByLabelText('Message').textContent).toContain('Retained draft');
+    expect(screen.getByRole('button', { name: 'Restore composer' })).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restore composer' }));
+    expect(screen.getByLabelText('Message').textContent).toContain('Retained draft');
+  });
+
+  it('puts composer controls in the footer and disables preference changes while read-only', async () => {
+    const conversation = makeConversation('compose-footer', 'Footer transcript', {
+      workspace_id: 'ws-compose',
+      active_task_id: null,
+    });
+
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-compose"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+        readOnly
+      />,
+    );
+
+    await screen.findByLabelText('Send behavior');
+    const footer = document.querySelector<HTMLElement>('[data-chat-composer-footer]');
+    expect(footer).not.toBeNull();
+    expect(footer?.querySelector('[data-chat-composer-model]')).not.toBeNull();
+    expect(footer?.querySelector('.chat-composer-expand-btn')).not.toBeNull();
+    expect(screen.getByLabelText('Send behavior').hasAttribute('disabled')).toBe(true);
+  });
+
+  it('uses the composer button to restore a legacy sash-maximized transcript', async () => {
+    setChatLayoutCookie(currentUser.id, {
+      showSidebar: true,
+      sidebarWidth: 280,
+      inputAreaHeight: 160,
+      isInputAreaCollapsed: false,
+      isMessagesCollapsed: true,
+    });
+    const conversation = makeConversation('legacy-compose-button-restore', 'Legacy transcript', {
+      workspace_id: 'ws-1',
+      active_task_id: null,
+    });
+    const clientHeightSpy = vi
+      .spyOn(window.HTMLElement.prototype, 'clientHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.id === 'chat-main' ? 800 : 0;
+      });
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+      />,
+    );
+
+    const restore = await screen.findByRole('button', { name: 'Restore composer' });
+    expect(document.getElementById('chat-workbench-main')).toBeNull();
+    fireEvent.click(restore);
+
+    await waitFor(() => {
+      expect(screen.getByText('Legacy transcript')).toBeDefined();
+      expect(screen.getByRole('button', { name: 'Expand composer' })).toBeDefined();
+      expect(
+        screen.getByRole('separator', { name: 'Resize chat messages and composer' }),
+      ).toBeDefined();
+    });
+    expect(document.getElementById('chat-workbench-composer')?.style.height).toBe('160px');
+    clientHeightSpy.mockRestore();
+  });
+
   it('restores the messages region from the keyboard when the composer is maximized', async () => {
     setChatLayoutCookie(currentUser.id, {
       showSidebar: true,

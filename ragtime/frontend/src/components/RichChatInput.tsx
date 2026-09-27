@@ -12,6 +12,7 @@ import {
 
 import type { ChatContextReference } from '@/types';
 import { getFileTypeCodicon } from '@/utils/fileTypeIcon';
+import { shouldSubmitChatKey, type ChatSendMode } from '@/utils/chatSendMode';
 
 // Inline SVG markup mirroring lucide-react's `Code` and `X` icons so the
 // imperatively-built chip DOM is self-contained.
@@ -38,6 +39,8 @@ interface RichChatInputProps {
   // When false (default), Enter inserts a newline and never submits. Submission
   // is driven by an explicit send/save button instead.
   submitOnEnter?: boolean;
+  sendMode?: ChatSendMode;
+  onPasteText?: (text: string) => void;
   onCancel?: () => void;
   onFocus?: () => void;
   onRemoveReference?: (referenceId: string) => void;
@@ -170,6 +173,8 @@ export const RichChatInput = forwardRef<RichChatInputHandle, RichChatInputProps>
       onChange,
       onSubmit,
       submitOnEnter = false,
+      sendMode,
+      onPasteText,
       onCancel,
       onFocus,
       onRemoveReference,
@@ -438,7 +443,15 @@ export const RichChatInput = forwardRef<RichChatInputHandle, RichChatInputProps>
     const handleKeyDown = useCallback(
       (event: ReactKeyboardEvent<HTMLDivElement>) => {
         if (disabled) return;
-        if (submitOnEnter && event.key === 'Enter' && !event.shiftKey) {
+        const legacySubmit =
+          submitOnEnter &&
+          event.key === 'Enter' &&
+          !event.shiftKey &&
+          !event.altKey &&
+          !event.nativeEvent.isComposing &&
+          event.nativeEvent.keyCode !== 229 &&
+          !event.repeat;
+        if (sendMode ? shouldSubmitChatKey(event.nativeEvent, sendMode) : legacySubmit) {
           event.preventDefault();
           onSubmitRef.current();
           return;
@@ -448,7 +461,7 @@ export const RichChatInput = forwardRef<RichChatInputHandle, RichChatInputProps>
           onCancel();
         }
       },
-      [disabled, onCancel, submitOnEnter],
+      [disabled, onCancel, sendMode, submitOnEnter],
     );
 
     // Track the caret so reference chips can target the user's last cursor
@@ -466,6 +479,7 @@ export const RichChatInput = forwardRef<RichChatInputHandle, RichChatInputProps>
     const handlePaste = useCallback(
       (event: ReactClipboardEvent<HTMLDivElement>) => {
         event.preventDefault();
+        if (disabled) return;
         const text = event.clipboardData.getData('text/plain');
         if (!text) return;
         const selection = window.getSelection();
@@ -480,9 +494,10 @@ export const RichChatInput = forwardRef<RichChatInputHandle, RichChatInputProps>
           selection.addRange(range);
         }
         emitChange();
+        onPasteText?.(text);
         rememberCaret();
       },
-      [emitChange, rememberCaret],
+      [disabled, emitChange, onPasteText, rememberCaret],
     );
 
     const insertReferenceAtCaret = useCallback(

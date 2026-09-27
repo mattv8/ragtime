@@ -104,12 +104,16 @@ import { ChatLoadingState } from './ChatLoadingState';
 import { ReceivedConversationShares } from './ReceivedConversationShares';
 import {
   FileAttachment,
+  AttachmentPreviewList,
   attachmentsToContentParts,
   formatAttachmentSize,
   resizeAttachmentImageDataUrl,
   type AttachmentFile,
 } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
+import { useChatSendMode } from '@/hooks/useChatSendMode';
+import { ChatSendModeControl } from './ChatSendModeControl';
+import '../styles/chat-composer.css';
 import { ResizeHandle } from './ResizeHandle';
 import { ChatMessageNavigator, type ChatMessageNavigationEntry } from './ChatMessageNavigator';
 import { HtmlComponentDisplay, type HtmlComponentData } from './HtmlComponentDisplay';
@@ -1679,6 +1683,7 @@ interface StoredChatLayout {
   inputAreaHeight: number;
   isInputAreaCollapsed: boolean;
   isMessagesCollapsed: boolean;
+  isManualResize: boolean;
 }
 
 const CHAT_LAYOUT_COOKIE_PREFIX = 'chat_layout_';
@@ -1693,12 +1698,17 @@ function readStoredChatLayout(cookieName: string): StoredChatLayout | null {
 
   try {
     const parsed = JSON.parse(raw) as Partial<StoredChatLayout>;
+    const inputAreaHeight =
+      typeof parsed.inputAreaHeight === 'number' ? parsed.inputAreaHeight : 96;
     return {
       showSidebar: parsed.showSidebar ?? true,
       sidebarWidth: typeof parsed.sidebarWidth === 'number' ? parsed.sidebarWidth : 280,
-      inputAreaHeight: typeof parsed.inputAreaHeight === 'number' ? parsed.inputAreaHeight : 96,
+      inputAreaHeight,
       isInputAreaCollapsed: Boolean(parsed.isInputAreaCollapsed),
       isMessagesCollapsed: Boolean(parsed.isMessagesCollapsed),
+      // Older cookies predate this flag and encoded manual sizing implicitly.
+      isManualResize:
+        typeof parsed.isManualResize === 'boolean' ? parsed.isManualResize : inputAreaHeight > 96,
     };
   } catch {
     return null;
@@ -10440,6 +10450,7 @@ export function ChatPanel({
   const [isInputAreaCollapsed, setIsInputAreaCollapsed] = useState(false);
   const [isMessagesCollapsed, setIsMessagesCollapsed] = useState(false);
   const [isManualResize, setIsManualResize] = useState(false);
+  const [isComposeMode, setIsComposeMode] = useState(false);
   const [autoResizeState, setAutoResizeState] = useState<'growing' | 'shrinking' | null>(null);
   const [editingTitle, setEditingTitle] = useState<string | null>(null);
   // Separate state for the chat-header rename input so its `autoFocus` does not
@@ -12191,8 +12202,42 @@ export function ChatPanel({
   const inputAreaCollapsedLiveRef = useRef(false);
   const messagesCollapsedLiveRef = useRef(false);
   const manualResizeLiveRef = useRef(false);
+  const composeModeLiveRef = useRef(false);
+  const composeRestoreRef = useRef<{
+    height: number;
+    manual: boolean;
+    messagesCollapsed: boolean;
+  } | null>(null);
+  const composeAutoEnteredRef = useRef(false);
+  const pendingPasteCheckRef = useRef(false);
+  const markPendingPasteCheck = useCallback(() => {
+    pendingPasteCheckRef.current = true;
+  }, []);
   const prevInputLengthRef = useRef(0);
   const skipNextLayoutPersistRef = useRef(true);
+  const [sendMode, setSendMode] = useChatSendMode(currentUser.id);
+
+  useEffect(() => {
+    composeModeLiveRef.current = isComposeMode;
+  }, [isComposeMode]);
+
+  useEffect(() => {
+    // Expansion is deliberately local to this rendered conversation/panel.
+    // Do not carry its temporary dimensions into another chat or user layout.
+    const restore = composeRestoreRef.current;
+    if (composeModeLiveRef.current && restore) {
+      inputAreaHeightLiveRef.current = restore.height;
+      manualResizeLiveRef.current = restore.manual;
+      messagesCollapsedLiveRef.current = restore.messagesCollapsed;
+      setInputAreaHeight(restore.height);
+      setIsManualResize(restore.manual);
+      setIsMessagesCollapsed(restore.messagesCollapsed);
+    }
+    composeRestoreRef.current = null;
+    composeAutoEnteredRef.current = false;
+    pendingPasteCheckRef.current = false;
+    if (composeModeLiveRef.current) setIsComposeMode(false);
+  }, [activeConversationId, currentUser.id]);
 
   const getConversationTailKey = useCallback((conversation: Conversation): string | null => {
     const lastMessage = conversation.messages[conversation.messages.length - 1];
@@ -12253,6 +12298,7 @@ export function ChatPanel({
       setInputAreaHeight(MIN_INPUT_AREA_HEIGHT);
       setIsInputAreaCollapsed(false);
       setIsMessagesCollapsed(false);
+      setIsManualResize(false);
       prevSidebarWidth.current = 280;
       showSidebarLiveRef.current = !embedded;
       sidebarWidthLiveRef.current = 280;
@@ -12276,9 +12322,7 @@ export function ChatPanel({
     setInputAreaHeight(nextInputAreaHeight);
     setIsInputAreaCollapsed(nextIsInputAreaCollapsed);
     setIsMessagesCollapsed(nextIsMessagesCollapsed);
-    if (nextInputAreaHeight > MIN_INPUT_AREA_HEIGHT) {
-      setIsManualResize(true);
-    }
+    setIsManualResize(stored.isManualResize);
 
     if (nextSidebarWidth >= 120) {
       prevSidebarWidth.current = nextSidebarWidth;
@@ -12287,7 +12331,7 @@ export function ChatPanel({
     inputAreaHeightLiveRef.current = nextInputAreaHeight;
     inputAreaCollapsedLiveRef.current = nextIsInputAreaCollapsed;
     messagesCollapsedLiveRef.current = nextIsMessagesCollapsed;
-    manualResizeLiveRef.current = nextInputAreaHeight > MIN_INPUT_AREA_HEIGHT;
+    manualResizeLiveRef.current = stored.isManualResize;
   }, [MIN_INPUT_AREA_HEIGHT, chatLayoutCookieName, embedded]);
 
   useEffect(() => {
@@ -12327,9 +12371,19 @@ export function ChatPanel({
     const persisted: StoredChatLayout = {
       showSidebar: embedded ? false : showSidebar,
       sidebarWidth: clampNumber(sidebarWidth, 0, 480),
-      inputAreaHeight: Math.max(MIN_INPUT_AREA_HEIGHT, inputAreaHeight),
+      inputAreaHeight: Math.max(
+        MIN_INPUT_AREA_HEIGHT,
+        isComposeMode ? (composeRestoreRef.current?.height ?? inputAreaHeight) : inputAreaHeight,
+      ),
       isInputAreaCollapsed,
-      isMessagesCollapsed: isInputAreaCollapsed ? false : isMessagesCollapsed,
+      isMessagesCollapsed: isInputAreaCollapsed
+        ? false
+        : isComposeMode
+          ? (composeRestoreRef.current?.messagesCollapsed ?? isMessagesCollapsed)
+          : isMessagesCollapsed,
+      isManualResize: isComposeMode
+        ? (composeRestoreRef.current?.manual ?? isManualResize)
+        : isManualResize,
     };
 
     setSessionCookieValue(chatLayoutCookieName, JSON.stringify(persisted));
@@ -12338,7 +12392,9 @@ export function ChatPanel({
     chatLayoutCookieName,
     embedded,
     inputAreaHeight,
+    isComposeMode,
     isInputAreaCollapsed,
+    isManualResize,
     isMessagesCollapsed,
     showSidebar,
     sidebarWidth,
@@ -12406,15 +12462,102 @@ export function ChatPanel({
     for (const child of Array.from(chatMain.children)) {
       const el = child as HTMLElement;
       if (el.classList.contains('chat-input-area')) continue;
-      if (el.classList.contains('chat-messages')) continue;
+      // The transcript is the flex sibling displaced by the composer, not
+      // fixed overhead. Counting it here makes the composer cap depend on its
+      // current content/viewport height.
+      if (el.classList.contains('chat-message-region')) continue;
       occupiedHeight += el.getBoundingClientRect().height;
     }
 
-    return Math.max(MIN_INPUT_AREA_HEIGHT, containerHeight - occupiedHeight);
-  }, [MIN_INPUT_AREA_HEIGHT]);
+    const style = getComputedStyle(chatMain);
+    const gap = parseFloat(style.rowGap || style.gap) || 0;
+    const visibleChildren = Array.from(chatMain.children).filter(
+      (child) => (child as HTMLElement).offsetParent !== null,
+    ).length;
+    return Math.max(0, containerHeight - occupiedHeight - gap * Math.max(0, visibleChildren - 1));
+  }, []);
+
+  const measureNaturalComposerHeight = useCallback(
+    (editor = inputRef.current) => {
+      if (!editor) return { needed: MIN_INPUT_AREA_HEIGHT, minimumNeeded: MIN_INPUT_AREA_HEIGHT };
+
+      const px = (value: string) => Number.parseFloat(value) || 0;
+      const verticalBoxOverhead = (element: HTMLElement) => {
+        const style = getComputedStyle(element);
+        return (
+          px(style.paddingTop) +
+          px(style.paddingBottom) +
+          px(style.borderTopWidth) +
+          px(style.borderBottomWidth)
+        );
+      };
+      const verticalGap = (element: HTMLElement) => {
+        const style = getComputedStyle(element);
+        return px(style.rowGap || style.gap);
+      };
+
+      const area = editor.closest('.chat-input-area') as HTMLElement | null;
+      const card = editor.closest('.chat-composer-card') as HTMLElement | null;
+      const field = editor.closest('.chat-input-field') as HTMLElement | null;
+      const footer = card?.querySelector<HTMLElement>('[data-chat-composer-footer]') ?? null;
+      const previews = card?.querySelector<HTMLElement>('.chat-composer-attachments') ?? null;
+      const readOnlyNote = area?.querySelector<HTMLElement>(':scope > .chat-readonly-note') ?? null;
+
+      const editorStyle = getComputedStyle(editor);
+      const minimumEditorHeight = Math.max(px(editorStyle.minHeight), px(editorStyle.lineHeight));
+      const editorHeight = Math.max(editor.scrollHeight, minimumEditorHeight);
+      const fieldOverhead = field ? verticalBoxOverhead(field) : 0;
+      const footerHeight = footer?.getBoundingClientRect().height ?? 0;
+      // The preview row is always mounted, but :empty hides it. Treating its
+      // constrained box as content when empty recreates the initial clipping bug.
+      const previewHeight = previews?.childElementCount
+        ? previews.getBoundingClientRect().height
+        : 0;
+      const cardChildren = 2 + (previewHeight > 0 ? 1 : 0);
+      const cardOverhead = card
+        ? verticalBoxOverhead(card) + verticalGap(card) * Math.max(0, cardChildren - 1)
+        : 0;
+      const fixedCardHeight = fieldOverhead + footerHeight + previewHeight + cardOverhead;
+      const readOnlyHeight = readOnlyNote?.getBoundingClientRect().height ?? 0;
+      const areaChildren = 1 + (readOnlyHeight > 0 ? 1 : 0);
+      const areaOverhead = area
+        ? verticalBoxOverhead(area) +
+          verticalGap(area) * Math.max(0, areaChildren - 1) +
+          readOnlyHeight
+        : 0;
+
+      return {
+        needed: Math.ceil(editorHeight + fixedCardHeight + areaOverhead),
+        minimumNeeded: Math.ceil(minimumEditorHeight + fixedCardHeight + areaOverhead),
+      };
+    },
+    [MIN_INPUT_AREA_HEIGHT],
+  );
+
+  const getStructuralMinimumInputHeight = useCallback(() => {
+    const available = getMaxInputAreaHeight();
+    const { minimumNeeded } = measureNaturalComposerHeight();
+    return Math.min(available, Math.max(MIN_INPUT_AREA_HEIGHT, minimumNeeded));
+  }, [MIN_INPUT_AREA_HEIGHT, getMaxInputAreaHeight, measureNaturalComposerHeight]);
+
+  const getComposeTargetHeight = useCallback(
+    (editor = inputRef.current) => {
+      const available = getMaxInputAreaHeight();
+      const { needed, minimumNeeded } = measureNaturalComposerHeight(editor);
+      const base = Math.floor(available * 0.75);
+      const ceiling = Math.max(base, available - 80);
+      return Math.min(available, ceiling, Math.max(minimumNeeded, base, needed));
+    },
+    [getMaxInputAreaHeight, measureNaturalComposerHeight],
+  );
 
   const resizeInputAreaTo = useCallback(
     (nextValue: number) => {
+      if (isComposeMode) {
+        composeRestoreRef.current = null;
+        composeAutoEnteredRef.current = false;
+        setIsComposeMode(false);
+      }
       const inputArea = chatMainRef.current?.querySelector(
         '.chat-input-area',
       ) as HTMLElement | null;
@@ -12435,7 +12578,8 @@ export function ChatPanel({
       }
 
       const maxInputHeight = getMaxInputAreaHeight();
-      const next = Math.min(maxInputHeight, Math.max(MIN_INPUT_AREA_HEIGHT, nextValue));
+      const minimumInputHeight = getStructuralMinimumInputHeight();
+      const next = Math.min(maxInputHeight, Math.max(minimumInputHeight, nextValue));
       inputAreaHeightLiveRef.current = next;
       inputAreaCollapsedLiveRef.current = false;
       messagesCollapsedLiveRef.current = false;
@@ -12449,20 +12593,26 @@ export function ChatPanel({
       }
       if (messages) messages.style.display = '';
     },
-    [MIN_INPUT_AREA_HEIGHT, getMaxInputAreaHeight],
+    [MIN_INPUT_AREA_HEIGHT, getMaxInputAreaHeight, getStructuralMinimumInputHeight, isComposeMode],
   );
 
   const handleResizeInputArea = useCallback(
     (delta: number) => {
+      if (isComposeMode) {
+        composeRestoreRef.current = null;
+        composeAutoEnteredRef.current = false;
+        setIsComposeMode(false);
+      }
       const inputArea = chatMainRef.current?.querySelector(
         '.chat-input-area',
       ) as HTMLElement | null;
       const messages = chatMainRef.current?.querySelector('.chat-messages') as HTMLElement | null;
       const prev = inputAreaHeightLiveRef.current;
       const proposed = prev - delta;
+      const minInputHeight = getStructuralMinimumInputHeight();
       const draggingDown = delta > 0;
       const draggingUp = delta < 0;
-      const atMinHeight = prev <= MIN_INPUT_AREA_HEIGHT;
+      const atMinHeight = prev <= minInputHeight;
       const crossedCollapseThreshold = proposed < INPUT_AREA_COLLAPSE_THRESHOLD;
 
       if (draggingDown && (atMinHeight || crossedCollapseThreshold)) {
@@ -12503,6 +12653,8 @@ export function ChatPanel({
       INPUT_AREA_COLLAPSE_THRESHOLD,
       MIN_INPUT_AREA_HEIGHT,
       getMaxInputAreaHeight,
+      getStructuralMinimumInputHeight,
+      isComposeMode,
       resizeInputAreaTo,
     ],
   );
@@ -12515,6 +12667,61 @@ export function ChatPanel({
     );
     setIsManualResize(manualResizeLiveRef.current);
   }, []);
+
+  const enterComposeMode = useCallback(
+    (source: 'manual' | 'paste') => {
+      composeAutoEnteredRef.current = source === 'paste';
+      composeRestoreRef.current = {
+        height: inputAreaHeightLiveRef.current,
+        manual: manualResizeLiveRef.current,
+        messagesCollapsed: messagesCollapsedLiveRef.current,
+      };
+      const target = getComposeTargetHeight();
+      inputAreaHeightLiveRef.current = target;
+      messagesCollapsedLiveRef.current = false;
+      setInputAreaHeight(target);
+      setIsMessagesCollapsed(false);
+      setIsComposeMode(true);
+    },
+    [getComposeTargetHeight],
+  );
+
+  const exitComposeMode = useCallback(() => {
+    const restore = composeRestoreRef.current;
+    if (restore) {
+      inputAreaHeightLiveRef.current = restore.height;
+      manualResizeLiveRef.current = restore.manual;
+      messagesCollapsedLiveRef.current = restore.messagesCollapsed;
+      setInputAreaHeight(restore.height);
+      setIsManualResize(restore.manual);
+      setIsMessagesCollapsed(restore.messagesCollapsed);
+    }
+    composeRestoreRef.current = null;
+    composeAutoEnteredRef.current = false;
+    setIsComposeMode(false);
+  }, []);
+
+  const toggleComposeMode = useCallback(() => {
+    if (isMessagesCollapsed) {
+      composeAutoEnteredRef.current = false;
+      resizeInputAreaTo(prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT);
+      commitResizeInputArea();
+      return;
+    }
+    if (isComposeMode) {
+      exitComposeMode();
+      return;
+    }
+    enterComposeMode('manual');
+  }, [
+    MIN_INPUT_AREA_HEIGHT,
+    commitResizeInputArea,
+    enterComposeMode,
+    exitComposeMode,
+    isComposeMode,
+    isMessagesCollapsed,
+    resizeInputAreaTo,
+  ]);
 
   const clampInChatSearchInlineWidth = useCallback(
     (width: number) => Math.round(Math.max(220, Math.min(720, width))),
@@ -12568,10 +12775,21 @@ export function ChatPanel({
       const editor = el ?? inputRef.current;
       if (!editor) return;
 
+      if (isComposeMode) {
+        const target = getComposeTargetHeight(editor);
+        if (inputAreaHeightLiveRef.current !== target) {
+          inputAreaHeightLiveRef.current = target;
+          setInputAreaHeight(target);
+        }
+        return;
+      }
+
       const currentLength = editor.textContent?.length ?? 0;
 
       if (isManualResize) {
         if (currentLength === 0 && prevInputLengthRef.current > 0) {
+          manualResizeLiveRef.current = false;
+          inputAreaHeightLiveRef.current = MIN_INPUT_AREA_HEIGHT;
           setIsManualResize(false);
           setInputAreaHeight(MIN_INPUT_AREA_HEIGHT);
         }
@@ -12582,36 +12800,18 @@ export function ChatPanel({
       prevInputLengthRef.current = currentLength;
 
       const wrapper = editor.closest('.chat-input-area') as HTMLElement | null;
+      const { needed, minimumNeeded } = measureNaturalComposerHeight(editor);
 
-      let wrapperOverhead = 0;
-      if (wrapper) {
-        const wrapperStyle = getComputedStyle(wrapper);
-        const verticalPadding =
-          parseFloat(wrapperStyle.paddingTop) + parseFloat(wrapperStyle.paddingBottom);
-        const borderWidth =
-          parseFloat(wrapperStyle.borderTopWidth) + parseFloat(wrapperStyle.borderBottomWidth);
-        wrapperOverhead = verticalPadding + borderWidth;
-      }
-
-      // A contentEditable element is content-sized; its scrollHeight already
-      // reflects wrapped text and inline chips. Read the field padding so the
-      // measured content maps cleanly onto the container height.
-      const field = editor.closest('.chat-input-field') as HTMLElement | null;
-      let fieldPadding = 0;
-      if (field) {
-        const fieldStyle = getComputedStyle(field);
-        fieldPadding = parseFloat(fieldStyle.paddingTop) + parseFloat(fieldStyle.paddingBottom);
-      }
-      const contentHeight = editor.scrollHeight + fieldPadding;
-
-      // Content-driven auto-resize: grow or shrink container to fit.
+      // Normal drafting gets about half the panel. The structural one-line
+      // minimum (footer, previews, gaps, borders, and area chrome) takes
+      // precedence when the panel has room, but never exceeds that panel.
       const rawMax = getMaxInputAreaHeight();
-      const maxInputHeight = embedded
+      const minimum = Math.min(MIN_INPUT_AREA_HEIGHT, rawMax);
+      const maxInputHeight = isManualResize
         ? rawMax
-        : Math.min(rawMax, Math.floor(window.innerHeight * 0.5));
-
-      const needed = contentHeight + wrapperOverhead;
-      const target = Math.min(maxInputHeight, Math.max(MIN_INPUT_AREA_HEIGHT, Math.ceil(needed)));
+        : Math.min(rawMax, Math.max(minimum, minimumNeeded, Math.floor(rawMax * 0.5)));
+      const target = Math.min(maxInputHeight, Math.max(minimum, needed));
+      inputAreaHeightLiveRef.current = target;
 
       setInputAreaHeight((prev) => {
         if (prev === target) return prev;
@@ -12630,15 +12830,99 @@ export function ChatPanel({
         return target;
       });
     },
-    [MIN_INPUT_AREA_HEIGHT, embedded, getMaxInputAreaHeight, isManualResize],
+    [
+      MIN_INPUT_AREA_HEIGHT,
+      getComposeTargetHeight,
+      getMaxInputAreaHeight,
+      isComposeMode,
+      isManualResize,
+      measureNaturalComposerHeight,
+    ],
   );
+
+  useLayoutEffect(() => {
+    const panel = chatMainRef.current;
+    const editor = inputRef.current;
+    if (!panel || !editor) return;
+
+    const syncHeight = () => {
+      const available = getMaxInputAreaHeight();
+      if (isComposeMode) {
+        const target = getComposeTargetHeight(editor);
+        if (inputAreaHeightLiveRef.current !== target) {
+          inputAreaHeightLiveRef.current = target;
+          setInputAreaHeight(target);
+        }
+        return;
+      }
+      if (manualResizeLiveRef.current) {
+        const target = Math.min(
+          available,
+          Math.max(getStructuralMinimumInputHeight(), inputAreaHeightLiveRef.current),
+        );
+        if (inputAreaHeightLiveRef.current !== target) {
+          inputAreaHeightLiveRef.current = target;
+          setInputAreaHeight(target);
+        }
+        return;
+      }
+      autoResizeInput(editor);
+    };
+
+    syncHeight();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(syncHeight);
+    observer.observe(panel);
+    const footer = panel.querySelector<HTMLElement>('[data-chat-composer-footer]');
+    const previews = panel.querySelector<HTMLElement>('.chat-composer-attachments');
+    if (footer) observer.observe(footer);
+    if (previews) observer.observe(previews);
+    return () => observer.disconnect();
+  }, [
+    activeConversationId,
+    autoResizeInput,
+    getComposeTargetHeight,
+    getMaxInputAreaHeight,
+    getStructuralMinimumInputHeight,
+    isComposeMode,
+    measureNaturalComposerHeight,
+    renderedConversation,
+  ]);
 
   // Cover composer changes (typing, programmatic clears, conversation switch,
   // and inline chip add/remove — all of which change the segment model).
-  useEffect(() => {
+  useLayoutEffect(() => {
     messageSegmentsRef.current = messageSegments;
     autoResizeInput();
-  }, [autoResizeInput, messageSegments]);
+    if (pendingPasteCheckRef.current) {
+      pendingPasteCheckRef.current = false;
+      const editor = inputRef.current;
+      const { needed } = measureNaturalComposerHeight(editor);
+      if (
+        editor &&
+        needed > inputAreaHeightLiveRef.current &&
+        !isComposeMode &&
+        !isMessagesCollapsed &&
+        !isReadOnly
+      ) {
+        enterComposeMode('paste');
+        const field = editor.closest('.chat-input-field') as HTMLElement | null;
+        if (field) field.scrollTop = field.scrollHeight;
+      }
+    }
+    if (isComposeMode && composeAutoEnteredRef.current && segmentsAreEmpty(messageSegments)) {
+      exitComposeMode();
+    }
+  }, [
+    autoResizeInput,
+    enterComposeMode,
+    exitComposeMode,
+    isComposeMode,
+    isMessagesCollapsed,
+    isReadOnly,
+    measureNaturalComposerHeight,
+    messageSegments,
+  ]);
 
   // onChange from the rich composer: update the segment model and resize.
   const handleSegmentsChange = useCallback(
@@ -18965,31 +19249,6 @@ export function ChatPanel({
                     }
                   />
                 )}
-                <ModelSelector
-                  models={availableModels}
-                  selectedModelId={(() => {
-                    const selection = resolveConversationModelSelection(
-                      renderedConversation.model || '',
-                      availableModels,
-                    );
-                    return selection.matchedModel
-                      ? toProviderScopedModelKey(
-                          selection.matchedModel.provider,
-                          selection.matchedModel.id,
-                        )
-                      : selection.modelId;
-                  })()}
-                  onModelChange={changeModel}
-                  getModelSelectionKey={(model) =>
-                    toProviderScopedModelKey(model.provider, model.id)
-                  }
-                  disabled={isStreaming || isModelsLoading}
-                  loading={isModelsLoading}
-                  triggerIcon={showWorkspaceConversationSelect ? <Bot size={14} /> : undefined}
-                  triggerClassName={
-                    showWorkspaceConversationSelect ? 'chat-workspace-model-trigger' : undefined
-                  }
-                />
                 <button
                   className="btn btn-sm btn-secondary chat-new-chat-btn"
                   onClick={startFreshConversation}
@@ -19243,6 +19502,7 @@ export function ChatPanel({
                                       onOpenReference={onOpenContextReference}
                                       className="chat-message-text chat-message-user-text chat-edit-input"
                                       ariaLabel="Edit message"
+                                      sendMode={sendMode}
                                     />
                                     <div className="chat-message-footer">
                                       <span className="chat-message-time">
@@ -20040,8 +20300,8 @@ export function ChatPanel({
               className="resize-handle resize-handle-vertical chat-resize-handle"
               ariaLabel={composerHandleLabel}
               value={inputAreaHeight}
-              min={MIN_INPUT_AREA_HEIGHT}
-              max={Math.max(MIN_INPUT_AREA_HEIGHT, getMaxInputAreaHeight())}
+              min={getStructuralMinimumInputHeight()}
+              max={getMaxInputAreaHeight()}
               valueUnit="pixels"
               onResize={handleResizeInputArea}
               onResizeTo={resizeInputAreaTo}
@@ -20074,16 +20334,18 @@ export function ChatPanel({
                     {effectiveReadOnlyMessage}
                   </div>
                 )}
-                <div className="chat-input-wrapper">
-                  <FileAttachment
-                    attachments={attachments}
-                    onAttachmentsChange={setAttachments}
-                    conversationId={renderedConversation.id}
-                    workspaceId={workspaceId}
-                    disabled={
-                      isReadOnly || isStreaming || hasQueuedCompactionMessageForActiveConversation
-                    }
-                  />
+                <div className="chat-input-wrapper chat-composer-card">
+                  <div className="chat-composer-attachments">
+                    <AttachmentPreviewList
+                      attachments={attachments}
+                      onRemove={(id) =>
+                        setAttachments((current) => current.filter((item) => item.id !== id))
+                      }
+                      disabled={
+                        isReadOnly || isStreaming || hasQueuedCompactionMessageForActiveConversation
+                      }
+                    />
+                  </div>
                   <div className="chat-input-field">
                     <RichChatInput
                       ref={richInputRef}
@@ -20091,6 +20353,7 @@ export function ChatPanel({
                       segments={messageSegments}
                       onChange={handleSegmentsChange}
                       onSubmit={sendMessage}
+                      onPasteText={markPendingPasteCheck}
                       onFocus={() => {
                         activeComposerRef.current = 'main';
                       }}
@@ -20103,10 +20366,23 @@ export function ChatPanel({
                       }
                       disabled={isReadOnly}
                       ariaLabel="Message"
+                      sendMode={sendMode}
                     />
                   </div>
-                  {isStreaming ? (
-                    <div className="chat-input-inline-actions">
+                  <div className="chat-composer-footer" data-chat-composer-footer>
+                    <div className="chat-composer-footer-left">
+                      <FileAttachment
+                        attachments={attachments}
+                        onAttachmentsChange={setAttachments}
+                        conversationId={renderedConversation.id}
+                        workspaceId={workspaceId}
+                        showPreviews={false}
+                        disabled={
+                          isReadOnly ||
+                          isStreaming ||
+                          hasQueuedCompactionMessageForActiveConversation
+                        }
+                      />
                       {showInlineToolSelector && (
                         <ToolSelectorDropdown
                           availableTools={effectiveAvailableTools}
@@ -20120,7 +20396,7 @@ export function ChatPanel({
                           selectedToolGroupIds={effectiveToolGroupIdSet}
                           toolGroups={effectiveToolGroups}
                           openDirection="up"
-                          disabled={false}
+                          disabled={isReadOnly || isStreaming}
                           readOnly={false}
                           saving={effectiveSavingTools}
                           title="Conversation Tools"
@@ -20134,77 +20410,116 @@ export function ChatPanel({
                       )}
                       <button
                         type="button"
-                        className="btn chat-stop-btn-inline"
-                        onClick={stopStreaming}
-                        title="Stop generating"
+                        className="btn btn-secondary btn-sm btn-icon chat-composer-expand-btn"
+                        onClick={toggleComposeMode}
+                        aria-label={
+                          isComposeMode || isMessagesCollapsed
+                            ? 'Restore composer'
+                            : 'Expand composer'
+                        }
+                        title={
+                          isComposeMode || isMessagesCollapsed
+                            ? 'Restore composer'
+                            : 'Expand composer'
+                        }
+                        aria-pressed={isComposeMode || isMessagesCollapsed}
                       >
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                          <rect x="6" y="6" width="12" height="12" rx="2"></rect>
-                        </svg>
+                        {isComposeMode || isMessagesCollapsed ? (
+                          <Minimize2 size={16} />
+                        ) : (
+                          <Maximize2 size={16} />
+                        )}
                       </button>
                     </div>
-                  ) : (
-                    !isReadOnly && (
-                      <div className="chat-input-inline-actions">
-                        {showInlineToolSelector && (
-                          <ToolSelectorDropdown
-                            availableTools={effectiveAvailableTools}
-                            selectedToolIds={resolvedEffectiveToolIdSet}
-                            toolSelectionMode={effectiveToolSelection.mode}
-                            onSelectionChange={handleToolSelectionChange}
-                            builtInTools={chatMenuBuiltInTools}
-                            selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
-                            onToggleBuiltInTool={handleToggleConversationBuiltInTool}
-                            onBulkBuiltInToggle={handleBulkChatMenuBuiltInToggle}
-                            selectedToolGroupIds={effectiveToolGroupIdSet}
-                            toolGroups={effectiveToolGroups}
-                            openDirection="up"
-                            disabled={false}
-                            readOnly={false}
-                            saving={effectiveSavingTools}
-                            title="Conversation Tools"
-                            getToolMenuItems={getToolMenuItems}
-                            getToolGroupMenuItems={getToolGroupMenuItems}
-                            getToolStatusBadge={getToolStatusBadge}
-                            onRequestEnableWorkspaceTool={
-                              useWorkspaceToolSource ? onRequestEnableWorkspaceTool : undefined
-                            }
-                          />
-                        )}
-                        {(!segmentsAreEmpty(messageSegments) || attachments.length > 0) && (
-                          <button
-                            type="button"
-                            className="btn chat-send-btn-inline"
-                            onClick={sendMessage}
-                            disabled={
-                              !renderedConversation ||
-                              !contextUsage.hasHeadroom ||
-                              hasQueuedCompactionMessageForActiveConversation
-                            }
-                            title={
-                              contextUsage.hasHeadroom
-                                ? 'Send message'
-                                : `Context headroom too low (${contextUsage.projectedInputPercent}%)`
-                            }
-                          >
-                            <svg
-                              width="20"
-                              height="20"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            >
-                              <line x1="12" y1="19" x2="12" y2="5"></line>
-                              <polyline points="5 12 12 5 19 12"></polyline>
-                            </svg>
-                          </button>
-                        )}
+                    <div className="chat-composer-footer-right">
+                      <ChatSendModeControl
+                        mode={sendMode}
+                        onChange={setSendMode}
+                        disabled={
+                          isReadOnly ||
+                          isStreaming ||
+                          hasQueuedCompactionMessageForActiveConversation
+                        }
+                      />
+                      <div data-chat-composer-model>
+                        <ModelSelector
+                          models={availableModels}
+                          selectedModelId={(() => {
+                            const selection = resolveConversationModelSelection(
+                              renderedConversation.model || '',
+                              availableModels,
+                            );
+                            return selection.matchedModel
+                              ? toProviderScopedModelKey(
+                                  selection.matchedModel.provider,
+                                  selection.matchedModel.id,
+                                )
+                              : selection.modelId;
+                          })()}
+                          onModelChange={changeModel}
+                          getModelSelectionKey={(model) =>
+                            toProviderScopedModelKey(model.provider, model.id)
+                          }
+                          disabled={isStreaming || isModelsLoading}
+                          loading={isModelsLoading}
+                          placement="top-end"
+                          triggerClassName="chat-composer-model-trigger"
+                        />
                       </div>
-                    )
-                  )}
+                      {isStreaming ? (
+                        <button
+                          type="button"
+                          className="btn chat-stop-btn-inline"
+                          onClick={stopStreaming}
+                          title="Stop generating"
+                          aria-label="Stop generating"
+                        >
+                          <svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 24 24"
+                            fill="currentColor"
+                            aria-hidden="true"
+                          >
+                            <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+                          </svg>
+                        </button>
+                      ) : !isReadOnly &&
+                        (!segmentsAreEmpty(messageSegments) || attachments.length > 0) ? (
+                        <button
+                          type="button"
+                          className="btn chat-send-btn-inline"
+                          onClick={sendMessage}
+                          disabled={
+                            !renderedConversation ||
+                            !contextUsage.hasHeadroom ||
+                            hasQueuedCompactionMessageForActiveConversation
+                          }
+                          title={
+                            contextUsage.hasHeadroom
+                              ? 'Send message'
+                              : `Context headroom too low (${contextUsage.projectedInputPercent}%)`
+                          }
+                          aria-label="Send message"
+                        >
+                          <svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                          >
+                            <line x1="12" y1="19" x2="12" y2="5"></line>
+                            <polyline points="5 12 12 5 19 12"></polyline>
+                          </svg>
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
