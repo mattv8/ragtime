@@ -30,7 +30,7 @@
 
 <div align="center">
   <img src=".github/images/2026-01-12.png" alt="Screenshot 1" height="360" />
-  <img src=".github/images/Screenshot 2026-02-28 131359.png " alt="Screenshot 1" height="360" />
+  <img src=".github/images/workspace-safari.png" alt="Ragtime Workspace with a live sales dashboard in a Safari-style browser frame" height="360" />
 </div>
 
 ## Table of Contents
