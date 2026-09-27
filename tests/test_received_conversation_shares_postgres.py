@@ -67,6 +67,7 @@ class ReceivedConversationSharesPostgresTests(unittest.TestCase):
         async def query_raw(query: str) -> list[dict[str, Any]]:
             with self.connection.cursor() as cursor:
                 cursor.execute(query)
+                assert cursor.description is not None
                 columns = [column.name for column in cursor.description]
                 return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
@@ -85,9 +86,7 @@ class ReceivedConversationSharesPostgresTests(unittest.TestCase):
                 self.assertEqual(await repository.list_received_conversation_shares("admin-not-selected"), [])
 
                 first = await repository.list_received_conversation_shares("recipient", limit=1)
-                second = await repository.list_received_conversation_shares(
-                    "recipient", limit=1, cursor_created_at=first[0].created_at, cursor_id=first[0].id
-                )
+                second = await repository.list_received_conversation_shares("recipient", limit=1, cursor_created_at=first[0].created_at, cursor_id=first[0].id)
                 self.assertEqual([share.id for share in first + second], ["s2", "s1"])
 
                 with self.connection.cursor() as cursor:

@@ -3607,7 +3607,7 @@ class IndexerRepository:
             FROM conversation_shares s
             INNER JOIN conversations c ON c.id = s.conversation_id
             INNER JOIN users u ON u.id = s.owner_user_id
-            WHERE {' AND '.join(where_parts)}
+            WHERE {" AND ".join(where_parts)}
             ORDER BY s.created_at DESC, s.id DESC
             LIMIT {int(limit)}
             """)

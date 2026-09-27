@@ -74,6 +74,7 @@ class ReceivedConversationShareTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(shares, [])
+        assert query_raw.await_args is not None
         sql = query_raw.await_args.args[0]
         self.assertIn("s.share_access_mode = 'selected_users'", sql)
         self.assertIn("s.share_selected_user_ids @> '[\"recipient-''quoted\"]'::jsonb", sql)
@@ -201,9 +202,10 @@ class ReceivedConversationShareTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_route_protects_only_displayed_metadata_and_rejects_blocked_content(self) -> None:
         share = _share()
-        with mock.patch.object(repository, "list_received_conversation_shares", mock.AsyncMock(return_value=[share])), mock.patch(
-            "ragtime.indexer.routes._authorize_conversation_release", mock.AsyncMock(side_effect=RuntimeError("blocked"))
-        ) as authorize:
+        with (
+            mock.patch.object(repository, "list_received_conversation_shares", mock.AsyncMock(return_value=[share])),
+            mock.patch("ragtime.indexer.routes._authorize_conversation_release", mock.AsyncMock(side_effect=RuntimeError("blocked"))) as authorize,
+        ):
             with self.assertRaisesRegex(RuntimeError, "blocked"):
                 await list_received_conversation_shares(response=Response(), limit=50, user=_user())
         authorize.assert_awaited_once_with(
