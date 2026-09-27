@@ -1,5 +1,5 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
-import { createRef } from 'react';
+import { createRef, StrictMode } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -82,6 +82,28 @@ describe('ObjectStorageSettings', () => {
 
     await expect(ref.current?.save()).rejects.toThrow('Object storage settings are still loading');
     await act(async () => resolveSettings(settings));
+  });
+
+  it('saves local settings after a StrictMode-delayed initial load', async () => {
+    const localSettings = { ...settings, mode: 'local' as const };
+    let resolveSettings: (value: typeof localSettings) => void;
+    const settingsPromise = new Promise<typeof localSettings>((resolve) => {
+      resolveSettings = resolve;
+    });
+    apiMock.getObjectStorageAdminSettings.mockReturnValue(settingsPromise);
+    apiMock.updateObjectStorageAdminSettings.mockResolvedValue(localSettings);
+    const ref = createRef<ObjectStorageSettingsHandle>();
+    render(
+      <StrictMode>
+        <ObjectStorageSettings ref={ref} />
+      </StrictMode>,
+    );
+
+    await expect(ref.current?.save()).rejects.toThrow('Object storage settings are still loading');
+    await act(async () => resolveSettings(localSettings));
+    await act(async () => ref.current?.save());
+
+    expect(apiMock.updateObjectStorageAdminSettings).toHaveBeenCalledWith({ mode: 'local' });
   });
 
   it('rejects saving while another object storage operation is active', async () => {

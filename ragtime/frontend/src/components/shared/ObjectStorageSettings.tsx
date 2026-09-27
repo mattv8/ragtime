@@ -60,6 +60,7 @@ export const ObjectStorageSettings = forwardRef<ObjectStorageSettingsHandle>(
       }
     }, []);
     useEffect(() => {
+      mounted.current = true;
       void load();
       return () => {
         mounted.current = false;
