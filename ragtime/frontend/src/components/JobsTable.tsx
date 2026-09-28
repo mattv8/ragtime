@@ -14,6 +14,7 @@ import { InlineCopyButton } from './shared/InlineCopyButton';
 import { useToast, ToastContainer } from './shared/Toast';
 import { useIndexResourceStatus } from '@/hooks/useIndexResourceStatus';
 import type { IndexResourceReason } from '@/types';
+import { JobsTableFrame } from './shared/JobsTableFrame';
 
 interface JobsTableProps {
   jobs: IndexJob[];
@@ -708,359 +709,351 @@ export function JobsTable({
 
       {allJobs.length > 0 && (
         <>
-          <div className="jobs-table-wrapper">
-            <table className="jobs-table">
-              <thead>
-                <tr>
-                  <th onClick={() => handleSort('type')} style={{ cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      Type
-                      {sortConfig?.key === 'type' &&
-                        (sortConfig.direction === 'asc' ? (
-                          <ArrowUp size={12} />
-                        ) : (
-                          <ArrowDown size={12} />
-                        ))}
-                    </div>
-                  </th>
-                  <th onClick={() => handleSort('name')} style={{ cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      Name
-                      {sortConfig?.key === 'name' &&
-                        (sortConfig.direction === 'asc' ? (
-                          <ArrowUp size={12} />
-                        ) : (
-                          <ArrowDown size={12} />
-                        ))}
-                    </div>
-                  </th>
-                  <th onClick={() => handleSort('createdAt')} style={{ cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      Created
-                      {sortConfig?.key === 'createdAt' &&
-                        (sortConfig.direction === 'asc' ? (
-                          <ArrowUp size={12} />
-                        ) : (
-                          <ArrowDown size={12} />
-                        ))}
-                    </div>
-                  </th>
-                  <th onClick={() => handleSort('completedAt')} style={{ cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      Completed
-                      {sortConfig?.key === 'completedAt' &&
-                        (sortConfig.direction === 'asc' ? (
-                          <ArrowUp size={12} />
-                        ) : (
-                          <ArrowDown size={12} />
-                        ))}
-                    </div>
-                  </th>
-                  <th>Elapsed</th>
-                  <th onClick={() => handleSort('progress')} style={{ cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      Progress
-                      {sortConfig?.key === 'progress' &&
-                        (sortConfig.direction === 'asc' ? (
-                          <ArrowUp size={12} />
-                        ) : (
-                          <ArrowDown size={12} />
-                        ))}
-                    </div>
-                  </th>
-                  <th onClick={() => handleSort('id')} style={{ cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      ID
-                      {sortConfig?.key === 'id' &&
-                        (sortConfig.direction === 'asc' ? (
-                          <ArrowUp size={12} />
-                        ) : (
-                          <ArrowDown size={12} />
-                        ))}
-                    </div>
-                  </th>
-                  <th className="sticky-action-header">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {displayedJobs.map((job) => {
-                  const isActive =
-                    job.status === 'pending' ||
-                    job.status === 'processing' ||
-                    job.status === 'indexing';
-                  const actionableJobType = isActionableJobType(job.type) ? job.type : null;
-                  const cancellableJobType =
-                    isActionableJobType(job.type) || job.type === 'userspace_code'
-                      ? job.type
-                      : null;
-                  const waitReason =
-                    job.type === 'document' ? resourceWaits.get(job.id) : undefined;
+          <JobsTableFrame id="indexing-jobs-table">
+            <thead>
+              <tr>
+                <th onClick={() => handleSort('type')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    Type
+                    {sortConfig?.key === 'type' &&
+                      (sortConfig.direction === 'asc' ? (
+                        <ArrowUp size={12} />
+                      ) : (
+                        <ArrowDown size={12} />
+                      ))}
+                  </div>
+                </th>
+                <th onClick={() => handleSort('name')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    Name
+                    {sortConfig?.key === 'name' &&
+                      (sortConfig.direction === 'asc' ? (
+                        <ArrowUp size={12} />
+                      ) : (
+                        <ArrowDown size={12} />
+                      ))}
+                  </div>
+                </th>
+                <th onClick={() => handleSort('createdAt')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    Created
+                    {sortConfig?.key === 'createdAt' &&
+                      (sortConfig.direction === 'asc' ? (
+                        <ArrowUp size={12} />
+                      ) : (
+                        <ArrowDown size={12} />
+                      ))}
+                  </div>
+                </th>
+                <th onClick={() => handleSort('completedAt')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    Completed
+                    {sortConfig?.key === 'completedAt' &&
+                      (sortConfig.direction === 'asc' ? (
+                        <ArrowUp size={12} />
+                      ) : (
+                        <ArrowDown size={12} />
+                      ))}
+                  </div>
+                </th>
+                <th>Elapsed</th>
+                <th onClick={() => handleSort('progress')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    Progress
+                    {sortConfig?.key === 'progress' &&
+                      (sortConfig.direction === 'asc' ? (
+                        <ArrowUp size={12} />
+                      ) : (
+                        <ArrowDown size={12} />
+                      ))}
+                  </div>
+                </th>
+                <th onClick={() => handleSort('id')} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    ID
+                    {sortConfig?.key === 'id' &&
+                      (sortConfig.direction === 'asc' ? (
+                        <ArrowUp size={12} />
+                      ) : (
+                        <ArrowDown size={12} />
+                      ))}
+                  </div>
+                </th>
+                <th className="sticky-action-header">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {displayedJobs.map((job) => {
+                const isActive =
+                  job.status === 'pending' ||
+                  job.status === 'processing' ||
+                  job.status === 'indexing';
+                const actionableJobType = isActionableJobType(job.type) ? job.type : null;
+                const cancellableJobType =
+                  isActionableJobType(job.type) || job.type === 'userspace_code' ? job.type : null;
+                const waitReason = job.type === 'document' ? resourceWaits.get(job.id) : undefined;
 
-                  return (
-                    <tr key={`${job.type}-${job.id}`}>
-                      <td data-label="Type">
-                        <span className={`badge type-${job.type}`}>
-                          {job.type === 'document'
-                            ? 'Document'
-                            : job.type === 'filesystem'
-                              ? 'Filesystem'
-                              : job.type === 'pdm'
-                                ? 'PDM'
-                                : job.type === 'userspace_code'
-                                  ? 'User Space Code'
-                                  : 'Schema'}
-                        </span>
-                      </td>
-                      <td data-label="Name" title={job.name}>
-                        {job.name}
-                      </td>
-                      <td data-label="Created">{formatDate(job.createdAt)}</td>
-                      <td data-label="Completed">
-                        {job.completedAt ? formatDate(job.completedAt) : '-'}
-                      </td>
-                      <td data-label="Elapsed">{getElapsedDuration(job, nowMs)}</td>
-                      <td data-label="Progress" className="progress-cell">
-                        {job.status === 'failed' ? (
-                          job.errorMessage ? (
-                            <button
-                              className="badge failed clickable"
-                              onClick={() => setSelectedJob(job)}
-                              title="Click to view error details"
-                            >
-                              failed <span className="info-icon">i</span>
-                            </button>
-                          ) : (
-                            <span className="badge failed">failed</span>
-                          )
-                        ) : job.status === 'processing' || job.status === 'indexing' ? (
-                          <div className="progress-container">
-                            <div className="progress-bar">
-                              <div
-                                className="progress-fill"
-                                style={{ width: `${job.progress}%` }}
-                              />
-                            </div>
-                            <div className="progress-details">
-                              <span className="progress-phase">{job.phase}</span>
-                              {waitReason && (
-                                <span className="field-help" data-resource-wait-reason={waitReason}>
-                                  {resourceWaitLabels[waitReason]}
-                                </span>
-                              )}
-                              <span className="progress-stats">
-                                {job.type === 'schema' ? (
-                                  // Schema jobs: show appropriate progress based on phase
-                                  job.phase.startsWith('Embedding') ? (
-                                    <>
-                                      {job.processedTables}/{job.totalTables ?? 0} tables
-                                    </>
-                                  ) : job.phase.startsWith('Introspecting') ||
-                                    job.phase.startsWith('Discovering') ||
-                                    job.phase.startsWith('Connecting') ? (
-                                    (job.totalTables ?? 0) > 0 ? (
-                                      <>{job.totalTables} tables found</>
-                                    ) : null
-                                  ) : (job.totalTables ?? 0) > 0 ? (
-                                    <>
-                                      {job.processedTables}/{job.totalTables} tables
-                                    </>
+                return (
+                  <tr key={`${job.type}-${job.id}`}>
+                    <td data-label="Type">
+                      <span className={`badge type-${job.type}`}>
+                        {job.type === 'document'
+                          ? 'Document'
+                          : job.type === 'filesystem'
+                            ? 'Filesystem'
+                            : job.type === 'pdm'
+                              ? 'PDM'
+                              : job.type === 'userspace_code'
+                                ? 'User Space Code'
+                                : 'Schema'}
+                      </span>
+                    </td>
+                    <td data-label="Name" title={job.name}>
+                      {job.name}
+                    </td>
+                    <td data-label="Created">{formatDate(job.createdAt)}</td>
+                    <td data-label="Completed">
+                      {job.completedAt ? formatDate(job.completedAt) : '-'}
+                    </td>
+                    <td data-label="Elapsed">{getElapsedDuration(job, nowMs)}</td>
+                    <td data-label="Progress" className="progress-cell">
+                      {job.status === 'failed' ? (
+                        job.errorMessage ? (
+                          <button
+                            className="badge failed clickable"
+                            onClick={() => setSelectedJob(job)}
+                            title="Click to view error details"
+                          >
+                            failed <span className="info-icon">i</span>
+                          </button>
+                        ) : (
+                          <span className="badge failed">failed</span>
+                        )
+                      ) : job.status === 'processing' || job.status === 'indexing' ? (
+                        <div className="progress-container">
+                          <div className="progress-bar">
+                            <div className="progress-fill" style={{ width: `${job.progress}%` }} />
+                          </div>
+                          <div className="progress-details">
+                            <span className="progress-phase">{job.phase}</span>
+                            {waitReason && (
+                              <span className="field-help" data-resource-wait-reason={waitReason}>
+                                {resourceWaitLabels[waitReason]}
+                              </span>
+                            )}
+                            <span className="progress-stats">
+                              {job.type === 'schema' ? (
+                                // Schema jobs: show appropriate progress based on phase
+                                job.phase.startsWith('Embedding') ? (
+                                  <>
+                                    {job.processedTables}/{job.totalTables ?? 0} tables
+                                  </>
+                                ) : job.phase.startsWith('Introspecting') ||
+                                  job.phase.startsWith('Discovering') ||
+                                  job.phase.startsWith('Connecting') ? (
+                                  (job.totalTables ?? 0) > 0 ? (
+                                    <>{job.totalTables} tables found</>
                                   ) : null
-                                ) : job.type === 'filesystem' ? (
-                                  // Filesystem jobs: show appropriate progress based on phase
-                                  job.phase.startsWith('Embedding') ? (
-                                    <>
-                                      {job.processedChunks.toLocaleString()}/
-                                      {job.totalChunks.toLocaleString()} chunks
-                                    </>
-                                  ) : job.phase.startsWith('Loading') ||
-                                    job.phase.startsWith('Scanning') ? (
-                                    <>
-                                      {(job.processedFiles + job.skippedFiles).toLocaleString()}/
-                                      {job.totalFiles.toLocaleString()} files
-                                      {job.skippedFiles > 0 &&
-                                        ` (${job.skippedFiles.toLocaleString()} unchanged)`}
-                                    </>
-                                  ) : job.totalChunks > 0 ? (
-                                    <>{job.totalChunks.toLocaleString()} chunks</>
-                                  ) : (
-                                    <>
-                                      {job.processedFiles.toLocaleString()}/
-                                      {job.totalFiles.toLocaleString()} files
-                                    </>
-                                  )
-                                ) : job.type === 'pdm' ? (
-                                  // PDM jobs: phase already shows doc progress, just show chunk count
-                                  <>{job.totalChunks.toLocaleString()} chunks</>
-                                ) : job.type === 'userspace_code' ? (
-                                  // User Space code jobs: show chunk progress during chunk-heavy
-                                  // phases, files/current file otherwise
-                                  ['Embedding', 'Indexing symbols', 'Finalizing'].includes(
-                                    job.phase,
-                                  ) && job.totalChunks > 0 ? (
-                                    <>
-                                      {job.processedChunks.toLocaleString()}/
-                                      {job.totalChunks.toLocaleString()} chunks
-                                    </>
-                                  ) : job.currentFile ? (
-                                    <>
-                                      {job.processedFiles.toLocaleString()}/
-                                      {job.totalFiles.toLocaleString()} files ({job.currentFile})
-                                    </>
-                                  ) : (
-                                    <>
-                                      {job.processedFiles.toLocaleString()}/
-                                      {job.totalFiles.toLocaleString()} files
-                                    </>
-                                  )
-                                ) : // Document jobs: show appropriate progress based on phase
-                                job.phase === 'Embedding' ? (
+                                ) : (job.totalTables ?? 0) > 0 ? (
+                                  <>
+                                    {job.processedTables}/{job.totalTables} tables
+                                  </>
+                                ) : null
+                              ) : job.type === 'filesystem' ? (
+                                // Filesystem jobs: show appropriate progress based on phase
+                                job.phase.startsWith('Embedding') ? (
                                   <>
                                     {job.processedChunks.toLocaleString()}/
                                     {job.totalChunks.toLocaleString()} chunks
                                   </>
-                                ) : job.phase === 'Chunking' ? (
+                                ) : job.phase.startsWith('Loading') ||
+                                  job.phase.startsWith('Scanning') ? (
                                   <>
-                                    {job.processedChunks.toLocaleString()}/
-                                    {job.totalChunks.toLocaleString()} documents
-                                  </>
-                                ) : job.phase === 'Loading files' ||
-                                  job.phase === 'Scanning files' ? (
-                                  <>
-                                    {job.processedFiles.toLocaleString()}/
+                                    {(job.processedFiles + job.skippedFiles).toLocaleString()}/
                                     {job.totalFiles.toLocaleString()} files
+                                    {job.skippedFiles > 0 &&
+                                      ` (${job.skippedFiles.toLocaleString()} unchanged)`}
                                   </>
                                 ) : job.totalChunks > 0 ? (
                                   <>{job.totalChunks.toLocaleString()} chunks</>
-                                ) : job.totalFiles > 0 ? (
+                                ) : (
                                   <>
                                     {job.processedFiles.toLocaleString()}/
                                     {job.totalFiles.toLocaleString()} files
                                   </>
-                                ) : null}
-                              </span>
-                            </div>
-                          </div>
-                        ) : job.status === 'completed' ? (
-                          <span className="progress-complete">
-                            {job.type === 'schema' ? (
-                              <>
-                                {job.totalTables} tables, {job.totalChunks} chunks
-                              </>
-                            ) : job.type === 'filesystem' ? (
-                              <>
-                                {job.processedFiles > 0 ? (
+                                )
+                              ) : job.type === 'pdm' ? (
+                                // PDM jobs: phase already shows doc progress, just show chunk count
+                                <>{job.totalChunks.toLocaleString()} chunks</>
+                              ) : job.type === 'userspace_code' ? (
+                                // User Space code jobs: show chunk progress during chunk-heavy
+                                // phases, files/current file otherwise
+                                ['Embedding', 'Indexing symbols', 'Finalizing'].includes(
+                                  job.phase,
+                                ) && job.totalChunks > 0 ? (
                                   <>
-                                    {job.processedFiles} indexed, {job.totalChunks} chunks
-                                    {job.skippedFiles > 0 && ` (${job.skippedFiles} unchanged)`}
+                                    {job.processedChunks.toLocaleString()}/
+                                    {job.totalChunks.toLocaleString()} chunks
                                   </>
-                                ) : job.skippedFiles > 0 ? (
-                                  <>All {job.skippedFiles} files unchanged</>
+                                ) : job.currentFile ? (
+                                  <>
+                                    {job.processedFiles.toLocaleString()}/
+                                    {job.totalFiles.toLocaleString()} files ({job.currentFile})
+                                  </>
                                 ) : (
-                                  <>No files to index</>
-                                )}
-                              </>
-                            ) : job.type === 'userspace_code' ? (
-                              <>
-                                {job.totalFiles} files, {job.totalChunks} chunks
-                              </>
-                            ) : (
-                              <>
-                                {job.totalFiles} files, {job.totalChunks} chunks
-                                {job.skippedFiles > 0 && ` (${job.skippedFiles} skipped)`}
-                              </>
-                            )}
-                          </span>
-                        ) : job.status === 'pending' ? (
-                          <span className="progress-pending">
-                            {job.type === 'userspace_code' && job.waitingForJobId
-                              ? `Waiting for ${job.waitingForJobId} to finish`
-                              : 'Waiting...'}
-                          </span>
-                        ) : job.status === 'cancelled' ? (
-                          <span className="progress-cancelled">Cancelled</span>
-                        ) : (
-                          <span className="progress-failed">--</span>
-                        )}
-                      </td>
-                      <td data-label="ID">
-                        <code>{job.id.slice(0, 8)}</code>
-                      </td>
-                      <td data-label="Actions" className="sticky-action-cell">
-                        <div className="actions-cell">
-                          {actionLoading === job.id ? (
-                            <span className="action-loading">...</span>
+                                  <>
+                                    {job.processedFiles.toLocaleString()}/
+                                    {job.totalFiles.toLocaleString()} files
+                                  </>
+                                )
+                              ) : // Document jobs: show appropriate progress based on phase
+                              job.phase === 'Embedding' ? (
+                                <>
+                                  {job.processedChunks.toLocaleString()}/
+                                  {job.totalChunks.toLocaleString()} chunks
+                                </>
+                              ) : job.phase === 'Chunking' ? (
+                                <>
+                                  {job.processedChunks.toLocaleString()}/
+                                  {job.totalChunks.toLocaleString()} documents
+                                </>
+                              ) : job.phase === 'Loading files' ||
+                                job.phase === 'Scanning files' ? (
+                                <>
+                                  {job.processedFiles.toLocaleString()}/
+                                  {job.totalFiles.toLocaleString()} files
+                                </>
+                              ) : job.totalChunks > 0 ? (
+                                <>{job.totalChunks.toLocaleString()} chunks</>
+                              ) : job.totalFiles > 0 ? (
+                                <>
+                                  {job.processedFiles.toLocaleString()}/
+                                  {job.totalFiles.toLocaleString()} files
+                                </>
+                              ) : null}
+                            </span>
+                          </div>
+                        </div>
+                      ) : job.status === 'completed' ? (
+                        <span className="progress-complete">
+                          {job.type === 'schema' ? (
+                            <>
+                              {job.totalTables} tables, {job.totalChunks} chunks
+                            </>
+                          ) : job.type === 'filesystem' ? (
+                            <>
+                              {job.processedFiles > 0 ? (
+                                <>
+                                  {job.processedFiles} indexed, {job.totalChunks} chunks
+                                  {job.skippedFiles > 0 && ` (${job.skippedFiles} unchanged)`}
+                                </>
+                              ) : job.skippedFiles > 0 ? (
+                                <>All {job.skippedFiles} files unchanged</>
+                              ) : (
+                                <>No files to index</>
+                              )}
+                            </>
+                          ) : job.type === 'userspace_code' ? (
+                            <>
+                              {job.totalFiles} files, {job.totalChunks} chunks
+                            </>
                           ) : (
                             <>
-                              {isActive &&
-                                cancellableJobType &&
-                                (cancelConfirmId === job.id ? (
-                                  <div style={{ display: 'flex', gap: '4px' }}>
-                                    <button
-                                      className="action-btn action-btn-confirm"
-                                      onClick={() =>
-                                        confirmCancel(job.id, cancellableJobType, job.toolConfigId)
-                                      }
-                                      title="Confirm cancel"
-                                    >
-                                      Confirm
-                                    </button>
-                                    <button
-                                      className="action-btn action-btn-secondary"
-                                      onClick={() => setCancelConfirmId(null)}
-                                      title="Cancel"
-                                    >
-                                      Back
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <button
-                                    className="action-btn action-btn-cancel"
-                                    onClick={() => handleCancel(job.id)}
-                                    title="Cancel this job"
-                                  >
-                                    Cancel
-                                  </button>
-                                ))}
-                              {(job.status === 'failed' || job.status === 'cancelled') &&
-                                actionableJobType &&
-                                (retryConfirmId === job.id ? (
-                                  <div style={{ display: 'flex', gap: '4px' }}>
-                                    <button
-                                      className="action-btn action-btn-confirm"
-                                      onClick={() =>
-                                        confirmRetry(job.id, actionableJobType, job.toolConfigId)
-                                      }
-                                      title="Confirm retry"
-                                    >
-                                      Confirm
-                                    </button>
-                                    <button
-                                      className="action-btn action-btn-secondary"
-                                      onClick={() => setRetryConfirmId(null)}
-                                      title="Cancel"
-                                    >
-                                      Back
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <button
-                                    className="action-btn action-btn-retry"
-                                    onClick={() => handleRetry(job.id)}
-                                    title="Retry this failed job"
-                                  >
-                                    Retry
-                                  </button>
-                                ))}
+                              {job.totalFiles} files, {job.totalChunks} chunks
+                              {job.skippedFiles > 0 && ` (${job.skippedFiles} skipped)`}
                             </>
                           )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                        </span>
+                      ) : job.status === 'pending' ? (
+                        <span className="progress-pending">
+                          {job.type === 'userspace_code' && job.waitingForJobId
+                            ? `Waiting for ${job.waitingForJobId} to finish`
+                            : 'Waiting...'}
+                        </span>
+                      ) : job.status === 'cancelled' ? (
+                        <span className="progress-cancelled">Cancelled</span>
+                      ) : (
+                        <span className="progress-failed">--</span>
+                      )}
+                    </td>
+                    <td data-label="ID">
+                      <code>{job.id.slice(0, 8)}</code>
+                    </td>
+                    <td data-label="Actions" className="sticky-action-cell">
+                      <div className="actions-cell">
+                        {actionLoading === job.id ? (
+                          <span className="action-loading">...</span>
+                        ) : (
+                          <>
+                            {isActive &&
+                              cancellableJobType &&
+                              (cancelConfirmId === job.id ? (
+                                <div style={{ display: 'flex', gap: '4px' }}>
+                                  <button
+                                    className="action-btn action-btn-confirm"
+                                    onClick={() =>
+                                      confirmCancel(job.id, cancellableJobType, job.toolConfigId)
+                                    }
+                                    title="Confirm cancel"
+                                  >
+                                    Confirm
+                                  </button>
+                                  <button
+                                    className="action-btn action-btn-secondary"
+                                    onClick={() => setCancelConfirmId(null)}
+                                    title="Cancel"
+                                  >
+                                    Back
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  className="action-btn action-btn-cancel"
+                                  onClick={() => handleCancel(job.id)}
+                                  title="Cancel this job"
+                                >
+                                  Cancel
+                                </button>
+                              ))}
+                            {(job.status === 'failed' || job.status === 'cancelled') &&
+                              actionableJobType &&
+                              (retryConfirmId === job.id ? (
+                                <div style={{ display: 'flex', gap: '4px' }}>
+                                  <button
+                                    className="action-btn action-btn-confirm"
+                                    onClick={() =>
+                                      confirmRetry(job.id, actionableJobType, job.toolConfigId)
+                                    }
+                                    title="Confirm retry"
+                                  >
+                                    Confirm
+                                  </button>
+                                  <button
+                                    className="action-btn action-btn-secondary"
+                                    onClick={() => setRetryConfirmId(null)}
+                                    title="Cancel"
+                                  >
+                                    Back
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  className="action-btn action-btn-retry"
+                                  onClick={() => handleRetry(job.id)}
+                                  title="Retry this failed job"
+                                >
+                                  Retry
+                                </button>
+                              ))}
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </JobsTableFrame>
 
           {hasMore && (
             <div style={{ textAlign: 'center', marginTop: '12px' }}>

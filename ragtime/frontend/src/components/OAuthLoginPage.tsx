@@ -239,6 +239,17 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
     }
   };
 
+  // The original OAuth parameters remain in props; a new ordinary sign-in
+  // starts a fresh authorization exchange instead of spending recovery state.
+  const restartLoginAfterRecovery = () => {
+    setPassword('');
+    setMfaCode('');
+    setMfaChallengeToken(null);
+    setMfaMode('none');
+    setError(null);
+    setAuthorizationRetryAvailable(false);
+  };
+
   return (
     <LoginGradientShell>
       <div id="oauth-login-card" className="login-card">
@@ -282,6 +293,7 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
             onVerify={handleMfaVerify}
             onSessionEstablished={handleMfaSessionEstablished}
             onRecoveryContinue={() => void handleRecoveryContinue()}
+            onRestartLogin={restartLoginAfterRecovery}
           />
         )}
 

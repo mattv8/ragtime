@@ -51,18 +51,21 @@ def _json_response_body(response: Response) -> dict[str, object]:
     return json.loads(bytes(response.body))
 
 
-def _local_managed_user(*, user_id: str, display_name: str = "Alice") -> SimpleNamespace:
-    return SimpleNamespace(
-        id=user_id,
-        username="local:alice",
-        authProvider="local_managed",
-        displayName=display_name,
-        email="alice@example.com",
-        role="user",
-        roleManuallySet=False,
-        themePack=None,
-        mfaPreferredMethod=None,
-        lastLoginAt=None,
+def _local_managed_user(*, user_id: str, display_name: str = "Alice") -> api_auth.User:
+    return cast(
+        api_auth.User,
+        SimpleNamespace(
+            id=user_id,
+            username="local:alice",
+            authProvider="local_managed",
+            displayName=display_name,
+            email="alice@example.com",
+            role="user",
+            roleManuallySet=False,
+            themePack=None,
+            mfaPreferredMethod=None,
+            lastLoginAt=None,
+        ),
     )
 
 
@@ -155,47 +158,95 @@ class ModelsEndpointAuthTests(unittest.TestCase):
 
 
 class CredentialSessionInvalidationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_local_password_update_invalidates_existing_sessions(self) -> None:
-        db = _local_user_db()
-
-        async def fake_get_db():
-            return db
-
+    async def test_local_password_update_invalidates_auth_inside_update_transaction(self) -> None:
         updated_user = _local_managed_user(user_id="user-1")
+        tx = SimpleNamespace(
+            user=SimpleNamespace(find_unique=mock.AsyncMock(return_value=updated_user), update=mock.AsyncMock(return_value=updated_user)),
+            execute_raw=mock.AsyncMock(),
+            authsyncevent=SimpleNamespace(create=mock.AsyncMock()),
+        )
+
+        class TransactionContext:
+            async def __aenter__(self):
+                return tx
+
+            async def __aexit__(self, *_args):
+                return False
+
+        db = _local_user_db()
+        db.tx = lambda: TransactionContext()
 
         with (
-            mock.patch.object(api_auth, "get_db", new=fake_get_db),
-            mock.patch.object(api_auth, "create_or_update_local_managed_user", new=mock.AsyncMock(return_value=updated_user)),
-            mock.patch.object(api_auth, "invalidate_all_sessions", new=mock.AsyncMock()) as invalidate,
+            mock.patch.object(api_auth, "get_db", new=mock.AsyncMock(return_value=db)),
+            mock.patch.object(api_auth, "_require_admin_security_token", new=mock.AsyncMock()),
+            mock.patch.object(api_auth, "hash_local_password", return_value="new-hash"),
+            mock.patch.object(api_auth, "revoke_user_auth_in_transaction", new=mock.AsyncMock(return_value=1)) as revoke,
             mock.patch.object(api_auth, "_user_response", new=mock.AsyncMock(return_value=updated_user)),
         ):
             await api_auth.update_local_user(
                 "user-1",
-                api_auth.LocalUserUpdateRequest(password="new-password"),
+                api_auth.LocalUserUpdateRequest(password="new-password", verification_token="verified"),
+                Request(_scope(method="PATCH", path="/auth/local/users/user-1")),
+                _local_managed_user(user_id="admin-1"),
             )
 
-        invalidate.assert_awaited_once_with("user-1")
+        revoke.assert_awaited_once_with(tx, "user-1")
+        tx.user.update.assert_awaited_once()
+        self.assertEqual(tx.user.update.await_args.kwargs["data"]["passwordHash"], "new-hash")
+
+    async def test_local_password_update_reports_missing_user_before_audit(self) -> None:
+        existing_user = _local_managed_user(user_id="user-1")
+        tx = SimpleNamespace(
+            user=SimpleNamespace(find_unique=mock.AsyncMock(return_value=existing_user), update=mock.AsyncMock(return_value=None)),
+            execute_raw=mock.AsyncMock(),
+            authsyncevent=SimpleNamespace(create=mock.AsyncMock()),
+        )
+
+        class TransactionContext:
+            async def __aenter__(self):
+                return tx
+
+            async def __aexit__(self, *_args):
+                return False
+
+        db = _local_user_db()
+        db.tx = lambda: TransactionContext()
+
+        with (
+            mock.patch.object(api_auth, "get_db", new=mock.AsyncMock(return_value=db)),
+            mock.patch.object(api_auth, "_require_admin_security_token", new=mock.AsyncMock()),
+            mock.patch.object(api_auth, "hash_local_password", return_value="new-hash"),
+            mock.patch.object(api_auth, "revoke_user_auth_in_transaction", new=mock.AsyncMock(return_value=1)),
+            self.assertRaises(api_auth.HTTPException) as caught,
+        ):
+            await api_auth.update_local_user(
+                "user-1",
+                api_auth.LocalUserUpdateRequest(password="new-password", verification_token="verified"),
+                Request(_scope(method="PATCH", path="/auth/local/users/user-1")),
+                _local_managed_user(user_id="admin-1"),
+            )
+
+        self.assertEqual(caught.exception.status_code, 404)
+        tx.authsyncevent.create.assert_not_awaited()
 
     async def test_local_profile_update_does_not_invalidate_existing_sessions(self) -> None:
         db = _local_user_db()
-
-        async def fake_get_db():
-            return db
-
         updated_user = _local_managed_user(user_id="user-1", display_name="Alice Renamed")
 
         with (
-            mock.patch.object(api_auth, "get_db", new=fake_get_db),
+            mock.patch.object(api_auth, "get_db", new=mock.AsyncMock(return_value=db)),
             mock.patch.object(api_auth, "create_or_update_local_managed_user", new=mock.AsyncMock(return_value=updated_user)),
-            mock.patch.object(api_auth, "invalidate_all_sessions", new=mock.AsyncMock()) as invalidate,
+            mock.patch.object(api_auth, "revoke_user_auth_in_transaction", new=mock.AsyncMock()) as revoke,
             mock.patch.object(api_auth, "_user_response", new=mock.AsyncMock(return_value=updated_user)),
         ):
             await api_auth.update_local_user(
                 "user-1",
                 api_auth.LocalUserUpdateRequest(display_name="Alice Renamed"),
+                Request(_scope(method="PATCH", path="/auth/local/users/user-1")),
+                _local_managed_user(user_id="admin-1"),
             )
 
-        invalidate.assert_not_awaited()
+        revoke.assert_not_awaited()
 
     async def test_webauthn_credential_delete_invalidates_existing_sessions(self) -> None:
         user = cast(api_auth.User, type("User", (), {"id": "user-1"})())
@@ -308,7 +359,7 @@ class ListUsersQueryShapeTests(unittest.IsolatedAsyncioTestCase):
                 return len(users)
 
             async def find_many(self, **kwargs):
-                test_case.assertEqual(kwargs["order"], {"createdAt": "desc"})
+                test_case.assertEqual(kwargs["order"], [{"createdAt": "desc"}, {"id": "desc"}])
                 test_case.assertEqual(kwargs["skip"], 0)
                 test_case.assertEqual(kwargs["take"], 50)
                 return users

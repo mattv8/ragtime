@@ -46,6 +46,10 @@ token/theme files, shared CSS, then this guide. Start with:
   document; otherwise use a stable semantic `data-*` value or a durable domain
   identifier. Never use an array index, random value, or styling class as the
   hook. Incidental wrappers and leaves do not need one.
+- **Shared components.** Prefer existing shared components over lookalike JSX/CSS.
+  For domain-specific presentation, share a small display-only layer without
+  coupling unrelated domain logic. Reuse surfaces, spacing, state styles, and
+  token hierarchies; do not fork them.
 - **Responsive, touch, motion.** Test desktop and narrow layouts. Preserve
   `responsive.css`'s stacked forms, wrapped tabs, mobile modal sizing, and
   User Space pane reflow. Coarse pointers require usable targets (normally
@@ -63,6 +67,10 @@ The pack is `data-theme-pack` (`default` is absent) and mode is `data-theme`
 (`light`, `dark`, or absent for system). Explicit light and system-light blocks
 are intentionally equivalent. Review every changed surface in Default, Modern,
 and Serif, in dark and light/system.
+
+Use the actual route/container hierarchy in previews and fixtures, including
+ancestor IDs/classes that theme selectors depend on. Inspect initial and
+scrolled states; let transitions settle before capturing visual evidence.
 
 ### Default
 
@@ -104,21 +112,44 @@ turn code or UI chrome into serif by accident.
 - **Cards, records, and summaries.** Make the primary action, status, metadata,
   and secondary actions easy to scan. Compact summaries may hide detail, but
   selected/expanded states and unavailable reasons must remain explicit.
+  Keep page-level summary panels as standalone themed surfaces, respecting each
+  pack's surface and shadow rules. Include only task-relevant metrics.
+- **Structured metadata.** Use labeled pills/badges for discrete status and
+  capability values, with explicit state text. Group other independent values
+  in semantic HTML elements. Use CSS `gap` between elements instead of
+  dot/bullet-delimited status or metadata strings.
 - **Forms and wizards.** Group related fields, give errors an associated label,
   preserve entered work, and make the next action/irreversible consequence
   clear. `ToolWizard.tsx` and `WorkspaceScmWizard.tsx` are broad, stateful
   references: review step progress, validation, busy/error/retry/result states,
   and cancellation/close behavior rather than copying their structure blindly.
+- **Toolbars.** Maintain coherent control heights, consistent spacing, usable
+  search widths, grouped actions/filters, and responsive wrapping. Verify CSS
+  selectors cover rendered input types; a familiar class name alone is not
+  proof of styling.
 - **Discovery, search, filtering, and tables.** `SearchFilterBar.tsx` supports
   tag creation, debounced filtering, URL state, completion, clear, and keyboard
   handling. Results must state empty, filtered-empty, loading, and failure
-  conditions. Preserve headings/cells and responsive table-to-card behavior;
-  `ToolAccessEditor.tsx` shows ARIA table and listbox semantics.
+  conditions. Reuse shared table presentation such as `shared/JobsTableFrame.tsx`,
+  the shell used by `JobsTable.tsx`. In horizontally scrollable admin tables,
+  keep the final row-action column pinned with an opaque themed background;
+  verify tablet/mobile breakpoints and scroll cues. Preserve scoped tabular layouts
+  and page-specific responsive behavior; do not force unconditional table-to-card
+  conversion. `ToolAccessEditor.tsx` shows ARIA table and listbox semantics.
 - **Tabs, async progress, and destructive actions.** Tabs require correct
-  tablist/tab/tabpanel relationships and a visible selected state. Long work
-  needs a progress/status signal and a terminal result. Use explicit confirm,
-  consequence, and recovery paths for destructive actions; do not rely on color
-  or a transient toast as the only evidence.
+  tablist/tab/tabpanel relationships and a visible selected state. Modal tabs
+  must use `shared/ModalTabs.tsx`: add `modal-with-tabs` to the dialog's
+  `.modal-content` and render the tabs inside `.modal-body`, following
+  `shared/AgentAccessModal.tsx`. Preserve visited drafts, keyboard navigation,
+  and focus restoration. Do not apply modal navigation
+  patterns to page-level navigation. Long work needs a progress/status signal
+  and terminal result. Use explicit confirm, consequence, and recovery paths
+  for destructive actions; do not rely on color or transient toast alone.
+- **Page-size preferences.** Explicit non-default row/item count choices must be
+  remembered in session cookies using `utils/cookies.ts`; omit `Expires`/`Max-Age`
+  except for deletion. Scope by user and table as appropriate. Validate allowed
+  values and restore on reload, navigation, and user change. Clear override on
+  default selection. Keep UI-preference cookies separate from authentication cookies.
 - **File and diff views.** `FileDiffOverlay.tsx` provides per-file navigation,
   loading, error, no-diff, and changed-line summaries. Preserve filenames,
   operation/status labels, before/after context, scrollability, and narrow
@@ -179,12 +210,24 @@ turn code or UI chrome into serif by accident.
 Mark each **Pass / Fail / N/A**:
 
 - Hierarchy is clear; surfaces, borders, spacing, and density match the pack.
-- Default, Modern, and Serif work in dark, light, and system mode.
+- Default, Modern, and Serif work in dark, light, and system mode, verified
+  within the actual route/container hierarchy.
 - Unique primary boundaries have stable, named IDs or semantic data hooks.
 - Loading, empty, filtered-empty, success, error, disabled, and progress states
   are explicit where applicable.
 - Keyboard, focus, labels, roles, live feedback, contrast, touch targets, and
   reduced motion are preserved.
+- Shared components are reused; domain-specific presentation is isolated.
+- Summary panels preserve theme hierarchy; independent metadata uses grouped
+  HTML and labeled status pills/badges rather than dot-delimited strings.
+- Toolbars have coherent control heights, spacing, usable search widths, grouped
+  actions/filters, and responsive wrapping. CSS selectors cover rendered types.
+- Modal tabs use shared `ModalTabs.tsx` with correct placement; visited state,
+  keyboard navigation, and focus are preserved.
+- Tables reuse shared presentation; final row actions remain pinned during
+  horizontal scrolling, with themed backgrounds and visible scroll cues.
+- Page-size preferences stored in session cookies scoped by user/table, validated,
+  and restored on reload/navigation/user change; default selection clears the override.
 - Narrow/mobile reflow, panes, forms, tabs, tables, and overlays remain usable.
 - Portals, charts/canvas, and embedded iframes respect theme changes, layering,
   sizing, sandboxing, and fallback/error states.

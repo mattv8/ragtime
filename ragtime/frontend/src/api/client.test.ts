@@ -168,6 +168,58 @@ describe('auth-aware transport', () => {
   });
 });
 
+describe('user management transport contracts', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+  beforeEach(() => vi.stubGlobal('fetch', fetchMock));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('collects paginated users with take=500 and deduplicates overlapping pages', async () => {
+    const users = Array.from({ length: 500 }, (_, index) => ({
+      id: String(index),
+      username: `u${index}`,
+    }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ users })).mockResolvedValueOnce(
+      jsonResponse({
+        users: [
+          { id: '499', username: 'u499' },
+          { id: '500', username: 'u500' },
+        ],
+      }),
+    );
+
+    const result = await api.listUsers();
+    expect(result).toHaveLength(501);
+    expect(fetchMock.mock.calls[0][0]).toBe('/auth/users?skip=0&take=500');
+    expect(fetchMock.mock.calls[1][0]).toBe('/auth/users?skip=500&take=500');
+  });
+
+  it('keeps legacy array user responses compatible', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ id: 'u1', username: 'legacy' }]));
+    await expect(api.listUsers()).resolves.toEqual([{ id: 'u1', username: 'legacy' }]);
+  });
+
+  it('fetches one canonical user without listing the directory', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 'user id', username: 'alex' }));
+    await expect(api.getUser('user id')).resolves.toMatchObject({ id: 'user id' });
+    expect(fetchMock).toHaveBeenCalledWith('/auth/users/user%20id', expect.anything());
+  });
+
+  it('serializes verification JSON for destructive MFA reset', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true }));
+    await api.resetUserMfa('target id', 'fresh-token');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/auth/users/target%20id/mfa',
+      expect.objectContaining({
+        method: 'DELETE',
+        body: JSON.stringify({ verification_token: 'fresh-token' }),
+      }),
+    );
+  });
+});
+
 describe('auth-aware transport isolated authenticated sessions', () => {
   const fetchMock = vi.fn<typeof fetch>();
 

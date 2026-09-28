@@ -332,30 +332,40 @@ async def revoke_refresh_token(refresh_hash: str, *, client_id: str | None = Non
         )
 
 
-async def revoke_user_auth(user_id: str, *, expected_generation: int | None = None) -> int:
-    """Atomically invalidate user auth and return the generation written.
+async def revoke_user_auth_in_transaction(
+    tx: Any,
+    user_id: str,
+    *,
+    expected_generation: int | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Invalidate user auth inside an existing transaction.
 
-    When an authentication snapshot is supplied, it must still be current while
-    holding the user row lock.  This prevents a stale continuation from
-    invalidating a newer administrator security reset and then inheriting its
-    generation.
+    The user security row is always the first lock acquired by this primitive.
+    Callers can then mutate passwords or factors in the same transaction without
+    opening a race against recovery finalization.
     """
+    current_generation = await lock_user_security_generation(tx, user_id)
+    if expected_generation is not None and int(expected_generation) != current_generation:
+        raise OAuthGrantError("security_generation_mismatch")
+    rows = await tx.query_raw(
+        'UPDATE "users" SET "security_generation" = "security_generation" + 1 WHERE "id" = $1 RETURNING "security_generation"',
+        user_id,
+    )
+    await tx.execute_raw('DELETE FROM "sessions" WHERE "user_id" = $1', user_id)
+    await tx.execute_raw(
+        'UPDATE "oauth_grants" SET "revoked_at" = COALESCE("revoked_at", $1::timestamp) WHERE "user_id" = $2',
+        _timestamp(_now(now)),
+        user_id,
+    )
+    return int(rows[0]["security_generation"])
+
+
+async def revoke_user_auth(user_id: str, *, expected_generation: int | None = None) -> int:
+    """Atomically invalidate user auth and return the generation written."""
     db = await get_db()
     async with db.tx() as tx:
-        current_generation = await lock_user_security_generation(tx, user_id)
-        if expected_generation is not None and int(expected_generation) != current_generation:
-            raise OAuthGrantError("security_generation_mismatch")
-        rows = await tx.query_raw(
-            'UPDATE "users" SET "security_generation" = "security_generation" + 1 WHERE "id" = $1 RETURNING "security_generation"',
-            user_id,
-        )
-        await tx.execute_raw('DELETE FROM "sessions" WHERE "user_id" = $1', user_id)
-        await tx.execute_raw(
-            'UPDATE "oauth_grants" SET "revoked_at" = COALESCE("revoked_at", $1::timestamp) WHERE "user_id" = $2',
-            _timestamp(_now()),
-            user_id,
-        )
-    return int(rows[0]["security_generation"])
+        return await revoke_user_auth_in_transaction(tx, user_id, expected_generation=expected_generation)
 
 
 async def cleanup_expired_grants(*, now: datetime | None = None) -> int:

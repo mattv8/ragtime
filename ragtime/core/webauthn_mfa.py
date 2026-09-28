@@ -204,6 +204,51 @@ def _normalize_credential_name(name: str | None) -> str:
     return name[:WEBAUTHN_CREDENTIAL_NAME_MAX_LENGTH] or WEBAUTHN_DEFAULT_CREDENTIAL_NAME
 
 
+def decode_registration_challenge(token: str, *, expected_purpose: str) -> WebauthnChallengeClaims | None:
+    """Decode a registration token without touching persistence."""
+    return _decode_challenge_token(token, expected_purpose=expected_purpose)
+
+
+def verify_webauthn_registration_pure(
+    user: Any,
+    request: Request,
+    registration_token: str,
+    credential: dict,
+    *,
+    expected_purpose: str,
+) -> dict[str, Any]:
+    """Verify a registration response without consuming or writing credentials.
+
+    Recovery completion uses this before its one all-or-nothing security
+    transaction; ordinary registration retains its existing persistence flow.
+    """
+    claims = _decode_challenge_token(registration_token, expected_purpose=expected_purpose)
+    if not claims or claims.user_id != user.id:
+        raise WebauthnError("Invalid or expired WebAuthn registration token.")
+    rp_id, expected_origins = resolve_rp(request)
+    try:
+        verification = verify_registration_response(
+            credential=credential,
+            expected_challenge=claims.challenge,
+            expected_rp_id=rp_id,
+            expected_origin=expected_origins,
+        )
+    except Exception as exc:
+        logger.debug("WebAuthn registration verification failed: %s", exc)
+        raise WebauthnError("WebAuthn registration could not be verified.") from exc
+    response = credential.get("response", {}) if isinstance(credential, dict) else {}
+    transports = [str(value) for value in response.get("transports", [])] if isinstance(response, dict) and isinstance(response.get("transports"), list) else []
+    return {
+        "jti": claims.jti,
+        "expires_at": claims.exp,
+        "credential_id": bytes_to_base64url(verification.credential_id),
+        "public_key": bytes_to_base64url(verification.credential_public_key),
+        "sign_count": int(verification.sign_count or 0),
+        "transports": transports,
+        "aaguid": str(verification.aaguid) if getattr(verification, "aaguid", None) is not None else None,
+    }
+
+
 def _credential_id_b64(cred: Any) -> str | None:
     return getattr(cred, "credentialId", None) or getattr(cred, "credential_id", None)
 

@@ -160,6 +160,7 @@ import type { FileDiffOverlayEntry } from './shared/FileDiffOverlay';
 import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
+import { NoticeDialog } from './shared/NoticeDialog';
 import {
   ToolSelectorDropdown,
   type ToolGroupInfo,
@@ -10419,6 +10420,7 @@ export function ChatPanel({
   const messageSegmentsRef = useRef<RichChatSegment[]>(EMPTY_RICH_SEGMENTS);
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [deleteMessageError, setDeleteMessageError] = useState<string | null>(null);
   // Tracks which conversation the active stream belongs to so streaming output
   // is never rendered under a different conversation after the user switches chats.
   const [streamingConversationId, setStreamingConversationId] = useState<string | null>(null);
@@ -17449,7 +17451,7 @@ export function ChatPanel({
       } catch (err) {
         console.error('Failed to delete from message:', err);
         const message = err instanceof Error ? err.message : 'Failed to delete message';
-        alert(message);
+        setDeleteMessageError(message);
       }
     },
     [
@@ -20559,6 +20561,15 @@ export function ChatPanel({
           entityType="conversation"
           formatUserLabel={formatUserLabel}
           saving={savingMembers}
+        />
+      )}
+
+      {deleteMessageError && (
+        <NoticeDialog
+          title="Could not delete message"
+          message={deleteMessageError}
+          dialogKey="delete-message-error"
+          onClose={() => setDeleteMessageError(null)}
         />
       )}
 

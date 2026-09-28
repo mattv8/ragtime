@@ -124,9 +124,10 @@ class UserGenerationPolicyRouteTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(api_auth, "get_db", mock.AsyncMock(return_value=db)),
             mock.patch.object(generation_policy, "get_db", mock.AsyncMock(return_value=db)),
             mock.patch.object(api_auth, "user_has_enabled_totp", mock.AsyncMock(return_value=False)),
+            mock.patch.object(api_auth, "user_has_enabled_webauthn", mock.AsyncMock(return_value=False)),
             mock.patch.object(api_auth, "mfa_needed_for_user", mock.AsyncMock(return_value=False)),
         )
-        with patches[0], patches[1], patches[2], patches[3]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
             enabled = await api_auth.update_user_generation_policy(
                 "user-1",
                 api_auth.UpdateUserGenerationPolicyRequest.model_validate({"chat_enabled": True}),

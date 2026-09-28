@@ -6,6 +6,8 @@ Endpoints for login, logout, user info, and LDAP configuration.
 
 import base64
 import hashlib
+import hmac
+import json
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -24,8 +26,10 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse
-from prisma import Json
+from jose import JWTError, jwt  # type: ignore[import-untyped]
+from prisma import Json, types
 from prisma.enums import AuthProvider, UserRole
+from prisma.errors import UniqueViolationError
 from prisma.models import User
 from pydantic import BaseModel, Field
 
@@ -52,6 +56,8 @@ from ragtime.core.auth import (
     discover_ldap_structure,
     get_auth_provider_config,
     get_ldap_config,
+    hash_local_password,
+    hash_token,
     import_ldap_user_profile,
     invalidate_all_sessions,
     invalidate_session,
@@ -83,24 +89,46 @@ from ragtime.core.mfa import (
     RECOVERY_CODE_COUNT,
     WEBAUTHN_METHOD,
     begin_totp_enrollment,
+    build_otpauth_uri,
     confirm_totp_enrollment,
     create_pending_mfa_token,
     create_trusted_device,
     decode_pending_mfa_token,
     generate_recovery_code,
     generate_totp_code,
+    generate_totp_secret,
     get_allowed_mfa_methods,
     get_enabled_totp_factor,
     hash_recovery_code,
     mfa_needed_for_user,
     regenerate_recovery_codes,
-    reset_user_mfa,
     resolve_preferred_mfa_method,
     trusted_device_satisfies_mfa,
     user_allowed_enrolled_methods,
     user_has_enabled_totp,
+    verify_totp_code,
     verify_user_mfa_code,
 )
+from ragtime.core.mfa_recovery import (
+    MAX_PASS_ATTEMPTS,
+    RECOVERY_CONTINUATION_TTL,
+    RECOVERY_PASS_TTL,
+    RecoveryStatus,
+    create_recovery_token,
+    create_totp_token,
+    create_webauthn_token,
+    generate_pass,
+    hash_pass,
+    recovery_status,
+    verify_pass,
+)
+from ragtime.core.mfa_recovery import (
+    decode_token as decode_recovery_token,
+)
+from ragtime.core.mfa_recovery import (
+    utcnow as recovery_now,
+)
+from ragtime.core.oauth_grants import OAuthGrantError, lock_user_security_generation, revoke_user_auth_in_transaction
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
 from ragtime.core.security import (
     get_current_user,
@@ -123,10 +151,12 @@ from ragtime.core.webauthn_mfa import (
     begin_webauthn_registration,
     complete_webauthn_authentication,
     complete_webauthn_registration,
+    decode_registration_challenge,
     delete_webauthn_credential,
     list_webauthn_credentials,
     rename_webauthn_credential,
     user_has_enabled_webauthn,
+    verify_webauthn_registration_pure,
 )
 from ragtime.mcp.user_oauth import McpOAuthError, issue_mcp_token_pair, normalize_mcp_resource, refresh_mcp_token_pair, revoke_mcp_token
 from ragtime.oauth_redirects import (
@@ -379,6 +409,9 @@ class LoginResponse(BaseModel):
     mfa_preferred_method: Optional[str] = Field(default=None, description="Resolved MFA method to present first in the challenge UI")
 
 
+MfaMethod = Literal["totp", "webauthn"]
+
+
 class UserResponse(BaseModel):
     """Current user info response."""
 
@@ -401,6 +434,7 @@ class UserResponse(BaseModel):
         description="Deprecated alias for manual_group_ids.",
     )
     mfa_enabled: bool = False
+    mfa_methods: list[MfaMethod] = Field(default_factory=list)
     mfa_required: bool = False
     recovery_codes_remaining: int = 0
     chat_enabled: Optional[bool] = None
@@ -625,6 +659,68 @@ class LocalUserUpdateRequest(BaseModel):
     display_name: Optional[str] = Field(default=None, max_length=255)
     email: Optional[str] = Field(default=None, max_length=255)
     role: Optional[Literal["user", "admin"]] = None
+    verification_token: Optional[str] = None
+
+
+class AdminSecurityVerifyRequest(BaseModel):
+    password: str = Field(..., min_length=1, max_length=1024)
+
+
+class AdminSecurityVerificationResponse(BaseModel):
+    verification_token: str
+    expires_at: str
+
+
+class VerificationTokenRequest(BaseModel):
+    verification_token: str = Field(..., min_length=1)
+
+
+class RecoveryPassStatus(BaseModel):
+    id: str
+    status: RecoveryStatus
+    created_at: str
+    expires_at: str
+    redeemed_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+
+class RecoveryPassResponse(BaseModel):
+    pass_: str = Field(..., alias="pass")
+    grant: RecoveryPassStatus
+
+
+class RecoveryPassListResponse(BaseModel):
+    grant: Optional[RecoveryPassStatus] = None
+
+
+class RecoveryPassRedeemRequest(BaseModel):
+    mfa_challenge_token: str
+    pass_: str = Field(..., alias="pass", min_length=1)
+
+
+class RecoveryPassRedeemResponse(BaseModel):
+    recovery_token: str
+    expires_at: str
+    allowed_methods: list[MfaMethod]
+
+
+class RecoveryTotpStartRequest(BaseModel):
+    recovery_token: str
+
+
+class RecoveryTotpCompleteRequest(RecoveryTotpStartRequest):
+    enrollment_token: str
+    code: str = Field(..., min_length=1, max_length=64)
+
+
+class RecoveryWebauthnStartRequest(RecoveryTotpStartRequest):
+    pass
+
+
+class RecoveryWebauthnCompleteRequest(RecoveryTotpStartRequest):
+    registration_token: str
+    credential: dict[str, Any]
+    name: str = Field(..., min_length=1, max_length=100)
 
 
 class AuthGroupResponse(BaseModel):
@@ -852,7 +948,12 @@ async def _user_response(user: User) -> UserResponse:
             manual_group_ids.append(membership.groupId)
         elif membership_provider == "ldap":
             ldap_group_ids.append(membership.groupId)
-    mfa_enabled = await user_has_enabled_totp(user.id)
+    methods: list[Literal["totp", "webauthn"]] = []
+    if await user_has_enabled_webauthn(user.id):
+        methods.append("webauthn")
+    if await user_has_enabled_totp(user.id):
+        methods.append("totp")
+    mfa_enabled = bool(methods)
     mfa_required = await mfa_needed_for_user(user)
     recovery_codes_remaining = await db.usermfarecoverycode.count(where={"userId": user.id, "usedAt": None})
 
@@ -873,6 +974,7 @@ async def _user_response(user: User) -> UserResponse:
         ldap_group_ids=ldap_group_ids,
         local_group_ids=manual_group_ids,
         mfa_enabled=mfa_enabled,
+        mfa_methods=methods,
         mfa_required=mfa_required,
         recovery_codes_remaining=recovery_codes_remaining,
         chat_enabled=getattr(user, "chatEnabled", None),
@@ -966,6 +1068,11 @@ async def _bulk_user_responses(users: list[User]) -> list[UserResponse]:
     for user in users:
         cached_groups = getattr(user, "cachedGroups", None)
         manual_group_ids, ldap_group_ids = _prefetched_group_ids_for_user(user.id, memberships_by_user_id, groups_by_id)
+        mfa_methods: list[MfaMethod] = []
+        if user.id in webauthn_enabled_user_ids:
+            mfa_methods.append("webauthn")
+        if user.id in totp_enabled_user_ids:
+            mfa_methods.append("totp")
         responses.append(
             UserResponse(
                 id=user.id,
@@ -983,7 +1090,8 @@ async def _bulk_user_responses(users: list[User]) -> list[UserResponse]:
                 manual_group_ids=manual_group_ids,
                 ldap_group_ids=ldap_group_ids,
                 local_group_ids=manual_group_ids,
-                mfa_enabled=user.id in totp_enabled_user_ids,
+                mfa_enabled=user.id in totp_enabled_user_ids or user.id in webauthn_enabled_user_ids,
+                mfa_methods=mfa_methods,
                 mfa_required=_prefetched_user_requires_mfa(
                     user,
                     auth_config,
@@ -2839,7 +2947,9 @@ async def create_local_user(
 async def update_local_user(
     user_id: str,
     body: LocalUserUpdateRequest,
-    _user: User = Depends(require_admin),
+    request: Request,
+    current_user: User = Depends(require_admin),
+    session_token: str | None = Depends(get_session_token),
 ):
     """Update an internal managed user profile or password."""
     db = await get_db()
@@ -2851,23 +2961,65 @@ async def update_local_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only internal managed users can be edited here",
         )
+    if body.password is not None:
+        if not body.verification_token:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Fresh administrator verification required")
+        await _require_admin_security_token(body.verification_token, current_user, session_token)
     role = existing.role
     if body.role:
         role = UserRole.admin if body.role == "admin" else UserRole.user
+    fields_set = body.model_fields_set
+    profile_display_name = existing.displayName if "display_name" not in fields_set else (body.display_name or existing.username)
+    profile_email = existing.email if "email" not in fields_set else body.email
     try:
-        user = await create_or_update_local_managed_user(
-            user_id=user_id,
-            username=existing.username,
-            password=body.password,
-            display_name=(body.display_name if body.display_name is not None else existing.displayName),
-            email=(body.email if body.email is not None else existing.email),
-            role=role,
-            role_manually_set=True if body.role is not None else None,
-        )
+        if body.password is None:
+            user = await create_or_update_local_managed_user(
+                user_id=user_id,
+                username=existing.username,
+                display_name=profile_display_name,
+                email=profile_email,
+                role=role,
+                role_manually_set=True if body.role is not None else None,
+            )
+        else:
+            password_hash = hash_local_password(body.password)
+            async with db.tx() as tx:
+                # Auth revocation acquires the user-security row lock before any
+                # credential write; password, grant revocation, and generation
+                # change then commit or roll back together.
+                await revoke_user_auth_in_transaction(tx, user_id)
+                now = recovery_now()
+                locked_existing = await tx.user.find_unique(where={"id": user_id})
+                if not locked_existing or _auth_provider_value(locked_existing.authProvider) != "local_managed":
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only internal managed users can be edited here")
+                update_data: types.UserUpdateInput = {
+                    "passwordHash": password_hash,
+                    "displayName": locked_existing.displayName if "display_name" not in fields_set else (body.display_name or locked_existing.username),
+                    "email": locked_existing.email if "email" not in fields_set else body.email,
+                    "role": (UserRole.admin if body.role == "admin" else UserRole.user) if body.role else locked_existing.role,
+                }
+                if body.role is not None:
+                    update_data["roleManuallySet"] = True
+                user = await tx.user.update(where={"id": user_id}, data=update_data)
+                if user is None:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+                await tx.execute_raw(
+                    'UPDATE "user_mfa_recovery_passes" SET "revoked_at" = COALESCE("revoked_at", $1::timestamp) WHERE "user_id" = $2',
+                    now.replace(tzinfo=None),
+                    user_id,
+                )
+                await tx.authsyncevent.create(
+                    data={
+                        "userId": user_id,
+                        "username": user.username,
+                        "sourceProvider": AuthProvider.local_managed,
+                        "action": "upsert_local_user",
+                        "status": "success",
+                        "detail": json.dumps({"actor_id": current_user.id}, separators=(",", ":"), sort_keys=True),
+                    }
+                )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    if body.password is not None:
-        await invalidate_all_sessions(user_id)
     return await _user_response(user)
 
 
@@ -3036,6 +3188,415 @@ async def set_user_groups(
 # =============================================================================
 
 
+def _iso(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.replace(" ", "T")
+    return value.isoformat()
+
+
+def _utc_datetime(value: Any) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else value
+    if not isinstance(parsed, datetime):
+        raise ValueError("Expected a timestamp")
+    return (parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+
+def _recovery_pass_status(row: dict[str, Any]) -> RecoveryPassStatus:
+    grant_status = recovery_status(row)
+    current_generation = row.get("current_security_generation")
+    if grant_status in {"issued", "redeemed"} and current_generation is not None and int(row["security_generation"]) != int(current_generation):
+        grant_status = "revoked"
+    return RecoveryPassStatus(
+        id=str(row["id"]),
+        status=grant_status,
+        created_at=_iso(row["created_at"]) or "",
+        expires_at=_iso(row["expires_at"]) or "",
+        redeemed_at=_iso(row.get("redeemed_at")),
+        completed_at=_iso(row.get("completed_at")),
+    )
+
+
+async def _lock_recovery_target(tx: Any, user_id: str) -> int:
+    try:
+        return await lock_user_security_generation(tx, user_id)
+    except OAuthGrantError as exc:
+        if exc.reason == "user_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found") from exc
+        raise
+
+
+def _recovery_audit_data(*, actor_id: str, target: User, action: str) -> types.AuthSyncEventCreateInput:
+    """Build a secret-free event carrying both actor and target identities."""
+    return {
+        "userId": target.id,
+        "username": target.username,
+        "sourceProvider": target.authProvider,
+        "action": action,
+        "status": "success",
+        "detail": json.dumps({"actor_id": actor_id}, separators=(",", ":"), sort_keys=True),
+    }
+
+
+def _create_admin_security_token(*, actor: User, session_token: str) -> tuple[str, datetime]:
+    expires = recovery_now() + timedelta(minutes=5)
+    payload = {
+        "sub": actor.id,
+        "generation": int(getattr(actor, "securityGeneration", 0)),
+        "session_hash": hash_token(session_token),
+        "purpose": "admin:security_verify",
+        "exp": expires,
+    }
+    return jwt.encode(payload, settings.encryption_key, algorithm=settings.jwt_algorithm), expires
+
+
+async def _require_admin_security_token(token: str, actor: User, session_token: str | None) -> None:
+    try:
+        claims = jwt.decode(token, settings.encryption_key, algorithms=[settings.jwt_algorithm])
+    except JWTError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Fresh administrator verification required") from exc
+    if not isinstance(claims, dict) or claims.get("purpose") != "admin:security_verify" or claims.get("sub") != actor.id or not session_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Fresh administrator verification required")
+    if not hmac.compare_digest(str(claims.get("session_hash", "")), hash_token(session_token)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Fresh administrator verification required")
+    db = await get_db()
+    current = await db.user.find_unique(where={"id": actor.id})
+    if not current or _auth_provider_value(current.role) != "admin" or int(getattr(current, "securityGeneration", 0)) != int(claims.get("generation", -1)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Fresh administrator verification required")
+
+
+@router.post("/admin/security/verify", response_model=AdminSecurityVerificationResponse)
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def verify_admin_security(
+    request: Request,
+    body: AdminSecurityVerifyRequest,
+    actor: User = Depends(require_admin),
+    session_token: str | None = Depends(get_session_token),
+):
+    """Verify the current administrator without issuing a new login session."""
+    session_generation = int(getattr(actor, "securityGeneration", 0))
+    result = await authenticate(actor.username, body.password)
+    if not result.success or result.user_id != actor.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrator password verification failed")
+    db = await get_db()
+    current = await db.user.find_unique(where={"id": actor.id})
+    if not current or _auth_provider_value(current.role) != "admin" or int(getattr(current, "securityGeneration", 0)) != session_generation:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    if not session_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Fresh administrator verification required")
+    token, expires = _create_admin_security_token(actor=current, session_token=session_token)
+    response = AdminSecurityVerificationResponse(verification_token=token, expires_at=expires.isoformat())
+    return JSONResponse(content=response.model_dump(), headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+@router.get("/users/{user_id}/mfa/recovery-pass", response_model=RecoveryPassListResponse)
+async def get_recovery_pass(user_id: str, _actor: User = Depends(require_admin)):
+    db = await get_db()
+    rows = await db.query_raw(
+        """SELECT p.*, u."security_generation" AS "current_security_generation"
+           FROM "user_mfa_recovery_passes" p
+           JOIN "users" u ON u."id" = p."user_id"
+           WHERE p."user_id" = $1""",
+        user_id,
+    )
+    return RecoveryPassListResponse(grant=_recovery_pass_status(rows[0]) if rows else None)
+
+
+@router.post("/users/{user_id}/mfa/recovery-pass", response_model=RecoveryPassResponse)
+async def issue_recovery_pass(
+    user_id: str,
+    body: VerificationTokenRequest,
+    request: Request,
+    actor: User = Depends(require_admin),
+    session_token: str | None = Depends(get_session_token),
+):
+    if user_id == actor.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot issue a recovery pass for yourself")
+    await _require_admin_security_token(body.verification_token, actor, session_token)
+    db = await get_db()
+    raw_pass, now, expires, grant_id = generate_pass(), recovery_now(), recovery_now() + RECOVERY_PASS_TTL, str(__import__("uuid").uuid4())
+    async with db.tx() as tx:
+        generation = await _lock_recovery_target(tx, user_id)
+        rows = await tx.query_raw(
+            """INSERT INTO "user_mfa_recovery_passes" ("id", "user_id", "pass_hash", "security_generation", "attempts", "created_at", "expires_at")
+               VALUES ($1, $2, $3, $4, 0, $5::timestamp, $6::timestamp)
+               ON CONFLICT ("user_id") DO UPDATE SET "id" = EXCLUDED."id", "pass_hash" = EXCLUDED."pass_hash", "security_generation" = EXCLUDED."security_generation", "attempts" = 0, "created_at" = EXCLUDED."created_at", "expires_at" = EXCLUDED."expires_at", "redeemed_at" = NULL, "completed_at" = NULL, "revoked_at" = NULL
+               RETURNING *""",
+            grant_id,
+            user_id,
+            hash_pass(raw_pass),
+            generation,
+            now.replace(tzinfo=None),
+            expires.replace(tzinfo=None),
+        )
+        target = await tx.user.find_unique(where={"id": user_id})
+        if not target:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        await tx.authsyncevent.create(data=_recovery_audit_data(actor_id=actor.id, target=target, action="mfa_recovery_pass_issued"))
+    response = RecoveryPassResponse(**{"pass": raw_pass}, grant=_recovery_pass_status(rows[0]))
+    return JSONResponse(content=response.model_dump(by_alias=True), headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+@router.delete("/users/{user_id}/mfa/recovery-pass")
+async def revoke_recovery_pass(
+    user_id: str,
+    body: VerificationTokenRequest,
+    request: Request,
+    actor: User = Depends(require_admin),
+    session_token: str | None = Depends(get_session_token),
+):
+    if user_id == actor.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot revoke a recovery pass for yourself")
+    await _require_admin_security_token(body.verification_token, actor, session_token)
+    db = await get_db()
+    async with db.tx() as tx:
+        await _lock_recovery_target(tx, user_id)
+        changed = await tx.query_raw(
+            'UPDATE "user_mfa_recovery_passes" SET "revoked_at" = $1::timestamp WHERE "user_id" = $2 AND "revoked_at" IS NULL AND "completed_at" IS NULL RETURNING "id"',
+            recovery_now().replace(tzinfo=None),
+            user_id,
+        )
+        if changed:
+            target = await tx.user.find_unique(where={"id": user_id})
+            if target:
+                await tx.authsyncevent.create(data=_recovery_audit_data(actor_id=actor.id, target=target, action="mfa_recovery_pass_revoked"))
+    return {"success": True}
+
+
+@router.post("/mfa/recovery-pass/redeem", response_model=RecoveryPassRedeemResponse)
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def redeem_recovery_pass(request: Request, body: RecoveryPassRedeemRequest):
+    user = await _user_from_pending_mfa_token(body.mfa_challenge_token, purpose="challenge")
+    db, now = await get_db(), recovery_now()
+    invalid_pass = False
+    async with db.tx() as tx:
+        generation = await _lock_recovery_target(tx, user.id)
+        rows = await tx.query_raw('SELECT * FROM "user_mfa_recovery_passes" WHERE "user_id" = $1 FOR UPDATE', user.id)
+        if not rows or recovery_status(rows[0], now) != "issued" or int(rows[0]["security_generation"]) != generation:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired recovery pass")
+        row = rows[0]
+        try:
+            grant_expires_at = _utc_datetime(row["expires_at"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired recovery pass") from exc
+        if not verify_pass(body.pass_, str(row["pass_hash"])):
+            await tx.execute_raw(
+                'UPDATE "user_mfa_recovery_passes" SET "attempts" = "attempts" + 1, "revoked_at" = CASE WHEN "attempts" + 1 >= $1 THEN $2::timestamp ELSE "revoked_at" END WHERE "id" = $3',
+                MAX_PASS_ATTEMPTS,
+                now.replace(tzinfo=None),
+                row["id"],
+            )
+            invalid_pass = True
+        else:
+            changed = await tx.query_raw(
+                'UPDATE "user_mfa_recovery_passes" SET "redeemed_at" = $1::timestamp WHERE "id" = $2 AND "redeemed_at" IS NULL AND "revoked_at" IS NULL RETURNING "id"',
+                now.replace(tzinfo=None),
+                row["id"],
+            )
+            if not changed:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired recovery pass")
+            await tx.authsyncevent.create(data=_recovery_audit_data(actor_id=user.id, target=user, action="mfa_recovery_pass_redeemed"))
+    if invalid_pass:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid recovery pass")
+    expires = min(now + RECOVERY_CONTINUATION_TTL, grant_expires_at)
+    methods: list[MfaMethod] = []
+    for method in await get_allowed_mfa_methods():
+        if method == "totp":
+            methods.append("totp")
+        elif method == "webauthn":
+            methods.append("webauthn")
+    response = RecoveryPassRedeemResponse(
+        recovery_token=create_recovery_token(user_id=user.id, grant_id=str(row["id"]), generation=generation, expires=expires),
+        expires_at=expires.isoformat(),
+        allowed_methods=methods,
+    )
+    return JSONResponse(content=response.model_dump(), headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+def _recovery_claims(token: str) -> dict[str, Any]:
+    claims = decode_recovery_token(token, purpose="mfa:recovery_continuation")
+    if not claims:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired recovery continuation")
+    return claims
+
+
+async def _recovery_user(token: str) -> tuple[dict[str, Any], User]:
+    """Require a live redeemed grant, not merely a correctly signed JWT."""
+    claims = _recovery_claims(token)
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": str(claims.get("sub", ""))})
+    rows = await db.query_raw(
+        'SELECT * FROM "user_mfa_recovery_passes" WHERE "id" = $1 AND "user_id" = $2', str(claims.get("grant_id", "")), str(claims.get("sub", ""))
+    )
+    if (
+        not user
+        or not rows
+        or recovery_status(rows[0]) != "redeemed"
+        or int(rows[0]["security_generation"]) != int(claims.get("generation", -1))
+        or int(getattr(user, "securityGeneration", 0)) != int(claims.get("generation", -1))
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired recovery continuation")
+    return claims, user
+
+
+async def _finalize_recovery_factor(*, user: User, claims: dict[str, Any], factor: dict[str, Any], codes: list[str]) -> None:
+    """Atomically consume the grant and replace every security factor."""
+    user_id, grant_id, generation, now = user.id, str(claims["grant_id"]), int(claims["generation"]), recovery_now()
+    db = await get_db()
+    async with db.tx() as tx:
+        current = await _lock_recovery_target(tx, user_id)
+        if current != generation:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Recovery continuation is no longer valid")
+        updated = await tx.query_raw(
+            'UPDATE "user_mfa_recovery_passes" SET "completed_at" = $1::timestamp WHERE "id" = $2 AND "user_id" = $3 AND "security_generation" = $4 AND "redeemed_at" IS NOT NULL AND "completed_at" IS NULL AND "revoked_at" IS NULL AND "expires_at" > $1::timestamp RETURNING "id"',
+            now.replace(tzinfo=None),
+            grant_id,
+            user_id,
+            generation,
+        )
+        if not updated:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Recovery continuation is no longer valid")
+        if factor["type"] == "webauthn":
+            # The unique JTI insert is the replay guard and is deliberately in
+            # the same transaction as the replacement credential.
+            await tx.userwebauthnchallenge.create(data={"jti": factor["jti"], "expiresAt": factor["expires_at"]})
+        await tx.usermfafactor.delete_many(where={"userId": user_id})
+        await tx.userwebauthncredential.delete_many(where={"userId": user_id})
+        await tx.usermfatrusteddevice.delete_many(where={"userId": user_id})
+        await tx.usermfarecoverycode.delete_many(where={"userId": user_id})
+        if factor["type"] == "totp":
+            await tx.usermfafactor.create(
+                data={
+                    "userId": user_id,
+                    "factorType": "totp",
+                    "label": "Authenticator app",
+                    "secretEncrypted": encrypt_secret(factor["secret"]),
+                    "enabled": True,
+                    "confirmedAt": now,
+                    "lastUsedStep": factor["time_step"],
+                    "lastUsedAt": now,
+                }
+            )
+        else:
+            try:
+                await tx.userwebauthncredential.create(
+                    data={
+                        "userId": user_id,
+                        "credentialId": factor["credential_id"],
+                        "publicKey": factor["public_key"],
+                        "signCount": factor["sign_count"],
+                        "transports": factor["transports"],
+                        "aaguid": factor["aaguid"],
+                        "name": factor["name"],
+                    }
+                )
+            except UniqueViolationError as exc:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="WebAuthn credential is already registered") from exc
+        for code in codes:
+            await tx.usermfarecoverycode.create(data={"userId": user_id, "codeHash": hash_recovery_code(code)})
+        await tx.query_raw('UPDATE "users" SET "security_generation" = "security_generation" + 1 WHERE "id" = $1', user_id)
+        await tx.execute_raw('DELETE FROM "sessions" WHERE "user_id" = $1', user_id)
+        await tx.execute_raw(
+            'UPDATE "oauth_grants" SET "revoked_at" = COALESCE("revoked_at", $1::timestamp) WHERE "user_id" = $2', now.replace(tzinfo=None), user_id
+        )
+        await tx.authsyncevent.create(data=_recovery_audit_data(actor_id=user_id, target=user, action="mfa_recovery_pass_completed"))
+
+
+@router.post("/mfa/recovery-pass/totp/start", response_model=MfaEnrollStartResponse)
+async def start_recovery_totp(body: RecoveryTotpStartRequest):
+    claims, user = await _recovery_user(body.recovery_token)
+    if "totp" not in await get_allowed_mfa_methods():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP enrollment is not allowed")
+    secret = generate_totp_secret()
+    expires = datetime.fromtimestamp(int(claims["exp"]), tz=timezone.utc)
+    app_settings = await get_app_settings()
+    server_name = str(app_settings.get("server_name") or DEFAULT_SERVER_NAME).strip() or DEFAULT_SERVER_NAME
+    response = MfaEnrollStartResponse(
+        secret=secret,
+        otpauth_uri=build_otpauth_uri(issuer=server_name, username=user.username, secret=secret),
+        enrollment_token=create_totp_token(
+            user_id=user.id, grant_id=str(claims["grant_id"]), generation=int(claims["generation"]), secret=secret, expires=expires
+        ),
+    )
+    return JSONResponse(content=response.model_dump(), headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+@router.post("/mfa/recovery-pass/totp/complete")
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def complete_recovery_totp(request: Request, body: RecoveryTotpCompleteRequest):
+    continuation, user = await _recovery_user(body.recovery_token)
+    enrollment = decode_recovery_token(body.enrollment_token, purpose="mfa:recovery_totp_enrollment")
+    if not enrollment or any(str(enrollment.get(key)) != str(continuation.get(key)) for key in ("sub", "grant_id", "generation")):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid recovery enrollment token")
+    proof = verify_totp_code(str(enrollment.get("secret", "")), body.code)
+    if not proof.valid or proof.time_step is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code")
+    if "totp" not in await get_allowed_mfa_methods():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP enrollment is not allowed")
+    codes = [generate_recovery_code() for _ in range(RECOVERY_CODE_COUNT)]
+    await _finalize_recovery_factor(
+        user=user, claims=continuation, factor={"type": "totp", "secret": str(enrollment["secret"]), "time_step": proof.time_step}, codes=codes
+    )
+    return JSONResponse(content={"success": True, "recovery_codes": codes}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+@router.post("/mfa/recovery-pass/webauthn/start", response_model=WebauthnRegisterStartResponse)
+async def start_recovery_webauthn(request: Request, body: RecoveryWebauthnStartRequest):
+    claims, user = await _recovery_user(body.recovery_token)
+    if WEBAUTHN_METHOD not in await get_allowed_mfa_methods():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WebAuthn enrollment is not allowed")
+    try:
+        options, normal_token = await begin_webauthn_registration(user, request, security_generation=int(claims["generation"]))
+        challenge = decode_registration_challenge(normal_token, expected_purpose="webauthn_register")
+        if challenge is None:
+            raise WebauthnError("Invalid WebAuthn registration token.")
+    except WebauthnError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    token = create_webauthn_token(
+        user_id=user.id,
+        grant_id=str(claims["grant_id"]),
+        generation=int(claims["generation"]),
+        challenge=base64.urlsafe_b64encode(challenge.challenge).rstrip(b"=").decode(),
+        jti=challenge.jti,
+        expires=challenge.exp,
+    )
+    response = WebauthnRegisterStartResponse(options=options, registration_token=token)
+    return JSONResponse(content=response.model_dump(), headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+@router.post("/mfa/recovery-pass/webauthn/complete")
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def complete_recovery_webauthn(request: Request, body: RecoveryWebauthnCompleteRequest):
+    continuation, user = await _recovery_user(body.recovery_token)
+    enrollment = decode_recovery_token(body.registration_token, purpose="mfa:recovery_webauthn_enrollment")
+    if not enrollment or any(str(enrollment.get(key)) != str(continuation.get(key)) for key in ("sub", "grant_id", "generation")):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid recovery enrollment token")
+    if WEBAUTHN_METHOD not in await get_allowed_mfa_methods():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WebAuthn enrollment is not allowed")
+    # Re-sign into the standard challenge shape only for pure verification.
+    standard_token = jwt.encode(
+        {
+            "sub": user.id,
+            "purpose": "mfa:recovery_webauthn_enrollment",
+            "challenge": enrollment["challenge"],
+            "jti": enrollment["jti"],
+            "exp": enrollment["exp"],
+            "security_generation": enrollment["generation"],
+        },
+        settings.encryption_key,
+        algorithm=settings.jwt_algorithm,
+    )
+    try:
+        verified = verify_webauthn_registration_pure(user, request, standard_token, body.credential, expected_purpose="mfa:recovery_webauthn_enrollment")
+    except WebauthnError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    verified.update({"type": "webauthn", "name": body.name.strip() or "Passkey"})
+    codes = [generate_recovery_code() for _ in range(RECOVERY_CODE_COUNT)]
+    await _finalize_recovery_factor(user=user, claims=continuation, factor=verified, codes=codes)
+    return JSONResponse(content={"success": True, "recovery_codes": codes}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
 @router.get("/users/directory", response_model=UserDirectoryResponse)
 async def list_users_directory(
     _user: User = Depends(get_current_user),
@@ -3067,7 +3628,7 @@ async def list_users(
     db = await get_db()
     total = await db.user.count()
     users = await db.user.find_many(
-        order={"createdAt": "desc"},
+        order=[{"createdAt": "desc"}, {"id": "desc"}],
         skip=skip,
         take=take,
     )
@@ -3078,6 +3639,16 @@ async def list_users(
         skip=skip,
         take=take,
     )
+
+
+@router.get("/users/{user_id}", response_model=UserResponse)
+async def get_user(user_id: str, _user: User = Depends(require_admin)):
+    """Return one fully serialized user for canonical post-mutation refresh."""
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": user_id})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return await _user_response(user)
 
 
 @router.delete("/users/{user_id}")
@@ -3107,15 +3678,42 @@ async def delete_user(
 @router.delete("/users/{user_id}/mfa")
 async def reset_user_mfa_by_admin(
     user_id: str,
+    body: VerificationTokenRequest,
+    request: Request,
     current_user: User = Depends(require_admin),
+    session_token: str | None = Depends(get_session_token),
 ):
     """Reset a user's MFA enrollment and remembered devices (admin only)."""
+    if user_id == current_user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot reset your own MFA here")
+    await _require_admin_security_token(body.verification_token, current_user, session_token)
     db = await get_db()
     user = await db.user.find_unique(where={"id": user_id})
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    await reset_user_mfa(user_id)
-    await invalidate_all_sessions(user_id)
+    async with db.tx() as tx:
+        # The shared revocation primitive takes the same first lock as recovery
+        # finalization, so reset cannot interleave factor deletion and CAS.
+        try:
+            await revoke_user_auth_in_transaction(tx, user_id)
+        except OAuthGrantError as exc:
+            if exc.reason == "user_not_found":
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found") from exc
+            raise
+        now = recovery_now()
+        user = await tx.user.find_unique(where={"id": user_id})
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        await tx.usermfafactor.delete_many(where={"userId": user_id})
+        await tx.usermfarecoverycode.delete_many(where={"userId": user_id})
+        await tx.usermfatrusteddevice.delete_many(where={"userId": user_id})
+        await tx.userwebauthncredential.delete_many(where={"userId": user_id})
+        await tx.execute_raw(
+            'UPDATE "user_mfa_recovery_passes" SET "revoked_at" = COALESCE("revoked_at", $1::timestamp) WHERE "user_id" = $2',
+            now.replace(tzinfo=None),
+            user_id,
+        )
+        await tx.authsyncevent.create(data=_recovery_audit_data(actor_id=current_user.id, target=user, action="mfa_reset"))
     logger.info(f"User '{user.username}' MFA reset by admin '{current_user.username}'")
     return {"success": True}
 

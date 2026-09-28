@@ -194,6 +194,16 @@ export function LoginCard({
     }
   };
 
+  // Restricted recovery deliberately has no application session. Clear every
+  // challenge secret and return to the ordinary credentials exchange.
+  const restartLoginAfterRecovery = () => {
+    setPassword('');
+    setMfaCode('');
+    setMfaChallengeToken(null);
+    setMfaMode('none');
+    setError(null);
+  };
+
   return (
     <div id="login-card" className="login-card">
       <div className="login-header">
@@ -237,6 +247,7 @@ export function LoginCard({
           onVerify={handleMfaVerify}
           onSessionEstablished={handleMfaSessionEstablished}
           onRecoveryContinue={() => void handleRecoveryContinue()}
+          onRestartLogin={restartLoginAfterRecovery}
         />
       )}
 

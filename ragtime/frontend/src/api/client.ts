@@ -274,6 +274,10 @@ import type {
   MfaEnrollStartResponse,
   MfaMethod,
   MfaStatusResponse,
+  AdminSecurityVerification,
+  RecoveryPassStatus,
+  RecoveryPassRedeemResponse,
+  RecoveryWebauthnStartResponse,
   RecoveryCodesResponse,
   UserDirectoryEntry,
   WebauthnAuthenticateStartResponse,
@@ -972,11 +976,139 @@ export const api = {
     await handleResponse<{ success: boolean }>(response);
   },
 
-  async resetUserMfa(userId: string): Promise<void> {
+  async resetUserMfa(userId: string, verificationToken: string): Promise<void> {
     const response = await apiFetch(`${AUTH_BASE}/users/${encodeURIComponent(userId)}/mfa`, {
       method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ verification_token: verificationToken }),
     });
     await handleResponse<{ success: boolean }>(response);
+  },
+
+  async verifyAdminSecurity(password: string): Promise<AdminSecurityVerification> {
+    const response = await apiFetch(
+      `${AUTH_BASE}/admin/security/verify`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      },
+      'challenge',
+    );
+    return handleResponse<AdminSecurityVerification>(response);
+  },
+
+  async getRecoveryPass(userId: string): Promise<RecoveryPassStatus | null> {
+    const response = await apiFetch(
+      `${AUTH_BASE}/users/${encodeURIComponent(userId)}/mfa/recovery-pass`,
+      {},
+    );
+    const data = await handleResponse<{ grant: RecoveryPassStatus | null }>(response);
+    return data.grant;
+  },
+
+  async issueRecoveryPass(
+    userId: string,
+    verificationToken: string,
+  ): Promise<{ pass: string; grant: RecoveryPassStatus }> {
+    const response = await apiFetch(
+      `${AUTH_BASE}/users/${encodeURIComponent(userId)}/mfa/recovery-pass`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verification_token: verificationToken }),
+      },
+    );
+    return handleResponse<{ pass: string; grant: RecoveryPassStatus }>(response);
+  },
+
+  async revokeRecoveryPass(userId: string, verificationToken: string): Promise<void> {
+    const response = await apiFetch(
+      `${AUTH_BASE}/users/${encodeURIComponent(userId)}/mfa/recovery-pass`,
+      {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verification_token: verificationToken }),
+      },
+    );
+    await handleResponse<{ success: boolean }>(response);
+  },
+
+  async redeemRecoveryPass(request: {
+    mfa_challenge_token: string;
+    pass: string;
+  }): Promise<RecoveryPassRedeemResponse> {
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/recovery-pass/redeem`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+      'challenge',
+    );
+    return handleResponse<RecoveryPassRedeemResponse>(response);
+  },
+
+  async startRecoveryTotp(recoveryToken: string): Promise<MfaEnrollStartResponse> {
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/recovery-pass/totp/start`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recovery_token: recoveryToken }),
+      },
+      'challenge',
+    );
+    return handleResponse<MfaEnrollStartResponse>(response);
+  },
+
+  async completeRecoveryTotp(request: {
+    recovery_token: string;
+    enrollment_token: string;
+    code: string;
+  }): Promise<RecoveryCodesResponse> {
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/recovery-pass/totp/complete`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+      'challenge',
+    );
+    return handleResponse<RecoveryCodesResponse>(response);
+  },
+
+  async startRecoveryWebauthn(recoveryToken: string): Promise<RecoveryWebauthnStartResponse> {
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/recovery-pass/webauthn/start`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recovery_token: recoveryToken }),
+      },
+      'challenge',
+    );
+    return handleResponse<RecoveryWebauthnStartResponse>(response);
+  },
+
+  async completeRecoveryWebauthn(request: {
+    recovery_token: string;
+    registration_token: string;
+    credential: Record<string, unknown>;
+    name: string;
+  }): Promise<RecoveryCodesResponse> {
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/recovery-pass/webauthn/complete`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+      'challenge',
+    );
+    return handleResponse<RecoveryCodesResponse>(response);
   },
 
   /**
@@ -1140,9 +1272,28 @@ export const api = {
    * List all users
    */
   async listUsers(): Promise<User[]> {
-    const response = await apiFetch(`${AUTH_BASE}/users`, {});
-    const data = await handleResponse<{ users: User[] } | User[]>(response);
-    return Array.isArray(data) ? data : ((data as { users: User[] }).users ?? []);
+    const take = 500;
+    const users = new Map<string, User>();
+    let skip = 0;
+    for (;;) {
+      const response = await apiFetch(`${AUTH_BASE}/users?skip=${skip}&take=${take}`, {});
+      const data = await handleResponse<{ users: User[]; total?: number } | User[]>(response);
+      // Older servers return a bare array. It is already their complete response.
+      if (Array.isArray(data)) return data;
+      const page = data.users ?? [];
+      const before = users.size;
+      page.forEach((user) => users.set(user.id, user));
+      if (page.length < take || users.size === before) break;
+      // Advance by the response length, not a possibly stale total.
+      skip += page.length;
+    }
+    return [...users.values()];
+  },
+
+  /** Get the canonical current representation of one user. */
+  async getUser(userId: string): Promise<User> {
+    const response = await apiFetch(`${AUTH_BASE}/users/${encodeURIComponent(userId)}`, {});
+    return handleResponse<User>(response);
   },
 
   async updateUserGenerationPolicy(
