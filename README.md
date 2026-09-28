@@ -69,6 +69,7 @@ Configure LLM and embedding providers in the Settings UI. Chat (LLM) and embeddi
 | **Anthropic** | API key | Yes | - |
 | **Claude Code** | Claude Pro/Max subscription (CLI/OAuth) | Yes | - |
 | **OpenRouter** | API key | Yes | Yes |
+| **OpenAI-compatible** | API key, if required by the endpoint | Yes | - |
 | **GitHub Copilot** | OAuth device flow or PAT | Yes | - |
 | **Ollama** | Local (self-hosted) | Yes | Yes |
 | **llama.cpp** | Local (self-hosted) | Yes | Yes |
@@ -76,6 +77,16 @@ Configure LLM and embedding providers in the Settings UI. Chat (LLM) and embeddi
 | **oMLX** | Local (self-hosted) | Yes | Yes |
 
 Subscription-backed providers (OpenAI Codex, Claude Code) authenticate from the Settings UI without an API key. Claude Code uses the Claude Code CLI subscription and discovers the full Claude model family your plan serves.
+
+#### Connect an OpenAI-compatible service
+
+In the model-provider settings, select **OpenAI-compatible**, enter the service's full API base URL and API key, then fetch its models. Include the API path in the URL (for example, `https://api.example.com/v1`); Ragtime preserves that path and does not add `/v1`. The service must expose a compatible `/models` endpoint. This connection uses the Chat Completions API for chat, streaming, and tool calls. Model and endpoint support for tools can vary. Images use Ragtime's OCR path; this provider does not enable native image input or the Responses API. Configure an embedding provider separately for document indexing and retrieval.
+
+Model lists do not always include token limits. Ragtime resolves each model's context and output limits from administrator overrides, then endpoint metadata, then an exact model match in an explicitly selected **models.dev catalog reference**. Choose a catalog reference only when it describes your service's limits; the same model can have different limits on different services. Missing values remain unknown. Before using a model with an unknown context limit, enter its documented context limit in the per-model settings. An unknown output limit does not become an invented provider maximum; Ragtime uses the configured response budget and the known context window.
+
+If a successful model listing omits a deployment's model ID, enter that exact ID and its documented context limit to configure it manually. Ragtime keeps these entries separate from models the endpoint explicitly identifies as non-chat models.
+
+The generic connection has its own API key and provider-scoped model IDs (`openai_compatible::model-id`). Changing its base URL clears the loaded key in the form so you can enter credentials for the new endpoint. Settings API updates also clear the previous key when the URL changes unless the update supplies a replacement. API keys use the same encrypted storage and administrator-only settings access as the other providers.
 
 ### Architecture
 

@@ -380,7 +380,14 @@ class MultiRoundStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(llm.calls, 1)
         self.assertEqual(
             events,
-            [{"type": "error", "code": "payment_required", "content": "The provider requires available payment credit before this request can continue."}],
+            [
+                {
+                    "type": "error",
+                    "code": "payment_required",
+                    "content": "The provider requires available payment credit before this request can continue.",
+                    "provider": "openrouter",
+                }
+            ],
         )
 
 

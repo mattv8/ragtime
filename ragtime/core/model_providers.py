@@ -135,6 +135,17 @@ OMLX_LLM_CONNECTION = ProviderConnection(
     default_base_url="http://host.docker.internal:8000",
 )
 
+OPENAI_COMPATIBLE_CONNECTION = ProviderConnection(
+    protocol_field="",
+    host_field="",
+    port_field="",
+    base_url_field="openai_compatible_base_url",
+    default_protocol="http",
+    default_host="",
+    default_port=0,
+    default_base_url="",
+)
+
 
 OPENAI_CODEX_RESPONSES_PAYLOAD_KEYS = frozenset(
     {
@@ -221,6 +232,14 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
             ("Cohere", "Cohere"),
             ("Router", "Router"),
         ),
+    ),
+    "openai_compatible": ModelProvider(
+        name="openai_compatible",
+        label="OpenAI-compatible",
+        llm_connection=OPENAI_COMPATIBLE_CONNECTION,
+        llm_api_key_field="openai_compatible_api_key",
+        supports_llm=True,
+        openai_compatible_chat=True,
     ),
     "ollama": ModelProvider(
         name="ollama",

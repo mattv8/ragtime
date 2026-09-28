@@ -17,6 +17,8 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union, cast
 
+import httpx
+import openai
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 try:
@@ -44,6 +46,7 @@ from ragtime.core.datetimes import coerce_utc_datetime, utc_now
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.generation_policy import GenerationSurface, generation_context, require_generation
 from ragtime.core.logging import get_logger
+from ragtime.core.model_providers import normalize_provider_name
 from ragtime.core.scheduling import is_anchored_schedule_due
 from ragtime.core.sql_utils import strip_table_metadata
 from ragtime.core.usage_accounting import (
@@ -73,6 +76,50 @@ logger = get_logger(__name__)
 
 
 DEV_SERVER_INTERRUPT_MESSAGE = "Chat run interrupted by dev server reload or shutdown before it finished."
+
+
+def _explicit_provider_from_model(model: object) -> str | None:
+    """Return only an explicit persisted provider prefix, never a model-family guess."""
+    value = str(model or "").strip().lower()
+    prefix, separator, _ = value.partition("::")
+    if not separator:
+        return None
+    return "openrouter" if prefix == "or" else (normalize_provider_name(prefix) or None)
+
+
+def _generic_exception_error(exc: BaseException, provider: str | None) -> tuple[str, str] | None:
+    """Keep terminal generic-provider exception text safe without changing classifiers."""
+    if provider != "openai_compatible":
+        return None
+    code = str(getattr(exc, "code", "") or "")
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    recognized = {"authentication", "rate_limited", "timeout", "unavailable", "model_not_found", "invalid_base_url", "invalid_catalog", "invalid_model_limits"}
+    if code not in recognized:
+        if status_code in {401, 403}:
+            code = "authentication"
+        elif status_code == 429:
+            code = "rate_limited"
+        elif status_code == 408:
+            code = "timeout"
+        elif isinstance(exc, (openai.APITimeoutError, asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)):
+            code = "timeout"
+        elif isinstance(exc, (openai.APIError, httpx.HTTPError)):
+            code = "unavailable"
+        else:
+            return None
+    messages = {
+        "authentication": "The configured OpenAI-compatible provider rejected its credentials.",
+        "rate_limited": "The configured OpenAI-compatible provider is rate limited. Please retry shortly.",
+        "timeout": "The configured OpenAI-compatible provider timed out. Please retry shortly.",
+        "model_not_found": "The configured OpenAI-compatible provider did not list this model.",
+        "invalid_base_url": "The configured OpenAI-compatible provider URL is invalid.",
+        "invalid_catalog": "The configured OpenAI-compatible provider returned an invalid model catalog.",
+        "invalid_model_limits": "The configured OpenAI-compatible provider model limits are invalid.",
+        "unavailable": "The configured OpenAI-compatible provider is unavailable. Please retry later.",
+    }
+    return code, messages[code]
+
+
 WRAPPED_PROCESSING_ERROR_PREFIX = "I encountered an error processing your request:"
 WRAPPED_CONTEXTUAL_PROCESSING_ERROR_PREFIX = "I encountered an error processing your request"
 
@@ -922,6 +969,8 @@ class BackgroundTaskService:
             tool_calls: list[dict[str, Any]] = []
             partial_message_persisted = False
             reasoning_block_started_at: Optional[datetime] = None
+            conv: Any = None
+            app_settings: dict[str, Any] = {}
             try:
                 # Queued tasks may be created by non-HTTP callers.  Check the
                 # submitted body before a task row or message can retain it.
@@ -1053,6 +1102,7 @@ class BackgroundTaskService:
                 hit_max_iterations = False  # Track if we hit the iteration limit
                 provider_error_code: str | None = None
                 provider_error_content = ""
+                provider_error_provider: str | None = None
                 last_update = utc_now()
                 current_version = 0  # Version counter for efficient client polling
                 pending_streaming_publish = False
@@ -1226,9 +1276,24 @@ class BackgroundTaskService:
                         # cannot be mistaken for a text-only/synthetic success.
                         if event_type == "error":
                             code = str(event.get("code") or "").strip()
-                            if code == "payment_required":
+                            event_provider = str(event.get("provider") or "").strip().lower() or None
+                            resolved_provider = (
+                                event_provider or _explicit_provider_from_model(conv.model) or normalize_provider_name(app_settings.get("llm_provider", ""))
+                            )
+                            generic_terminal_codes = {
+                                "authentication",
+                                "rate_limited",
+                                "timeout",
+                                "unavailable",
+                                "model_not_found",
+                                "invalid_base_url",
+                                "invalid_catalog",
+                                "invalid_model_limits",
+                            }
+                            if code == "payment_required" or (resolved_provider == "openai_compatible" and code in generic_terminal_codes):
                                 provider_error_code = code
                                 provider_error_content = str(event.get("content") or "").strip()
+                                provider_error_provider = resolved_provider
                                 break
                             # Unknown/advisory error codes: keep the safe text so it
                             # is not silently dropped from the persisted response.
@@ -1388,7 +1453,7 @@ class BackgroundTaskService:
                     await _close_stream_handles(_stream_iter, _stream, task_id)
 
                 # Task completed successfully - save final state
-                if provider_error_code == "payment_required":
+                if provider_error_code:
                     if provider_error_content and not full_response.strip():
                         full_response = provider_error_content
                         events.append({"type": "content", "channel": "final", "content": full_response})
@@ -1397,10 +1462,13 @@ class BackgroundTaskService:
                         reasoning_block_started_at = None
                     if not partial_message_persisted and await _persist_partial_assistant_message(conversation_id, full_response, events):
                         partial_message_persisted = True
-                    from ragtime.core.openrouter_credits import note_openrouter_payment_required
                     from ragtime.core.provider_errors import provider_error_message
 
-                    warning = note_openrouter_payment_required()
+                    warning = None
+                    if provider_error_code == "payment_required" and provider_error_provider == "openrouter":
+                        from ragtime.core.openrouter_credits import note_openrouter_payment_required
+
+                        warning = note_openrouter_payment_required()
                     safe_message = provider_error_content or provider_error_message(provider_error_code)
                     await repository.update_chat_task_status(
                         task_id,
@@ -1725,18 +1793,26 @@ class BackgroundTaskService:
                         termination_reason = None
                     warnings = []
                     error_message = str(e)
+                    resolved_provider = _explicit_provider_from_model(getattr(conv, "model", None)) or normalize_provider_name(
+                        (app_settings or {}).get("llm_provider", "")
+                    )
+                    generic_error = _generic_exception_error(e, resolved_provider)
+                    if generic_error and not termination_reason:
+                        termination_reason, error_message = generic_error
                     if is_protection_error:
                         detail = cast(Callable[[], dict[str, str]], protection_detail)()
                         error_message = str(detail.get("message") or "This content is not available under your access profile.")
                         termination_reason = str(detail.get("code") or "content_protection")
                     if termination_reason == "payment_required":
-                        from ragtime.core.openrouter_credits import note_openrouter_payment_required
                         from ragtime.core.provider_errors import provider_error_message
 
                         error_message = provider_error_message(termination_reason)
-                        warning = note_openrouter_payment_required()
-                        if warning:
-                            warnings.append(warning)
+                        if resolved_provider == "openrouter":
+                            from ragtime.core.openrouter_credits import note_openrouter_payment_required
+
+                            warning = note_openrouter_payment_required()
+                            if warning:
+                                warnings.append(warning)
                     await repository.update_chat_task_status(
                         task_id,
                         ChatTaskStatus.failed,

@@ -81,6 +81,7 @@ from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
 )
+from ragtime.core.openai_compatible import CompatibleProviderError, ModelLimitOverride, normalize_base_url
 from ragtime.core.userspace_limits import (
     ARCHIVE_MAX_FILE_COUNT_DEFAULT,
     ARCHIVE_MAX_FILE_COUNT_MAX,
@@ -724,7 +725,7 @@ class AppSettings(BaseModel):
     # LLM Configuration (for chat/RAG responses)
     llm_provider: str = Field(
         default=DEFAULT_LLM_PROVIDER,
-        description="LLM provider: 'openai', 'openai_codex', 'anthropic', 'claude_code', 'openrouter', 'ollama', 'llama_cpp', 'lmstudio', 'omlx', 'github_copilot', or 'github_models'",
+        description="LLM provider identifier, including 'openai_compatible' for a configurable Chat Completions API.",
     )
     llm_model: str = Field(
         default=DEFAULT_LLM_MODEL,
@@ -800,6 +801,21 @@ class AppSettings(BaseModel):
         default="http://host.docker.internal:8000",
         description="oMLX LLM server URL (computed from protocol/host/port)",
     )
+    openai_compatible_base_url: str = Field(default="", description="Full OpenAI-compatible Chat Completions API root URL")
+    openai_compatible_api_key: str = Field(default="", description="OpenAI-compatible API key")
+    openai_compatible_catalog_provider: str = Field(default="", description="Optional exact models.dev catalog provider slug")
+    openai_compatible_model_limits: Dict[str, ModelLimitOverride] = Field(default_factory=dict)
+
+    @field_validator("openai_compatible_base_url")
+    @classmethod
+    def validate_openai_compatible_base_url(cls, value: str) -> str:
+        if not value.strip():
+            return ""
+        try:
+            return normalize_base_url(value)
+        except CompatibleProviderError as exc:
+            raise ValueError(str(exc)) from exc
+
     openai_api_key: str = Field(
         default="",
         description="OpenAI API key (used for LLM and optionally embeddings)",
@@ -1557,6 +1573,10 @@ class UpdateSettingsRequest(BaseModel):
     llm_omlx_host: Optional[str] = None
     llm_omlx_port: Optional[int] = Field(default=None, ge=1, le=65535)
     llm_omlx_base_url: Optional[str] = None
+    openai_compatible_base_url: Optional[str] = None
+    openai_compatible_api_key: Optional[str] = None
+    openai_compatible_catalog_provider: Optional[str] = None
+    openai_compatible_model_limits: Optional[Dict[str, ModelLimitOverride]] = None
     openai_api_key: Optional[str] = None
     openai_codex_access_token: Optional[str] = None
     openai_codex_refresh_token: Optional[str] = None
@@ -1576,6 +1596,33 @@ class UpdateSettingsRequest(BaseModel):
     default_chat_model: Optional[str] = None
     allowed_openapi_models: Optional[List[str]] = None
     openapi_sync_chat_models: Optional[bool] = None
+
+    @field_validator("openai_compatible_base_url")
+    @classmethod
+    def normalize_openai_compatible_base_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not value.strip():
+            return ""
+        try:
+            return normalize_base_url(value)
+        except CompatibleProviderError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("embedding_provider")
+    @classmethod
+    def reject_openai_compatible_embeddings(cls, value: Optional[str]) -> Optional[str]:
+        if value == "openai_compatible":
+            raise ValueError("openai_compatible supports chat only, not embeddings")
+        return value
+
+    @field_validator("openai_compatible_model_limits")
+    @classmethod
+    def normalize_openai_compatible_model_limits(cls, value: Optional[Dict[str, ModelLimitOverride]]) -> Optional[Dict[str, ModelLimitOverride]]:
+        if value is None:
+            return None
+        return {str(model_id): override for model_id, override in value.items() if str(model_id)}
+
     max_iterations: Optional[int] = Field(default=None, ge=1, le=100)
     chat_compaction_threshold_percent: Optional[int] = Field(
         default=None,

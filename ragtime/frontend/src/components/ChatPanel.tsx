@@ -14806,14 +14806,24 @@ export function ChatPanel({
   // Resolve context limit from stored conversation model value.
   // Handles provider-scoped and legacy model id formats to avoid 8k fallback mismatches.
   const getContextLimit = useCallback(
-    (storedModel: string): number => {
+    (storedModel: string): number | null => {
       const selection = resolveConversationModelSelection(storedModel, availableModels);
       if (!selection.modelId) {
         return defaultContextLimit;
       }
 
       if (selection.matchedModel) {
-        return selection.matchedModel.context_limit;
+        if (
+          selection.matchedModel.provider === 'openai_compatible' &&
+          (!selection.matchedModel.context_limit || selection.matchedModel.context_limit <= 0)
+        ) {
+          return null;
+        }
+        return selection.matchedModel.context_limit || defaultContextLimit;
+      }
+
+      if (selection.explicitProvider === 'openai_compatible') {
+        return null;
       }
 
       return defaultContextLimit;
@@ -16114,6 +16124,13 @@ export function ChatPanel({
     setLastSentMessage(userMessage);
 
     const contextLimit = getContextLimit(conversation.model);
+    if (contextLimit === null) {
+      setError(
+        'This OpenAI-compatible model has no known context limit. Ask an administrator to fetch or configure its documented context limit before chatting.',
+      );
+      return;
+    }
+
     const contextUsage = calculateConversationContextUsage({
       messages: completeConversation?.messages ?? [],
       persistedConversationTokens: conversation.total_tokens,
@@ -17591,6 +17608,16 @@ export function ChatPanel({
     }
 
     const contextLimit = getContextLimit(conversation.model);
+    if (contextLimit === null) {
+      return {
+        currentTokens: 0,
+        totalTokens: conversation.total_tokens,
+        contextLimit: null,
+        contextUsagePercent: 0,
+        projectedInputPercent: 0,
+        hasHeadroom: true,
+      };
+    }
     return calculateConversationContextUsage({
       messages:
         activeConversation?.id === conversation.id
@@ -19174,23 +19201,32 @@ export function ChatPanel({
               </div>
               <div className="chat-header-actions">
                 {inChatSearchOpen && !inChatSearchFloating && renderInChatSearchBar('inline')}
-                <ContextUsagePie
-                  currentTokens={contextUsage.currentTokens}
-                  totalTokens={contextUsage.totalTokens}
-                  contextLimit={contextUsage.contextLimit}
-                  compactThresholdPercent={compactThresholdPercent}
-                  loading={isModelsLoading}
-                  onCompact={
-                    contextUsage.contextUsagePercent >= compactThresholdPercent &&
-                    !isStreaming &&
-                    !isReplayPending &&
-                    !isReadOnly &&
-                    !isActiveConversationCompacting
-                      ? compactActiveConversation
-                      : undefined
-                  }
-                  isCompacting={isActiveConversationCompacting}
-                />
+                {contextUsage.contextLimit === null ? (
+                  <span
+                    className="chat-context-usage-unknown"
+                    title="Configure the model context limit before chat"
+                  >
+                    Context unknown
+                  </span>
+                ) : (
+                  <ContextUsagePie
+                    currentTokens={contextUsage.currentTokens}
+                    totalTokens={contextUsage.totalTokens}
+                    contextLimit={contextUsage.contextLimit}
+                    compactThresholdPercent={compactThresholdPercent}
+                    loading={isModelsLoading}
+                    onCompact={
+                      contextUsage.contextUsagePercent >= compactThresholdPercent &&
+                      !isStreaming &&
+                      !isReplayPending &&
+                      !isReadOnly &&
+                      !isActiveConversationCompacting
+                        ? compactActiveConversation
+                        : undefined
+                    }
+                    isCompacting={isActiveConversationCompacting}
+                  />
+                )}
                 <button
                   className={`btn btn-secondary btn-sm btn-icon chat-in-chat-search-trigger chat-in-chat-search-trigger-mobile${inChatSearchOpen ? ' active' : ''}`}
                   onClick={() => (inChatSearchOpen ? closeInChatSearch() : openInChatSearch())}

@@ -67,6 +67,7 @@ const apiMock = vi.hoisted(() => ({
   getAvailableModels: vi.fn(),
   getAllModels: vi.fn(),
   fetchLLMModels: vi.fn(),
+  listModelCatalogProviders: vi.fn(),
   listMcpRoutes: vi.fn(),
   listMcpDefaultFilters: vi.fn(),
   listToolConfigs: vi.fn(),
@@ -524,6 +525,7 @@ beforeEach(() => {
     allowed_openapi_models: [],
   });
   apiMock.fetchLLMModels.mockResolvedValue({ success: true, models: [] });
+  apiMock.listModelCatalogProviders.mockResolvedValue([]);
   apiMock.listMcpRoutes.mockResolvedValue({ routes: [] });
   apiMock.listMcpDefaultFilters.mockResolvedValue({ filters: [] });
   apiMock.listToolConfigs.mockResolvedValue([]);
@@ -1843,6 +1845,191 @@ describe('SettingsPanel', () => {
     expect(toastErrorSpy).toHaveBeenCalledWith('Codex disconnect denied');
     await waitFor(() => {
       expect((disconnectButton as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
+  it('previews compatible models without forwarding a loaded key after the API root changes', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_base_url: 'https://old.example/v1/',
+        openai_compatible_api_key: 'saved-compatible-key',
+      }),
+    );
+    apiMock.listModelCatalogProviders.mockResolvedValueOnce([
+      { id: 'reference', name: 'Reference provider', api: 'https://reference.example' },
+    ]);
+
+    render(<SettingsPanel />);
+    const accordionToggle = await screen.findByRole('button', { name: /LLM Providers/i });
+    fireEvent.click(accordionToggle);
+
+    fireEvent.change(await screen.findByLabelText('Base URL'), {
+      target: { value: 'https://new.example/v1' },
+    });
+    await waitFor(() => {
+      expect((screen.getByLabelText('API Key') as HTMLInputElement).value).toBe('');
+    });
+    fireEvent.change(await screen.findByLabelText('Catalog reference'), {
+      target: { value: 'reference' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Fetch Models' }));
+
+    await waitFor(() => {
+      expect(apiMock.fetchLLMModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: 'openai_compatible',
+          base_url: 'https://new.example/v1',
+          api_key: '',
+          catalog_provider: 'reference',
+        }),
+      );
+    });
+  });
+
+  it('persists compatible model overrides and presents unknown context as configuration work', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_base_url: 'https://compatible.example/v1',
+      }),
+    );
+    apiMock.fetchLLMModels.mockResolvedValueOnce({
+      success: true,
+      models: [
+        {
+          id: 'CaseSensitive/Model',
+          name: 'CaseSensitive/Model',
+          context_limit: null,
+          max_output_tokens: 4096,
+          context_limit_source: null,
+          output_limit_source: 'configured',
+        },
+      ],
+    });
+
+    render(<SettingsPanel />);
+    const accordionToggle = await screen.findByRole('button', { name: /LLM Providers/i });
+    fireEvent.click(accordionToggle);
+    fireEvent.change(await screen.findByLabelText('Model'), {
+      target: { value: 'CaseSensitive/Model' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Fetch Models' }));
+    await screen.findByText(/Unknown — configure before chat/i);
+    // output_limit_source is 'configured' with no override, so it displays as Unknown
+    expect(screen.getByText(/Output: Unknown/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Advanced model limits'));
+    fireEvent.change(screen.getByLabelText('Context limit'), { target: { value: '131072' } });
+    fireEvent.change(screen.getByLabelText('Maximum output tokens'), { target: { value: '4096' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save LLM Configuration' }));
+
+    await waitFor(() => {
+      expect(apiMock.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          openai_compatible_model_limits: {
+            'CaseSensitive/Model': { context_limit: 131072, max_output_tokens: 4096 },
+          },
+        }),
+      );
+    });
+  });
+
+  it('restores discovered compatible limits after clearing an override', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_base_url: 'https://compatible.example/v1',
+      }),
+    );
+    apiMock.fetchLLMModels.mockResolvedValueOnce({
+      success: true,
+      models: [
+        {
+          id: 'model-a',
+          name: 'model-a',
+          context_limit: 4096,
+          context_limit_source: 'provider',
+          max_output_tokens: null,
+          output_limit_source: null,
+        },
+      ],
+    });
+
+    render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /LLM Providers/i }));
+    fireEvent.change(await screen.findByLabelText('Model'), { target: { value: 'model-a' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Fetch Models' }));
+    await screen.findByText(/Context: 4096 \(provider\)/i);
+    fireEvent.click(screen.getByText('Advanced model limits'));
+    fireEvent.change(screen.getByLabelText('Context limit'), { target: { value: '8192' } });
+    await screen.findByText(/Context: 8192 \(configured\)/i);
+    fireEvent.change(screen.getByLabelText('Context limit'), { target: { value: '' } });
+    await screen.findByText(/Context: 4096 \(provider\)/i);
+  });
+
+  it('saved override with fetch configured source clears correctly', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    // Seed settings with saved override in formData
+    const savedOverrides = {
+      'test-model': {
+        context_limit: 16384,
+        max_output_tokens: 8192,
+      },
+    };
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_base_url: 'https://compatible.example/v1',
+        openai_compatible_model_limits: savedOverrides,
+      }),
+    );
+    // Fetch returns model with 'configured' source (old saved provider metadata)
+    apiMock.fetchLLMModels.mockResolvedValueOnce({
+      success: true,
+      models: [
+        {
+          id: 'test-model',
+          name: 'test-model',
+          context_limit: 5000,
+          context_limit_source: 'configured',
+          max_output_tokens: 2000,
+          output_limit_source: 'configured',
+        },
+      ],
+    });
+
+    render(<SettingsPanel />);
+    const accordionToggle = await screen.findByRole('button', { name: /LLM Providers/i });
+    fireEvent.click(accordionToggle);
+    fireEvent.change(await screen.findByLabelText('Model'), { target: { value: 'test-model' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Fetch Models' }));
+
+    // Saved override should display as current (16384 configured, not 5000 configured)
+    await screen.findByText(/Context: 16384 \(configured\)/i);
+    expect(screen.getByText(/Output: 8192 \(configured\)/i)).toBeTruthy();
+
+    // Open advanced limits and clear the fields
+    fireEvent.click(screen.getByText('Advanced model limits'));
+    fireEvent.change(screen.getByLabelText('Context limit'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Maximum output tokens'), { target: { value: '' } });
+
+    // After clearing: should show "Unknown" (not stale 5000 configured)
+    // because fetch result context_limit_source was 'configured' and there's no current override
+    await screen.findByText(/Unknown — configure before chat/i);
+    expect(screen.getByText(/Output: Unknown/i)).toBeTruthy();
+
+    // Verify override map is deleted when both fields are empty
+    fireEvent.click(screen.getByRole('button', { name: 'Save LLM Configuration' }));
+    await waitFor(() => {
+      expect(apiMock.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          openai_compatible_model_limits: {}, // Map should be empty or removed
+        }),
+      );
     });
   });
 });

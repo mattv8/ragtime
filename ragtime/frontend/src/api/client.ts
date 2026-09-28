@@ -22,6 +22,7 @@ import type {
   VisionModelsResponse,
   LLMModelsRequest,
   LLMModelsResponse,
+  ModelCatalogProvider,
   EmbeddingModelsRequest,
   EmbeddingModelsResponse,
   LmStudioModelLoadRequest,
@@ -2034,6 +2035,12 @@ export const api = {
       body: JSON.stringify(request),
     });
     return handleResponse<LLMModelsResponse>(response);
+  },
+
+  /** List optional models.dev catalog references for compatible endpoints. */
+  async listModelCatalogProviders(): Promise<ModelCatalogProvider[]> {
+    const response = await apiFetch(`${API_BASE}/llm/model-catalog-providers`);
+    return handleResponse<ModelCatalogProvider[]>(response);
   },
 
   /**

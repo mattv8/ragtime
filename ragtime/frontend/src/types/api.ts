@@ -1006,6 +1006,7 @@ export type LlmProvider =
   | 'llama_cpp'
   | 'lmstudio'
   | 'omlx'
+  | 'openai_compatible'
   | 'github_copilot'
   | 'openai_codex'
   | 'claude_code';
@@ -1057,6 +1058,10 @@ export interface AppSettings {
   omlx_port: number;
   omlx_base_url: string;
   omlx_api_key: string;
+  openai_compatible_base_url?: string;
+  openai_compatible_api_key?: string;
+  openai_compatible_catalog_provider?: string;
+  openai_compatible_model_limits?: Record<string, ModelLimitOverride>;
   // LLM Configuration (for chat/RAG responses)
   llm_provider: LlmProviderWire;
   llm_model: string;
@@ -1232,6 +1237,10 @@ export interface UpdateSettingsRequest {
   omlx_port?: number;
   omlx_base_url?: string;
   omlx_api_key?: string;
+  openai_compatible_base_url?: string;
+  openai_compatible_api_key?: string;
+  openai_compatible_catalog_provider?: string;
+  openai_compatible_model_limits?: Record<string, ModelLimitOverride>;
   // LLM settings
   llm_provider?: LlmProviderWire;
   llm_model?: string;
@@ -1490,6 +1499,7 @@ export interface LLMModelsRequest {
     | 'llama_cpp'
     | 'lmstudio'
     | 'omlx'
+    | 'openai_compatible'
     | 'github_copilot'
     | 'openai_codex'
     | 'claude_code'
@@ -1500,6 +1510,19 @@ export interface LLMModelsRequest {
   include_directory_models?: boolean;
   include_anthropic_models?: boolean;
   include_google_models?: boolean;
+  catalog_provider?: string;
+  model_limits?: Record<string, ModelLimitOverride>;
+}
+
+export interface ModelLimitOverride {
+  context_limit?: number | null;
+  max_output_tokens?: number | null;
+}
+
+export interface ModelCatalogProvider {
+  id: string;
+  name: string;
+  api: string;
 }
 
 export interface LLMModel {
@@ -1516,8 +1539,11 @@ export interface LLMModel {
   model_variant?: string;
   freshness_rank?: number;
   is_latest?: boolean;
-  max_output_tokens?: number;
-  context_limit?: number;
+  max_output_tokens?: number | null;
+  context_limit?: number | null;
+  context_limit_source?: string | null;
+  output_limit_source?: string | null;
+  tool_call_supported?: boolean | null;
   capabilities?: string[];
   supported_endpoints?: string[];
   reasoning_supported?: boolean;
@@ -4895,8 +4921,11 @@ export interface AvailableModel {
   id: string;
   name: string;
   provider: LlmProviderWire;
-  context_limit: number; // Max context window tokens
-  max_output_tokens?: number; // Max output tokens for this model
+  context_limit: number | null; // Max context window tokens, when known
+  max_output_tokens?: number | null; // Max output tokens for this model
+  context_limit_source?: string | null;
+  output_limit_source?: string | null;
+  tool_call_supported?: boolean | null;
   group?: string; // Optional group for UI organization
   model_provider?: string;
   model_provider_label?: string;

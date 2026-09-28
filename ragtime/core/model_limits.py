@@ -53,8 +53,13 @@ _provider_supports_thinking_budget: dict[str, bool] = {}
 _provider_supports_image_input: dict[str, bool] = {}
 # Catalog of model ids published by each models.dev provider slug (normalized).
 _provider_model_catalog: dict[str, list[str]] = {}
+# Raw provider payloads are intentionally scoped by the literal models.dev slug.
+# Generic compatible providers must never use the normalized legacy caches above:
+# those include aliases and cross-provider model IDs.
+_models_dev_provider_snapshots: dict[str, dict[str, object]] = {}
 _cache_lock = asyncio.Lock()
 _cache_loaded = False
+_models_dev_fetch_succeeded = False
 
 # Default when model not found
 DEFAULT_CONTEXT_LIMIT = 8192
@@ -760,7 +765,7 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
     global _model_supports_function_calling, _model_supports_reasoning, _model_supports_reasoning_effort, _model_supports_thinking_budget
     global _model_supports_embeddings, _model_is_embedding_only
     global _model_family_labels_cache, _model_provider_labels_cache, _model_display_names_cache, _model_freshness_cache
-    global _provider_model_catalog
+    global _provider_model_catalog, _models_dev_provider_snapshots, _models_dev_fetch_succeeded
     limits: dict[str, int] = {}
     output_limits: dict[str, int] = {}
     family_labels: dict[str, str] = {}
@@ -784,10 +789,12 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
             if not isinstance(data, dict):
                 logger.warning("models.dev payload was not a dictionary")
                 return {}, {}
+            _models_dev_fetch_succeeded = True
 
             for provider, provider_payload in data.items():
                 if not isinstance(provider_payload, dict):
                     continue
+                _models_dev_provider_snapshots[str(provider)] = provider_payload
                 models_obj = provider_payload.get("models", {})
                 if not isinstance(models_obj, dict):
                     continue
@@ -889,6 +896,7 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
             return limits, output_limits
 
     except Exception as e:
+        _models_dev_fetch_succeeded = False
         logger.warning(f"Failed to fetch models.dev model data: {e}")
         return {}, {}
 
@@ -914,7 +922,9 @@ async def _ensure_cache_loaded() -> None:
         else:
             logger.info("Using empty cache as fetch failed")
 
-        _cache_loaded = True
+        # Do not make a transient catalog failure permanent. Successful legacy
+        # metadata remains cached; only a later catalog request retries.
+        _cache_loaded = _models_dev_fetch_succeeded
 
 
 async def ensure_model_metadata_loaded() -> None:
@@ -1349,8 +1359,9 @@ def update_model_function_calling(model_id: str, supports: bool) -> None:
 
 def invalidate_cache() -> None:
     """Invalidate the cache (forces re-fetch on next request)."""
-    global _cache_loaded
+    global _cache_loaded, _models_dev_fetch_succeeded
     _cache_loaded = False
+    _models_dev_fetch_succeeded = False
     _model_limits_cache.clear()
     _model_output_limits_cache.clear()
     _model_family_labels_cache.clear()
@@ -1368,6 +1379,7 @@ def invalidate_cache() -> None:
     _provider_supports_reasoning_effort.clear()
     _provider_supports_thinking_budget.clear()
     _provider_model_catalog.clear()
+    _models_dev_provider_snapshots.clear()
 
 
 async def supports_function_calling(model_id: str) -> bool:
@@ -1428,6 +1440,24 @@ async def get_provider_model_catalog(provider: str) -> list[str]:
     await _ensure_cache_loaded()
     normalized = normalize_provider_name(provider)
     return list(_provider_model_catalog.get(normalized, []))
+
+
+async def get_models_dev_provider_snapshot(provider: str) -> dict[str, object] | None:
+    """Return a raw models.dev provider payload by its exact slug.
+
+    This accessor deliberately does not normalize aliases or model IDs. It is
+    for integrations where a catalog reference is explicitly selected and must
+    not inherit legacy fuzzy matching behavior.
+    """
+    await _ensure_cache_loaded()
+    snapshot = _models_dev_provider_snapshots.get(str(provider))
+    return dict(snapshot) if snapshot is not None else None
+
+
+async def get_models_dev_provider_snapshots() -> dict[str, dict[str, object]]:
+    """Return raw models.dev provider payloads keyed by their exact slugs."""
+    await _ensure_cache_loaded()
+    return {slug: dict(payload) for slug, payload in _models_dev_provider_snapshots.items()}
 
 
 async def supports_reasoning(model_id: str) -> bool:

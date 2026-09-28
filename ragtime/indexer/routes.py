@@ -170,6 +170,17 @@ from ragtime.core.openai_codex_auth import (
     ensure_openai_codex_token_fresh,
     extract_openai_codex_account_id,
 )
+from ragtime.core.openai_compatible import (
+    CompatibleProviderError,
+    list_catalog_providers,
+    normalize_base_url,
+)
+from ragtime.core.openai_compatible import (
+    get_model as get_compatible_model,
+)
+from ragtime.core.openai_compatible import (
+    list_models as list_compatible_models,
+)
 from ragtime.core.openrouter_credits import get_openrouter_credit_status
 from ragtime.core.performance import timed_operation, track_operation
 from ragtime.core.scheduling import normalize_timezone_name
@@ -8082,7 +8093,7 @@ class LLMModelsRequest(BaseModel):
 
     provider: str = Field(
         ...,
-        description="LLM provider: 'openai', 'openai_codex', 'anthropic', 'openrouter', 'llama_cpp', 'lmstudio', 'omlx', or 'github_copilot'",
+        description="LLM provider identifier, including 'openai_compatible' for a configurable Chat Completions API.",
     )
     api_key: str = Field(default="", description="API key/token for the provider")
     auth_mode: Optional[str] = Field(
@@ -8101,7 +8112,9 @@ class LLMModelsRequest(BaseModel):
         default=False,
         description="Include Google/Gemini models from directory results.",
     )
-    base_url: str = Field(default="", description="Base URL for local providers")
+    base_url: str = Field(default="", description="Provider base URL; for OpenAI-compatible services include the complete API path prefix.")
+    catalog_provider: str = Field(default="", description="Optional exact models.dev catalog provider for OpenAI-compatible preview")
+    model_limits: Optional[dict[str, Any]] = Field(default=None, description="Optional per-model limits for OpenAI-compatible preview")
 
 
 class LLMModel(BaseModel):
@@ -8122,6 +8135,9 @@ class LLMModel(BaseModel):
     is_latest: bool = False
     max_output_tokens: Optional[int] = None
     context_limit: Optional[int] = None
+    context_limit_source: Optional[str] = None
+    output_limit_source: Optional[str] = None
+    tool_call_supported: Optional[bool] = None
     capabilities: Optional[List[str]] = None
     supported_endpoints: Optional[List[str]] = None
     reasoning_supported: Optional[bool] = None
@@ -8150,8 +8166,11 @@ class AvailableModel(BaseModel):
     id: str
     name: str
     provider: str  # 'openai' or 'anthropic'
-    context_limit: int = 8192  # Max context window tokens
+    context_limit: Optional[int] = 8192  # Max context window tokens
     max_output_tokens: Optional[int] = None  # Max output tokens for this model
+    context_limit_source: Optional[str] = None
+    output_limit_source: Optional[str] = None
+    tool_call_supported: Optional[bool] = None
     group: Optional[str] = None  # Model group for UI organization
     model_provider: Optional[str] = None  # Model publisher/provider key
     model_provider_label: Optional[str] = None  # Human label for model publisher/provider
@@ -8821,7 +8840,7 @@ async def _fetch_llm_models_for_provider(
     provider: str,
     *,
     settings: AppSettings,
-    api_key: str = "",
+    api_key: str | None = None,
     auth_mode: Optional[str] = None,
     base_url: str = "",
     include_directory_models: bool = False,
@@ -8832,6 +8851,47 @@ async def _fetch_llm_models_for_provider(
 ) -> LLMModelsResponse | None:
     """Fetch LLM models for a provider using one shared dispatch point."""
     normalized_provider = normalize_provider_name(provider)
+    if normalized_provider == "openai_compatible":
+        try:
+            configured_url = getattr(settings, "openai_compatible_base_url", "") or ""
+            requested_url = base_url or configured_url
+            if not str(requested_url).strip():
+                if raise_on_unconfigured:
+                    raise HTTPException(status_code=400, detail="OpenAI-compatible provider is not configured")
+                return LLMModelsResponse(success=False, message="OpenAI-compatible provider is not configured")
+            normalized_url = normalize_base_url(requested_url)
+            saved_url = normalize_base_url(configured_url) if str(configured_url).strip() else ""
+            if api_key is None and normalized_url == saved_url:
+                resolved_api_key = getattr(settings, "openai_compatible_api_key", "") or ""
+            else:
+                resolved_api_key = api_key or ""
+            models = await list_compatible_models(
+                normalized_url,
+                api_key=resolved_api_key,
+                catalog_provider=getattr(settings, "openai_compatible_catalog_provider", "") or "",
+                model_limits=getattr(settings, "openai_compatible_model_limits", {}) or {},
+                force_refresh=force_refresh,
+            )
+        except CompatibleProviderError as exc:
+            return LLMModelsResponse(success=False, message=str(exc))
+        return LLMModelsResponse(
+            success=True,
+            message=f"Found {len(models)} model(s).",
+            models=[
+                LLMModel(
+                    id=model.id,
+                    name=model.name,
+                    context_limit=model.context_limit,
+                    max_output_tokens=model.max_output_tokens,
+                    context_limit_source=model.context_limit_source,
+                    output_limit_source=model.output_limit_source,
+                    tool_call_supported=model.tool_call_supported,
+                    supported_endpoints=["/chat/completions"],
+                )
+                for model in models
+            ],
+            default_model=models[0].id if models else None,
+        )
     provider_info = get_provider(normalized_provider)
     if provider_info is None or not provider_info.supports_llm:
         return None
@@ -8919,7 +8979,7 @@ async def _fetch_llm_models_for_provider(
         return await _fetch_github_provider_models(
             provider=provider,
             settings=settings,
-            api_key=api_key,
+            api_key=api_key or "",
             auth_mode=auth_mode,
             include_directory_models=include_directory_models,
             include_anthropic_models=include_anthropic_models,
@@ -8928,6 +8988,35 @@ async def _fetch_llm_models_for_provider(
         )
 
     return None
+
+
+async def _fetch_llm_models_for_provider_safe(
+    provider: str,
+    *,
+    settings: AppSettings,
+    api_key: str | None = None,
+    auth_mode: Optional[str] = None,
+    base_url: str = "",
+    include_directory_models: bool = False,
+    include_anthropic_models: bool = False,
+    include_google_models: bool = False,
+    force_refresh: bool = False,
+    raise_on_unconfigured: bool = False,
+) -> LLMModelsResponse:
+    """Fetch LLM models for a provider, ensuring LLMModelsResponse is always returned."""
+    result = await _fetch_llm_models_for_provider(
+        provider,
+        settings=settings,
+        api_key=api_key,
+        auth_mode=auth_mode,
+        base_url=base_url,
+        include_directory_models=include_directory_models,
+        include_anthropic_models=include_anthropic_models,
+        include_google_models=include_google_models,
+        force_refresh=force_refresh,
+        raise_on_unconfigured=raise_on_unconfigured,
+    )
+    return result or LLMModelsResponse(success=False, message="No response from provider")
 
 
 async def _safe_fetch_llm_models_task(
@@ -10101,6 +10190,12 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
     """Assign UI group labels to models for better organization."""
     for model in models:
         model.is_latest = False
+        if model.provider == "openai_compatible":
+            model.group = model.group or "OpenAI-compatible"
+            model.model_family = model.model_family or model.group
+            model.host_provider_label = get_provider_label(model.provider)
+            model.selector_label = model.selector_label or model.name
+            continue
         _enrich_model_metadata(model, model.provider)
         if model.group:
             continue
@@ -10136,6 +10231,22 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
     return models
 
 
+def _generic_available_model(model: LLMModel) -> AvailableModel:
+    """Preserve generic discovery metadata without legacy model-ID inference."""
+    return AvailableModel(
+        id=model.id,
+        name=model.name,
+        provider="openai_compatible",
+        context_limit=model.context_limit,
+        max_output_tokens=model.max_output_tokens,
+        context_limit_source=model.context_limit_source,
+        output_limit_source=model.output_limit_source,
+        tool_call_supported=model.tool_call_supported,
+        group="OpenAI-compatible",
+        supported_endpoints=model.supported_endpoints or ["/chat/completions"],
+    )
+
+
 @router.post("/llm/models", response_model=LLMModelsResponse, tags=["Settings"])
 async def fetch_llm_models(request: LLMModelsRequest, _user: User = Depends(require_admin)):
     """
@@ -10144,6 +10255,45 @@ async def fetch_llm_models(request: LLMModelsRequest, _user: User = Depends(requ
     Queries the provider's API and returns a list of available chat/completion models.
     """
     settings = await repository.get_settings()
+    if normalize_provider_name(request.provider) == "openai_compatible":
+        try:
+            requested_url = normalize_base_url(request.base_url or settings.openai_compatible_base_url)
+            saved_url = normalize_base_url(settings.openai_compatible_base_url) if settings.openai_compatible_base_url else ""
+        except (CompatibleProviderError, ValueError) as exc:
+            return LLMModelsResponse(success=False, message=str(exc))
+        api_key = (
+            request.api_key
+            if "api_key" in request.model_fields_set
+            else (settings.openai_compatible_api_key if requested_url and requested_url == saved_url else "")
+        )
+        try:
+            models = await list_compatible_models(
+                requested_url,
+                api_key=api_key,
+                catalog_provider=request.catalog_provider,
+                model_limits=request.model_limits,
+                force_refresh=True,
+            )
+        except CompatibleProviderError as exc:
+            return LLMModelsResponse(success=False, message=str(exc))
+        return LLMModelsResponse(
+            success=True,
+            message=f"Found {len(models)} model(s).",
+            models=[
+                LLMModel(
+                    id=model.id,
+                    name=model.name,
+                    context_limit=model.context_limit,
+                    max_output_tokens=model.max_output_tokens,
+                    context_limit_source=model.context_limit_source,
+                    output_limit_source=model.output_limit_source,
+                    tool_call_supported=model.tool_call_supported,
+                    supported_endpoints=["/chat/completions"],
+                )
+                for model in models
+            ],
+            default_model=models[0].id if models else None,
+        )
     result = await _fetch_llm_models_for_provider(
         request.provider,
         settings=settings,
@@ -10166,6 +10316,12 @@ async def fetch_llm_models(request: LLMModelsRequest, _user: User = Depends(requ
         success=False,
         message=f"Unknown provider: {request.provider}. Supported: {', '.join(LLM_PROVIDER_NAMES)}",
     )
+
+
+@router.get("/llm/model-catalog-providers", tags=["Settings"])
+async def get_model_catalog_providers(_user: User = Depends(require_admin)) -> list[dict[str, str]]:
+    """List the current models.dev providers usable as explicit catalog references."""
+    return await list_catalog_providers()
 
 
 def _merge_llm_model_results(primary: LLMModelsResponse, extra: LLMModelsResponse) -> LLMModelsResponse:
@@ -11525,6 +11681,7 @@ async def _build_available_models_response(app_settings: AppSettings) -> Availab
         "lmstudio": ProviderModelState(provider="lmstudio"),
         "omlx": ProviderModelState(provider="omlx"),
         "github_copilot": ProviderModelState(provider="github_copilot"),
+        "openai_compatible": ProviderModelState(provider="openai_compatible"),
     }
 
     # --- Build parallel fetch tasks for each configured provider ---
@@ -11553,6 +11710,18 @@ async def _build_available_models_response(app_settings: AppSettings) -> Availab
         provider_states["anthropic"].configured = True
         provider_states["anthropic"].connected = True
         tasks.append(asyncio.create_task(_safe_fetch_llm_models_task("anthropic", _fetch_anthropic_models(app_settings.anthropic_api_key))))
+
+    if (app_settings.openai_compatible_base_url or "").strip():
+        provider_states["openai_compatible"].configured = True
+        provider_states["openai_compatible"].connected = True
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "openai_compatible",
+                    _fetch_llm_models_for_provider_safe("openai_compatible", settings=app_settings),
+                )
+            )
+        )
 
     openrouter_api_key = resolve_provider_api_key(app_settings, "openrouter", "llm") or ""
     if openrouter_api_key and len(openrouter_api_key) > 10:
@@ -11681,6 +11850,9 @@ async def _build_available_models_response(app_settings: AppSettings) -> Availab
                 state.connected = True
 
         for m in result.models:
+            if provider_key == "openai_compatible":
+                all_models.append(_generic_available_model(m))
+                continue
             if provider_key == "github_copilot":
                 # For PAT-mode catalog models, strip publisher prefix for context lookup
                 context_model_id = m.id.split("/", 1)[1] if github_auth_mode == "pat" and "/" in m.id else m.id
@@ -11711,6 +11883,9 @@ async def _build_available_models_response(app_settings: AppSettings) -> Availab
                         else (m.context_limit if isinstance(m.context_limit, int) and m.context_limit > 0 else await get_context_limit(context_model_id))
                     ),
                     max_output_tokens=m.max_output_tokens,
+                    context_limit_source=m.context_limit_source,
+                    output_limit_source=m.output_limit_source,
+                    tool_call_supported=m.tool_call_supported,
                     group=m.group,
                     model_provider=m.model_provider,
                     model_provider_label=m.model_provider_label,
@@ -11862,6 +12037,17 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
             )
         )
 
+    if (app_settings.openai_compatible_base_url or "").strip():
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "openai_compatible",
+                    _fetch_llm_models_for_provider_safe("openai_compatible", settings=app_settings),
+                    none_on_error=True,
+                )
+            )
+        )
+
     claude_code_status = await get_claude_code_status()
     if claude_code_status.available:
         tasks.append(
@@ -11984,6 +12170,9 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
         successful_discovery_providers.add(_normalize_provider_alias(provider_key))
 
         for m in result.models:
+            if provider_key == "openai_compatible":
+                all_models.append(_generic_available_model(m))
+                continue
             if provider_key == "github_copilot":
                 context_model_id = m.id.split("/", 1)[1] if github_auth_mode == "pat" and "/" in m.id else m.id
             else:
@@ -12010,6 +12199,9 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                         else (m.context_limit if isinstance(m.context_limit, int) and m.context_limit > 0 else await get_context_limit(context_model_id))
                     ),
                     max_output_tokens=m.max_output_tokens,
+                    context_limit_source=m.context_limit_source,
+                    output_limit_source=m.output_limit_source,
+                    tool_call_supported=m.tool_call_supported,
                     group=m.group,
                     model_provider=m.model_provider,
                     model_provider_label=m.model_provider_label,
@@ -12271,14 +12463,19 @@ async def _to_shared_conversation_response(
     context_limit: int | None = None
     raw_model = (getattr(conv, "model", "") or "").strip()
     if raw_model:
+        model_provider = ""
         if "::" in raw_model:
-            _, _, model_id = raw_model.partition("::")
+            model_provider, _, model_id = raw_model.partition("::")
         else:
             model_id = raw_model
         model_id = model_id.strip()
         if model_id:
             try:
-                context_limit = await get_context_limit(model_id)
+                if normalize_provider_name(model_provider) == "openai_compatible":
+                    compatible_settings = await repository.get_settings()
+                    context_limit = (await get_compatible_model(compatible_settings, model_id)).context_limit
+                else:
+                    context_limit = await get_context_limit(model_id)
             except Exception:  # pragma: no cover - defensive
                 context_limit = None
 
