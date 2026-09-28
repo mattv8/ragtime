@@ -180,12 +180,62 @@ class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
             tempfile.TemporaryDirectory() as temp,
             mock.patch.object(queue.settings, "index_data_path", temp),
             mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=history),
-            mock.patch.object(history, "capture_workspace_databases", new=mock.AsyncMock(return_value=[{"id": "failed-backup", "status": "failed"}])),
+            mock.patch.object(
+                history,
+                "capture_workspace_databases",
+                new=mock.AsyncMock(return_value=[{"id": "failed-backup", "status": "failed", "database_name": "app.sqlite3", "error": "503: unavailable"}]),
+            ),
         ):
             await service._run_claimed(job)
         self.assertEqual("failed", store.finished[0]["status"])
-        self.assertEqual("One or more SQLite databases could not be captured", store.finished[0]["error_message"])
+        self.assertEqual("Could not capture app.sqlite3: unavailable", store.finished[0]["error_message"])
         self.assertEqual(["failed-backup"], store.finished[0]["backup_ids"])
+
+    def test_failed_outcome_summary_groups_matching_errors(self) -> None:
+        self.assertEqual(
+            "Could not capture 2 databases (one.sqlite3, two.sqlite3): unavailable",
+            queue._failed_outcome_summary(
+                [
+                    {"status": "failed", "database_name": "one.sqlite3", "error": "503: unavailable"},
+                    {"status": "failed", "database_name": "two.sqlite3", "error": "503: unavailable"},
+                ]
+            ),
+        )
+
+    def test_failed_outcome_summary_lists_distinct_errors(self) -> None:
+        self.assertEqual(
+            "Could not capture 2 databases. one.sqlite3: first; two.sqlite3: unknown error",
+            queue._failed_outcome_summary(
+                [
+                    {"status": "failed", "database_name": "one.sqlite3", "error": "first"},
+                    {"status": "failed", "database_name": "two.sqlite3"},
+                ]
+            ),
+        )
+
+    async def test_stale_runtime_failed_receipt_uses_database_outcome_summary(self) -> None:
+        job = self._job()
+        store = _Store(job)
+        store.reconcilable = mock.AsyncMock(return_value=[job])
+        service = SqliteBackupQueueService(store)
+        history = mock.Mock()
+        history.runtime_history_active = mock.AsyncMock(return_value=True)
+        receipt = {
+            "phase": "failed",
+            "error": "generic runtime failure",
+            "database_outcomes": {
+                "app.sqlite3": {"results": [{"id": "failed-backup", "status": "failed", "database_name": "app.sqlite3", "error": "503: unavailable"}]}
+            },
+        }
+        with (
+            mock.patch("ragtime.userspace.sqlite_history.get_sqlite_history_service", return_value=history),
+            mock.patch.object(queue, "runtime_manager_request", new=mock.AsyncMock(return_value=receipt)),
+        ):
+            interrupted = await service.recover_stale()
+
+        self.assertEqual([job["id"]], interrupted)
+        self.assertEqual("failed", store.finished[0]["status"])
+        self.assertEqual("Could not capture app.sqlite3: unavailable", store.finished[0]["error_message"])
 
     async def test_heartbeat_database_error_interrupts_after_capture_drains(self) -> None:
         job = self._job()
