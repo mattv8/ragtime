@@ -4,6 +4,8 @@
   width: 100%;
   max-width: none;
   padding: 0;
+  /* The collapsed sidebar handle sits in the desk gutter outside this box. */
+  overflow: visible;
 }
 
 [data-theme-pack='modern'] .chat-page-container.chat-page-fullscreen {

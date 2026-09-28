@@ -172,10 +172,28 @@
 }
 
 [data-theme-pack='modern'] .userspace-content {
+  position: relative;
   display: grid;
   flex: 1;
   gap: var(--workbench-gap);
   min-height: 0;
+}
+
+/* Leading collapsed handles sit in the desk gutter, so these wrappers must not clip it. */
+[data-theme-pack='modern'] .userspace-page-container,
+[data-theme-pack='modern'] .userspace-layout,
+[data-theme-pack='modern'] .userspace-content,
+[data-theme-pack='modern'] .userspace-left-pane,
+[data-theme-pack='modern'] .userspace-editor-section {
+  overflow: visible;
+}
+
+[data-theme-pack='modern'] .userspace-editor-section {
+  position: relative;
+}
+
+[data-theme-pack='modern'] .userspace-content > .resize-handle-collapsed[data-collapsed-side='before'] + .userspace-right-pane {
+  grid-column: 1 / -1;
 }
 
 [data-theme-pack='modern'] .userspace-left-pane,

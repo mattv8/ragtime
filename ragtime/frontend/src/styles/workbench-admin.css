@@ -20,6 +20,12 @@
   min-height: 0;
 }
 
+/* Chat and Workspaces park collapsed pane handles in the desk gutter; the
+   shell stack still clips at the window edge. */
+[data-theme-pack='modern'] .app-shell-locked #workbench-shell-stack > .container {
+  overflow: visible;
+}
+
 [data-theme-pack='modern'] #workbench-warning-stack {
   display: flex;
   flex-direction: column;

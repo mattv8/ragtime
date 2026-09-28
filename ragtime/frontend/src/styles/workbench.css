@@ -98,6 +98,33 @@
   pointer-events: none;
 }
 
+/*
+ * A pane collapsed against the workbench's leading edge parks its restore
+ * handle in the desk padding, so the remaining pane stays aligned with the
+ * topnav instead of being pushed in by the collapsed strip.
+ */
+[data-theme-pack='modern'] .chat-panel > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before'],
+[data-theme-pack='modern'] .userspace-content > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before'],
+[data-theme-pack='modern'] .userspace-editor-section > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before'] {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: calc(var(--workbench-padding) * -1);
+  width: var(--workbench-padding);
+}
+
+[data-theme-pack='modern'] .chat-panel > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before']:focus-visible,
+[data-theme-pack='modern'] .userspace-content > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before']:focus-visible,
+[data-theme-pack='modern'] .userspace-editor-section > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before']:focus-visible {
+  box-shadow: 0 0 0 1px var(--color-focus);
+}
+
+/* The 8px gutter strip is too narrow for the chevron; the lit sash bar is the restore cue. */
+[data-theme-pack='modern'] .chat-panel > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before'] .resize-handle-chevron,
+[data-theme-pack='modern'] .userspace-content > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before'] .resize-handle-chevron,
+[data-theme-pack='modern'] .userspace-editor-section > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before'] .resize-handle-chevron {
+  display: none;
+}
+
 @media (pointer: coarse) {
   [data-theme-pack='modern'] .resize-handle::after {
     opacity: 0.55;
