@@ -100,6 +100,7 @@ class SqliteHistoryListResponse(BaseModel):
     backups: list[SqliteHistoryBackup]
     can_manage: bool
     interrupted_maintenance: SqliteHistoryInterruptedMaintenance | None = None
+    capture_unavailable_reason: str | None = None
 
 
 class SqliteHistoryCaptureResponse(BaseModel):

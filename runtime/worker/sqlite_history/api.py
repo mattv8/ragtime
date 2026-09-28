@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from runtime.core.private_file_response import private_file_response
+from runtime.worker import mount_sync_launcher
 
 from .coordinator import SqliteHistoryCoordinator
 from .inspector_import import RuntimeInspectorImport
@@ -99,6 +100,7 @@ def history_router(prefix: str, auth: Any, coordinator: Callable[[], SqliteHisto
         return {
             "backups": await service.list_backups(workspace_id, database_name=database_name, snapshot_id=snapshot_id),
             "interrupted_maintenance": await service.interrupted_maintenance(workspace_id),
+            "capture_unavailable_reason": mount_sync_launcher.confinement_unavailable_reason(),
         }
 
     @router.post("/workspaces/{workspace_id}/sqlite-history/captures", status_code=202)

@@ -48,6 +48,7 @@ from runtime.core.sqlite_workspace_state import (
 from runtime.core.sqlite_workspace_state import (
     read_marker as _read_runtime_marker,
 )
+from runtime.worker import mount_sync_launcher
 
 from .models import ResticArtifact
 from .storage import held_repository_fds
@@ -304,7 +305,8 @@ def _now() -> datetime:
 
 def _safe_error(exc: Exception) -> str:
     # Engine errors are deliberately user-safe.  Do not leak filesystem paths.
-    text = str(exc).replace("\\", "/")
+    text = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+    text = text.replace("\\", "/")
     return text[:400] or "SQLite history operation failed"
 
 
@@ -1289,17 +1291,26 @@ class SqliteHistoryService:
                     timeout=60,
                 )
         except (OSError, SecureFileError, subprocess.TimeoutExpired) as exc:
-            raise HTTPException(status_code=503, detail="Secure SQLite capture confinement is unavailable") from exc
+            raise HTTPException(
+                status_code=503,
+                detail=mount_sync_launcher.confinement_unavailable_reason() or "Secure SQLite capture confinement is unavailable",
+            ) from exc
         if completed.returncode:
             logger.warning("Confined SQLite capture failed returncode=%s stderr=%s", completed.returncode, completed.stderr[:400])
-            raise HTTPException(status_code=503, detail="Secure SQLite capture confinement is unavailable")
+            raise HTTPException(
+                status_code=503,
+                detail=mount_sync_launcher.confinement_unavailable_reason() or "Secure SQLite capture confinement is unavailable",
+            )
         try:
             result = json.loads(completed.stdout)
             if not isinstance(result, dict):
                 raise ValueError
             return result
         except (json.JSONDecodeError, ValueError) as exc:
-            raise HTTPException(status_code=503, detail="Secure SQLite capture confinement is unavailable") from exc
+            raise HTTPException(
+                status_code=503,
+                detail=mount_sync_launcher.confinement_unavailable_reason() or "Secure SQLite capture confinement is unavailable",
+            ) from exc
 
     @staticmethod
     def _probe_confined(files_dir: Path, database_name: str) -> str | None:
