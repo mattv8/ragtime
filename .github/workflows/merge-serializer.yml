@@ -33,13 +33,13 @@ jobs:
       - name: Advance the oldest queued PR
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.MERGE_SERIALIZER_TOKEN }}
+          GH_TOKEN: ${{ secrets.PR_AUTOMATION_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
           set -Eeuo pipefail
 
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::MERGE_SERIALIZER_TOKEN is required (fine-grained PAT)." >&2
+            echo "::error::PR_AUTOMATION_TOKEN is required (fine-grained PAT)." >&2
             exit 1
           fi
 

@@ -182,7 +182,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--initial-version", default="1.0.0")
     args = parser.parse_args(argv)
     if not os.environ.get("GH_TOKEN"):
-        print("RELEASE_PR_TOKEN is required for release PR preparation.", file=sys.stderr)
+        print("PR_AUTOMATION_TOKEN is required for release PR preparation.", file=sys.stderr)
         return 1
     try:
         print(

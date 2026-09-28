@@ -129,7 +129,7 @@ class MergeSerializerTests(unittest.TestCase):
             self.assertNotIn(prohibited, workflow_text)
         missing, calls, _ = self._run({}, token=False)
         self.assertNotEqual(missing.returncode, 0)
-        self.assertIn("MERGE_SERIALIZER_TOKEN", missing.stderr)
+        self.assertIn("PR_AUTOMATION_TOKEN", missing.stderr)
         self.assertEqual(calls, [])
         empty, calls, _ = self._run({"list_pages": [[]]})
         self.assertEqual(empty.returncode, 0, empty.stderr)

@@ -29,14 +29,14 @@ jobs:
       - name: Prepare or refresh release pull request
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
+          GH_TOKEN: ${{ secrets.PR_AUTOMATION_TOKEN }}
           REPOSITORY: ${{ github.repository }}
           INITIAL_VERSION: ${{ vars.RELEASE_INITIAL_VERSION || '1.0.0' }}
           EVENT: ${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && 'manual' || github.ref_name == 'beta' && 'beta-push' || 'main-push' }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::RELEASE_PR_TOKEN is required (fine-grained PAT with contents read and pull requests write)." >&2
+            echo "::error::PR_AUTOMATION_TOKEN is required (fine-grained PAT with contents read and pull requests write)." >&2
             exit 1
           fi
           python3 docker/scripts/release_pr.py --event "$EVENT" --repository "$REPOSITORY" --initial-version "$INITIAL_VERSION"
