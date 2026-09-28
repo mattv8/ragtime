@@ -324,6 +324,7 @@ from ragtime.indexer.models import (
     ProviderPromptDebugListResponse,
     ProviderPromptDebugRecord,
     PublicShareTargetResponse,
+    ReceivedConversationShare,
     RefreshLiveVisualizationRequest,
     RefreshLiveVisualizationResponse,
     ReorderToolsRequest,
@@ -12727,6 +12728,13 @@ def _validate_conversation_cursor_pair(cursor_updated_at: Optional[datetime], cu
         )
 
 
+def _validate_received_share_cursor_pair(cursor_created_at: Optional[datetime], cursor_id: Optional[str]) -> None:
+    if cursor_created_at is None and cursor_id:
+        raise HTTPException(status_code=400, detail="cursor_id requires cursor_created_at")
+    if cursor_created_at is not None and not cursor_id:
+        raise HTTPException(status_code=400, detail="cursor_created_at requires cursor_id")
+
+
 class WorkspaceConversationStateSummaryRequest(BaseModel):
     workspace_ids: List[str] = Field(
         default_factory=list,
@@ -13130,6 +13138,42 @@ async def _resolve_workspace_runtime_scope(
     )
 
     return effective_workspace_id, blocked_tool_names, workspace_context
+
+
+@router.get("/conversations/shared-with-me", response_model=List[ReceivedConversationShare])
+async def list_received_conversation_shares(
+    response: Response,
+    limit: int = Query(default=50, ge=1, le=200),
+    cursor_created_at: Optional[str] = None,
+    cursor_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Return selected-user personal chat shares addressed to the authenticated user."""
+    cursor_created_at_dt = _parse_conversation_time_filter(cursor_created_at, "cursor_created_at")
+    _validate_received_share_cursor_pair(cursor_created_at_dt, cursor_id)
+    shares = await repository.list_received_conversation_shares(
+        user.id,
+        limit=limit,
+        cursor_created_at=cursor_created_at_dt,
+        cursor_id=cursor_id,
+    )
+    # Routing IDs and tokens are intentionally excluded: content protection
+    # should inspect only the human-readable metadata this route displays.
+    await _authorize_conversation_release(
+        [
+            {
+                "title": share.title,
+                "label": share.label,
+                "owner_username": share.owner_username,
+                "owner_display_name": share.owner_display_name,
+            }
+            for share in shares
+        ],
+        user=user,
+        owner_user_id=None,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return shares
 
 
 @router.get("/conversations", response_model=List[ConversationResponse])

@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
+import { useAnchoredMenuPosition } from '@/hooks/useAnchoredMenuPosition';
 import { formatProviderDisplayName } from '@/utils/modelDisplay';
 import { normalizeProviderAlias } from '@/utils/modelProviders';
 
@@ -34,6 +35,8 @@ interface ModelSelectorProps<T extends BaseModel> {
   variant?: 'compact' | 'full';
   triggerIcon?: ReactNode;
   triggerClassName?: string;
+  /** Where the root menu should prefer to open. */
+  placement?: 'bottom-start' | 'top-end';
 }
 
 /**
@@ -58,7 +61,6 @@ type MenuPosition =
 
 const ESTIMATED_SUBMENU_WIDTH = 240;
 const SUBMENU_GAP = 2;
-
 function hostProviderLabel(model: BaseModel): string {
   return model.host_provider_label || formatProviderDisplayName(model.provider);
 }
@@ -190,14 +192,12 @@ export function ModelSelector<T extends BaseModel>({
   variant = 'compact',
   triggerIcon,
   triggerClassName,
+  placement = 'bottom-start',
 }: ModelSelectorProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
   const [expandedPath, setExpandedPath] = useState<string[]>([]);
   const [submenuPositions, setSubmenuPositions] = useState<MenuPosition[]>([]);
   const [rootChildSide, setRootChildSide] = useState<MenuSide>('right');
-  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(
-    null,
-  );
   const [searchQuery, setSearchQuery] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -208,6 +208,13 @@ export function ModelSelector<T extends BaseModel>({
   const itemRefs = useRef<Map<number, Map<string, HTMLDivElement>>>(new Map());
   // Refs to the submenu container elements at each depth (depth = submenu index + 1).
   const submenuRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const dropdownPosition = useAnchoredMenuPosition({
+    open: isOpen,
+    triggerRef: containerRef,
+    menuRef: dropdownRef,
+    placement,
+    measureKey: searchQuery,
+  });
 
   const selectionKeyFor = useCallback(
     (model: T): string => {
@@ -416,13 +423,6 @@ export function ModelSelector<T extends BaseModel>({
     return modelProviderLabel(selectedModel) || displayText;
   }, [displayText, selectedModel]);
 
-  // Compute and track fixed dropdown position so it draws over iframes without layout shift
-  const computeDropdownPosition = useCallback(() => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    setDropdownPosition({ top: rect.bottom, left: rect.left });
-  }, []);
-
   // Decide whether the root-level child submenu will open left or right based
   // on space around the dropdown. Drives root-row chevron direction.
   const computeRootChildSide = useCallback(() => {
@@ -436,21 +436,20 @@ export function ModelSelector<T extends BaseModel>({
     setRootChildSide(openLeft ? 'left' : 'right');
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isOpen) return;
-    computeDropdownPosition();
-    // Defer side measurement until the dropdown is rendered.
-    const raf = requestAnimationFrame(computeRootChildSide);
-    window.addEventListener('scroll', computeDropdownPosition, true);
-    window.addEventListener('resize', computeDropdownPosition);
+    computeRootChildSide();
     window.addEventListener('resize', computeRootChildSide);
     return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener('scroll', computeDropdownPosition, true);
-      window.removeEventListener('resize', computeDropdownPosition);
       window.removeEventListener('resize', computeRootChildSide);
     };
-  }, [isOpen, computeDropdownPosition, computeRootChildSide]);
+  }, [isOpen, computeRootChildSide]);
+
+  // The root portal's rect includes its fixed position only after the preceding
+  // layout update has committed. Calculate its child-menu direction then.
+  useLayoutEffect(() => {
+    if (isOpen && dropdownPosition) computeRootChildSide();
+  }, [isOpen, dropdownPosition, computeRootChildSide]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -736,7 +735,10 @@ export function ModelSelector<T extends BaseModel>({
       <button
         type="button"
         className={triggerClasses}
-        onClick={() => !disabled && setIsOpen(!isOpen)}
+        onClick={() => {
+          if (disabled) return;
+          setIsOpen(!isOpen);
+        }}
         disabled={disabled}
         title={displayText || 'Select model'}
       >
@@ -759,8 +761,14 @@ export function ModelSelector<T extends BaseModel>({
             ref={dropdownRef}
             style={
               dropdownPosition
-                ? { top: dropdownPosition.top, left: dropdownPosition.left }
-                : undefined
+                ? {
+                    top: dropdownPosition.top,
+                    left: dropdownPosition.left,
+                    maxHeight: dropdownPosition.maxHeight,
+                    maxWidth: dropdownPosition.maxWidth,
+                    visibility: 'visible',
+                  }
+                : { visibility: 'hidden' }
             }
             onMouseEnter={cancelCollapse}
             onMouseLeave={scheduleCollapseAll}
@@ -805,7 +813,19 @@ export function ModelSelector<T extends BaseModel>({
             )}
 
             {/* Scrollable inner container for root menu items */}
-            <div className="model-selector-dropdown-inner">
+            <div
+              className="model-selector-dropdown-inner"
+              style={
+                dropdownPosition
+                  ? {
+                      maxHeight: Math.max(
+                        0,
+                        dropdownPosition.maxHeight - (models.length > 1 ? 36 : 0),
+                      ),
+                    }
+                  : undefined
+              }
+            >
               {isSearching ? (
                 filteredModels.length === 0 ? (
                   <div className="model-selector-empty">No models match "{searchQuery.trim()}"</div>

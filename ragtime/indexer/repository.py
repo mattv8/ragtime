@@ -167,6 +167,7 @@ from ragtime.indexer.models import (
     OcrMode,
     OcrProvider,
     ProviderPromptDebugRecord,
+    ReceivedConversationShare,
     ToolAccessEntry,
     ToolAccessEntryUpdate,
     ToolAccessPolicyResponse,
@@ -3549,6 +3550,83 @@ class IndexerRepository:
         for summary in summaries:
             summary.subagent_conversation_ids = child_ids_by_parent.get(summary.id, [])
         return summaries
+
+    async def list_received_conversation_shares(
+        self,
+        user_id: str,
+        *,
+        limit: int = 50,
+        cursor_created_at: Optional[datetime] = None,
+        cursor_id: Optional[str] = None,
+    ) -> list[ReceivedConversationShare]:
+        """List metadata-only selected-user shares addressed to ``user_id``.
+
+        This deliberately mirrors the recipient branch of
+        ``UserSpaceService._enforce_share_access``: only selected-user records
+        whose selected IDs contain the current user are discoverable. Owners are
+        excluded here even though the release endpoint grants them an access
+        bypass, so this remains a received-share inbox rather than a share index.
+        """
+        if not user_id:
+            return []
+        if not 1 <= limit <= 200:
+            raise ValueError("limit must be between 1 and 200")
+
+        db = await self._get_db()
+        quoted_user_id = _sql_quote_literal(user_id)
+        # Encode JSON before SQL quoting so a recipient ID cannot alter the JSONB
+        # containment predicate or raw SQL syntax.
+        selected_user_ids_json = _sql_quote_literal(json.dumps([user_id]))
+        where_parts = [
+            "s.share_access_mode = 'selected_users'",
+            f"s.share_selected_user_ids @> {selected_user_ids_json}::jsonb",
+            "c.workspace_id IS NULL",
+            "c.parent_conversation_id IS NULL",
+            f"s.owner_user_id IS DISTINCT FROM {quoted_user_id}",
+            f"c.user_id IS DISTINCT FROM {quoted_user_id}",
+            "NULLIF(BTRIM(s.share_token), '') IS NOT NULL",
+        ]
+        if cursor_created_at is not None:
+            cursor_created_at_sql = f"{_sql_quote_literal(cursor_created_at.isoformat())}::timestamp"
+            cursor_id_sql = _sql_quote_literal(cursor_id or "")
+            where_parts.append(f"(s.created_at < {cursor_created_at_sql} OR (s.created_at = {cursor_created_at_sql} AND s.id < {cursor_id_sql}))")
+
+        rows = await db.query_raw(f"""
+            SELECT
+                s.id,
+                s.conversation_id,
+                c.title,
+                u.username AS owner_username,
+                u.display_name AS owner_display_name,
+                s.share_token,
+                s.label,
+                s.granted_role,
+                s.scope_anchor_message_idx,
+                s.scope_direction,
+                s.created_at
+            FROM conversation_shares s
+            INNER JOIN conversations c ON c.id = s.conversation_id
+            INNER JOIN users u ON u.id = s.owner_user_id
+            WHERE {" AND ".join(where_parts)}
+            ORDER BY s.created_at DESC, s.id DESC
+            LIMIT {int(limit)}
+            """)
+        return [
+            ReceivedConversationShare(
+                id=str(row.get("id") or ""),
+                conversation_id=str(row.get("conversation_id") or ""),
+                title=str(row.get("title") or "Untitled Chat"),
+                owner_username=str(row.get("owner_username") or ""),
+                owner_display_name=row.get("owner_display_name"),
+                share_token=str(row.get("share_token") or ""),
+                label=row.get("label"),
+                granted_role=cast(Any, row.get("granted_role") if row.get("granted_role") in {"viewer", "editor"} else "viewer"),
+                scope_anchor_message_idx=(int(row["scope_anchor_message_idx"]) if row.get("scope_anchor_message_idx") is not None else None),
+                scope_direction=cast(Any, row.get("scope_direction") if row.get("scope_direction") in {"forward", "backward"} else None),
+                created_at=cast(datetime, row.get("created_at")),
+            )
+            for row in rows
+        ]
 
     async def list_subagent_conversation_summaries(
         self,

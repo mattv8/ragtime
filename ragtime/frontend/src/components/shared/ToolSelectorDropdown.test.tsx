@@ -87,6 +87,7 @@ interface ControlledDropdownProps {
     tool: ToolSelectorTool,
     context: ToolSelectorStatusBadgeContext,
   ) => ToolSelectorStatusBadge | null;
+  openDirection?: 'down' | 'up';
 }
 
 function ControlledDropdown({
@@ -102,6 +103,7 @@ function ControlledDropdown({
   onRequestEnableWorkspaceTool,
   getToolMenuItems,
   getToolStatusBadge,
+  openDirection,
 }: ControlledDropdownProps) {
   const availableTools = useMemo(() => availableToolsProp, [availableToolsProp]);
   const [selection, setSelection] = useState<UserSpaceToolSelection>({
@@ -143,6 +145,7 @@ function ControlledDropdown({
         }}
         toolGroups={[{ id: 'group-1', name: 'Alpha Group' }]}
         title="Conversation Tools"
+        openDirection={openDirection}
         focusRequest={focusRequest}
         onRequestEnableWorkspaceTool={onRequestEnableWorkspaceTool}
         getToolMenuItems={getToolMenuItems}
@@ -744,5 +747,64 @@ describe('ToolSelectorDropdown bulk selection', () => {
     await user.hover(screen.getByTitle('Conversation Tools (3/3 selected)'));
 
     await waitFor(() => expect(document.body.querySelector('.popover')).toBeNull());
+  });
+});
+
+describe('ToolSelectorDropdown placement', () => {
+  function rect(left: number, top: number, width: number, height: number) {
+    return {
+      x: left,
+      y: top,
+      left,
+      top,
+      width,
+      height,
+      right: left + width,
+      bottom: top + height,
+      toJSON: () => ({}),
+    } as DOMRect;
+  }
+
+  function setViewport(width: number, height: number) {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: height });
+  }
+
+  it('opens upward and rightward from a trigger near the left edge', () => {
+    setViewport(500, 500);
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains('userspace-tool-dropdown-surface')
+          ? rect(0, 0, 320, 200)
+          : rect(12, 300, 30, 30);
+      });
+    render(<ControlledDropdown openDirection="up" />);
+
+    fireEvent.click(screen.getByTitle('Conversation Tools (3/3 selected)'));
+
+    const dropdown = document.querySelector('.userspace-tool-dropdown') as HTMLElement;
+    expect(dropdown.style.left).toBe('12px');
+    expect(dropdown.style.top).toBe('100px');
+    rectSpy.mockRestore();
+  });
+
+  it('keeps the menu right-aligned to a trigger near the right edge', () => {
+    setViewport(500, 500);
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains('userspace-tool-dropdown-surface')
+          ? rect(0, 0, 320, 200)
+          : rect(400, 300, 30, 30);
+      });
+    render(<ControlledDropdown openDirection="up" />);
+
+    fireEvent.click(screen.getByTitle('Conversation Tools (3/3 selected)'));
+
+    const dropdown = document.querySelector('.userspace-tool-dropdown') as HTMLElement;
+    expect(dropdown.style.left).toBe('110px');
+    expect(Number.parseFloat(dropdown.style.left) + 320).toBe(430);
+    rectSpy.mockRestore();
   });
 });

@@ -2918,6 +2918,22 @@ export interface ConversationSummary {
   updated_at: string;
 }
 
+/** Metadata for a selected-user conversation share received by the current user. */
+export interface ReceivedConversationShare {
+  id: string;
+  conversation_id: string;
+  title: string;
+  owner_username: string;
+  owner_display_name: string | null;
+  share_token: string;
+  label: string | null;
+  granted_role: 'viewer' | 'editor';
+  scope_anchor_message_idx: number | null;
+  scope_direction: 'forward' | 'backward' | null;
+  /** Immutable share creation timestamp used for keyset pagination. */
+  created_at: string;
+}
+
 export interface ConversationCountResponse {
   count: number;
 }

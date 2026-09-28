@@ -1017,6 +1017,25 @@ describe('conversation client request shapes', () => {
       expect.anything(),
     );
   });
+
+  it('uses the received-share endpoint with created-at pagination and forwards abort signals', async () => {
+    const controller = new AbortController();
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+    await api.listReceivedConversationShares(
+      {
+        limit: 50,
+        cursorCreatedAt: '2026-09-15T12:34:56.123456+00:00',
+        cursorId: 'share/a b',
+      },
+      controller.signal,
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/conversations/shared-with-me?limit=50&cursor_created_at=2026-09-15T12%3A34%3A56.123456%2B00%3A00&cursor_id=share%2Fa%20b',
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
 });
 
 describe('HTTP API OAuth client request shapes', () => {

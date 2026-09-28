@@ -3149,6 +3149,22 @@ class ConversationSummaryResponse(BaseModel):
     updated_at: datetime
 
 
+class ReceivedConversationShare(BaseModel):
+    """Metadata for a selected-user conversation share addressed to the current user."""
+
+    id: str
+    conversation_id: str
+    title: str
+    owner_username: str
+    owner_display_name: str | None = None
+    share_token: str
+    label: str | None = None
+    granted_role: Literal["viewer", "editor"]
+    scope_anchor_message_idx: int | None = None
+    scope_direction: Literal["forward", "backward"] | None = None
+    created_at: datetime
+
+
 class ConversationCountResponse(BaseModel):
     """Lightweight count-only response for conversation list badges."""
 
