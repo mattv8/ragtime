@@ -5565,6 +5565,7 @@ export interface SqliteHistoryListResponse {
   workspace_id: string;
   backups: SqliteHistoryBackup[];
   can_manage: boolean;
+  capture_unavailable_reason?: string | null;
   interrupted_maintenance?: SqliteHistoryMaintenanceStateResponse | null;
 }
 
