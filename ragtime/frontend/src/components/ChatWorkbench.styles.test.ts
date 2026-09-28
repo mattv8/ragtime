@@ -133,7 +133,7 @@ describe('Chat workbench surface contract', () => {
       /\[data-theme-pack='modern'\]\s+\.reasoning-block\s*\{[\s\S]*background:\s*var\(--color-widget\);[\s\S]*border-radius:\s*var\(--workbench-control-radius\);/,
     );
     expect(css).toMatch(
-      /\[data-theme-pack='modern'\]\s+\.live-data-refresh-btn\s+\.theme-chrome-icon\s*\{[\s\S]*transform:\s*translateY\(1px\);/,
+      /\[data-theme-pack='modern'\]\s+\.live-data-refresh-btn\s+\.theme-chrome-icon\s*\{[\s\S]*transform:\s*translateY\(-2px\);/,
     );
     // The animated loading spinner rotates via `transform`, so a competing static
     // `transform` on the same element (the old `svg` nudge) silently killed the spin

@@ -661,8 +661,10 @@
   line-height: 1;
 }
 
+/* codicon.css forces the glyph to 16px inside the 12px icon box, which drops its ink
+   ~2px below the label's optical center; lift it back into line. */
 [data-theme-pack='modern'] .live-data-refresh-btn .theme-chrome-icon {
-  transform: translateY(1px);
+  transform: translateY(-2px);
 }
 
 /* Spinner rotates via `transform`; nudge with `top` so the animation is preserved. */
