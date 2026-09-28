@@ -786,6 +786,14 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+// Collapsed layouts drop the hidden pane's track entirely so the grid gap does not
+// leave an extra gutter beside the 16px collapsed handle (matching ChatPanel's flex sashes).
+function getMainSplitGridTemplate(fraction: number): string {
+  if (fraction >= 1) return 'minmax(0, 1fr) 16px';
+  if (fraction <= 0) return '16px minmax(0, 1fr)';
+  return `minmax(0, ${fraction}fr) 4px minmax(0, ${1 - fraction}fr)`;
+}
+
 export function resolveAbsolutePaneFraction(
   nextPercent: number,
   collapseSide: 'before' | 'after' = 'after',
@@ -1607,12 +1615,7 @@ export function UserSpacePanel({
     }
 
     leftPaneFractionLiveRef.current = next;
-    el.style.gridTemplateColumns =
-      next === 1
-        ? 'minmax(0, 1fr) 16px minmax(0, 0fr)'
-        : next === 0
-          ? 'minmax(0, 0fr) 16px minmax(0, 1fr)'
-          : `minmax(0, ${next}fr) 4px minmax(0, ${1 - next}fr)`;
+    el.style.gridTemplateColumns = getMainSplitGridTemplate(next);
 
     if (next === 0 && leftPaneRef.current) leftPaneRef.current.style.display = 'none';
     else if (leftPaneRef.current) leftPaneRef.current.style.display = '';
@@ -1628,7 +1631,7 @@ export function UserSpacePanel({
 
       const next = resolveAbsolutePaneFraction(nextPercent, collapseSide);
       leftPaneFractionLiveRef.current = next;
-      el.style.gridTemplateColumns = `minmax(0, ${next}fr) 4px minmax(0, ${1 - next}fr)`;
+      el.style.gridTemplateColumns = getMainSplitGridTemplate(next);
 
       if (leftPaneRef.current) leftPaneRef.current.style.display = '';
       if (rightPaneRef.current) rightPaneRef.current.style.display = next === 1 ? 'none' : '';
@@ -9473,7 +9476,11 @@ export function UserSpacePanel({
               onClick={toggleFullscreen}
               title={isFullscreen ? 'Exit full screen' : 'Full screen'}
             >
-              {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              <ThemeChromeIcon
+                fallback={isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                codicon={isFullscreen ? 'screen-normal' : 'screen-full'}
+                size={14}
+              />
             </button>
           </div>
         </div>
@@ -9486,11 +9493,9 @@ export function UserSpacePanel({
         className="userspace-content"
         ref={contentRef}
         style={{
-          gridTemplateColumns: rightPaneCollapsed
-            ? 'minmax(0, 1fr) 16px minmax(0, 0fr)'
-            : leftPaneCollapsed
-              ? 'minmax(0, 0fr) 16px minmax(0, 1fr)'
-              : `minmax(0, ${leftPaneFractionLiveRef.current}fr) 4px minmax(0, ${1 - leftPaneFractionLiveRef.current}fr)`,
+          gridTemplateColumns: getMainSplitGridTemplate(
+            rightPaneCollapsed ? 1 : leftPaneCollapsed ? 0 : leftPaneFractionLiveRef.current,
+          ),
         }}
       >
         {/* Left pane */}

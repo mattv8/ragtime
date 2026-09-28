@@ -138,7 +138,6 @@
   --workbench-control-radius: 4px;
   --workbench-container-border: 1px solid var(--color-border);
   --workbench-section-gap: 12px; /* Composite ResizeHandle spacing between floating panels: 4px gap + 4px sash + 4px gap. Applied to vertical stacks on Chat/Workspaces and canonically between admin section panels. */
-  --userspace-preview-snapshots-gap: 3px; /* Flex gap on each side of the snapshots sash. */
 
   --color-workbench: #252526;
   --color-chrome: #181818;

@@ -2434,18 +2434,6 @@ textarea:focus {
   overflow: hidden;
 }
 
-.userspace-content > .userspace-left-pane {
-  grid-column: 1;
-}
-
-.userspace-content > .resize-handle {
-  grid-column: 2;
-}
-
-.userspace-content > .userspace-right-pane {
-  grid-column: 3;
-}
-
 /* --- Left pane: editor + chat --- */
 
 .userspace-left-pane {
@@ -3091,10 +3079,6 @@ textarea:focus {
 
 .userspace-snapshots-section {
   flex-shrink: 0;
-}
-
-.userspace-right-pane > .resize-handle-vertical {
-  margin-block: 2px;
 }
 
 .userspace-snapshots-header {

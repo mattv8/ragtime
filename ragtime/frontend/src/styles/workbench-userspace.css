@@ -13,11 +13,13 @@
 }
 
 [data-theme-pack='modern'] .userspace-layout.userspace-fullscreen {
+  position: fixed;
+  inset: var(--workbench-padding);
+  width: auto;
   height: auto;
-  padding: max(var(--workbench-padding), env(safe-area-inset-top))
-    max(var(--workbench-padding), env(safe-area-inset-right))
-    max(var(--workbench-padding), env(safe-area-inset-bottom))
-    max(var(--workbench-padding), env(safe-area-inset-left));
+  max-width: none;
+  padding: 0;
+  z-index: 500;
 }
 
 [data-theme-pack='modern'] .userspace-toolbar,
@@ -187,11 +189,6 @@
 [data-theme-pack='modern'] .userspace-left-pane,
 [data-theme-pack='modern'] .userspace-right-pane {
   flex-direction: column;
-}
-
-/* Preview-to-snapshots flex gap on each side of the snapshots sash. */
-[data-theme-pack='modern'] .userspace-right-pane {
-  gap: var(--userspace-preview-snapshots-gap);
 }
 
 [data-theme-pack='modern'] .userspace-file-sidebar,

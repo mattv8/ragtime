@@ -38,6 +38,9 @@ describe('User Space workbench styles contract', () => {
       /\[data-theme-pack='modern'\]\s+\.userspace-layout\s*\{[\s\S]*padding:\s*0;[\s\S]*max-width:\s*none;[\s\S]*margin:\s*0;[\s\S]*border:\s*none;[\s\S]*border-radius:\s*0;/,
     );
     expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.userspace-layout\.userspace-fullscreen\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*var\(--workbench-padding\);[^}]*padding:\s*0;/,
+    );
+    expect(css).toMatch(
       /\[data-theme-pack='modern'\]\s+\.userspace-toolbar\s*\{[\s\S]*padding:\s*0\s+var\(--space-sm\);/,
     );
     expect(css).toMatch(
