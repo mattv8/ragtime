@@ -196,6 +196,28 @@
   grid-column: 1 / -1;
 }
 
+/* Full screen is a fixed layout: pane sashes are hidden, and panes keep their current sizes. */
+[data-theme-pack='modern'] .userspace-fullscreen :is(.userspace-content, .userspace-left-pane, .userspace-right-pane, .userspace-editor-section) > .resize-handle,
+[data-theme-pack='modern'] .userspace-fullscreen .resize-handle.chat-resize-handle {
+  display: none;
+}
+
+/*
+ * The main split sash's empty 4px track stays as the pane gap, and panes are
+ * pinned to their tracks so they don't flow into the sash's slot.
+ */
+[data-theme-pack='modern'] .userspace-fullscreen .userspace-content {
+  column-gap: 0;
+}
+
+[data-theme-pack='modern'] .userspace-fullscreen .userspace-content > .userspace-right-pane {
+  grid-column: -2 / -1;
+}
+
+[data-theme-pack='modern'] .userspace-fullscreen .userspace-content:has(> .resize-handle-collapsed[data-collapsed-side='after']) > .userspace-left-pane {
+  grid-column: 1 / -1;
+}
+
 [data-theme-pack='modern'] .userspace-left-pane,
 [data-theme-pack='modern'] .userspace-right-pane,
 [data-theme-pack='modern'] .userspace-editor-section {

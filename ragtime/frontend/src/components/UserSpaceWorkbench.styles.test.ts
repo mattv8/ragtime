@@ -41,6 +41,12 @@ describe('User Space workbench styles contract', () => {
       /\[data-theme-pack='modern'\]\s+\.userspace-layout\.userspace-fullscreen\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*var\(--workbench-padding\);[^}]*padding:\s*0;/,
     );
     expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.userspace-fullscreen \.userspace-content\s*\{\s*column-gap:\s*0;/,
+    );
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.userspace-fullscreen \.userspace-content > \.userspace-right-pane\s*\{\s*grid-column:\s*-2 \/ -1;/,
+    );
+    expect(css).toMatch(
       /\[data-theme-pack='modern'\]\s+\.userspace-toolbar\s*\{[\s\S]*padding:\s*0\s+var\(--space-sm\);/,
     );
     expect(css).toMatch(

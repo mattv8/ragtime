@@ -817,6 +817,11 @@
   background: transparent;
 }
 
+/* Full screen is a fixed layout: pane sashes are hidden, and panes keep their current sizes. */
+[data-theme-pack='modern'] .chat-panel-fullscreen .resize-handle.chat-resize-handle {
+  display: none;
+}
+
 [data-theme-pack='modern'] .chat-in-chat-search-resize-handle {
   position: absolute;
 }
