@@ -106,6 +106,10 @@ describe('Resize handle style contracts', () => {
       /\[data-theme-pack='modern'\]\s+\.resize-handle:focus-visible\s*\{/,
     );
 
+    expect(css).toMatch(
+      /\[data-theme-pack='modern'\]\s+\.resize-handle::after\s*\{[^}]*mask-image:\s*var\(--resize-handle-bar-mask,\s*none\);/,
+    );
+
     expect(css).not.toContain('\n.resize-handle {');
     expect(css).not.toContain('\n.resize-handle::before {');
     expect(css).not.toContain('\n.resize-handle::after {');

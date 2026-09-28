@@ -26,6 +26,9 @@
   background: var(--color-sash-hover);
   opacity: 0;
   pointer-events: none;
+  /* Set by ResizeHandle's barSegmentSelector to break the bar between adjacent panes. */
+  -webkit-mask-image: var(--resize-handle-bar-mask, none);
+  mask-image: var(--resize-handle-bar-mask, none);
   transition:
     opacity var(--transition-fast),
     background-color var(--transition-fast);
@@ -152,6 +155,8 @@
   [data-theme-pack='modern'] .resize-handle::after {
     background: CanvasText;
     opacity: 1;
+    -webkit-mask-image: none;
+    mask-image: none;
   }
 
   [data-theme-pack='modern'] .resize-handle:focus-visible {

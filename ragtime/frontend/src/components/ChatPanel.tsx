@@ -219,6 +219,12 @@ const WEB_READ_PDF_TOOL_ID = 'web_read_pdf';
 const WORKSPACE_SUBAGENTS_TOOL_ID = 'spawn_subagents';
 const SUBAGENT_HANDOFF_TOOL_ID = 'submit_subagent_handoff';
 const COMPACTION_TASK_USER_MESSAGE = '__ragtime_compaction__';
+// The sidebar sash bar breaks where the header, messages, and composer panes are separated.
+const CHAT_SIDEBAR_SASH_SEGMENT_SELECTOR = [
+  '.chat-main > .chat-header',
+  '.chat-main > .chat-message-region',
+  '.chat-main > .chat-input-area > .chat-input-wrapper',
+].join(', ');
 
 function isCompactionTask(task: ChatTask | null | undefined): boolean {
   return task?.user_message === COMPACTION_TASK_USER_MESSAGE;
@@ -18865,6 +18871,7 @@ export function ChatPanel({
           onResize={handleResizeSidebar}
           onResizeTo={handleResizeSidebarTo}
           onResizeEnd={commitResizeSidebar}
+          barSegmentSelector={CHAT_SIDEBAR_SASH_SEGMENT_SELECTOR}
           collapsed={!showSidebar ? 'before' : undefined}
           collapsible={{
             side: 'before',
