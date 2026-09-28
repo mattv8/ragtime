@@ -725,6 +725,20 @@ docker compose pull
 docker compose up -d
 ```
 
+#### Release channels
+
+The default Compose images follow the stable `main` channel. Stable aliases
+`main` and `latest` remain moving tags; development aliases are `beta` and
+`latest-beta`. For a repeatable deployment, pin the Ragtime, runtime, and
+storage images to the same release tag, `vX.Y.Z`. The older-CPU Ragtime image
+uses the matching `vX.Y.Z-legacy` tag. Image digests identify the exact bytes
+when a deployment requires stronger pinning than a tag.
+
+Stable release PRs are prepared automatically each Tuesday at 09:17 UTC and
+are merged manually. See the [release promotion procedure in
+CONTRIBUTING.md](CONTRIBUTING.md#release-promotion) for maintainer operations,
+including retries and version selection.
+
 ### Troubleshooting
 
 #### SSH Tools Fail from Colima on macOS but Hosts Are Reachable

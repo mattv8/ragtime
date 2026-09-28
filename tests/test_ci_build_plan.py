@@ -142,6 +142,13 @@ class CiBuildPlanTests(unittest.TestCase):
             "needs.plan.result": "success",
             "needs.plan.outputs.promote": "true",
             "needs.plan.outputs.build_main": "true",
+            "github.ref_name": "main",
+            "needs.main-release-guard.result": "success",
+            "needs.quality.result": "success",
+            "needs.quality.outputs.backend_result": "success",
+            "needs.quality.outputs.frontend_result": "success",
+            "needs.quality.outputs.storage_result": "success",
+            "needs.release-plan.result": "success",
             "needs.candidate-main.result": "success",
             "needs.sbom.result": "success",
             "needs.plan.outputs.build_runtime": "true",
@@ -158,7 +165,39 @@ class CiBuildPlanTests(unittest.TestCase):
             ("needs.candidate-storage.result", "failure"),
             ("needs.candidate-storage.result", "cancelled"),
             ("needs.candidate-storage.result", "skipped"),
+            ("needs.main-release-guard.result", "failure"),
+            ("needs.quality.result", "failure"),
+            ("needs.quality.outputs.backend_result", "failure"),
+            ("needs.quality.outputs.frontend_result", "skipped"),
+            ("needs.quality.outputs.storage_result", "cancelled"),
+            ("needs.release-plan.result", "cancelled"),
             ("cancelled()", True),
         ):
             with self.subTest(field=field, value=value):
                 self.assertFalse(evaluates(**{**baseline, field: value}))
+
+        legacy = {
+            **baseline,
+            "needs.plan.outputs.build_main": "false",
+            "needs.main-release-guard.result": "skipped",
+            "needs.quality.result": "skipped",
+            "needs.release-plan.result": "skipped",
+            "needs.candidate-main.result": "skipped",
+            "needs.sbom.result": "skipped",
+            "needs.plan.outputs.build_runtime": "false",
+            "needs.candidate-runtime.result": "skipped",
+            "needs.candidate-storage.result": "skipped",
+            "needs.plan.outputs.build_legacy": "true",
+            "needs.candidate-legacy.result": "success",
+        }
+        self.assertTrue(evaluates(**legacy))
+        self.assertFalse(evaluates(**{**legacy, "needs.quality.result": "failure"}))
+
+        beta = {
+            **baseline,
+            "github.ref_name": "beta",
+            "needs.main-release-guard.result": "skipped",
+            "needs.quality.result": "skipped",
+            "needs.release-plan.result": "skipped",
+        }
+        self.assertTrue(evaluates(**beta))

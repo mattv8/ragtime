@@ -1,0 +1,42 @@
+name: Prepare weekly release PR
+
+on:
+  push:
+    branches: [beta, main]
+  schedule:
+    - cron: '17 9 * * 2'
+  workflow_dispatch:
+
+concurrency:
+  group: release-pr-coordinator
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: beta
+      - name: Fetch stable and development refs
+        shell: bash
+        run: git fetch --tags --force origin refs/heads/main:refs/remotes/origin/main refs/heads/beta:refs/remotes/origin/beta
+      - name: Prepare or refresh release pull request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          INITIAL_VERSION: ${{ vars.RELEASE_INITIAL_VERSION || '1.0.0' }}
+          EVENT: ${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && 'manual' || github.ref_name == 'beta' && 'beta-push' || 'main-push' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::RELEASE_PR_TOKEN is required (fine-grained PAT with contents read and pull requests write)." >&2
+            exit 1
+          fi
+          python3 docker/scripts/release_pr.py --event "$EVENT" --repository "$REPOSITORY" --initial-version "$INITIAL_VERSION"

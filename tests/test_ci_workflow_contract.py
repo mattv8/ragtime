@@ -182,20 +182,42 @@ class CiWorkflowContractTests(unittest.TestCase):
             self.assertEqual(version_result.returncode, 0, version_result.stderr)
             self.assertEqual(docker_log.read_text(encoding="utf-8").splitlines(), ["buildx version"])
 
-    def test_build_container_is_packaging_only(self) -> None:
+    def test_build_container_revalidates_main_before_stable_publication(self) -> None:
         workflow = _load_workflow("build-container.yml")
         self.assertNotIn("pull_request", workflow["on"])
         self.assertNotIn("workflow_call", workflow["on"])
         self.assertNotIn("paths", workflow["on"]["push"])
         jobs = workflow["jobs"]
-        self.assertNotIn("quality", jobs)
+        self.assertIn("quality", jobs)
+        self.assertIn("main-release-guard", jobs)
+        self.assertIn("release-plan", jobs)
+        self.assertEqual(jobs["quality"]["uses"], "./.github/workflows/quality.yml")
+        self.assertIn("main-release-guard", jobs["quality"]["needs"])
+        zero_guard = jobs["main-release-guard"]["steps"][0]["run"]
+        self.assertIn("0000000000000000000000000000000000000000", zero_guard)
+        self.assertEqual(jobs["release-plan"]["permissions"]["pull-requests"], "read")
+        self.assertIn("git fetch --force --tags", jobs["release-plan"]["steps"][-1]["run"])
         promotion = jobs["promote"]
-        self.assertNotIn("quality", promotion["needs"])
+        self.assertIn("quality", promotion["needs"])
+        self.assertIn("release-plan", promotion["needs"])
+        self.assertIn("needs.quality.outputs.backend_result == 'success'", promotion["if"])
+        self.assertIn("needs.quality.outputs.frontend_result == 'success'", promotion["if"])
+        self.assertIn("needs.quality.outputs.storage_result == 'success'", promotion["if"])
         self.assertIn("candidate-main", promotion["needs"])
         stale_guard = next(step for step in promotion["steps"] if step.get("name") == "Reject stale branch ref")
         self.assertIn("git ls-remote", stale_guard["run"])
         self.assertTrue(any("cosign" in step.get("uses", "") for step in promotion["steps"]))
-        self.assertTrue(any(step.get("name") == "Sign promoted immutable digests" for step in promotion["steps"]))
+        stable = next(step for step in promotion["steps"] if step.get("name") == "Publish stable digest-pinned release")
+        self.assertIn("github.ref_name == 'main'", stable["if"])
+        self.assertIn("publish_release.py", stable["run"])
+        self.assertNotIn("COSIGN_PUBLIC_KEY", stable["env"])
+        legacy = next(step for step in promotion["steps"] if step.get("name") == "Maintain legacy image only")
+        self.assertIn("cosign verify", legacy["run"])
+        self.assertIn("cosign public-key --key env://COSIGN_PRIVATE_KEY", legacy["run"])
+        self.assertIn("$APP:legacy", legacy["run"])
+        beta = next(step for step in promotion["steps"] if step.get("name") == "Promote beta candidates")
+        self.assertIn("github.ref_name == 'beta'", beta["if"])
+        self.assertIn("$APP_TAGS", beta["run"])
 
     def test_quality_runs_frontend_and_storage_tests_with_read_only_caches(self) -> None:
         quality = _load_workflow("quality.yml")

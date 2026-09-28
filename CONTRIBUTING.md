@@ -115,6 +115,26 @@ names are retained per request; individual slow operations still emit warnings.
 - Mention any database, auth, runtime, or configuration impact.
 - For UI changes, include a screenshot or short note about what you checked.
 
+## Release Promotion
+
+Each Tuesday at 09:17 UTC, the release workflow opens one `beta` -> `main`
+promotion PR. It opens no PR when `beta` has no commits ahead of `main` or
+both branches have identical content.
+
+CI reuses an open PR across skipped weeks and includes subsequent `beta`
+commits.
+
+A maintainer merges the promotion PR with a **merge commit**. Before the next
+promotion, merge the generated `main` -> `beta` reconciliation PR with a merge
+commit.
+
+Releases use SemVer tags in `vMAJOR.MINOR.PATCH` format. The workflow selects a
+major bump for `!`, `BREAKING CHANGE:`, or `BREAKING-CHANGE:`; a `feat` selects
+minor; `fix` and other changes select patch. The highest applicable bump wins.
+
+On the promotion PR, a maintainer may apply exactly one override label:
+`release:patch`, `release:minor`, or `release:major`.
+
 ## Adding Tools
 
 Tools are auto-discovered from `ragtime/tools/`. Create a new file and implement a `StructuredTool` export:
