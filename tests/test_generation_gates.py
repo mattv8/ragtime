@@ -17,6 +17,7 @@ NON_GENERATIVE_CALL_EXEMPTIONS = {
     ("ragtime/indexer/visualization_retry.py", "_rerun_source_query", "tool.ainvoke"),
     ("ragtime/mcp/tools.py", "executor", "tool.ainvoke"),  # MCP configured-tool execution, not an LLM
     ("ragtime/userspace/service.py", "_invoke_runtime_bridge_tool", "runtime_tool.ainvoke"),  # runtime bridge tool dispatch
+    ("ragtime/userspace/development_ssh.py", "execute", "tool.ainvoke"),  # BYO configured SSH tool execution, not LLM
     ("ragtime/rag/components.py", "invoke", "self.ainvoke"),
     ("ragtime/rag/components.py", "_get_context_from_retrievers_async", "retriever.ainvoke"),
     # Index-description generation belongs to indexing, not Chat or User Space.
