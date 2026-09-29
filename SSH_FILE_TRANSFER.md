@@ -20,6 +20,27 @@ At least one endpoint must use SSH. An ambiguous connection name is rejected.
 Workspace endpoints require an authenticated user and workspace access; a
 route password or client-credentials token alone does not grant workspace access.
 
+### Workspace development credentials
+
+External coding-agent credentials call `ssh_transfer` through the single
+`workspace_development` wrapper rather than the general MCP tool catalog. The
+outer development call supplies the workspace, so transfer arguments must not
+include `workspace_id`. Only selected, enabled workspace SSH connections that
+the caller and owner can access are advertised; endpoint aliases are safe to
+discover, but addresses and credentials are not.
+
+Development transfers require `exec`; the credential's user and workspace owner
+must also have `read` or `read_write` access to the source connection. An exec-only credential may download a
+permitted SSH file to `inline`, but any remote or workspace destination also
+requires credential `write` and the workspace write policy. For a
+`workspace:/` destination, `expected_content_hash` is required: use explicit
+`null` to create a file only when absent, or its current SHA-256 digest to
+replace exactly that version. Do not supply `overwrite` for workspace
+destinations; it is derived from that compare-and-swap value. Inline downloads
+are bounded to a 24 KiB serialized UTF-8 JSON response and return an explicit
+too-large result instead of truncated content. Use workspace files for larger
+text and SSH-to-SSH transfers for larger binary files.
+
 ## Arguments
 
 | Argument | Default | Meaning |
@@ -33,6 +54,7 @@ route password or client-credentials token alone does not grant workspace access
 | `reason` | `SSH file transfer` | Description of the operation. |
 | `timeout` | 300 | Requested time budget in seconds, from 1 to 300; each endpoint's configured ceiling still applies. |
 | `workspace_id` | None | Workspace identifier; chat uses its active workspace. |
+| `expected_content_hash` | Required for `workspace:/` destinations | `null` creates only; a SHA-256 digest replaces only that version. This is a workspace-development transfer argument, not a general MCP argument. |
 
 ## Constraints
 
