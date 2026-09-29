@@ -212,13 +212,23 @@ def _build_connect_kwargs(config: SSHConfig) -> dict:
     return kwargs
 
 
-def _create_ssh_client(config: SSHConfig) -> paramiko.SSHClient:
+def _create_ssh_client(
+    config: SSHConfig,
+    *,
+    on_client_created: Callable[[paramiko.SSHClient], None] | None = None,
+    tcp_connect_timeout: float | None = None,
+) -> paramiko.SSHClient:
     """Create and connect an SSH client."""
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    if on_client_created is not None:
+        on_client_created(client)
     logger.debug(f"SSH connecting to {config.user}@{config.host}:{config.port} using {config.auth_method.value}")
     try:
-        client.connect(**_build_connect_kwargs(config))
+        connect_kwargs = _build_connect_kwargs(config)
+        if tcp_connect_timeout is not None:
+            connect_kwargs["timeout"] = tcp_connect_timeout
+        client.connect(**connect_kwargs)
     except Exception:
         try:
             client.close()
