@@ -607,6 +607,7 @@ The schemas below list the primary fields; several tools also accept optional fi
 | `influxdb` | `{query, reason}` |
 | `odoo_shell` | `{code, reason}` |
 | `ssh_shell` | `{command, reason}` |
+| [`ssh_transfer`](SSH_FILE_TRANSFER.md) | `{source, destination, content?, encoding?, overwrite?, recursive?, reason?, timeout?, workspace_id?}`; copies between authorized SSH connections, inline content, and workspace text files. |
 | `filesystem_indexer` | `{query, max_results}` |
 | `solidworks_pdm` | `search_{tool}`: `{query, document_type}`; Chat also provides `lookup_{tool}` for exact indexed-snapshot lookup. |
 | `knowledge_search` | `{query, index_name}` |
