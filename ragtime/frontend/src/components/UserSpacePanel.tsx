@@ -82,6 +82,7 @@ import {
 import { useUserSpaceToolHealthEvents } from '@/utils/useUserSpaceToolHealthEvents';
 import { buildSnapshotDatabaseWindows } from '@/utils/snapshotDatabaseHistory';
 import { useSnapshotDatabaseHistory } from '@/utils/useSnapshotDatabaseHistory';
+import { shouldSendCollabUpdate } from './collabUpdate';
 import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { AgentAccessButton } from './shared/AgentAccessButton';
 import { AgentAccessModal } from './shared/AgentAccessModal';
@@ -965,6 +966,10 @@ function writeDismissedOnboardingCookie(ids: Set<string>): void {
   setSessionCookieValue('agent_onboarding_dismissed', [...ids].join(','));
 }
 
+function getEditorDocumentOwner(workspaceId: string, filePath: string): string {
+  return JSON.stringify([workspaceId, filePath]);
+}
+
 export function UserSpacePanel({
   currentUser,
   userspaceGenerationEnabled = false,
@@ -1032,6 +1037,7 @@ export function UserSpacePanel({
 
   const [selectedFilePath, setSelectedFilePath] = useState<string>('dashboard/main.ts');
   const [fileContent, setFileContent] = useState<string>('');
+  const [fileContentOwner, setFileContentOwner] = useState<string | null>(null);
   const [fileDirty, setFileDirty] = useState(false);
   const [selectedFileArtifactType, setSelectedFileArtifactType] =
     useState<UserSpaceArtifactType | null>(null);
@@ -1066,6 +1072,20 @@ export function UserSpacePanel({
   const [collabVersion, setCollabVersion] = useState(0);
   const [collabPresenceCount, setCollabPresenceCount] = useState(0);
   const [collabPresenceUsers, setCollabPresenceUsers] = useState<UserSpaceCollabPresenceUser[]>([]);
+  const currentDocumentOwner =
+    activeWorkspaceId && selectedFilePath
+      ? getEditorDocumentOwner(activeWorkspaceId, selectedFilePath)
+      : null;
+  const fileContentRef = useRef(fileContent);
+  const fileContentOwnerRef = useRef(fileContentOwner);
+  const collabUnsentEditRef = useRef(false);
+  const setEditorDocument = useCallback((owner: string | null, content: string) => {
+    fileContentOwnerRef.current = owner;
+    fileContentRef.current = content;
+    collabUnsentEditRef.current = false;
+    setFileContentOwner(owner);
+    setFileContent(content);
+  }, []);
   const [collabPresenceLoading, setCollabPresenceLoading] = useState(false);
   const [collabPresenceError, setCollabPresenceError] = useState<string | null>(null);
   const collabPresenceWorkspaceRef = useRef<string | null>(null);
@@ -1293,6 +1313,7 @@ export function UserSpacePanel({
   const selectedFilePathRef = useRef(selectedFilePath);
   const treeFileHoverSuppressRef = useRef<string | null>(null);
   const fileContentCacheRef = useRef(fileContentCache);
+  const filesWorkspaceIdRef = useRef<string | null>(null);
   const activeWorkspaceIdRef = useRef<string | null>(activeWorkspaceId);
   const agentAccessRequestIdRef = useRef(0);
   const agentAccessLoadRequestIdRef = useRef(0);
@@ -1308,6 +1329,8 @@ export function UserSpacePanel({
   const snapshotRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const focusedSnapshotNavigationTargetRef = useRef<string | null>(null);
   const fileDirtyRef = useRef(false);
+  const selectedFileLoadRequestIdRef = useRef(0);
+  const selectedFileLoadInFlightRef = useRef<string | null>(null);
   const changedFileStateInFlightRef = useRef(false);
   const changedFileStateLastStartedAtRef = useRef(0);
   const changedFileStatePendingWorkspaceIdRef = useRef<string | null>(null);
@@ -1315,7 +1338,6 @@ export function UserSpacePanel({
   const collabSocketRef = useRef<WebSocket | null>(null);
   const collabReconnectTimerRef = useRef<number | null>(null);
   const collabReconnectAttemptsRef = useRef(0);
-  const collabSuppressNextSendRef = useRef(false);
   const workspaceEventsReconnectTimerRef = useRef<number | null>(null);
   const loadWorkspaceDataDebounceRef = useRef<number | null>(null);
   const loadChangedFileStateDebounceRef = useRef<number | null>(null);
@@ -1896,11 +1918,18 @@ export function UserSpacePanel({
         modules[file.path] = cached.content;
       }
     }
-    if (selectedFilePath) {
+    if (selectedFilePath && fileContentOwner === currentDocumentOwner) {
       modules[selectedFilePath] = fileContent;
     }
     return modules;
-  }, [fileContent, fileContentCache, files, selectedFilePath]);
+  }, [
+    currentDocumentOwner,
+    fileContent,
+    fileContentCache,
+    fileContentOwner,
+    files,
+    selectedFilePath,
+  ]);
 
   const activeWorkspaceToolSelection = useMemo<UserSpaceToolSelection>(() => {
     const storedToolIds = activeWorkspace?.selected_tool_ids ?? [];
@@ -2574,6 +2603,11 @@ export function UserSpacePanel({
 
       activeWorkspaceIdRef.current = nextWorkspaceId;
       if (workspaceChanged) {
+        loadWorkspaceDataRequestIdRef.current += 1;
+        filesWorkspaceIdRef.current = null;
+        fileContentCacheRef.current = {};
+        setFiles([]);
+        setFileContentCache({});
         updateActiveWorkspaceConversationId(null);
         setActiveWorkspaceChatSnapshot(null);
         setRuntimeStatus(null);
@@ -2863,9 +2897,15 @@ export function UserSpacePanel({
         : nextFiles.some((file) => file.path === previewEntryPath)
           ? previewEntryPath
           : (nextFiles[0]?.path ?? previewEntryPath);
+      const workspaceFilesChanged = filesWorkspaceIdRef.current !== workspaceId;
       const treeChanged =
+        workspaceFilesChanged ||
         fileEntriesFingerprint(normalizedEntries) !==
-        fileEntriesFingerprint(fileBrowserEntriesRef.current);
+          fileEntriesFingerprint(fileBrowserEntriesRef.current);
+
+      if (activeWorkspaceIdRef.current === workspaceId) {
+        filesWorkspaceIdRef.current = workspaceId;
+      }
 
       if (treeChanged) {
         setFileBrowserEntries(normalizedEntries);
@@ -2942,6 +2982,10 @@ export function UserSpacePanel({
           }
         },
       );
+
+      if (activeWorkspaceIdRef.current !== workspaceId) {
+        return;
+      }
 
       setFileContentCache((current) => {
         const next: Record<string, CachedUserSpaceFile> = { ...current };
@@ -3031,7 +3075,7 @@ export function UserSpacePanel({
             ) {
               return;
             }
-            setFileContent(cached.content);
+            setEditorDocument(getEditorDocumentOwner(workspaceId, preferredPath), cached.content);
             setSelectedFileArtifactType(cached.artifactType ?? null);
             setSelectedFileUnsupportedMessage(cached.unsupportedMessage ?? null);
           } else {
@@ -3045,7 +3089,7 @@ export function UserSpacePanel({
                 return;
               }
 
-              setFileContent(file.content);
+              setEditorDocument(getEditorDocumentOwner(workspaceId, preferredPath), file.content);
               setSelectedFileArtifactType(file.artifact_type ?? null);
               setFileContentCache((current) => ({
                 ...current,
@@ -3069,7 +3113,7 @@ export function UserSpacePanel({
                 throw err;
               }
 
-              setFileContent('');
+              setEditorDocument(getEditorDocumentOwner(workspaceId, preferredPath), '');
               setSelectedFileArtifactType(null);
               setSelectedFileUnsupportedMessage(unsupportedMessage);
               setFileContentCache((current) => ({
@@ -3084,7 +3128,7 @@ export function UserSpacePanel({
             }
           }
         } else {
-          setFileContent('');
+          setEditorDocument(null, '');
           setSelectedFileArtifactType(null);
           setSelectedFileUnsupportedMessage(null);
         }
@@ -3098,7 +3142,7 @@ export function UserSpacePanel({
         setError(err instanceof Error ? err.message : 'Failed to load workspace data');
       }
     },
-    [reconcileWorkspaceFileTree, warmWorkspaceFileCache],
+    [reconcileWorkspaceFileTree, setEditorDocument, warmWorkspaceFileCache],
   );
 
   const loadChangedFileState = useCallback(async (workspaceId: string) => {
@@ -4310,20 +4354,32 @@ export function UserSpacePanel({
     };
   }, [activeWorkspaceDuplicateTaskCount, loadWorkspaces]);
 
-  const handleSelectFile = useCallback(
-    async (path: string) => {
-      if (!activeWorkspaceId) return;
+  const loadSelectedFile = useCallback(
+    async (workspaceId: string, path: string) => {
+      const owner = getEditorDocumentOwner(workspaceId, path);
+      if (fileContentOwnerRef.current === owner || selectedFileLoadInFlightRef.current === owner) {
+        return;
+      }
 
-      selectedFilePathRef.current = path;
-      setSelectedFilePath(path);
+      const requestId = ++selectedFileLoadRequestIdRef.current;
+      selectedFileLoadInFlightRef.current = owner;
+      const isStale = () =>
+        requestId !== selectedFileLoadRequestIdRef.current ||
+        selectedFilePathRef.current !== path ||
+        activeWorkspaceIdRef.current !== workspaceId ||
+        fileContentOwnerRef.current === owner;
+      const hasWorkspaceFiles = filesWorkspaceIdRef.current === workspaceId;
 
       try {
-        const selectedMeta = files.find((file) => file.path === path);
+        const selectedMeta = hasWorkspaceFiles
+          ? files.find((file) => file.path === path)
+          : undefined;
         const selectedUpdatedAt = selectedMeta?.updated_at ?? '';
-        const cached = fileContentCacheRef.current[path];
+        const cached = hasWorkspaceFiles ? fileContentCacheRef.current[path] : undefined;
 
         if (cached && cached.updatedAt === selectedUpdatedAt) {
-          setFileContent(cached.content);
+          if (isStale()) return;
+          setEditorDocument(owner, cached.content);
           setFileDirty(false);
           setSelectedFileArtifactType(cached.artifactType ?? null);
           setSelectedFileUnsupportedMessage(cached.unsupportedMessage ?? null);
@@ -4331,8 +4387,9 @@ export function UserSpacePanel({
           return;
         }
 
-        const file = await api.getUserSpaceFile(activeWorkspaceId, path);
-        setFileContent(file.content);
+        const file = await api.getUserSpaceFile(workspaceId, path);
+        if (isStale()) return;
+        setEditorDocument(owner, file.content);
         setSelectedFileArtifactType(file.artifact_type ?? null);
         setFileContentCache((current) => ({
           ...current,
@@ -4346,10 +4403,13 @@ export function UserSpacePanel({
         setSelectedFileUnsupportedMessage(null);
         setError(null);
       } catch (err) {
+        if (isStale()) return;
         const unsupportedMessage = getUnsupportedEditorFileMessage(err);
         if (unsupportedMessage) {
-          const selectedMeta = files.find((file) => file.path === path);
-          setFileContent('');
+          const selectedMeta = hasWorkspaceFiles
+            ? files.find((file) => file.path === path)
+            : undefined;
+          setEditorDocument(owner, '');
           setFileDirty(false);
           setSelectedFileArtifactType(null);
           setSelectedFileUnsupportedMessage(unsupportedMessage);
@@ -4369,10 +4429,44 @@ export function UserSpacePanel({
         setSelectedFileArtifactType(null);
         setSelectedFileUnsupportedMessage(null);
         setError(err instanceof Error ? err.message : 'Failed to open file');
+      } finally {
+        if (selectedFileLoadInFlightRef.current === owner) {
+          selectedFileLoadInFlightRef.current = null;
+        }
       }
     },
-    [activeWorkspaceId, files],
+    [files, setEditorDocument],
   );
+
+  const handleSelectFile = useCallback(
+    async (path: string) => {
+      if (!activeWorkspaceId) return;
+
+      selectedFilePathRef.current = path;
+      setSelectedFilePath(path);
+      await loadSelectedFile(activeWorkspaceId, path);
+    },
+    [activeWorkspaceId, loadSelectedFile],
+  );
+
+  useEffect(() => {
+    if (
+      !activeWorkspaceId ||
+      !selectedFilePath ||
+      filesWorkspaceIdRef.current !== activeWorkspaceId ||
+      fileContentOwner === currentDocumentOwner ||
+      selectedFileLoadInFlightRef.current === currentDocumentOwner
+    ) {
+      return;
+    }
+    void loadSelectedFile(activeWorkspaceId, selectedFilePath);
+  }, [
+    activeWorkspaceId,
+    currentDocumentOwner,
+    fileContentOwner,
+    loadSelectedFile,
+    selectedFilePath,
+  ]);
 
   const handleTreeFileSelect = useCallback(
     (filePath: string) => {
@@ -4396,7 +4490,7 @@ export function UserSpacePanel({
           return;
         }
         const content =
-          path === selectedFilePath
+          path === selectedFilePath && fileContentOwner === currentDocumentOwner
             ? fileContent
             : cached && cached.updatedAt === selectedUpdatedAt
               ? cached.content
@@ -4436,7 +4530,14 @@ export function UserSpacePanel({
         );
       }
     },
-    [activeWorkspaceId, fileContent, files, selectedFilePath],
+    [
+      activeWorkspaceId,
+      currentDocumentOwner,
+      fileContent,
+      fileContentOwner,
+      files,
+      selectedFilePath,
+    ],
   );
 
   const handleRegisterContextReferenceInserter = useCallback(
@@ -4462,7 +4563,8 @@ export function UserSpacePanel({
 
       window.requestAnimationFrame(() => {
         const view = codeMirrorViewRef.current;
-        if (!view || selectedFilePathRef.current !== reference.path) return;
+        if (!view || !view.dom.isConnected || selectedFilePathRef.current !== reference.path)
+          return;
         if (!reference.startLine) {
           view.dispatch({ effects: clearContextLineHighlightEffect.of(null) });
           view.focus();
@@ -4535,19 +4637,17 @@ export function UserSpacePanel({
       if (!activeWorkspaceId || !canEditWorkspace) return;
       setSavingTreeFile(filePath);
       try {
-        // Determine content: if the file is currently selected, use editor state;
-        // otherwise fall back to the file content cache.
-        const content =
-          filePath === selectedFilePath
-            ? fileContent
-            : (fileContentCacheRef.current[filePath]?.content ?? '');
-        const artifactType =
-          filePath === selectedFilePath
-            ? (selectedFileArtifactType ?? undefined)
-            : (fileContentCacheRef.current[filePath]?.artifactType ?? undefined);
+        const selectedDocumentMatches =
+          filePath === selectedFilePath && fileContentOwner === currentDocumentOwner;
+        const source = selectedDocumentMatches
+          ? { content: fileContent, artifactType: selectedFileArtifactType ?? undefined }
+          : await api.getUserSpaceFile(activeWorkspaceId, filePath).then((file) => ({
+              content: file.content,
+              artifactType: file.artifact_type ?? undefined,
+            }));
         await api.upsertUserSpaceFile(activeWorkspaceId, filePath, {
-          content,
-          artifact_type: artifactType,
+          content: source.content,
+          artifact_type: source.artifactType,
         });
         const changedFileState = await api.acknowledgeUserSpaceChangedFilePath(activeWorkspaceId, {
           path: filePath,
@@ -4555,7 +4655,7 @@ export function UserSpacePanel({
         setChangedFiles(new Set(changedFileState.changed_file_paths));
         setAcknowledgedFiles(new Set(changedFileState.acknowledged_changed_file_paths));
         // If saving the currently selected file, clear its editor dirty flag too.
-        if (filePath === selectedFilePath) {
+        if (filePath === selectedFilePathRef.current) {
           setFileDirty(false);
         }
       } catch (err) {
@@ -4564,7 +4664,15 @@ export function UserSpacePanel({
         setSavingTreeFile(null);
       }
     },
-    [activeWorkspaceId, canEditWorkspace, fileContent, selectedFileArtifactType, selectedFilePath],
+    [
+      activeWorkspaceId,
+      canEditWorkspace,
+      currentDocumentOwner,
+      fileContent,
+      fileContentOwner,
+      selectedFileArtifactType,
+      selectedFilePath,
+    ],
   );
 
   const handleWorkspaceToolSelectionChange = useCallback(
@@ -5677,7 +5785,13 @@ export function UserSpacePanel({
 
           if (payload.type === 'file_renamed') {
             if (selectedFilePath === payload.old_path) {
+              const oldOwner = getEditorDocumentOwner(activeWorkspaceId, payload.old_path);
+              const newOwner = getEditorDocumentOwner(activeWorkspaceId, payload.new_path);
+              selectedFilePathRef.current = payload.new_path;
               setSelectedFilePath(payload.new_path);
+              if (fileContentOwnerRef.current === oldOwner) {
+                setEditorDocument(newOwner, fileContentRef.current);
+              }
             }
             return;
           }
@@ -5692,10 +5806,12 @@ export function UserSpacePanel({
           }
 
           if (payload.type === 'snapshot' || payload.type === 'update') {
-            collabSuppressNextSendRef.current = true;
             setCollabVersion(payload.version);
             setCollabReadOnly(payload.type === 'snapshot' ? payload.read_only : false);
-            setFileContent(payload.content);
+            setEditorDocument(
+              getEditorDocumentOwner(activeWorkspaceId, selectedFilePath),
+              payload.content,
+            );
             setFileDirty(false);
             setFileContentCache((current) => ({
               ...current,
@@ -5996,14 +6112,21 @@ export function UserSpacePanel({
     const socket = collabSocketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     if (!activeWorkspaceId || !selectedFilePath) return;
-    if (!canEditWorkspace || collabReadOnly) return;
 
-    if (collabSuppressNextSendRef.current) {
-      collabSuppressNextSendRef.current = false;
+    if (
+      !shouldSendCollabUpdate({
+        canEditWorkspace,
+        collabReadOnly,
+        hasUnsentEdit: collabUnsentEditRef.current,
+        ownsCurrentDocument: fileContentOwner === currentDocumentOwner,
+        collabVersion,
+      })
+    ) {
       return;
     }
 
     const timer = window.setTimeout(() => {
+      collabUnsentEditRef.current = false;
       try {
         socket.send(
           JSON.stringify({
@@ -6015,6 +6138,7 @@ export function UserSpacePanel({
           }),
         );
       } catch {
+        collabUnsentEditRef.current = true;
         // Ignore send errors; reconnect happens on workspace/file changes.
       }
     }, 250);
@@ -6025,7 +6149,9 @@ export function UserSpacePanel({
     canEditWorkspace,
     collabReadOnly,
     collabVersion,
+    currentDocumentOwner,
     fileContent,
+    fileContentOwner,
     selectedFilePath,
   ]);
 
@@ -6133,15 +6259,23 @@ export function UserSpacePanel({
           next.add(normalizedNewPath);
           return next;
         });
-        if (selectedFilePath === oldPath) {
+        if (selectedFilePathRef.current === oldPath) {
+          const oldOwner = getEditorDocumentOwner(activeWorkspaceId, oldPath);
           setSelectedFilePath(normalizedNewPath);
+          selectedFilePathRef.current = normalizedNewPath;
+          if (fileContentOwnerRef.current === oldOwner) {
+            setEditorDocument(
+              getEditorDocumentOwner(activeWorkspaceId, normalizedNewPath),
+              fileContentRef.current,
+            );
+          }
         }
         await loadWorkspaceData(activeWorkspaceId);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to rename file');
       }
     },
-    [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath],
+    [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, setEditorDocument],
   );
 
   const handleRenameFolder = useCallback(
@@ -6230,8 +6364,18 @@ export function UserSpacePanel({
         return next;
       });
 
-      if (selectedFilePath.startsWith(`${oldPrefix}/`)) {
-        setSelectedFilePath(`${newPrefix}/${selectedFilePath.slice(oldPrefix.length + 1)}`);
+      const currentSelectedPath = selectedFilePathRef.current;
+      if (currentSelectedPath.startsWith(`${oldPrefix}/`)) {
+        const nextPath = `${newPrefix}/${currentSelectedPath.slice(oldPrefix.length + 1)}`;
+        const oldOwner = getEditorDocumentOwner(activeWorkspaceId, currentSelectedPath);
+        setSelectedFilePath(nextPath);
+        selectedFilePathRef.current = nextPath;
+        if (fileContentOwnerRef.current === oldOwner) {
+          setEditorDocument(
+            getEditorDocumentOwner(activeWorkspaceId, nextPath),
+            fileContentRef.current,
+          );
+        }
       }
 
       // Transfer changed/acknowledged markers from old paths to new paths.
@@ -6262,7 +6406,7 @@ export function UserSpacePanel({
         setError(`Folder renamed, but ${deleteFailures} source file(s) could not be removed`);
       }
     },
-    [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, selectedFilePath],
+    [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, setEditorDocument],
   );
 
   const handleDeleteFile = useCallback(
@@ -6288,7 +6432,7 @@ export function UserSpacePanel({
         });
         if (selectedFilePath === filePath) {
           setSelectedFilePath('');
-          setFileContent('');
+          setEditorDocument(null, '');
           setFileDirty(false);
         }
         await loadWorkspaceData(activeWorkspaceId);
@@ -6298,7 +6442,14 @@ export function UserSpacePanel({
         toast.error(message, 8000);
       }
     },
-    [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath, toast],
+    [
+      activeWorkspaceId,
+      canEditWorkspace,
+      loadWorkspaceData,
+      selectedFilePath,
+      setEditorDocument,
+      toast,
+    ],
   );
 
   const handleDeleteFolder = useCallback(
@@ -6336,7 +6487,7 @@ export function UserSpacePanel({
         });
         if (selectedFilePath.startsWith(`${normalizedFolderPath}/`)) {
           setSelectedFilePath('');
-          setFileContent('');
+          setEditorDocument(null, '');
           setFileDirty(false);
         }
         await loadWorkspaceData(activeWorkspaceId);
@@ -6352,7 +6503,15 @@ export function UserSpacePanel({
         toast.error(message, 8000);
       }
     },
-    [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, selectedFilePath, toast],
+    [
+      activeWorkspaceId,
+      canEditWorkspace,
+      files,
+      loadWorkspaceData,
+      selectedFilePath,
+      setEditorDocument,
+      toast,
+    ],
   );
 
   const handleToggleFolder = useCallback((folderPath: string) => {
@@ -6507,7 +6666,7 @@ export function UserSpacePanel({
               setCurrentSnapshotId(null);
               setCurrentSnapshotBranchId(null);
               setFileContentCache({});
-              setFileContent('');
+              setEditorDocument(null, '');
               setSelectedFilePath('');
               setFileDirty(false);
             }
@@ -6528,7 +6687,7 @@ export function UserSpacePanel({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeWorkspaceDeleteTaskCount, loadWorkspaces, selectActiveWorkspace]);
+  }, [activeWorkspaceDeleteTaskCount, loadWorkspaces, selectActiveWorkspace, setEditorDocument]);
 
   const handleOpenMembersModal = useCallback(async () => {
     if (!activeWorkspace || !isOwner) return;
@@ -9623,12 +9782,17 @@ export function UserSpacePanel({
                 </div>
               ) : (
                 <CodeMirror
+                  // A document-specific editor state prevents cross-file undo history.
+                  key={fileContentOwner ?? 'none'}
                   value={fileContent}
                   onCreateEditor={(view) => {
                     codeMirrorViewRef.current = view;
                     applyEditorTheme(view);
                   }}
                   onChange={(value) => {
+                    if (fileContentOwner !== currentDocumentOwner) return;
+                    fileContentRef.current = value;
+                    collabUnsentEditRef.current = true;
                     setFileContent(value);
                     setFileDirty(true);
                     setChangedFiles((prev) => {
@@ -9652,8 +9816,8 @@ export function UserSpacePanel({
                     }
                   }}
                   extensions={codeMirrorExtensions}
-                  editable={canEditWorkspace}
-                  readOnly={!canEditWorkspace}
+                  editable={canEditWorkspace && fileContentOwner === currentDocumentOwner}
+                  readOnly={!canEditWorkspace || fileContentOwner !== currentDocumentOwner}
                   placeholder="Create dashboard/report/module source files here"
                   height="100%"
                   basicSetup={USERSPACE_CODEMIRROR_BASIC_SETUP}
