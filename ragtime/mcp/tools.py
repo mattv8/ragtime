@@ -634,11 +634,11 @@ class MCPToolAdapter:
         endpoint_configs: list[dict[str, Any]] = []
         for value in (arguments.get("source"), arguments.get("destination")):
             try:
-                _kind, _path, config = parse_endpoint(str(value or ""), by_name)
+                _kind, _path, endpoint_config = parse_endpoint(str(value or ""), by_name)
             except ValueError:
                 continue
-            if config is not None:
-                endpoint_configs.append(config)
+            if endpoint_config is not None:
+                endpoint_configs.append(endpoint_config)
         caps = [int(config.get("timeout_max_seconds", 0) or 0) for config in endpoint_configs]
         return min([300] + [cap for cap in caps if cap > 0])
 

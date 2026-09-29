@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ragtime.content_protection import service as content_protection_service
@@ -16,6 +17,8 @@ from ragtime.content_protection.models import ContentProtectionError
 from ragtime.core.ssh import SSHConfig
 from ragtime.core.tool_timeouts import resolve_effective_command_timeout
 from ragtime.indexer.utils import safe_tool_name
+from ragtime.userspace.models import UpsertWorkspaceFileRequest
+from ragtime.userspace.service import userspace_service
 
 MAX_INLINE_BYTES = 1024 * 1024
 WorkspaceRead = Callable[[str, str], Awaitable[str]]
@@ -149,10 +152,6 @@ def build_workspace_file_callbacks(
 
     async def workspace_read(active_workspace_id: str, path: str) -> str:
         require_workspace(active_workspace_id)
-        from fastapi import HTTPException
-
-        from ragtime.userspace.service import userspace_service
-
         try:
             return (await userspace_service.get_workspace_file(active_workspace_id, path, user_id, is_admin=is_admin)).content
         except HTTPException as exc:
@@ -166,11 +165,6 @@ def build_workspace_file_callbacks(
 
     async def workspace_write(active_workspace_id: str, path: str, content: str, overwrite: bool) -> None:
         require_workspace(active_workspace_id)
-        from fastapi import HTTPException
-
-        from ragtime.userspace.models import UpsertWorkspaceFileRequest
-        from ragtime.userspace.service import userspace_service
-
         existing = None
         try:
             existing = await userspace_service.get_workspace_file(active_workspace_id, path, user_id, is_admin=is_admin)

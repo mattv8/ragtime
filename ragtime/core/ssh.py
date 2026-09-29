@@ -107,7 +107,7 @@ class SSHConfig:
     key_path: Optional[str] = None
     key_content: Optional[str] = None
     key_passphrase: Optional[str] = None
-    timeout: int = 30
+    timeout: int | float = 30
 
     @property
     def auth_method(self) -> SSHAuthMethod:
@@ -251,7 +251,7 @@ def _error_result(message: str) -> SSHResult:
     return SSHResult(stdout="", stderr=message, exit_code=-1, success=False)
 
 
-def _wrap_command_with_timeout(command: str, timeout_seconds: int) -> str:
+def _wrap_command_with_timeout(command: str, timeout_seconds: int | float) -> str:
     """Wrap a remote command so the server terminates it after the deadline.
 
     Paramiko channel timeouts only limit the client-side wait. For long-running
@@ -1542,7 +1542,7 @@ def _build_rsync_ssh_cmd(
         parts.extend(["-i", key])
         parts.extend(["-o", "IdentitiesOnly=yes"])
     if config.timeout:
-        parts.extend(["-o", f"ConnectTimeout={config.timeout}"])
+        parts.extend(["-o", f"ConnectTimeout={max(1, int(config.timeout))}"])
 
     if key and config.password:
         parts.extend(

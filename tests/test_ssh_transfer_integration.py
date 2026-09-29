@@ -107,7 +107,7 @@ class SSHTransferIntegrationTests(unittest.IsolatedAsyncioTestCase):
         service = mock.Mock()
         service.get_workspace_file = mock.AsyncMock(side_effect=HTTPException(status_code=404, detail="missing"))
         service.upsert_workspace_file = mock.AsyncMock()
-        with mock.patch("ragtime.userspace.service.userspace_service", service):
+        with mock.patch("ragtime.tools.ssh_transfer.userspace_service", service):
             await write("w1", "out.txt", "new", False)
         service.get_workspace_file.assert_awaited_once_with("w1", "out.txt", "user-1", is_admin=True)
         kwargs = service.upsert_workspace_file.await_args.kwargs
@@ -123,7 +123,7 @@ class SSHTransferIntegrationTests(unittest.IsolatedAsyncioTestCase):
             get_workspace_file=mock.AsyncMock(return_value=existing),
             upsert_workspace_file=mock.AsyncMock(),
         )
-        with mock.patch("ragtime.userspace.service.userspace_service", service):
+        with mock.patch("ragtime.tools.ssh_transfer.userspace_service", service):
             with self.assertRaisesRegex(ValueError, "already exists"):
                 await write("w1", "out.txt", "new", False)
         service.upsert_workspace_file.assert_not_awaited()
@@ -224,30 +224,29 @@ class SSHTransferIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unbound_mcp_handler_checks_endpoint_policy_before_core(self) -> None:
         adapter = MCPToolAdapter()
-        adapter.resolve_canonical_tool_id = mock.AsyncMock(return_value="__ssh_transfer_synthetic__")
-        adapter.get_ssh_transfer_definition = mock.AsyncMock(
-            return_value=MCPToolDefinition(
-                name="ssh_transfer",
-                description="transfer",
-                input_schema=SSHTransferInput.model_json_schema(),
-                tool_config={"id": "__ssh_transfer_synthetic__"},
-                execute_fn=mock.AsyncMock(),
-                is_synthetic=True,
-            )
-        )
-        adapter._get_configs_for_name_resolution = mock.AsyncMock(return_value=[SSH])
-        server = Server("test-unbound-policy")
-        _register_handlers(server, adapter)
-        handler = server.request_handlers[CallToolRequest]
-        request = CallToolRequest(
-            params=CallToolRequestParams(name="ssh_transfer", arguments={"source": "inline", "destination": "ssh://docker_1/x", "content": "secret"})
+        definition = MCPToolDefinition(
+            name="ssh_transfer",
+            description="transfer",
+            input_schema=SSHTransferInput.model_json_schema(),
+            tool_config={"id": "__ssh_transfer_synthetic__"},
+            execute_fn=mock.AsyncMock(),
+            is_synthetic=True,
         )
         denied = ContentProtectionError("content_denied", "endpoint-request")
         with (
+            mock.patch.object(adapter, "resolve_canonical_tool_id", mock.AsyncMock(return_value="__ssh_transfer_synthetic__")),
+            mock.patch.object(adapter, "get_ssh_transfer_definition", mock.AsyncMock(return_value=definition)),
+            mock.patch.object(adapter, "_get_configs_for_name_resolution", mock.AsyncMock(return_value=[SSH])),
             mock.patch("ragtime.mcp.server.authorize_external_content", mock.AsyncMock()),
             mock.patch("ragtime.tools.ssh_transfer.content_protection_service.authorize_content", mock.AsyncMock(side_effect=denied)) as authorize,
             mock.patch("ragtime.core.ssh_transfer.transfer_ssh_files") as core,
         ):
+            server = Server("test-unbound-policy")
+            _register_handlers(server, adapter)
+            handler = server.request_handlers[CallToolRequest]
+            request = CallToolRequest(
+                params=CallToolRequestParams(name="ssh_transfer", arguments={"source": "inline", "destination": "ssh://docker_1/x", "content": "secret"})
+            )
             result = await handler(request)
         core.assert_not_called()
         self.assertTrue(getattr(result.root, "isError", False))
@@ -368,30 +367,33 @@ class SSHTransferIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mcp_workspace_callbacks_only_for_user_principals(self) -> None:
         adapter = MCPToolAdapter()
-        adapter.resolve_canonical_tool_id = mock.AsyncMock(return_value="ssh_transfer")
-        adapter.execute_ssh_transfer = mock.AsyncMock(return_value=json.dumps(CORE_OK))
-        adapter.get_ssh_transfer_definition = mock.AsyncMock(return_value=SimpleNamespace(is_synthetic=True))
-        server = Server("test")
-        _register_handlers(server, adapter)
-        handler = server.request_handlers[CallToolRequest]
-        request = CallToolRequest(
-            params=CallToolRequestParams(
-                name="ssh_transfer",
-                arguments={"source": "inline", "destination": "ssh://docker_1/x", "content": "x", "workspace_id": "w1"},
+        execute_transfer = mock.AsyncMock(return_value=json.dumps(CORE_OK))
+        with (
+            mock.patch.object(adapter, "resolve_canonical_tool_id", mock.AsyncMock(return_value="ssh_transfer")),
+            mock.patch.object(adapter, "execute_ssh_transfer", execute_transfer),
+            mock.patch.object(adapter, "get_ssh_transfer_definition", mock.AsyncMock(return_value=SimpleNamespace(is_synthetic=True))),
+            mock.patch("ragtime.mcp.server.authorize_external_content", mock.AsyncMock()),
+        ):
+            server = Server("test")
+            _register_handlers(server, adapter)
+            handler = server.request_handlers[CallToolRequest]
+            request = CallToolRequest(
+                params=CallToolRequestParams(
+                    name="ssh_transfer",
+                    arguments={"source": "inline", "destination": "ssh://docker_1/x", "content": "x", "workspace_id": "w1"},
+                )
             )
-        )
-        with mock.patch("ragtime.mcp.server.authorize_external_content", mock.AsyncMock()):
             with mcp_request_context(SimpleNamespace(user_id="u1", credential_id=None, is_admin=False)):
                 await handler(request)
-            assert adapter.execute_ssh_transfer.await_args is not None
-            user_kwargs = adapter.execute_ssh_transfer.await_args.kwargs
+            assert execute_transfer.await_args is not None
+            user_kwargs = execute_transfer.await_args.kwargs
             self.assertIsNotNone(user_kwargs["workspace_read"])
             self.assertIsNotNone(user_kwargs["workspace_write"])
 
-            adapter.execute_ssh_transfer.reset_mock()
+            execute_transfer.reset_mock()
             with mcp_request_context(SimpleNamespace(user_id="u1", credential_id="cred-1", is_admin=False)):
                 credential_result = await handler(request)
-        adapter.execute_ssh_transfer.assert_not_awaited()
+        execute_transfer.assert_not_awaited()
         self.assertTrue(getattr(credential_result.root, "isError", False))
 
     async def test_filtered_mcp_route_calls_legacy_transfer_connection(self) -> None:
