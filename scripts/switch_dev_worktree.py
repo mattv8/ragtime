@@ -526,7 +526,8 @@ class Switcher:
                     "python",
                     "-c",
                     f"import urllib.request; urllib.request.urlopen('{self.vite_url}',timeout=2)",
-                ]
+                ],
+                capture=True,
             )
             return True
         except (subprocess.CalledProcessError, json.JSONDecodeError):
