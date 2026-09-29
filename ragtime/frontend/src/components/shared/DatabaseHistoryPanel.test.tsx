@@ -864,7 +864,7 @@ describe('DatabaseHistoryPanel', () => {
     expect(dialog.querySelector('[data-history-database-group="app.sqlite3"]')).toBeTruthy();
   });
 
-  it('labels an empty active-job scope as all workspace databases', async () => {
+  it('labels an empty active-job scope as all databases in this workspace', async () => {
     const user = userEvent.setup();
     apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
       jobs: [{ ...captureJob, database_names: [] }],
@@ -879,8 +879,31 @@ describe('DatabaseHistoryPanel', () => {
       expect(card).toBeTruthy();
       return card as HTMLElement;
     });
-    expect(within(job).getByText('All workspace databases')).toBeTruthy();
+    expect(within(job).getByText('All databases in this workspace')).toBeTruthy();
     expect(within(job).queryByText('All databases')).toBeNull();
+    expect(
+      within(dialog).getByText('Restore points for all databases in this workspace'),
+    ).toBeTruthy();
+  });
+
+  it('names the workspace in the default all-databases subtitle', async () => {
+    const user = userEvent.setup();
+    render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        workspaceName="Launch Sales Dashboard"
+        ownerOrAdmin
+        hostId="workspace"
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+
+    expect(
+      within(screen.getByRole('dialog')).getByText(
+        'Restore points for all databases in Launch Sales Dashboard',
+      ),
+    ).toBeTruthy();
   });
 
   it('omits the default all-databases scope from completed activity with no changes', async () => {
@@ -916,7 +939,7 @@ describe('DatabaseHistoryPanel', () => {
     );
     expect(row).toBeTruthy();
     expect(within(row as HTMLElement).getByText('Hourly backup check')).toBeTruthy();
-    expect(within(row as HTMLElement).queryByText('All workspace databases')).toBeNull();
+    expect(within(row as HTMLElement).queryByText('All databases in this workspace')).toBeNull();
     // No restore points created → no outcome text shown (per spec: silence when nothing happened).
     expect(within(row as HTMLElement).queryByText(/restore point/i)).toBeNull();
     // Activity rows with no restore points have no snapshot link → no focusable controls.

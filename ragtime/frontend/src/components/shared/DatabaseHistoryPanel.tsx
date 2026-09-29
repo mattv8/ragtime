@@ -30,6 +30,8 @@ import type {
 
 interface DatabaseHistoryPanelProps {
   workspaceId: string;
+  /** Names the workspace in the default all-databases subtitle. */
+  workspaceName?: string;
   ownerOrAdmin: boolean;
   databaseName?: string;
   snapshotId?: string;
@@ -145,6 +147,7 @@ function getFocusableElements(container: HTMLElement | null): HTMLElement[] {
 
 export function DatabaseHistoryPanel({
   workspaceId,
+  workspaceName,
   ownerOrAdmin,
   databaseName,
   snapshotId,
@@ -689,7 +692,7 @@ export function DatabaseHistoryPanel({
   const renderCaptureJob = (job: SqliteBackupJob) => {
     const requestedDatabases = job.database_names.length
       ? job.database_names.join(', ')
-      : 'All workspace databases';
+      : 'All databases in this workspace';
     const hasProgress = isActiveJob(job) && job.total_databases > 0;
     const readyBackupCount = [...new Set(job.backup_ids)].filter((backupId) =>
       readyVisibleBackupIds.has(backupId),
@@ -781,7 +784,7 @@ export function DatabaseHistoryPanel({
     const oldestJob = jobs[jobs.length - 1]!;
     const requestedDatabases = newestJob.database_names.length
       ? newestJob.database_names.join(', ')
-      : 'All workspace databases';
+      : 'All databases in this workspace';
     const attemptJobs = jobs.slice(0, CAPTURE_JOB_PAGE_LIMIT);
     const olderAttemptCount = jobs.length - attemptJobs.length;
     const attemptLabel =
@@ -1003,7 +1006,9 @@ export function DatabaseHistoryPanel({
                       ? `Exact snapshot ${snapshotId}`
                       : databaseName
                         ? `Restore points for ${databaseName}`
-                        : 'Restore points for all workspace databases')}
+                        : workspaceName
+                          ? `Restore points for all databases in ${workspaceName}`
+                          : 'Restore points for all databases in this workspace')}
                 </p>
               </div>
               <button
