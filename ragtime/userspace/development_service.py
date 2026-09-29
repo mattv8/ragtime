@@ -16,7 +16,8 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from ragtime.content_protection.external import authorize_external_content, public_error_detail
+from ragtime.content_protection import service as content_protection_service
+from ragtime.content_protection.external import authorize_external_content, external_protection_context, public_error_detail
 from ragtime.core.database import get_db
 from ragtime.core.tool_access import resolve_tool_access
 from ragtime.http_api.models import HttpApiConnectionConfig, HttpApiRequest
@@ -160,6 +161,34 @@ _OPERATIONS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         _schema({"job_id": {"type": "string"}, "cursor": {"type": "integer"}, "limit": {"type": "integer"}}, ["job_id"]),
     ),
     ("exec_cancel", "Cancel a running exec job.", "exec", _schema({"job_id": {"type": "string"}}, ["job_id"])),
+    (
+        "ssh_execute",
+        "Execute a command through a selected SSH connection. Also requires write scope and workspace write authorization.",
+        "exec",
+        _schema(
+            {"component_id": {"type": "string"}, "command": {"type": "string"}, "reason": {"type": "string"}, "timeout": {"type": "integer"}},
+            ["component_id", "command"],
+        ),
+    ),
+    (
+        "ssh_transfer",
+        "Transfer files between authorized SSH endpoints, inline content, and workspace files; destination writes require write scope.",
+        "exec",
+        _schema(
+            {
+                "source": {"type": "string"},
+                "destination": {"type": "string"},
+                "content": {"type": ["string", "null"]},
+                "encoding": {"type": "string", "enum": ["text", "base64"]},
+                "reason": {"type": "string"},
+                "timeout": {"type": "integer"},
+                "recursive": {"type": "boolean"},
+                "overwrite": {"type": "boolean"},
+                "expected_content_hash": {"type": ["string", "null"]},
+            },
+            ["source", "destination"],
+        ),
+    ),
 )
 
 
@@ -394,13 +423,34 @@ class DevelopmentService:
         levels = await resolve_tool_access(user_id=principal.user_id, is_admin=principal.is_admin, surface="workspace", tool_config_ids=selected_ids)
         allowed_tool_ids = [tool_id for tool_id in selected_ids if levels.get(tool_id, "deny") in {"read", "read_write"}]
         tools: list[dict[str, Any]] = []
+        ssh_entries: list[tuple[Any, dict[str, Any]]] = []
         for tool_id in allowed_tool_ids:
             tool_config = await repository.get_tool_config(tool_id)
             if tool_config is None or not bool(getattr(tool_config, "enabled", False)):
                 continue
             enriched = await self._enrich_authorized_tool(tool_config, levels[tool_id])
-            if enriched is not None:
+            if enriched is None:
+                continue
+            if str(getattr(getattr(tool_config, "tool_type", None), "value", getattr(tool_config, "tool_type", ""))) == "ssh_shell":
+                ssh_entries.append((tool_config, enriched))
+            else:
                 tools.append(enriched)
+        from ragtime.userspace.development_ssh import resource_metadata
+
+        if ssh_entries:
+            ssh_metadata = {
+                item["component_id"]: item
+                for item in await resource_metadata(
+                    principal,
+                    workspace,
+                    configs=[config for config, _canonical in ssh_entries],
+                    caller_access=levels,
+                )
+            }
+            for config, canonical in ssh_entries:
+                metadata = ssh_metadata.get(str(config.id))
+                if metadata is not None:
+                    tools.append({**canonical, **metadata})
         db = await get_db()
         grants = await db.workspaceindexgrant.find_many(where={"workspaceId": workspace_id}, order={"indexName": "asc"})
         indexes = [{"name": "workspace_code", "source_type": "workspace_code"}]
@@ -508,6 +558,14 @@ class DevelopmentService:
 
     async def execute(self, principal: DevelopmentPrincipal, workspace_id: str, operation: str, arguments: dict[str, Any] | None = None) -> Any:
         """Guard development inputs before side effects and outputs before release."""
+        # HTTP calls have no pre-bound context. MCP dispatch does, and must
+        # retain its trusted route identity rather than replacing it.
+        if content_protection_service.current_context() is None:
+            with external_protection_context(principal, surface="development", resource_id=workspace_id):
+                return await self._execute_with_context(principal, workspace_id, operation, arguments)
+        return await self._execute_with_context(principal, workspace_id, operation, arguments)
+
+    async def _execute_with_context(self, principal: DevelopmentPrincipal, workspace_id: str, operation: str, arguments: dict[str, Any] | None = None) -> Any:
         candidate = {"workspace_id": workspace_id, "operation": operation, "arguments": arguments or {}}
         try:
             await authorize_external_content(
@@ -558,7 +616,7 @@ class DevelopmentService:
             raise HTTPException(status_code=404, detail="Unknown development operation")
         args = self._validate_arguments(op[3], args)
         scope = op[2]
-        await self._workspace(principal, workspace_id, scope)
+        workspace = await self._workspace(principal, workspace_id, scope)
         # Reuse the existing workspace runtime audit sink for minimal external
         # operation attribution. Arguments are intentionally omitted because
         # they can contain file contents, queries, or commands.
@@ -681,6 +739,13 @@ class DevelopmentService:
             ).model_dump()
         if operation == "resources":
             return await self._resources(principal, workspace_id)
+        if operation in {"ssh_execute", "ssh_transfer"}:
+            from ragtime.userspace.development_ssh import execute as ssh_execute
+            from ragtime.userspace.development_ssh import transfer as ssh_transfer
+
+            if operation == "ssh_execute":
+                return await ssh_execute(principal, workspace_id, workspace, args)
+            return await ssh_transfer(principal, workspace_id, workspace, dict(args))
         if operation == "http_api_catalog_search":
             catalog = await self._resources(principal, workspace_id)
             tool = next((item for item in catalog["tools"] if item["component_id"] == args["component_id"]), None)
