@@ -3416,10 +3416,10 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
         return
 
     can_edit = not snapshot.read_only
+    read_only = snapshot.read_only
 
     await websocket.accept()
     accepted = True
-    await _runtime_service().register_collab_client(workspace_id, snapshot.file_path, websocket, user_id)
 
     async def _cleanup_collab() -> None:
         users = await _runtime_service().clear_collab_presence(
@@ -3444,6 +3444,13 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
         )
 
     try:
+        snapshot = await _runtime_service().register_collab_client(
+            workspace_id,
+            snapshot.file_path,
+            websocket,
+            user_id,
+            skip_disk_resync=True,
+        )
         await websocket.send_text(
             json.dumps(
                 {
@@ -3452,7 +3459,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
                     "file_path": snapshot.file_path,
                     "version": snapshot.version,
                     "content": snapshot.content,
-                    "read_only": snapshot.read_only,
+                    "read_only": read_only,
                 }
             )
         )
@@ -3471,9 +3478,38 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
             )
         )
 
+        async def _send_version_conflict(expected_version: int) -> None:
+            latest = await _runtime_service().get_collab_snapshot(
+                workspace_id,
+                snapshot.file_path,
+                user_id,
+            )
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "error",
+                        "message": f"Version conflict: expected {expected_version}, current {latest.version}",
+                    }
+                )
+            )
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "snapshot",
+                        "workspace_id": latest.workspace_id,
+                        "file_path": latest.file_path,
+                        "version": latest.version,
+                        "content": latest.content,
+                        "read_only": latest.read_only,
+                    }
+                )
+            )
+
         while True:
             data = await websocket.receive_text()
             payload = json.loads(data)
+            if not isinstance(payload, dict):
+                continue
             message_type = payload.get("type")
             if message_type == "presence":
                 users = await _runtime_service().update_collab_presence(
@@ -3499,7 +3535,22 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
                 await websocket.send_text(json.dumps({"type": "error", "message": "Read-only collaboration session"}))
                 continue
 
-            content = str(payload.get("content", ""))
+            try:
+                update_file_path = payload["file_path"]
+                if not isinstance(update_file_path, str):
+                    raise ValueError("Collaboration update file path must be a string")
+                normalized_update_path = _runtime_service()._normalize_file_path(update_file_path)
+            except Exception:
+                await websocket.send_text(json.dumps({"type": "error", "message": "Invalid collaboration update file path"}))
+                continue
+            if normalized_update_path != snapshot.file_path:
+                await websocket.send_text(json.dumps({"type": "error", "message": "Collaboration update file path does not match this session"}))
+                continue
+
+            content = payload.get("content")
+            if not isinstance(content, str):
+                await websocket.send_text(json.dumps({"type": "error", "message": "Collaboration update content must be a string"}))
+                continue
             client_version_raw = payload.get("version")
             client_version: int | None = None
             if isinstance(client_version_raw, (int, float, str)):
@@ -3508,6 +3559,9 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
                     parsed = int(version_str)
                     if parsed > 0:
                         client_version = parsed
+            if client_version is None:
+                await _send_version_conflict(0)
+                continue
             try:
                 updated = await _runtime_service().apply_collab_update(
                     workspace_id,
@@ -3517,31 +3571,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
                     expected_version=client_version,
                 )
             except RuntimeVersionConflictError as conflict:
-                latest = await _runtime_service().get_collab_snapshot(
-                    workspace_id,
-                    snapshot.file_path,
-                    user_id,
-                )
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "error",
-                            "message": (f"Version conflict: expected {conflict.expected_version}, current {conflict.actual_version}"),
-                        }
-                    )
-                )
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "snapshot",
-                            "workspace_id": latest.workspace_id,
-                            "file_path": latest.file_path,
-                            "version": latest.version,
-                            "content": latest.content,
-                            "read_only": latest.read_only,
-                        }
-                    )
-                )
+                await _send_version_conflict(conflict.expected_version)
                 continue
             await websocket.send_text(
                 json.dumps(
@@ -3560,6 +3590,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
         # Client disconnected during send (e.g. initial snapshot/presence).
         # Treat identically to WebSocketDisconnect for cleanup purposes.
         await _cleanup_collab()
+        await _safe_close_websocket(websocket, 1011)
 
 
 @router.post("/collab/workspaces/{workspace_id}/files/create")
