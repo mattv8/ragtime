@@ -78,6 +78,7 @@ async def _sqlite_history_list_payload(
             "backups": state["backups"],
             "can_manage": True,
             "interrupted_maintenance": state["interrupted_maintenance"],
+            "capture_unavailable_reason": state.get("capture_unavailable_reason"),
         }
     )
     return response.model_dump(mode="json")

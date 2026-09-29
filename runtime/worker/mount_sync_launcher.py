@@ -71,6 +71,31 @@ def landlock_abi() -> int:
     return int(result)
 
 
+def confinement_unavailable_reason() -> str | None:
+    """Return the public reason secure SQLite confinement cannot be installed."""
+    try:
+        abi = landlock_abi()
+    except OSError:
+        return (
+            "Database snapshots and restores are unavailable: Landlock is disabled in the Linux kernel running the Ragtime containers, "
+            "or blocked by the container's seccomp profile. Secure SQLite history requires Landlock ABI 3 or newer "
+            "(Linux 6.2+ with Landlock enabled)."
+        )
+    if abi < 3:
+        return (
+            f"Database snapshots and restores are unavailable: the Linux kernel running the Ragtime containers supports Landlock ABI {abi}, "
+            "but secure SQLite history requires ABI 3 or newer (Linux 6.2+). Upgrade the kernel on the Docker host and reboot it. "
+            "If Docker runs in a virtual machine, upgrade the VM's kernel, not the hypervisor's."
+        )
+    try:
+        trial_ruleset()
+    except OSError:
+        return (
+            "Database snapshots and restores are unavailable: the Linux kernel running the Ragtime containers rejected the secure SQLite confinement ruleset."
+        )
+    return None
+
+
 def trial_ruleset() -> None:
     """Verify ruleset creation without changing the caller's restrictions."""
     if landlock_abi() < 3:

@@ -592,3 +592,19 @@
 [data-theme-pack='modern'] .database-history-activity.database-history-backup:last-child {
   border-bottom: none;
 }
+
+[data-theme-pack='modern'] .database-history-capture-unavailable {
+  border: var(--workbench-container-border);
+  border-left: 3px solid var(--color-error);
+  border-radius: var(--workbench-surface-radius);
+  background: var(--color-widget);
+}
+
+[data-theme-pack='modern'] .database-history-capture-group-attempt {
+  padding: var(--space-xs) 0;
+  border-bottom: var(--workbench-container-border);
+}
+
+[data-theme-pack='modern'] .database-history-capture-group-attempt:last-child {
+  border-bottom: none;
+}
