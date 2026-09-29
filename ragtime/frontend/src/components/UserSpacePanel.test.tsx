@@ -29,7 +29,22 @@ vi.mock('@xterm/addon-fit', () => ({
   },
 }));
 vi.mock('@uiw/react-codemirror', () => ({
-  default: () => <div data-testid="code-editor" />,
+  default: ({
+    value,
+    onChange,
+    readOnly,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    readOnly?: boolean;
+  }) => (
+    <textarea
+      data-testid="code-editor"
+      value={value}
+      readOnly={readOnly}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  ),
 }));
 
 const {
@@ -101,6 +116,13 @@ const {
 let latestSqliteInspectorModalProps: unknown = null;
 let sqliteInspectorModalRender: (props: unknown) => unknown = () => null;
 let latestSnapshotRestorePanelProps: unknown = null;
+const webSocketInstances: Array<{
+  readyState: number;
+  send: ReturnType<typeof vi.fn>;
+  close: ReturnType<typeof vi.fn>;
+  onopen: (() => void) | null;
+  onmessage: ((event: MessageEvent) => void) | null;
+}> = [];
 
 vi.mock('@/api', () => ({ api: previewApiMock, ApiError: class ApiError extends Error {} }));
 vi.mock('@/contexts/AvailableModelsContext', () => ({
@@ -576,8 +598,15 @@ beforeAll(() => {
   vi.stubGlobal(
     'WebSocket',
     class {
-      close() {}
-      send() {}
+      static OPEN = 1;
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor() {
+        webSocketInstances.push(this);
+      }
       addEventListener() {}
       removeEventListener() {}
     },
@@ -598,6 +627,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  webSocketInstances.length = 0;
   document.cookie = 'userspace_layout_user-1=; path=/; max-age=0';
   previewApiMock.listUserSpaceWorkspaces.mockResolvedValue({ items: [{ ...WORKSPACE }], total: 1 });
   previewApiMock.getUserSpaceWorkspace.mockResolvedValue({ ...WORKSPACE });
@@ -2237,5 +2267,141 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       expect(document.querySelector('[data-snapshot-actions="preceding"]')).toBeTruthy(),
     );
     expect(document.querySelector('[data-history-trigger]')).toBeNull();
+  });
+});
+
+describe('UserSpacePanel collaboration document ownership', () => {
+  it('does not send a collab update after a programmatic file switch', async () => {
+    previewApiMock.listUserSpaceFiles.mockResolvedValue([
+      { path: 'dashboard/main.ts', updated_at: '2026-07-14T00:00:00Z', artifact_type: 'code' },
+      { path: 'dashboard/other.ts', updated_at: '2026-07-14T00:00:01Z', artifact_type: 'code' },
+    ]);
+    previewApiMock.getUserSpaceFile.mockImplementation((_workspaceId: string, path: string) =>
+      Promise.resolve({
+        path,
+        content: path === 'dashboard/main.ts' ? 'const main = true;\n' : 'const other = true;\n',
+        updated_at: '2026-07-14T00:00:00Z',
+        artifact_type: 'code',
+      }),
+    );
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    await waitFor(() => expect(webSocketInstances).toHaveLength(1));
+    const socket = webSocketInstances[0];
+    socket.onopen?.();
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'snapshot',
+        file_path: 'dashboard/main.ts',
+        content: 'const main = true;\n',
+        version: 1,
+        read_only: false,
+      }),
+    } as MessageEvent);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'dashboard' }));
+    await user.click(screen.getByRole('button', { name: 'other.ts' }));
+    await waitFor(() =>
+      expect((screen.getByTestId('code-editor') as HTMLTextAreaElement).value).toBe(
+        'const other = true;\n',
+      ),
+    );
+    expect(socket.send).not.toHaveBeenCalledWith(expect.stringContaining('"type":"update"'));
+  });
+
+  it('ignores a stale file selection response', async () => {
+    const otherFile = createDeferredPromise<{
+      path: string;
+      content: string;
+      updated_at: string;
+      artifact_type: string;
+    }>();
+    previewApiMock.listUserSpaceFiles.mockResolvedValue([
+      { path: 'dashboard/main.ts', updated_at: '2026-07-14T00:00:00Z', artifact_type: 'code' },
+      { path: 'dashboard/other.ts', updated_at: '2026-07-14T00:00:01Z', artifact_type: 'code' },
+    ]);
+    previewApiMock.getUserSpaceFile.mockImplementation((_workspaceId: string, path: string) => {
+      if (path === 'dashboard/other.ts') return otherFile.promise;
+      return Promise.resolve({
+        path,
+        content: 'const main = true;\n',
+        updated_at: '2026-07-14T00:00:00Z',
+        artifact_type: 'code',
+      });
+    });
+
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('code-editor') as HTMLTextAreaElement).value).toBe(
+        'const main = true;\n',
+      ),
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'dashboard' }));
+    await user.click(screen.getByRole('button', { name: 'other.ts' }));
+    await user.click(screen.getByRole('button', { name: 'main.ts' }));
+    otherFile.resolve({
+      path: 'dashboard/other.ts',
+      content: 'const stale = true;\n',
+      updated_at: '2026-07-14T00:00:01Z',
+      artifact_type: 'code',
+    });
+
+    await flushAsyncWork();
+    expect((screen.getByTestId('code-editor') as HTMLTextAreaElement).value).toBe(
+      'const main = true;\n',
+    );
+  });
+
+  it('loads shared paths from the new workspace instead of reusing the previous cache', async () => {
+    const workspaceTwo = { ...WORKSPACE, id: 'ws-2', name: 'Workspace Two' };
+    previewApiMock.listUserSpaceWorkspaces.mockResolvedValue({
+      items: [{ ...WORKSPACE }, workspaceTwo],
+      total: 2,
+    });
+    previewApiMock.getUserSpaceWorkspace.mockImplementation((workspaceId: string) =>
+      Promise.resolve(workspaceId === 'ws-2' ? workspaceTwo : { ...WORKSPACE }),
+    );
+    previewApiMock.listUserSpaceFiles.mockImplementation((workspaceId: string) =>
+      Promise.resolve([
+        {
+          path: 'dashboard/main.ts',
+          updated_at: '2026-07-14T00:00:00Z',
+          artifact_type: 'code',
+          workspace_id: workspaceId,
+        },
+      ]),
+    );
+    previewApiMock.getUserSpaceFile.mockImplementation((workspaceId: string, path: string) =>
+      Promise.resolve({
+        path,
+        content:
+          workspaceId === 'ws-2' ? 'const workspaceTwo = true;\n' : 'const workspaceOne = true;\n',
+        updated_at: '2026-07-14T00:00:00Z',
+        artifact_type: 'code',
+      }),
+    );
+
+    const { rerender } = render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('code-editor') as HTMLTextAreaElement).value).toBe(
+        'const workspaceOne = true;\n',
+      ),
+    );
+
+    rerender(
+      <UserSpacePanel
+        currentUser={{ ...CURRENT_USER }}
+        openWorkspaceRequest={{ workspaceId: 'ws-2', requestId: 1 }}
+      />,
+    );
+
+    await waitFor(() =>
+      expect((screen.getByTestId('code-editor') as HTMLTextAreaElement).value).toBe(
+        'const workspaceTwo = true;\n',
+      ),
+    );
+    expect(previewApiMock.getUserSpaceFile).toHaveBeenCalledWith('ws-2', 'dashboard/main.ts');
   });
 });

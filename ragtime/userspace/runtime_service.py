@@ -126,7 +126,9 @@ class _CollabDocState:
     workspace_id: str
     file_path: str
     content: str
+    disk_content: str
     version: int = 0
+    pending_persists: int = 0
     clients: set[WebSocket] = field(default_factory=set)
 
 
@@ -3702,6 +3704,27 @@ class UserSpaceRuntimeService:
         )
         return str(payload.get("content", ""))
 
+    async def _load_collab_disk_content(
+        self,
+        workspace_id: str,
+        normalized_path: str,
+        user_id: str,
+    ) -> tuple[str, bool, bool]:
+        normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_path,
+        )
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        payload = await self._runtime_provider_read_file(
+            session.provider_session_id,
+            normalized_path,
+        )
+        return (
+            str(payload.get("content", "")),
+            bool(payload.get("exists", False)),
+            bool(payload.get("is_utf8_text", False)),
+        )
+
     async def _persist_file_content(
         self,
         workspace_id: str,
@@ -3733,6 +3756,64 @@ class UserSpaceRuntimeService:
                 normalized_path,
                 exc_info=True,
             )
+
+    async def _resync_collab_state_from_disk(
+        self,
+        workspace_id: str,
+        normalized_path: str,
+        user_id: str,
+        *,
+        exclude_client: WebSocket | None = None,
+    ) -> _CollabDocState | None:
+        key = (workspace_id, normalized_path)
+        async with self._collab_lock:
+            state = self._collab_docs.get(key)
+            observed_version = state.version if state is not None else None
+            persist_in_flight = state is not None and state.pending_persists > 0
+        if state is None:
+            return None
+        if persist_in_flight:
+            return state
+
+        disk_content, exists, is_utf8_text = await self._load_collab_disk_content(
+            workspace_id,
+            normalized_path,
+            user_id,
+        )
+        if not exists or not is_utf8_text:
+            return state
+        message: dict[str, Any] | None = None
+        recipients: list[WebSocket] = []
+        async with self._collab_lock:
+            state = self._collab_docs.get(key)
+            if state is None:
+                return None
+            # Collab writes during the disk read make the read ambiguous; only adopt a quiescent external change.
+            if state.version == observed_version and state.pending_persists == 0 and disk_content != state.disk_content and disk_content != state.content:
+                state.content = disk_content
+                state.disk_content = disk_content
+                state.version += 1
+                message = {
+                    "type": "update",
+                    "workspace_id": workspace_id,
+                    "file_path": normalized_path,
+                    "version": state.version,
+                    "content": disk_content,
+                }
+                recipients = [client for client in state.clients if client is not exclude_client]
+
+        if message and recipients:
+            payload = json.dumps(message)
+
+            async def _send(client: WebSocket) -> None:
+                try:
+                    await client.send_text(payload)
+                except Exception:
+                    pass
+
+            await asyncio.gather(*(_send(client) for client in recipients))
+
+        return state
 
     async def runtime_fs_read(
         self,
@@ -3846,8 +3927,11 @@ class UserSpaceRuntimeService:
         )
         key = (workspace_id, normalized_path)
 
-        async with self._collab_lock:
-            state = self._collab_docs.get(key)
+        state = await self._resync_collab_state_from_disk(
+            workspace_id,
+            normalized_path,
+            user_id,
+        )
         if state is None:
             content = await self._load_file_content(
                 workspace_id,
@@ -3861,6 +3945,7 @@ class UserSpaceRuntimeService:
                         workspace_id=workspace_id,
                         file_path=normalized_path,
                         content=content,
+                        disk_content=content,
                         version=1,
                     )
                     self._collab_docs[key] = state
@@ -3879,6 +3964,8 @@ class UserSpaceRuntimeService:
         file_path: str,
         websocket: WebSocket,
         user_id: str,
+        *,
+        skip_disk_resync: bool = False,
     ) -> UserSpaceCollabSnapshotResponse:
         normalized_path = self._normalize_file_path(file_path)
         normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
@@ -3886,8 +3973,17 @@ class UserSpaceRuntimeService:
             normalized_path,
         )
         key = (workspace_id, normalized_path)
-        async with self._collab_lock:
-            state = self._collab_docs.get(key)
+        state = None
+        if not skip_disk_resync:
+            state = await self._resync_collab_state_from_disk(
+                workspace_id,
+                normalized_path,
+                user_id,
+                exclude_client=websocket,
+            )
+        else:
+            async with self._collab_lock:
+                state = self._collab_docs.get(key)
         if state is None:
             content = await self._load_file_content(
                 workspace_id,
@@ -3901,6 +3997,7 @@ class UserSpaceRuntimeService:
                         workspace_id=workspace_id,
                         file_path=normalized_path,
                         content=content,
+                        disk_content=content,
                         version=1,
                     )
                     self._collab_docs[key] = state
@@ -4049,6 +4146,7 @@ class UserSpaceRuntimeService:
                         workspace_id=workspace_id,
                         file_path=normalized_path,
                         content=existing,
+                        disk_content=existing,
                         version=1,
                     )
                     self._collab_docs[key] = state
@@ -4065,15 +4163,25 @@ class UserSpaceRuntimeService:
 
             state.content = content
             state.version += 1
+            state.pending_persists += 1
             version = state.version
             recipients = list(state.clients)
+            persist_state = state
 
-        await self._persist_file_content(
-            workspace_id,
-            normalized_path,
-            content,
-            user_id,
-        )
+        try:
+            await self._persist_file_content(
+                workspace_id,
+                normalized_path,
+                content,
+                user_id,
+            )
+        finally:
+            async with self._collab_lock:
+                persist_state.pending_persists -= 1
+        async with self._collab_lock:
+            state = self._collab_docs.get(key)
+            if state and state.content == content:
+                state.disk_content = content
         await self._store_collab_checkpoint(workspace_id, normalized_path, content, version)
         await self.bump_workspace_generation(workspace_id)
         await self._audit(
@@ -4139,6 +4247,7 @@ class UserSpaceRuntimeService:
                 workspace_id=workspace_id,
                 file_path=normalized_path,
                 content=content,
+                disk_content=content,
                 version=1,
             )
             self._collab_docs[(workspace_id, normalized_path)] = state
