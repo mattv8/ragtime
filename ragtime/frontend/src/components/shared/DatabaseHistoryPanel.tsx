@@ -90,6 +90,28 @@ function isActiveJob(job: SqliteBackupJob): boolean {
   return ACTIVE_JOB_STATUSES.has(job.status);
 }
 
+function isResolvedByLaterCapture(job: SqliteBackupJob, jobs: SqliteBackupJob[]): boolean {
+  if (job.status !== 'failed' && job.status !== 'interrupted') return false;
+  const jobTime = Date.parse(job.finished_at ?? job.updated_at);
+  return jobs.some((laterJob) => {
+    if (
+      laterJob.status !== 'completed' ||
+      Date.parse(laterJob.finished_at ?? laterJob.updated_at) <= jobTime
+    ) {
+      return false;
+    }
+    return (
+      laterJob.database_names.length === 0 ||
+      (job.database_names.length > 0 &&
+        job.database_names.every((name) => laterJob.database_names.includes(name)))
+    );
+  });
+}
+
+type ActivityEntry =
+  | { kind: 'job'; job: SqliteBackupJob }
+  | { kind: 'recovered'; jobs: SqliteBackupJob[] };
+
 function pluralize(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
@@ -666,11 +688,33 @@ export function DatabaseHistoryPanel({
         b.id.localeCompare(a.id),
     );
   const attentionCaptureJobs = terminalCaptureJobs.filter(
-    (job) => job.status === 'failed' || job.status === 'interrupted',
+    (job) =>
+      (job.status === 'failed' || job.status === 'interrupted') &&
+      !isResolvedByLaterCapture(job, captureJobs),
   );
-  const activityCaptureJobs = terminalCaptureJobs.filter(
-    (job) => job.status === 'completed' || job.status === 'cancelled',
-  );
+  const activityEntries = terminalCaptureJobs.reduce<ActivityEntry[]>((entries, job) => {
+    if (job.status === 'completed' || job.status === 'cancelled') {
+      entries.push({ kind: 'job', job });
+      return entries;
+    }
+    if (!isResolvedByLaterCapture(job, captureJobs)) return entries;
+
+    const previous = entries[entries.length - 1];
+    if (
+      previous?.kind === 'recovered' &&
+      previous.jobs[0]?.status === job.status &&
+      previous.jobs[0]?.error_message === job.error_message &&
+      previous.jobs[0]?.database_names.join(',') === job.database_names.join(',')
+    ) {
+      previous.jobs.push(job);
+    } else {
+      entries.push({ kind: 'recovered', jobs: [job] });
+    }
+    return entries;
+  }, []);
+  const mayHaveUnloadedAttempts = (jobs: SqliteBackupJob[]) =>
+    captureJobs.length >= CAPTURE_JOB_PAGE_LIMIT &&
+    jobs[jobs.length - 1]?.id === terminalCaptureJobs[terminalCaptureJobs.length - 1]?.id;
   const attentionCaptureJobGroups = attentionCaptureJobs.reduce<SqliteBackupJob[][]>(
     (groups, job) => {
       const previousGroup = groups[groups.length - 1];
@@ -790,9 +834,7 @@ export function DatabaseHistoryPanel({
     const attemptLabel =
       newestJob.status === 'interrupted' ? 'interrupted attempts' : 'failed attempts';
     // The jobs endpoint returns one page; a group reaching its end may continue past it.
-    const mayHaveUnloadedAttempts =
-      captureJobs.length >= CAPTURE_JOB_PAGE_LIMIT &&
-      oldestJob.id === attentionCaptureJobs[attentionCaptureJobs.length - 1]?.id;
+    const hasUnloadedAttempts = mayHaveUnloadedAttempts(jobs);
     return (
       <article
         key={newestJob.id}
@@ -807,7 +849,7 @@ export function DatabaseHistoryPanel({
             <span
               className={`badge database-history-trigger-badge database-history-job-badge--${newestJob.status}`}
             >
-              {`${jobs.length}${mayHaveUnloadedAttempts ? '+' : ''} ${attemptLabel}`}
+              {`${jobs.length}${hasUnloadedAttempts ? '+' : ''} ${attemptLabel}`}
             </span>
           </div>
           <div className="database-history-backup-meta">
@@ -817,7 +859,7 @@ export function DatabaseHistoryPanel({
               {TRIGGER_LABEL[newestJob.trigger]}
             </span>
             <span className="database-history-backup-secondary">
-              {mayHaveUnloadedAttempts ? 'Earliest shown' : 'First'}{' '}
+              {hasUnloadedAttempts ? 'Earliest shown' : 'First'}{' '}
               {new Date(oldestJob.finished_at ?? oldestJob.updated_at).toLocaleString()}
             </span>
             <span className="database-history-backup-secondary">
@@ -913,6 +955,52 @@ export function DatabaseHistoryPanel({
               {restorePointLabel}
             </span>
           ))}
+      </article>
+    );
+  };
+  const renderRecoveredActivityRow = (jobs: SqliteBackupJob[]) => {
+    const newestJob = jobs[0]!;
+    const scope = newestJob.database_names.length ? newestJob.database_names.join(', ') : null;
+    const hasUnloadedAttempts = mayHaveUnloadedAttempts(jobs);
+    const title =
+      newestJob.status === 'interrupted'
+        ? jobs.length === 1
+          ? 'Interrupted capture'
+          : 'Interrupted captures'
+        : jobs.length === 1
+          ? 'Failed capture'
+          : 'Failed captures';
+    const errorMessage =
+      newestJob.error_message ||
+      (newestJob.status === 'interrupted' ? 'Capture was interrupted before completing.' : null);
+    return (
+      <article
+        key={newestJob.id}
+        className="database-history-activity database-history-backup database-history-activity--recovered"
+        data-history-activity-recovered={newestJob.id}
+        data-history-activity-status={newestJob.status}
+        data-history-capture-group-count={jobs.length}
+      >
+        <div className="database-history-activity-meta">
+          <div className="database-history-backup-meta">
+            <span className="database-history-backup-time">{title}</span>
+            {scope && <span className="database-history-backup-secondary">{scope}</span>}
+            {jobs.length > 1 && (
+              <span className="database-history-backup-secondary">
+                {hasUnloadedAttempts
+                  ? `${jobs.length}+ occurrences (earliest shown)`
+                  : `${jobs.length} occurrences`}
+              </span>
+            )}
+            <span className="database-history-backup-secondary">
+              {new Date(newestJob.finished_at ?? newestJob.updated_at).toLocaleString()}
+            </span>
+          </div>
+          {errorMessage && (
+            <span className="database-history-backup-secondary">{errorMessage}</span>
+          )}
+          <span className="database-history-backup-secondary">Later capture succeeded</span>
+        </div>
       </article>
     );
   };
@@ -1507,7 +1595,7 @@ export function DatabaseHistoryPanel({
                       : 'No captured database backups. Missing live databases can still be recovered here once a backup exists.'}
                   </p>
                 ))}
-              {activityCaptureJobs.length > 0 && (
+              {activityEntries.length > 0 && (
                 <section
                   className="database-history-band"
                   aria-labelledby={`db-hist-band-activity-${key}`}
@@ -1517,11 +1605,13 @@ export function DatabaseHistoryPanel({
                     Activity
                   </h4>
                   <details>
-                    <summary>
-                      Capture activity ({pluralize(activityCaptureJobs.length, 'run')})
-                    </summary>
+                    <summary>Capture activity ({pluralize(activityEntries.length, 'run')})</summary>
                     <div className="database-history-activity-list">
-                      {activityCaptureJobs.map(renderActivityRow)}
+                      {activityEntries.map((entry) =>
+                        entry.kind === 'job'
+                          ? renderActivityRow(entry.job)
+                          : renderRecoveredActivityRow(entry.jobs),
+                      )}
                     </div>
                   </details>
                 </section>
