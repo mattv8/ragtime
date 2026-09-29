@@ -125,24 +125,32 @@ class SqliteHistoryCapabilityTests(unittest.TestCase):
             state = asyncio.run(self.service.history_state("workspace"))
         self.assertEqual("unavailable", state["capture_unavailable_reason"])
 
+    def _landlock_unavailable_reason(self) -> str:
+        reason = mount_sync_launcher.confinement_unavailable_reason()
+        assert reason is not None
+        self.assertTrue(reason.startswith("Database snapshots and restores are unavailable:"))
+        return reason
+
     def test_landlock_unavailable_reason_covers_probe_abi_and_ruleset_failures(self) -> None:
         with mock.patch.object(mount_sync_launcher, "landlock_abi", return_value=2):
-            reason = mount_sync_launcher.confinement_unavailable_reason()
-            self.assertTrue(reason.startswith("Database snapshots and restores are unavailable:"))
+            reason = self._landlock_unavailable_reason()
             self.assertIn("supports Landlock ABI 2", reason)
             self.assertIn("secure SQLite history requires", reason)
         with mock.patch.object(mount_sync_launcher, "landlock_abi", side_effect=OSError(errno.ENOSYS, "unavailable")):
-            reason = mount_sync_launcher.confinement_unavailable_reason()
-            self.assertTrue(reason.startswith("Database snapshots and restores are unavailable:"))
+            reason = self._landlock_unavailable_reason()
             self.assertIn("disabled in the Linux kernel", reason)
             self.assertIn("Secure SQLite history requires", reason)
         with (
             mock.patch.object(mount_sync_launcher, "landlock_abi", return_value=3),
             mock.patch.object(mount_sync_launcher, "trial_ruleset", side_effect=OSError(errno.EPERM, "rejected")),
         ):
-            reason = mount_sync_launcher.confinement_unavailable_reason()
-            self.assertTrue(reason.startswith("Database snapshots and restores are unavailable:"))
+            reason = self._landlock_unavailable_reason()
             self.assertIn("rejected the secure SQLite confinement ruleset", reason)
+        with (
+            mock.patch.object(mount_sync_launcher, "landlock_abi", return_value=3),
+            mock.patch.object(mount_sync_launcher, "trial_ruleset", return_value=None),
+        ):
+            self.assertIsNone(mount_sync_launcher.confinement_unavailable_reason())
 
     def test_positive_preflight_does_not_mask_drift_child_failure(self) -> None:
         root = self.files.parent / "sqlite_backups"

@@ -36,6 +36,11 @@ class _Store:
         raise AssertionError("successful capture must not be interrupted")
 
 
+class _ReconcilableStore(_Store):
+    async def reconcilable(self, **kwargs: int) -> list[dict]:
+        return [self.job]
+
+
 class _History:
     async def runtime_history_active(self) -> bool:
         return False
@@ -215,8 +220,7 @@ class SqliteBackupQueueRunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stale_runtime_failed_receipt_uses_database_outcome_summary(self) -> None:
         job = self._job()
-        store = _Store(job)
-        store.reconcilable = mock.AsyncMock(return_value=[job])
+        store = _ReconcilableStore(job)
         service = SqliteBackupQueueService(store)
         history = mock.Mock()
         history.runtime_history_active = mock.AsyncMock(return_value=True)
