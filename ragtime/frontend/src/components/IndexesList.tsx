@@ -16,6 +16,7 @@ import { IndexCard } from './IndexCard';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
 import { IndexingPill } from './IndexingPill';
+import { isGitAuthenticationError, useGitTokenValidation } from './gitTokenValidation';
 
 interface IndexesListProps {
   indexes: IndexInfo[];
@@ -180,6 +181,25 @@ export function IndexesList({
   const [reindexing, setReindexing] = useState(false);
   const [reindexVisibility, setReindexVisibility] = useState<RepoVisibilityResponse | null>(null);
   const [checkingReindexVisibility, setCheckingReindexVisibility] = useState(false);
+  const [reindexAuthFailure, setReindexAuthFailure] = useState<string | null>(null);
+  const reindexTokenValidation = useGitTokenValidation(
+    reindexingIndex?.source || '',
+    reindexingIndex?.name,
+  );
+  const isSshReindexUrl = /^git@[^:]+:[^/]+\/[^/]+(?:\.git)?$/.test(reindexingIndex?.source || '');
+  const reindexTokenBlocked =
+    (Boolean(reindexToken.trim()) && reindexTokenValidation.state !== 'valid') ||
+    (!isSshReindexUrl &&
+      Boolean(reindexAuthFailure || reindexVisibility?.needs_token) &&
+      !reindexToken.trim());
+
+  const closeReindexModal = () => {
+    setReindexingIndex(null);
+    setReindexToken('');
+    setReindexVisibility(null);
+    setReindexAuthFailure(null);
+    reindexTokenValidation.invalidate();
+  };
 
   // Download state
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -276,6 +296,7 @@ export function IndexesList({
       return;
     }
 
+    let cancelled = false;
     const checkVisibility = async () => {
       setCheckingReindexVisibility(true);
       try {
@@ -283,21 +304,25 @@ export function IndexesList({
           git_url: reindexingIndex.source!,
           index_name: reindexingIndex.name,
         });
-        setReindexVisibility(result);
+        if (!cancelled) setReindexVisibility(result);
       } catch {
         // Fallback to has_stored_token if check fails
-        setReindexVisibility({
-          visibility: 'error',
-          has_stored_token: reindexingIndex.has_stored_token,
-          needs_token: !reindexingIndex.has_stored_token,
-          message: 'Could not check repository visibility',
-        });
+        if (!cancelled)
+          setReindexVisibility({
+            visibility: 'error',
+            has_stored_token: reindexingIndex.has_stored_token,
+            needs_token: !reindexingIndex.has_stored_token,
+            message: 'Could not check repository visibility',
+          });
       } finally {
-        setCheckingReindexVisibility(false);
+        if (!cancelled) setCheckingReindexVisibility(false);
       }
     };
 
-    checkVisibility();
+    void checkVisibility();
+    return () => {
+      cancelled = true;
+    };
   }, [reindexingIndex?.source, reindexingIndex?.name, reindexingIndex?.has_stored_token]);
 
   const handleCancelWizard = () => {
@@ -405,26 +430,31 @@ export function IndexesList({
 
   const handleReindex = async () => {
     if (!reindexingIndex) return;
+    if (reindexTokenBlocked) {
+      setReindexAuthFailure(
+        reindexToken.trim()
+          ? 'Check the replacement token before re-indexing.'
+          : 'A replacement token is required to restore repository access.',
+      );
+      return;
+    }
 
     setReindexing(true);
     try {
       await api.reindexFromGit(reindexingIndex.name, reindexToken || undefined);
-      setReindexingIndex(null);
-      setReindexToken('');
+      closeReindexModal();
       onJobCreated?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Reindex failed';
-      // Check if it's a token error
-      if (
-        message.includes('token') ||
-        message.includes('401') ||
-        message.includes('authentication')
-      ) {
-        setErrorMessage('Authentication failed. Please check your token and try again.');
+      if (isGitAuthenticationError(message) && !isSshReindexUrl) {
+        setReindexAuthFailure(
+          'Repository authentication failed. Provide and check a replacement token, then try again.',
+        );
       } else {
         setErrorMessage(message);
       }
-      setTimeout(() => setErrorMessage(null), 5000);
+      if (!isGitAuthenticationError(message) || isSshReindexUrl)
+        setTimeout(() => setErrorMessage(null), 5000);
     } finally {
       setReindexing(false);
     }
@@ -872,27 +902,26 @@ export function IndexesList({
 
           {reindexingIndex && (
             <div
+              id="git-reindex-modal"
               className="modal-overlay"
               onClick={() => {
-                setReindexingIndex(null);
-                setReindexToken('');
-                setReindexVisibility(null);
+                closeReindexModal();
               }}
             >
               <div
                 className="modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="git-reindex-modal-title"
                 onClick={(e) => e.stopPropagation()}
                 style={{ maxWidth: '500px' }}
               >
                 <div className="modal-header">
-                  <h3>Pull &amp; Re-index</h3>
+                  <h3 id="git-reindex-modal-title">Pull &amp; Re-index</h3>
                   <button
                     className="modal-close"
-                    onClick={() => {
-                      setReindexingIndex(null);
-                      setReindexToken('');
-                      setReindexVisibility(null);
-                    }}
+                    aria-label="Close Pull and Re-index dialog"
+                    onClick={closeReindexModal}
                   >
                     &times;
                   </button>
@@ -939,98 +968,82 @@ export function IndexesList({
                   {!checkingReindexVisibility &&
                     reindexVisibility?.visibility === 'private' &&
                     !reindexVisibility.needs_token && (
-                      <div
-                        style={{
-                          marginBottom: '16px',
-                          padding: '12px',
-                          background: 'var(--color-success-light)',
-                          borderRadius: '8px',
-                          border: '1px solid var(--color-success-border)',
-                        }}
-                      >
-                        <span style={{ color: 'var(--color-success)' }}>
-                          Private repository - will use stored token.
-                        </span>
+                      <div className="status-message success">
+                        Private repository - will use stored token.
                       </div>
                     )}
 
-                  {/* Private repo needing token (no stored token or invalid) */}
-                  {!checkingReindexVisibility && reindexVisibility?.needs_token && (
-                    <div className="form-group">
-                      {reindexVisibility.has_stored_token && (
-                        <div
-                          style={{
-                            marginBottom: '12px',
-                            padding: '12px',
-                            background: 'var(--color-warning-light)',
-                            borderRadius: '8px',
-                            border: '1px solid var(--color-warning-border)',
-                          }}
-                        >
-                          <span style={{ color: 'var(--color-warning)' }}>
-                            {reindexVisibility.message || 'Stored token is no longer valid.'}
-                          </span>
-                        </div>
-                      )}
-                      <label htmlFor="reindex-token">
-                        Git Token {reindexVisibility.visibility === 'private' ? '*' : '(optional)'}
-                      </label>
-                      <small
-                        style={{
-                          display: 'block',
-                          color: 'var(--color-text-secondary)',
-                          marginBottom: '8px',
-                        }}
-                      >
-                        {reindexVisibility.visibility === 'private'
-                          ? 'Required for this private repository. Token will be stored for future re-indexing.'
-                          : 'Provide a token if the repository requires authentication.'}
-                      </small>
-                      <input
-                        id="reindex-token"
-                        type="password"
-                        className="form-input"
-                        value={reindexToken}
-                        onChange={(e) => setReindexToken(e.target.value)}
-                        placeholder="ghp_xxxx... or glpat-xxxx..."
-                      />
-                    </div>
-                  )}
-
-                  {/* Error checking visibility - show token input as fallback */}
                   {!checkingReindexVisibility &&
-                    reindexVisibility?.visibility === 'error' &&
-                    !reindexVisibility.has_stored_token && (
-                      <div className="form-group">
-                        <label htmlFor="reindex-token">Git Token (optional)</label>
-                        <small
-                          style={{
-                            display: 'block',
-                            color: 'var(--color-text-secondary)',
-                            marginBottom: '8px',
-                          }}
-                        >
-                          Provide a token if the repository requires authentication.
+                    !isSshReindexUrl &&
+                    (reindexVisibility?.needs_token ||
+                      reindexAuthFailure ||
+                      !reindexVisibility?.has_stored_token) && (
+                      <section
+                        id="git-reindex-credentials"
+                        className="form-group"
+                        aria-label="Git credentials"
+                      >
+                        {(reindexAuthFailure || reindexVisibility?.visibility === 'error') && (
+                          <div className="status-message error" aria-live="polite">
+                            {reindexAuthFailure || reindexVisibility?.message}
+                          </div>
+                        )}
+                        <label htmlFor="reindex-token">
+                          Personal access token{' '}
+                          {reindexVisibility?.needs_token || reindexAuthFailure
+                            ? '*'
+                            : '(optional)'}
+                        </label>
+                        <small id="reindex-token-help" className="field-help">
+                          GitHub fine-grained tokens need Contents: Read-only, repository selection,
+                          and any required organization approval or SSO. Classic tokens need repo
+                          scope for private repositories. No write permission is required.
                         </small>
                         <input
                           id="reindex-token"
                           type="password"
                           className="form-input"
                           value={reindexToken}
-                          onChange={(e) => setReindexToken(e.target.value)}
+                          onChange={(e) => {
+                            setReindexToken(e.target.value);
+                            reindexTokenValidation.invalidate();
+                          }}
+                          onBlur={() => {
+                            if (reindexToken.trim())
+                              void reindexTokenValidation.validate(reindexToken);
+                          }}
                           placeholder="ghp_xxxx... or glpat-xxxx..."
+                          autoComplete="off"
+                          aria-describedby="reindex-token-help reindex-token-status"
+                          aria-invalid={reindexTokenValidation.state === 'invalid'}
                         />
-                      </div>
+                        <div id="reindex-token-status" className="field-help" aria-live="polite">
+                          {reindexTokenValidation.state === 'checking' && 'Checking token access…'}
+                          {reindexTokenValidation.state === 'valid' &&
+                            'Token can access this repository.'}
+                          {reindexTokenValidation.state === 'invalid' &&
+                            'This token cannot access this repository.'}
+                          {reindexTokenValidation.state === 'failed' &&
+                            'Token access check could not complete. Try again.'}
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          aria-describedby="reindex-token-status"
+                          onClick={() => void reindexTokenValidation.validate(reindexToken)}
+                          disabled={
+                            !reindexToken.trim() || reindexTokenValidation.state === 'checking'
+                          }
+                        >
+                          Check token
+                        </button>
+                      </section>
                     )}
                 </div>
                 <div className="modal-footer">
                   <button
                     className="btn btn-secondary"
-                    onClick={() => {
-                      setReindexingIndex(null);
-                      setReindexToken('');
-                      setReindexVisibility(null);
-                    }}
+                    onClick={closeReindexModal}
                     disabled={reindexing || checkingReindexVisibility}
                   >
                     Cancel
@@ -1038,11 +1051,7 @@ export function IndexesList({
                   <button
                     className="btn btn-primary"
                     onClick={handleReindex}
-                    disabled={
-                      reindexing ||
-                      checkingReindexVisibility ||
-                      (reindexVisibility?.needs_token && !reindexToken)
-                    }
+                    disabled={reindexing || checkingReindexVisibility || reindexTokenBlocked}
                   >
                     {checkingReindexVisibility
                       ? 'Checking...'
@@ -1056,15 +1065,26 @@ export function IndexesList({
           )}
 
           {editingGitIndex && (
-            <div className="modal-overlay" onClick={() => setEditingGitIndex(null)}>
+            <div
+              id="git-index-edit-modal"
+              className="modal-overlay"
+              onClick={() => setEditingGitIndex(null)}
+            >
               <div
                 className="modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="git-index-edit-modal-title"
                 onClick={(e) => e.stopPropagation()}
                 style={{ maxWidth: '700px' }}
               >
                 <div className="modal-header">
-                  <h3>Edit Index Configuration</h3>
-                  <button className="modal-close" onClick={() => setEditingGitIndex(null)}>
+                  <h3 id="git-index-edit-modal-title">Edit Index Configuration</h3>
+                  <button
+                    className="modal-close"
+                    aria-label="Close Edit Index Configuration dialog"
+                    onClick={() => setEditingGitIndex(null)}
+                  >
                     &times;
                   </button>
                 </div>
@@ -1073,10 +1093,11 @@ export function IndexesList({
                     key={editingGitIndex.name}
                     editIndex={editingGitIndex}
                     onCancel={() => setEditingGitIndex(null)}
-                    onConfigSaved={() => {
-                      setEditingGitIndex(null);
+                    onConfigSaved={(result) => {
                       onToggle?.(); // Refresh the list to show updated config
+                      if (result?.renamed) setEditingGitIndex(null);
                     }}
+                    onJobCreated={onJobCreated}
                     onNavigateToSettings={onNavigateToSettings}
                   />
                 </div>
