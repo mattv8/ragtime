@@ -12168,13 +12168,11 @@ export function ChatPanel({
   const [autoHydratingDeferredIndex, setAutoHydratingDeferredIndex] = useState<number | null>(null);
   const autoHydratingDeferredRequestRef = useRef(0);
   const autoHydratingDeferredIndexRef = useRef<number | null>(null);
-  const autoScrollFrameRef = useRef<number | null>(null);
   const navigatorScrollFrameRef = useRef<number | null>(null);
   const pendingUserMessageNavigationTargetRef = useRef<{
     key: string;
     scrollTop: number;
   } | null>(null);
-  const programmaticScrollRef = useRef(false);
   const inputRef = useRef<HTMLDivElement>(null);
   const richInputRef = useRef<RichChatInputHandle>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -13452,10 +13450,6 @@ export function ChatPanel({
 
   useEffect(() => {
     return () => {
-      if (autoScrollFrameRef.current !== null) {
-        window.cancelAnimationFrame(autoScrollFrameRef.current);
-        autoScrollFrameRef.current = null;
-      }
       if (navigatorScrollFrameRef.current !== null) {
         window.cancelAnimationFrame(navigatorScrollFrameRef.current);
         navigatorScrollFrameRef.current = null;
@@ -13518,18 +13512,9 @@ export function ChatPanel({
   useLayoutEffect(() => {
     if (!shouldAutoScrollRef.current || !chatMessagesRef.current) return;
     if (historyPrependAnchorRef.current) return;
-    if (autoScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(autoScrollFrameRef.current);
-      autoScrollFrameRef.current = null;
-    }
     const messagesRoot = chatMessagesRef.current;
-    programmaticScrollRef.current = true;
     messagesRoot.scrollTop = messagesRoot.scrollHeight;
-    autoScrollFrameRef.current = window.requestAnimationFrame(() => {
-      autoScrollFrameRef.current = null;
-      programmaticScrollRef.current = false;
-      scheduleUserMessageNavigationActiveKeyUpdate();
-    });
+    scheduleUserMessageNavigationActiveKeyUpdate();
   }, [
     activeConversation?.messages,
     consolidatedSegments,
@@ -13592,20 +13577,18 @@ export function ChatPanel({
       (element) => element.dataset.chatMessageKey === anchor.key,
     );
     if (!target) return;
-    programmaticScrollRef.current = true;
     historyAnchorRestoreInProgressRef.current = true;
     root.scrollTop +=
       target.getBoundingClientRect().top - root.getBoundingClientRect().top - anchor.offset;
     historyPrependAnchorRef.current = null;
     window.requestAnimationFrame(() => {
       historyAnchorRestoreInProgressRef.current = false;
-      programmaticScrollRef.current = false;
     });
   }, [completedHistoryPrependOperation, standaloneWindow.olderError, visibleMessageEntries]);
 
   const handleScroll = useCallback(() => {
     if (!chatMessagesRef.current) return;
-    if (programmaticScrollRef.current && historyAnchorRestoreInProgressRef.current) {
+    if (historyAnchorRestoreInProgressRef.current) {
       scheduleUserMessageNavigationActiveKeyUpdate();
       return;
     }
@@ -16892,7 +16875,7 @@ export function ChatPanel({
 
   const retryCompactionReview = useCallback(() => {
     const conversation = activeConversation ?? activeConversationMetadata;
-    if (!compactionReviewMarker || !conversation) return;
+    if (!compactionReviewMarker || !conversation || isReplayPendingRef.current) return;
     const marker = compactionReviewMarker;
     closeCompactionReview();
 
@@ -17254,12 +17237,20 @@ export function ChatPanel({
         (!activeConversationMetadata && !activeConversation) ||
         isStreaming ||
         isReplayPendingRef.current ||
+        branchSwitchingRef.current ||
         isReadOnly
       )
         return;
       isReplayPendingRef.current = true;
       setIsReplayPending(true);
       setReplayingMessageIdx(messageIdx);
+      const isStillSelected = (id: string) =>
+        workspaceId
+          ? activeConversationRef.current?.id === id && workspaceIdRef.current === workspaceId
+          : standaloneSelectedIdRef.current === id;
+      const initiatingConversationId = workspaceId
+        ? (activeConversationRef.current?.id ?? null)
+        : standaloneSelectedIdRef.current;
       let conversationId: string | null = null;
       let replayClaimed = false;
       try {
@@ -17286,13 +17277,9 @@ export function ChatPanel({
           workspaceId,
         );
         replayClaimed = true;
-        const stillSelected = workspaceId
-          ? activeConversationRef.current?.id === conversationId &&
-            workspaceIdRef.current === workspaceId
-          : standaloneSelectedIdRef.current === conversationId;
-        if (!stillSelected) {
-          // User switched chats while replay was pending; sync metadata without claiming stream
-          setIsReplayPending(false);
+        if (!isStillSelected(conversationId)) {
+          // The user switched chats while the request was pending. Record the
+          // claimed task without adopting its transcript or stream here.
           syncConversationActiveTaskId(conversationId, response.task.id);
           void refreshBranchPoints(conversationId);
           if (workspaceId) {
@@ -17315,15 +17302,14 @@ export function ChatPanel({
         setStreamingEvents([]);
         setHitMaxIterations(false);
         setIsConnectionError(false);
-        // Mark the UI active before releasing the replay guard. connectTaskStream
-        // repeats this synchronously as it claims the returned task stream.
+        // Mark the UI streaming in the same batch that releases the replay guard
+        // so mutation controls never re-enable between claim and stream start.
         setIsStreaming(true);
         setActiveTask(response.task);
         setInterruptedTask(null);
         syncConversationActiveTaskId(conversationId, response.task.id);
-        setReplayingMessageIdx(null);
         void connectTaskStream(response.task.id, conversationId).catch((streamError) => {
-          console.error('Failed to start replay task stream:', streamError);
+          console.error('Replay task stream failed:', streamError);
         });
         void refreshBranchPoints(conversationId);
         if (workspaceId) {
@@ -17334,15 +17320,16 @@ export function ChatPanel({
           }
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to retry message');
+        const ownerConversationId = conversationId ?? initiatingConversationId;
+        if (ownerConversationId && isStillSelected(ownerConversationId)) {
+          setError(err instanceof Error ? err.message : 'Failed to retry message');
+        } else {
+          console.warn('Replay failed after leaving its conversation:', err);
+        }
         if (!replayClaimed && conversationId) {
           try {
             const refreshed = await api.getConversation(conversationId, workspaceId);
-            const stillSelected = workspaceId
-              ? activeConversationRef.current?.id === conversationId &&
-                workspaceIdRef.current === workspaceId
-              : standaloneSelectedIdRef.current === conversationId;
-            if (stillSelected) {
+            if (isStillSelected(conversationId)) {
               setActiveConversation(refreshed);
               setConversations((prev) => prev.map((c) => (c.id === refreshed.id ? refreshed : c)));
               syncConversationActiveTaskId(conversationId, refreshed.active_task_id ?? null);
@@ -17379,6 +17366,7 @@ export function ChatPanel({
         (!activeConversationMetadata && !activeConversation) ||
         isStreaming ||
         isReplayPendingRef.current ||
+        branchSwitchingRef.current ||
         isReadOnly
       )
         return;
@@ -17477,7 +17465,8 @@ export function ChatPanel({
       editingMessageIdx === null ||
       (!editHasContent && editMessageAttachments.length === 0) ||
       isSubmittingEdit ||
-      isReplayPendingRef.current
+      isReplayPendingRef.current ||
+      branchSwitchingRef.current
     )
       return;
     setIsSubmittingEdit(true);
@@ -17638,6 +17627,7 @@ export function ChatPanel({
       autoCompactThresholdPercent >= 100 ||
       isReadOnly ||
       isStreaming ||
+      isReplayPending ||
       isActiveConversationCompacting ||
       hasQueuedCompactionMessageForActiveConversation ||
       contextUsage.contextUsagePercent < autoCompactThresholdPercent
@@ -17678,6 +17668,7 @@ export function ChatPanel({
     hasQueuedCompactionMessageForActiveConversation,
     isActiveConversationCompacting,
     isReadOnly,
+    isReplayPending,
     isStreaming,
   ]);
 
@@ -19192,6 +19183,7 @@ export function ChatPanel({
                   onCompact={
                     contextUsage.contextUsagePercent >= compactThresholdPercent &&
                     !isStreaming &&
+                    !isReplayPending &&
                     !isReadOnly &&
                     !isActiveConversationCompacting
                       ? compactActiveConversation
@@ -19407,15 +19399,15 @@ export function ChatPanel({
                             >
                               <div className={`chat-message chat-message-${entry.preview.role}`}>
                                 <div className="chat-message-content">
-                                  <div className="chat-message-text markdown-content">
-                                    {entry.preview.role === 'user' ? (
-                                      <div className="chat-message-user-text">
-                                        <LinkifiedText text={entry.preview.content} />
-                                      </div>
-                                    ) : (
+                                  {entry.preview.role === 'user' ? (
+                                    <div className="chat-message-text chat-message-user-text">
+                                      <LinkifiedText text={entry.preview.content} />
+                                    </div>
+                                  ) : (
+                                    <div className="chat-message-text markdown-content">
                                       <MemoizedMarkdown content={entry.preview.content} />
-                                    )}
-                                  </div>
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                               {isHydrating ? (
@@ -19864,7 +19856,7 @@ export function ChatPanel({
                                           <button
                                             className="chat-action-text-btn primary"
                                             onClick={submitEditMessage}
-                                            disabled={isSubmittingEdit}
+                                            disabled={isSubmittingEdit || isReplayPending}
                                           >
                                             Send
                                           </button>
@@ -19904,7 +19896,7 @@ export function ChatPanel({
                                                 );
                                               }}
                                               title="Edit and resend"
-                                              disabled={isReplayPending}
+                                              disabled={isReplayPending || branchSwitching}
                                             >
                                               <Pencil size={12} />
                                             </button>
@@ -19924,7 +19916,7 @@ export function ChatPanel({
                                                   : 'Replay from this message'
                                               }
                                               aria-busy={replayingMessageIdx === idx}
-                                              disabled={replayingMessageIdx !== null}
+                                              disabled={isReplayPending || branchSwitching}
                                             >
                                               {replayingMessageIdx === idx ? (
                                                 <MiniLoadingSpinner variant="icon" size={12} />
@@ -19946,7 +19938,7 @@ export function ChatPanel({
                                                   ? 'Delete message and restore workspace snapshot'
                                                   : 'Delete message'
                                               }
-                                              disabled={isReplayPending}
+                                              disabled={isReplayPending || branchSwitching}
                                             >
                                               <Trash2 size={12} />
                                             </button>
@@ -20031,7 +20023,7 @@ export function ChatPanel({
                                                 : 'Replay from this message'
                                             }
                                             aria-busy={replayingMessageIdx === idx}
-                                            disabled={replayingMessageIdx !== null}
+                                            disabled={isReplayPending || branchSwitching}
                                           >
                                             {replayingMessageIdx === idx ? (
                                               <MiniLoadingSpinner variant="icon" size={12} />
@@ -20053,7 +20045,7 @@ export function ChatPanel({
                                                 ? 'Delete reply and restore workspace snapshot'
                                                 : 'Delete reply'
                                             }
-                                            disabled={isReplayPending}
+                                            disabled={isReplayPending || branchSwitching}
                                           >
                                             <Trash2 size={12} />
                                           </button>
@@ -20300,7 +20292,7 @@ export function ChatPanel({
                           <button
                             className="chat-continue-link"
                             onClick={continueConversation}
-                            disabled={isReplayPending}
+                            disabled={isReplayPending || branchSwitching}
                           >
                             continue?
                           </button>
@@ -21090,7 +21082,12 @@ export function ChatPanel({
                           e.stopPropagation();
                           setIsEditingCompactionReview(true);
                         }}
-                        disabled={isReadOnly || isActiveConversationCompacting || isStreaming}
+                        disabled={
+                          isReadOnly ||
+                          isActiveConversationCompacting ||
+                          isStreaming ||
+                          isReplayPending
+                        }
                         aria-label="Edit compaction summary"
                         title="Edit"
                       >
@@ -21103,7 +21100,12 @@ export function ChatPanel({
                           e.stopPropagation();
                           retryCompactionReview();
                         }}
-                        disabled={isReadOnly || isActiveConversationCompacting || isStreaming}
+                        disabled={
+                          isReadOnly ||
+                          isActiveConversationCompacting ||
+                          isStreaming ||
+                          isReplayPending
+                        }
                         aria-label="Regenerate compaction"
                         title="Try Again"
                       >

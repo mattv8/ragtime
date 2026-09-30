@@ -1750,7 +1750,6 @@ textarea.chat-header-title-input {
 .chat-action-icon-btn:disabled {
   opacity: 0.4;
   cursor: default;
-  pointer-events: none;
 }
 .chat-branch-wrapper-has-branches .chat-message-hover-actions {
   opacity: 0;
@@ -2105,6 +2104,11 @@ textarea.chat-header-title-input {
 }
 .chat-action-text-btn.primary:hover {
   background: var(--color-surface-hover);
+}
+.chat-action-text-btn:disabled,
+.chat-continue-link:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .chat-message-streaming {
   font-size: var(--text-xs);

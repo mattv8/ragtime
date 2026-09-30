@@ -36,18 +36,10 @@ vi.mock('@/hooks/useReceivedConversationShares', () => ({
   useReceivedConversationShares: receivedConversationSharesMock,
 }));
 
-const apiMock = vi.hoisted(() => {
+const { apiMock, applyMutableApiMockDefaults } = vi.hoisted(() => {
   const mock = {
-    getConversation: vi.fn().mockResolvedValue(null),
-    getConversationLatestExchange: vi.fn().mockResolvedValue({
-      conversation: null,
-      revision: 'test-revision',
-      total_message_count: 0,
-      entries: [],
-      next_cursor: null,
-      has_more: false,
-      legacy_conversation: null,
-    }),
+    getConversation: vi.fn(),
+    getConversationLatestExchange: vi.fn(),
     getConversationMessageWindow: vi.fn(),
     getConversationWindowMessage: vi.fn(),
     searchConversationBranches: vi.fn().mockResolvedValue({ matches: [] }),
@@ -82,11 +74,7 @@ const apiMock = vi.hoisted(() => {
       close: vi.fn(),
       onmessage: null,
     }),
-    streamChatTask: vi.fn().mockReturnValue(
-      (async function* () {
-        yield* [];
-      })(),
-    ),
+    streamChatTask: vi.fn(),
     sendMessageBackground: vi.fn().mockResolvedValue({
       id: 'task-window-send',
       status: 'running',
@@ -98,77 +86,29 @@ const apiMock = vi.hoisted(() => {
     }),
     editResendConversationMessage: vi.fn(),
   };
-  mock.getConversationMessageWindow.mockImplementation(async (conversationId: string) => {
-    const latestResult = [...mock.getConversationLatestExchange.mock.results]
-      .reverse()
-      .find(
-        (_result, index) =>
-          mock.getConversationLatestExchange.mock.calls[
-            mock.getConversationLatestExchange.mock.calls.length - 1 - index
-          ]?.[0] === conversationId,
-      );
-    const latest = await latestResult?.value;
-    if (!latest?.conversation)
-      throw new Error(`Missing latest window fixture for ${conversationId}`);
-    return {
-      ...latest,
+  const applyMutableApiMockDefaults = () => {
+    mock.getConversation.mockResolvedValue(null);
+    mock.getConversationLatestExchange.mockResolvedValue({
+      conversation: null,
+      revision: 'test-revision',
+      total_message_count: 0,
       entries: [],
       next_cursor: null,
       has_more: false,
       legacy_conversation: null,
-    };
-  });
-  mock.getConversationWindowMessage.mockImplementation(
-    async (conversationId: string, index: number) => {
+    });
+    mock.streamChatTask.mockImplementation(() =>
+      (async function* () {
+        yield* [];
+      })(),
+    );
+    mock.getConversationMessageWindow.mockImplementation(async (conversationId: string) => {
       const latestResult = [...mock.getConversationLatestExchange.mock.results]
         .reverse()
         .find(
-          (_result, resultIndex) =>
-            mock.getConversationLatestExchange.mock.calls[
-              mock.getConversationLatestExchange.mock.calls.length - 1 - resultIndex
-            ]?.[0] === conversationId,
-        );
-      const latest = await latestResult?.value;
-      const entry = latest?.entries.find(
-        (candidate: ConversationWindowEntry) => candidate.index === index,
-      );
-      if (!entry) throw new Error(`Missing deferred entry fixture for ${conversationId}:${index}`);
-      if (entry.state === 'ready') return entry;
-      return {
-        ...entry,
-        state: 'ready' as const,
-        message: {
-          role: entry.preview.role,
-          content: entry.preview.content,
-          timestamp: entry.preview.timestamp,
-          message_id: entry.preview.message_id ?? undefined,
-        },
-        preview: null,
-      };
-    },
-  );
-  return mock;
-});
-
-function resetMutableChatApiMocks() {
-  apiMock.getConversationLatestExchange.mockReset().mockResolvedValue({
-    conversation: null,
-    revision: 'test-revision',
-    total_message_count: 0,
-    entries: [],
-    next_cursor: null,
-    has_more: false,
-    legacy_conversation: null,
-  });
-  apiMock.getConversationMessageWindow
-    .mockReset()
-    .mockImplementation(async (conversationId: string) => {
-      const latestResult = [...apiMock.getConversationLatestExchange.mock.results]
-        .reverse()
-        .find(
           (_result, index) =>
-            apiMock.getConversationLatestExchange.mock.calls[
-              apiMock.getConversationLatestExchange.mock.calls.length - 1 - index
+            mock.getConversationLatestExchange.mock.calls[
+              mock.getConversationLatestExchange.mock.calls.length - 1 - index
             ]?.[0] === conversationId,
         );
       const latest = await latestResult?.value;
@@ -182,36 +122,53 @@ function resetMutableChatApiMocks() {
         legacy_conversation: null,
       };
     });
-  apiMock.getConversationWindowMessage
-    .mockReset()
-    .mockImplementation(async (conversationId: string, index: number) => {
-      const latestResult = [...apiMock.getConversationLatestExchange.mock.results]
-        .reverse()
-        .find(
-          (_result, resultIndex) =>
-            apiMock.getConversationLatestExchange.mock.calls[
-              apiMock.getConversationLatestExchange.mock.calls.length - 1 - resultIndex
-            ]?.[0] === conversationId,
+    mock.getConversationWindowMessage.mockImplementation(
+      async (conversationId: string, index: number) => {
+        const latestResult = [...mock.getConversationLatestExchange.mock.results]
+          .reverse()
+          .find(
+            (_result, resultIndex) =>
+              mock.getConversationLatestExchange.mock.calls[
+                mock.getConversationLatestExchange.mock.calls.length - 1 - resultIndex
+              ]?.[0] === conversationId,
+          );
+        const latest = await latestResult?.value;
+        const entry = latest?.entries.find(
+          (candidate: ConversationWindowEntry) => candidate.index === index,
         );
-      const latest = await latestResult?.value;
-      const entry = latest?.entries.find(
-        (candidate: ConversationWindowEntry) => candidate.index === index,
-      );
-      if (!entry) throw new Error(`Missing deferred entry fixture for ${conversationId}:${index}`);
-      if (entry.state === 'ready') return entry;
-      return {
-        ...entry,
-        state: 'ready' as const,
-        message: {
-          role: entry.preview.role,
-          content: entry.preview.content,
-          timestamp: entry.preview.timestamp,
-          message_id: entry.preview.message_id ?? undefined,
-        },
-        preview: null,
-      };
-    });
-  apiMock.editResendConversationMessage.mockReset();
+        if (!entry)
+          throw new Error(`Missing deferred entry fixture for ${conversationId}:${index}`);
+        if (entry.state === 'ready') return entry;
+        return {
+          ...entry,
+          state: 'ready' as const,
+          message: {
+            role: entry.preview.role,
+            content: entry.preview.content,
+            timestamp: entry.preview.timestamp,
+            message_id: entry.preview.message_id ?? undefined,
+          },
+          preview: null,
+        };
+      },
+    );
+  };
+  applyMutableApiMockDefaults();
+  return { apiMock: mock, applyMutableApiMockDefaults };
+});
+
+function resetMutableChatApiMocks() {
+  for (const mock of [
+    apiMock.getConversation,
+    apiMock.getConversationLatestExchange,
+    apiMock.getConversationMessageWindow,
+    apiMock.getConversationWindowMessage,
+    apiMock.streamChatTask,
+    apiMock.editResendConversationMessage,
+  ]) {
+    mock.mockReset();
+  }
+  applyMutableApiMockDefaults();
 }
 
 const chatMessageNavigatorMock = vi.hoisted(() => ({
@@ -851,8 +808,6 @@ function getChatLayoutCookie(userId: string): Record<string, unknown> | null {
 }
 
 describe('ChatPanel replay', () => {
-  afterEach(() => resetMutableChatApiMocks());
-
   const makeReplayTask = (conversationId: string, id: string) => ({
     id,
     conversation_id: conversationId,
@@ -908,8 +863,12 @@ describe('ChatPanel replay', () => {
     const user = userEvent.setup();
     await user.type(await screen.findByLabelText('Message'), 'Do not send while replay is pending');
     const replay = (await screen.findAllByTitle('Replay from this message'))[0];
-    fireEvent.click(replay);
-    fireEvent.click(replay);
+    // Both clicks land before React commits the disabled state, so only the
+    // synchronous pending ref can reject the second request.
+    act(() => {
+      replay.click();
+      replay.click();
+    });
 
     await waitFor(() => expect(apiMock.editResendConversationMessage).toHaveBeenCalledTimes(1));
     expect(replay.getAttribute('title')).toBe('Replaying…');
@@ -1217,6 +1176,7 @@ describe('ChatPanel replay', () => {
       expect(apiMock.getConversation).toHaveBeenCalledWith(original.id, 'ws-replay'),
     );
     expect(screen.getByText('Current streamed conversation')).toBeDefined();
+    expect(screen.queryByText('Replay request rejected')).toBeNull();
     expect(screen.getByTitle('Stop generating')).toBeDefined();
     expect(currentStreamSignal?.aborted).toBe(false);
     expect(apiMock.getConversation).not.toHaveBeenCalledWith(selected.id, 'ws-replay');
@@ -1296,6 +1256,7 @@ describe('ChatPanel replay', () => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  resetMutableChatApiMocks();
   receivedConversationSharesMock.mockReturnValue({
     shares: [],
     loading: false,
@@ -1634,6 +1595,46 @@ describe('ChatPanel standalone first-paint loading', () => {
     expect(scrollTop).toBe(100);
   });
 
+  it('renders deferred user previews with the same plain-text markup as ready rows', async () => {
+    const userText = '# Literal heading\n\n- literal item';
+    const conversation = makeConversation('deferred-user-markup', 'Answer', {
+      messages: [
+        {
+          role: 'user',
+          content: userText,
+          timestamp: '2026-09-30T12:00:00.000Z',
+          message_id: 'deferred-user',
+        },
+        {
+          role: 'assistant',
+          content: 'Answer',
+          timestamp: '2026-09-30T12:00:01.000Z',
+          message_id: 'deferred-assistant',
+        },
+      ],
+    });
+    apiMock.getConversationLatestExchange.mockResolvedValueOnce(makeLatestExchange(conversation));
+    apiMock.getConversationWindowMessage.mockImplementation(() => new Promise(() => undefined));
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    const row = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>(
+        '[data-chat-message-key="deferred-user"]',
+      );
+      expect(element).not.toBeNull();
+      return element as HTMLElement;
+    });
+    const text = row.querySelector('.chat-message-user .chat-message-content > .chat-message-text');
+    expect(row.classList.contains('chat-branch-wrapper-user')).toBe(true);
+    expect(row.classList.contains('chat-message-deferred')).toBe(true);
+    expect(text?.classList.contains('chat-message-user-text')).toBe(true);
+    expect(row.querySelector('.markdown-content')).toBeNull();
+    expect(text?.textContent).toBe(userText);
+  });
+
   it('prioritizes an authorized shared preferred id and skips an older preferred detail', async () => {
     const older = makeConversation('older-preferred', 'Old response', {
       updated_at: '2000-01-01T00:00:00.000Z',
@@ -1961,6 +1962,7 @@ describe('ChatPanel standalone first-paint loading', () => {
       }),
     } as Response);
     apiMock.createConversation.mockResolvedValue(created);
+    apiMock.getConversation.mockResolvedValue(current);
 
     renderChatPanel(
       <ChatPanel
@@ -2668,8 +2670,9 @@ describe('ChatPanel standalone first-paint loading', () => {
     );
 
     await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2));
+    // Both deferred entries in the latest exchange fail, so each offers its own retry.
     await waitFor(() =>
-      expect(screen.getAllByRole('button', { name: 'Retry details' })).toHaveLength(1),
+      expect(screen.getAllByRole('button', { name: 'Retry details' })).toHaveLength(2),
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2);
@@ -4175,7 +4178,6 @@ describe('ChatPanel bounded-window operation boundaries', () => {
   });
 
   it('restores a pending older-page anchor before queued animation frames run', async () => {
-    resetMutableChatApiMocks();
     const frameCallbacks: FrameRequestCallback[] = [];
     window.requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
       callback(0);
@@ -5084,6 +5086,7 @@ describe('ChatPanel resize and mobile sidebar integration', () => {
       workspace_id: 'ws-compose',
       active_task_id: null,
     });
+    apiMock.getConversation.mockResolvedValue(conversation);
     renderChatPanel(
       <ChatPanel
         currentUser={currentUser}
