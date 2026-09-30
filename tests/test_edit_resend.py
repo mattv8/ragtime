@@ -3,9 +3,11 @@ import inspect
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 from fastapi import HTTPException
+from prisma.models import User
 from starlette.requests import Request
 
 
@@ -187,7 +189,7 @@ class LegacyCreateBranchRouteTests(unittest.IsolatedAsyncioTestCase):
         from ragtime.indexer import routes
         from ragtime.indexer.models import CreateConversationBranchRequest
 
-        user = SimpleNamespace(id="user-1", role="user")
+        user = cast(User, SimpleNamespace(id="user-1", role="user"))
         repository = SimpleNamespace(
             check_conversation_access=mock.AsyncMock(return_value=True),
             get_conversation=mock.AsyncMock(
