@@ -163,6 +163,34 @@ class GitIndexJobCreationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config_snapshot["git_history_depth"], 0)
         self.assertNotIn("_analyze_only_git_token", config_snapshot)
 
+    async def test_optimistic_credentials_are_preserved_only_for_same_source_git_reindex(self) -> None:
+        metadata = SimpleNamespace(
+            sourceType="git",
+            source=URL,
+            description="Keep me",
+            configSnapshot={},
+            documentCount=1,
+            chunkCount=1,
+            sizeBytes=1,
+        )
+        with (
+            mock.patch.object(repository, "get_index_metadata", new=mock.AsyncMock(return_value=metadata)),
+            mock.patch.object(repository, "upsert_index_metadata", new=mock.AsyncMock()) as upsert,
+        ):
+            for source_type, source, preserve in (
+                ("git", URL, True),
+                ("git", "https://another.example/repo.git", False),
+                ("upload", "archive.zip", False),
+            ):
+                await self.service._create_optimistic_index_metadata(
+                    self.config,
+                    source_type,
+                    source,
+                    git_token="candidate" if source_type == "git" else None,
+                )
+                self.assertEqual(upsert.await_args.kwargs["preserve_git_token"], preserve)
+                self.assertEqual(upsert.await_args.kwargs["git_token"], None if preserve or source_type == "upload" else "candidate")
+
     async def test_create_optimistic_index_metadata_preserves_real_existing_snapshot(self) -> None:
         existing_metadata = SimpleNamespace(
             description="Keep me",

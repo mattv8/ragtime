@@ -998,6 +998,7 @@ class IndexerRepository:
         description: str = "",
         git_branch: Optional[str] = None,
         git_token: Optional[str] = None,
+        preserve_git_token: bool = False,
         display_name: Optional[str] = None,
         vector_store_type: VectorStoreType = VectorStoreType.FAISS,
     ) -> None:
@@ -1048,13 +1049,15 @@ class IndexerRepository:
             "sourceType": source_type,
             "source": source,
             "gitBranch": git_branch,
-            "gitToken": encrypted_git_token,
             "vectorStoreType": prisma_vector_store_type,
             "ocrMode": ocr_mode or "disabled",
             "ocrProvider": ocr_provider,
             "ocrVisionModel": ocr_vision_model,
             "lastModified": utc_now(),
         }
+
+        if git_token or not preserve_git_token:
+            update_data["gitToken"] = encrypted_git_token
 
         # Only update displayName if provided (don't overwrite with None)
         if display_name is not None:

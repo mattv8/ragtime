@@ -13,6 +13,7 @@ import tarfile
 import zipfile
 from pathlib import Path
 from typing import List, Literal, Optional, Tuple
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from ragtime.core.file_constants import (
     MINIFIED_PATTERNS,
@@ -20,6 +21,7 @@ from ragtime.core.file_constants import (
     PARSEABLE_DOCUMENT_EXTENSIONS,
     UNPARSEABLE_BINARY_EXTENSIONS,
 )
+from ragtime.core.git_auth import git_auth_pair
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -58,10 +60,6 @@ HARDCODED_EXCLUDES = [
 #   - Format: https://{token}@{host}/owner/repo.git
 # ==============================================================================
 
-_GITHUB_TOKEN_PREFIXES = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_")
-_GITLAB_TOKEN_PREFIXES = ("glpat-", "glptt-", "gldt-", "glsoat-")
-
-
 def build_authenticated_git_url(git_url: str, token: Optional[str] = None) -> str:
     """
     Build a Git clone URL with embedded token authentication.
@@ -79,33 +77,14 @@ def build_authenticated_git_url(git_url: str, token: Optional[str] = None) -> st
     if not token:
         return git_url
 
-    # Parse URL: protocol://host/path
-    match = re.match(r"(https?://)([^/]+)(/.*)$", git_url)
-    if not match:
+    parsed = urlsplit(git_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return git_url
-
-    protocol, host, path = match.groups()
-    host_lower = host.lower()
-
-    # Priority 1: Detect by hostname
-    if "github.com" in host_lower:
-        return f"{protocol}x-access-token:{token}@{host}{path}"
-
-    if "gitlab" in host_lower:
-        return f"{protocol}oauth2:{token}@{host}{path}"
-
-    if "bitbucket.org" in host_lower:
-        return f"{protocol}x-bitbucket-api-token-auth:{token}@{host}{path}"
-
-    # Priority 2: Detect by token prefix
-    if token.startswith(_GITHUB_TOKEN_PREFIXES):
-        return f"{protocol}x-access-token:{token}@{host}{path}"
-
-    if token.startswith(_GITLAB_TOKEN_PREFIXES):
-        return f"{protocol}oauth2:{token}@{host}{path}"
-
-    # Priority 3: Generic fallback
-    return f"{protocol}{token}@{host}{path}"
+    username, password = git_auth_pair(git_url, token)
+    userinfo = quote(username, safe="")
+    if password:
+        userinfo = f"{userinfo}:{quote(password, safe='')}"
+    return urlunsplit((parsed.scheme, f"{userinfo}@{parsed.netloc}", parsed.path, parsed.query, parsed.fragment))
 
 
 # ==============================================================================
