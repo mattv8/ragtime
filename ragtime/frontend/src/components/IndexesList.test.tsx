@@ -1,13 +1,17 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IndexesList } from './IndexesList';
 import type { ImportFaissIndexResponse, IndexInfo, IndexJob } from '@/types';
+import { deferred } from '@/testHelpers/deferred';
 
 const apiMock = vi.hoisted(() => ({
   getSettings: vi.fn(),
   getHealth: vi.fn(),
+  checkRepoVisibility: vi.fn(),
+  fetchBranches: vi.fn(),
+  reindexFromGit: vi.fn(),
 }));
 
 const gitWizardPropsMock = vi.hoisted(() => ({
@@ -167,6 +171,14 @@ beforeEach(() => {
     },
   });
   apiMock.getHealth.mockResolvedValue({ index_details: [] });
+  apiMock.checkRepoVisibility.mockResolvedValue({
+    visibility: 'public',
+    has_stored_token: false,
+    needs_token: false,
+    message: '',
+  });
+  apiMock.fetchBranches.mockResolvedValue({ branches: ['main'], error: null, needs_token: false });
+  apiMock.reindexFromGit.mockResolvedValue(makeJob());
 });
 
 afterEach(() => {
@@ -409,5 +421,74 @@ describe('IndexesList broken index recovery controls', () => {
     await screen.findByTestId('index-card-Repo');
     expect(screen.getByRole('button', { name: 'Pull & Re-index' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Download' })).toBeNull();
+  });
+});
+
+describe('IndexesList Git credential recovery', () => {
+  it('does not show a replacement token while initial visibility is pending', async () => {
+    const visibility = deferred<{
+      visibility: 'private';
+      has_stored_token: boolean;
+      needs_token: boolean;
+      message: string;
+    }>();
+    apiMock.checkRepoVisibility.mockImplementationOnce(() => visibility.promise);
+    const user = userEvent.setup();
+    render(
+      <IndexesList
+        indexes={[makeIndex()]}
+        jobs={[]}
+        loading={false}
+        error={null}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Pull & Re-index' }));
+    expect(screen.getByText('Checking repository access...')).toBeTruthy();
+    expect(screen.queryByLabelText(/Git token/i)).toBeNull();
+    visibility.resolve({
+      visibility: 'private',
+      has_stored_token: false,
+      needs_token: true,
+      message: '',
+    });
+    expect(await screen.findByLabelText(/Personal access token/i)).toBeTruthy();
+  });
+
+  it('keeps a 403 reindex authentication failure in the modal and exposes a checked replacement token', async () => {
+    apiMock.checkRepoVisibility.mockResolvedValueOnce({
+      visibility: 'private',
+      has_stored_token: true,
+      needs_token: false,
+      message: '',
+    });
+    apiMock.reindexFromGit.mockRejectedValueOnce(
+      new Error('HTTP 403 Write access to repository not granted'),
+    );
+    const user = userEvent.setup();
+    render(
+      <IndexesList
+        indexes={[makeIndex({ has_stored_token: true })]}
+        jobs={[]}
+        loading={false}
+        error={null}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Pull & Re-index' }));
+    await user.click(await screen.findByRole('button', { name: 'Re-index' }));
+    expect(await screen.findByText(/provide and check a replacement token/i)).toBeTruthy();
+    const token = screen.getByLabelText(/Personal access token/i);
+    await user.type(token, 'replacement');
+    fireEvent.blur(token);
+    await waitFor(() =>
+      expect(apiMock.fetchBranches).toHaveBeenCalledWith({
+        git_url: 'https://github.com/example/repo.git',
+        git_token: 'replacement',
+        index_name: 'repo',
+      }),
+    );
   });
 });

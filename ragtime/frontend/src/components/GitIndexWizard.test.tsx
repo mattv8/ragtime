@@ -233,6 +233,102 @@ afterEach(() => {
 });
 
 describe('GitIndexWizard', () => {
+  it('keeps stored-token recovery controls in edit mode and requires a checked replacement token', async () => {
+    const user = userEvent.setup();
+    apiMock.checkRepoVisibility.mockResolvedValue({
+      visibility: 'private',
+      has_stored_token: true,
+      needs_token: false,
+      message: '',
+    });
+    render(<GitIndexWizard editIndex={{ ...existingGitIndex, has_stored_token: true }} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Update token' }));
+    const token = screen.getByLabelText('Personal access token');
+    await user.type(token, 'replacement-token');
+    expect(
+      (screen.getByRole('button', { name: 'Save Configuration' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    fireEvent.blur(token);
+    await waitFor(() =>
+      expect(apiMock.fetchBranches).toHaveBeenCalledWith({
+        git_url: existingGitIndex.source,
+        git_token: 'replacement-token',
+        index_name: 'repo',
+      }),
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Save Configuration' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it('returns an authentication-failed Pull now flow to token repair controls', async () => {
+    apiMock.reindexFromGit.mockRejectedValue(
+      new Error('HTTP 403 Write access to repository not granted'),
+    );
+    render(<GitIndexWizard editIndex={{ ...existingGitIndex, has_stored_token: true }} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Pull now' }));
+
+    expect(await screen.findByText(/provide and check a replacement token/i)).toBeTruthy();
+    expect(screen.getByLabelText('Personal access token *')).toBeTruthy();
+  });
+
+  it('does not accept a stale token validation completion after the token changes', async () => {
+    const firstCheck = deferred<{ branches: string[]; error: null; needs_token: boolean }>();
+    apiMock.fetchBranches.mockImplementationOnce(() => firstCheck.promise);
+    const user = userEvent.setup();
+    render(<GitIndexWizard editIndex={{ ...existingGitIndex, has_stored_token: true }} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Update token' }));
+    const token = screen.getByLabelText('Personal access token');
+    await user.type(token, 'first');
+    fireEvent.blur(token);
+    await user.clear(token);
+    await user.type(token, 'second');
+    firstCheck.resolve({ branches: ['main'], error: null, needs_token: false });
+
+    await waitFor(() => expect(screen.queryByText('Token can access this repository.')).toBeNull());
+    expect(
+      (screen.getByRole('button', { name: 'Save Configuration' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it('keeps a network validation failure distinct from an invalid token', async () => {
+    apiMock.fetchBranches
+      .mockResolvedValueOnce({ branches: ['main'], error: null, needs_token: false })
+      .mockRejectedValueOnce(new Error('network unavailable'));
+    const user = userEvent.setup();
+    render(<GitIndexWizard editIndex={{ ...existingGitIndex, has_stored_token: true }} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Update token' }));
+    const token = screen.getByLabelText('Personal access token');
+    await user.type(token, 'replacement');
+    fireEvent.blur(token);
+    expect(
+      await screen.findByText('Token access check could not complete. Try again.'),
+    ).toBeTruthy();
+    expect(screen.queryByText('This token cannot access this repository.')).toBeNull();
+  });
+
+  it('returns an asynchronously failed indexing job with a 403 to token repair', async () => {
+    apiMock.getJob.mockResolvedValue({
+      ...startingJob,
+      status: 'failed',
+      phase: 'failed',
+      error_message: 'HTTP 403 Write access to repository not granted',
+      completed_at: '2026-07-15T00:01:00Z',
+    });
+    render(<GitIndexWizard />);
+
+    await completeAnalysis();
+    fireEvent.click(screen.getByRole('button', { name: 'Start Indexing' }));
+
+    expect(await screen.findByText(/provide and check a replacement token/i)).toBeTruthy();
+    expect(screen.getByLabelText('Personal access token *')).toBeTruthy();
+  });
+
   it('notifies immediately after creating the git job and starts polling it', async () => {
     const onJobCreated = vi.fn();
 
@@ -619,4 +715,120 @@ describe('GitIndexWizard', () => {
     await waitFor(() => expect(apiMock.disableIndexWebhook).toHaveBeenCalledWith('repo'));
     expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).value).toBe('0');
   });
+
+  it.each(['public', 'error'] as const)(
+    'reopens token repair when a stored credential needs replacement for %s visibility',
+    async (visibility) => {
+      apiMock.checkRepoVisibility.mockResolvedValue({
+        visibility,
+        has_stored_token: true,
+        needs_token: true,
+        message: 'Repository access failed',
+      });
+      render(<GitIndexWizard editIndex={{ ...existingGitIndex, has_stored_token: true }} />);
+
+      expect(await screen.findByLabelText('Personal access token *')).toBeTruthy();
+      expect(
+        (screen.getByRole('button', { name: 'Save Configuration' }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+    },
+  );
+
+  it('does not require a PAT to save or pull an SSH-key repository', async () => {
+    apiMock.checkRepoVisibility.mockResolvedValue({
+      visibility: 'error',
+      has_stored_token: false,
+      needs_token: false,
+      message: 'Could not verify SSH read access',
+    });
+    render(
+      <GitIndexWizard
+        editIndex={{ ...existingGitIndex, source: 'git@github.com:example/repo.git' }}
+      />,
+    );
+
+    const save = await screen.findByRole('button', { name: 'Save Configuration' });
+    expect((save as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(apiMock.updateIndexConfig).toHaveBeenCalledWith('repo', expect.anything()),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pull now' }));
+    await waitFor(() => expect(apiMock.reindexFromGit).toHaveBeenCalledWith('repo', undefined));
+  });
+
+  it('does not rename when a pre-rename configuration request fails', async () => {
+    apiMock.updateIndexConfig.mockRejectedValue(new Error('config unavailable'));
+    render(<GitIndexWizard editIndex={existingGitIndex} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Save Configuration' }));
+    await screen.findByText(/config unavailable/i);
+    expect(apiMock.renameIndex).not.toHaveBeenCalled();
+    expect(apiMock.updateIndexDescription).not.toHaveBeenCalled();
+  });
+
+  it('saves a verified replacement and pulls using the saved credential rather than retaining the draft', async () => {
+    apiMock.checkRepoVisibility.mockResolvedValue({
+      visibility: 'private',
+      has_stored_token: true,
+      needs_token: true,
+      message: 'access rejected',
+    });
+    render(<GitIndexWizard editIndex={{ ...existingGitIndex, has_stored_token: true }} />);
+    const token = await screen.findByLabelText('Personal access token *');
+    fireEvent.change(token, { target: { value: 'candidate' } });
+    fireEvent.blur(token);
+    const save = screen.getByRole('button', { name: 'Save Configuration' }) as HTMLButtonElement;
+    await waitFor(() => expect(save.disabled).toBe(false));
+    fireEvent.click(save);
+    await screen.findByRole('button', { name: 'Update token' });
+    expect(apiMock.updateIndexConfig).toHaveBeenCalledWith(
+      'repo',
+      expect.objectContaining({ git_token: 'candidate' }),
+    );
+    expect(screen.queryByLabelText(/Personal access token/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Pull now' }));
+    await waitFor(() => expect(apiMock.reindexFromGit).toHaveBeenCalledWith('repo', undefined));
+  });
+
+  it.each(['job', 'request'])(
+    'requires a fresh check when a previously verified candidate is rejected by the pull %s',
+    async (failurePath) => {
+      apiMock.checkRepoVisibility.mockResolvedValue({
+        visibility: 'private',
+        has_stored_token: true,
+        needs_token: false,
+        message: '',
+      });
+      apiMock.getJob.mockResolvedValue({
+        ...startingJob,
+        status: 'failed',
+        phase: 'failed',
+        error_message: 'Git fetch failed: Authentication failed',
+      });
+      if (failurePath === 'request') {
+        apiMock.reindexFromGit.mockRejectedValue(new Error('Authentication failed'));
+      }
+      render(<GitIndexWizard editIndex={{ ...existingGitIndex, has_stored_token: true }} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Update token' }));
+      const token = screen.getByLabelText(/Personal access token/);
+      fireEvent.change(token, { target: { value: 'candidate' } });
+      fireEvent.blur(token);
+      const pull = screen.getByRole('button', { name: 'Pull now' }) as HTMLButtonElement;
+      await waitFor(() => expect(pull.disabled).toBe(false));
+      fireEvent.click(pull);
+      await screen.findByLabelText('Personal access token *');
+      expect(
+        (screen.getByRole('button', { name: 'Save Configuration' }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+      fireEvent.blur(screen.getByLabelText('Personal access token *'));
+      await waitFor(() =>
+        expect(
+          (screen.getByRole('button', { name: 'Save Configuration' }) as HTMLButtonElement)
+            .disabled,
+        ).toBe(false),
+      );
+    },
+  );
 });

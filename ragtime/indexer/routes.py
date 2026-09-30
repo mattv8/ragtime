@@ -107,6 +107,7 @@ from ragtime.core.encryption import (
 from ragtime.core.encryption_health import recheck_encryption_key_health
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.generation_policy import GenerationSurface, generation_context, require_chat_generation, require_userspace_generation
+from ragtime.core.git import GIT_AUTH_FAILURE_MESSAGE, GIT_REPOSITORY_ACCESS_FAILURE_MESSAGE
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.http_timeouts import get_http_proxy_safe_timeout_seconds
@@ -844,7 +845,10 @@ async def check_repo_visibility(
     if request.index_name:
         try:
             metadata = await repository.get_index_metadata(request.index_name)
-            encrypted_token = getattr(metadata, "gitToken", None) if metadata else None
+            source = getattr(metadata, "source", None) if metadata else None
+            encrypted_token = (
+                getattr(metadata, "gitToken", None) if isinstance(source, str) and source.rstrip("/") == request.git_url.strip().rstrip("/") else None
+            )
             stored_token = decrypt_secret(encrypted_token) if encrypted_token else None
         except Exception:
             pass  # No stored token available
@@ -873,11 +877,15 @@ async def fetch_branches(
     Uses stored token from an existing index if available, otherwise uses provided token.
     """
     # Try to get stored token from existing index if index_name provided
-    token = request.git_token
-    if not token and request.index_name:
+    candidate_supplied = "git_token" in request.model_fields_set
+    token = (request.git_token.strip() or None) if request.git_token else None
+    if not candidate_supplied and not token and request.index_name:
         try:
             metadata = await repository.get_index_metadata(request.index_name)
-            encrypted_token = getattr(metadata, "gitToken", None) if metadata else None
+            source = getattr(metadata, "source", None) if metadata else None
+            encrypted_token = (
+                getattr(metadata, "gitToken", None) if isinstance(source, str) and source.rstrip("/") == request.git_url.strip().rstrip("/") else None
+            )
             token = decrypt_secret(encrypted_token) if encrypted_token else None
         except Exception:
             pass  # No stored token available
@@ -888,7 +896,7 @@ async def fetch_branches(
     )
 
     if error:
-        needs_token = "private" in error.lower() or "token" in error.lower()
+        needs_token = error in {GIT_AUTH_FAILURE_MESSAGE, GIT_REPOSITORY_ACCESS_FAILURE_MESSAGE}
         return FetchBranchesResponse(
             branches=[],
             error=error,
@@ -1161,9 +1169,15 @@ async def reindex_from_git(
         )
 
     # Use provided token, or fall back to stored token (decrypt if encrypted)
+    replacement_token = request.git_token.strip() if request.git_token and request.git_token.strip() else None
+    if replacement_token:
+        _branches, validation_error = await git_fetch_branches(metadata.source, replacement_token)
+        if validation_error:
+            raise HTTPException(status_code=400, detail=validation_error)
+
     encrypted_token = getattr(metadata, "gitToken", None)
     stored_token = decrypt_secret(encrypted_token) if encrypted_token else None
-    git_token = request.git_token or stored_token
+    git_token = replacement_token or stored_token
 
     # Get config from snapshot or use defaults
     config_snapshot = getattr(metadata, "configSnapshot", None)
@@ -1238,8 +1252,15 @@ async def retry_failed_job(
             detail=f"Cannot retry job with status '{failed_job.status}'. Only failed or stuck jobs can be retried.",
         )
 
-    # Use provided token, or fall back to stored token
-    git_token = request.git_token or failed_job.git_token
+    # Validate explicit replacement before it can replace credentials in the
+    # newly-created retry job. Stored-token retries continue to rely on the
+    # actual Git operation.
+    replacement_token = request.git_token.strip() if request.git_token and request.git_token.strip() else None
+    if replacement_token and failed_job.source_type == "git" and failed_job.git_url:
+        _branches, validation_error = await git_fetch_branches(failed_job.git_url, replacement_token)
+        if validation_error:
+            raise HTTPException(status_code=400, detail=validation_error)
+    git_token = replacement_token or failed_job.git_token
 
     if failed_job.source_type == "git":
         if not failed_job.git_url:
@@ -1480,6 +1501,14 @@ async def update_index_config(
     existing_config: dict[str, Any] = existing_snapshot if isinstance(existing_snapshot, dict) else {}
     new_config = {}
     clear_git_token = "git_token" in request.model_fields_set and not (request.git_token or "").strip()
+    replacement_token = request.git_token.strip() if request.git_token and request.git_token.strip() else None
+
+    if replacement_token:
+        if not metadata.source:
+            raise HTTPException(status_code=400, detail="Git URL not found in index metadata. Cannot validate replacement token.")
+        _, validation_error = await git_fetch_branches(metadata.source, replacement_token)
+        if validation_error:
+            raise HTTPException(status_code=400, detail=validation_error)
 
     if (
         clear_git_token
@@ -1546,7 +1575,7 @@ async def update_index_config(
         name=name,
         git_branch=request.git_branch,
         config_snapshot=new_config if new_config else None,
-        git_token=request.git_token,
+        git_token=replacement_token,
         clear_git_token=clear_git_token,
     )
     if not success:

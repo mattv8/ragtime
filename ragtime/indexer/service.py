@@ -42,6 +42,7 @@ from ragtime.core.file_constants import (
     UNPARSEABLE_BINARY_EXTENSIONS,
     get_embedding_safety_margin,
 )
+from ragtime.core.git import GIT_AUTH_FAILURE_MESSAGE, is_git_auth_error
 from ragtime.core.logging import get_logger
 from ragtime.core.model_providers import normalize_provider_name, resolve_provider_api_key, resolve_provider_base_url
 from ragtime.core.tokenization import count_tokens
@@ -1088,6 +1089,19 @@ class IndexerService:
             size_bytes = 0
             logger.debug(f"Creating new index '{config.name}': using config from request")
 
+        # A replacement token is already validated by the route, but an
+        # optimistic re-index must not erase a working stored credential before
+        # the background Git operation has established the replacement.
+        metadata_token = git_token
+        preserve_git_token = bool(
+            existing_metadata
+            and source_type == "git"
+            and getattr(existing_metadata, "sourceType", None) == "git"
+            and getattr(existing_metadata, "source", None) == source
+        )
+        if preserve_git_token:
+            metadata_token = None
+
         await repository.upsert_index_metadata(
             name=config.name,
             path=str(index_path),
@@ -1099,7 +1113,8 @@ class IndexerService:
             config_snapshot=config_snapshot,
             description=description,
             git_branch=git_branch,
-            git_token=git_token,
+            git_token=metadata_token,
+            preserve_git_token=preserve_git_token,
             vector_store_type=config.vector_store_type,
         )
 
@@ -1119,16 +1134,8 @@ class IndexerService:
 
     @staticmethod
     def _is_git_auth_error(detail: str) -> bool:
-        normalized = detail.lower()
-        return any(
-            marker in normalized
-            for marker in (
-                "invalid username or token",
-                "authentication failed",
-                "bad credentials",
-                "could not read username",
-            )
-        )
+        """Compatibility wrapper for shared Git transport error detection."""
+        return is_git_auth_error(detail)
 
     async def _delete_analyze_only_git_metadata_if_unused(self, name: str) -> None:
         metadata = await repository.get_index_metadata(name)
@@ -2389,8 +2396,8 @@ class IndexerService:
             # Clean up failed clone
             await asyncio.to_thread(shutil.rmtree, repo_dir, ignore_errors=True)
             error_msg = stderr_output
-            if "could not read Username" in error_msg or "Authentication failed" in error_msg:
-                raise RuntimeError("Git clone failed: Authentication required. This is a private repository - please provide a valid access token.")
+            if self._is_git_auth_error(error_msg):
+                raise RuntimeError(f"Git clone failed: {GIT_AUTH_FAILURE_MESSAGE}")
             raise RuntimeError(f"Git clone failed: {error_msg}")
 
         logger.info("Clone complete")
@@ -2524,8 +2531,8 @@ class IndexerService:
             ownership_error = format_dubious_ownership_error(error_msg, "fetch")
             if ownership_error:
                 raise RuntimeError(ownership_error)
-            if "could not read Username" in error_msg or "Authentication failed" in error_msg:
-                raise RuntimeError("Git fetch failed: Authentication required. This is a private repository - please provide a valid access token.")
+            if self._is_git_auth_error(error_msg):
+                raise RuntimeError(f"Git fetch failed: {GIT_AUTH_FAILURE_MESSAGE}")
             raise RuntimeError(f"Git fetch failed: {error_msg}")
 
         # Reset to the fetched branch - run in thread to avoid blocking
