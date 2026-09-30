@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import os
+import re
 import stat
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,6 +25,25 @@ _POLL_SECONDS = 1.0
 _IDLE_BACKOFF_SECONDS = (1.0, 2.0, 4.0, 5.0)
 _HEARTBEAT_SECONDS = 10.0
 _TERMINAL = frozenset({"completed", "failed", "cancelled", "interrupted"})
+
+
+def _failed_outcome_summary(outcomes: list[dict[str, Any]]) -> str | None:
+    failed = [outcome for outcome in outcomes if outcome.get("status") == "failed"]
+    if not failed:
+        return None
+    named = [(str(outcome.get("database_name") or "").strip(), str(outcome.get("error") or "unknown error")) for outcome in failed]
+    named = [(name, re.sub(r"^\d{3}: ", "", error)) for name, error in named if name]
+    if not named:
+        return "One or more SQLite databases could not be captured"
+    if len(named) == 1:
+        message = f"Could not capture {named[0][0]}: {named[0][1]}"
+    elif len({error for _name, error in named}) == 1:
+        names = ", ".join(name for name, _error in named)
+        message = f"Could not capture {len(named)} databases ({names}): {named[0][1]}"
+    else:
+        details = "; ".join(f"{name}: {error}" for name, error in named)
+        message = f"Could not capture {len(named)} databases. {details}"
+    return message[:499] + "…" if len(message) > 500 else message
 
 
 def _job_lock_directory() -> int:
@@ -276,7 +296,7 @@ class SqliteBackupQueueService:
             )
             has_failure = any(outcome.get("status") == "failed" for outcome in outcomes)
             status = "cancelled" if cancelled else "failed" if has_failure else "completed"
-            error_message = "One or more SQLite databases could not be captured" if has_failure else None
+            error_message = _failed_outcome_summary(outcomes) if has_failure else None
             finished = await self._store.finish(job_id, owner_token, status=status, backup_ids=backup_ids, error_message=error_message)
             if not finished:
                 logger.warning("SQLite backup queue ownership lost before completion job_id=%s", job_id)
@@ -450,11 +470,17 @@ class SqliteBackupQueueService:
                     if isinstance(result, dict) and result.get("id")
                 ]
                 status = "completed" if phase == "completed" else phase
+                result_outcomes = [
+                    result for outcome in outcomes.values() if isinstance(outcome, dict) for result in outcome.get("results", []) if isinstance(result, dict)
+                ]
+                error_message = _failed_outcome_summary(result_outcomes) if phase == "failed" else None
+                if error_message is None:
+                    error_message = receipt.get("error")
                 project = getattr(self._store, "project_runtime_terminal", None)
                 projected = (
-                    await project(job["id"], status=status, backup_ids=backup_ids, error_message=receipt.get("error"))
+                    await project(job["id"], status=status, backup_ids=backup_ids, error_message=error_message)
                     if project
-                    else await self._store.finish(job["id"], owner_token, status=status, backup_ids=backup_ids, error_message=receipt.get("error"))
+                    else await self._store.finish(job["id"], owner_token, status=status, backup_ids=backup_ids, error_message=error_message)
                 )
                 if projected or job.get("status") in _TERMINAL:
                     interrupted.append(job["id"])

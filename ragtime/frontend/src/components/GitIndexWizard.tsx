@@ -19,6 +19,7 @@ import { ReindexIntervalSelect } from './ReindexIntervalSelect';
 import { defaultScheduleStartMinute, defaultScheduleTimezone } from './ScheduleStartTimeInput';
 import { GitWebhookSettings } from './GitWebhookSettings';
 import { GitHistoryDepthAndAdvancedOptions } from './GitHistoryDepthAndAdvancedOptions';
+import { isGitAuthenticationError, useGitTokenValidation } from './gitTokenValidation';
 
 type StatusType = 'info' | 'success' | 'error' | null;
 type WizardStep = 'input' | 'analyzing' | 'review' | 'indexing';
@@ -94,7 +95,7 @@ interface GitIndexWizardProps {
   /** When provided, wizard operates in edit mode for an existing git index */
   editIndex?: IndexInfo;
   /** Called when config is saved in edit mode (without triggering re-index) */
-  onConfigSaved?: () => void;
+  onConfigSaved?: (result?: { renamed: boolean }) => void;
   /** Called when user wants to navigate to settings */
   onNavigateToSettings?: () => void;
   /** If set, vector store type is locked (for consistency with existing indexes) */
@@ -126,12 +127,15 @@ export function GitIndexWizard({
   const [indexingJob, setIndexingJob] = useState<IndexJob | null>(null);
   const notifiedJobCreatedRef = useRef(false);
   const webhookRequestRef = useRef(0);
+  const branchRequestRef = useRef(0);
 
   const [gitUrl, setGitUrl] = useState(editIndex?.source || '');
   const [gitToken, setGitToken] = useState('');
   const [isPrivateRepo, setIsPrivateRepo] = useState(false);
   const [hasStoredToken, setHasStoredToken] = useState(editIndex?.has_stored_token || false);
-  const [storedTokenValid, setStoredTokenValid] = useState(true); // Assume valid until proven otherwise
+  const [replacementMode, setReplacementMode] = useState(false);
+  const [requiresTokenRepair, setRequiresTokenRepair] = useState(false);
+  const [repoVisibility, setRepoVisibility] = useState<'public' | 'private' | 'error' | null>(null);
   const [checkingVisibility, setCheckingVisibility] = useState(false);
   const [branches, setBranches] = useState<string[]>([]);
   const [selectedBranch, setSelectedBranch] = useState(editIndex?.git_branch || '');
@@ -189,6 +193,34 @@ export function GitIndexWizard({
   const [webhookRequestState, setWebhookRequestState] = useState<'idle' | 'loading' | 'mutating'>(
     'idle',
   );
+  const tokenValidation = useGitTokenValidation(gitUrl, editIndex?.name);
+  const invalidateTokenValidation = tokenValidation.invalidate;
+  const hasReplacementToken = Boolean(gitToken.trim());
+  const isSshGitUrl = /^git@[^:]+:[^/]+\/[^/]+(?:\.git)?$/.test(gitUrl);
+  const tokenActionBlocked =
+    (hasReplacementToken && tokenValidation.state !== 'valid') ||
+    (!isSshGitUrl && requiresTokenRepair && !hasReplacementToken) ||
+    (!isSshGitUrl && isPrivateRepo && !hasStoredToken && !hasReplacementToken);
+
+  const showTokenRepair =
+    replacementMode ||
+    (!isSshGitUrl && requiresTokenRepair) ||
+    (!isSshGitUrl && isPrivateRepo) ||
+    (!isEditMode && !hasStoredToken && !isSshGitUrl && isPrivateRepo);
+  const handleTokenChange = (value: string) => {
+    setGitToken(value);
+    tokenValidation.invalidate();
+  };
+  const guardTokenAction = () => {
+    if (!tokenActionBlocked) return false;
+    setStatus({
+      type: 'error',
+      message: hasReplacementToken
+        ? 'Check the replacement token before continuing.'
+        : 'A replacement token is required to restore repository access.',
+    });
+    return true;
+  };
 
   useEffect(() => {
     return () => {
@@ -294,7 +326,9 @@ export function GitIndexWizard({
       setSelectedBranch(editIndex.git_branch || '');
       setDescription(editIndex.description || '');
       setHasStoredToken(editIndex.has_stored_token || false);
-      setStoredTokenValid(true); // Reset to assume valid
+      setReplacementMode(false);
+      setRequiresTokenRepair(false);
+      setGitToken('');
       const snapshot = editIndex.config_snapshot;
       if (snapshot) {
         setFilePatterns(snapshot.file_patterns?.join(', ') || DEFAULT_FILE_PATTERNS);
@@ -376,6 +410,7 @@ export function GitIndexWizard({
   useEffect(() => {
     if (!isEditMode || !editIndex?.source) return;
 
+    let cancelled = false;
     const checkVisibility = async () => {
       setCheckingVisibility(true);
       try {
@@ -384,26 +419,37 @@ export function GitIndexWizard({
           index_name: editIndex.name,
         });
 
+        if (cancelled) return;
         if (result.visibility === 'private') {
+          setRepoVisibility('private');
           setIsPrivateRepo(true);
           setHasStoredToken(result.has_stored_token);
-          setStoredTokenValid(!result.needs_token);
-          if (result.needs_token) {
-            setBranchError(result.message);
-          }
+          setRequiresTokenRepair(result.needs_token);
+          if (result.message) setBranchError(result.message);
         } else if (result.visibility === 'public') {
+          setRepoVisibility('public');
           setIsPrivateRepo(false);
-          setBranchError(null);
+          if (result.has_stored_token) setHasStoredToken(true);
+          setRequiresTokenRepair(result.needs_token);
+          if (result.needs_token) setBranchError(result.message);
+          else setBranchError(null);
+        } else {
+          setRepoVisibility('error');
+          setHasStoredToken(result.has_stored_token);
+          setRequiresTokenRepair(result.needs_token);
+          if (result.message) setBranchError(result.message);
         }
-        // For 'error' or 'not_found', keep current state
       } catch {
         // Silently fail - don't break the UI
       } finally {
-        setCheckingVisibility(false);
+        if (!cancelled) setCheckingVisibility(false);
       }
     };
 
-    checkVisibility();
+    void checkVisibility();
+    return () => {
+      cancelled = true;
+    };
   }, [isEditMode, editIndex?.source, editIndex?.name]);
 
   const resetState = useCallback(() => {
@@ -415,6 +461,10 @@ export function GitIndexWizard({
     notifiedJobCreatedRef.current = false;
     setGitUrl('');
     setGitToken('');
+    setReplacementMode(false);
+    setRequiresTokenRepair(false);
+    setRepoVisibility(null);
+    tokenValidation.invalidate();
     setIsPrivateRepo(false);
     setBranches([]);
     setSelectedBranch('');
@@ -439,7 +489,7 @@ export function GitIndexWizard({
     setWebhookError(null);
     setWebhookRequestState('idle');
     webhookRequestRef.current += 1;
-  }, []);
+  }, [tokenValidation]);
 
   /**
    * Parse a Git URL to extract the repository name.
@@ -473,6 +523,7 @@ export function GitIndexWizard({
         return;
       }
 
+      const request = ++branchRequestRef.current;
       setLoadingBranches(true);
       setBranchError(null);
 
@@ -483,6 +534,7 @@ export function GitIndexWizard({
           index_name: editIndex?.name,
         });
 
+        if (request !== branchRequestRef.current) return;
         if (result.error) {
           if (!silent404 && result.error) {
             setBranchError(result.error);
@@ -503,12 +555,13 @@ export function GitIndexWizard({
           setSelectedBranch(defaultBranch);
         }
       } catch {
+        if (request !== branchRequestRef.current) return;
         if (!silent404) {
           setBranchError('Failed to fetch branches');
         }
         setBranches([]);
       } finally {
-        setLoadingBranches(false);
+        if (request === branchRequestRef.current) setLoadingBranches(false);
       }
     },
     [editIndex?.name, selectedBranch],
@@ -532,19 +585,15 @@ export function GitIndexWizard({
       return;
     }
 
-    const timer = setTimeout(() => {
-      if (isPrivateRepo && gitToken && gitToken.length >= 10) {
-        fetchBranches(gitUrl, gitToken, false);
-      } else if (!isPrivateRepo) {
-        fetchBranches(gitUrl, undefined, true);
-      } else {
-        setBranches([]);
-        setBranchError(null);
-      }
-    }, 500);
+    if (!isEditMode && !isPrivateRepo && !gitToken.trim())
+      void fetchBranches(gitUrl, undefined, true);
+  }, [fetchBranches, gitToken, gitUrl, isEditMode, isPrivateRepo]);
 
-    return () => clearTimeout(timer);
-  }, [fetchBranches, gitToken, gitUrl, isPrivateRepo, isEditMode]);
+  useEffect(() => {
+    if (tokenValidation.state === 'valid' && gitToken.trim()) {
+      void fetchBranches(gitUrl, gitToken, false);
+    }
+  }, [fetchBranches, gitToken, gitUrl, tokenValidation.state]);
 
   // Poll the indexing job so the wizard can show live clone/indexing progress.
   const indexingJobId = indexingJob?.id ?? null;
@@ -567,7 +616,20 @@ export function GitIndexWizard({
         if (nextJob.status === 'completed') {
           setStatus({ type: 'success', message: `Indexing complete: ${nextJob.name}` });
         } else if (nextJob.status === 'failed') {
-          setStatus({ type: 'error', message: nextJob.error_message || 'Indexing failed.' });
+          const message = nextJob.error_message || 'Indexing failed.';
+          if (isGitAuthenticationError(message)) {
+            setRequiresTokenRepair(true);
+            setReplacementMode(true);
+            setWizardStep('input');
+            invalidateTokenValidation();
+            setStatus({
+              type: 'error',
+              message:
+                'Repository authentication failed. Provide and check a replacement token, then try again.',
+            });
+          } else {
+            setStatus({ type: 'error', message });
+          }
         }
       } catch (err) {
         if (!cancelled) {
@@ -589,9 +651,10 @@ export function GitIndexWizard({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [indexingJobId, indexingJobStatus]);
+  }, [indexingJobId, indexingJobStatus, invalidateTokenValidation]);
 
   const handleAnalyze = async () => {
+    if (guardTokenAction()) return;
     if (!gitUrl) {
       setStatus({ type: 'error', message: 'Please enter a Git URL' });
       return;
@@ -614,7 +677,7 @@ export function GitIndexWizard({
         index_name: name,
         git_url: gitUrl,
         git_branch: selectedBranch || 'main',
-        git_token: isPrivateRepo ? gitToken : undefined,
+        git_token: gitToken.trim() || undefined,
         file_patterns: filePatterns
           .split(',')
           .map((s) => s.trim())
@@ -667,6 +730,7 @@ export function GitIndexWizard({
   };
 
   const handleStartIndexing = async () => {
+    if (guardTokenAction()) return;
     const parsed = parseGitUrl(gitUrl);
     if (!parsed) {
       setStatus({ type: 'error', message: 'Invalid Git URL format' });
@@ -687,7 +751,7 @@ export function GitIndexWizard({
         name,
         git_url: gitUrl,
         git_branch: selectedBranch || 'main',
-        git_token: isPrivateRepo ? gitToken : undefined,
+        git_token: gitToken.trim() || undefined,
         config: {
           name,
           description: '',
@@ -768,8 +832,10 @@ export function GitIndexWizard({
     notifiedJobCreatedRef.current = false;
     setGitUrl(isEditMode ? editIndex?.source || '' : '');
     setGitToken('');
+    setReplacementMode(false);
+    setRequiresTokenRepair(false);
+    tokenValidation.invalidate();
     setIsPrivateRepo(false);
-    setStoredTokenValid(true);
     setBranches([]);
     setSelectedBranch('');
     setLoadingBranches(false);
@@ -826,31 +892,15 @@ export function GitIndexWizard({
    */
   const handleSaveConfig = async () => {
     if (!editIndex) return;
+    if (guardTokenAction()) return;
 
     setIsLoading(true);
     setStatus({ type: 'info', message: 'Saving configuration...' });
 
     try {
-      // Track the current name for API calls (may change if renamed)
       let currentName = editIndex.name;
-
-      // If name has changed, rename the index first
-      // The backend will automatically convert the name to a safe identifier
-      // Compare against display_name (human-readable) not the safe tool name
       const trimmedName = indexName.trim();
       const originalDisplayName = editIndex.display_name || editIndex.name;
-      if (trimmedName && trimmedName !== originalDisplayName) {
-        setStatus({ type: 'info', message: 'Renaming index...' });
-        const renameResult = await api.renameIndex(editIndex.name, trimmedName);
-        currentName = renameResult.new_name;
-        // Update to display_name for the UI, not the safe tool name
-        setIndexName(renameResult.display_name);
-      }
-
-      // Update description (using the potentially new name)
-      await api.updateIndexDescription(currentName, description);
-
-      // Update config
       const trimmedToken = gitToken.trim();
       const updated = await api.updateIndexConfig(currentName, {
         git_branch: selectedBranch || undefined,
@@ -877,6 +927,15 @@ export function GitIndexWizard({
         reindex_timezone:
           reindexIntervalHours > 0 ? (reindexTimezone ?? defaultScheduleTimezone()) : null,
       });
+      // Validate and persist a replacement credential before renaming. A
+      // rejected candidate must not leave the modal pointing at a stale name.
+      await api.updateIndexDescription(currentName, description);
+      if (trimmedName && trimmedName !== originalDisplayName) {
+        setStatus({ type: 'info', message: 'Renaming index...' });
+        const renameResult = await api.renameIndex(editIndex.name, trimmedName);
+        currentName = renameResult.new_name;
+        setIndexName(renameResult.display_name);
+      }
       // Reflect saved config locally so the UI shows persisted values
       const snap = updated?.config_snapshot;
       if (snap) {
@@ -903,9 +962,11 @@ export function GitIndexWizard({
       if (trimmedToken) {
         setGitToken('');
         setHasStoredToken(true);
-        setStoredTokenValid(true);
+        setReplacementMode(false);
+        setRequiresTokenRepair(false);
+        tokenValidation.invalidate();
       }
-      onConfigSaved?.();
+      onConfigSaved?.({ renamed: wasRenamed });
     } catch (err) {
       setStatus({
         type: 'error',
@@ -972,6 +1033,10 @@ export function GitIndexWizard({
     if (!currentWebhookIndexName) {
       return;
     }
+    if (tokenActionBlocked) {
+      setStatus({ type: 'error', message: 'Check the replacement token before continuing.' });
+      return;
+    }
     setIsLoading(true);
     setWebhookError(null);
     setStatus({ type: 'info', message: 'Cloning repository...' });
@@ -982,14 +1047,28 @@ export function GitIndexWizard({
       notifiedJobCreatedRef.current = true;
       onJobCreated?.();
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Request failed';
+      if (isGitAuthenticationError(message)) {
+        setRequiresTokenRepair(true);
+        setReplacementMode(true);
+        invalidateTokenValidation();
+      }
       setStatus({
         type: 'error',
-        message: `Error: ${err instanceof Error ? err.message : 'Request failed'}`,
+        message: isGitAuthenticationError(message)
+          ? 'Repository authentication failed. Provide and check a replacement token, then try again.'
+          : `Error: ${message}`,
       });
     } finally {
       setIsLoading(false);
     }
-  }, [currentWebhookIndexName, gitToken, onJobCreated]);
+  }, [
+    currentWebhookIndexName,
+    gitToken,
+    invalidateTokenValidation,
+    onJobCreated,
+    tokenActionBlocked,
+  ]);
 
   const handleWebhookDeliveryChange = useCallback(
     async (enabled: boolean): Promise<boolean> => {
@@ -1050,10 +1129,83 @@ export function GitIndexWizard({
     </div>
   ) : null;
 
+  const credentialsSection = (sectionId: string) =>
+    (isEditMode || isPrivateRepo || requiresTokenRepair) && (
+      <section id={sectionId} className="form-group" aria-label="Git credentials">
+        {isEditMode && hasStoredToken && !requiresTokenRepair && repoVisibility !== 'error' && (
+          <div className="status-message success">
+            Stored credentials are available.
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ marginLeft: '12px' }}
+              onClick={() => setReplacementMode(true)}
+              disabled={isLoading}
+            >
+              Update token
+            </button>
+          </div>
+        )}
+        {isEditMode && !hasStoredToken && !requiresTokenRepair && repoVisibility !== 'public' && (
+          <div className="field-help" aria-live="polite">
+            Repository access is unknown. Provide a token to check access before saving or pulling.
+          </div>
+        )}
+        {requiresTokenRepair && (
+          <div className="status-message error" aria-live="polite">
+            Repository authentication needs a replacement token.
+          </div>
+        )}
+        {showTokenRepair &&
+          (!isEditMode || !hasStoredToken || replacementMode || requiresTokenRepair) && (
+            <>
+              <label htmlFor={`${sectionId}-token`}>
+                Personal access token{' '}
+                {requiresTokenRepair || (isPrivateRepo && !hasStoredToken) ? '*' : ''}
+              </label>
+              <input
+                id={`${sectionId}-token`}
+                type="password"
+                value={gitToken}
+                onChange={(e) => handleTokenChange(e.target.value)}
+                onBlur={() => {
+                  if (gitToken.trim()) void tokenValidation.validate(gitToken);
+                }}
+                placeholder="ghp_xxxx... or glpat-xxxx..."
+                autoComplete="off"
+                aria-describedby={`${sectionId}-token-help ${sectionId}-token-status`}
+                aria-invalid={tokenValidation.state === 'invalid'}
+                disabled={isLoading}
+              />
+              <small id={`${sectionId}-token-help`} className="field-help">
+                GitHub fine-grained tokens need Contents: Read-only, repository selection, and any
+                required organization approval or SSO. Classic tokens need repo scope for private
+                repositories. No write permission is required.
+              </small>
+              <div id={`${sectionId}-token-status`} className="field-help" aria-live="polite">
+                {tokenValidation.state === 'checking' && 'Checking token access…'}
+                {tokenValidation.state === 'valid' && 'Token can access this repository.'}
+                {tokenValidation.state === 'invalid' && 'This token cannot access this repository.'}
+                {tokenValidation.state === 'failed' &&
+                  'Token access check could not complete. Try again.'}
+              </div>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => void tokenValidation.validate(gitToken)}
+                disabled={isLoading || !gitToken.trim() || tokenValidation.state === 'checking'}
+              >
+                Check token
+              </button>
+            </>
+          )}
+      </section>
+    );
+
   // Edit mode: show simplified config editor
   if (isEditMode && wizardStep === 'input') {
     return (
-      <div>
+      <div id="git-index-edit-wizard">
         <h4 style={{ marginBottom: '12px' }}>Edit Index Configuration</h4>
         <p className="field-help" style={{ marginBottom: '16px' }}>
           Update settings for the next time you click "Pull & Re-index". Changes will not take
@@ -1073,6 +1225,8 @@ export function GitIndexWizard({
             <strong>Source:</strong> {editIndex.source}
           </div>
         </div>
+
+        {credentialsSection('git-index-edit-credentials')}
 
         <div
           style={{
@@ -1150,7 +1304,8 @@ export function GitIndexWizard({
                   disabled={
                     isLoading ||
                     webhookRequestState === 'mutating' ||
-                    (indexingJob !== null && !isIndexJobTerminal(indexingJob))
+                    (indexingJob !== null && !isIndexJobTerminal(indexingJob)) ||
+                    tokenActionBlocked
                   }
                 >
                   Pull now
@@ -1216,7 +1371,12 @@ export function GitIndexWizard({
           >
             Clear Fields
           </button>
-          <button type="button" className="btn" onClick={handleSaveConfig} disabled={isLoading}>
+          <button
+            type="button"
+            className="btn"
+            onClick={handleSaveConfig}
+            disabled={isLoading || tokenActionBlocked}
+          >
             {isLoading ? 'Saving...' : 'Save Configuration'}
           </button>
         </div>
@@ -1228,7 +1388,7 @@ export function GitIndexWizard({
 
   if (wizardStep === 'input' || wizardStep === 'analyzing') {
     return (
-      <div>
+      <div id="git-index-create-wizard">
         <div className="form-group" style={{ marginBottom: '16px' }}>
           <label>Git URL *</label>
           <input
@@ -1239,6 +1399,8 @@ export function GitIndexWizard({
             disabled={isLoading}
           />
         </div>
+
+        {credentialsSection('git-index-create-credentials')}
 
         <div
           style={{
@@ -1335,7 +1497,7 @@ export function GitIndexWizard({
               onChange={(e) => {
                 setIsPrivateRepo(e.target.checked);
                 if (!e.target.checked) {
-                  setGitToken('');
+                  handleTokenChange('');
                   if (gitUrl) {
                     fetchBranches(gitUrl);
                   }
@@ -1352,95 +1514,6 @@ export function GitIndexWizard({
             )}
           </label>
         </div>
-
-        {isPrivateRepo && (
-          <div
-            className="form-group"
-            style={{
-              marginLeft: '1.5rem',
-              borderLeft: '2px solid var(--color-border-strong)',
-              paddingLeft: '1rem',
-              marginBottom: '1rem',
-            }}
-          >
-            {/* Show stored token status in edit mode */}
-            {isEditMode && hasStoredToken && storedTokenValid && (
-              <div
-                style={{
-                  marginBottom: '12px',
-                  padding: '12px',
-                  background: 'var(--color-success-light)',
-                  borderRadius: '8px',
-                  border: '1px solid var(--color-success-border)',
-                }}
-              >
-                <span style={{ color: 'var(--color-success)' }}>
-                  Token stored - will use existing credentials.
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setStoredTokenValid(false)}
-                  style={{
-                    marginLeft: '12px',
-                    padding: '4px 8px',
-                    fontSize: '12px',
-                    background: 'transparent',
-                    border: '1px solid var(--color-border-strong)',
-                    borderRadius: '4px',
-                    color: 'var(--color-text-muted)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Update Token
-                </button>
-              </div>
-            )}
-
-            {/* Show warning if stored token is invalid */}
-            {isEditMode && hasStoredToken && !storedTokenValid && (
-              <div
-                style={{
-                  marginBottom: '12px',
-                  padding: '12px',
-                  background: 'var(--color-warning-light)',
-                  borderRadius: '8px',
-                  border: '1px solid var(--color-warning-border)',
-                }}
-              >
-                <span style={{ color: 'var(--color-warning)' }}>
-                  Stored token no longer works - please provide a new token.
-                </span>
-              </div>
-            )}
-
-            {/* Show token input if needed */}
-            {(!isEditMode || !hasStoredToken || !storedTokenValid) && (
-              <>
-                <label>Personal Access Token {!isEditMode ? '*' : ''}</label>
-                <input
-                  type="password"
-                  value={gitToken}
-                  onChange={(e) => setGitToken(e.target.value)}
-                  placeholder="ghp_xxxx... or glpat-xxxx..."
-                  autoComplete="off"
-                  disabled={isLoading}
-                />
-                <small
-                  style={{
-                    color: 'var(--color-text-muted)',
-                    fontSize: '0.85em',
-                    display: 'block',
-                    marginTop: '0.25rem',
-                  }}
-                >
-                  {isEditMode
-                    ? 'Provide a new token to update stored credentials.'
-                    : 'Required for private repositories. Token is stored securely for automatic re-indexing.'}
-                </small>
-              </>
-            )}
-          </div>
-        )}
 
         <OcrVectorStoreFields
           isLoading={isLoading}
@@ -1500,7 +1573,7 @@ export function GitIndexWizard({
             type="button"
             className="btn"
             onClick={handleAnalyze}
-            disabled={isLoading || !gitUrl}
+            disabled={isLoading || !gitUrl || tokenActionBlocked}
           >
             {isLoading ? 'Analyzing...' : 'Analyze Repository'}
           </button>
@@ -1640,7 +1713,12 @@ export function GitIndexWizard({
           >
             Clear Fields
           </button>
-          <button type="button" className="btn" onClick={handleStartIndexing} disabled={isLoading}>
+          <button
+            type="button"
+            className="btn"
+            onClick={handleStartIndexing}
+            disabled={isLoading || tokenActionBlocked}
+          >
             {isLoading ? 'Starting...' : 'Start Indexing'}
           </button>
         </div>

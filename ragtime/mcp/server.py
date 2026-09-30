@@ -26,7 +26,7 @@ from typing import Any, cast
 
 from mcp.server import NotificationOptions, Server
 from mcp.server.session import ServerSession
-from mcp.types import CallToolResult, TextContent, Tool
+from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
 
 from ragtime.content_protection.external import (
     authorize_external_content,
@@ -39,6 +39,7 @@ from ragtime.core.logging import get_logger
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, mcp_tool_adapter
 from ragtime.rag import rag
+from ragtime.tools.ssh_transfer import build_workspace_file_callbacks
 from ragtime.userspace.development_bootstrap import (
     build_compact_context,
     read_context_facts,
@@ -581,13 +582,23 @@ def _register_handlers(
                 tool_definitions = await tool_adapter.get_available_tools(route_filter=route_filter)
 
                 for tool_def in tool_definitions:
-                    tools.append(
-                        Tool(
-                            name=tool_def.name,
-                            description=tool_def.description,
-                            inputSchema=tool_def.input_schema,
+                    if tool_def.is_synthetic:
+                        tools.append(
+                            Tool(
+                                name=tool_def.name,
+                                description=tool_def.description,
+                                inputSchema=tool_def.input_schema,
+                                annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True),
+                            )
                         )
-                    )
+                    else:
+                        tools.append(
+                            Tool(
+                                name=tool_def.name,
+                                description=tool_def.description,
+                                inputSchema=tool_def.input_schema,
+                            )
+                        )
 
             if principal is not None and route_filter is None:
                 # Definitions are rebuilt per request because the operation
@@ -620,7 +631,7 @@ def _register_handlers(
         # Arguments are untrusted content and must not enter ordinary logs.
 
         try:
-            canonical_tool_id = await tool_adapter.resolve_canonical_tool_id(name)
+            canonical_tool_id = await tool_adapter.resolve_canonical_tool_id(name, route_filter)
             await authorize_external_content(
                 arguments,
                 direction="inbound",
@@ -658,7 +669,31 @@ def _register_handlers(
                         )
                     ]
 
-            result = await tool_adapter.execute_tool(name, arguments)
+            synthetic_transfer = name == "ssh_transfer" and await tool_adapter.get_ssh_transfer_definition(route_filter) is not None
+            if synthetic_transfer:
+                # The synthetic tool must be resolved against the route again at
+                # call time; never use a global adapter cache for its endpoints.
+                principal = get_request_development_principal()
+                workspace_read = workspace_write = None
+                principal_user_id = str(getattr(principal, "user_id", "") or "")
+                if principal_user_id and getattr(principal, "credential_id", None) is None:
+                    workspace_read, workspace_write = build_workspace_file_callbacks(
+                        user_id=principal_user_id,
+                        is_admin=bool(getattr(principal, "is_admin", False)),
+                    )
+
+                # stdio callbacks do not pass through the ASGI request wrapper.
+                # Bind a fresh transport context so endpoint-scoped protection
+                # sees the same trusted identity/route as the outer guards.
+                with mcp_request_context(principal, _mcp_route_id.get()):
+                    result = await tool_adapter.execute_ssh_transfer(
+                        arguments,
+                        route_filter,
+                        workspace_read=workspace_read,
+                        workspace_write=workspace_write,
+                    )
+            else:
+                result = await tool_adapter.execute_tool(name, arguments)
             await authorize_external_content(
                 result,
                 direction="outbound",

@@ -42,6 +42,7 @@ from ragtime.rag.components import (
     serialize_knowledge_search_payload,
 )
 from ragtime.tools.git_history import search_git_history
+from ragtime.tools.ssh_transfer import SSHTransferInput, build_ssh_transfer_tool, normalized_ssh_name, parse_endpoint
 
 logger = get_logger(__name__)
 
@@ -402,6 +403,7 @@ class MCPToolDefinition:
     tool_config: dict  # Original ToolConfig data
     execute_fn: Callable[..., Awaitable[str]]
     is_healthy: bool = True
+    is_synthetic: bool = False
 
 
 @dataclass
@@ -548,7 +550,97 @@ class MCPToolAdapter:
             git_history_tools = await self._create_git_history_tools(aggregate_search)
             tools.extend(git_history_tools)
 
+        transfer = await self.get_ssh_transfer_definition(route_filter, configs=tool_configs)
+        if transfer is not None:
+            tools.append(transfer)
+
         return tools
+
+    async def get_ssh_transfer_definition(
+        self,
+        route_filter: McpRouteFilter | None = None,
+        *,
+        configs: list[dict[str, Any]] | None = None,
+    ) -> MCPToolDefinition | None:
+        """Build the synthetic tool from this request's route-visible SSH rows."""
+        configs = configs if configs is not None else await self._get_configs_for_name_resolution()
+        if route_filter is not None:
+            configs = [config for config in configs if config.get("id") in route_filter.tool_config_ids]
+        ssh_configs = [config for config in configs if config.get("tool_type") == "ssh_shell" and config.get("enabled", True)]
+        if not ssh_configs or any(self._build_tool_name(config) == "ssh_transfer" for config in ssh_configs):
+            if ssh_configs:
+                logger.warning("MCP: omitting synthetic ssh_transfer because a visible legacy SSH tool uses that name")
+            return None
+        # A synthetic definition is intentionally never cached: route filtering
+        # and write permissions are authorization decisions, not presentation.
+        return MCPToolDefinition(
+            name="ssh_transfer",
+            description="Copy a file between route-authorized SSH endpoints, inline content, or an authorized workspace file.",
+            input_schema=SSHTransferInput.model_json_schema(),
+            tool_config={"id": "__ssh_transfer_synthetic__", "timeout_max_seconds": 300},
+            execute_fn=build_ssh_transfer_tool(ssh_configs),
+            is_synthetic=True,
+        )
+
+    async def execute_ssh_transfer(
+        self,
+        arguments: dict[str, Any],
+        route_filter: McpRouteFilter | None = None,
+        *,
+        workspace_read: Callable[[str, str], Awaitable[str]] | None = None,
+        workspace_write: Callable[[str, str, str, bool], Awaitable[None]] | None = None,
+    ) -> str:
+        fresh_configs = await self._get_configs_for_name_resolution()
+        if route_filter is not None:
+            fresh_configs = [config for config in fresh_configs if config.get("id") in route_filter.tool_config_ids]
+        fresh_configs = [config for config in fresh_configs if config.get("tool_type") == "ssh_shell" and config.get("enabled", True)]
+        definition = await self.get_ssh_transfer_definition(route_filter, configs=fresh_configs)
+        if definition is None:
+            return json.dumps(
+                {
+                    "tool": "ssh_transfer",
+                    "status": "rejected",
+                    "bytes_transferred": 0,
+                    "files_transferred": 0,
+                    "errors": ["SSH transfer is not available"],
+                    "skipped": [],
+                }
+            )
+        definition.execute_fn = build_ssh_transfer_tool(
+            fresh_configs,
+            workspace_read=workspace_read,
+            workspace_write=workspace_write,
+        )
+        timeout_ceiling = self._ssh_transfer_timeout_ceiling(arguments, fresh_configs)
+        return await self._execute_with_timeout(
+            definition.name,
+            definition.execute_fn,
+            arguments,
+            timeout_max_seconds=timeout_ceiling,
+            input_schema=definition.input_schema,
+        )
+
+    @staticmethod
+    def _ssh_transfer_timeout_ceiling(arguments: dict[str, Any], configs: list[dict[str, Any]]) -> int:
+        by_name: dict[str, dict[str, Any]] = {}
+        duplicates: set[str] = set()
+        for config in configs:
+            name = normalized_ssh_name(str(config.get("name") or ""))
+            if name in by_name:
+                duplicates.add(name)
+            by_name[name] = config
+        for name in duplicates:
+            by_name.pop(name, None)
+        endpoint_configs: list[dict[str, Any]] = []
+        for value in (arguments.get("source"), arguments.get("destination")):
+            try:
+                _kind, _path, endpoint_config = parse_endpoint(str(value or ""), by_name)
+            except ValueError:
+                continue
+            if endpoint_config is not None:
+                endpoint_configs.append(endpoint_config)
+        caps = [int(config.get("timeout_max_seconds", 0) or 0) for config in endpoint_configs]
+        return min([300] + [cap for cap in caps if cap > 0])
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
         """
@@ -636,16 +728,13 @@ class MCPToolAdapter:
 
         return f"Error: Unknown tool '{tool_name}'"
 
-    async def resolve_canonical_tool_id(self, tool_name: str) -> str:
+    async def resolve_canonical_tool_id(self, tool_name: str, route_filter: McpRouteFilter | None = None) -> str:
         """Return the durable ToolConfig ID for an exposed MCP name.
 
         Names are presentation aliases and can change.  Coverage requirements
         are stored against ToolConfig IDs, so callers must resolve this at each
         request rather than capture it with a cached executor.
         """
-        cached = self._tool_definitions.get(tool_name)
-        if cached is not None:
-            return str(cached.tool_config.get("id") or tool_name)
         for config in await self._get_configs_for_name_resolution():
             if tool_name in {
                 self._build_tool_name(config),
@@ -653,6 +742,11 @@ class MCPToolAdapter:
                 self._build_http_api_catalog_search_tool_name(config),
             }:
                 return str(config.get("id") or tool_name)
+        cached = self._tool_definitions.get(tool_name)
+        if cached is not None:
+            return str(cached.tool_config.get("id") or tool_name)
+        if tool_name == "ssh_transfer" and await self.get_ssh_transfer_definition(route_filter) is not None:
+            return "__ssh_transfer_synthetic__"
         # Static/index-backed tools have no ToolConfig row. Their stable MCP
         # name remains the canonical ID.
         return tool_name
@@ -734,6 +828,8 @@ class MCPToolAdapter:
         This intentionally avoids get_available_tools(): call-time authorization
         should not rebuild tools or run heartbeat checks before every tool call.
         """
+        if tool_name == "ssh_transfer" and await self.get_ssh_transfer_definition(route_filter) is not None:
+            return True
         tool_configs = await self._get_configs_for_name_resolution()
 
         for config in tool_configs:

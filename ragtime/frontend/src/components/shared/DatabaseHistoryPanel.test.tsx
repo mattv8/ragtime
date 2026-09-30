@@ -767,7 +767,7 @@ describe('DatabaseHistoryPanel', () => {
           ...captureJob,
           id: 'completed-job',
           status: 'completed',
-          finished_at: '2026-09-17T12:00:00Z',
+          finished_at: '2026-09-17T09:00:00Z',
           backup_ids: ['hourly-new'],
         },
       ],
@@ -864,7 +864,7 @@ describe('DatabaseHistoryPanel', () => {
     expect(dialog.querySelector('[data-history-database-group="app.sqlite3"]')).toBeTruthy();
   });
 
-  it('labels an empty active-job scope as all workspace databases', async () => {
+  it('labels an empty active-job scope as all databases in this workspace', async () => {
     const user = userEvent.setup();
     apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
       jobs: [{ ...captureJob, database_names: [] }],
@@ -879,8 +879,31 @@ describe('DatabaseHistoryPanel', () => {
       expect(card).toBeTruthy();
       return card as HTMLElement;
     });
-    expect(within(job).getByText('All workspace databases')).toBeTruthy();
+    expect(within(job).getByText('All databases in this workspace')).toBeTruthy();
     expect(within(job).queryByText('All databases')).toBeNull();
+    expect(
+      within(dialog).getByText('Restore points for all databases in this workspace'),
+    ).toBeTruthy();
+  });
+
+  it('names the workspace in the default all-databases subtitle', async () => {
+    const user = userEvent.setup();
+    render(
+      <DatabaseHistoryPanel
+        workspaceId="ws-1"
+        workspaceName="Launch Sales Dashboard"
+        ownerOrAdmin
+        hostId="workspace"
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+
+    expect(
+      within(screen.getByRole('dialog')).getByText(
+        'Restore points for all databases in Launch Sales Dashboard',
+      ),
+    ).toBeTruthy();
   });
 
   it('omits the default all-databases scope from completed activity with no changes', async () => {
@@ -916,7 +939,7 @@ describe('DatabaseHistoryPanel', () => {
     );
     expect(row).toBeTruthy();
     expect(within(row as HTMLElement).getByText('Hourly backup check')).toBeTruthy();
-    expect(within(row as HTMLElement).queryByText('All workspace databases')).toBeNull();
+    expect(within(row as HTMLElement).queryByText('All databases in this workspace')).toBeNull();
     // No restore points created → no outcome text shown (per spec: silence when nothing happened).
     expect(within(row as HTMLElement).queryByText(/restore point/i)).toBeNull();
     // Activity rows with no restore points have no snapshot link → no focusable controls.
@@ -1691,5 +1714,392 @@ describe('DatabaseHistoryPanel', () => {
     expect(
       screen.getByRole('button', { name: /Delete app\.sqlite3 backup/ }).hasAttribute('disabled'),
     ).toBe(true);
+  });
+
+  it('groups consecutive identical failed captures and limits rendered attempts', async () => {
+    const user = userEvent.setup();
+    const jobs = Array.from({ length: 51 }, (_, index) => ({
+      ...captureJob,
+      id: `failed-${index}`,
+      status: 'failed' as const,
+      error_message: 'Docker host kernel is unavailable',
+      finished_at: new Date(Date.UTC(2026, 8, 17, 23, 59) - index * 60_000).toISOString(),
+      updated_at: '2026-09-17T10:00:00Z',
+    }));
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({ jobs });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const group = await waitFor(() => {
+      const item = screen
+        .getByRole('dialog')
+        .querySelector<HTMLElement>('[data-history-capture-group="failed-0"]');
+      expect(item).toBeTruthy();
+      return item as HTMLElement;
+    });
+    expect(within(group).getByText('51+ failed attempts')).toBeTruthy();
+    expect(within(group).getByText(/^Earliest shown /)).toBeTruthy();
+    expect(group.querySelectorAll('[data-history-capture-job]')).toHaveLength(0);
+    expect(group.querySelector('[data-history-group-attempts]')).toBeTruthy();
+    await user.click(within(group).getByText('Show attempts'));
+    expect(group.querySelectorAll('[data-history-capture-attempt]')).toHaveLength(50);
+    expect(within(group).getByText('and 1 older attempts')).toBeTruthy();
+  });
+
+  it('shows exact attempt counts when the job list is not truncated', async () => {
+    const user = userEvent.setup();
+    const jobs = Array.from({ length: 3 }, (_, index) => ({
+      ...captureJob,
+      id: `failed-${index}`,
+      status: 'failed' as const,
+      error_message: 'Docker host kernel is unavailable',
+      finished_at: new Date(Date.UTC(2026, 8, 17, 23, 59) - index * 60_000).toISOString(),
+      updated_at: '2026-09-17T10:00:00Z',
+    }));
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({ jobs });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const group = await waitFor(() => {
+      const item = screen
+        .getByRole('dialog')
+        .querySelector<HTMLElement>('[data-history-capture-group="failed-0"]');
+      expect(item).toBeTruthy();
+      return item as HTMLElement;
+    });
+    expect(within(group).getByText('3 failed attempts')).toBeTruthy();
+    expect(within(group).getByText(/^First /)).toBeTruthy();
+    expect(within(group).queryByText(/Earliest shown/)).toBeNull();
+  });
+
+  it('moves failed scheduled captures resolved by a later all-databases run into grouped activity', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        {
+          ...captureJob,
+          id: 'success',
+          trigger: 'scheduled',
+          status: 'completed',
+          database_names: [],
+          finished_at: '2026-09-17T12:00:00Z',
+        },
+        ...['failed-3', 'failed-2', 'failed-1'].map((id, index) => ({
+          ...captureJob,
+          id,
+          trigger: 'scheduled' as const,
+          status: 'failed' as const,
+          error_message: 'Docker host kernel is unavailable',
+          finished_at: `2026-09-17T11:0${3 - index}:00Z`,
+        })),
+      ],
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const dialog = screen.getByRole('dialog');
+    const recovered = await waitFor(() => {
+      const row = dialog.querySelector<HTMLElement>('[data-history-activity-recovered]');
+      expect(row).toBeTruthy();
+      return row as HTMLElement;
+    });
+    expect(dialog.querySelector('[data-history-band="attention"]')).toBeNull();
+    expect(recovered.dataset.historyCaptureGroupCount).toBe('3');
+    expect(within(recovered).getByText('Failed captures')).toBeTruthy();
+    expect(within(recovered).getByText('3 occurrences')).toBeTruthy();
+    expect(within(recovered).getByText('Later capture succeeded')).toBeTruthy();
+    expect(
+      within(recovered)
+        .getByText('Docker host kernel is unavailable')
+        .classList.contains('database-history-backup-secondary'),
+    ).toBe(true);
+    expect(recovered.querySelector('.database-history-error')).toBeNull();
+    expect(within(dialog).getByText('Capture activity (2 runs)')).toBeTruthy();
+  });
+
+  it('keeps a failure in Needs attention when a later capture covers another database', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        {
+          ...captureJob,
+          id: 'orders-success',
+          status: 'completed',
+          database_names: ['orders.sqlite3'],
+          finished_at: '2026-09-17T12:00:00Z',
+        },
+        {
+          ...captureJob,
+          id: 'app-failure',
+          status: 'failed',
+          error_message: 'Capture unavailable',
+          finished_at: '2026-09-17T11:00:00Z',
+        },
+      ],
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const dialog = screen.getByRole('dialog');
+    await waitFor(() =>
+      expect(dialog.querySelector('[data-history-capture-job="app-failure"]')).toBeTruthy(),
+    );
+    expect(dialog.querySelector('[data-history-activity-recovered]')).toBeNull();
+  });
+
+  it('keeps an all-databases failure in Needs attention after a single-database success', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        {
+          ...captureJob,
+          id: 'app-success',
+          status: 'completed',
+          database_names: ['app.sqlite3'],
+          finished_at: '2026-09-17T12:00:00Z',
+        },
+        {
+          ...captureJob,
+          id: 'all-failure',
+          status: 'failed',
+          database_names: [],
+          error_message: 'Capture unavailable',
+          finished_at: '2026-09-17T11:00:00Z',
+        },
+      ],
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const dialog = screen.getByRole('dialog');
+    await waitFor(() =>
+      expect(dialog.querySelector('[data-history-capture-job="all-failure"]')).toBeTruthy(),
+    );
+    expect(dialog.querySelector('[data-history-activity-recovered]')).toBeNull();
+  });
+
+  it('marks a recovered streak reaching the end of a full job page as possibly truncated', async () => {
+    const user = userEvent.setup();
+    const failures = Array.from({ length: 49 }, (_, index) => ({
+      ...captureJob,
+      id: `failed-${index}`,
+      trigger: 'scheduled' as const,
+      status: 'failed' as const,
+      database_names: [],
+      error_message: 'Docker host kernel is unavailable',
+      finished_at: new Date(Date.UTC(2026, 8, 17, 11, 59) - index * 60_000).toISOString(),
+    }));
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        {
+          ...captureJob,
+          id: 'success',
+          trigger: 'scheduled',
+          status: 'completed',
+          database_names: [],
+          finished_at: '2026-09-17T12:00:00Z',
+        },
+        ...failures,
+      ],
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const recovered = await waitFor(() => {
+      const row = screen
+        .getByRole('dialog')
+        .querySelector<HTMLElement>('[data-history-activity-recovered="failed-0"]');
+      expect(row).toBeTruthy();
+      return row as HTMLElement;
+    });
+    expect(recovered.dataset.historyCaptureGroupCount).toBe('49');
+    expect(within(recovered).getByText('49+ occurrences (earliest shown)')).toBeTruthy();
+  });
+
+  it('keeps a newer failure unresolved while showing the earlier failure streak as recovered', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        {
+          ...captureJob,
+          id: 'new-failure',
+          status: 'failed',
+          error_message: 'Still unavailable',
+          finished_at: '2026-09-17T12:00:00Z',
+        },
+        {
+          ...captureJob,
+          id: 'success',
+          status: 'completed',
+          database_names: [],
+          finished_at: '2026-09-17T11:00:00Z',
+        },
+        ...['old-failure-2', 'old-failure-1'].map((id, index) => ({
+          ...captureJob,
+          id,
+          status: 'failed' as const,
+          error_message: 'Previously unavailable',
+          finished_at: `2026-09-17T10:0${2 - index}:00Z`,
+        })),
+      ],
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const dialog = screen.getByRole('dialog');
+    await waitFor(() =>
+      expect(dialog.querySelector('[data-history-capture-job="new-failure"]')).toBeTruthy(),
+    );
+    const recovered = dialog.querySelector<HTMLElement>('[data-history-activity-recovered]');
+    expect(recovered?.dataset.historyCaptureGroupCount).toBe('2');
+  });
+
+  it('separates recovered failure streaks when a completed capture occurs between them', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        {
+          ...captureJob,
+          id: 'latest-success',
+          status: 'completed',
+          finished_at: '2026-09-17T13:00:00Z',
+        },
+        {
+          ...captureJob,
+          id: 'newer-failure',
+          status: 'failed',
+          error_message: 'Capture unavailable',
+          finished_at: '2026-09-17T12:00:00Z',
+        },
+        {
+          ...captureJob,
+          id: 'middle-success',
+          status: 'completed',
+          finished_at: '2026-09-17T11:00:00Z',
+        },
+        {
+          ...captureJob,
+          id: 'older-failure',
+          status: 'failed',
+          error_message: 'Capture unavailable',
+          finished_at: '2026-09-17T10:00:00Z',
+        },
+      ],
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const dialog = screen.getByRole('dialog');
+    await waitFor(() =>
+      expect(dialog.querySelectorAll('[data-history-activity-recovered]')).toHaveLength(2),
+    );
+  });
+
+  it('uses singular recovered activity copy without an occurrence count', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        { ...captureJob, id: 'success', status: 'completed', finished_at: '2026-09-17T12:00:00Z' },
+        {
+          ...captureJob,
+          id: 'failure',
+          status: 'failed',
+          error_message: 'Capture unavailable',
+          finished_at: '2026-09-17T11:00:00Z',
+        },
+      ],
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const recovered = await waitFor(() => {
+      const row = screen
+        .getByRole('dialog')
+        .querySelector<HTMLElement>('[data-history-activity-recovered="failure"]');
+      expect(row).toBeTruthy();
+      return row as HTMLElement;
+    });
+    expect(recovered.dataset.historyCaptureGroupCount).toBe('1');
+    expect(within(recovered).getByText('Failed capture')).toBeTruthy();
+    expect(within(recovered).queryByText(/occurrences/)).toBeNull();
+  });
+
+  it('shows only ready restore points for failed jobs and failed backup status without download', async () => {
+    const user = userEvent.setup();
+    const failedBackup = {
+      ...backup,
+      id: 'failed-backup',
+      status: 'failed' as const,
+      can_restore: false,
+      error: null,
+    };
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1',
+      backups: [backup, failedBackup],
+      can_manage: true,
+    });
+    apiMock.listUserSpaceSqliteBackupJobs.mockResolvedValue({
+      jobs: [
+        {
+          ...captureJob,
+          id: 'failed-job',
+          status: 'failed',
+          error_message: 'Capture unavailable',
+          backup_ids: ['backup-1', 'failed-backup'],
+        },
+      ],
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const dialog = screen.getByRole('dialog');
+    const failedJob = await waitFor(() => {
+      const item = dialog.querySelector<HTMLElement>('[data-history-capture-job="failed-job"]');
+      expect(item).toBeTruthy();
+      return item as HTMLElement;
+    });
+    expect(within(failedJob).getByText('1 restore point available')).toBeTruthy();
+    expect(within(failedJob).queryByText(/databases processed/)).toBeNull();
+    expect(within(failedJob).queryByText(/Partial result/)).toBeNull();
+    const failedActions = dialog.querySelector<HTMLElement>(
+      '[data-history-actions="failed-backup"]',
+    )!;
+    expect(within(failedActions).getByText('Capture failed')).toBeTruthy();
+    expect(within(failedActions).queryByRole('button', { name: /Download/ })).toBeNull();
+    expect(within(failedActions).getByRole('button', { name: /Delete/ })).toBeTruthy();
+    expect(within(dialog).getByText('No recovery file was captured.')).toBeTruthy();
+  });
+
+  it('shows the history-level capture unavailable notice even without failed jobs', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1',
+      backups: [],
+      can_manage: true,
+      capture_unavailable_reason: 'Dockerhost2 requires Landlock ABI 3.',
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    const notice = await screen.findByText('Automatic database snapshots are paused');
+    const banner = notice.closest('[data-history-capture-unavailable]') as HTMLElement;
+    expect(banner.getAttribute('role')).toBe('status');
+    expect(within(banner).getByText('Dockerhost2 requires Landlock ABI 3.')).toBeTruthy();
+    expect(banner.closest('[data-history-band="attention"]')).toBeTruthy();
+  });
+
+  it('hides the capture unavailable notice when capture is available', async () => {
+    const user = userEvent.setup();
+    apiMock.listUserSpaceSqliteHistory.mockResolvedValue({
+      workspace_id: 'ws-1',
+      backups: [],
+      can_manage: true,
+      capture_unavailable_reason: null,
+    });
+    render(<DatabaseHistoryPanel workspaceId="ws-1" ownerOrAdmin hostId="workspace" />);
+
+    await user.click(screen.getByRole('button', { name: 'Database history' }));
+    await screen.findByText('Restore points');
+    expect(document.querySelector('[data-history-capture-unavailable]')).toBeNull();
   });
 });

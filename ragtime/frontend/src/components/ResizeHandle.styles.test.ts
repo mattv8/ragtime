@@ -110,10 +110,13 @@ describe('Resize handle style contracts', () => {
       /\[data-theme-pack='modern'\]\s+\.resize-handle::after\s*\{[^}]*mask-image:\s*var\(--resize-handle-bar-mask,\s*none\);/,
     );
     expect(readSource('src/styles/workbench-chat.css')).toMatch(
-      /\[data-theme-pack='modern'\]\s+\.chat-panel-fullscreen \.resize-handle\.chat-resize-handle\s*\{\s*display:\s*none;/,
+      /\[data-theme-pack='modern'\]\s+\.chat-panel-fullscreen > \.resize-handle-collapsed\.resize-handle-horizontal\[data-collapsed-side='before'\]\s*\{\s*display:\s*none;/,
     );
     expect(readSource('src/styles/workbench-userspace.css')).toMatch(
-      /\[data-theme-pack='modern'\]\s+\.userspace-fullscreen :is\(\.userspace-content, \.userspace-left-pane, \.userspace-right-pane, \.userspace-editor-section\) > \.resize-handle,\s*\[data-theme-pack='modern'\]\s+\.userspace-fullscreen \.resize-handle\.chat-resize-handle\s*\{\s*display:\s*none;/,
+      /\[data-theme-pack='modern'\]\s+\.userspace-fullscreen :is\(\.userspace-content, \.userspace-editor-section\) > \.resize-handle-collapsed\.resize-handle-horizontal\[data-collapsed-side='before'\]\s*\{\s*display:\s*none;/,
+    );
+    expect(readSource('src/styles/workbench-userspace.css')).not.toContain(
+      '.userspace-fullscreen .userspace-content > .userspace-right-pane',
     );
 
     expect(css).not.toContain('\n.resize-handle {');

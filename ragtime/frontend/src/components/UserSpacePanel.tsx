@@ -10094,6 +10094,7 @@ export function UserSpacePanel({
                 <div className="userspace-snapshots-header-db-history">
                   <DatabaseHistoryPanel
                     workspaceId={activeWorkspaceId}
+                    workspaceName={activeWorkspace?.name}
                     ownerOrAdmin={canManageDatabaseHistory}
                     triggerLabel="Database history"
                     iconOnly

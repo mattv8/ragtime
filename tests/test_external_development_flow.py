@@ -38,6 +38,8 @@ class ExternalDevelopmentOperationContractTests(unittest.TestCase):
                 "exec_list",
                 "exec_get",
                 "exec_cancel",
+                "ssh_execute",
+                "ssh_transfer",
             },
         )
         for operation in operations.values():

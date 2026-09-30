@@ -70,7 +70,8 @@ def _now() -> datetime:
 
 def _safe_error(exc: Exception) -> str:
     # Engine errors are deliberately user-safe.  Do not leak filesystem paths.
-    text = str(exc).replace("\\", "/")
+    text = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+    text = text.replace("\\", "/")
     return text[:400] or "SQLite history operation failed"
 
 
@@ -529,12 +530,19 @@ class SqliteHistoryService:
             return {
                 "backups": [self._public_backup(row) for row in response.get("backups", []) if isinstance(row, dict)],
                 "interrupted_maintenance": response.get("interrupted_maintenance") if isinstance(response.get("interrupted_maintenance"), dict) else None,
+                "capture_unavailable_reason": response.get("capture_unavailable_reason")
+                if isinstance(response.get("capture_unavailable_reason"), str) and response.get("capture_unavailable_reason")
+                else None,
             }
         backups, interrupted = await asyncio.gather(
             self.list_backups(workspace_id, database_name=database_name, snapshot_id=snapshot_id),
             self.interrupted_maintenance(workspace_id),
         )
-        return {"backups": backups, "interrupted_maintenance": interrupted}
+        return {
+            "backups": backups,
+            "interrupted_maintenance": interrupted,
+            "capture_unavailable_reason": sqlite_history_confinement.unavailable_reason(),
+        }
 
     async def run_maintenance_once(self) -> None:
         """Run a bounded, fair maintenance pass; cleanup is not capture-gated."""
@@ -1279,17 +1287,21 @@ class SqliteHistoryService:
                     timeout=60,
                 )
         except (OSError, SecureFileError, subprocess.TimeoutExpired) as exc:
-            raise HTTPException(status_code=503, detail="Secure SQLite capture confinement is unavailable") from exc
+            raise HTTPException(
+                status_code=503, detail=sqlite_history_confinement.unavailable_reason() or "Secure SQLite capture confinement is unavailable"
+            ) from exc
         if completed.returncode:
             logger.warning("Confined SQLite capture failed returncode=%s stderr=%s", completed.returncode, completed.stderr[:400])
-            raise HTTPException(status_code=503, detail="Secure SQLite capture confinement is unavailable")
+            raise HTTPException(status_code=503, detail=sqlite_history_confinement.unavailable_reason() or "Secure SQLite capture confinement is unavailable")
         try:
             result = json.loads(completed.stdout)
             if not isinstance(result, dict):
                 raise ValueError
             return result
         except (json.JSONDecodeError, ValueError) as exc:
-            raise HTTPException(status_code=503, detail="Secure SQLite capture confinement is unavailable") from exc
+            raise HTTPException(
+                status_code=503, detail=sqlite_history_confinement.unavailable_reason() or "Secure SQLite capture confinement is unavailable"
+            ) from exc
 
     @staticmethod
     def _probe_confined(files_dir: Path, database_name: str) -> str | None:

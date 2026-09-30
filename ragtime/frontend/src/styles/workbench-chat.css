@@ -817,8 +817,8 @@
   background: transparent;
 }
 
-/* Full screen is a fixed layout: pane sashes are hidden, and panes keep their current sizes. */
-[data-theme-pack='modern'] .chat-panel-fullscreen .resize-handle.chat-resize-handle {
+/* Full screen has no desk gutter to park the collapsed sidebar's restore strip in. */
+[data-theme-pack='modern'] .chat-panel-fullscreen > .resize-handle-collapsed.resize-handle-horizontal[data-collapsed-side='before'] {
   display: none;
 }
 

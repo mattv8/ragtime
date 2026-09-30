@@ -2,6 +2,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from collections.abc import Sequence
@@ -502,6 +503,40 @@ class SwitchTests(unittest.TestCase):
         ):
             switch.verify(Path("plan.json"))
         sleep.assert_called_once_with(1)
+
+    def test_services_ready_retries_on_vite_connection_refusal_without_leaking_traceback(self):
+        temp, primary, target = self.make_tree()
+        self.addCleanup(temp.cleanup)
+        runner, switch, _ = self.switch(primary, target)
+        vite_attempt = [0]
+
+        def run_simulating_subprocess_stderr(args, *, capture=False, check=True):
+            args_list = list(args)
+            joined = " ".join(args_list)
+            if "urllib.request" in joined and ".read().decode()" in joined:
+                return subprocess.CompletedProcess(args_list, 0, json.dumps({"status": "healthy"}), "")
+            if "urllib.request" in joined and "timeout=2" in joined and ".read().decode()" not in joined:
+                vite_attempt[0] += 1
+                if vite_attempt[0] == 1:
+                    if not capture:
+                        print("Traceback (most recent call last):\n  URLError: connection refused", file=sys.stderr)
+                    raise subprocess.CalledProcessError(1, args_list, output="", stderr="connection refused")
+                return subprocess.CompletedProcess(args_list, 0, "", "")
+            return original_run(args_list, capture=capture, check=check)
+
+        original_run = runner.run
+        runner.run = run_simulating_subprocess_stderr
+        switch.services = ["ragtime", "runtime"]
+        switch.db_volume = "docker_ragtime-db-data"
+
+        stderr_capture = io.StringIO()
+        with mock.patch("sys.stderr", stderr_capture):
+            ready_first = switch._services_ready()
+        self.assertFalse(ready_first)
+        self.assertEqual(stderr_capture.getvalue(), "")
+
+        ready_second = switch._services_ready()
+        self.assertTrue(ready_second)
 
     def test_repository_root_uses_common_dir(self):
         runner = mock.Mock()
