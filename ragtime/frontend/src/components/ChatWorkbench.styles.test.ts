@@ -90,6 +90,14 @@ describe('Chat workbench surface contract', () => {
     expect(css).toMatch(
       /\[data-theme-pack='modern'\]\s+\.chat-branch-wrapper-assistant\s*\{[\s\S]*width:\s*80%;[\s\S]*max-width:\s*80%;[\s\S]*align-self:\s*flex-start;/,
     );
+    const baseBranchWrapper = getRuleBody(chatCss, '.chat-branch-wrapper');
+    const baseUserBranchWrapper = getRuleBody(chatCss, '.chat-branch-wrapper-user');
+    expect(baseBranchWrapper).toMatch(/max-width:\s*85%;/);
+    expect(baseBranchWrapper).not.toMatch(/contain:/);
+    expect(baseUserBranchWrapper).toMatch(/width:\s*85%;/);
+    expect(chatCss).toMatch(
+      /\.chat-message-user\s+\.chat-message-content\s*\{[\s\S]*width:\s*fit-content;[\s\S]*max-width:\s*100%;/,
+    );
     expect(css).toMatch(
       /\[data-theme-pack='modern'\]\s+\.chat-branch-wrapper-assistant\s+\.chat-message-assistant,[\s\S]*width:\s*100%;/,
     );
