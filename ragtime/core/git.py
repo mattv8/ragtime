@@ -167,6 +167,9 @@ async def _probe_git_read_access(url: str, token: str | None, timeout: float = 1
             except Exception:
                 pass
 
+    if process is None:
+        return [], "Unable to verify repository access. Please retry."
+
     if process.returncode == 0:
         branches = []
         for line in stdout.decode(errors="replace").splitlines():

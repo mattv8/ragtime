@@ -188,8 +188,10 @@ class GitIndexJobCreationTests(unittest.IsolatedAsyncioTestCase):
                     source,
                     git_token="candidate" if source_type == "git" else None,
                 )
-                self.assertEqual(upsert.await_args.kwargs["preserve_git_token"], preserve)
-                self.assertEqual(upsert.await_args.kwargs["git_token"], None if preserve or source_type == "upload" else "candidate")
+                upsert_call = upsert.await_args
+                assert upsert_call is not None
+                self.assertEqual(upsert_call.kwargs["preserve_git_token"], preserve)
+                self.assertEqual(upsert_call.kwargs["git_token"], None if preserve or source_type == "upload" else "candidate")
 
     async def test_create_optimistic_index_metadata_preserves_real_existing_snapshot(self) -> None:
         existing_metadata = SimpleNamespace(

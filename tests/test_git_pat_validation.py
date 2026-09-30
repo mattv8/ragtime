@@ -85,6 +85,30 @@ class GitPatValidationTests(unittest.IsolatedAsyncioTestCase):
             await routes.update_index_config("idx", routes.UpdateIndexConfigRequest(git_token=" good "), _user=mock.sentinel.user)
         self.assertEqual(repo.update_index_config.await_args.kwargs["git_token"], "good")
 
+    async def test_config_rejects_replacement_without_source_before_probe_or_persistence(self) -> None:
+        repo = mock.AsyncMock()
+        repo.get_index_metadata.return_value = SimpleNamespace(sourceType="git", source=None, configSnapshot={})
+        with (
+            mock.patch.object(routes, "repository", repo),
+            mock.patch.object(routes, "git_fetch_branches", new=mock.AsyncMock(return_value=([], None))) as probe,
+        ):
+            with self.assertRaises(HTTPException) as failure:
+                await routes.update_index_config("idx", routes.UpdateIndexConfigRequest(git_token="candidate"), _user=mock.sentinel.user)
+        self.assertEqual(failure.exception.status_code, 400)
+        probe.assert_not_awaited()
+        repo.update_index_config.assert_not_awaited()
+
+    async def test_config_without_replacement_does_not_require_source(self) -> None:
+        repo = mock.AsyncMock()
+        repo.get_index_metadata.return_value = SimpleNamespace(sourceType="git", source=None, configSnapshot={})
+        with (
+            mock.patch.object(routes, "repository", repo),
+            mock.patch.object(routes, "git_fetch_branches", new=mock.AsyncMock()) as probe,
+        ):
+            await routes.update_index_config("idx", routes.UpdateIndexConfigRequest(chunk_size=512), _user=mock.sentinel.user)
+        probe.assert_not_awaited()
+        repo.update_index_config.assert_awaited_once()
+
     async def test_reindex_validates_explicit_candidate_before_creating_job(self) -> None:
         metadata = SimpleNamespace(
             sourceType="git", source="https://github.com/acme/repo.git", description="", configSnapshot={}, gitBranch="main", gitToken=None
@@ -129,8 +153,10 @@ class GitPatValidationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("ragtime.core.git.asyncio.create_subprocess_exec", new=mock.AsyncMock(return_value=process)) as spawn,
         ):
             await git.fetch_branches("https://code.example.com/acme/repo.git", token)
-        args = spawn.await_args.args
-        env = spawn.await_args.kwargs["env"]
+        spawn_call = spawn.await_args
+        assert spawn_call is not None
+        args = spawn_call.args
+        env = spawn_call.kwargs["env"]
         self.assertEqual(env["GIT_CONFIG_GLOBAL"], "/example/gitconfig")
         self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertNotIn("Authorization: old-header", env.values())
@@ -180,7 +206,9 @@ class GitPatValidationTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(asyncio.CancelledError):
                 await git.fetch_branches("https://github.com/acme/repo.git")
-        self.assertTrue(spawn.await_args.kwargs["start_new_session"])
+        spawn_call = spawn.await_args
+        assert spawn_call is not None
+        self.assertTrue(spawn_call.kwargs["start_new_session"])
         kill_group.assert_called_once_with(process.pid, git.signal.SIGKILL)
         process.wait.assert_awaited_once()
 
@@ -230,7 +258,8 @@ class GitPatValidationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(result.needs_token)
 
     async def test_api_transport_failure_is_not_collapsed_into_repository_denial(self) -> None:
-        client = SimpleNamespace(get=mock.AsyncMock(side_effect=httpx.ConnectError("offline")))
+        client = mock.create_autospec(httpx.AsyncClient, instance=True, spec_set=True)
+        client.get = mock.AsyncMock(side_effect=httpx.ConnectError("offline"))
         parsed = git.parse_git_url("https://github.com/acme/repo.git")
         assert parsed is not None
         with self.assertRaises(httpx.ConnectError):
@@ -247,13 +276,21 @@ class GitPatValidationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(routes, "git_fetch_branches", new=probe),
         ):
             await routes.fetch_branches(FetchBranchesRequest(git_url=metadata.source, index_name="idx"), _user=mock.sentinel.user)
-            self.assertEqual(probe.await_args.kwargs["token"], "stored")
+            probe_call = probe.await_args
+            assert probe_call is not None
+            self.assertEqual(probe_call.kwargs["token"], "stored")
             await routes.fetch_branches(FetchBranchesRequest(git_url="https://github.com/other/repo.git", index_name="idx"), _user=mock.sentinel.user)
-            self.assertIsNone(probe.await_args.kwargs["token"])
+            probe_call = probe.await_args
+            assert probe_call is not None
+            self.assertIsNone(probe_call.kwargs["token"])
             await routes.fetch_branches(FetchBranchesRequest(git_url=metadata.source, index_name="idx", git_token="  "), _user=mock.sentinel.user)
-            self.assertIsNone(probe.await_args.kwargs["token"])
+            probe_call = probe.await_args
+            assert probe_call is not None
+            self.assertIsNone(probe_call.kwargs["token"])
             await routes.fetch_branches(FetchBranchesRequest(git_url=metadata.source, index_name="idx", git_token=" candidate "), _user=mock.sentinel.user)
-            self.assertEqual(probe.await_args.kwargs["token"], "candidate")
+            probe_call = probe.await_args
+            assert probe_call is not None
+            self.assertEqual(probe_call.kwargs["token"], "candidate")
 
     def test_core_git_import_does_not_initialize_indexer_settings(self) -> None:
         result = subprocess.run(

@@ -1171,7 +1171,7 @@ async def reindex_from_git(
     # Use provided token, or fall back to stored token (decrypt if encrypted)
     replacement_token = request.git_token.strip() if request.git_token and request.git_token.strip() else None
     if replacement_token:
-        _, validation_error = await git_fetch_branches(metadata.source, replacement_token)
+        _branches, validation_error = await git_fetch_branches(metadata.source, replacement_token)
         if validation_error:
             raise HTTPException(status_code=400, detail=validation_error)
 
@@ -1257,7 +1257,7 @@ async def retry_failed_job(
     # actual Git operation.
     replacement_token = request.git_token.strip() if request.git_token and request.git_token.strip() else None
     if replacement_token and failed_job.source_type == "git" and failed_job.git_url:
-        _, validation_error = await git_fetch_branches(failed_job.git_url, replacement_token)
+        _branches, validation_error = await git_fetch_branches(failed_job.git_url, replacement_token)
         if validation_error:
             raise HTTPException(status_code=400, detail=validation_error)
     git_token = replacement_token or failed_job.git_token
@@ -1504,6 +1504,8 @@ async def update_index_config(
     replacement_token = request.git_token.strip() if request.git_token and request.git_token.strip() else None
 
     if replacement_token:
+        if not metadata.source:
+            raise HTTPException(status_code=400, detail="Git URL not found in index metadata. Cannot validate replacement token.")
         _, validation_error = await git_fetch_branches(metadata.source, replacement_token)
         if validation_error:
             raise HTTPException(status_code=400, detail=validation_error)
