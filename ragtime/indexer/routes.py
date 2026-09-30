@@ -846,7 +846,9 @@ async def check_repo_visibility(
         try:
             metadata = await repository.get_index_metadata(request.index_name)
             source = getattr(metadata, "source", None) if metadata else None
-            encrypted_token = getattr(metadata, "gitToken", None) if isinstance(source, str) and source.rstrip("/") == request.git_url.strip().rstrip("/") else None
+            encrypted_token = (
+                getattr(metadata, "gitToken", None) if isinstance(source, str) and source.rstrip("/") == request.git_url.strip().rstrip("/") else None
+            )
             stored_token = decrypt_secret(encrypted_token) if encrypted_token else None
         except Exception:
             pass  # No stored token available
@@ -881,7 +883,9 @@ async def fetch_branches(
         try:
             metadata = await repository.get_index_metadata(request.index_name)
             source = getattr(metadata, "source", None) if metadata else None
-            encrypted_token = getattr(metadata, "gitToken", None) if isinstance(source, str) and source.rstrip("/") == request.git_url.strip().rstrip("/") else None
+            encrypted_token = (
+                getattr(metadata, "gitToken", None) if isinstance(source, str) and source.rstrip("/") == request.git_url.strip().rstrip("/") else None
+            )
             token = decrypt_secret(encrypted_token) if encrypted_token else None
         except Exception:
             pass  # No stored token available

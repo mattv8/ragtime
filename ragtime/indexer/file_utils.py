@@ -60,6 +60,7 @@ HARDCODED_EXCLUDES = [
 #   - Format: https://{token}@{host}/owner/repo.git
 # ==============================================================================
 
+
 def build_authenticated_git_url(git_url: str, token: Optional[str] = None) -> str:
     """
     Build a Git clone URL with embedded token authentication.
