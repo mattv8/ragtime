@@ -103,7 +103,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_SEARCH_RESULTS_K,
     DEFAULT_TOOL_SKILLS_ENABLED,
 )
-from ragtime.core.app_settings import get_app_settings, get_tool_configs
+from ragtime.core.app_settings import get_app_settings, get_enabled_tool_configs, get_tool_configs
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.database import get_db
@@ -183,7 +183,7 @@ from ragtime.core.ssh import (
     ssh_tunnel_config_from_dict,
 )
 from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
-from ragtime.core.tool_access import ToolAccessLevel, resolve_tool_access
+from ragtime.core.tool_access import ToolAccessLevel, ToolSurface, resolve_tool_access
 from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata, coerce_nonnegative_int_metadata
 from ragtime.core.userspace_limits import (
@@ -290,6 +290,13 @@ from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import build_docker_shell_command, build_odoo_shell_args, build_shell_input, filter_odoo_output
+from ragtime.tools.ssh_transfer import (
+    SSHTransferInput,
+    build_ssh_transfer_tool,
+    build_workspace_file_callbacks,
+    normalized_ssh_name,
+    ssh_transfer_validation_error,
+)
 from ragtime.userspace.instruction_facts import build_env_var_turn_hint
 from ragtime.userspace.models import (
     ArtifactType,
@@ -2983,16 +2990,18 @@ class RAGComponents:
         *,
         mode: str,
         workspace_id: str | None = None,
+        request_state: dict[str, Any] | None = None,
     ) -> tuple[list[Any], dict[str, Any]]:
-        request_state: dict[str, Any] = {
-            "tool_calls": cast(list[dict[str, Any]], []),
-            "signature_counts": cast(dict[str, int], {}),
-            "blocked_repeat_calls": 0,
-            "max_iterations_reached": False,
-            "internal_continue_attempts": 0,
-            "internal_continue_stop_reason": "",
-            "tool_free_synthesis_used": False,
-        }
+        if request_state is None:
+            request_state = {
+                "tool_calls": cast(list[dict[str, Any]], []),
+                "signature_counts": cast(dict[str, int], {}),
+                "blocked_repeat_calls": 0,
+                "max_iterations_reached": False,
+                "internal_continue_attempts": 0,
+                "internal_continue_stop_reason": "",
+                "tool_free_synthesis_used": False,
+            }
         if mode != "userspace" or not tools:
             return tools, request_state
 
@@ -14287,6 +14296,112 @@ class RAGComponents:
 
         return allowed_tool_config_ids
 
+    async def _create_ssh_transfer_tool(
+        self,
+        runtime_tools: list[Any],
+        *,
+        allowed_tool_config_ids: list[str] | None,
+        workspace_id: str | None = None,
+        user_id: str | None = None,
+        is_admin: bool = False,
+        conversation_id: str | None = None,
+        subagent_file_scope: list[str] | None = None,
+    ) -> StructuredTool | None:
+        """Build a transfer tool whose endpoint allowlist and policy are rechecked per call."""
+        visible_names = {str(getattr(tool, "name", "") or "") for tool in runtime_tools}
+        allowed_ids = set(allowed_tool_config_ids) if allowed_tool_config_ids is not None else None
+        visible_config_ids = {
+            str(config.get("id") or "")
+            for config in self._tool_configs or []
+            if config.get("tool_type") == "ssh_shell"
+            and self._derive_config_tool_names(config).intersection(visible_names)
+            and (allowed_ids is None or str(config.get("id") or "") in allowed_ids)
+        }
+        visible_config_ids.discard("")
+        if not visible_config_ids:
+            return None
+
+        access_surface: ToolSurface = "workspace" if workspace_id else "chat"
+
+        async def effective_configs(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            current = [
+                dict(config)
+                for config in configs
+                if str(config.get("id") or "") in visible_config_ids and config.get("tool_type") == "ssh_shell" and config.get("enabled", True)
+            ]
+            if not current:
+                return []
+
+            access_by_id: dict[str, ToolAccessLevel] = {}
+            if user_id:
+                try:
+                    access_by_id = await resolve_tool_access(
+                        user_id=user_id,
+                        is_admin=is_admin,
+                        surface=access_surface,
+                        tool_config_ids=[str(config.get("id") or "") for config in current],
+                    )
+                except Exception:
+                    logger.warning("Failed to resolve SSH transfer access", exc_info=True)
+                    return []
+                current = [config for config in current if access_by_id.get(str(config.get("id") or ""), "deny") != "deny"]
+
+            if conversation_id and current:
+                try:
+                    db = await get_db()
+                    rows = await db.conversationtooloption.find_many(where={"conversationId": conversation_id})
+                except Exception:
+                    logger.warning("Failed to resolve SSH transfer conversation options", exc_info=True)
+                    return []
+                options_by_id: dict[str, dict[str, bool]] = {}
+                for row in rows:
+                    raw = row.options.data if isinstance(row.options, Json) else row.options
+                    options_by_id[str(row.toolConfigId)] = load_conversation_tool_options(cast(dict[str, Any] | None, raw))
+                for config in current:
+                    config_id = str(config.get("id") or "")
+                    config["allow_write"] = resolve_effective_allow_write(
+                        bool(config.get("allow_write", False)),
+                        options_by_id.get(config_id),
+                    )
+
+            if user_id:
+                for config in current:
+                    if access_by_id.get(str(config.get("id") or "")) != "read_write":
+                        config["allow_write"] = False
+            return current
+
+        configs = await effective_configs(list(self._tool_configs or []))
+        if not configs:
+            return None
+
+        async def resolve_visible_configs() -> list[dict[str, Any]]:
+            return await effective_configs(await get_enabled_tool_configs())
+
+        workspace_read = workspace_write = None
+        if user_id and workspace_id:
+            workspace_read, workspace_write = build_workspace_file_callbacks(
+                user_id=user_id,
+                is_admin=is_admin,
+                allowed_workspace_id=workspace_id,
+            )
+
+        max_output_chars = int((self._app_settings or {}).get("max_tool_output_chars", DEFAULT_MAX_TOOL_OUTPUT_CHARS))
+        return StructuredTool.from_function(
+            coroutine=build_ssh_transfer_tool(
+                configs,
+                workspace_read=workspace_read,
+                workspace_write=workspace_write,
+                workspace_id=workspace_id,
+                max_output_chars=max_output_chars,
+                visible_config_resolver=resolve_visible_configs,
+                subagent_file_scope=subagent_file_scope,
+            ),
+            name="ssh_transfer",
+            description="Copy files between authorized SSH endpoints, inline content, and the active workspace.",
+            args_schema=SSHTransferInput,
+            handle_validation_error=ssh_transfer_validation_error,
+        )
+
     def _map_runtime_tools_to_runnable_tool_config_ids(
         self,
         runtime_tools: list[Any],
@@ -15796,6 +15911,30 @@ class RAGComponents:
                     runtime_tools.extend(chat_diag_tools)
             if conversation_export_tool is not None:
                 runtime_tools.append(conversation_export_tool)
+
+        # This is deliberately built after request/workspace filtering and
+        # conversation overrides.  Its endpoint map is derived from the shell
+        # tools that survived those checks, never from the global config list.
+        transfer_tool = await self._create_ssh_transfer_tool(
+            runtime_tools,
+            allowed_tool_config_ids=allowed_tool_config_ids,
+            workspace_id=workspace_id or None,
+            user_id=request_user_id or None,
+            is_admin=request_is_admin,
+            conversation_id=conversation_id,
+            subagent_file_scope=(workspace_context or {}).get("subagent_file_scope") if isinstance(workspace_context, dict) else None,
+        )
+        legacy_transfer_visible = any(getattr(tool, "name", "") == "ssh_transfer" for tool in runtime_tools)
+        if legacy_transfer_visible:
+            logger.warning("Omitting synthetic ssh_transfer because visible legacy SSH tool uses that name")
+        elif transfer_tool is not None and "ssh_transfer" not in (blocked_tool_names or set()):
+            if mode == "userspace":
+                wrapped_transfer, _ = self._wrap_runtime_tools_with_request_state(
+                    [transfer_tool], mode=mode, workspace_id=workspace_id, request_state=request_tool_state
+                )
+                runtime_tools.extend(wrapped_transfer)
+            else:
+                runtime_tools.append(transfer_tool)
 
         if conversation_export_tool is not None:
             runtime_tools = self._wrap_tools_with_export_context_tracking(runtime_tools, export_context)

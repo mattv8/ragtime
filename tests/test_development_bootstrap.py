@@ -113,6 +113,16 @@ class DevelopmentBootstrapTests(unittest.TestCase):
         self.assertIn("after compaction", core)
         self.assertIn("Load `ragtime-workspace` first", core)
         self.assertIn("guidance hashes", core)
+        self.assertIn("`ssh_execute` requires both credential `exec` and `write` scopes", core)
+        self.assertIn("`expected_content_hash`", core)
+
+    def test_canonical_workspace_guidance_explains_bounded_ssh_transfer_contract(self) -> None:
+        from ragtime.userspace.instruction_content import build_external_guidance_documents
+
+        guidance = build_external_guidance_documents()["workspace"]
+        self.assertIn("Authorized SSH operations", guidance)
+        self.assertIn("24 KiB serialized UTF-8 JSON", guidance)
+        self.assertIn("Do not include `workspace_id` in transfer arguments", guidance)
 
     def test_profile_config_artifacts_have_native_syntax(self) -> None:
         opencode = get_bootstrap_artifact(

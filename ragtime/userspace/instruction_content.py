@@ -63,6 +63,7 @@ def build_external_guidance_documents() -> dict[str, str]:
         + content_protection_refusal_relay_guidance()
         + _topic(template, "## USER SPACE WORKSPACE CONTEXT", "#### Terminal tool")
         + _topic(template, "### File tool workflow", "### Theme + CSS rules")
+        + "\n## Authorized SSH operations\n\nUse `ssh_execute` and `ssh_transfer` only through the `workspace_development` operation wrapper after reading their current contracts. SSH endpoints use only aliases advertised in authorized workspace resources; never infer connection addresses or credentials. `ssh_execute` requires both `exec` and `write` credential scopes. An exec-only credential can download a permitted SSH file to `inline` with `ssh_transfer`, but cannot write a remote or workspace destination. SSH transfer responses are capped at 24 KiB serialized UTF-8 JSON and file contents are never silently truncated: send larger UTF-8 text to `workspace:/relative/path`, and keep larger binary transfers SSH-to-SSH. SSH command output may be explicitly truncated to fit that budget. A workspace transfer destination is bound to the enclosing workspace and requires `expected_content_hash`; explicit `null` creates only, while a SHA-256 digest replaces only that version. Do not include `workspace_id` in transfer arguments.\n"
         + "\n## Per-turn completion checklist\n"
         + build_userspace_turn_reminder(include_sqlite_persistence=False),
         "runtime": USERSPACE_ENTRYPOINT_SETUP_PROMPT

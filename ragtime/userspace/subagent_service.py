@@ -26,6 +26,7 @@ SUBAGENT_WRITE_TOOL_NAMES = {
     "delete_userspace_file",
     "create_userspace_snapshot",
     "run_terminal_command",
+    "ssh_transfer",
 }
 
 

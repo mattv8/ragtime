@@ -574,7 +574,7 @@ The copied setup instructions point to `GET /indexes/userspace/development/works
 
 The `/mcp` connection exposes compact context, resource discovery, paged instructions/contracts, and development operations. The existing full HTTP `/context` and `/operations` endpoints under the same workspace prefix remain available for downloads and programmatic clients. Credential creation, rotation, and revocation require an owner/admin session; development credentials authorize only their scoped workspace-development HTTP and MCP access.
 
-File writes and patches require the current content hash. Exec jobs have bounded concurrency and output retention. The hidden workspace code index is available by default; other indexes require an owner grant and retain backing-tool access checks. Development credentials are rejected from Chat generation, User Space generation, built-in API key management, and other credential-surface operations; they are exclusively scoped to workspace development access.
+File writes and patches require the current content hash. Exec jobs have bounded concurrency and output retention. Selected SSH connections are available only through the `workspace_development` wrapper: `ssh_execute` requires both `exec` and `write` credential scopes, while an exec-only credential can download a permitted SSH file with `ssh_transfer` but cannot mutate remote or workspace destinations. Transfer contracts bind `workspace:/` paths to the enclosing workspace; workspace destinations use `expected_content_hash` for create-only or compare-and-swap replacement and never take an inner `workspace_id`. Inline SSH results are capped at 24 KiB serialized UTF-8 JSON without silent truncation; use workspace files for larger text and SSH-to-SSH for larger binary transfers. The hidden workspace code index is available by default; other indexes require an owner grant and retain backing-tool access checks. Development credentials are rejected from Chat generation, User Space generation, built-in API key management, and other credential-surface operations; they are exclusively scoped to workspace development access.
 
 ### Vector Store Abstraction
 
@@ -607,6 +607,7 @@ The schemas below list the primary fields; several tools also accept optional fi
 | `influxdb` | `{query, reason}` |
 | `odoo_shell` | `{code, reason}` |
 | `ssh_shell` | `{command, reason}` |
+| [`ssh_transfer`](SSH_FILE_TRANSFER.md) | `{source, destination, content?, encoding?, overwrite?, recursive?, reason?, timeout?, workspace_id?}`; copies between authorized SSH connections, inline content, and workspace text files. |
 | `filesystem_indexer` | `{query, max_results}` |
 | `solidworks_pdm` | `search_{tool}`: `{query, document_type}`; Chat also provides `lookup_{tool}` for exact indexed-snapshot lookup. |
 | `knowledge_search` | `{query, index_name}` |
