@@ -1605,6 +1605,10 @@ textarea.chat-header-title-input {
   .chat-message-navigator-popover {
     transform: translateY(-50%);
   }
+
+  .chat-action-icon-btn .userspace-icon-spin {
+    animation: none;
+  }
 }
 @media (forced-colors: active) {
   .chat-loading-state-error {
@@ -1657,6 +1661,11 @@ textarea.chat-header-title-input {
 .chat-message-user .chat-message-content {
   background: var(--color-primary-light);
   border: 1px solid var(--color-primary-border);
+  width: fit-content;
+  max-width: 100%;
+}
+.chat-message-user .chat-message-content:has(.chat-edit-input) {
+  width: 100%;
 }
 .chat-message-queued .chat-message-content {
   opacity: 0.55;
@@ -1734,9 +1743,13 @@ textarea.chat-header-title-input {
     color var(--transition-fast),
     background var(--transition-fast);
 }
-.chat-action-icon-btn:hover {
+.chat-action-icon-btn:hover:not(:disabled) {
   color: var(--color-text);
   background: var(--color-surface-hover);
+}
+.chat-action-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .chat-branch-wrapper-has-branches .chat-message-hover-actions {
   opacity: 0;
@@ -1967,6 +1980,7 @@ textarea.chat-header-title-input {
 .chat-branch-wrapper-user {
   align-self: flex-end;
   align-items: flex-end;
+  width: 85%;
 }
 .chat-branch-wrapper-assistant {
   align-self: flex-start;
@@ -2090,6 +2104,11 @@ textarea.chat-header-title-input {
 }
 .chat-action-text-btn.primary:hover {
   background: var(--color-surface-hover);
+}
+.chat-action-text-btn:disabled,
+.chat-continue-link:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .chat-message-streaming {
   font-size: var(--text-xs);
@@ -2403,6 +2422,10 @@ textarea.chat-header-title-input {
   border-radius: var(--radius-md);
   background: var(--color-surface);
   padding: 6px 10px;
+}
+.chat-replay-pending-status {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
 }
 /* Inline context chips: atomic, non-editable tokens embedded directly in the
    contentEditable composer so the user can weave references between words,

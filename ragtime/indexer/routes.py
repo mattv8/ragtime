@@ -14898,7 +14898,7 @@ async def create_conversation_branch(
         )
         raise HTTPException(
             status_code=500,
-            detail="Failed to create branch. The conversation may be locked by an active streaming response.",
+            detail="Failed to create branch.",
         )
 
     await _link_branch_snapshot_to_anchor_message(
@@ -14971,9 +14971,9 @@ async def edit_resend_conversation_branch(
         "editor",
     )
 
-    user_message = request.message.strip()
-    if not user_message:
+    if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message is required")
+    user_message = request.message if request.branch_kind == ConversationBranchKind.REPLAY else request.message.strip()
 
     current_time_context = _build_current_time_prompt_context(request)
     ui_theme_context = _build_ui_theme_prompt_context(request)

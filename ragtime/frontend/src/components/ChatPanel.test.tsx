@@ -14,6 +14,7 @@ import type {
   ConversationMessageWindow,
   ConversationSummary,
   ConversationWindowEntry,
+  ContentPart,
   User,
   WorkspaceChatStateResponse,
 } from '@/types';
@@ -35,18 +36,10 @@ vi.mock('@/hooks/useReceivedConversationShares', () => ({
   useReceivedConversationShares: receivedConversationSharesMock,
 }));
 
-const apiMock = vi.hoisted(() => {
+const { apiMock, applyMutableApiMockDefaults } = vi.hoisted(() => {
   const mock = {
-    getConversation: vi.fn().mockResolvedValue(null),
-    getConversationLatestExchange: vi.fn().mockResolvedValue({
-      conversation: null,
-      revision: 'test-revision',
-      total_message_count: 0,
-      entries: [],
-      next_cursor: null,
-      has_more: false,
-      legacy_conversation: null,
-    }),
+    getConversation: vi.fn(),
+    getConversationLatestExchange: vi.fn(),
     getConversationMessageWindow: vi.fn(),
     getConversationWindowMessage: vi.fn(),
     searchConversationBranches: vi.fn().mockResolvedValue({ matches: [] }),
@@ -81,72 +74,102 @@ const apiMock = vi.hoisted(() => {
       close: vi.fn(),
       onmessage: null,
     }),
-    streamChatTask: vi.fn().mockReturnValue(
-      (async function* () {
-        yield* [];
-      })(),
-    ),
+    streamChatTask: vi.fn(),
     sendMessageBackground: vi.fn().mockResolvedValue({
       id: 'task-window-send',
       status: 'running',
     }),
+    createConversationBranch: vi.fn(),
     compactConversation: vi.fn().mockResolvedValue({
       id: 'task-window-compaction',
       status: 'running',
     }),
     editResendConversationMessage: vi.fn(),
   };
-  mock.getConversationMessageWindow.mockImplementation(async (conversationId: string) => {
-    const latestResult = [...mock.getConversationLatestExchange.mock.results]
-      .reverse()
-      .find(
-        (_result, index) =>
-          mock.getConversationLatestExchange.mock.calls[
-            mock.getConversationLatestExchange.mock.calls.length - 1 - index
-          ]?.[0] === conversationId,
-      );
-    const latest = await latestResult?.value;
-    if (!latest?.conversation)
-      throw new Error(`Missing latest window fixture for ${conversationId}`);
-    return {
-      ...latest,
+  const applyMutableApiMockDefaults = () => {
+    mock.getConversation.mockResolvedValue(null);
+    mock.getConversationLatestExchange.mockResolvedValue({
+      conversation: null,
+      revision: 'test-revision',
+      total_message_count: 0,
       entries: [],
       next_cursor: null,
       has_more: false,
       legacy_conversation: null,
-    };
-  });
-  mock.getConversationWindowMessage.mockImplementation(
-    async (conversationId: string, index: number) => {
+    });
+    mock.streamChatTask.mockImplementation(() =>
+      (async function* () {
+        yield* [];
+      })(),
+    );
+    mock.getConversationMessageWindow.mockImplementation(async (conversationId: string) => {
       const latestResult = [...mock.getConversationLatestExchange.mock.results]
         .reverse()
         .find(
-          (_result, resultIndex) =>
+          (_result, index) =>
             mock.getConversationLatestExchange.mock.calls[
-              mock.getConversationLatestExchange.mock.calls.length - 1 - resultIndex
+              mock.getConversationLatestExchange.mock.calls.length - 1 - index
             ]?.[0] === conversationId,
         );
       const latest = await latestResult?.value;
-      const entry = latest?.entries.find(
-        (candidate: ConversationWindowEntry) => candidate.index === index,
-      );
-      if (!entry) throw new Error(`Missing deferred entry fixture for ${conversationId}:${index}`);
-      if (entry.state === 'ready') return entry;
+      if (!latest?.conversation)
+        throw new Error(`Missing latest window fixture for ${conversationId}`);
       return {
-        ...entry,
-        state: 'ready' as const,
-        message: {
-          role: entry.preview.role,
-          content: entry.preview.content,
-          timestamp: entry.preview.timestamp,
-          message_id: entry.preview.message_id ?? undefined,
-        },
-        preview: null,
+        ...latest,
+        entries: [],
+        next_cursor: null,
+        has_more: false,
+        legacy_conversation: null,
       };
-    },
-  );
-  return mock;
+    });
+    mock.getConversationWindowMessage.mockImplementation(
+      async (conversationId: string, index: number) => {
+        const latestResult = [...mock.getConversationLatestExchange.mock.results]
+          .reverse()
+          .find(
+            (_result, resultIndex) =>
+              mock.getConversationLatestExchange.mock.calls[
+                mock.getConversationLatestExchange.mock.calls.length - 1 - resultIndex
+              ]?.[0] === conversationId,
+          );
+        const latest = await latestResult?.value;
+        const entry = latest?.entries.find(
+          (candidate: ConversationWindowEntry) => candidate.index === index,
+        );
+        if (!entry)
+          throw new Error(`Missing deferred entry fixture for ${conversationId}:${index}`);
+        if (entry.state === 'ready') return entry;
+        return {
+          ...entry,
+          state: 'ready' as const,
+          message: {
+            role: entry.preview.role,
+            content: entry.preview.content,
+            timestamp: entry.preview.timestamp,
+            message_id: entry.preview.message_id ?? undefined,
+          },
+          preview: null,
+        };
+      },
+    );
+  };
+  applyMutableApiMockDefaults();
+  return { apiMock: mock, applyMutableApiMockDefaults };
 });
+
+function resetMutableChatApiMocks() {
+  for (const mock of [
+    apiMock.getConversation,
+    apiMock.getConversationLatestExchange,
+    apiMock.getConversationMessageWindow,
+    apiMock.getConversationWindowMessage,
+    apiMock.streamChatTask,
+    apiMock.editResendConversationMessage,
+  ]) {
+    mock.mockReset();
+  }
+  applyMutableApiMockDefaults();
+}
 
 const chatMessageNavigatorMock = vi.hoisted(() => ({
   renderSpy: vi.fn(),
@@ -784,9 +807,456 @@ function getChatLayoutCookie(userId: string): Record<string, unknown> | null {
     : null;
 }
 
+describe('ChatPanel replay', () => {
+  const makeReplayTask = (conversationId: string, id: string) => ({
+    id,
+    conversation_id: conversationId,
+    status: 'running',
+    user_message: 'Replay message',
+    streaming_state: null,
+    response_content: null,
+    error_message: null,
+    created_at: new Date().toISOString(),
+    started_at: new Date().toISOString(),
+    completed_at: null,
+    last_update_at: new Date().toISOString(),
+  });
+
+  it('atomically replays a user row once with serialized attachments and its user anchor', async () => {
+    const content: ContentPart[] = [
+      { type: 'text', text: 'Replay this attachment' },
+      { type: 'file', filename: 'notes.txt', file_path: '/tmp/notes.txt' },
+    ];
+    const conversation = makeConversation('atomic-replay', 'Prior response', {
+      messages: [
+        {
+          role: 'user',
+          content,
+          timestamp: '2026-09-30T12:00:00.000Z',
+          message_id: 'replay-user',
+        },
+        {
+          role: 'assistant',
+          content: 'Prior response',
+          timestamp: '2026-09-30T12:00:01.000Z',
+          message_id: 'replay-assistant',
+        },
+      ],
+    });
+    let resolveReplay:
+      | ((value: { conversation: Conversation; task: ReturnType<typeof makeReplayTask> }) => void)
+      | undefined;
+    apiMock.editResendConversationMessage.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveReplay = resolve;
+        }),
+    );
+    apiMock.getConversation.mockResolvedValueOnce(conversation).mockResolvedValueOnce(conversation);
+    apiMock.getConversationLatestExchange.mockResolvedValueOnce(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValueOnce(makeWindow(conversation));
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText('Message'), 'Do not send while replay is pending');
+    const replay = (await screen.findAllByTitle('Replay from this message'))[0];
+    // Both clicks land before React commits the disabled state, so only the
+    // synchronous pending ref can reject the second request.
+    act(() => {
+      replay.click();
+      replay.click();
+    });
+
+    await waitFor(() => expect(apiMock.editResendConversationMessage).toHaveBeenCalledTimes(1));
+    expect(replay.getAttribute('title')).toBe('Replaying…');
+    const send = screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement;
+    expect(send.title).toBe('Starting replay…');
+    fireEvent.click(send);
+    expect(apiMock.sendMessageBackground).not.toHaveBeenCalled();
+    expect(send.disabled).toBe(true);
+    expect(
+      screen
+        .getAllByRole('button', { name: /Replay/ })
+        .every((button) => (button as HTMLButtonElement).hasAttribute('disabled')),
+    ).toBe(true);
+    expect(
+      screen
+        .getAllByTitle('Edit and resend')
+        .every((button) => (button as HTMLButtonElement).hasAttribute('disabled')),
+    ).toBe(true);
+    expect(
+      screen
+        .getAllByTitle(/Delete (message|reply)/)
+        .every((button) => (button as HTMLButtonElement).hasAttribute('disabled')),
+    ).toBe(true);
+    expect(apiMock.editResendConversationMessage).toHaveBeenCalledWith(
+      conversation.id,
+      {
+        message: JSON.stringify(content),
+        from_message_index: 0,
+        branch_kind: 'replay',
+        auto_snapshot: false,
+      },
+      undefined,
+    );
+    expect(apiMock.createConversationBranch).not.toHaveBeenCalled();
+    expect(apiMock.sendMessageBackground).not.toHaveBeenCalled();
+
+    resolveReplay?.({
+      conversation,
+      task: makeReplayTask(conversation.id, 'task-atomic-replay'),
+    });
+    await waitFor(() =>
+      expect(apiMock.streamChatTask).toHaveBeenCalledWith(
+        'task-atomic-replay',
+        0,
+        expect.any(AbortSignal),
+        undefined,
+      ),
+    );
+    await waitFor(() => expect(apiMock.getConversation).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getAllByTitle('Replay from this message')).toHaveLength(2));
+  });
+
+  it('anchors an assistant-row replay to its preceding user message', async () => {
+    const conversation = makeConversation('assistant-replay', 'Replay assistant response', {
+      workspace_id: 'ws-replay',
+    });
+    apiMock.editResendConversationMessage.mockResolvedValueOnce({
+      conversation,
+      task: makeReplayTask(conversation.id, 'task-assistant-replay'),
+    });
+    apiMock.getConversation.mockResolvedValueOnce(conversation);
+
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-replay"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    const replayButtons = await screen.findAllByTitle('Replay from this message');
+    fireEvent.click(replayButtons[1]);
+
+    await waitFor(() =>
+      expect(apiMock.editResendConversationMessage).toHaveBeenCalledWith(
+        conversation.id,
+        {
+          message: 'Do the work.',
+          from_message_index: 0,
+          branch_kind: 'replay',
+          auto_snapshot: true,
+        },
+        'ws-replay',
+      ),
+    );
+    expect(apiMock.createConversationBranch).not.toHaveBeenCalled();
+    expect(apiMock.sendMessageBackground).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(apiMock.streamChatTask).toHaveBeenCalledWith(
+        'task-assistant-replay',
+        0,
+        expect.any(AbortSignal),
+        'ws-replay',
+      ),
+    );
+    await waitFor(() =>
+      expect(apiMock.getConversation).toHaveBeenCalledWith(conversation.id, 'ws-replay'),
+    );
+    await waitFor(() => expect(screen.getAllByTitle('Replay from this message')).toHaveLength(2));
+  });
+
+  it('keeps a successful replay stream claimed when snapshot notification throws', async () => {
+    const conversation = makeConversation('snapshot-callback-replay', 'Prior response', {
+      workspace_id: 'ws-replay',
+    });
+    let releaseStream: (() => void) | undefined;
+    const streamCompletion = new Promise<void>((resolve) => (releaseStream = resolve));
+    let streamSignal: AbortSignal | undefined;
+    apiMock.editResendConversationMessage.mockResolvedValueOnce({
+      conversation: { ...conversation, active_task_id: 'task-snapshot-replay' },
+      task: makeReplayTask(conversation.id, 'task-snapshot-replay'),
+    });
+    apiMock.streamChatTask.mockImplementationOnce(
+      (_taskId: string, _version: number, signal: AbortSignal) => {
+        streamSignal = signal;
+        return (async function* () {
+          await streamCompletion;
+          yield { type: 'completion', completed: true, status: 'completed' };
+        })();
+      },
+    );
+    apiMock.getConversation.mockResolvedValueOnce(conversation);
+    const onSnapshotsMaybeChanged = vi.fn(() => {
+      throw new Error('Snapshot listener failed');
+    });
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      renderChatPanel(
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="ws-replay"
+          workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          onSnapshotsMaybeChanged={onSnapshotsMaybeChanged}
+          embedded
+        />,
+      );
+
+      fireEvent.click((await screen.findAllByTitle('Replay from this message'))[0]);
+
+      expect(await screen.findByTitle('Stop generating')).toBeDefined();
+      expect(apiMock.streamChatTask).toHaveBeenCalledWith(
+        'task-snapshot-replay',
+        0,
+        expect.any(AbortSignal),
+        'ws-replay',
+      );
+      expect(onSnapshotsMaybeChanged).toHaveBeenCalled();
+      expect(streamSignal?.aborted).toBe(false);
+      expect(apiMock.getConversation).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => releaseStream?.());
+      await waitFor(() =>
+        expect(apiMock.getConversation).toHaveBeenCalledWith(conversation.id, 'ws-replay'),
+      );
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it('does not adopt or stream an old replay claim after selecting another conversation', async () => {
+    const original = makeConversation('pending-replay-old', 'Old conversation response', {
+      workspace_id: 'ws-replay',
+    });
+    const selected = makeConversation('pending-replay-new', 'New selection remains visible', {
+      workspace_id: 'ws-replay',
+    });
+    let resolveReplay:
+      | ((value: { conversation: Conversation; task: ReturnType<typeof makeReplayTask> }) => void)
+      | undefined;
+    apiMock.editResendConversationMessage.mockImplementationOnce(
+      () => new Promise((resolve) => (resolveReplay = resolve)),
+    );
+    const stateFor = (selectedId: string): WorkspaceChatStateResponse => ({
+      ...makeWorkspaceChatState(selectedId === original.id ? original : selected),
+      conversations: [original, selected],
+      selected_conversation_id: selectedId,
+      active_task: null,
+    });
+
+    const { rerender } = renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-replay"
+        workspaceChatState={stateFor(original.id)}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+    fireEvent.click((await screen.findAllByTitle('Replay from this message'))[0]);
+    await waitFor(() => expect(resolveReplay).toBeDefined());
+
+    rerender(
+      <AvailableModelsProvider>
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="ws-replay"
+          workspaceChatState={stateFor(selected.id)}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          embedded
+        />
+      </AvailableModelsProvider>,
+    );
+    expect(await screen.findByText('New selection remains visible')).toBeDefined();
+
+    resolveReplay?.({
+      conversation: { ...original, active_task_id: 'task-old-replay' },
+      task: makeReplayTask(original.id, 'task-old-replay'),
+    });
+
+    await waitFor(() => expect(apiMock.editResendConversationMessage).toHaveBeenCalledTimes(1));
+    expect(screen.getByText('New selection remains visible')).toBeDefined();
+    expect(screen.queryByText('Old conversation response')).toBeNull();
+    expect(apiMock.streamChatTask).not.toHaveBeenCalledWith(
+      'task-old-replay',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('refreshes only the replay owner after rejection without clearing another selected stream', async () => {
+    const original = makeConversation('rejected-replay-old', 'Old conversation response', {
+      workspace_id: 'ws-replay',
+    });
+    const selected = makeConversation('rejected-replay-new', 'Current streamed conversation', {
+      workspace_id: 'ws-replay',
+      active_task_id: 'task-parent-1',
+    });
+    let rejectReplay: ((reason?: unknown) => void) | undefined;
+    let releaseCurrentStream: (() => void) | undefined;
+    let currentStreamSignal: AbortSignal | undefined;
+    const currentStreamCompletion = new Promise<void>(
+      (resolve) => (releaseCurrentStream = resolve),
+    );
+    apiMock.editResendConversationMessage.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (rejectReplay = reject)),
+    );
+    apiMock.streamChatTask.mockImplementationOnce(
+      (_taskId: string, _version: number, signal: AbortSignal) => {
+        currentStreamSignal = signal;
+        return (async function* () {
+          await currentStreamCompletion;
+          yield { type: 'completion', completed: true, status: 'completed' };
+        })();
+      },
+    );
+    apiMock.getConversation.mockImplementation((id: string) =>
+      Promise.resolve(id === original.id ? original : selected),
+    );
+    const stateFor = (
+      selectedId: string,
+      activeTask: WorkspaceChatStateResponse['active_task'],
+    ): WorkspaceChatStateResponse => ({
+      ...makeWorkspaceChatState(selectedId === original.id ? original : selected),
+      conversations: [original, selected],
+      selected_conversation_id: selectedId,
+      active_task: activeTask,
+    });
+
+    const { rerender } = renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-replay"
+        workspaceChatState={stateFor(original.id, null)}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+    fireEvent.click((await screen.findAllByTitle('Replay from this message'))[0]);
+    await waitFor(() => expect(rejectReplay).toBeDefined());
+
+    const selectedState = makeWorkspaceChatState(selected);
+    rerender(
+      <AvailableModelsProvider>
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="ws-replay"
+          workspaceChatState={stateFor(selected.id, selectedState.active_task)}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          embedded
+        />
+      </AvailableModelsProvider>,
+    );
+    await waitFor(() =>
+      expect(apiMock.streamChatTask).toHaveBeenCalledWith(
+        'task-parent-1',
+        0,
+        expect.any(AbortSignal),
+        'ws-replay',
+      ),
+    );
+
+    rejectReplay?.(new Error('Replay request rejected'));
+
+    await waitFor(() =>
+      expect(apiMock.getConversation).toHaveBeenCalledWith(original.id, 'ws-replay'),
+    );
+    expect(screen.getByText('Current streamed conversation')).toBeDefined();
+    expect(screen.queryByText('Replay request rejected')).toBeNull();
+    expect(screen.getByTitle('Stop generating')).toBeDefined();
+    expect(currentStreamSignal?.aborted).toBe(false);
+    expect(apiMock.getConversation).not.toHaveBeenCalledWith(selected.id, 'ws-replay');
+
+    await act(async () => releaseCurrentStream?.());
+    await waitFor(() =>
+      expect(apiMock.getConversation).toHaveBeenCalledWith(selected.id, 'ws-replay'),
+    );
+  });
+
+  it('clears replay pending state when full transcript hydration rejects', async () => {
+    const conversation = makeConversation('replay-full-rejection', 'Partial response');
+    apiMock.getConversationLatestExchange.mockResolvedValueOnce(makeWindow(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValueOnce(makeWindow(conversation));
+    apiMock.getConversation.mockRejectedValueOnce(new Error('Full transcript unavailable'));
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    fireEvent.click((await screen.findAllByTitle('Replay from this message'))[0]);
+
+    expect(await screen.findByText('Full transcript unavailable')).toBeDefined();
+    expect(apiMock.editResendConversationMessage).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getAllByTitle('Replay from this message')[0].hasAttribute('disabled')).toBe(
+        false,
+      ),
+    );
+  });
+
+  it('keeps the committed replay and refreshes after its task stream rejects', async () => {
+    const original = makeConversation('committed-replay', 'Prior response', {
+      workspace_id: 'ws-replay',
+    });
+    const committed = makeConversation('committed-replay', 'Committed replay response', {
+      workspace_id: 'ws-replay',
+      active_task_id: null,
+    });
+    apiMock.editResendConversationMessage.mockResolvedValueOnce({
+      conversation: { ...original, active_task_id: 'task-committed-replay' },
+      task: makeReplayTask(original.id, 'task-committed-replay'),
+    });
+    apiMock.streamChatTask.mockImplementationOnce(() =>
+      (async function* () {
+        yield await Promise.reject(new Error('Replay stream disconnected'));
+      })(),
+    );
+    apiMock.getConversation.mockResolvedValueOnce(committed);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      renderChatPanel(
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="ws-replay"
+          workspaceChatState={{ ...makeWorkspaceChatState(original), active_task: null }}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          embedded
+        />,
+      );
+
+      fireEvent.click((await screen.findAllByTitle('Replay from this message'))[0]);
+
+      expect(await screen.findByText('Committed replay response')).toBeDefined();
+      expect(apiMock.editResendConversationMessage).toHaveBeenCalledTimes(1);
+      expect(apiMock.getConversation).toHaveBeenCalledWith(original.id, 'ws-replay');
+      expect(apiMock.createConversationBranch).not.toHaveBeenCalled();
+      expect(apiMock.sendMessageBackground).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+});
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  resetMutableChatApiMocks();
   receivedConversationSharesMock.mockReturnValue({
     shares: [],
     loading: false,
@@ -989,6 +1459,180 @@ describe('ChatPanel standalone first-paint loading', () => {
     await waitFor(() => expect(scrollTop).toBe(800));
     expect(scrollTo).not.toHaveBeenCalled();
     expect(scrollTop).toBe(800);
+  });
+
+  it('pins queued deferred growth before the next frame and preserves an intentional scroll-up', async () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
+    window.requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    const conversation = makeConversation('queued-auto-pin', 'Newest response', {
+      messages: [
+        {
+          role: 'user',
+          content: 'Old question',
+          timestamp: '2026-09-30T12:00:00.000Z',
+          message_id: 'queued-0',
+        },
+        {
+          role: 'assistant',
+          content: 'Middle response',
+          timestamp: '2026-09-30T12:00:01.000Z',
+          message_id: 'queued-1',
+        },
+        {
+          role: 'assistant',
+          content: 'Newest response',
+          timestamp: '2026-09-30T12:00:02.000Z',
+          message_id: 'queued-2',
+        },
+      ],
+    });
+    const deferredEntries: ConversationWindowEntry[] = conversation.messages.map(
+      (message, index) => ({
+        index,
+        key: message.message_id ?? `queued-${index}`,
+        state: 'deferred',
+        message: null,
+        preview: {
+          role: message.role,
+          content: String(message.content),
+          timestamp: message.timestamp,
+          message_id: message.message_id ?? null,
+          content_truncated: false,
+          has_details: true,
+        },
+      }),
+    );
+    let resolveNewest: ((entry: ConversationWindowEntry) => void) | undefined;
+    let resolveMiddle: ((entry: ConversationWindowEntry) => void) | undefined;
+    let resolveOldest: ((entry: ConversationWindowEntry) => void) | undefined;
+    apiMock.getConversationLatestExchange.mockResolvedValueOnce(
+      makeWindow(conversation, { entries: deferredEntries }),
+    );
+    apiMock.getConversationMessageWindow.mockResolvedValueOnce(
+      makeWindow(conversation, { entries: deferredEntries }),
+    );
+    apiMock.getConversationWindowMessage.mockImplementationOnce(
+      () => new Promise<ConversationWindowEntry>((resolve) => (resolveNewest = resolve)),
+    );
+    apiMock.getConversationWindowMessage.mockImplementationOnce(
+      () => new Promise<ConversationWindowEntry>((resolve) => (resolveMiddle = resolve)),
+    );
+    apiMock.getConversationWindowMessage.mockImplementationOnce(
+      () => new Promise<ConversationWindowEntry>((resolve) => (resolveOldest = resolve)),
+    );
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+    await waitFor(() => expect(resolveNewest).toBeDefined());
+    const root = document.querySelector('.chat-messages') as HTMLElement;
+    let scrollTop = 0;
+    Object.defineProperties(root, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 800 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    const deferredWrapper = document.querySelector<HTMLElement>(
+      '[data-chat-message-key="queued-2"]',
+    );
+    expect(deferredWrapper?.classList.contains('chat-branch-wrapper-assistant')).toBe(true);
+    expect(deferredWrapper?.getAttribute('aria-busy')).toBe('true');
+    expect(deferredWrapper?.querySelector('.chat-message-assistant')).not.toBeNull();
+
+    await act(async () => {
+      resolveNewest?.({
+        ...deferredEntries[2],
+        state: 'ready',
+        message: conversation.messages[2],
+        preview: null,
+      });
+    });
+
+    expect(scrollTop).toBe(800);
+    expect(frameCallbacks.length).toBeGreaterThan(0);
+    const readyWrapper = document.querySelector<HTMLElement>('[data-chat-message-key="queued-2"]');
+    expect(readyWrapper?.classList.contains('chat-branch-wrapper-assistant')).toBe(true);
+    expect(readyWrapper?.classList.contains('chat-message-deferred')).toBe(false);
+
+    await act(async () => {
+      while (frameCallbacks.length > 0) frameCallbacks.shift()?.(0);
+    });
+    scrollTop = 100;
+    fireEvent.scroll(root);
+    await waitFor(() => expect(resolveMiddle).toBeDefined());
+    await act(async () => {
+      resolveMiddle?.({
+        ...deferredEntries[1],
+        state: 'ready',
+        message: conversation.messages[1],
+        preview: null,
+      });
+    });
+
+    expect(scrollTop).toBe(100);
+    await waitFor(() => expect(resolveOldest).toBeDefined());
+    await act(async () => {
+      resolveOldest?.({
+        ...deferredEntries[0],
+        state: 'ready',
+        message: conversation.messages[0],
+        preview: null,
+      });
+    });
+    await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(3));
+    await act(async () => {
+      while (frameCallbacks.length > 0) frameCallbacks.shift()?.(0);
+    });
+    expect(scrollTop).toBe(100);
+  });
+
+  it('renders deferred user previews with the same plain-text markup as ready rows', async () => {
+    const userText = '# Literal heading\n\n- literal item';
+    const conversation = makeConversation('deferred-user-markup', 'Answer', {
+      messages: [
+        {
+          role: 'user',
+          content: userText,
+          timestamp: '2026-09-30T12:00:00.000Z',
+          message_id: 'deferred-user',
+        },
+        {
+          role: 'assistant',
+          content: 'Answer',
+          timestamp: '2026-09-30T12:00:01.000Z',
+          message_id: 'deferred-assistant',
+        },
+      ],
+    });
+    apiMock.getConversationLatestExchange.mockResolvedValueOnce(makeLatestExchange(conversation));
+    apiMock.getConversationWindowMessage.mockImplementation(() => new Promise(() => undefined));
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    const row = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>(
+        '[data-chat-message-key="deferred-user"]',
+      );
+      expect(element).not.toBeNull();
+      return element as HTMLElement;
+    });
+    const text = row.querySelector('.chat-message-user .chat-message-content > .chat-message-text');
+    expect(row.classList.contains('chat-branch-wrapper-user')).toBe(true);
+    expect(row.classList.contains('chat-message-deferred')).toBe(true);
+    expect(text?.classList.contains('chat-message-user-text')).toBe(true);
+    expect(row.querySelector('.markdown-content')).toBeNull();
+    expect(text?.textContent).toBe(userText);
   });
 
   it('prioritizes an authorized shared preferred id and skips an older preferred detail', async () => {
@@ -1318,6 +1962,7 @@ describe('ChatPanel standalone first-paint loading', () => {
       }),
     } as Response);
     apiMock.createConversation.mockResolvedValue(created);
+    apiMock.getConversation.mockResolvedValue(current);
 
     renderChatPanel(
       <ChatPanel
@@ -2025,8 +2670,9 @@ describe('ChatPanel standalone first-paint loading', () => {
     );
 
     await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2));
+    // Both deferred entries in the latest exchange fail, so each offers its own retry.
     await waitFor(() =>
-      expect(screen.getAllByRole('button', { name: 'Retry details' })).toHaveLength(1),
+      expect(screen.getAllByRole('button', { name: 'Retry details' })).toHaveLength(2),
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(2);
@@ -3531,7 +4177,8 @@ describe('ChatPanel bounded-window operation boundaries', () => {
     await waitFor(() => expect(apiMock.getConversationWindowMessage).toHaveBeenCalledTimes(3));
   });
 
-  it('restores a pending older-page anchor after deferred detail hydration completes', async () => {
+  it('restores a pending older-page anchor before queued animation frames run', async () => {
+    const frameCallbacks: FrameRequestCallback[] = [];
     window.requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
       callback(0);
       return 1;
@@ -3678,6 +4325,10 @@ describe('ChatPanel bounded-window operation boundaries', () => {
         } as DOMRect;
       };
     }
+    window.requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
     fireEvent.scroll(root);
     fireEvent.click(loadEarlier);
     await waitFor(() => expect(resolveOlder).toBeDefined());
@@ -3692,6 +4343,11 @@ describe('ChatPanel bounded-window operation boundaries', () => {
     prepended = true;
     resolveOlder?.(olderPage);
     await waitFor(() => expect(scrollTop).toBe(440));
+    expect(frameCallbacks.length).toBeGreaterThan(0);
+    await act(async () => {
+      while (frameCallbacks.length > 0) frameCallbacks.shift()?.(0);
+    });
+    expect(scrollTop).toBe(440);
   });
 
   it('loads earlier messages when no message intersects the viewport for anchoring', async () => {
@@ -4203,12 +4859,8 @@ describe('ChatPanel user message navigator integration', () => {
     await waitFor(() => {
       expect(screen.getByText('Newest answer')).toBeDefined();
     });
-    await waitFor(() => {
-      expect(defaultPrototypeScrollTo).toHaveBeenCalledWith({
-        top: 1200,
-        behavior: 'smooth',
-      });
-    });
+    expect(scrollTop).toBe(1200);
+    expect(defaultPrototypeScrollTo).not.toHaveBeenCalled();
   });
 
   it('tracks the latest user message at or above the focus line on chat scroll', async () => {
@@ -4434,6 +5086,7 @@ describe('ChatPanel resize and mobile sidebar integration', () => {
       workspace_id: 'ws-compose',
       active_task_id: null,
     });
+    apiMock.getConversation.mockResolvedValue(conversation);
     renderChatPanel(
       <ChatPanel
         currentUser={currentUser}

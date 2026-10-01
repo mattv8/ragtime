@@ -188,6 +188,10 @@ from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 logger = get_logger(__name__)
 
 _CONVERSATION_WINDOW_PAGE_BUDGET_BYTES = 256 * 1024
+# Branch mutations rewrite whole-transcript JSON and may freeze every legacy
+# branch prefix, which exceeds Prisma's 5 second default on long chats.
+_BRANCH_MUTATION_TX_MAX_WAIT = timedelta(seconds=10)
+_BRANCH_MUTATION_TX_TIMEOUT = timedelta(seconds=30)
 
 
 class ConversationBranchMutationError(RuntimeError):
@@ -4423,7 +4427,7 @@ class IndexerRepository:
         db = await self._get_db()
         try:
             async with self._get_conversation_branch_lock(conversation_id):
-                async with db.tx() as tx:
+                async with db.tx(max_wait=_BRANCH_MUTATION_TX_MAX_WAIT, timeout=_BRANCH_MUTATION_TX_TIMEOUT) as tx:
                     prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
@@ -4497,7 +4501,7 @@ class IndexerRepository:
         db = await self._get_db()
         try:
             async with self._get_conversation_branch_lock(conversation_id):
-                async with db.tx() as tx:
+                async with db.tx(max_wait=_BRANCH_MUTATION_TX_MAX_WAIT, timeout=_BRANCH_MUTATION_TX_TIMEOUT) as tx:
                     prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
@@ -4544,7 +4548,7 @@ class IndexerRepository:
         db = await self._get_db()
         try:
             async with self._get_conversation_branch_lock(conversation_id):
-                async with db.tx() as tx:
+                async with db.tx(max_wait=_BRANCH_MUTATION_TX_MAX_WAIT, timeout=_BRANCH_MUTATION_TX_TIMEOUT) as tx:
                     prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
@@ -5042,7 +5046,7 @@ class IndexerRepository:
         db = await self._get_db()
         try:
             async with self._get_conversation_branch_lock(conversation_id):
-                async with db.tx() as tx:
+                async with db.tx(max_wait=_BRANCH_MUTATION_TX_MAX_WAIT, timeout=_BRANCH_MUTATION_TX_TIMEOUT) as tx:
                     prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
@@ -5827,7 +5831,10 @@ class IndexerRepository:
             pass
 
         try:
-            async with self._get_conversation_branch_lock(conversation_id), db.tx(max_wait=timedelta(seconds=10), timeout=timedelta(seconds=30)) as tx:
+            async with (
+                self._get_conversation_branch_lock(conversation_id),
+                db.tx(max_wait=_BRANCH_MUTATION_TX_MAX_WAIT, timeout=_BRANCH_MUTATION_TX_TIMEOUT) as tx,
+            ):
                 prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                 if not prisma_conv:
                     return None, None, None, "conversation_not_found"
