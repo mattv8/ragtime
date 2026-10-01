@@ -5831,7 +5831,10 @@ class IndexerRepository:
             pass
 
         try:
-            async with self._get_conversation_branch_lock(conversation_id), db.tx(max_wait=_BRANCH_MUTATION_TX_MAX_WAIT, timeout=_BRANCH_MUTATION_TX_TIMEOUT) as tx:
+            async with (
+                self._get_conversation_branch_lock(conversation_id),
+                db.tx(max_wait=_BRANCH_MUTATION_TX_MAX_WAIT, timeout=_BRANCH_MUTATION_TX_TIMEOUT) as tx,
+            ):
                 prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                 if not prisma_conv:
                     return None, None, None, "conversation_not_found"
