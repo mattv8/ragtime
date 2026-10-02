@@ -1905,6 +1905,63 @@ describe('ChatPanel standalone first-paint loading', () => {
     expect(apiMock.createConversation).toHaveBeenCalledWith(undefined, undefined);
   });
 
+  it('shows unknown context instead of the 8192 gauge fallback for a generic model', async () => {
+    const current = makeConversation('generic-unknown-context', 'Compatible reply', {
+      model: 'openai_compatible::CaseSensitive/Model',
+      total_tokens: 4_000,
+    });
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        models: [
+          {
+            id: 'CaseSensitive/Model',
+            name: 'CaseSensitive/Model',
+            provider: 'openai_compatible',
+            context_limit: null,
+          },
+        ],
+        default_model: 'CaseSensitive/Model',
+        current_model: 'CaseSensitive/Model',
+        allowed_models: ['CaseSensitive/Model'],
+        allowed_openapi_models: [],
+      }),
+    } as Response);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(current));
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={current.id} />);
+
+    expect(await screen.findByText('Compatible reply')).toBeDefined();
+    expect(await screen.findByText('Context unknown')).toBeDefined();
+    expect(screen.queryByText(/4,000 \/ 8,192 tokens/)).toBeNull();
+  });
+
+  it('shows unknown context when an explicit compatible-provider model is absent from discovery', async () => {
+    const current = makeConversation('generic-absent-context', 'Compatible reply', {
+      model: 'openai_compatible::shared-id',
+      total_tokens: 4_000,
+    });
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        models: [
+          { id: 'shared-id', name: 'OpenAI model', provider: 'openai', context_limit: 128_000 },
+        ],
+        default_model: 'shared-id',
+        current_model: 'shared-id',
+        allowed_models: ['shared-id'],
+        allowed_openapi_models: [],
+      }),
+    } as Response);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(current));
+
+    renderChatPanel(<ChatPanel currentUser={currentUser} initialConversationId={current.id} />);
+
+    expect(await screen.findByText('Compatible reply')).toBeDefined();
+    expect(await screen.findByText('Context unknown')).toBeDefined();
+    expect(screen.queryByText(/4,000 \/ 128,000 tokens/)).toBeNull();
+  });
+
   it('updates the standalone window selector after a successful model change without full hydration', async () => {
     const current = makeConversation('window-only-model', 'Window-only reply', {
       model: 'old-model',

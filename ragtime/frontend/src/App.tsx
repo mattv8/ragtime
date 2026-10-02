@@ -35,6 +35,7 @@ import type {
   OpenRouterCreditStatus,
 } from '@/types';
 import { BrandName } from '@/utils/buildEnvironment';
+import { hasUntrustedModelEndpoint } from '@/utils/modelEndpointTrust';
 import { setThemePack, resolveThemePackId } from '@/theme';
 import { ThemeChromeIcon } from '@/components/shared/ThemeChromeIcon';
 import { SERVER_BACKUP_RESTORE_HIGHLIGHT } from '@/components/shared/securityWarnings';
@@ -353,6 +354,8 @@ export function App() {
 
   // Configuration warnings state
   const [configurationWarnings, setConfigurationWarnings] = useState<ConfigurationWarning[]>([]);
+  const [isUntrustedModelEndpointConfigured, setIsUntrustedModelEndpointConfigured] =
+    useState(false);
   const [openRouterCreditStatus, setOpenRouterCreditStatus] =
     useState<OpenRouterCreditStatus | null>(null);
   const authIdentityRef = useRef({
@@ -471,6 +474,7 @@ export function App() {
     clearPrincipalState();
     setConfigurationWarnings([]);
     setOpenRouterCreditStatus(null);
+    setIsUntrustedModelEndpointConfigured(false);
   }, [clearPrincipalState, userId, userRole]);
 
   useEffect(() => {
@@ -508,6 +512,7 @@ export function App() {
       setAggregateSearch(settings.aggregate_search ?? true);
       setEmbeddingDimensions(settings.embedding_dimensions ?? null);
       setConfigurationWarnings(nextWarnings);
+      setIsUntrustedModelEndpointConfigured(hasUntrustedModelEndpoint(settings));
 
       const hasEncryptionWarning = nextWarnings.some(
         (warning) => warning.category === 'encryption',
@@ -1490,6 +1495,7 @@ export function App() {
             <SecurityBanner
               authStatus={authStatus}
               isAdmin={isAdmin}
+              isUntrustedModelEndpointConfigured={isUntrustedModelEndpointConfigured}
               hidden={hideChrome}
               onNavigateToSettings={(highlightTarget) => {
                 if (isAdmin) {

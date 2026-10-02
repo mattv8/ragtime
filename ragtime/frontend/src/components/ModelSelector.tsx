@@ -96,7 +96,10 @@ function modelTriggerDisplayName(model: BaseModel): string {
 }
 
 function modelFamilyLabel(model: BaseModel): string {
-  return model.model_family || model.group || 'Other';
+  if (model.model_family || model.group) return model.model_family || model.group || 'Other';
+  return normalizeProviderAlias(model.provider || '') === 'openai_compatible'
+    ? hostProviderLabel(model)
+    : 'Other';
 }
 
 function modelProviderLabel(model: BaseModel): string {
@@ -350,10 +353,15 @@ export function ModelSelector<T extends BaseModel>({
     return hostEntries
       .map(([hostKey, providersByKey]) => {
         const children = buildHostChildren(hostKey, providersByKey);
+        const hostLabel = hostLabels.get(hostKey) || hostKey;
+        const onlyChild = children.length === 1 ? children[0] : undefined;
+        if (onlyChild && labelsMatch(onlyChild.label, hostLabel)) {
+          return { ...onlyChild, key: hostKey, label: hostLabel };
+        }
         const latestModel = children[0]?.latestModel || models[0];
         return {
           key: hostKey,
-          label: hostLabels.get(hostKey) || hostKey,
+          label: hostLabel,
           latestModel,
           children,
         };

@@ -9,6 +9,7 @@ export const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
   llama_cpp: 'llama.cpp',
   lmstudio: 'LM Studio',
   omlx: 'oMLX',
+  openai_compatible: 'OpenAI-compatible',
   github_copilot: 'GitHub Copilot',
   github_models: 'GitHub Copilot',
   openai_codex: 'OpenAI Codex',

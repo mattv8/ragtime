@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle } from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatSettingsSectionProps } from './settings/ChatSettingsSection';
 import type { User } from '@/types';
@@ -67,6 +67,8 @@ const apiMock = vi.hoisted(() => ({
   getAvailableModels: vi.fn(),
   getAllModels: vi.fn(),
   fetchLLMModels: vi.fn(),
+  fetchEmbeddingModels: vi.fn(),
+  listModelCatalogProviders: vi.fn(),
   listMcpRoutes: vi.fn(),
   listMcpDefaultFilters: vi.fn(),
   listToolConfigs: vi.fn(),
@@ -524,6 +526,9 @@ beforeEach(() => {
     allowed_openapi_models: [],
   });
   apiMock.fetchLLMModels.mockResolvedValue({ success: true, models: [] });
+  apiMock.fetchEmbeddingModels.mockReset();
+  apiMock.fetchEmbeddingModels.mockResolvedValue({ success: true, models: [] });
+  apiMock.listModelCatalogProviders.mockResolvedValue([]);
   apiMock.listMcpRoutes.mockResolvedValue({ routes: [] });
   apiMock.listMcpDefaultFilters.mockResolvedValue({ filters: [] });
   apiMock.listToolConfigs.mockResolvedValue([]);
@@ -1843,6 +1848,403 @@ describe('SettingsPanel', () => {
     expect(toastErrorSpy).toHaveBeenCalledWith('Codex disconnect denied');
     await waitFor(() => {
       expect((disconnectButton as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
+  it('previews compatible models without forwarding a loaded key after the API root changes', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_base_url: 'https://old.example/v1/',
+        openai_compatible_api_key: 'saved-compatible-key',
+      }),
+    );
+    apiMock.listModelCatalogProviders.mockResolvedValueOnce([
+      { id: 'reference', name: 'Reference provider', api: 'https://reference.example' },
+    ]);
+
+    render(<SettingsPanel />);
+    const accordionToggle = await screen.findByRole('button', { name: /LLM Providers/i });
+    fireEvent.click(accordionToggle);
+
+    fireEvent.change(await screen.findByLabelText('Base URL'), {
+      target: { value: 'https://new.example/v1' },
+    });
+    await waitFor(() => {
+      expect((screen.getByLabelText('API Key') as HTMLInputElement).value).toBe('');
+    });
+    fireEvent.change(await screen.findByLabelText('Catalog reference'), {
+      target: { value: 'reference' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Fetch Models' }));
+
+    await waitFor(() => {
+      expect(apiMock.fetchLLMModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: 'openai_compatible',
+          base_url: 'https://new.example/v1',
+          api_key: '',
+          catalog_provider: 'reference',
+        }),
+      );
+    });
+  });
+
+  it('uses an unsaved compatible provider name for preview and persists the trimmed label', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_base_url: 'https://compatible.example/v1',
+      }),
+    );
+
+    render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /LLM Providers/i }));
+    fireEvent.change(screen.getByLabelText('Provider Name'), {
+      target: { value: ' Internal Gateway ' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch Models' }));
+
+    await waitFor(() => {
+      expect(apiMock.fetchLLMModels).toHaveBeenCalledWith(
+        expect.objectContaining({ provider_name: 'Internal Gateway' }),
+      );
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save LLM Configuration' }));
+    await waitFor(() => {
+      expect(apiMock.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ openai_compatible_provider_name: 'Internal Gateway' }),
+      );
+    });
+  });
+
+  it.each([
+    {
+      allowed: ['openai::existing'],
+      expected: ['openai::existing', 'openai_compatible::Case/Model'],
+    },
+    { allowed: [], expected: [] },
+  ])(
+    'enables only the selected generic model while preserving allowlist $allowed',
+    async ({ allowed, expected }) => {
+      chatModelsSectionState.autoOpenModal = false;
+      apiMock.getSettings.mockResolvedValueOnce(
+        buildSettingsResponse({
+          llm_provider: 'openai_compatible',
+          llm_model: 'Case/Model',
+          openai_compatible_base_url: 'https://gateway.example/v1',
+          allowed_chat_models: allowed,
+        }),
+      );
+      render(<SettingsPanel currentUser={adminUser} />);
+      fireEvent.click(await screen.findByRole('button', { name: /LLM Providers/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save LLM Configuration' }));
+      await waitFor(() =>
+        expect(apiMock.updateSettings).toHaveBeenCalledWith(
+          expect.objectContaining({ allowed_chat_models: expected }),
+        ),
+      );
+    },
+  );
+
+  it('does not reenable an excluded generic model when saving ordinary chat settings', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        llm_model: 'Case/Model',
+        openai_compatible_base_url: 'https://gateway.example/v1',
+        allowed_chat_models: ['openai::existing'],
+      }),
+    );
+    render(<SettingsPanel currentUser={adminUser} />);
+    await screen.findByRole('button', { name: /LLM Providers/i });
+    await act(async () => {
+      await chatModelsSectionState.latestProps!.handleSaveChat();
+    });
+    expect(apiMock.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ allowed_chat_models: ['openai::existing'] }),
+    );
+  });
+
+  it('binds the generic status name and configured dot to the shared keyless connection', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_provider_name: 'A2Agent',
+        openai_compatible_base_url: 'https://gateway.example/v1',
+        openai_compatible_api_key: '',
+      }),
+    );
+    const { container } = render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /LLM Providers/i }));
+    const status = container.querySelector('[aria-label="LLM provider configuration status"]')!;
+    expect(
+      within(status as HTMLElement)
+        .getByLabelText('A2Agent configured')
+        .classList.contains('configured'),
+    ).toBe(true);
+    fireEvent.change(screen.getByLabelText('Provider Name'), { target: { value: '' } });
+    expect(
+      within(status as HTMLElement).getByLabelText('OpenAI-compatible configured'),
+    ).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: '' } });
+    expect(
+      within(status as HTMLElement)
+        .getByLabelText('OpenAI-compatible not configured')
+        .classList.contains('configured'),
+    ).toBe(false);
+  });
+
+  it('discards old embedding discovery after a shared root change and saves the new keyless connection', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        embedding_provider: 'openai_compatible',
+        embedding_model: 'manual-embed',
+        openai_compatible_base_url: 'https://old.example/v1',
+        openai_compatible_api_key: 'old-key',
+        openai_compatible_provider_name: 'Gateway',
+      }),
+    );
+    let resolveOld!: (value: unknown) => void;
+    apiMock.fetchEmbeddingModels.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveOld = resolve;
+      }),
+    );
+    const { container } = render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /Embedding Configuration/i }));
+    const section = within(
+      container.querySelector('#embedding-provider-config-openai-compatible')! as HTMLElement,
+    );
+    fireEvent.click(section.getByRole('button', { name: 'Fetch Models' }));
+    fireEvent.change(section.getByLabelText('Base URL'), {
+      target: { value: 'https://new.example/api' },
+    });
+    expect((section.getByLabelText('API Key') as HTMLInputElement).value).toBe('');
+    await act(async () =>
+      resolveOld({
+        success: true,
+        models: [{ id: 'old-model', name: 'Old model', dimensions: 3 }],
+        default_model: 'old-model',
+      }),
+    );
+    expect(section.queryByRole('combobox')).toBeNull();
+    expect((section.getByLabelText('Embedding Model') as HTMLInputElement).value).toBe(
+      'manual-embed',
+    );
+    fireEvent.click(section.getByRole('button', { name: 'Fetch Models' }));
+    await waitFor(() =>
+      expect(apiMock.fetchEmbeddingModels).toHaveBeenLastCalledWith({
+        provider: 'openai_compatible',
+        api_key: '',
+        base_url: 'https://new.example/api',
+        model: 'manual-embed',
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save Embedding Configuration' }));
+    await waitFor(() =>
+      expect(apiMock.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          embedding_provider: 'openai_compatible',
+          embedding_model: 'manual-embed',
+          openai_compatible_base_url: 'https://new.example/api',
+          openai_compatible_api_key: '',
+          openai_compatible_provider_name: 'Gateway',
+        }),
+      ),
+    );
+  });
+
+  it('updates generic picker labels after a provider-name edit without refetching', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_base_url: 'https://compatible.example/v1',
+        openai_compatible_provider_name: 'Old Gateway',
+      }),
+    );
+    apiMock.fetchLLMModels.mockResolvedValueOnce({
+      success: true,
+      default_model: 'CaseSensitive/Model',
+      models: [
+        {
+          id: 'CaseSensitive/Model',
+          name: 'CaseSensitive/Model',
+          group: 'Old Gateway',
+          host_provider_label: 'Old Gateway',
+          context_limit: null,
+        },
+      ],
+    });
+
+    render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /LLM Providers/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch Models' }));
+    await screen.findByRole('button', { name: /CaseSensitive\/Model \(Old Gateway\)/i });
+
+    fireEvent.change(screen.getByLabelText('Provider Name'), { target: { value: 'New Gateway' } });
+    expect(
+      screen.getByRole('button', { name: /CaseSensitive\/Model \(New Gateway\)/i }),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /CaseSensitive\/Model \(New Gateway\)/i }));
+    expect(screen.getByRole('button', { name: /^New Gateway/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Old Gateway/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Other/ })).toBeNull();
+    fireEvent.change(screen.getByLabelText('Provider Name'), { target: { value: '' } });
+    expect(
+      screen.getByRole('button', { name: /CaseSensitive\/Model \(OpenAI-compatible\)/i }),
+    ).toBeTruthy();
+    expect(apiMock.fetchLLMModels).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists compatible model overrides and presents unknown context as configuration work', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_base_url: 'https://compatible.example/v1',
+      }),
+    );
+    apiMock.fetchLLMModels.mockResolvedValueOnce({
+      success: true,
+      models: [
+        {
+          id: 'CaseSensitive/Model',
+          name: 'CaseSensitive/Model',
+          context_limit: null,
+          max_output_tokens: 4096,
+          context_limit_source: null,
+          output_limit_source: 'configured',
+        },
+      ],
+    });
+
+    render(<SettingsPanel />);
+    const accordionToggle = await screen.findByRole('button', { name: /LLM Providers/i });
+    fireEvent.click(accordionToggle);
+    fireEvent.change(await screen.findByLabelText('Model'), {
+      target: { value: 'CaseSensitive/Model' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Fetch Models' }));
+    await screen.findByText(/Unknown — configure before chat/i);
+    // output_limit_source is 'configured' with no override, so it displays as Unknown
+    expect(screen.getByText(/Output: Unknown/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Advanced model limits'));
+    fireEvent.change(screen.getByLabelText('Context limit'), { target: { value: '131072' } });
+    fireEvent.change(screen.getByLabelText('Maximum output tokens'), { target: { value: '4096' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save LLM Configuration' }));
+
+    await waitFor(() => {
+      expect(apiMock.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          openai_compatible_model_limits: {
+            'CaseSensitive/Model': { context_limit: 131072, max_output_tokens: 4096 },
+          },
+        }),
+      );
+    });
+  });
+
+  it('restores discovered compatible limits after clearing an override', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_base_url: 'https://compatible.example/v1',
+      }),
+    );
+    apiMock.fetchLLMModels.mockResolvedValueOnce({
+      success: true,
+      models: [
+        {
+          id: 'model-a',
+          name: 'model-a',
+          context_limit: 4096,
+          context_limit_source: 'provider',
+          max_output_tokens: null,
+          output_limit_source: null,
+        },
+      ],
+    });
+
+    render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /LLM Providers/i }));
+    fireEvent.change(await screen.findByLabelText('Model'), { target: { value: 'model-a' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Fetch Models' }));
+    await screen.findByText(/Context: 4096 \(provider\)/i);
+    fireEvent.click(screen.getByText('Advanced model limits'));
+    fireEvent.change(screen.getByLabelText('Context limit'), { target: { value: '8192' } });
+    await screen.findByText(/Context: 8192 \(configured\)/i);
+    fireEvent.change(screen.getByLabelText('Context limit'), { target: { value: '' } });
+    await screen.findByText(/Context: 4096 \(provider\)/i);
+  });
+
+  it('saved override with fetch configured source clears correctly', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    // Seed settings with saved override in formData
+    const savedOverrides = {
+      'test-model': {
+        context_limit: 16384,
+        max_output_tokens: 8192,
+      },
+    };
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_base_url: 'https://compatible.example/v1',
+        openai_compatible_model_limits: savedOverrides,
+      }),
+    );
+    // Fetch returns model with 'configured' source (old saved provider metadata)
+    apiMock.fetchLLMModels.mockResolvedValueOnce({
+      success: true,
+      models: [
+        {
+          id: 'test-model',
+          name: 'test-model',
+          context_limit: 5000,
+          context_limit_source: 'configured',
+          max_output_tokens: 2000,
+          output_limit_source: 'configured',
+        },
+      ],
+    });
+
+    render(<SettingsPanel />);
+    const accordionToggle = await screen.findByRole('button', { name: /LLM Providers/i });
+    fireEvent.click(accordionToggle);
+    fireEvent.change(await screen.findByLabelText('Model'), { target: { value: 'test-model' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Fetch Models' }));
+
+    // Saved override should display as current (16384 configured, not 5000 configured)
+    await screen.findByText(/Context: 16384 \(configured\)/i);
+    expect(screen.getByText(/Output: 8192 \(configured\)/i)).toBeTruthy();
+
+    // Open advanced limits and clear the fields
+    fireEvent.click(screen.getByText('Advanced model limits'));
+    fireEvent.change(screen.getByLabelText('Context limit'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Maximum output tokens'), { target: { value: '' } });
+
+    // After clearing: should show "Unknown" (not stale 5000 configured)
+    // because fetch result context_limit_source was 'configured' and there's no current override
+    await screen.findByText(/Unknown — configure before chat/i);
+    expect(screen.getByText(/Output: Unknown/i)).toBeTruthy();
+
+    // Verify override map is deleted when both fields are empty
+    fireEvent.click(screen.getByRole('button', { name: 'Save LLM Configuration' }));
+    await waitFor(() => {
+      expect(apiMock.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          openai_compatible_model_limits: {}, // Map should be empty or removed
+        }),
+      );
     });
   });
 });

@@ -5,7 +5,10 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+import httpx
+
 import ragtime.indexer.background_tasks as background_tasks
+from ragtime.content_protection.models import ContentProtectionError
 from ragtime.indexer.task_policy import activity_summary, make_execution_policy, required_action_termination
 from tests.content_protection_support import use_disabled_content_protection
 from tests.generation_policy_test_support import enabled_generation_policy
@@ -51,11 +54,11 @@ class BackgroundTaskOutcomeExecutionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         use_disabled_content_protection(self)
 
-    def _dependencies(self, stream):
+    def _dependencies(self, stream, *, model="openai::test"):
         conversation = SimpleNamespace(
             messages=[SimpleNamespace(role="user", content="build it", events=None)],
             user_id="user-1",
-            model="openai::test",
+            model=model,
             workspace_id="ws-1",
         )
         repository = SimpleNamespace(
@@ -72,9 +75,10 @@ class BackgroundTaskOutcomeExecutionTests(unittest.IsolatedAsyncioTestCase):
         settings = SimpleNamespace(get_settings=mock.AsyncMock(return_value={"max_tool_output_chars": 5000}))
         return repository, rag, settings
 
-    async def _run(self, stream, policy, *, usage_attempt_id=None):
+    async def _run(self, stream, policy, *, usage_attempt_id=None, model="openai::test", settings_values=None):
         service = background_tasks.BackgroundTaskService()
-        repository, rag, settings = self._dependencies(stream)
+        repository, rag, settings = self._dependencies(stream, model=model)
+        settings.get_settings = mock.AsyncMock(return_value=settings_values or {"max_tool_output_chars": 5000})
         bus = SimpleNamespace(publish=mock.AsyncMock())
         with (
             enabled_generation_policy("user-1"),
@@ -88,13 +92,36 @@ class BackgroundTaskOutcomeExecutionTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(service._running_tasks["task-1"], timeout=1)
         return repository, finalize_usage
 
+    async def test_early_content_protection_denial_fails_task_and_finalizes_usage(self) -> None:
+        denial = ContentProtectionError("content_denied", "request-1", reason="Restricted input.")
+
+        with mock.patch.object(background_tasks, "authorize_inbound", new=mock.AsyncMock(side_effect=denial)):
+            repository, usage = await self._run(
+                None,
+                make_execution_policy("general", source="workspace_agent"),
+                usage_attempt_id="usage-1",
+            )
+
+        update = repository.update_chat_task_status.await_args
+        self.assertEqual(update.args[1].value, "failed")
+        self.assertEqual(update.kwargs["termination_reason"], "content_denied")
+        self.assertEqual(update.kwargs["outcome_summary"]["refusal"]["code"], "content_denied")
+        usage.assert_awaited_once_with(
+            "usage-1",
+            status="failed",
+            failure_reason="content_denied",
+            output_tokens=0,
+        )
+
     async def test_structured_payment_error_persists_partial_and_closes_usage(self) -> None:
         async def stream():
             yield "partial work"
             yield {"type": "error", "code": "payment_required", "content": "Payment required."}
 
         with mock.patch("ragtime.core.openrouter_credits.note_openrouter_payment_required", return_value="Credit warning"):
-            repository, usage = await self._run(stream(), make_execution_policy("build", source="workspace_agent"), usage_attempt_id="usage-1")
+            repository, usage = await self._run(
+                stream(), make_execution_policy("build", source="workspace_agent"), usage_attempt_id="usage-1", model="openrouter::test"
+            )
 
         update = repository.update_chat_task_status.await_args
         self.assertEqual(update.args[1].value, "failed")
@@ -103,6 +130,94 @@ class BackgroundTaskOutcomeExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update.kwargs["outcome_summary"]["warnings"], ["Credit warning"])
         repository.link_assistant_snapshot_tool_calls.assert_awaited_once()
         usage.assert_awaited_once()
+
+    async def test_generic_payment_stream_fails_without_openrouter_credit_side_effect(self) -> None:
+        async def stream():
+            yield {"type": "error", "code": "payment_required", "content": "Payment required.", "provider": "openai_compatible"}
+
+        with mock.patch("ragtime.core.openrouter_credits.note_openrouter_payment_required") as note:
+            repository, _usage = await self._run(stream(), make_execution_policy("build", source="workspace_agent"), model="openai_compatible::same-id")
+
+        update = repository.update_chat_task_status.await_args
+        self.assertEqual(update.args[1].value, "failed")
+        self.assertEqual(update.kwargs["termination_reason"], "payment_required")
+        self.assertEqual(update.kwargs["outcome_summary"]["warnings"], [])
+        note.assert_not_called()
+
+    async def test_generic_payment_exception_does_not_change_openrouter_credit_state(self) -> None:
+        error = httpx.HTTPStatusError(
+            "raw upstream payment body",
+            request=httpx.Request("POST", "https://compatible.test/chat/completions"),
+            response=httpx.Response(402, json={}),
+        )
+
+        async def stream():
+            raise error
+            yield  # pragma: no cover - marks this as an async generator
+
+        with mock.patch("ragtime.core.openrouter_credits.note_openrouter_payment_required") as note:
+            repository, _usage = await self._run(stream(), make_execution_policy("build", source="workspace_agent"), model="openai_compatible::same-id")
+
+        update = repository.update_chat_task_status.await_args
+        self.assertEqual(update.args[1].value, "failed")
+        self.assertEqual(update.kwargs["termination_reason"], "payment_required")
+        note.assert_not_called()
+
+    async def test_generic_structured_payment_exception_preserves_shared_classification(self) -> None:
+        error = httpx.HTTPStatusError(
+            "raw upstream payment body",
+            request=httpx.Request("POST", "https://compatible.test/chat/completions"),
+            response=httpx.Response(400, json={"error": {"type": "insufficient_credit"}}),
+        )
+
+        async def stream():
+            raise error
+            yield  # pragma: no cover - marks this as an async generator
+
+        with mock.patch("ragtime.core.openrouter_credits.note_openrouter_payment_required") as note:
+            repository, _usage = await self._run(stream(), make_execution_policy("build", source="workspace_agent"), model="openai_compatible::same-id")
+
+        update = repository.update_chat_task_status.await_args
+        self.assertEqual(update.args[1].value, "failed")
+        self.assertEqual(update.kwargs["termination_reason"], "payment_required")
+        note.assert_not_called()
+
+    async def test_bare_openrouter_payment_uses_configured_provider_for_credit_warning(self) -> None:
+        async def stream():
+            yield {"type": "error", "code": "payment_required", "content": "Payment required."}
+
+        with mock.patch("ragtime.core.openrouter_credits.note_openrouter_payment_required", return_value="Credit warning"):
+            repository, _usage = await self._run(
+                stream(), make_execution_policy("build", source="workspace_agent"), model="same-id", settings_values={"llm_provider": "openrouter"}
+            )
+
+        self.assertEqual(repository.update_chat_task_status.await_args.kwargs["outcome_summary"]["warnings"], ["Credit warning"])
+
+    async def test_bare_generic_platform_exception_stays_unclassified(self) -> None:
+        async def stream():
+            raise RuntimeError("platform implementation detail")
+            yield  # pragma: no cover
+
+        repository, _usage = await self._run(
+            stream(), make_execution_policy("general", source="workspace_agent"), model="same-id", settings_values={"llm_provider": "openai_compatible"}
+        )
+        self.assertIsNone(repository.update_chat_task_status.await_args.kwargs["termination_reason"])
+
+    async def test_generic_safe_rate_error_is_terminal_not_advisory_success(self) -> None:
+        async def stream():
+            yield {
+                "type": "error",
+                "code": "rate_limited",
+                "content": "The configured OpenAI-compatible provider is rate limited. Please retry shortly.",
+                "provider": "openai_compatible",
+            }
+
+        repository, _usage = await self._run(stream(), make_execution_policy("general", source="workspace_agent"), model="openai_compatible::same-id")
+
+        update = repository.update_chat_task_status.await_args
+        self.assertEqual(update.args[1].value, "failed")
+        self.assertEqual(update.kwargs["termination_reason"], "rate_limited")
+        repository.complete_chat_task.assert_not_awaited()
 
     async def test_plan_only_build_is_interrupted_and_finalizes_usage_and_snapshot(self) -> None:
         async def stream():

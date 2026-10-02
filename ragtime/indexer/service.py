@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
 
+import httpx
 from langchain_community.document_loaders import TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangChainDocument
@@ -44,6 +45,8 @@ from ragtime.core.file_constants import (
 from ragtime.core.git import GIT_AUTH_FAILURE_MESSAGE, is_git_auth_error
 from ragtime.core.logging import get_logger
 from ragtime.core.model_providers import normalize_provider_name, resolve_provider_api_key, resolve_provider_base_url
+from ragtime.core.openai_compatible import get_model as get_compatible_model
+from ragtime.core.openai_compatible_client import CompatibleChatOpenAI, compatible_chat_options
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_limits import (
     ARCHIVE_MAX_FILE_COUNT_DEFAULT,
@@ -111,6 +114,7 @@ from ragtime.indexer.vector_utils import (
 )
 
 logger = get_logger(__name__)
+
 
 ANALYZE_ONLY_GIT_TOKEN_METADATA_TTL_SECONDS = 24 * 60 * 60
 
@@ -290,6 +294,38 @@ async def generate_index_description(
                 logger.debug(f"Using GitHub Models for description generation: {model}")
             else:
                 logger.debug("GitHub Models selected but no PAT token configured")
+
+        elif provider == "openai_compatible":
+            base_url = str(app_settings.get("openai_compatible_base_url", "") or "").strip()
+            model = str(app_settings.get("llm_model", "") or "").strip()
+            if not base_url or not model:
+                logger.debug("OpenAI-compatible description generation is not configured")
+            else:
+                metadata = await get_compatible_model(app_settings, model)
+                if not metadata.context_limit:
+                    logger.debug("Skipping description generation: OpenAI-compatible model context limit is unknown")
+                else:
+                    from langchain_openai import ChatOpenAI
+
+                    request_budget = app_settings.get("llm_max_tokens")
+                    max_tokens = request_budget if isinstance(request_budget, int) and request_budget > 0 else None
+                    if max_tokens and metadata.max_output_tokens:
+                        max_tokens = min(max_tokens, metadata.max_output_tokens)
+                    if max_tokens:
+                        max_tokens = min(max_tokens, metadata.context_limit)
+                    # Empty is deliberate: do not inherit OPENAI_API_KEY when
+                    # this independently configured endpoint has no key.
+                    options: dict[str, Any] = {
+                        "model": metadata.id,
+                        "temperature": 0.3,
+                        "base_url": base_url,
+                        "use_responses_api": False,
+                    }
+                    if max_tokens:
+                        options["max_tokens"] = max_tokens
+                    options.update(compatible_chat_options(str(app_settings.get("openai_compatible_api_key", "") or "")))
+                    llm = CompatibleChatOpenAI(**options)
+                    logger.debug("Using OpenAI-compatible provider for description generation: %s", model)
 
         if llm is None:
             logger.debug(f"No LLM available for description generation (provider: {provider})")
