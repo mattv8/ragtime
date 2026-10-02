@@ -118,6 +118,13 @@ ANALYZE_ONLY_GIT_TOKEN_METADATA_TTL_SECONDS = 24 * 60 * 60
 UPLOAD_TMP_DIR = Path(settings.index_data_path) / "_tmp"
 
 
+def _safe_upload_filename(filename: str) -> str:
+    """Accept only a portable upload basename for staging and job recovery."""
+    if not filename or "\\" in filename or Path(filename).name != filename or filename in {".", ".."}:
+        raise ValueError("Upload filename must be a plain basename")
+    return filename
+
+
 async def generate_index_description(
     index_name: str,
     documents: List,
@@ -1570,6 +1577,7 @@ class IndexerService:
 
         The temporary extraction is deleted after analysis.
         """
+        filename = _safe_upload_filename(filename)
         temp_dir = UPLOAD_TMP_DIR / f"analysis_{uuid.uuid4().hex[:8]}"
 
         try:
@@ -1916,6 +1924,7 @@ class IndexerService:
         The uploaded file is stored in a persistent tmp directory so it
         survives server restarts and can be resumed if interrupted.
         """
+        filename = _safe_upload_filename(filename)
         job_id = str(uuid.uuid4())[:8]
 
         job = IndexJob(
