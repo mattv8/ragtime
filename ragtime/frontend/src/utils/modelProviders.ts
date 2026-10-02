@@ -31,6 +31,7 @@ export const EMBEDDING_PROVIDER_KEYS = [
   'llama_cpp',
   'lmstudio',
   'omlx',
+  'openai_compatible',
 ] as const;
 
 export const KNOWN_PROVIDER_KEYS = new Set<string>([

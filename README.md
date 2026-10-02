@@ -69,7 +69,7 @@ Configure LLM and embedding providers in the Settings UI. Chat (LLM) and embeddi
 | **Anthropic** | API key | Yes | - |
 | **Claude Code** | Claude Pro/Max subscription (CLI/OAuth) | Yes | - |
 | **OpenRouter** | API key | Yes | Yes |
-| **OpenAI-compatible** | API key, if required by the endpoint | Yes | - |
+| **OpenAI-compatible** | API key, if required by the endpoint | Yes | Yes, when supported by the endpoint |
 | **GitHub Copilot** | OAuth device flow or PAT | Yes | - |
 | **Ollama** | Local (self-hosted) | Yes | Yes |
 | **llama.cpp** | Local (self-hosted) | Yes | Yes |
@@ -82,9 +82,13 @@ Subscription-backed providers (OpenAI Codex, Claude Code) authenticate from the 
 
 Custom model endpoints receive prompts and tool results and can influence tool calls; use only providers you trust.
 
-In the model-provider settings, select **OpenAI-compatible**, enter the service's full API base URL and API key, then fetch its models. Include the API path in the URL (for example, `https://api.example.com/v1`); Ragtime preserves that path and does not add `/v1`. The service must expose a compatible `/models` endpoint. This connection uses the Chat Completions API for chat, streaming, and tool calls. Model and endpoint support for tools can vary. Images use Ragtime's OCR path; this provider does not enable native image input or the Responses API. Configure an embedding provider separately for document indexing and retrieval.
+In the model-provider settings, select **OpenAI-compatible**, enter the service's full API base URL and API key, then fetch its models. Include the API path in the URL (for example, `https://api.example.com/v1`); Ragtime preserves that path and does not add `/v1`. Chat discovery requires a compatible `/models` endpoint. This connection uses the Chat Completions API for chat, streaming, and tool calls. Model and endpoint support for tools can vary. Images use Ragtime's OCR path; this provider does not enable native image input or the Responses API.
+
+For embeddings, select **OpenAI-compatible** under **Embedding Configuration**. Chat and embeddings share the generic connection's URL, key, and provider name, but use separate model selections. Fetch embedding models or enter an exact embedding model ID to probe it through `/embeddings`. Only models that return valid vectors are listed. A manually entered embedding model can be checked even when the service does not expose `/models`.
 
 Use the optional **Provider Name** to label the connection in model pickers; leaving it blank uses **OpenAI-compatible**. This label does not change model IDs or request routing.
+
+**Save LLM Configuration** enables the selected generic chat model in an existing Chat Models allowlist while preserving the other allowed models. Use **Chat Models** to manage the remaining selections.
 
 Model lists do not always include token limits. Ragtime resolves each model's context and output limits from administrator overrides, then endpoint metadata, then an exact model match in an explicitly selected **models.dev catalog reference**. Choose a catalog reference only when it describes your service's limits; the same model can have different limits on different services. Missing values remain unknown. Before using a model with an unknown context limit, enter its documented context limit in the per-model settings. An unknown output limit does not become an invented provider maximum; Ragtime uses the configured response budget and the known context window.
 

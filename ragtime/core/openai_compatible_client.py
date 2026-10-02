@@ -50,6 +50,11 @@ def compatible_chat_options(api_key: str) -> dict[str, Any]:
     }
 
 
+def compatible_embedding_options(api_key: str) -> dict[str, Any]:
+    """Return credential-isolated HTTP clients for compatible embeddings."""
+    return compatible_chat_options(api_key)
+
+
 class CompatibleChatOpenAI(ChatOpenAI):
     """Keep Chat Completions' documented ``max_tokens`` wire field."""
 

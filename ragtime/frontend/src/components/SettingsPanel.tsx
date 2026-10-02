@@ -89,6 +89,7 @@ import {
   buildProviderBaseUrl,
   normalizeProviderAlias,
   providersSame,
+  toProviderScopedModelKey,
   type ProviderConnectionDescriptor,
 } from '@/utils/modelProviders';
 import { type ThemePackId, resolveThemePackId, applyThemePack } from '@/theme';
@@ -501,7 +502,8 @@ type SharedLlmEmbeddingProvider =
   | 'ollama'
   | 'llama_cpp'
   | 'lmstudio'
-  | 'omlx';
+  | 'omlx'
+  | 'openai_compatible';
 
 function getDefaultEmbeddingModelForProvider(provider: SharedLlmEmbeddingProvider): string {
   if (provider === 'ollama') {
@@ -887,6 +889,7 @@ export function SettingsPanel({
   const [embeddingModelsError, setEmbeddingModelsError] = useState<string | null>(null);
   const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModel[]>([]);
   const [embeddingModelsLoaded, setEmbeddingModelsLoaded] = useState(false);
+  const embeddingModelsRequestGeneration = useRef(0);
   const [lmstudioModelActionLoading, setLmstudioModelActionLoading] = useState(false);
 
   // Model filter modal state (chat)
@@ -1029,6 +1032,8 @@ export function SettingsPanel({
   }, []);
 
   const resetEmbeddingModelsState = useCallback(() => {
+    embeddingModelsRequestGeneration.current += 1;
+    setEmbeddingModelsFetching(false);
     setEmbeddingModels([]);
     setEmbeddingModelsError(null);
     setEmbeddingModelsLoaded(false);
@@ -1872,14 +1877,24 @@ export function SettingsPanel({
 
   // Fetch embedding models from hosted provider APIs
   const fetchEmbeddingModels = useCallback(
-    async (provider: 'openai' | 'openai_codex' | 'openrouter', apiKey: string) => {
+    async (
+      provider: 'openai' | 'openai_codex' | 'openrouter' | 'openai_compatible',
+      apiKey: string,
+      baseUrl?: string,
+    ) => {
       const providerLabel =
         provider === 'openrouter'
           ? 'OpenRouter'
           : provider === 'openai_codex'
             ? 'OpenAI Codex'
-            : 'OpenAI';
-      if (provider !== 'openai_codex' && (!apiKey || apiKey.length < 10)) {
+            : provider === 'openai_compatible'
+              ? 'OpenAI-compatible'
+              : 'OpenAI';
+      if (
+        provider !== 'openai_codex' &&
+        provider !== 'openai_compatible' &&
+        (!apiKey || apiKey.length < 10)
+      ) {
         setEmbeddingModelsError(`Please enter a valid ${providerLabel} API key first`);
         return;
       }
@@ -1888,36 +1903,43 @@ export function SettingsPanel({
       setEmbeddingModelsError(null);
       setEmbeddingModels([]);
       setEmbeddingModelsLoaded(false);
+      const generation = ++embeddingModelsRequestGeneration.current;
 
       try {
         const response = await api.fetchEmbeddingModels({
           provider,
           api_key: provider === 'openai_codex' ? '' : apiKey,
+          base_url: baseUrl,
+          model:
+            provider === 'openai_compatible' ? formData.embedding_model || undefined : undefined,
         });
+        if (generation !== embeddingModelsRequestGeneration.current) return;
 
         if (response.success) {
           setEmbeddingModels(response.models);
           setEmbeddingModelsLoaded(true);
           // Auto-select the default model if none is currently set or the current one isn't in the list
           if (response.default_model) {
-            const currentModel = formData.embedding_model;
-            const modelExists = response.models.some((m) => m.id === currentModel);
-            if (!currentModel || !modelExists) {
-              setFormData((prev) => ({
-                ...prev,
-                embedding_model: response.default_model,
-              }));
-            }
+            setFormData((prev) => {
+              const currentModel = prev.embedding_model;
+              return !currentModel || !response.models.some((m) => m.id === currentModel)
+                ? { ...prev, embedding_model: response.default_model }
+                : prev;
+            });
           }
         } else {
-          setEmbeddingModelsError(response.message);
+          if (generation === embeddingModelsRequestGeneration.current) {
+            setEmbeddingModelsError(response.message);
+          }
         }
       } catch (err) {
-        setEmbeddingModelsError(
-          err instanceof Error ? err.message : 'Failed to fetch embedding models',
-        );
+        if (generation === embeddingModelsRequestGeneration.current)
+          setEmbeddingModelsError(
+            err instanceof Error ? err.message : 'Failed to fetch embedding models',
+          );
       } finally {
-        setEmbeddingModelsFetching(false);
+        if (generation === embeddingModelsRequestGeneration.current)
+          setEmbeddingModelsFetching(false);
       }
     },
     [formData.embedding_model],
@@ -1936,6 +1958,7 @@ export function SettingsPanel({
       setEmbeddingModelsError(null);
       setEmbeddingModels([]);
       setEmbeddingModelsLoaded(false);
+      const generation = ++embeddingModelsRequestGeneration.current;
 
       try {
         const response = await api.fetchEmbeddingModels({
@@ -1944,25 +1967,28 @@ export function SettingsPanel({
           base_url: buildLocalBaseUrl(protocol, host, port, connection),
           model: formData.embedding_model || undefined,
         });
+        if (generation !== embeddingModelsRequestGeneration.current) return;
 
         if (response.success) {
           setEmbeddingModels(response.models);
           setEmbeddingModelsLoaded(true);
-          if (response.default_model) {
+          if (response.default_model)
             setFormData((prev) => ({
               ...prev,
               embedding_model: prev.embedding_model || response.default_model,
             }));
-          }
         } else {
-          setEmbeddingModelsError(response.message);
+          if (generation === embeddingModelsRequestGeneration.current)
+            setEmbeddingModelsError(response.message);
         }
       } catch (err) {
-        setEmbeddingModelsError(
-          err instanceof Error ? err.message : 'Failed to fetch embedding models',
-        );
+        if (generation === embeddingModelsRequestGeneration.current)
+          setEmbeddingModelsError(
+            err instanceof Error ? err.message : 'Failed to fetch embedding models',
+          );
       } finally {
-        setEmbeddingModelsFetching(false);
+        if (generation === embeddingModelsRequestGeneration.current)
+          setEmbeddingModelsFetching(false);
       }
     },
     [formData.embedding_model],
@@ -2333,6 +2359,7 @@ export function SettingsPanel({
 
     try {
       await api.updateSettings({ allowed_chat_models: allowedModels });
+      setFormData((previous) => ({ ...previous, allowed_chat_models: allowedModels }));
       setShowModelFilterModal(false);
       toast.success('Model filter saved');
       refreshModels();
@@ -2477,6 +2504,7 @@ export function SettingsPanel({
         github_copilot_enterprise_url: data.github_copilot_enterprise_url,
         openai_codex_base_url: data.openai_codex_base_url,
         default_chat_model: data.default_chat_model ?? null,
+        allowed_chat_models: data.allowed_chat_models ?? [],
         chat_enabled: data.chat_enabled !== false,
         userspace_generation_enabled: data.userspace_generation_enabled !== false,
         userspace_build_model: data.userspace_build_model ?? null,
@@ -3124,12 +3152,26 @@ export function SettingsPanel({
         default_ocr_vision_model: formData.default_ocr_vision_model,
         ocr_concurrency_limit: formData.ocr_concurrency_limit,
       };
+      if (formData.embedding_provider === 'openai_compatible') {
+        dataToSave.openai_compatible_base_url = formData.openai_compatible_base_url;
+        dataToSave.openai_compatible_api_key = formData.openai_compatible_api_key;
+        dataToSave.openai_compatible_provider_name =
+          formData.openai_compatible_provider_name?.trim() || '';
+      }
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
       setFormData((prev) => ({
         ...prev,
         ...getEmbeddingSettingsFormData(updated),
+        openai_compatible_base_url: updated.openai_compatible_base_url || '',
+        openai_compatible_api_key: updated.openai_compatible_api_key || '',
+        openai_compatible_provider_name: updated.openai_compatible_provider_name || '',
       }));
+      if (formData.embedding_provider === 'openai_compatible') {
+        setOpenAiCompatibleLoadedKey(updated.openai_compatible_api_key || '');
+        refreshModels();
+        await refreshDefaultChatModelPreview();
+      }
       await onSettingsSaved?.();
       toast.success('Embedding configuration saved');
     } catch (err) {
@@ -3140,7 +3182,7 @@ export function SettingsPanel({
   };
 
   // Save LLM Configuration
-  const handleSaveLlm = async () => {
+  const handleSaveLlm = async (enableSelectedCompatibleModel = false) => {
     setLlmSaving(true);
 
     try {
@@ -3172,7 +3214,21 @@ export function SettingsPanel({
         tool_output_mode: formData.tool_output_mode,
       };
       dataToSave.default_chat_model = formData.default_chat_model;
-      dataToSave.allowed_chat_models = formData.allowed_chat_models;
+      const selectedCompatibleModel = formData.llm_model?.trim();
+      const existingAllowedModels =
+        formData.allowed_chat_models ?? settings?.allowed_chat_models ?? [];
+      dataToSave.allowed_chat_models =
+        enableSelectedCompatibleModel &&
+        normalizedProvider === 'openai_compatible' &&
+        selectedCompatibleModel &&
+        existingAllowedModels.length
+          ? Array.from(
+              new Set([
+                ...existingAllowedModels,
+                toProviderScopedModelKey('openai_compatible', selectedCompatibleModel),
+              ]),
+            )
+          : existingAllowedModels;
       dataToSave.chat_compaction_threshold_percent = formData.chat_compaction_threshold_percent;
       dataToSave.chat_auto_compaction_threshold_percent =
         formData.chat_auto_compaction_threshold_percent;
@@ -4143,6 +4199,17 @@ export function SettingsPanel({
   const omlxConfigured = Boolean(
     formData.llm_omlx_protocol && formData.llm_omlx_host?.trim() && formData.llm_omlx_port,
   );
+  const openAiCompatibleConfigured = Boolean(formData.openai_compatible_base_url?.trim());
+  const openAiCompatibleLabel =
+    formData.openai_compatible_provider_name?.trim() || 'OpenAI-compatible';
+  const compatibleSelectedModelExcluded = Boolean(
+    normalizeLlmProvider(formData.llm_provider) === 'openai_compatible' &&
+    formData.llm_model?.trim() &&
+    (formData.allowed_chat_models ?? settings?.allowed_chat_models ?? []).length &&
+    !(formData.allowed_chat_models ?? settings?.allowed_chat_models ?? []).includes(
+      toProviderScopedModelKey('openai_compatible', formData.llm_model.trim()),
+    ),
+  );
   const embeddingOpenAiConfigured = Boolean(
     (formData.openai_api_key ?? settings?.openai_api_key)?.trim(),
   );
@@ -4162,6 +4229,7 @@ export function SettingsPanel({
   const embeddingOmlxConfigured = Boolean(
     formData.omlx_protocol && formData.omlx_host?.trim() && formData.omlx_port,
   );
+  const embeddingOpenAiCompatibleConfigured = openAiCompatibleConfigured;
   const llmProviderForEmbeddingCopy = (() => {
     const provider = normalizeLlmProvider(formData.llm_provider || 'openai');
     if (provider !== (formData.embedding_provider || 'ollama')) {
@@ -4182,6 +4250,8 @@ export function SettingsPanel({
         return lmstudioConfigured ? provider : null;
       case 'omlx':
         return omlxConfigured ? provider : null;
+      case 'openai_compatible':
+        return openAiCompatibleConfigured ? provider : null;
       default:
         return null;
     }
@@ -4206,6 +4276,8 @@ export function SettingsPanel({
         return embeddingLmstudioConfigured ? provider : null;
       case 'omlx':
         return embeddingOmlxConfigured ? provider : null;
+      case 'openai_compatible':
+        return embeddingOpenAiCompatibleConfigured ? provider : null;
       default:
         return null;
     }
@@ -4436,6 +4508,16 @@ export function SettingsPanel({
       </span>
       <span
         className="llm-provider-status-item"
+        title={`${openAiCompatibleLabel} ${openAiCompatibleConfigured ? 'configured' : 'not configured'}`}
+      >
+        <span
+          className={`llm-provider-status-dot ${openAiCompatibleConfigured ? 'configured' : ''}`}
+          aria-label={`${openAiCompatibleLabel} ${openAiCompatibleConfigured ? 'configured' : 'not configured'}`}
+        />
+        <span className="llm-provider-status-label">{openAiCompatibleLabel}</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
         title={
           copilotConfigured || copilotPatConfigured
             ? 'GitHub Copilot configured'
@@ -4567,6 +4649,16 @@ export function SettingsPanel({
           aria-label={embeddingOmlxConfigured ? 'oMLX configured' : 'oMLX not configured'}
         />
         <span className="llm-provider-status-label">oMLX</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={`${openAiCompatibleLabel} ${embeddingOpenAiCompatibleConfigured ? 'configured' : 'not configured'}`}
+      >
+        <span
+          className={`llm-provider-status-dot ${embeddingOpenAiCompatibleConfigured ? 'configured' : ''}`}
+          aria-label={`${openAiCompatibleLabel} ${embeddingOpenAiCompatibleConfigured ? 'configured' : 'not configured'}`}
+        />
+        <span className="llm-provider-status-label">{openAiCompatibleLabel}</span>
       </span>
     </span>
   );
@@ -4817,7 +4909,7 @@ export function SettingsPanel({
               toScopedModelIdentifier={toScopedModelIdentifier}
               openModelFilterModal={openModelFilterModal}
               openOpenapiModelModal={openOpenapiModelModal}
-              handleSaveChat={handleSaveLlm}
+              handleSaveChat={() => handleSaveLlm()}
               chatSaving={llmSaving}
               isAdmin={isAdmin}
               configurationVisible={chatConfigurationVisible}
@@ -6054,7 +6146,10 @@ export function SettingsPanel({
                                 ? ''
                                 : formData.openai_compatible_api_key,
                           });
-                          if (rootChanged) resetLlmModelsState();
+                          if (rootChanged) {
+                            resetLlmModelsState();
+                            resetEmbeddingModelsState();
+                          }
                         }}
                         placeholder="https://your-endpoint/v1"
                         autoComplete="off"
@@ -6080,6 +6175,7 @@ export function SettingsPanel({
                           });
                           setOpenAiCompatibleLoadedKey('');
                           resetLlmModelsState();
+                          resetEmbeddingModelsState();
                         }}
                         placeholder="sk-... (optional)"
                         autoComplete="off"
@@ -6190,9 +6286,26 @@ export function SettingsPanel({
                       </p>
                     )}
                     <p id="openai-compatible-model-help" className="field-help">
-                      Enter a model ID manually or fetch models. This provider supports chat only;
-                      use a separate configured provider for embeddings.
+                      Enter a model ID manually or fetch models. Saving this LLM configuration
+                      enables the selected model when a chat allowlist is in use.{' '}
+                      <button
+                        type="button"
+                        className="btn-link"
+                        onClick={() => void openModelFilterModal()}
+                      >
+                        Manage allowed models
+                      </button>
                     </p>
+                    {compatibleSelectedModelExcluded && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => handleSaveLlm(true)}
+                        disabled={llmSaving}
+                      >
+                        Enable selected model and save
+                      </button>
+                    )}
                     {llmModelsLoaded && llmModels.length === 0 && (
                       <p className="field-error" role="alert">
                         No models returned. Enter a model ID manually.
@@ -7461,7 +7574,12 @@ export function SettingsPanel({
               </details>
 
               <div className="form-actions">
-                <button type="button" className="btn" onClick={handleSaveLlm} disabled={llmSaving}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => handleSaveLlm(true)}
+                  disabled={llmSaving}
+                >
                   {llmSaving ? 'Saving...' : 'Save LLM Configuration'}
                 </button>
               </div>
@@ -7496,7 +7614,8 @@ export function SettingsPanel({
                           | 'openrouter'
                           | 'llama_cpp'
                           | 'lmstudio'
-                          | 'omlx';
+                          | 'omlx'
+                          | 'openai_compatible';
                         setFormData({
                           ...formData,
                           embedding_provider: newProvider,
@@ -7510,9 +7629,11 @@ export function SettingsPanel({
                                   ? ''
                                   : newProvider === 'omlx'
                                     ? ''
-                                    : newProvider === 'openrouter'
+                                    : newProvider === 'openai_compatible'
                                       ? ''
-                                      : 'text-embedding-3-small',
+                                      : newProvider === 'openrouter'
+                                        ? ''
+                                        : 'text-embedding-3-small',
                         });
                         // Reset Ollama connection state when switching providers
                         if (newProvider !== 'ollama') {
@@ -7525,6 +7646,7 @@ export function SettingsPanel({
                       <option value="llama_cpp">llama.cpp</option>
                       <option value="lmstudio">LM Studio</option>
                       <option value="omlx">oMLX</option>
+                      <option value="openai_compatible">OpenAI-compatible</option>
                       <option value="openai">OpenAI</option>
                       <option value="openai_codex">OpenAI Codex</option>
                       <option value="openrouter">OpenRouter</option>
@@ -7851,6 +7973,144 @@ export function SettingsPanel({
                     appear but fail dimension probing.
                   </p>
                 </>
+              )}
+
+              {formData.embedding_provider === 'openai_compatible' && (
+                <div id="embedding-provider-config-openai-compatible">
+                  <p id="openai-compatible-embedding-connection-help" className="field-help">
+                    This shared connection is also used by the OpenAI-compatible LLM provider.
+                  </p>
+                  <div
+                    className="form-group"
+                    id="setting-openai-compatible-embedding-provider-name"
+                  >
+                    <label htmlFor="openai-compatible-embedding-provider-name">Provider Name</label>
+                    <input
+                      id="openai-compatible-embedding-provider-name"
+                      type="text"
+                      maxLength={80}
+                      autoComplete="off"
+                      aria-describedby="openai-compatible-embedding-connection-help"
+                      value={formData.openai_compatible_provider_name || ''}
+                      onChange={(event) =>
+                        setFormData({
+                          ...formData,
+                          openai_compatible_provider_name: event.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="form-group" id="setting-openai-compatible-embedding-base-url">
+                    <label htmlFor="openai-compatible-embedding-base-url">Base URL</label>
+                    <input
+                      id="openai-compatible-embedding-base-url"
+                      type="url"
+                      autoComplete="off"
+                      aria-describedby="openai-compatible-embedding-connection-help"
+                      value={formData.openai_compatible_base_url || ''}
+                      onChange={(event) => {
+                        const nextBaseUrl = event.target.value;
+                        const rootChanged =
+                          normalizeCompatibleBaseUrl(nextBaseUrl) !==
+                          normalizeCompatibleBaseUrl(formData.openai_compatible_base_url);
+                        setFormData({
+                          ...formData,
+                          openai_compatible_base_url: nextBaseUrl,
+                          openai_compatible_api_key:
+                            rootChanged &&
+                            formData.openai_compatible_api_key === openAiCompatibleLoadedKey
+                              ? ''
+                              : formData.openai_compatible_api_key,
+                        });
+                        if (rootChanged) {
+                          resetLlmModelsState();
+                          resetEmbeddingModelsState();
+                        }
+                      }}
+                    />
+                  </div>
+                  <div className="form-group" id="setting-openai-compatible-embedding-api-key">
+                    <label htmlFor="openai-compatible-embedding-api-key">API Key</label>
+                    <input
+                      id="openai-compatible-embedding-api-key"
+                      type="password"
+                      autoComplete="off"
+                      value={formData.openai_compatible_api_key || ''}
+                      onChange={(event) => {
+                        setFormData({ ...formData, openai_compatible_api_key: event.target.value });
+                        setOpenAiCompatibleLoadedKey('');
+                        resetLlmModelsState();
+                        resetEmbeddingModelsState();
+                      }}
+                      placeholder="optional"
+                    />
+                  </div>
+                  <div className="form-group" id="setting-openai-compatible-embedding-model">
+                    <label htmlFor="openai-compatible-embedding-model">Embedding Model</label>
+                    <div className="input-with-button">
+                      <input
+                        id="openai-compatible-embedding-model"
+                        type="text"
+                        autoComplete="off"
+                        aria-describedby="openai-compatible-embedding-model-help"
+                        value={formData.embedding_model || ''}
+                        onChange={(event) =>
+                          setFormData({ ...formData, embedding_model: event.target.value })
+                        }
+                      />
+                      <button
+                        type="button"
+                        className={`btn btn-test${embeddingModelsLoaded ? ' btn-connected' : ''}`}
+                        onClick={() =>
+                          fetchEmbeddingModels(
+                            'openai_compatible',
+                            formData.openai_compatible_api_key || '',
+                            formData.openai_compatible_base_url,
+                          )
+                        }
+                        disabled={
+                          embeddingModelsFetching || !formData.openai_compatible_base_url?.trim()
+                        }
+                      >
+                        {embeddingModelsFetching
+                          ? 'Fetching...'
+                          : embeddingModelsLoaded
+                            ? 'Loaded'
+                            : 'Fetch Models'}
+                      </button>
+                    </div>
+                    {embeddingModelsError && (
+                      <p className="field-error" role="alert">
+                        {embeddingModelsError}
+                      </p>
+                    )}
+                    <p id="openai-compatible-embedding-model-help" className="field-help">
+                      Enter a model ID or fetch models from the shared connection. Fetching tests
+                      the embedding endpoint and can make a billable provider call.
+                    </p>
+                    {embeddingModelsLoaded && embeddingModels.length === 0 && (
+                      <p className="field-error" role="alert">
+                        No embedding-capable models returned. Enter a model ID manually.
+                      </p>
+                    )}
+                    {embeddingModelsLoaded && embeddingModels.length > 0 && (
+                      <select
+                        aria-label="Discovered embedding models"
+                        value={formData.embedding_model || ''}
+                        onChange={(event) =>
+                          setFormData({ ...formData, embedding_model: event.target.value })
+                        }
+                      >
+                        <option value="">Enter a model manually...</option>
+                        {embeddingModels.map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.name || model.id}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                </div>
               )}
 
               {hostedEmbeddingProviderConfig && (

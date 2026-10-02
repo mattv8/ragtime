@@ -94,13 +94,26 @@ class OpenAICompatibleSettingsTests(unittest.IsolatedAsyncioTestCase):
         assert fake_db.appsettings.last_update_data is not None
         self.assertEqual(fake_db.appsettings.last_update_data["openaiCompatibleApiKey"], "")
 
-    def test_compatible_settings_validate_url_and_reject_embedding_provider(self) -> None:
+    def test_compatible_settings_validate_url_and_allow_embedding_provider(self) -> None:
         with self.assertRaises(ValueError):
             AppSettings(openai_compatible_base_url="not-a-url")
         with self.assertRaises(ValueError):
             UpdateSettingsRequest(openai_compatible_base_url="https://proxy.example/?query=yes")
-        with self.assertRaises(ValueError):
-            UpdateSettingsRequest(embedding_provider="openai_compatible")
+        self.assertEqual(UpdateSettingsRequest(embedding_provider="openai_compatible").embedding_provider, "openai_compatible")
+
+    def test_generic_embedding_hash_includes_normalized_endpoint_only_for_generic_provider(self) -> None:
+        self.assertEqual(
+            AppSettings(
+                embedding_provider="openai_compatible", embedding_model="embed", openai_compatible_base_url="https://proxy.example/v1/"
+            ).get_embedding_config_hash(),
+            "openai_compatible:embed:default:https://proxy.example/v1",
+        )
+        self.assertEqual(AppSettings(embedding_provider="openai", embedding_model="embed").get_embedding_config_hash(), "openai:embed:default")
+
+    def test_generic_embedding_hash_normalizes_mutated_endpoint(self) -> None:
+        settings = AppSettings(embedding_provider="openai_compatible", embedding_model="embed")
+        settings.openai_compatible_base_url = " https://proxy.example/root/ "
+        self.assertEqual(settings.get_embedding_config_hash(), "openai_compatible:embed:default:https://proxy.example/root")
 
     def test_compatible_provider_name_is_trimmed_and_bounded(self) -> None:
         self.assertEqual(AppSettings(openai_compatible_provider_name="  Trusted Relay  ").openai_compatible_provider_name, "Trusted Relay")

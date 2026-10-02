@@ -17,6 +17,26 @@ def _create_mock_user():
 
 
 class OpenAICompatibleRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_embedding_preview_reuses_key_only_for_same_saved_root_and_probes_explicit_model(self) -> None:
+        settings = SimpleNamespace(openai_compatible_base_url="https://proxy.example/v1", openai_compatible_api_key="saved-key")
+        fetch = mock.AsyncMock(return_value=[])
+        with (
+            mock.patch("ragtime.indexer.routes.repository.get_settings", mock.AsyncMock(return_value=settings)),
+            mock.patch("ragtime.indexer.routes.list_compatible_embedding_models", fetch),
+        ):
+            await routes.fetch_embedding_models(
+                routes.EmbeddingModelsRequest(provider="openai_compatible", base_url="https://proxy.example/v1/", model="embed-a"),
+                cast(User, _create_mock_user()),
+            )
+            await routes.fetch_embedding_models(
+                routes.EmbeddingModelsRequest(provider="openai_compatible", base_url="https://other.example/v1", api_key="", model="embed-a"),
+                cast(User, _create_mock_user()),
+            )
+
+        self.assertEqual(fetch.await_args_list[0].kwargs["api_key"], "saved-key")
+        self.assertEqual(fetch.await_args_list[0].kwargs["selected_model"], "embed-a")
+        self.assertEqual(fetch.await_args_list[1].kwargs["api_key"], "")
+
     async def test_preview_uses_saved_key_only_for_same_normalized_url(self) -> None:
         settings = SimpleNamespace(
             openai_compatible_base_url="https://proxy.example/v1",

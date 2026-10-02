@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle } from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatSettingsSectionProps } from './settings/ChatSettingsSection';
 import type { User } from '@/types';
@@ -67,6 +67,7 @@ const apiMock = vi.hoisted(() => ({
   getAvailableModels: vi.fn(),
   getAllModels: vi.fn(),
   fetchLLMModels: vi.fn(),
+  fetchEmbeddingModels: vi.fn(),
   listModelCatalogProviders: vi.fn(),
   listMcpRoutes: vi.fn(),
   listMcpDefaultFilters: vi.fn(),
@@ -525,6 +526,8 @@ beforeEach(() => {
     allowed_openapi_models: [],
   });
   apiMock.fetchLLMModels.mockResolvedValue({ success: true, models: [] });
+  apiMock.fetchEmbeddingModels.mockReset();
+  apiMock.fetchEmbeddingModels.mockResolvedValue({ success: true, models: [] });
   apiMock.listModelCatalogProviders.mockResolvedValue([]);
   apiMock.listMcpRoutes.mockResolvedValue({ routes: [] });
   apiMock.listMcpDefaultFilters.mockResolvedValue({ filters: [] });
@@ -1915,6 +1918,146 @@ describe('SettingsPanel', () => {
         expect.objectContaining({ openai_compatible_provider_name: 'Internal Gateway' }),
       );
     });
+  });
+
+  it.each([
+    {
+      allowed: ['openai::existing'],
+      expected: ['openai::existing', 'openai_compatible::Case/Model'],
+    },
+    { allowed: [], expected: [] },
+  ])(
+    'enables only the selected generic model while preserving allowlist $allowed',
+    async ({ allowed, expected }) => {
+      chatModelsSectionState.autoOpenModal = false;
+      apiMock.getSettings.mockResolvedValueOnce(
+        buildSettingsResponse({
+          llm_provider: 'openai_compatible',
+          llm_model: 'Case/Model',
+          openai_compatible_base_url: 'https://gateway.example/v1',
+          allowed_chat_models: allowed,
+        }),
+      );
+      render(<SettingsPanel currentUser={adminUser} />);
+      fireEvent.click(await screen.findByRole('button', { name: /LLM Providers/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save LLM Configuration' }));
+      await waitFor(() =>
+        expect(apiMock.updateSettings).toHaveBeenCalledWith(
+          expect.objectContaining({ allowed_chat_models: expected }),
+        ),
+      );
+    },
+  );
+
+  it('does not reenable an excluded generic model when saving ordinary chat settings', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        llm_model: 'Case/Model',
+        openai_compatible_base_url: 'https://gateway.example/v1',
+        allowed_chat_models: ['openai::existing'],
+      }),
+    );
+    render(<SettingsPanel currentUser={adminUser} />);
+    await screen.findByRole('button', { name: /LLM Providers/i });
+    await act(async () => {
+      await chatModelsSectionState.latestProps!.handleSaveChat();
+    });
+    expect(apiMock.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ allowed_chat_models: ['openai::existing'] }),
+    );
+  });
+
+  it('binds the generic status name and configured dot to the shared keyless connection', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_provider_name: 'A2Agent',
+        openai_compatible_base_url: 'https://gateway.example/v1',
+        openai_compatible_api_key: '',
+      }),
+    );
+    const { container } = render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /LLM Providers/i }));
+    const status = container.querySelector('[aria-label="LLM provider configuration status"]')!;
+    expect(
+      within(status as HTMLElement)
+        .getByLabelText('A2Agent configured')
+        .classList.contains('configured'),
+    ).toBe(true);
+    fireEvent.change(screen.getByLabelText('Provider Name'), { target: { value: '' } });
+    expect(
+      within(status as HTMLElement).getByLabelText('OpenAI-compatible configured'),
+    ).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: '' } });
+    expect(
+      within(status as HTMLElement)
+        .getByLabelText('OpenAI-compatible not configured')
+        .classList.contains('configured'),
+    ).toBe(false);
+  });
+
+  it('discards old embedding discovery after a shared root change and saves the new keyless connection', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        embedding_provider: 'openai_compatible',
+        embedding_model: 'manual-embed',
+        openai_compatible_base_url: 'https://old.example/v1',
+        openai_compatible_api_key: 'old-key',
+        openai_compatible_provider_name: 'Gateway',
+      }),
+    );
+    let resolveOld!: (value: unknown) => void;
+    apiMock.fetchEmbeddingModels.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveOld = resolve;
+      }),
+    );
+    const { container } = render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /Embedding Configuration/i }));
+    const section = within(
+      container.querySelector('#embedding-provider-config-openai-compatible')! as HTMLElement,
+    );
+    fireEvent.click(section.getByRole('button', { name: 'Fetch Models' }));
+    fireEvent.change(section.getByLabelText('Base URL'), {
+      target: { value: 'https://new.example/api' },
+    });
+    expect((section.getByLabelText('API Key') as HTMLInputElement).value).toBe('');
+    await act(async () =>
+      resolveOld({
+        success: true,
+        models: [{ id: 'old-model', name: 'Old model', dimensions: 3 }],
+        default_model: 'old-model',
+      }),
+    );
+    expect(section.queryByRole('combobox')).toBeNull();
+    expect((section.getByLabelText('Embedding Model') as HTMLInputElement).value).toBe(
+      'manual-embed',
+    );
+    fireEvent.click(section.getByRole('button', { name: 'Fetch Models' }));
+    await waitFor(() =>
+      expect(apiMock.fetchEmbeddingModels).toHaveBeenLastCalledWith({
+        provider: 'openai_compatible',
+        api_key: '',
+        base_url: 'https://new.example/api',
+        model: 'manual-embed',
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save Embedding Configuration' }));
+    await waitFor(() =>
+      expect(apiMock.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          embedding_provider: 'openai_compatible',
+          embedding_model: 'manual-embed',
+          openai_compatible_base_url: 'https://new.example/api',
+          openai_compatible_api_key: '',
+          openai_compatible_provider_name: 'Gateway',
+        }),
+      ),
+    );
   });
 
   it('updates generic picker labels after a provider-name edit without refetching', async () => {

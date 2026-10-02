@@ -178,6 +178,7 @@ from ragtime.core.openai_compatible import (
 from ragtime.core.openai_compatible import (
     get_model as get_compatible_model,
 )
+from ragtime.core.openai_compatible import list_embedding_models as list_compatible_embedding_models
 from ragtime.core.openai_compatible import (
     list_models as list_compatible_models,
 )
@@ -7783,6 +7784,30 @@ async def fetch_embedding_models(request: EmbeddingModelsRequest, _user: User = 
         settings = await repository.get_settings()
         api_key = str(request.api_key or resolve_provider_api_key(settings, normalized_provider, "embedding") or "").strip()
         return await _fetch_openrouter_embedding_models(api_key)
+
+    if normalized_provider == "openai_compatible":
+        settings = await repository.get_settings()
+        try:
+            requested_url = normalize_base_url(request.base_url or settings.openai_compatible_base_url)
+            saved_url = normalize_base_url(settings.openai_compatible_base_url) if settings.openai_compatible_base_url else ""
+        except (CompatibleProviderError, ValueError) as exc:
+            return EmbeddingModelsResponse(success=False, message=str(exc))
+        api_key = (
+            request.api_key
+            if "api_key" in request.model_fields_set
+            else (settings.openai_compatible_api_key if requested_url and requested_url == saved_url else "")
+        )
+        try:
+            discovered = await list_compatible_embedding_models(requested_url, api_key=api_key, selected_model=request.model)
+        except CompatibleProviderError as exc:
+            return EmbeddingModelsResponse(success=False, message=str(exc))
+        models = [_to_embedding_model(model) for model in discovered]
+        return EmbeddingModelsResponse(
+            success=True,
+            message=f"Found {len(models)} OpenAI-compatible embedding model(s).",
+            models=models,
+            default_model=models[0].id if models else None,
+        )
 
     if normalized_provider in {"llama_cpp", "lmstudio", "omlx"}:
         settings = await repository.get_settings()

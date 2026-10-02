@@ -1036,7 +1036,8 @@ export interface AppSettings {
     | 'openrouter'
     | 'llama_cpp'
     | 'lmstudio'
-    | 'omlx';
+    | 'omlx'
+    | 'openai_compatible';
   embedding_model: string;
   embedding_dimensions?: number | null;
   // Ollama connection settings for embeddings (separate fields)
@@ -1217,7 +1218,8 @@ export interface UpdateSettingsRequest {
     | 'openrouter'
     | 'llama_cpp'
     | 'lmstudio'
-    | 'omlx';
+    | 'omlx'
+    | 'openai_compatible';
   embedding_model?: string;
   embedding_dimensions?: number | null;
   ollama_protocol?: 'http' | 'https';
@@ -1668,7 +1670,14 @@ export interface ClaudeCodeAuthCompleteResponse {
 
 // Embedding Provider Model Fetching
 export interface EmbeddingModelsRequest {
-  provider: 'openai' | 'openai_codex' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
+  provider:
+    | 'openai'
+    | 'openai_codex'
+    | 'openrouter'
+    | 'llama_cpp'
+    | 'lmstudio'
+    | 'omlx'
+    | 'openai_compatible';
   api_key?: string;
   base_url?: string;
   model?: string;

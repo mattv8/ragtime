@@ -11,7 +11,7 @@ from typing import Optional
 import httpx
 from fastapi import HTTPException
 
-from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
+from ragtime.core import llama_cpp, lmstudio, omlx, openai_compatible, openrouter
 from ragtime.core.logging import get_logger
 from ragtime.core.model_providers import (
     EMBEDDING_PROVIDER_NAMES,
@@ -69,6 +69,7 @@ async def validate_embedding_provider() -> ValidationResult:
             "openai": _validate_openai_embeddings,
             "openrouter": _validate_openrouter_embeddings,
             "openai_codex": _validate_openai_codex_embeddings,
+            "openai_compatible": _validate_openai_compatible_embeddings,
         }
         validator = validators.get(provider)
         if validator is None:
@@ -218,6 +219,18 @@ async def _validate_openai_embeddings(settings: object, model: str) -> Validatio
             details=str(e),
         )
 
+    return ValidationResult(valid=True)
+
+
+async def _validate_openai_compatible_embeddings(settings: object, model: str) -> ValidationResult:
+    """Validate one manually configured generic endpoint with an embeddings probe."""
+    base_url = resolve_provider_base_url(settings, "openai_compatible", "embedding")
+    if not base_url:
+        return ValidationResult(False, "OpenAI-compatible API URL not configured", "Add the provider API root in Settings.")
+    try:
+        await openai_compatible.probe_embedding_dimension(base_url, model, resolve_provider_api_key(settings, "openai_compatible", "embedding") or "")
+    except openai_compatible.CompatibleProviderError as exc:
+        return ValidationResult(False, "OpenAI-compatible embedding validation failed", str(exc))
     return ValidationResult(valid=True)
 
 

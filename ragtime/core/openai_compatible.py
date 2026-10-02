@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import math
 import time
+from numbers import Real
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -14,6 +17,10 @@ from ragtime.core import model_limits as models_dev
 
 _DISCOVERY_TTL_SECONDS = 300
 _DISCOVERY_CACHE_MAX_ENTRIES = 128
+_EMBEDDING_PROBE_TIMEOUT_SECONDS = 10.0
+_EMBEDDING_DISCOVERY_TIMEOUT_SECONDS = 30.0
+_EMBEDDING_PROBE_CONCURRENCY = 2
+_EMBEDDING_DISCOVERY_MAX_CANDIDATES = 20
 _discovery_cache: dict[str, tuple[float, list["CompatibleModel"]]] = {}
 
 
@@ -43,6 +50,15 @@ class CompatibleModel(BaseModel):
     output_limit_source: str | None = None
     tool_call_supported: bool | None = None
     supported_endpoints: list[str] = ["/chat/completions"]
+
+
+class CompatibleEmbeddingModel(BaseModel):
+    """One verified embedding model at the configured compatible endpoint."""
+
+    id: str
+    name: str
+    dimensions: int
+    supported_endpoints: list[str] = ["/embeddings"]
 
 
 def normalize_base_url(value: str) -> str:
@@ -182,6 +198,115 @@ async def _fetch_live_models(base_url: str, api_key: str) -> list[dict[str, obje
     if not isinstance(rows, list):
         raise CompatibleProviderError("invalid_catalog", "The provider returned an invalid model catalog.")
     return [row for row in rows if isinstance(row, dict)]
+
+
+def _supports_embeddings(row: dict[str, object]) -> bool:
+    """Return only explicit embedding capability declarations, never ID guesses."""
+    kind = str(row.get("type") or row.get("object") or "").strip().lower()
+    if kind in {"embedding", "embeddings"}:
+        return True
+    endpoints = row.get("supported_endpoints", row.get("supportedEndpoints"))
+    if isinstance(endpoints, list):
+        normalized = {f"/{str(endpoint).strip().lstrip('/').rstrip('/')}" for endpoint in endpoints}
+        if "/embeddings" in normalized:
+            return True
+    for container in (row, _nested(row, "capabilities")):
+        for key in ("embedding", "embeddings", "supports_embeddings"):
+            if container.get(key) is True:
+                return True
+    modalities = (_nested(row, "modalities").get("output"), _nested(row, "architecture").get("output_modalities"))
+    return any(isinstance(values, list) and any(str(value).strip().lower() in {"embedding", "embeddings"} for value in values) for values in modalities)
+
+
+async def probe_embedding_dimension(base_url: str, model_id: str, api_key: str = "") -> int:
+    """Probe one explicitly chosen model; a successful vector is the dimension authority."""
+    normalized_url = normalize_base_url(base_url)
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=_EMBEDDING_PROBE_TIMEOUT_SECONDS, follow_redirects=False) as client:
+            response = await client.post(
+                f"{normalized_url}/embeddings",
+                headers=headers,
+                json={"model": model_id, "input": "test"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.TimeoutException as exc:
+        raise CompatibleProviderError("timeout", "The provider timed out while generating a test embedding.") from exc
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        code = "authentication" if status in {401, 403} else "rate_limited" if status == 429 else "unavailable"
+        raise CompatibleProviderError(code, "The provider could not generate a test embedding.") from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise CompatibleProviderError("unavailable", "The provider returned an invalid embedding response.") from exc
+    data = payload.get("data") if isinstance(payload, dict) else None
+    vector = data[0].get("embedding") if isinstance(data, list) and data and isinstance(data[0], dict) else None
+    if (
+        not isinstance(vector, list)
+        or not vector
+        or any(isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) for value in vector)
+    ):
+        raise CompatibleProviderError("invalid_embedding", "The provider returned an invalid embedding response.")
+    return len(vector)
+
+
+async def list_embedding_models(
+    base_url: str,
+    api_key: str = "",
+    *,
+    selected_model: str = "",
+) -> list[CompatibleEmbeddingModel]:
+    """Discover explicit embedding candidates and verify each with /embeddings."""
+    normalized_url = normalize_base_url(base_url)
+    selected = str(selected_model or "").strip()
+    try:
+        rows = await _fetch_live_models(normalized_url, str(api_key or ""))
+    except CompatibleProviderError:
+        if not selected:
+            raise
+        rows = []
+    candidates_by_id: dict[str, str] = {}
+    for row in rows:
+        model_id = str(row.get("id") or "").strip()
+        if model_id and _supports_embeddings(row):
+            candidates_by_id.setdefault(model_id, str(row.get("display_name") or row.get("name") or model_id).strip() or model_id)
+    if selected:
+        candidates = [(selected, candidates_by_id.pop(selected, selected)), *candidates_by_id.items()]
+    else:
+        candidates = list(candidates_by_id.items())
+    candidates = candidates[:_EMBEDDING_DISCOVERY_MAX_CANDIDATES]
+    if not candidates:
+        return []
+
+    semaphore = asyncio.Semaphore(_EMBEDDING_PROBE_CONCURRENCY)
+
+    async def _probe_candidate(model_id: str, name: str) -> tuple[CompatibleEmbeddingModel | None, CompatibleProviderError | None]:
+        try:
+            async with semaphore:
+                dimensions = await probe_embedding_dimension(normalized_url, model_id, str(api_key or ""))
+            return CompatibleEmbeddingModel(id=model_id, name=name, dimensions=dimensions), None
+        except CompatibleProviderError as exc:
+            return None, exc
+
+    tasks = [asyncio.create_task(_probe_candidate(model_id, name)) for model_id, name in candidates]
+    done: set[asyncio.Task[tuple[CompatibleEmbeddingModel | None, CompatibleProviderError | None]]] = set()
+    try:
+        done, _pending = await asyncio.wait(tasks, timeout=_EMBEDDING_DISCOVERY_TIMEOUT_SECONDS)
+        outcomes = [task.result() for task in tasks if task in done]
+    finally:
+        pending = [task for task in tasks if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+    result = [model for model, _error in outcomes if model is not None]
+    errors = [error for _model, error in outcomes if error is not None]
+    if len(done) != len(tasks):
+        errors.append(CompatibleProviderError("timeout", "The provider timed out while discovering embedding models."))
+    if not result and errors:
+        priority = {"authentication": 0, "rate_limited": 1, "unavailable": 2}
+        raise min(errors, key=lambda error: priority.get(error.code, 3))
+    return result
 
 
 def _cache_key(base_url: str, api_key: str, catalog_provider: str, overrides: dict[str, ModelLimitOverride]) -> str:

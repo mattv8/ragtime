@@ -237,9 +237,13 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
         name="openai_compatible",
         label="OpenAI-compatible",
         llm_connection=OPENAI_COMPATIBLE_CONNECTION,
+        embedding_connection=OPENAI_COMPATIBLE_CONNECTION,
         llm_api_key_field="openai_compatible_api_key",
+        embedding_api_key_field="openai_compatible_api_key",
         supports_llm=True,
+        supports_embeddings=True,
         openai_compatible_chat=True,
+        openai_compatible_embeddings=True,
     ),
     "ollama": ModelProvider(
         name="ollama",

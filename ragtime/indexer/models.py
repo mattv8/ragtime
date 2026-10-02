@@ -1290,7 +1290,11 @@ class AppSettings(BaseModel):
     def get_embedding_config_hash(self) -> str:
         """Generate a hash for current embedding provider+model+dimensions configuration."""
         dims = self.embedding_dimensions or "default"
-        return f"{self.embedding_provider}:{self.embedding_model}:{dims}"
+        base = f"{self.embedding_provider}:{self.embedding_model}:{dims}"
+        if self.embedding_provider == "openai_compatible":
+            endpoint = normalize_base_url(self.openai_compatible_base_url) if self.openai_compatible_base_url else ""
+            return f"{base}:{endpoint}"
+        return base
 
     def has_embedding_config_changed(self) -> bool:
         """Check if the embedding configuration has changed from what was indexed."""
@@ -1620,13 +1624,6 @@ class UpdateSettingsRequest(BaseModel):
     @classmethod
     def normalize_openai_compatible_provider_name(cls, value: Optional[str]) -> Optional[str]:
         return str(value or "").strip() if value is not None else None
-
-    @field_validator("embedding_provider")
-    @classmethod
-    def reject_openai_compatible_embeddings(cls, value: Optional[str]) -> Optional[str]:
-        if value == "openai_compatible":
-            raise ValueError("openai_compatible supports chat only, not embeddings")
-        return value
 
     @field_validator("openai_compatible_model_limits")
     @classmethod
