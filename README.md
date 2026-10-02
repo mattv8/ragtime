@@ -360,6 +360,10 @@ flowchart LR
          # Optional: mount docker.sock only if you need Docker tool execution.
          # The Docker API can control the host even when the socket is mounted read-only.
          # - /var/run/docker.sock:/var/run/docker.sock:ro
+         # Optional: host SMB/NFS shares. Bind the parent directory with rslave,
+         # never the share mountpoint itself; a share that is down at boot then
+         # cannot stop the container from starting. See README "Docker & Mounts".
+         # - /mnt/shares:/mnt/shares:rslave
        security_opt:
          - no-new-privileges:true
        # Uncomment below if using SMB/NFS mounting inside container (consider mounting via docker volume instead)
@@ -428,6 +432,8 @@ flowchart LR
          RUNTIME_RECONCILE_INTERVAL_SECONDS: ${RUNTIME_RECONCILE_INTERVAL_SECONDS:-15}
        volumes:
          - ./data:/data
+         # Optional: host SMB/NFS shares for User Space; same parent-bind pattern as ragtime.
+         # - /mnt/shares:/mnt/shares:rslave
        security_opt:
          - no-new-privileges:true
        # Uncomment below to enable full runtime sandbox isolation when the host
