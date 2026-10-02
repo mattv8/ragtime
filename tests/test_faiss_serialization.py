@@ -41,7 +41,9 @@ class FaissSerializationTests(unittest.TestCase):
             with self.subTest(protocol=protocol):
                 docstore, mapping = self._load(_payload(protocol=protocol))
                 self.assertIsInstance(docstore, InMemoryDocstore)
-                self.assertEqual(docstore.search("one").page_content, "hello")
+                result = docstore.search("one")
+                assert isinstance(result, Document)
+                self.assertEqual(result.page_content, "hello")
                 self.assertEqual(mapping, {0: "one"})
 
     def test_rejects_reducers_and_unknown_globals(self) -> None:
@@ -96,7 +98,9 @@ class FaissSerializationTests(unittest.TestCase):
             (path / "index.pkl").write_bytes(_payload())
             store = safe_load_faiss(path, object())
             self.assertEqual(store.index.ntotal, 1)
-            self.assertEqual(store.docstore.search("one").page_content, "hello")
+            result = store.docstore.search("one")
+            assert isinstance(result, Document)
+            self.assertEqual(result.page_content, "hello")
 
     def test_safe_load_rejects_native_mapping_count_mismatch(self) -> None:
         import faiss
@@ -146,7 +150,9 @@ class FaissSerializationTests(unittest.TestCase):
     def test_allows_equal_but_distinct_metadata_containers(self) -> None:
         metadata = {"first": {"value": "same"}, "second": {"value": "same"}}
         docstore, _mapping = self._load(_payload(documents={"one": Document(page_content="hello", metadata=metadata)}))
-        self.assertEqual(docstore.search("one").metadata, metadata)
+        result = docstore.search("one")
+        assert isinstance(result, Document)
+        self.assertEqual(result.metadata, metadata)
 
     def test_rejects_metadata_container_aliases_across_documents(self) -> None:
         shared_metadata = {"nested": ["shared"]}
@@ -165,8 +171,12 @@ class FaissSerializationTests(unittest.TestCase):
             "two": Document(page_content="second", metadata=second_metadata),
         }
         docstore, _mapping = self._load(_payload(documents=documents, mapping={0: "one", 1: "two"}))
-        self.assertEqual(docstore.search("one").metadata, first_metadata)
-        self.assertEqual(docstore.search("two").metadata, second_metadata)
+        result_one = docstore.search("one")
+        assert isinstance(result_one, Document)
+        self.assertEqual(result_one.metadata, first_metadata)
+        result_two = docstore.search("two")
+        assert isinstance(result_two, Document)
+        self.assertEqual(result_two.metadata, second_metadata)
 
     def test_count_uses_source_before_file_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
