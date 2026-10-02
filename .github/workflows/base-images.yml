@@ -171,20 +171,12 @@ jobs:
           done
       - id: empty-images
         if: ${{ needs.access.outputs.can_publish != 'true' }}
-        env:
-          FRONTEND: ${{ needs.hashes.outputs.frontend_tag }}
-          PYTHON_CI: ${{ needs.hashes.outputs.python_ci_tag }}
-          PRODUCTION: ${{ needs.hashes.outputs.production_tag }}
-          RUNTIME: ${{ needs.hashes.outputs.runtime_tag }}
+        # Untrusted callers must not pin Harbor dependency-base images.
+        # Manifest readability (via docker buildx imagetools inspect) does not guarantee
+        # downstream BuildKit pull access; untrusted callers must use empty image references.
         run: |
           set -euo pipefail
           for kind in FRONTEND PYTHON_CI PRODUCTION RUNTIME; do
-            image="${!kind}"
             key="$(printf '%s' "$kind" | tr '[:upper:]' '[:lower:]')"
-            if digest="$(docker buildx imagetools inspect "$image" --format '{{.Manifest.Digest}}' 2>&1)" && printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
-              printf '%s_image=%s@%s\n' "$key" "$image" "$digest" >> "$GITHUB_OUTPUT"
-            else
-              printf '::warning::Could not resolve %s anonymously: %s\n' "$image" "$digest"
-              printf '%s_image=\n' "$key" >> "$GITHUB_OUTPUT"
-            fi
+            printf '%s_image=\n' "$key" >> "$GITHUB_OUTPUT"
           done
