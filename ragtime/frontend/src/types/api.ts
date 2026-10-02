@@ -4291,6 +4291,23 @@ export interface OpenRouterCreditStatus {
   warning: string | null;
 }
 
+export interface MountProblem {
+  container: 'ragtime' | 'runtime';
+  mount_point: string;
+  fstype: string;
+  source: string;
+  state: 'failed' | 'unresponsive';
+  error: string | null;
+  failing_since: string | null;
+}
+
+export interface MountHealthStatus {
+  status: 'ok' | 'degraded' | 'unknown';
+  checked_at: string | null;
+  runtime_checked: boolean;
+  problems: MountProblem[];
+}
+
 export type WorkspaceExternalApiMethod = 'GET' | 'HEAD';
 
 export interface WorkspaceExternalApiManifestCandidate {

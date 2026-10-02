@@ -6246,6 +6246,18 @@ export const api = {
     return handleResponse<import('@/types').OpenRouterCreditStatus>(response);
   },
 
+  async getMountHealth(): Promise<import('@/types').MountHealthStatus> {
+    const response = await apiFetch(`${API_BASE}/system/mount-health`, { cache: 'no-store' });
+    return handleResponse<import('@/types').MountHealthStatus>(response);
+  },
+
+  async recheckMountHealth(): Promise<import('@/types').MountHealthStatus> {
+    const response = await apiFetch(`${API_BASE}/system/mount-health/recheck`, {
+      method: 'POST',
+    });
+    return handleResponse<import('@/types').MountHealthStatus>(response);
+  },
+
   async disableWorkspaceAgentAccess(workspaceId: string): Promise<WorkspaceAgentAccessStatus> {
     const response = await apiFetch(
       `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/agent-access/disable`,
