@@ -112,9 +112,9 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
                     new=AsyncMock(return_value=[]),
                 ),
                 patch(
-                    "ragtime.rag.components.FAISS.load_local",
+                    "ragtime.rag.components.safe_load_faiss",
                     return_value=FakeFaissIndex(),
-                ) as load_local,
+                ) as safe_loader,
                 patch(
                     "ragtime.rag.components.repository.update_index_memory_stats",
                     new=AsyncMock(return_value=True),
@@ -126,7 +126,7 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("hot-index", rag.faiss_dbs)
             self.assertIn("hot-index", rag.retrievers)
             self.assertEqual(rag._index_details["hot-index"]["status"], "loaded")
-            load_local.assert_called_once()
+            safe_loader.assert_called_once()
             rag._create_agent.assert_awaited_once()
 
     async def test_load_faiss_index_from_metadata_retains_dimension_mismatch_error_after_unload(self):
@@ -165,7 +165,7 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
                 patch("ragtime.rag.components.get_app_settings", new=AsyncMock(return_value=rag._app_settings)),
                 patch("ragtime.rag.components.get_tool_configs", new=AsyncMock(return_value=[])),
                 patch(
-                    "ragtime.rag.components.FAISS.load_local",
+                    "ragtime.rag.components.safe_load_faiss",
                     side_effect=[SimpleNamespace(index=SimpleNamespace(d=4)), corrected_db],
                 ),
                 patch("ragtime.rag.components.repository.update_index_memory_stats", new=AsyncMock(return_value=True)),
@@ -301,7 +301,7 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch("ragtime.rag.components.get_app_settings", new=AsyncMock(return_value=rag._app_settings)),
                 patch("ragtime.rag.components.get_tool_configs", new=AsyncMock(return_value=[])),
-                patch("ragtime.rag.components.FAISS.load_local", return_value=FakeFaissIndex()),
+                patch("ragtime.rag.components.safe_load_faiss", return_value=FakeFaissIndex()),
                 patch("ragtime.rag.components.repository.update_index_memory_stats", new=AsyncMock(return_value=True)),
                 self.assertLogs("ragtime.rag.components", level="WARNING") as logs,
             ):
@@ -408,7 +408,9 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(job.completed_at)
 
     async def test_rate_limit_detection_and_retry_delay_use_raw_cause_while_wrapper_stays_sanitized(self) -> None:
-        service = IndexerService()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        service = IndexerService(index_base_path=directory.name)
         request = httpx.Request("POST", "https://api.openai.com/v1/embeddings")
         response = httpx.Response(429, headers={"retry-after": "7"}, request=request)
 

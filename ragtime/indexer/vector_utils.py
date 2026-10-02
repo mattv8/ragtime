@@ -110,11 +110,6 @@ def count_faiss_docstore_stats(faiss_pickle_data: Any) -> Tuple[int, int]:
     metadata. ``chunk_count`` is the total number of stored chunks. Older code
     set both fields to the chunk count, which made every index look like it had
     a 1:1 file-to-chunk ratio in the UI.
-
-    Accepts the raw object returned by ``pickle.load`` on ``index.pkl``:
-    typically ``(InMemoryDocstore, index_to_docstore_id)``. Falls back to the
-    chunk count when no usable source metadata is present so legacy data does
-    not regress to zero.
     """
     docstore_dict: Optional[Mapping[Any, Any]] = None
     idx_to_id: Optional[Mapping[Any, Any]] = None
@@ -131,14 +126,9 @@ def count_faiss_docstore_stats(faiss_pickle_data: Any) -> Tuple[int, int]:
 
     if docstore_dict is not None:
         chunk_count = len(docstore_dict)
-        sources: set[str] = set()
-        for doc in docstore_dict.values():
-            source = _docstore_source(getattr(doc, "metadata", None))
-            if source:
-                sources.add(source)
-        if sources:
-            return len(sources), chunk_count
-        return chunk_count, chunk_count
+        sources = {_docstore_source(getattr(doc, "metadata", None)) for doc in docstore_dict.values()}
+        sources.discard("")
+        return (len(sources), chunk_count) if sources else (chunk_count, chunk_count)
 
     if idx_to_id is not None:
         count = len(idx_to_id)

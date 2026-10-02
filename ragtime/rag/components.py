@@ -218,6 +218,7 @@ from ragtime.indexer.export_service import (
     live_table_source,
     table_source,
 )
+from ragtime.indexer.faiss_serialization import safe_load_faiss
 from ragtime.indexer.memory_utils import estimate_index_memory
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
@@ -3387,10 +3388,9 @@ class RAGComponents:
                 details["status"] = "loading"
             task = asyncio.create_task(
                 asyncio.to_thread(
-                    FAISS.load_local,
-                    str(index_path),
+                    safe_load_faiss,
+                    index_path,
                     embedding_model,
-                    allow_dangerous_deserialization=True,
                 )
             )
             cancelled = 0
@@ -4489,7 +4489,7 @@ class RAGComponents:
     async def _load_faiss_indexes_parallel(self, embedding_model):
         """Load FAISS indexes in parallel using asyncio.to_thread.
 
-        This offloads the blocking FAISS.load_local calls to a thread pool,
+        This offloads the blocking safe FAISS loads to a thread pool,
         allowing multiple indexes to load concurrently and not blocking the
         event loop. Tracks memory usage for each index.
         """
