@@ -46,7 +46,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from prisma import Json, Prisma
 from prisma.enums import WorkspaceRole
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ragtime.chat_runtime.payloads import (
     build_chat_diagnostic_command_payload,
@@ -8113,8 +8113,14 @@ class LLMModelsRequest(BaseModel):
         description="Include Google/Gemini models from directory results.",
     )
     base_url: str = Field(default="", description="Provider base URL; for OpenAI-compatible services include the complete API path prefix.")
+    provider_name: Optional[str] = Field(default=None, max_length=80, description="Optional display name for the OpenAI-compatible provider preview")
     catalog_provider: str = Field(default="", description="Optional exact models.dev catalog provider for OpenAI-compatible preview")
     model_limits: Optional[dict[str, Any]] = Field(default=None, description="Optional per-model limits for OpenAI-compatible preview")
+
+    @field_validator("provider_name", mode="before")
+    @classmethod
+    def normalize_provider_name(cls, value: str | None) -> str | None:
+        return str(value or "").strip() if value is not None else None
 
 
 class LLMModel(BaseModel):
@@ -8321,6 +8327,22 @@ def _set_model_selector_labels(
         display_name=model.display_name,
         fallback_name=model.name,
     )
+
+
+def _openai_compatible_provider_label(provider_name: str | None) -> str:
+    """Return the display-only host label for generic OpenAI-compatible rows."""
+    return str(provider_name or "").strip() or "OpenAI-compatible"
+
+
+def _set_openai_compatible_selector_labels(
+    model: LLMModel | AvailableModel,
+    provider_name: str | None,
+) -> None:
+    """Label generic rows without deriving a model maker or changing their ID."""
+    host_label = _openai_compatible_provider_label(provider_name)
+    model.group = model.group or host_label
+    model.host_provider_label = host_label
+    model.selector_label = f"{model.display_name or model.name or model.id} ({host_label})"
 
 
 async def _is_model_discovery_loading() -> bool:
@@ -8874,22 +8896,25 @@ async def _fetch_llm_models_for_provider(
             )
         except CompatibleProviderError as exc:
             return LLMModelsResponse(success=False, message=str(exc))
+        response_models = [
+            LLMModel(
+                id=model.id,
+                name=model.name,
+                context_limit=model.context_limit,
+                max_output_tokens=model.max_output_tokens,
+                context_limit_source=model.context_limit_source,
+                output_limit_source=model.output_limit_source,
+                tool_call_supported=model.tool_call_supported,
+                supported_endpoints=["/chat/completions"],
+            )
+            for model in models
+        ]
+        for model in response_models:
+            _set_openai_compatible_selector_labels(model, getattr(settings, "openai_compatible_provider_name", ""))
         return LLMModelsResponse(
             success=True,
             message=f"Found {len(models)} model(s).",
-            models=[
-                LLMModel(
-                    id=model.id,
-                    name=model.name,
-                    context_limit=model.context_limit,
-                    max_output_tokens=model.max_output_tokens,
-                    context_limit_source=model.context_limit_source,
-                    output_limit_source=model.output_limit_source,
-                    tool_call_supported=model.tool_call_supported,
-                    supported_endpoints=["/chat/completions"],
-                )
-                for model in models
-            ],
+            models=response_models,
             default_model=models[0].id if models else None,
         )
     provider_info = get_provider(normalized_provider)
@@ -10191,10 +10216,8 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
     for model in models:
         model.is_latest = False
         if model.provider == "openai_compatible":
-            model.group = model.group or "OpenAI-compatible"
-            model.model_family = model.model_family or model.group
-            model.host_provider_label = get_provider_label(model.provider)
-            model.selector_label = model.selector_label or model.name
+            model.group = model.group or _openai_compatible_provider_label(model.host_provider_label)
+            _set_openai_compatible_selector_labels(model, model.host_provider_label)
             continue
         _enrich_model_metadata(model, model.provider)
         if model.group:
@@ -10231,9 +10254,9 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
     return models
 
 
-def _generic_available_model(model: LLMModel) -> AvailableModel:
+def _generic_available_model(model: LLMModel, provider_name: str | None = None) -> AvailableModel:
     """Preserve generic discovery metadata without legacy model-ID inference."""
-    return AvailableModel(
+    available = AvailableModel(
         id=model.id,
         name=model.name,
         provider="openai_compatible",
@@ -10242,9 +10265,25 @@ def _generic_available_model(model: LLMModel) -> AvailableModel:
         context_limit_source=model.context_limit_source,
         output_limit_source=model.output_limit_source,
         tool_call_supported=model.tool_call_supported,
-        group="OpenAI-compatible",
+        group=model.group,
+        model_provider=model.model_provider,
+        model_provider_label=model.model_provider_label,
+        model_family=model.model_family,
+        display_name=model.display_name,
+        selector_label=model.selector_label,
+        host_provider_label=model.host_provider_label,
+        model_variant=model.model_variant,
+        freshness_rank=model.freshness_rank,
+        created=model.created,
+        capabilities=model.capabilities,
         supported_endpoints=model.supported_endpoints or ["/chat/completions"],
+        reasoning_supported=model.reasoning_supported,
+        thinking_budget_supported=model.thinking_budget_supported,
+        effort_levels=model.effort_levels,
     )
+    _set_openai_compatible_selector_labels(available, provider_name if provider_name is not None else model.host_provider_label)
+    available.group = available.group or available.host_provider_label
+    return available
 
 
 @router.post("/llm/models", response_model=LLMModelsResponse, tags=["Settings"])
@@ -10276,22 +10315,26 @@ async def fetch_llm_models(request: LLMModelsRequest, _user: User = Depends(requ
             )
         except CompatibleProviderError as exc:
             return LLMModelsResponse(success=False, message=str(exc))
+        response_models = [
+            LLMModel(
+                id=model.id,
+                name=model.name,
+                context_limit=model.context_limit,
+                max_output_tokens=model.max_output_tokens,
+                context_limit_source=model.context_limit_source,
+                output_limit_source=model.output_limit_source,
+                tool_call_supported=model.tool_call_supported,
+                supported_endpoints=["/chat/completions"],
+            )
+            for model in models
+        ]
+        provider_name = request.provider_name if request.provider_name is not None else getattr(settings, "openai_compatible_provider_name", "")
+        for model in response_models:
+            _set_openai_compatible_selector_labels(model, provider_name)
         return LLMModelsResponse(
             success=True,
             message=f"Found {len(models)} model(s).",
-            models=[
-                LLMModel(
-                    id=model.id,
-                    name=model.name,
-                    context_limit=model.context_limit,
-                    max_output_tokens=model.max_output_tokens,
-                    context_limit_source=model.context_limit_source,
-                    output_limit_source=model.output_limit_source,
-                    tool_call_supported=model.tool_call_supported,
-                    supported_endpoints=["/chat/completions"],
-                )
-                for model in models
-            ],
+            models=response_models,
             default_model=models[0].id if models else None,
         )
     result = await _fetch_llm_models_for_provider(

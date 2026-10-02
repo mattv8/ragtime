@@ -1060,6 +1060,7 @@ export interface AppSettings {
   omlx_api_key: string;
   openai_compatible_base_url?: string;
   openai_compatible_api_key?: string;
+  openai_compatible_provider_name?: string;
   openai_compatible_catalog_provider?: string;
   openai_compatible_model_limits?: Record<string, ModelLimitOverride>;
   // LLM Configuration (for chat/RAG responses)
@@ -1239,6 +1240,7 @@ export interface UpdateSettingsRequest {
   omlx_api_key?: string;
   openai_compatible_base_url?: string;
   openai_compatible_api_key?: string;
+  openai_compatible_provider_name?: string;
   openai_compatible_catalog_provider?: string;
   openai_compatible_model_limits?: Record<string, ModelLimitOverride>;
   // LLM settings
@@ -1511,6 +1513,7 @@ export interface LLMModelsRequest {
   include_anthropic_models?: boolean;
   include_google_models?: boolean;
   catalog_provider?: string;
+  provider_name?: string;
   model_limits?: Record<string, ModelLimitOverride>;
 }
 

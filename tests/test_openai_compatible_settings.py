@@ -16,6 +16,7 @@ class OpenAICompatibleSettingsTests(unittest.IsolatedAsyncioTestCase):
             make_settings_row(
                 openaiCompatibleBaseUrl="https://proxy.example/v1",
                 openaiCompatibleApiKey=encrypt_secret("saved-compatible-key"),
+                openaiCompatibleProviderName="  Trusted Relay  ",
                 openaiCompatibleCatalogProvider="openrouter",
                 openaiCompatibleModelLimits={"gpt-4o": {"context_limit": 128000, "max_output_tokens": 4096}},
             )
@@ -27,6 +28,7 @@ class OpenAICompatibleSettingsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(loaded["openai_compatible_base_url"], "https://proxy.example/v1")
         self.assertEqual(loaded["openai_compatible_api_key"], "saved-compatible-key")
+        self.assertEqual(loaded["openai_compatible_provider_name"], "Trusted Relay")
         self.assertEqual(loaded["openai_compatible_catalog_provider"], "openrouter")
         self.assertEqual(loaded["openai_compatible_model_limits"], {"gpt-4o": {"context_limit": 128000, "max_output_tokens": 4096}})
 
@@ -35,6 +37,7 @@ class OpenAICompatibleSettingsTests(unittest.IsolatedAsyncioTestCase):
             {
                 "openai_compatible_base_url": "https://proxy.example/v1/",
                 "openai_compatible_api_key": "compatible-secret",
+                "openai_compatible_provider_name": "  Trusted Relay  ",
                 "openai_compatible_catalog_provider": "openrouter",
                 "openai_compatible_model_limits": {"model-A": {"context_limit": 32768, "max_output_tokens": 4096}},
             }
@@ -52,6 +55,7 @@ class OpenAICompatibleSettingsTests(unittest.IsolatedAsyncioTestCase):
         assert update is not None
         self.assertEqual(update["openaiCompatibleBaseUrl"], "https://proxy.example/v1")
         self.assertTrue(update["openaiCompatibleApiKey"].startswith(ENCRYPTED_PREFIX))
+        self.assertEqual(update["openaiCompatibleProviderName"], "Trusted Relay")
         self.assertEqual(update["openaiCompatibleCatalogProvider"], "openrouter")
         self.assertEqual(
             update["openaiCompatibleModelLimits"].data,
@@ -97,3 +101,9 @@ class OpenAICompatibleSettingsTests(unittest.IsolatedAsyncioTestCase):
             UpdateSettingsRequest(openai_compatible_base_url="https://proxy.example/?query=yes")
         with self.assertRaises(ValueError):
             UpdateSettingsRequest(embedding_provider="openai_compatible")
+
+    def test_compatible_provider_name_is_trimmed_and_bounded(self) -> None:
+        self.assertEqual(AppSettings(openai_compatible_provider_name="  Trusted Relay  ").openai_compatible_provider_name, "Trusted Relay")
+        self.assertEqual(UpdateSettingsRequest(openai_compatible_provider_name="  ").openai_compatible_provider_name, "")
+        with self.assertRaises(ValueError):
+            UpdateSettingsRequest(openai_compatible_provider_name="x" * 81)

@@ -45,6 +45,50 @@ class OpenAICompatibleRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetch.await_args_list[1].kwargs["api_key"], "")
         self.assertEqual(fetch.await_args_list[2].kwargs["api_key"], "")
 
+    async def test_preview_uses_saved_provider_name_for_omitted_or_null_and_blank_falls_back(self) -> None:
+        settings = SimpleNamespace(
+            openai_compatible_base_url="https://proxy.example/v1",
+            openai_compatible_api_key="",
+            openai_compatible_provider_name="Trusted Relay",
+        )
+        discovered = [
+            SimpleNamespace(
+                id="CaseSensitive-ID",
+                name="CaseSensitive-ID",
+                context_limit=None,
+                max_output_tokens=None,
+                context_limit_source=None,
+                output_limit_source=None,
+                tool_call_supported=None,
+            )
+        ]
+        with (
+            mock.patch("ragtime.indexer.routes.repository.get_settings", mock.AsyncMock(return_value=settings)),
+            mock.patch("ragtime.indexer.routes.list_compatible_models", mock.AsyncMock(return_value=discovered)),
+        ):
+            saved_name = await routes.fetch_llm_models(
+                routes.LLMModelsRequest(provider="openai_compatible", base_url="https://proxy.example/v1"),
+                cast(User, _create_mock_user()),
+            )
+            null_name = await routes.fetch_llm_models(
+                routes.LLMModelsRequest(provider="openai_compatible", base_url="https://proxy.example/v1", provider_name=None),
+                cast(User, _create_mock_user()),
+            )
+            blank_name = await routes.fetch_llm_models(
+                routes.LLMModelsRequest(provider="openai_compatible", base_url="https://proxy.example/v1", provider_name=""),
+                cast(User, _create_mock_user()),
+            )
+
+        saved_preview = saved_name.models[0].model_dump()
+        self.assertNotIn("provider", saved_preview)
+        self.assertEqual(saved_preview["id"], "CaseSensitive-ID")
+        self.assertEqual(saved_preview["group"], "Trusted Relay")
+        self.assertEqual(saved_preview["host_provider_label"], "Trusted Relay")
+        self.assertEqual(saved_preview["selector_label"], "CaseSensitive-ID (Trusted Relay)")
+        self.assertEqual(null_name.models[0].group, "Trusted Relay")
+        self.assertEqual(blank_name.models[0].host_provider_label, "OpenAI-compatible")
+        self.assertEqual(blank_name.models[0].group, "OpenAI-compatible")
+
     async def test_aggregate_and_validation_use_saved_key_but_explicit_empty_does_not(self) -> None:
         settings = SimpleNamespace(
             openai_compatible_base_url="https://proxy.example/v1",
@@ -98,6 +142,8 @@ class OpenAICompatibleRouteTests(unittest.IsolatedAsyncioTestCase):
             routes._assign_model_groups([available])
 
         self.assertEqual(available.provider, "openai_compatible")
+        self.assertEqual(available.host_provider_label, "OpenAI-compatible")
+        self.assertEqual(available.selector_label, "Generic GPT-4o (OpenAI-compatible)")
         self.assertIsNone(available.context_limit)
         self.assertIsNone(available.context_limit_source)
         self.assertFalse(available.tool_call_supported)

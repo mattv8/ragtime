@@ -1888,6 +1888,78 @@ describe('SettingsPanel', () => {
     });
   });
 
+  it('uses an unsaved compatible provider name for preview and persists the trimmed label', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_base_url: 'https://compatible.example/v1',
+      }),
+    );
+
+    render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /LLM Providers/i }));
+    fireEvent.change(screen.getByLabelText('Provider Name'), {
+      target: { value: ' Internal Gateway ' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch Models' }));
+
+    await waitFor(() => {
+      expect(apiMock.fetchLLMModels).toHaveBeenCalledWith(
+        expect.objectContaining({ provider_name: 'Internal Gateway' }),
+      );
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save LLM Configuration' }));
+    await waitFor(() => {
+      expect(apiMock.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ openai_compatible_provider_name: 'Internal Gateway' }),
+      );
+    });
+  });
+
+  it('updates generic picker labels after a provider-name edit without refetching', async () => {
+    chatModelsSectionState.autoOpenModal = false;
+    apiMock.getSettings.mockResolvedValueOnce(
+      buildSettingsResponse({
+        llm_provider: 'openai_compatible',
+        openai_compatible_base_url: 'https://compatible.example/v1',
+        openai_compatible_provider_name: 'Old Gateway',
+      }),
+    );
+    apiMock.fetchLLMModels.mockResolvedValueOnce({
+      success: true,
+      default_model: 'CaseSensitive/Model',
+      models: [
+        {
+          id: 'CaseSensitive/Model',
+          name: 'CaseSensitive/Model',
+          group: 'Old Gateway',
+          host_provider_label: 'Old Gateway',
+          context_limit: null,
+        },
+      ],
+    });
+
+    render(<SettingsPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: /LLM Providers/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch Models' }));
+    await screen.findByRole('button', { name: /CaseSensitive\/Model \(Old Gateway\)/i });
+
+    fireEvent.change(screen.getByLabelText('Provider Name'), { target: { value: 'New Gateway' } });
+    expect(
+      screen.getByRole('button', { name: /CaseSensitive\/Model \(New Gateway\)/i }),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /CaseSensitive\/Model \(New Gateway\)/i }));
+    expect(screen.getByRole('button', { name: /^New Gateway/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Old Gateway/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Other/ })).toBeNull();
+    fireEvent.change(screen.getByLabelText('Provider Name'), { target: { value: '' } });
+    expect(
+      screen.getByRole('button', { name: /CaseSensitive\/Model \(OpenAI-compatible\)/i }),
+    ).toBeTruthy();
+    expect(apiMock.fetchLLMModels).toHaveBeenCalledTimes(1);
+  });
+
   it('persists compatible model overrides and presents unknown context as configuration work', async () => {
     chatModelsSectionState.autoOpenModal = false;
     apiMock.getSettings.mockResolvedValueOnce(

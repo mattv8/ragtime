@@ -803,6 +803,7 @@ class AppSettings(BaseModel):
     )
     openai_compatible_base_url: str = Field(default="", description="Full OpenAI-compatible Chat Completions API root URL")
     openai_compatible_api_key: str = Field(default="", description="OpenAI-compatible API key")
+    openai_compatible_provider_name: str = Field(default="", max_length=80, description="Optional display name for the OpenAI-compatible provider")
     openai_compatible_catalog_provider: str = Field(default="", description="Optional exact models.dev catalog provider slug")
     openai_compatible_model_limits: Dict[str, ModelLimitOverride] = Field(default_factory=dict)
 
@@ -815,6 +816,11 @@ class AppSettings(BaseModel):
             return normalize_base_url(value)
         except CompatibleProviderError as exc:
             raise ValueError(str(exc)) from exc
+
+    @field_validator("openai_compatible_provider_name", mode="before")
+    @classmethod
+    def normalize_openai_compatible_provider_name(cls, value: str | None) -> str:
+        return str(value or "").strip()
 
     openai_api_key: str = Field(
         default="",
@@ -1575,6 +1581,7 @@ class UpdateSettingsRequest(BaseModel):
     llm_omlx_base_url: Optional[str] = None
     openai_compatible_base_url: Optional[str] = None
     openai_compatible_api_key: Optional[str] = None
+    openai_compatible_provider_name: Optional[str] = Field(default=None, max_length=80)
     openai_compatible_catalog_provider: Optional[str] = None
     openai_compatible_model_limits: Optional[Dict[str, ModelLimitOverride]] = None
     openai_api_key: Optional[str] = None
@@ -1608,6 +1615,11 @@ class UpdateSettingsRequest(BaseModel):
             return normalize_base_url(value)
         except CompatibleProviderError as exc:
             raise ValueError(str(exc)) from exc
+
+    @field_validator("openai_compatible_provider_name", mode="before")
+    @classmethod
+    def normalize_openai_compatible_provider_name(cls, value: Optional[str]) -> Optional[str]:
+        return str(value or "").strip() if value is not None else None
 
     @field_validator("embedding_provider")
     @classmethod

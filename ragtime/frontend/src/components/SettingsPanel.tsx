@@ -488,7 +488,7 @@ function availableModelSettingsLabel(model: AvailableModel): string {
   const hostLabel = availableModelHostLabel(model);
   const labelKey = compactModelLabelKey(label);
   const hostKey = compactModelLabelKey(hostLabel);
-  if (hostLabel && hostKey && !labelKey.startsWith(hostKey)) {
+  if (hostLabel && hostKey && !labelKey.startsWith(hostKey) && !label.endsWith(`(${hostLabel})`)) {
     return `${label} (${hostLabel})`;
   }
   return label;
@@ -817,6 +817,9 @@ export function SettingsPanel({
           clearTimeout(timer);
           window.cancelAnimationFrame(frame);
         };
+      } else {
+        // If the element is not found, call onHighlightComplete to clear the URL param
+        onHighlightComplete?.();
       }
     }
   }, [highlightSetting, loading, onHighlightComplete]);
@@ -1122,6 +1125,7 @@ export function SettingsPanel({
         includeGoogleModels?: boolean;
         baseUrl?: string;
         catalogProvider?: string;
+        providerName?: string;
         modelLimits?: UpdateSettingsRequest['openai_compatible_model_limits'];
         userTriggered?: boolean;
       },
@@ -1149,6 +1153,7 @@ export function SettingsPanel({
           include_anthropic_models: options?.includeAnthropicModels,
           include_google_models: options?.includeGoogleModels,
           catalog_provider: options?.catalogProvider,
+          provider_name: options?.providerName,
           model_limits: options?.modelLimits,
         });
 
@@ -2462,6 +2467,7 @@ export function SettingsPanel({
         openai_api_key: data.openai_api_key,
         openai_compatible_base_url: data.openai_compatible_base_url || '',
         openai_compatible_api_key: data.openai_compatible_api_key || '',
+        openai_compatible_provider_name: data.openai_compatible_provider_name || '',
         openai_compatible_catalog_provider: data.openai_compatible_catalog_provider || '',
         openai_compatible_model_limits: data.openai_compatible_model_limits || {},
         anthropic_api_key: data.anthropic_api_key,
@@ -3235,6 +3241,8 @@ export function SettingsPanel({
       if (normalizedProvider === 'openai_compatible') {
         dataToSave.openai_compatible_base_url = formData.openai_compatible_base_url;
         dataToSave.openai_compatible_api_key = formData.openai_compatible_api_key;
+        dataToSave.openai_compatible_provider_name =
+          formData.openai_compatible_provider_name?.trim() || '';
         dataToSave.openai_compatible_catalog_provider =
           formData.openai_compatible_catalog_provider || '';
         dataToSave.openai_compatible_model_limits = formData.openai_compatible_model_limits || {};
@@ -3254,6 +3262,7 @@ export function SettingsPanel({
         openrouter_low_credit_threshold_usd: updated.openrouter_low_credit_threshold_usd,
         openai_compatible_base_url: updated.openai_compatible_base_url || '',
         openai_compatible_api_key: updated.openai_compatible_api_key || '',
+        openai_compatible_provider_name: updated.openai_compatible_provider_name || '',
         openai_compatible_catalog_provider: updated.openai_compatible_catalog_provider || '',
         openai_compatible_model_limits: updated.openai_compatible_model_limits || {},
       }));
@@ -5691,7 +5700,7 @@ export function SettingsPanel({
                 Configure the language model used for answering questions and tool calls.
               </p>
 
-              <div className="form-group">
+              <div className="form-group" id="setting-llm_provider">
                 <label>Provider</label>
                 <div className="input-with-button input-with-actions">
                   <select
@@ -5997,110 +6006,142 @@ export function SettingsPanel({
               )}
 
               {formData.llm_provider === 'openai_compatible' && (
-                <div id="llm-provider-config-openai-compatible">
-                  <div className="form-group" id="setting-openai-compatible-base-url">
-                    <label htmlFor="openai-compatible-base-url">Base URL</label>
-                    <input
-                      id="openai-compatible-base-url"
-                      type="url"
-                      value={formData.openai_compatible_base_url || ''}
-                      onChange={(event) => {
-                        const nextBaseUrl = event.target.value;
-                        const rootChanged =
-                          normalizeCompatibleBaseUrl(nextBaseUrl) !==
-                          normalizeCompatibleBaseUrl(formData.openai_compatible_base_url);
-                        setFormData({
-                          ...formData,
-                          openai_compatible_base_url: nextBaseUrl,
-                          // Do not forward a credential loaded for a different endpoint.
-                          openai_compatible_api_key:
-                            rootChanged &&
-                            formData.openai_compatible_api_key === openAiCompatibleLoadedKey
-                              ? ''
-                              : formData.openai_compatible_api_key,
-                        });
-                        if (rootChanged) resetLlmModelsState();
-                      }}
-                      placeholder="https://your-endpoint/v1"
-                      autoComplete="off"
-                      aria-describedby="openai-compatible-base-url-help"
-                    />
-                    <p id="openai-compatible-base-url-help" className="field-help">
-                      Full API root URL including any path prefix, for example{' '}
-                      <code>https://api.example.com/v1</code>. The trailing slash is optional.
-                    </p>
+                <div
+                  id="llm-provider-config-openai-compatible"
+                  data-settings-provider="openai-compatible"
+                >
+                  <div className="form-row openai-compatible-form-row">
+                    <div className="form-group" id="setting-openai-compatible-provider-name">
+                      <label htmlFor="openai-compatible-provider-name">Provider Name</label>
+                      <input
+                        id="openai-compatible-provider-name"
+                        type="text"
+                        value={formData.openai_compatible_provider_name || ''}
+                        onChange={(event) =>
+                          setFormData({
+                            ...formData,
+                            openai_compatible_provider_name: event.target.value,
+                          })
+                        }
+                        placeholder="e.g. Azure OpenAI, My LLM Gateway"
+                        autoComplete="off"
+                        maxLength={80}
+                        aria-describedby="openai-compatible-provider-name-help"
+                      />
+                      <p id="openai-compatible-provider-name-help" className="field-help">
+                        Display name shown in the model picker. Does not change the provider
+                        identifier.
+                      </p>
+                    </div>
+                    <div className="form-group" id="setting-openai-compatible-base-url">
+                      <label htmlFor="openai-compatible-base-url">Base URL</label>
+                      <input
+                        id="openai-compatible-base-url"
+                        type="url"
+                        value={formData.openai_compatible_base_url || ''}
+                        onChange={(event) => {
+                          const nextBaseUrl = event.target.value;
+                          const rootChanged =
+                            normalizeCompatibleBaseUrl(nextBaseUrl) !==
+                            normalizeCompatibleBaseUrl(formData.openai_compatible_base_url);
+                          setFormData({
+                            ...formData,
+                            openai_compatible_base_url: nextBaseUrl,
+                            // Do not forward a credential loaded for a different endpoint.
+                            openai_compatible_api_key:
+                              rootChanged &&
+                              formData.openai_compatible_api_key === openAiCompatibleLoadedKey
+                                ? ''
+                                : formData.openai_compatible_api_key,
+                          });
+                          if (rootChanged) resetLlmModelsState();
+                        }}
+                        placeholder="https://your-endpoint/v1"
+                        autoComplete="off"
+                        aria-describedby="openai-compatible-base-url-help"
+                      />
+                      <p id="openai-compatible-base-url-help" className="field-help">
+                        Full API root URL including any path prefix, for example{' '}
+                        <code>https://api.example.com/v1</code>. The trailing slash is optional.
+                      </p>
+                    </div>
                   </div>
-                  <div className="form-group" id="setting-openai-compatible-api-key">
-                    <label htmlFor="openai-compatible-api-key">API Key</label>
-                    <input
-                      id="openai-compatible-api-key"
-                      type="password"
-                      value={formData.openai_compatible_api_key || ''}
-                      onChange={(event) => {
-                        setFormData({ ...formData, openai_compatible_api_key: event.target.value });
-                        setOpenAiCompatibleLoadedKey('');
-                        resetLlmModelsState();
-                      }}
-                      placeholder="sk-... (optional)"
-                      autoComplete="off"
-                    />
-                    <p className="field-help">
-                      Leave blank if the endpoint does not require authentication.
-                    </p>
-                    {formData.openai_compatible_api_key &&
-                      (window.location.protocol === 'http:' ||
-                        formData.openai_compatible_base_url?.trim().startsWith('http://')) && (
-                        <p className="field-help" style={{ color: 'var(--color-warning)' }}>
-                          Warning: API keys are transmitted in plaintext over HTTP.
+                  <div className="form-row openai-compatible-form-row">
+                    <div className="form-group" id="setting-openai-compatible-api-key">
+                      <label htmlFor="openai-compatible-api-key">API Key</label>
+                      <input
+                        id="openai-compatible-api-key"
+                        type="password"
+                        value={formData.openai_compatible_api_key || ''}
+                        onChange={(event) => {
+                          setFormData({
+                            ...formData,
+                            openai_compatible_api_key: event.target.value,
+                          });
+                          setOpenAiCompatibleLoadedKey('');
+                          resetLlmModelsState();
+                        }}
+                        placeholder="sk-... (optional)"
+                        autoComplete="off"
+                      />
+                      <p className="field-help">
+                        Leave blank if the endpoint does not require authentication.
+                      </p>
+                      {formData.openai_compatible_api_key &&
+                        (window.location.protocol === 'http:' ||
+                          formData.openai_compatible_base_url?.trim().startsWith('http://')) && (
+                          <p className="field-help" style={{ color: 'var(--color-warning)' }}>
+                            Warning: API keys are transmitted in plaintext over HTTP.
+                          </p>
+                        )}
+                    </div>
+                    <div className="form-group" id="setting-openai-compatible-catalog-provider">
+                      <label htmlFor="openai-compatible-catalog-provider">Catalog reference</label>
+                      <select
+                        id="openai-compatible-catalog-provider"
+                        value={formData.openai_compatible_catalog_provider || ''}
+                        disabled={modelCatalogProvidersLoading}
+                        aria-busy={modelCatalogProvidersLoading}
+                        onChange={(event) => {
+                          setFormData({
+                            ...formData,
+                            openai_compatible_catalog_provider: event.target.value,
+                          });
+                          resetLlmModelsState();
+                        }}
+                      >
+                        <option value="">No catalog reference</option>
+                        {modelCatalogProviders.map((provider) => (
+                          <option key={provider.id} value={provider.id}>
+                            {provider.name} ({provider.id})
+                          </option>
+                        ))}
+                      </select>
+                      {modelCatalogProvidersLoading && (
+                        <p className="field-help" aria-live="polite">
+                          Loading catalog references...
                         </p>
                       )}
-                  </div>
-                  <div className="form-group" id="setting-openai-compatible-catalog-provider">
-                    <label htmlFor="openai-compatible-catalog-provider">Catalog reference</label>
-                    <select
-                      id="openai-compatible-catalog-provider"
-                      value={formData.openai_compatible_catalog_provider || ''}
-                      disabled={modelCatalogProvidersLoading}
-                      aria-busy={modelCatalogProvidersLoading}
-                      onChange={(event) => {
-                        setFormData({
-                          ...formData,
-                          openai_compatible_catalog_provider: event.target.value,
-                        });
-                        resetLlmModelsState();
-                      }}
-                    >
-                      <option value="">No catalog reference</option>
-                      {modelCatalogProviders.map((provider) => (
-                        <option key={provider.id} value={provider.id}>
-                          {provider.name} ({provider.id})
-                        </option>
-                      ))}
-                    </select>
-                    {modelCatalogProvidersLoading && (
-                      <p className="field-help" aria-live="polite">
-                        Loading catalog references...
+                      <p className="field-help">
+                        Optional models.dev metadata reference. This does not prove this endpoint
+                        supports a catalog model.
                       </p>
-                    )}
-                    <p className="field-help">
-                      Optional models.dev metadata reference. This does not prove this endpoint
-                      supports a catalog model.
-                    </p>
-                    {modelCatalogProvidersError && (
-                      <>
-                        <p className="field-error" role="alert">
-                          {modelCatalogProvidersError}
-                        </p>
-                        <button
-                          type="button"
-                          className="btn btn-test"
-                          onClick={() => void loadModelCatalogProviders()}
-                          disabled={modelCatalogProvidersLoading}
-                        >
-                          Retry catalog
-                        </button>
-                      </>
-                    )}
+                      {modelCatalogProvidersError && (
+                        <>
+                          <p className="field-error" role="alert">
+                            {modelCatalogProvidersError}
+                          </p>
+                          <button
+                            type="button"
+                            className="btn btn-test"
+                            onClick={() => void loadModelCatalogProviders()}
+                            disabled={modelCatalogProvidersLoading}
+                          >
+                            Retry catalog
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                   <div className="form-group" id="setting-openai-compatible-model">
                     <label htmlFor="openai-compatible-model">Model</label>
@@ -6125,6 +6166,9 @@ export function SettingsPanel({
                             formData.openai_compatible_api_key || '',
                             {
                               baseUrl: formData.openai_compatible_base_url,
+                              providerName:
+                                formData.openai_compatible_provider_name?.trim() ||
+                                'OpenAI-compatible',
                               catalogProvider: formData.openai_compatible_catalog_provider || '',
                               modelLimits: formData.openai_compatible_model_limits || {},
                               userTriggered: true,
@@ -6156,7 +6200,18 @@ export function SettingsPanel({
                     )}
                     {llmModels.length > 0 && (
                       <ModelSelector
-                        models={llmModels}
+                        models={llmModels.map((model) => {
+                          const providerLabel =
+                            formData.openai_compatible_provider_name?.trim() || 'OpenAI-compatible';
+                          const modelLabel = model.display_name || model.name || model.id;
+                          return {
+                            ...model,
+                            provider: 'openai_compatible' as const,
+                            group: providerLabel,
+                            host_provider_label: providerLabel,
+                            selector_label: `${modelLabel} (${providerLabel})`,
+                          };
+                        })}
                         selectedModelId={formData.llm_model || ''}
                         onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
                         variant="full"
@@ -6212,6 +6267,7 @@ export function SettingsPanel({
                       : hasConfiguredOutputSource
                         ? null
                         : selectedModel?.output_limit_source;
+                    const hasLoadedSelectedModel = llmModelsLoaded && Boolean(selectedModel);
                     return (
                       <details
                         className="settings-advanced-block"
@@ -6229,38 +6285,47 @@ export function SettingsPanel({
                             Output:{' '}
                             {outputLimit
                               ? `${outputLimit} (${outputSource || 'unknown source'})`
-                              : 'Unknown.'}
+                              : 'Unknown — configured response budget applies.'}
                           </p>
+                          {!contextLimit && (
+                            <p className="field-help">
+                              {hasLoadedSelectedModel
+                                ? 'The endpoint did not report a context limit. Configure a documented limit or select a matching catalog reference.'
+                                : 'Fetch models to discover limits, or enter a documented limit.'}
+                            </p>
+                          )}
                         </div>
-                        <div className="form-group">
-                          <label htmlFor="openai-compatible-context-limit">Context limit</label>
-                          <input
-                            id="openai-compatible-context-limit"
-                            type="number"
-                            min="1"
-                            step="1"
-                            value={override.context_limit ?? ''}
-                            onChange={(event) =>
-                              updateOverride('context_limit', event.target.value)
-                            }
-                            placeholder="Required when unknown"
-                          />
-                        </div>
-                        <div className="form-group">
-                          <label htmlFor="openai-compatible-output-limit">
-                            Maximum output tokens
-                          </label>
-                          <input
-                            id="openai-compatible-output-limit"
-                            type="number"
-                            min="1"
-                            step="1"
-                            value={override.max_output_tokens ?? ''}
-                            onChange={(event) =>
-                              updateOverride('max_output_tokens', event.target.value)
-                            }
-                            placeholder="Optional"
-                          />
+                        <div className="form-row openai-compatible-form-row">
+                          <div className="form-group">
+                            <label htmlFor="openai-compatible-context-limit">Context limit</label>
+                            <input
+                              id="openai-compatible-context-limit"
+                              type="number"
+                              min="1"
+                              step="1"
+                              value={override.context_limit ?? ''}
+                              onChange={(event) =>
+                                updateOverride('context_limit', event.target.value)
+                              }
+                              placeholder="Required when unknown"
+                            />
+                          </div>
+                          <div className="form-group">
+                            <label htmlFor="openai-compatible-output-limit">
+                              Maximum output tokens
+                            </label>
+                            <input
+                              id="openai-compatible-output-limit"
+                              type="number"
+                              min="1"
+                              step="1"
+                              value={override.max_output_tokens ?? ''}
+                              onChange={(event) =>
+                                updateOverride('max_output_tokens', event.target.value)
+                              }
+                              placeholder="Optional"
+                            />
+                          </div>
                         </div>
                       </details>
                     );

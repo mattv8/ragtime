@@ -148,3 +148,28 @@ describe('ModelSelector placement', () => {
     expect(document.querySelector('.model-selector-dropdown')).toBeNull();
   });
 });
+
+describe('ModelSelector generic provider labels', () => {
+  afterEach(cleanup);
+
+  it('uses the configured host label instead of an Other group for sparse generic metadata', () => {
+    render(
+      <ModelSelector
+        models={[
+          {
+            id: 'CaseSensitive/Model',
+            name: 'CaseSensitive/Model',
+            provider: 'openai_compatible',
+            host_provider_label: 'Internal Gateway',
+          },
+        ]}
+        selectedModelId="CaseSensitive/Model"
+        onModelChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole('button', { name: /Internal Gateway CaseSensitive\/Model/i }),
+    ).toBeTruthy();
+  });
+});

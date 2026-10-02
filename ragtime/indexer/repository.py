@@ -1509,6 +1509,7 @@ class IndexerRepository:
             ),
             openai_compatible_base_url=getattr(settings, "openaiCompatibleBaseUrl", "") or "",
             openai_compatible_api_key=openai_compatible_api_key,
+            openai_compatible_provider_name=str(getattr(settings, "openaiCompatibleProviderName", "") or "").strip(),
             openai_compatible_catalog_provider=getattr(settings, "openaiCompatibleCatalogProvider", "") or "",
             openai_compatible_model_limits=getattr(settings, "openaiCompatibleModelLimits", {}) or {},
             openai_api_key=openai_key,
@@ -1868,6 +1869,7 @@ class IndexerRepository:
             "llm_omlx_base_url": "llmOmlxBaseUrl",
             "openai_compatible_base_url": "openaiCompatibleBaseUrl",
             "openai_compatible_api_key": "openaiCompatibleApiKey",
+            "openai_compatible_provider_name": "openaiCompatibleProviderName",
             "openai_compatible_catalog_provider": "openaiCompatibleCatalogProvider",
             "openai_compatible_model_limits": "openaiCompatibleModelLimits",
             "openai_api_key": "openaiApiKey",
@@ -1981,6 +1983,10 @@ class IndexerRepository:
                 value = updates[snake_key]
                 if snake_key == "default_theme_pack" and isinstance(value, str):
                     value = canonicalize_theme_pack_id(value) or "default"
+                if snake_key == "openai_compatible_provider_name" and isinstance(value, str):
+                    value = value.strip()
+                    if len(value) > 80:
+                        raise ValueError("openai_compatible_provider_name must be at most 80 characters")
                 update_data[camel_key] = value
 
         # Encrypt secret fields before storage

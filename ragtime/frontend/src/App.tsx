@@ -353,6 +353,7 @@ export function App() {
 
   // Configuration warnings state
   const [configurationWarnings, setConfigurationWarnings] = useState<ConfigurationWarning[]>([]);
+  const [isGenericProviderConfigured, setIsGenericProviderConfigured] = useState(false);
   const [openRouterCreditStatus, setOpenRouterCreditStatus] =
     useState<OpenRouterCreditStatus | null>(null);
   const authIdentityRef = useRef({
@@ -471,6 +472,7 @@ export function App() {
     clearPrincipalState();
     setConfigurationWarnings([]);
     setOpenRouterCreditStatus(null);
+    setIsGenericProviderConfigured(false);
   }, [clearPrincipalState, userId, userRole]);
 
   useEffect(() => {
@@ -508,6 +510,7 @@ export function App() {
       setAggregateSearch(settings.aggregate_search ?? true);
       setEmbeddingDimensions(settings.embedding_dimensions ?? null);
       setConfigurationWarnings(nextWarnings);
+      setIsGenericProviderConfigured(Boolean(settings.openai_compatible_base_url?.trim()));
 
       const hasEncryptionWarning = nextWarnings.some(
         (warning) => warning.category === 'encryption',
@@ -1490,6 +1493,7 @@ export function App() {
             <SecurityBanner
               authStatus={authStatus}
               isAdmin={isAdmin}
+              isGenericProviderConfigured={isGenericProviderConfigured}
               hidden={hideChrome}
               onNavigateToSettings={(highlightTarget) => {
                 if (isAdmin) {

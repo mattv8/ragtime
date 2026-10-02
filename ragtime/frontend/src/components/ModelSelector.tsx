@@ -96,7 +96,10 @@ function modelTriggerDisplayName(model: BaseModel): string {
 }
 
 function modelFamilyLabel(model: BaseModel): string {
-  return model.model_family || model.group || 'Other';
+  if (model.model_family || model.group) return model.model_family || model.group || 'Other';
+  return normalizeProviderAlias(model.provider || '') === 'openai_compatible'
+    ? hostProviderLabel(model)
+    : 'Other';
 }
 
 function modelProviderLabel(model: BaseModel): string {
