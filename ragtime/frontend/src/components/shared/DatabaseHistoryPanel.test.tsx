@@ -263,7 +263,7 @@ describe('DatabaseHistoryPanel', () => {
 
   it('preserves selection for equivalent window values and invalidates stale preview on window change', async () => {
     const user = userEvent.setup();
-    const { rerender } = render(
+    const { container, rerender } = render(
       <DatabaseHistoryPanel
         workspaceId="ws-1"
         ownerOrAdmin
@@ -273,7 +273,7 @@ describe('DatabaseHistoryPanel', () => {
     );
     await user.click(screen.getByRole('button', { name: 'Database history' }));
     await user.click(screen.getByRole('button', { name: /Restore app\.sqlite3 backup/ }));
-    expect(screen.getByLabelText('Mode')).toBeTruthy();
+    expect(container.querySelector('[data-history-restore-wizard]')).toBeTruthy();
 
     rerender(
       <DatabaseHistoryPanel
@@ -283,7 +283,7 @@ describe('DatabaseHistoryPanel', () => {
         captureWindow={{ start: '2026-09-17T09:00:00Z', end: '2026-09-17T11:00:00Z' }}
       />,
     );
-    expect(screen.getByLabelText('Mode')).toBeTruthy();
+    expect(container.querySelector('[data-history-restore-wizard]')).toBeTruthy();
 
     rerender(
       <DatabaseHistoryPanel
@@ -293,7 +293,9 @@ describe('DatabaseHistoryPanel', () => {
         captureWindow={{ start: '2026-09-17T11:00:00Z' }}
       />,
     );
-    await waitFor(() => expect(screen.queryByLabelText('Mode')).toBeNull());
+    await waitFor(() =>
+      expect(container.querySelector('[data-history-restore-wizard]')).toBeNull(),
+    );
   });
 
   it('discards an in-flight preview when its capture window changes', async () => {
