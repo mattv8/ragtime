@@ -80,7 +80,7 @@ Subscription-backed providers (OpenAI Codex, Claude Code) authenticate from the 
 
 #### Connect an OpenAI-compatible service
 
-Custom model endpoints receive prompts and tool results and can influence tool calls; use only providers you trust.
+**Security:** Public generic OpenAI API model endpoints receive prompts and tool results and can influence tool calls; use only providers you trust. Ragtime shows this notice to administrators when an OpenAI-compatible provider is configured, or when an Ollama, llama.cpp, LM Studio, or oMLX chat endpoint uses a public host.
 
 In the model-provider settings, select **OpenAI-compatible**, enter the service's full API base URL and API key, then fetch its models. Include the API path in the URL (for example, `https://api.example.com/v1`); Ragtime preserves that path and does not add `/v1`. Chat discovery requires a compatible `/models` endpoint. This connection uses the Chat Completions API for chat, streaming, and tool calls. Model and endpoint support for tools can vary. Images use Ragtime's OCR path; this provider does not enable native image input or the Responses API.
 

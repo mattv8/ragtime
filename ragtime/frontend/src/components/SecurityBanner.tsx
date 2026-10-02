@@ -24,7 +24,7 @@ interface SecurityBannerProps {
   authStatus: AuthStatus | null;
   isAdmin: boolean;
   hidden?: boolean;
-  isGenericProviderConfigured?: boolean;
+  isUntrustedModelEndpointConfigured?: boolean;
   onNavigateToSettings?: (highlightSetting?: string) => void;
 }
 
@@ -131,7 +131,7 @@ export function SecurityBanner({
   authStatus,
   isAdmin,
   hidden,
-  isGenericProviderConfigured = false,
+  isUntrustedModelEndpointConfigured = false,
   onNavigateToSettings,
 }: SecurityBannerProps) {
   const [dismissedNoticeIds, setDismissedNoticeIds] = useState<string[]>(readDismissedNoticeIds);
@@ -234,11 +234,12 @@ export function SecurityBanner({
     },
     {
       id: NOTICE_GENERIC_PROVIDER,
-      title: 'Note',
+      title: 'Security',
       message:
-        'Custom model endpoints receive prompts and tool results and can influence tool calls; use only providers you trust.',
+        'Public generic OpenAI API model endpoints receive prompts and tool results and can influence tool calls; use only providers you trust.',
       highlightSetting: 'llm_provider',
-      visible: isGenericProviderConfigured && !dismissedNoticeIds.includes(NOTICE_GENERIC_PROVIDER),
+      visible:
+        isUntrustedModelEndpointConfigured && !dismissedNoticeIds.includes(NOTICE_GENERIC_PROVIDER),
     },
   ];
 

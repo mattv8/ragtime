@@ -35,6 +35,7 @@ import type {
   OpenRouterCreditStatus,
 } from '@/types';
 import { BrandName } from '@/utils/buildEnvironment';
+import { hasUntrustedModelEndpoint } from '@/utils/modelEndpointTrust';
 import { setThemePack, resolveThemePackId } from '@/theme';
 import { ThemeChromeIcon } from '@/components/shared/ThemeChromeIcon';
 import { SERVER_BACKUP_RESTORE_HIGHLIGHT } from '@/components/shared/securityWarnings';
@@ -353,7 +354,8 @@ export function App() {
 
   // Configuration warnings state
   const [configurationWarnings, setConfigurationWarnings] = useState<ConfigurationWarning[]>([]);
-  const [isGenericProviderConfigured, setIsGenericProviderConfigured] = useState(false);
+  const [isUntrustedModelEndpointConfigured, setIsUntrustedModelEndpointConfigured] =
+    useState(false);
   const [openRouterCreditStatus, setOpenRouterCreditStatus] =
     useState<OpenRouterCreditStatus | null>(null);
   const authIdentityRef = useRef({
@@ -472,7 +474,7 @@ export function App() {
     clearPrincipalState();
     setConfigurationWarnings([]);
     setOpenRouterCreditStatus(null);
-    setIsGenericProviderConfigured(false);
+    setIsUntrustedModelEndpointConfigured(false);
   }, [clearPrincipalState, userId, userRole]);
 
   useEffect(() => {
@@ -510,7 +512,7 @@ export function App() {
       setAggregateSearch(settings.aggregate_search ?? true);
       setEmbeddingDimensions(settings.embedding_dimensions ?? null);
       setConfigurationWarnings(nextWarnings);
-      setIsGenericProviderConfigured(Boolean(settings.openai_compatible_base_url?.trim()));
+      setIsUntrustedModelEndpointConfigured(hasUntrustedModelEndpoint(settings));
 
       const hasEncryptionWarning = nextWarnings.some(
         (warning) => warning.category === 'encryption',
@@ -1493,7 +1495,7 @@ export function App() {
             <SecurityBanner
               authStatus={authStatus}
               isAdmin={isAdmin}
-              isGenericProviderConfigured={isGenericProviderConfigured}
+              isUntrustedModelEndpointConfigured={isUntrustedModelEndpointConfigured}
               hidden={hideChrome}
               onNavigateToSettings={(highlightTarget) => {
                 if (isAdmin) {

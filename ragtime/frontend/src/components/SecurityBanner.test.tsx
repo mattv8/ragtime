@@ -48,18 +48,25 @@ describe('SecurityBanner', () => {
     expect(screen.getByText(/The API endpoint accepts an API Key/i)).toBeTruthy();
   });
 
-  it('shows, dismisses, and clears the configured generic provider notice independently', () => {
+  it('shows, dismisses, and clears the untrusted model endpoint notice independently', () => {
     const onNavigateToSettings = vi.fn();
     const { rerender } = render(
       <SecurityBanner
         authStatus={baseStatus}
         isAdmin
-        isGenericProviderConfigured
+        isUntrustedModelEndpointConfigured
         onNavigateToSettings={onNavigateToSettings}
       />,
     );
 
-    expect(screen.getByText(/Custom model endpoints receive prompts/i)).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Public generic OpenAI API model endpoints receive prompts and tool results and can influence tool calls; use only providers you trust.',
+      ),
+    ).toBeTruthy();
+    expect(
+      document.querySelector('[data-security-notice="generic-provider"] strong')?.textContent,
+    ).toBe('Security:');
     fireEvent.click(
       document.querySelector('[data-security-notice="generic-provider"] .security-banner-link')!,
     );
@@ -67,11 +74,17 @@ describe('SecurityBanner', () => {
     fireEvent.click(
       document.querySelector('[data-security-notice="generic-provider"] .security-banner-dismiss')!,
     );
-    expect(screen.queryByText(/Custom model endpoints receive prompts/i)).toBeNull();
+    expect(screen.queryByText(/model endpoints receive prompts/i)).toBeNull();
 
     rerender(
-      <SecurityBanner authStatus={baseStatus} isAdmin isGenericProviderConfigured={false} />,
+      <SecurityBanner authStatus={baseStatus} isAdmin isUntrustedModelEndpointConfigured={false} />,
     );
-    expect(screen.queryByText(/Custom model endpoints receive prompts/i)).toBeNull();
+    expect(screen.queryByText(/model endpoints receive prompts/i)).toBeNull();
+  });
+
+  it('does not show the untrusted model endpoint notice by default', () => {
+    render(<SecurityBanner authStatus={baseStatus} isAdmin />);
+
+    expect(screen.queryByText(/model endpoints receive prompts/i)).toBeNull();
   });
 });
