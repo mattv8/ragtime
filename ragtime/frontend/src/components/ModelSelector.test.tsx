@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ModelSelector } from './ModelSelector';
@@ -37,6 +37,8 @@ function setViewport(width: number, height: number) {
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: height });
 }
 
+const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect');
+
 function renderSelector(placement?: 'bottom-start' | 'top-end') {
   return render(
     <ModelSelector
@@ -49,8 +51,6 @@ function renderSelector(placement?: 'bottom-start' | 'top-end') {
 }
 
 describe('ModelSelector placement', () => {
-  const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect');
-
   afterEach(() => {
     cleanup();
     rectSpy.mockReset();
@@ -171,5 +171,128 @@ describe('ModelSelector generic provider labels', () => {
     expect(
       screen.getByRole('button', { name: /Internal Gateway CaseSensitive\/Model/i }),
     ).toBeTruthy();
+  });
+});
+
+describe('ModelSelector multi-host nesting', () => {
+  afterEach(() => {
+    cleanup();
+    rectSpy.mockReset();
+  });
+
+  function mockMenuGeometry() {
+    setViewport(1200, 800);
+    rectSpy.mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains('model-selector-dropdown')) {
+        return rect({ left: 20, top: 48, width: 240, height: 160 });
+      }
+      return rect({ left: 20, top: 20, width: 180, height: 28 });
+    });
+  }
+
+  it('shows A2Agent model rows in its first submenu and returns the scoped raw ID', async () => {
+    mockMenuGeometry();
+    const onModelChange = vi.fn();
+    const models = [
+      {
+        id: 'Kimi/K2.5',
+        name: 'Kimi K2.5',
+        provider: 'openai_compatible',
+        host_provider_label: 'A2Agent',
+        model_provider_label: 'A2Agent',
+        group: 'A2Agent',
+        is_latest: true,
+      },
+      {
+        id: 'Kimi/K2.5-Reasoning',
+        name: 'Kimi K2.5 Reasoning',
+        provider: 'openai_compatible',
+        host_provider_label: 'A2Agent',
+        model_provider_label: 'A2Agent',
+        group: 'A2Agent',
+      },
+      {
+        id: 'mistral-small',
+        name: 'Mistral Small',
+        provider: 'openrouter',
+        host_provider_label: 'OpenRouter',
+        model_provider_label: 'Mistral',
+        group: 'Mistral',
+      },
+    ];
+    const { container } = render(
+      <ModelSelector
+        models={models}
+        selectedModelId="openai_compatible::Kimi/K2.5"
+        onModelChange={onModelChange}
+        getModelSelectionKey={(model) => `${model.provider}::${model.id}`}
+      />,
+    );
+
+    fireEvent.click(container.querySelector('.model-selector-trigger') as HTMLButtonElement);
+    fireEvent.mouseEnter(
+      within(document.querySelector('.model-selector-dropdown-inner') as HTMLElement).getByRole(
+        'button',
+        {
+          name: 'A2Agent',
+        },
+      ),
+    );
+
+    await waitFor(() => {
+      const submenu = document.querySelector('.model-selector-submenu');
+      expect(submenu).toBeTruthy();
+      const menu = within(submenu as HTMLElement);
+      expect(menu.getAllByRole('button')).toHaveLength(2);
+      expect(menu.getByText('Kimi K2.5', { exact: true })).toBeTruthy();
+      expect(menu.getByRole('button', { name: 'Kimi K2.5 Reasoning' })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Kimi K2.5 Reasoning' }));
+    expect(onModelChange).toHaveBeenCalledWith('openai_compatible::Kimi/K2.5-Reasoning');
+  });
+
+  it('keeps distinct provider and family children under a host', async () => {
+    mockMenuGeometry();
+    const { container } = render(
+      <ModelSelector
+        models={[
+          {
+            id: 'Kimi/K2.5',
+            name: 'Kimi K2.5',
+            provider: 'openai_compatible',
+            host_provider_label: 'A2Agent',
+            model_provider_label: 'Moonshot',
+            group: 'Kimi',
+          },
+          {
+            id: 'mistral-small',
+            name: 'Mistral Small',
+            provider: 'openrouter',
+            host_provider_label: 'OpenRouter',
+            model_provider_label: 'Mistral',
+            group: 'Mistral',
+          },
+        ]}
+        selectedModelId="openai_compatible::Kimi/K2.5"
+        onModelChange={vi.fn()}
+        getModelSelectionKey={(model) => `${model.provider}::${model.id}`}
+      />,
+    );
+
+    fireEvent.click(container.querySelector('.model-selector-trigger') as HTMLButtonElement);
+    fireEvent.mouseEnter(
+      within(document.querySelector('.model-selector-dropdown-inner') as HTMLElement).getByRole(
+        'button',
+        {
+          name: 'A2Agent',
+        },
+      ),
+    );
+
+    await waitFor(() => {
+      const submenu = document.querySelector('.model-selector-submenu');
+      expect(submenu).toBeTruthy();
+      expect(within(submenu as HTMLElement).getByRole('button', { name: 'Moonshot' })).toBeTruthy();
+    });
   });
 });
