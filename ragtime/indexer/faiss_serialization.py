@@ -17,6 +17,8 @@ from langchain_community.docstore.in_memory import InMemoryDocstore
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 
+from ragtime.indexer.vector_utils import count_faiss_docstore_stats
+
 
 class FaissSerializationError(ValueError):
     """Raised when a FAISS metadata artifact is not a supported safe export."""
@@ -187,6 +189,4 @@ def safe_load_faiss(path: str | Path, embeddings: Any, **kwargs: Any) -> FAISS:
 def count_faiss_metadata(path: str | Path) -> tuple[int, int]:
     """Return document and chunk counts from validated FAISS metadata."""
     docstore, mapping = load_faiss_metadata(path)
-    from ragtime.indexer.vector_utils import count_faiss_docstore_stats
-
     return count_faiss_docstore_stats((docstore, mapping))

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
+import faiss
 import numpy as np
 
 # Import actual LangChain classes for safe fixtures
@@ -31,8 +32,6 @@ def _create_real_faiss_bytes(chunk_count: int) -> bytes:
     chunk count. This ensures tests exercise the real FAISS deserialization
     path, not fake data.
     """
-    import faiss
-
     dimension = 384  # Common embedding dimension in ragtime
     index = faiss.IndexFlatL2(dimension)
 
