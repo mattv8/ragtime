@@ -323,6 +323,7 @@ from ragtime.indexer.models import (
     MessageSnapshotRestoreResponse,
     ModelPreferenceRequest,
     ModelPreferenceResponse,
+    MountHealthStatus,
     MssqlDiscoverRequest,
     MssqlDiscoverResponse,
     MysqlDiscoverRequest,
@@ -371,6 +372,7 @@ from ragtime.indexer.models import (
     VectorStoreType,
     WorkspaceChatStateResponse,
 )
+from ragtime.indexer.mount_health_monitor import mount_health_monitor
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import (
     ConversationBranchMutationError,
@@ -2415,6 +2417,21 @@ async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(
 async def get_openrouter_credits(_user: User = Depends(require_admin)) -> dict[str, Any]:
     """Return the admin-only, redacted OpenRouter credit-monitor snapshot."""
     return await get_openrouter_credit_status()
+
+
+@router.get("/system/mount-health", response_model=MountHealthStatus, tags=["Settings"])
+async def get_mount_health(user: User = Depends(get_current_user)) -> MountHealthStatus:
+    """Return the cached mount-health snapshot without probing mounts."""
+    status = mount_health_monitor.snapshot()
+    if user.role == "admin":
+        return status
+    return MountHealthStatus(status=status.status, checked_at=status.checked_at, runtime_checked=False, problems=[])
+
+
+@router.post("/system/mount-health/recheck", response_model=MountHealthStatus, tags=["Settings"])
+async def recheck_mount_health(_user: User = Depends(require_admin)) -> MountHealthStatus:
+    """Run an immediate mount-health check for an administrator."""
+    return await mount_health_monitor.recheck()
 
 
 @router.get("/settings/embedding-status", response_model=EmbeddingStatus, tags=["Settings"])
