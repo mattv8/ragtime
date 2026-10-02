@@ -40,7 +40,7 @@ class FaissResourceLoadingTests(unittest.IsolatedAsyncioTestCase):
             path = Path(directory)
             with (
                 patch("ragtime.indexer.resource_governor.resource_governor", Governor()),
-                patch("ragtime.rag.components.FAISS.load_local", side_effect=blocking_load),
+                patch("ragtime.rag.components.safe_load_faiss", side_effect=blocking_load),
             ):
                 task = asyncio.create_task(
                     rag._load_faiss_local_admitted(
@@ -50,11 +50,17 @@ class FaissResourceLoadingTests(unittest.IsolatedAsyncioTestCase):
                         metadata={"chunk_count": 1, "embedding_dimension": 2},
                     )
                 )
-                await entered.wait()
-                task.cancel()
-                release_thread.set()
-                with self.assertRaises(asyncio.CancelledError):
-                    await task
+                try:
+                    await asyncio.wait_for(entered.wait(), timeout=2)
+                    task.cancel()
+                    release_thread.set()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                finally:
+                    release_thread.set()
+                    if not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
 
         self.assertEqual(releases, [True])
 
@@ -86,18 +92,24 @@ class FaissResourceLoadingTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             with (
                 patch("ragtime.indexer.resource_governor.resource_governor", Governor()),
-                patch("ragtime.rag.components.FAISS.load_local", side_effect=blocking_load),
+                patch("ragtime.rag.components.safe_load_faiss", side_effect=blocking_load),
             ):
                 task = asyncio.create_task(
                     rag._load_faiss_local_admitted(
                         index_name="example", index_path=Path(directory), embedding_model=object(), metadata={"chunk_count": 1, "embedding_dimension": 2}
                     )
                 )
-                await entered.wait()
-                task.cancel()
-                task.cancel()
-                release_thread.set()
-                with self.assertRaises(asyncio.CancelledError):
-                    await task
+                try:
+                    await asyncio.wait_for(entered.wait(), timeout=2)
+                    task.cancel()
+                    task.cancel()
+                    release_thread.set()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                finally:
+                    release_thread.set()
+                    if not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
 
         self.assertEqual(releases, [True])

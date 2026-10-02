@@ -22,6 +22,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
+from ragtime.indexer.faiss_serialization import safe_load_faiss
 from ragtime.indexer.indexing_spool import IndexingSpool
 from ragtime.indexer.memory_utils import estimate_index_memory
 from ragtime.indexer.resource_governor import resource_governor
@@ -220,9 +221,9 @@ def _build_faiss_generation(
             # its own object graph for round-trip validation.
             del store, index, docstore, index_to_docstore_id
             gc.collect()
-            # A standard LangChain reload catches mismatched pickle/index pairs
-            # before the immutable directory is visible to metadata publication.
-            loaded = FAISS.load_local(str(staging), _ArtifactEmbeddings(), allow_dangerous_deserialization=True)
+            # A safe reload catches mismatched pickle/index pairs before the
+            # immutable directory is visible to metadata publication.
+            loaded = safe_load_faiss(staging, _ArtifactEmbeddings(), normalize_L2=normalize_l2)
             if loaded.index.ntotal != chunk_count or loaded.index.d != dimensions:
                 raise ValueError("FAISS generation round-trip validation failed")
             del loaded

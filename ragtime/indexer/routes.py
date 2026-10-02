@@ -10,7 +10,6 @@ import importlib
 import io
 import json
 import os
-import pickle
 import posixpath
 import re
 import secrets
@@ -250,6 +249,7 @@ from ragtime.indexer.export_service import (
     table_source,
     verify_token,
 )
+from ragtime.indexer.faiss_serialization import FaissSerializationError, safe_load_faiss
 from ragtime.indexer.file_utils import get_directory_size_bytes
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.live_visualizations import (
@@ -1901,7 +1901,10 @@ class ImportFaissIndexResponse(BaseModel):
 async def import_faiss_index(
     file: UploadFile = File(
         ...,
-        description="Zip archive produced by the FAISS download endpoint (contains index.faiss, index.pkl, metadata.json).",
+        description=(
+            "Zip archive produced by the FAISS download endpoint (contains index.faiss, index.pkl, metadata.json). "
+            "The native FAISS parser runs in-process without a sandbox, so import only artifacts from trusted sources."
+        ),
     ),
     name: Optional[str] = Form(
         default=None,
@@ -1917,10 +1920,13 @@ async def import_faiss_index(
     ),
     _user: User = Depends(require_admin),
 ):
-    """Import a previously-exported FAISS index zip and re-create the index metadata. Admin only.
+    """Import a trusted previously-exported FAISS index zip. Admin only.
 
     The zip is expected to contain ``index.faiss``, ``index.pkl``, and an
-    optional ``metadata.json`` produced by the download endpoint. The import:
+    optional ``metadata.json`` produced by the download endpoint. Safe metadata
+    deserialization does not sandbox the in-process native ``faiss.read_index``
+    parser, so this endpoint accepts native artifacts from trusted sources only.
+    The import:
 
     1. Extracts the archive into ``<index_base_path>/<name>/``.
     2. Reads ``metadata.json`` (if present) to restore the description, source,
@@ -1937,7 +1943,9 @@ async def import_faiss_index(
     # upload tmp dir and is cleaned up even on failure.
     tmp_dir = UPLOAD_TMP_DIR / f"faiss_import_{uuid.uuid4().hex[:8]}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = tmp_dir / file.filename
+    zip_path = tmp_dir / "upload.zip"
+    staging_path: Path | None = None
+    backup_path: Path | None = None
 
     try:
 
@@ -2002,16 +2010,8 @@ async def import_faiss_index(
                 detail=(f"Index '{safe_name}' already has metadata. Delete it first or retry with overwrite=true."),
             )
 
-        # If overwriting, unload and clear the existing index to avoid stale state
-        if existing_meta is not None or target_path.exists():
-            try:
-                rag.unload_index(safe_name)
-            except Exception as unload_err:
-                logger.warning(f"Failed to unload existing index '{safe_name}' before import: {unload_err}")
-            await asyncio.to_thread(shutil.rmtree, target_path, True)
-
         # Extract the archive, stripping any top-level directory so files
-        # land directly under target_path. The download zip always uses
+        # land directly under a private staging directory. The download zip always uses
         # ``{name}/`` as a prefix, so we strip that prefix when present.
         #
         # Security: every extracted member is validated to prevent zip-slip
@@ -2019,10 +2019,13 @@ async def import_faiss_index(
         # resolve outside target_path are silently skipped. Only the two
         # expected FAISS data files (index.faiss, index.pkl) are accepted.
         _ALLOWED_BASENAMES: frozenset[str] = frozenset({"index.faiss", "index.pkl"})
+        # This must share a filesystem with the target so publication is an
+        # atomic directory rename rather than a cross-device copy.
+        staging_path = indexer.index_base_path / f".{safe_name}.import-{uuid.uuid4().hex}"
 
         def _extract_zip() -> None:
-            resolved_target = target_path.resolve()
-            target_path.mkdir(parents=True, exist_ok=True)
+            resolved_target = staging_path.resolve()
+            staging_path.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(zip_path, "r") as zf:
                 for member in zf.namelist():
                     # Skip directory entries
@@ -2065,7 +2068,7 @@ async def import_faiss_index(
                         logger.warning(f"FAISS import: skipping unexpected member '{member}' (basename '{basename}' not in allowed set)")
                         continue
                     # 4. Resolve destination and confirm it stays under target_path.
-                    dest_file = target_path / relative
+                    dest_file = staging_path / relative
                     try:
                         resolved_dest = dest_file.resolve()
                     except Exception as resolve_err:
@@ -2081,29 +2084,48 @@ async def import_faiss_index(
         await asyncio.to_thread(_extract_zip)
 
         # Verify the extracted files are present
-        faiss_file = target_path / "index.faiss"
-        pkl_file = target_path / "index.pkl"
+        faiss_file = staging_path / "index.faiss"
+        pkl_file = staging_path / "index.pkl"
         if not faiss_file.exists() or not pkl_file.exists():
             raise HTTPException(
                 status_code=400,
                 detail="Extracted archive is missing index.faiss or index.pkl",
             )
 
-        # Compute document/chunk counts from the pickle file (best-effort).
-        # document_count = unique source files, chunk_count = total stored chunks.
-        # Older imports erroneously reused the chunk count for both, making the
-        # UI report a 1:1 file/chunk ratio.
-        def _read_counts() -> tuple[int, int]:
-            try:
-                with open(pkl_file, "rb") as pkl_f:
-                    data = pickle.load(pkl_f)
-                return count_faiss_docstore_stats(data)
-            except Exception as pkl_err:
-                logger.warning(f"Could not read counts from index.pkl during import: {pkl_err}")
-            return 0, 0
+        # Validate the complete staged artifact before touching any existing
+        # index. Metadata is safely rebuilt, then the native FAISS parser and
+        # its vector-count consistency are checked in-process.
+        def _validate_staged_artifact() -> tuple[int, int]:
+            store = safe_load_faiss(staging_path, embeddings=None)
+            return count_faiss_docstore_stats((store.docstore, store.index_to_docstore_id))
 
-        doc_count, chunk_count = await asyncio.to_thread(_read_counts)
-        size_bytes = await asyncio.to_thread(get_directory_size_bytes, target_path)
+        try:
+            doc_count, chunk_count = await asyncio.to_thread(_validate_staged_artifact)
+        except FaissSerializationError as exc:
+            raise HTTPException(status_code=400, detail="Unsafe or malformed FAISS artifact") from exc
+        size_bytes = await asyncio.to_thread(get_directory_size_bytes, staging_path)
+
+        # Only a validated staged artifact may replace a current index.
+        if existing_meta is not None or target_path.exists():
+            try:
+                rag.unload_index(safe_name)
+            except Exception as unload_err:
+                logger.warning(f"Failed to unload existing index '{safe_name}' before import: {unload_err}")
+        backup_path = indexer.index_base_path / f".{safe_name}.import-backup-{uuid.uuid4().hex}"
+
+        def _publish_staged_index() -> None:
+            if target_path.exists():
+                os.replace(target_path, backup_path)
+            try:
+                os.replace(staging_path, target_path)
+            except BaseException:
+                if backup_path.exists() and not target_path.exists():
+                    os.replace(backup_path, target_path)
+                raise
+            if backup_path.exists():
+                shutil.rmtree(backup_path)
+
+        await asyncio.to_thread(_publish_staged_index)
 
         # Pull restored values from metadata.json (overridable by form fields)
         description_value = description if description is not None else metadata_payload.get("description", "") or ""
@@ -2189,6 +2211,10 @@ async def import_faiss_index(
                 zip_path.unlink()
             if tmp_dir.exists():
                 await asyncio.to_thread(shutil.rmtree, tmp_dir, True)
+            if staging_path is not None and staging_path.exists():
+                await asyncio.to_thread(shutil.rmtree, staging_path, True)
+            if backup_path is not None and backup_path.exists() and target_path.exists():
+                await asyncio.to_thread(shutil.rmtree, backup_path, True)
         except Exception as cleanup_err:
             logger.warning(f"Failed to clean up FAISS import tmp dir {tmp_dir}: {cleanup_err}")
 

@@ -10,7 +10,6 @@ import asyncio
 import functools
 import json
 import os
-import pickle
 import re
 import shutil
 import sqlite3
@@ -61,6 +60,7 @@ from ragtime.indexer.chunking import (
 from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async, extract_text_from_file_process_safe
 from ragtime.indexer.embedding_errors import iter_exception_chain
 from ragtime.indexer.faiss_artifacts import prepare_faiss_artifact
+from ragtime.indexer.faiss_serialization import count_faiss_metadata
 from ragtime.indexer.file_utils import (
     build_authenticated_git_url,
     collect_files_recursive,
@@ -106,7 +106,6 @@ from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_utils import (
     EMBEDDING_SUB_BATCH_SIZE,
     append_embedding_dimension_warning,
-    count_faiss_docstore_stats,
     embed_documents_subbatched,
     get_embeddings_model,
 )
@@ -626,9 +625,7 @@ class IndexerService:
                 doc_count = 0
                 chunk_count = 0
                 try:
-                    with open(pkl_file, "rb") as pkl_f:
-                        data = pickle.load(pkl_f)
-                    doc_count, chunk_count = count_faiss_docstore_stats(data)
+                    doc_count, chunk_count = count_faiss_metadata(pkl_file)
 
                     logger.info(f"  Extracted {doc_count} source file(s) and {chunk_count} chunk(s) from {path.name}")
                 except Exception as e:
@@ -988,9 +985,7 @@ class IndexerService:
                     pkl_file = index_path / "index.pkl"
                     if pkl_file.exists():
                         try:
-                            with open(pkl_file, "rb") as f:
-                                data = pickle.load(f)
-                            doc_count, chunk_count = count_faiss_docstore_stats(data)
+                            doc_count, chunk_count = count_faiss_metadata(pkl_file)
                             if chunk_count > 0:
                                 size_bytes = await asyncio.to_thread(
                                     get_directory_size_bytes,

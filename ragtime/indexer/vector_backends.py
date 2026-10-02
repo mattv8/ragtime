@@ -22,6 +22,7 @@ from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
 from ragtime.core.faiss_concurrency import FaissSearchBusyError, faiss_search_coordinator
 from ragtime.core.logging import get_logger
+from ragtime.indexer.faiss_serialization import safe_load_faiss
 from ragtime.indexer.models import VectorStoreType
 from ragtime.indexer.vector_utils import (
     FAISS_SOURCE_METADATA_KEYS,
@@ -605,12 +606,7 @@ class FaissBackend(VectorStoreBackend):
             return False
 
         try:
-            faiss_db = await asyncio.to_thread(
-                FAISS.load_local,
-                str(index_path),
-                embeddings_model,
-                allow_dangerous_deserialization=True,
-            )
+            faiss_db = await asyncio.to_thread(safe_load_faiss, index_path, embeddings_model)
             self._loaded_indexes[index_name] = faiss_db
             logger.info(f"Loaded FAISS filesystem index: {index_name}")
             return True
