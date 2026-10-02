@@ -800,14 +800,12 @@ describe('mount health alerts', () => {
     vi.useFakeTimers();
     try {
       mockAuthenticatedAdmin();
-      apiMock.getMountHealth
-        .mockResolvedValueOnce(degradedMountHealth)
-        .mockResolvedValueOnce({
-          status: 'ok',
-          checked_at: '2026-10-02T12:01:00Z',
-          runtime_checked: true,
-          problems: [],
-        });
+      apiMock.getMountHealth.mockResolvedValueOnce(degradedMountHealth).mockResolvedValueOnce({
+        status: 'ok',
+        checked_at: '2026-10-02T12:01:00Z',
+        runtime_checked: true,
+        problems: [],
+      });
       render(<App />);
 
       await flushMicrotasks();

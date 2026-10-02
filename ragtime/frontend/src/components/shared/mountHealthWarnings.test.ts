@@ -46,10 +46,16 @@ describe('mount health warnings', () => {
       ),
     ).toBe('/mnt/Accounting (ragtime container) is unavailable. Source: //192.168.10.3/Acc.');
     expect(
-      formatMountProblem({ ...problem, failing_since: '2026-10-02T11:00:00Z' }, new Date('2026-10-02T12:00:00Z')),
+      formatMountProblem(
+        { ...problem, failing_since: '2026-10-02T11:00:00Z' },
+        new Date('2026-10-02T12:00:00Z'),
+      ),
     ).toContain('since 1 h ago');
     expect(
-      formatMountProblem({ ...problem, failing_since: '2026-10-01T12:00:00Z' }, new Date('2026-10-02T12:00:00Z')),
+      formatMountProblem(
+        { ...problem, failing_since: '2026-10-01T12:00:00Z' },
+        new Date('2026-10-02T12:00:00Z'),
+      ),
     ).toContain('since 1 d ago');
   });
 
