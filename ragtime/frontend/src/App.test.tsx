@@ -27,6 +27,8 @@ const apiMock = vi.hoisted(() => ({
   getServerBackupJob: vi.fn(),
   getServerRestoreJob: vi.fn(),
   getOpenRouterCreditStatus: vi.fn(),
+  getMountHealth: vi.fn(),
+  recheckMountHealth: vi.fn(),
   logout: vi.fn(),
   apiFetch: vi.fn((url: string, options: RequestInit) => fetch(url, options)),
 }));
@@ -180,7 +182,7 @@ vi.mock('./components/WarningsBanner', () => ({
     title?: string;
     warnings?: string[];
     hidden?: boolean;
-    action?: { label: string; onClick: () => void };
+    action?: { label: string; onClick: () => void; disabled?: boolean };
     dismissKey?: string;
     persistDismiss?: boolean;
   }) => {
@@ -188,8 +190,9 @@ vi.mock('./components/WarningsBanner', () => ({
     return (
       <div data-dismiss-key={dismissKey} data-persist-dismiss={persistDismiss ? 'true' : 'false'}>
         <span>{title}</span>
+        <span>{warnings.join(' ')}</span>
         {action ? (
-          <button type="button" onClick={action.onClick}>
+          <button type="button" onClick={action.onClick} disabled={action.disabled}>
             {action.label}
           </button>
         ) : null}
@@ -356,6 +359,18 @@ beforeEach(() => {
     checked_at: null,
     stale: false,
     warning: null,
+  });
+  apiMock.getMountHealth.mockResolvedValue({
+    status: 'ok',
+    checked_at: null,
+    runtime_checked: true,
+    problems: [],
+  });
+  apiMock.recheckMountHealth.mockResolvedValue({
+    status: 'ok',
+    checked_at: null,
+    runtime_checked: true,
+    problems: [],
   });
 });
 
@@ -677,6 +692,146 @@ describe('OpenRouter credit alerts', () => {
     await flushMicrotasks();
 
     expect(apiMock.getOpenRouterCreditStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('mount health alerts', () => {
+  const degradedMountHealth = {
+    status: 'degraded' as const,
+    checked_at: '2026-10-02T12:00:00Z',
+    runtime_checked: true,
+    problems: [
+      {
+        container: 'ragtime' as const,
+        mount_point: '/mnt/Accounting',
+        fstype: 'cifs',
+        source: '//192.168.10.3/Acc',
+        state: 'failed' as const,
+        error: 'No such device',
+        failing_since: '2026-10-02T11:53:00Z',
+      },
+    ],
+  };
+
+  it('shows admin mount details and rechecks on request', async () => {
+    mockAuthenticatedAdmin();
+    apiMock.getMountHealth.mockResolvedValue(degradedMountHealth);
+    render(<App />);
+
+    expect(await screen.findByText('Host Mount Unavailable')).toBeTruthy();
+    expect(screen.getByText(/\/mnt\/Accounting \(ragtime container\) is unavailable/)).toBeTruthy();
+    expect(screen.getByText(/Ragtime retries automatically every minute/)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    expect(apiMock.recheckMountHealth).toHaveBeenCalledOnce();
+  });
+
+  it('shows non-admin storage warning without mount details', async () => {
+    mockAuthenticatedNonAdmin();
+    apiMock.getMountHealth.mockResolvedValue(degradedMountHealth);
+    render(<App />);
+
+    expect(await screen.findByText('Storage Unavailable')).toBeTruthy();
+    expect(screen.queryByText(/\/mnt\/Accounting/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull();
+  });
+
+  it('does not render a mount warning when health is ok', async () => {
+    mockAuthenticatedAdmin();
+    render(<App />);
+
+    await flushMicrotasks();
+    expect(screen.queryByText('Host Mount Unavailable')).toBeNull();
+    expect(screen.queryByText('Storage Unavailable')).toBeNull();
+  });
+
+  it('shows a disabled in-flight recheck action and does not double-submit', async () => {
+    mockAuthenticatedAdmin();
+    apiMock.getMountHealth.mockResolvedValue(degradedMountHealth);
+    const recheck = deferred<typeof degradedMountHealth>();
+    apiMock.recheckMountHealth.mockReturnValue(recheck.promise);
+    render(<App />);
+
+    await screen.findByText('Host Mount Unavailable');
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+
+    const checking = screen.getByRole('button', { name: 'Checking…' });
+    expect((checking as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(checking);
+    expect(apiMock.recheckMountHealth).toHaveBeenCalledOnce();
+
+    await act(async () => recheck.resolve(degradedMountHealth));
+    await screen.findByRole('button', { name: 'Check again' });
+  });
+
+  it('shows an error toast when a recheck fails', async () => {
+    mockAuthenticatedAdmin();
+    apiMock.getMountHealth.mockResolvedValue(degradedMountHealth);
+    apiMock.recheckMountHealth.mockRejectedValue(new Error('offline'));
+    render(<App />);
+
+    await screen.findByText('Host Mount Unavailable');
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    await waitFor(() =>
+      expect(toastApiMock.error).toHaveBeenCalledWith(
+        'Mount health check failed. Ragtime will retry automatically.',
+      ),
+    );
+  });
+
+  it('does not show a recovery toast for its own recheck', async () => {
+    mockAuthenticatedAdmin();
+    apiMock.getMountHealth.mockResolvedValue(degradedMountHealth);
+    apiMock.recheckMountHealth.mockResolvedValue({
+      status: 'ok',
+      checked_at: '2026-10-02T12:01:00Z',
+      runtime_checked: true,
+      problems: [],
+    });
+    render(<App />);
+
+    await screen.findByText('Host Mount Unavailable');
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    await waitFor(() => expect(screen.queryByText('Host Mount Unavailable')).toBeNull());
+    expect(toastApiMock.success).not.toHaveBeenCalledWith('Host mounts recovered.');
+  });
+
+  it('shows a recovery toast when the poll observes recovery', async () => {
+    vi.useFakeTimers();
+    try {
+      mockAuthenticatedAdmin();
+      apiMock.getMountHealth.mockResolvedValueOnce(degradedMountHealth).mockResolvedValueOnce({
+        status: 'ok',
+        checked_at: '2026-10-02T12:01:00Z',
+        runtime_checked: true,
+        problems: [],
+      });
+      render(<App />);
+
+      await flushMicrotasks();
+      await act(async () => vi.advanceTimersByTime(60_000));
+      await flushMicrotasks();
+
+      expect(toastApiMock.success).toHaveBeenCalledWith('Host mounts recovered.');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops an in-flight recheck result after logout', async () => {
+    mockAuthenticatedAdmin();
+    apiMock.getMountHealth.mockResolvedValue(degradedMountHealth);
+    const recheck = deferred<typeof degradedMountHealth>();
+    apiMock.recheckMountHealth.mockReturnValue(recheck.promise);
+    render(<App />);
+
+    await screen.findByText('Host Mount Unavailable');
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Log out' }));
+    await screen.findByRole('region', { name: /Authentication recovery/ });
+
+    await act(async () => recheck.resolve(degradedMountHealth));
+    expect(screen.queryByText('Host Mount Unavailable')).toBeNull();
   });
 });
 

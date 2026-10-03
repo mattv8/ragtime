@@ -92,6 +92,7 @@ from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.chat_attachments import cleanup_expired_chat_attachments
 from ragtime.indexer.chunking import shutdown_process_pool
 from ragtime.indexer.filesystem_service import filesystem_indexer
+from ragtime.indexer.mount_health_monitor import mount_health_monitor
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
 from ragtime.indexer.resource_governor import resource_governor
@@ -286,6 +287,7 @@ async def lifespan(app: FastAPI):
     # Start heartbeat checks before runtime tools are materialized, but do not
     # block API readiness on remote SSH/Docker health probes.
     tool_health_monitor.start(on_change=_handle_tool_health_change)
+    mount_health_monitor.start()
 
     # Initialize RAG components
     # Resource admission must be live before RAG schedules FAISS loads or
@@ -366,6 +368,7 @@ async def lifespan(app: FastAPI):
     await userspace_runtime_service.shutdown_runtime_bridge_refresh_watch()
     await stop_openrouter_credit_monitor()
     await tool_health_monitor.stop()
+    await mount_health_monitor.stop()
 
     # Cleanup - stop background services before disconnecting DB
     await get_sqlite_backup_queue_service().stop()

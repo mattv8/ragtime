@@ -1449,6 +1449,27 @@ class ConfigurationWarning(BaseModel):
     recommendation: Optional[str] = Field(default=None, description="Suggested action to resolve")
 
 
+class MountProblem(BaseModel):
+    """A reported mount failure in the Ragtime or runtime container."""
+
+    container: Literal["ragtime", "runtime"] = Field(description="Container where the mount problem was observed")
+    mount_point: str = Field(description="Mount path in the reporting container")
+    fstype: str = Field(description="Filesystem type")
+    source: str = Field(description="Redacted mount source")
+    state: Literal["failed", "unresponsive"] = Field(description="Current mount failure state")
+    error: Optional[str] = Field(default=None, description="Failure detail when available")
+    failing_since: Optional[datetime] = Field(default=None, description="When the current failure streak began")
+
+
+class MountHealthStatus(BaseModel):
+    """Cached mount health across the Ragtime and runtime containers."""
+
+    status: Literal["ok", "degraded", "unknown"] = Field(description="Overall mount health state")
+    checked_at: Optional[datetime] = Field(default=None, description="When mount health was last checked")
+    runtime_checked: bool = Field(description="Whether runtime container health was available")
+    problems: List[MountProblem] = Field(description="Reported mount problems")
+
+
 class IndexResourceJobStatus(BaseModel):
     """One admitted or waiting document indexing job in the resource snapshot."""
 

@@ -1732,6 +1732,42 @@ describe('OpenRouter credit monitor client requests', () => {
   });
 });
 
+describe('mount health client requests', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+
+  beforeEach(() => vi.stubGlobal('fetch', fetchMock));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it('gets mount health without caching', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ status: 'ok', checked_at: null, runtime_checked: true, problems: [] }),
+    );
+
+    await api.getMountHealth();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/system/mount-health',
+      expect.objectContaining({ cache: 'no-store', credentials: 'include' }),
+    );
+  });
+
+  it('rechecks mount health', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ status: 'ok', checked_at: null, runtime_checked: true, problems: [] }),
+    );
+
+    await api.recheckMountHealth();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/system/mount-health/recheck',
+      expect.objectContaining({ method: 'POST', credentials: 'include' }),
+    );
+  });
+});
+
 describe('workspace external API credential client requests', () => {
   const fetchMock = vi.fn<typeof fetch>();
 

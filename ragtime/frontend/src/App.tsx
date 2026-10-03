@@ -33,12 +33,18 @@ import type {
   ServerBackupJob,
   ServerRestoreJob,
   OpenRouterCreditStatus,
+  MountHealthStatus,
 } from '@/types';
 import { BrandName } from '@/utils/buildEnvironment';
 import { hasUntrustedModelEndpoint } from '@/utils/modelEndpointTrust';
 import { setThemePack, resolveThemePackId } from '@/theme';
 import { ThemeChromeIcon } from '@/components/shared/ThemeChromeIcon';
 import { SERVER_BACKUP_RESTORE_HIGHLIGHT } from '@/components/shared/securityWarnings';
+import {
+  buildAdminMountWarnings,
+  mountProblemSignature,
+  NON_ADMIN_MOUNT_WARNING,
+} from '@/components/shared/mountHealthWarnings';
 import '@/styles/global.css';
 
 type ViewType = 'chat' | 'userspace' | 'indexer' | 'tools' | 'users' | 'settings';
@@ -83,6 +89,7 @@ const INDEXER_ACTIVE_POLL_MS = 2000;
 const ENCRYPTION_KEY_ERROR_DISMISS_KEY = 'ragtime_encryption_key_error';
 const ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY = 'ragtime_encryption_backup_reminder';
 const OPENROUTER_CREDIT_POLL_MS = 60_000;
+const MOUNT_HEALTH_POLL_MS = 60_000;
 
 const LazyChatPage = lazy(async () => ({
   default: (await import('./components/ChatPage')).ChatPage,
@@ -358,6 +365,11 @@ export function App() {
     useState(false);
   const [openRouterCreditStatus, setOpenRouterCreditStatus] =
     useState<OpenRouterCreditStatus | null>(null);
+  const [mountHealthStatus, setMountHealthStatus] = useState<MountHealthStatus | null>(null);
+  const [mountRecheckInProgress, setMountRecheckInProgress] = useState(false);
+  const mountRecheckInFlightRef = useRef(false);
+  const mountRecheckRecoveryRef = useRef(false);
+  const previousMountHealthStatusRef = useRef<MountHealthStatus['status'] | null>(null);
   const authIdentityRef = useRef({
     generation: authGeneration,
     userId: currentUser?.id ?? null,
@@ -475,6 +487,11 @@ export function App() {
     setConfigurationWarnings([]);
     setOpenRouterCreditStatus(null);
     setIsUntrustedModelEndpointConfigured(false);
+    setMountHealthStatus(null);
+    setMountRecheckInProgress(false);
+    mountRecheckInFlightRef.current = false;
+    mountRecheckRecoveryRef.current = false;
+    previousMountHealthStatusRef.current = null;
   }, [clearPrincipalState, userId, userRole]);
 
   useEffect(() => {
@@ -743,6 +760,61 @@ export function App() {
   const isAdmin = currentUser?.role === 'admin';
 
   useEffect(() => {
+    if (!mountHealthStatus) {
+      previousMountHealthStatusRef.current = null;
+      return;
+    }
+    if (
+      previousMountHealthStatusRef.current === 'degraded' &&
+      mountHealthStatus.status === 'ok' &&
+      isAdmin &&
+      !mountRecheckRecoveryRef.current
+    ) {
+      toast.success('Host mounts recovered.');
+    }
+    mountRecheckRecoveryRef.current = false;
+    previousMountHealthStatusRef.current = mountHealthStatus.status;
+  }, [isAdmin, mountHealthStatus, toast]);
+
+  const handleMountRecheck = useCallback(async () => {
+    if (mountRecheckInFlightRef.current) return;
+    const expected = authIdentityRef.current;
+    mountRecheckInFlightRef.current = true;
+    setMountRecheckInProgress(true);
+    try {
+      const status = await api.recheckMountHealth();
+      const current = authIdentityRef.current;
+      if (
+        current.generation === expected.generation &&
+        current.userId === expected.userId &&
+        current.role === expected.role
+      ) {
+        mountRecheckRecoveryRef.current = true;
+        setMountHealthStatus(status);
+      }
+    } catch {
+      const current = authIdentityRef.current;
+      if (
+        current.generation === expected.generation &&
+        current.userId === expected.userId &&
+        current.role === expected.role
+      ) {
+        toast.error('Mount health check failed. Ragtime will retry automatically.');
+      }
+    } finally {
+      mountRecheckInFlightRef.current = false;
+      const current = authIdentityRef.current;
+      if (
+        current.generation === expected.generation &&
+        current.userId === expected.userId &&
+        current.role === expected.role
+      ) {
+        setMountRecheckInProgress(false);
+      }
+    }
+  }, [toast]);
+
+  useEffect(() => {
     if (!currentUser || !isAdmin) {
       setOpenRouterCreditStatus(null);
       return;
@@ -798,6 +870,39 @@ export function App() {
       cancelled = true;
     };
   }, [currentUser, isAdmin, observeServerBackupJob, observeServerRestoreJob]);
+
+  useEffect(() => {
+    if (!userId) {
+      setMountHealthStatus(null);
+      return;
+    }
+
+    let cancelled = false;
+    const expected = authIdentityRef.current;
+    const refreshMountHealth = async () => {
+      try {
+        const status = await api.getMountHealth();
+        const current = authIdentityRef.current;
+        if (
+          !cancelled &&
+          current.generation === expected.generation &&
+          current.userId === expected.userId &&
+          current.role === expected.role
+        ) {
+          setMountHealthStatus(status);
+        }
+      } catch {
+        // Keep the last known result visible; a transient status request must not hide a live warning.
+      }
+    };
+
+    void refreshMountHealth();
+    const intervalId = window.setInterval(() => void refreshMountHealth(), MOUNT_HEALTH_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [userId]);
 
   useEffect(() => {
     if (!currentUser || !isAdmin) {
@@ -1360,6 +1465,11 @@ export function App() {
           `OpenRouter credits are ${openRouterCreditStatus.state}.`
         }${openRouterCreditStatus.stale ? ' Credit status is stale.' : ''}`
       : null;
+  const mountHealthProblems = mountHealthStatus?.problems ?? [];
+  const mountDismissKey =
+    mountHealthProblems.length > 0
+      ? `ragtime_mount_health_dismissed_${mountProblemSignature(mountHealthProblems)}`
+      : undefined;
 
   return (
     <AvailableModelsProvider>
@@ -1491,7 +1601,7 @@ export function App() {
               />
             </div>
           </nav>
-          <div id="workbench-warning-stack">
+          <div id="workbench-warning-stack" aria-live="polite">
             <SecurityBanner
               authStatus={authStatus}
               isAdmin={isAdmin}
@@ -1505,12 +1615,14 @@ export function App() {
               }}
             />
             <WarningsBanner
+              id="warning-encryption-key-error"
               title="Encryption Key Error"
               warnings={encryptionKeyErrorMessages}
               dismissKey={ENCRYPTION_KEY_ERROR_DISMISS_KEY}
               hidden={hideChrome || !isAdmin}
             />
             <WarningsBanner
+              id="warning-encryption-backup"
               title="Back Up Your Encryption Key"
               warnings={encryptionBackupMessages}
               dismissKey={ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY}
@@ -1540,6 +1652,7 @@ export function App() {
               }}
             />
             <WarningsBanner
+              id="warning-openrouter-credits"
               title="OpenRouter Credit Alert"
               warnings={openRouterCreditWarning ? [openRouterCreditWarning] : []}
               compact
@@ -1557,6 +1670,26 @@ export function App() {
               }
             />
             <WarningsBanner
+              id="warning-mount-health"
+              title="Host Mount Unavailable"
+              warnings={buildAdminMountWarnings(mountHealthProblems)}
+              dismissKey={mountDismissKey}
+              hidden={hideChrome || !isAdmin}
+              action={{
+                label: mountRecheckInProgress ? 'Checking…' : 'Check again',
+                onClick: () => void handleMountRecheck(),
+                disabled: mountRecheckInProgress,
+              }}
+            />
+            <WarningsBanner
+              id="warning-mount-health-user"
+              title="Storage Unavailable"
+              warnings={mountHealthStatus?.status === 'degraded' ? [NON_ADMIN_MOUNT_WARNING] : []}
+              compact
+              hidden={hideChrome || isAdmin}
+            />
+            <WarningsBanner
+              id="warning-preview-setup"
               title={previewWarning?.title || 'Userspace Preview Setup'}
               warnings={previewWarning?.warnings || []}
               dismissKey={previewWarning?.dismiss_key}
