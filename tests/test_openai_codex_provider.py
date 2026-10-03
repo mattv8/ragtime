@@ -16,6 +16,8 @@ from ragtime.core.openai_codex_auth import (
     extract_openai_codex_account_id,
 )
 from ragtime.indexer import routes as indexer_routes
+from ragtime.indexer.embedding_errors import EmbeddingOperationError
+from ragtime.indexer.vector_utils import get_embeddings_model
 from ragtime.rag.components import _build_codex_request
 
 
@@ -472,6 +474,63 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.updates[0]["openai_codex_access_token"], "fresh-access")
         self.assertEqual(repository.updates[0]["openai_codex_refresh_token"], "fresh-refresh")
         self.assertEqual(repository.updates[0]["openai_codex_account_id"], "acct_abc")
+
+    async def test_ensure_codex_token_fresh_returns_empty_when_refresh_is_unauthorized(self) -> None:
+        settings = SimpleNamespace(
+            openai_codex_access_token="expired-access",
+            openai_codex_refresh_token="refresh-token",
+            openai_codex_token_expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
+        repository = FakeRepository()
+        request = httpx.Request("POST", "https://auth.openai.com/oauth/token")
+        error = httpx.HTTPStatusError("401", request=request, response=httpx.Response(401, request=request))
+
+        with mock.patch(
+            "ragtime.core.openai_codex_auth.refresh_openai_codex_tokens",
+            new=mock.AsyncMock(side_effect=error),
+        ):
+            token = await ensure_openai_codex_token_fresh(settings=settings, repository=repository)
+
+        self.assertEqual(token, "")
+        self.assertEqual(repository.updates, [])
+
+    async def test_ensure_codex_token_fresh_keeps_valid_token_when_refresh_connection_fails(self) -> None:
+        settings = SimpleNamespace(
+            openai_codex_access_token="still-valid-access",
+            openai_codex_refresh_token="refresh-token",
+            openai_codex_token_expires_at=datetime.now(timezone.utc) + timedelta(minutes=1),
+        )
+        repository = FakeRepository()
+
+        with mock.patch(
+            "ragtime.core.openai_codex_auth.refresh_openai_codex_tokens",
+            new=mock.AsyncMock(side_effect=httpx.ConnectError("connection failed")),
+        ):
+            token = await ensure_openai_codex_token_fresh(settings=settings, repository=repository)
+
+        self.assertEqual(token, "still-valid-access")
+        self.assertEqual(repository.updates, [])
+
+    async def test_codex_embedding_refresh_exception_returns_none_when_allowed(self) -> None:
+        settings = SimpleNamespace(embedding_provider="openai_codex", embedding_model="text-embedding-3-small")
+
+        with mock.patch(
+            "ragtime.indexer.vector_utils.ensure_openai_codex_token_fresh",
+            new=mock.AsyncMock(side_effect=RuntimeError("refresh failed")),
+        ):
+            model = await get_embeddings_model(settings, return_none_on_error=True)
+
+        self.assertIsNone(model)
+
+    async def test_codex_embedding_refresh_exception_raises_configuration_error(self) -> None:
+        settings = SimpleNamespace(embedding_provider="openai_codex", embedding_model="text-embedding-3-small")
+
+        with mock.patch(
+            "ragtime.indexer.vector_utils.ensure_openai_codex_token_fresh",
+            new=mock.AsyncMock(side_effect=RuntimeError("refresh failed")),
+        ):
+            with self.assertRaises(EmbeddingOperationError):
+                await get_embeddings_model(settings)
 
 
 if __name__ == "__main__":
