@@ -542,7 +542,13 @@ async def get_embeddings_model(
         from langchain_openai import OpenAIEmbeddings
 
         settings_obj = SimpleNamespace(**settings) if isinstance(settings, dict) else settings
-        token = await ensure_openai_codex_token_fresh(settings=settings_obj)
+        try:
+            token = await ensure_openai_codex_token_fresh(settings=settings_obj)
+        except Exception as exc:
+            if allow_missing_api_key or return_none_on_error:
+                log.warning("OpenAI Codex token refresh failed (%s); reconnect OpenAI Codex in Settings.", type(exc).__name__)
+                return None
+            raise build_embedding_configuration_error(settings, operation="configure", cause=exc) from exc
         if not token:
             message = "OpenAI Codex embeddings selected but Codex is not authenticated"
             try:
