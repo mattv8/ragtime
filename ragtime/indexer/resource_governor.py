@@ -385,6 +385,7 @@ class IndexingResourceGovernor:
         record_count: int = 0,
         dimensions: int = 0,
         steady_bytes: int = 0,
+        minimum_peak_bytes: int = 0,
         cpu_slots: int = 1,
         provider_key: str | None = None,
         kind: Kind = "document_job",
@@ -393,7 +394,7 @@ class IndexingResourceGovernor:
 
         estimate = estimate_stage_peak_bytes(stage=stage, text_bytes=text_bytes, record_count=record_count, dimensions=dimensions, steady_bytes=steady_bytes)
         # A measured peak is a lower bound for later equivalent stage requests.
-        estimate = max(estimate, self._observed_stage_peaks.get(stage, 0))
+        estimate = max(estimate, self._observed_stage_peaks.get(stage, 0), max(0, minimum_peak_bytes))
         return ResourceRequest(job_id, stage, estimate, cpu_slots, provider_key, kind)
 
     def record_outcome(

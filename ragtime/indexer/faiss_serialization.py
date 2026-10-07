@@ -17,7 +17,7 @@ from langchain_community.docstore.in_memory import InMemoryDocstore
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 
-from ragtime.indexer.vector_utils import count_faiss_docstore_stats
+from ragtime.indexer.faiss_docstore_stats import count_faiss_docstore_stats
 
 
 class FaissSerializationError(ValueError):

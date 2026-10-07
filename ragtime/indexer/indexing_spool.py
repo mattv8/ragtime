@@ -399,7 +399,9 @@ class IndexingSpool:
 
     def summary(self) -> dict[str, int]:
         documents = self._connection.execute("SELECT COUNT(*) FROM records WHERE stage='documents'").fetchone()[0]
-        chunks, text = self._connection.execute("SELECT COUNT(*),COALESCE(SUM(text_bytes),0) FROM records WHERE stage='chunks'").fetchone()
+        chunks, text, metadata_bytes, identifier_bytes = self._connection.execute(
+            "SELECT COUNT(*),COALESCE(SUM(text_bytes),0),COALESCE(SUM(length(CAST(metadata AS BLOB))),0),COALESCE(SUM(length(CAST(record_id AS BLOB))),0) FROM records WHERE stage='chunks'"
+        ).fetchone()
         dimensions = self._connection.execute("SELECT COALESCE(MAX(dimensions),0) FROM embeddings").fetchone()[0]
         embedded = self._connection.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
         return {
@@ -408,6 +410,8 @@ class IndexingSpool:
             "embedded_count": embedded,
             "dimensions": dimensions,
             "text_bytes": text,
+            "metadata_bytes": metadata_bytes,
+            "identifier_bytes": identifier_bytes,
             "vector_bytes": embedded * dimensions * 4,
         }
 
