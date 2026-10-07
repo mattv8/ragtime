@@ -87,6 +87,37 @@ class IndexingResourceGovernorTests(unittest.IsolatedAsyncioTestCase):
                 pass
         self.assertEqual(raised.exception.reason, "memory_budget")
 
+    async def test_minimum_peak_floor_controls_finalization_admission(self) -> None:
+        self.governor.configure(memory_budget_mb=256, max_workers=0, max_batch_documents=0, sequential_index_loading=False)
+        await self.governor.start()
+        request = self.governor.estimate_request(
+            job_id="one",
+            stage="finalizing",
+            minimum_peak_bytes=300 * MiB,
+        )
+        self.assertEqual(request.estimated_peak_bytes, 300 * MiB)
+        with self.assertRaises(ResourceLimitError):
+            async with self.governor.acquire(request):
+                pass
+
+    async def test_observed_and_minimum_peaks_each_win_when_larger(self) -> None:
+        self.governor.record_outcome(stage="finalizing", elapsed_seconds=1, peak_bytes=400 * MiB)
+        observed_peak = self.governor.estimate_request(
+            job_id="observed",
+            stage="finalizing",
+            minimum_peak_bytes=300 * MiB,
+        )
+        self.assertEqual(observed_peak.estimated_peak_bytes, 400 * MiB)
+
+        fresh_governor = IndexingResourceGovernor()
+        fresh_governor.record_outcome(stage="finalizing", elapsed_seconds=1, peak_bytes=400 * MiB)
+        minimum_peak = fresh_governor.estimate_request(
+            job_id="minimum",
+            stage="finalizing",
+            minimum_peak_bytes=500 * MiB,
+        )
+        self.assertEqual(minimum_peak.estimated_peak_bytes, 500 * MiB)
+
     async def test_worker_idle_residency_is_visible_once(self) -> None:
         await self.governor.start()
         self.governor.track_worker(22, "one")
