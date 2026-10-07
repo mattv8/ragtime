@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ragtime.config import settings
+from ragtime.core.auth import get_external_origin
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.rate_limit import limiter
 from ragtime.core.security import require_admin
@@ -22,7 +22,7 @@ _MAX_BODY = 65536
 
 
 def _base_url(request: Request) -> str:
-    return str(getattr(settings, "external_base_url", "") or "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+    return get_external_origin(request)
 
 
 async def _pdm_tool(tool_id: str) -> Any:
