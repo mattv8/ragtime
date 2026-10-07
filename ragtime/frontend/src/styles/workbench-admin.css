@@ -1137,6 +1137,7 @@
       input[type='text'],
       input[type='password'],
       input[type='number'],
+      input[type='url'],
       select,
       .model-selector-trigger,
       .checkbox-dropdown-trigger,

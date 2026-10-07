@@ -1,6 +1,6 @@
 import copy
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import cast
 from unittest import mock
@@ -206,6 +206,33 @@ class ConversationBranchPrefixTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(tx.conversationbranch.rows["CurrentNew"].preservedMessages, [{"content": "new"}])
         self.assertEqual(len(tx.conversationbranch.rows), 4)
+
+    async def test_transcript_rewriting_branch_mutations_use_extended_transaction_timeouts(self):
+        messages = [{"content": "root"}, {"content": "reply"}]
+        operations = {
+            "create": (None, lambda repo: repo.create_conversation_branch("conversation", 1)),
+            "snapshot": (None, lambda repo: repo.create_conversation_snapshot_branch("conversation", 1)),
+            "switch": (None, lambda repo: repo.switch_conversation_branch("conversation", "legacy")),
+            "release": ("legacy", lambda repo: repo.release_conversation_branch("conversation")),
+        }
+        for name, (active_branch_id, operation) in operations.items():
+            with self.subTest(name):
+                legacy = self._row("legacy", 1, None, messages[1:], kind=None)
+                legacy.baseMessages = None
+                conversation = SimpleNamespace(
+                    id="conversation",
+                    messages=copy.deepcopy(messages),
+                    activeBranchId=active_branch_id,
+                    activeTaskId=None,
+                    userId="user",
+                )
+                repo, tx = self._repo(conversation, [legacy])
+
+                await operation(repo)
+
+                db = await repo._get_db()
+                db.tx.assert_called_once_with(max_wait=timedelta(seconds=10), timeout=timedelta(seconds=30))
+                self.assertEqual(tx.conversationbranch.rows["legacy"].baseMessages, messages[:1])
 
     async def test_malformed_or_cyclic_lineage_fails_before_mutation(self):
         first = self._row("first", 0, None, [], parent="second")

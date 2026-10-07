@@ -35,10 +35,8 @@ import { Bar, Chart, Line } from 'react-chartjs-2';
 import { DataTable, type DataTableColumn, type TableSortConfig } from './shared/DataTable';
 import { useToast, ToastContainer } from './shared/Toast';
 import { formatProviderDisplayName, formatModelDisplayName } from '@/utils/modelDisplay';
-import {
-  calculateConversationContextUsage,
-  parseStoredModelIdentifier,
-} from '@/utils/contextUsage';
+import { calculateConversationContextUsage } from '@/utils/contextUsage';
+import { resolveProviderModelSelection } from '@/utils/modelProviders';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
 import { UserManagementModal } from './users/UserManagementModal';
 import { JobsTableFrame } from './shared/JobsTableFrame';
@@ -129,37 +127,20 @@ function resolveConversationContextLimit(
   storedModel: string | null | undefined,
   availableModels: AvailableModel[],
   fallbackLimit: number,
-): number {
-  const parsed = parseStoredModelIdentifier(storedModel || '');
-  const modelId = parsed.modelId.trim();
-  const explicitProvider = (parsed.provider || '').trim().toLowerCase();
+): number | null {
+  const selection = resolveProviderModelSelection(storedModel, availableModels);
 
-  if (!modelId) return fallbackLimit;
+  if (!selection.modelId) return fallbackLimit;
 
-  let matchedModel: AvailableModel | undefined;
-  if (explicitProvider) {
-    matchedModel = availableModels.find(
-      (model) => model.id === modelId && String(model.provider).toLowerCase() === explicitProvider,
-    );
+  const matchedModel = selection.matchedModel;
+
+  if (
+    matchedModel?.provider === 'openai_compatible' &&
+    (!matchedModel.context_limit || matchedModel.context_limit <= 0)
+  ) {
+    return null;
   }
-
-  if (!matchedModel) {
-    matchedModel = availableModels.find((model) => model.id === modelId);
-  }
-
-  if (!matchedModel && modelId.includes('/')) {
-    const slashIndex = modelId.indexOf('/');
-    const providerFromModelId = modelId.slice(0, slashIndex).trim().toLowerCase();
-    const providerModelId = modelId.slice(slashIndex + 1).trim();
-    matchedModel = availableModels.find(
-      (model) =>
-        model.id === providerModelId &&
-        (!explicitProvider ||
-          String(model.provider).toLowerCase() === explicitProvider ||
-          String(model.provider).toLowerCase() === providerFromModelId),
-    );
-  }
-
+  if (selection.explicitProvider === 'openai_compatible' && !matchedModel) return null;
   return matchedModel?.context_limit || fallbackLimit;
 }
 
@@ -1136,6 +1117,9 @@ export function UsersPanel({
         availableModels,
         defaultContextLimit,
       );
+      if (contextLimit === null) {
+        return `${formatNumber(conversation.total_tokens)} / unknown context (configure before chat)`;
+      }
       const usage = calculateConversationContextUsage({
         messages: 'messages' in conversation ? conversation.messages : [],
         persistedConversationTokens: conversation.total_tokens,

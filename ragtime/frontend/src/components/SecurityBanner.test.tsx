@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthStatus } from '@/types';
 import { SecurityBanner } from './SecurityBanner';
 
@@ -46,5 +46,45 @@ describe('SecurityBanner', () => {
     );
 
     expect(screen.getByText(/The API endpoint accepts an API Key/i)).toBeTruthy();
+  });
+
+  it('shows, dismisses, and clears the untrusted model endpoint notice independently', () => {
+    const onNavigateToSettings = vi.fn();
+    const { rerender } = render(
+      <SecurityBanner
+        authStatus={baseStatus}
+        isAdmin
+        isUntrustedModelEndpointConfigured
+        onNavigateToSettings={onNavigateToSettings}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        'Public generic OpenAI API model endpoints receive prompts and tool results and can influence tool calls; use only providers you trust.',
+      ),
+    ).toBeTruthy();
+    expect(
+      document.querySelector('[data-security-notice="generic-provider"] strong')?.textContent,
+    ).toBe('Security:');
+    fireEvent.click(
+      document.querySelector('[data-security-notice="generic-provider"] .security-banner-link')!,
+    );
+    expect(onNavigateToSettings).toHaveBeenCalledWith('llm_provider');
+    fireEvent.click(
+      document.querySelector('[data-security-notice="generic-provider"] .security-banner-dismiss')!,
+    );
+    expect(screen.queryByText(/model endpoints receive prompts/i)).toBeNull();
+
+    rerender(
+      <SecurityBanner authStatus={baseStatus} isAdmin isUntrustedModelEndpointConfigured={false} />,
+    );
+    expect(screen.queryByText(/model endpoints receive prompts/i)).toBeNull();
+  });
+
+  it('does not show the untrusted model endpoint notice by default', () => {
+    render(<SecurityBanner authStatus={baseStatus} isAdmin />);
+
+    expect(screen.queryByText(/model endpoints receive prompts/i)).toBeNull();
   });
 });

@@ -27,6 +27,7 @@ _APP_SETTINGS_SECRET_FIELDS: Final[tuple[str, ...]] = (
     "postgresPassword",
     "lmstudioApiKey",
     "omlxApiKey",
+    "openaiCompatibleApiKey",
     "mcpDefaultRoutePassword",
 )
 

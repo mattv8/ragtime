@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import os
 import unittest
 from types import SimpleNamespace
 from typing import cast
@@ -12,6 +14,7 @@ from langchain_openai import OpenAIEmbeddings
 from ollama import ResponseError
 from pydantic import SecretStr
 
+from ragtime.core.openai_compatible_client import compatible_embedding_options
 from ragtime.indexer.embedding_errors import (
     EmbeddingFailureKind,
     EmbeddingOperationError,
@@ -311,6 +314,112 @@ class EmbeddingFactoryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(model.max_retries, 0)
         self.assertIsNotNone(model.request_timeout)
+
+    async def test_generic_embeddings_use_saved_endpoint_without_environment_credentials(self):
+        document_client = _AsyncEmbeddings()
+        query_client = _AsyncEmbeddings()
+        constructed = []
+
+        def _factory(**kwargs):
+            constructed.append(kwargs)
+            return document_client if len(constructed) == 1 else query_client
+
+        settings = {
+            "embedding_provider": "openai_compatible",
+            "embedding_model": "embed-model",
+            "openai_compatible_base_url": "https://compatible.test/api/root",
+            "openai_compatible_api_key": "",
+            "ollama_embedding_timeout_seconds": 90,
+        }
+
+        with (
+            mock.patch("langchain_openai.OpenAIEmbeddings", side_effect=_factory),
+            mock.patch("ragtime.core.openai_compatible_client.compatible_http_clients", return_value=(mock.Mock(), mock.Mock())),
+        ):
+            model = await get_embeddings_model(settings)
+
+        self.assertIsInstance(model, GuardedEmbeddings)
+        guarded_model = cast(GuardedEmbeddings, model)
+        self.assertEqual(guarded_model.endpoint, "https://compatible.test/api/root")
+        self.assertEqual(constructed[0]["base_url"], "https://compatible.test/api/root")
+        self.assertFalse(constructed[0]["check_embedding_ctx_length"])
+        self.assertEqual(constructed[0]["max_retries"], 0)
+        self.assertIn("http_client", constructed[0])
+        self.assertIn("http_async_client", constructed[0])
+
+    async def test_generic_embeddings_send_document_and_one_string_query_array_to_full_prefix_with_endpoint_key(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2]}]}, request=request)
+
+        transport = httpx.MockTransport(handler)
+        options = compatible_embedding_options("endpoint-key")
+        clients = (options["http_client"], options["http_async_client"])
+        clients[0]._transport = transport
+        clients[1]._transport = transport
+        settings = {
+            "embedding_provider": "openai_compatible",
+            "embedding_model": "embed-model",
+            "openai_compatible_base_url": "https://compatible.test/api/root",
+            "openai_compatible_api_key": "endpoint-key",
+        }
+        with mock.patch("ragtime.indexer.vector_utils.compatible_embedding_options", return_value=options):
+            model = await get_embeddings_model(settings)
+            assert model is not None
+            self.assertEqual(await model.aembed_documents(["document"]), [[0.1, 0.2]])
+            self.assertEqual(await model.aembed_query("raw query"), [0.1, 0.2])
+        self.assertEqual([request.url.path for request in requests], ["/api/root/embeddings", "/api/root/embeddings"])
+        self.assertTrue(all(request.headers.get("authorization") == "Bearer endpoint-key" for request in requests))
+        self.assertEqual(json.loads(requests[0].content)["model"], "embed-model")
+        self.assertEqual(json.loads(requests[0].content)["encoding_format"], "float")
+        self.assertEqual(json.loads(requests[1].content)["input"], ["raw query"])
+        clients[0].close()
+        await clients[1].aclose()
+
+    async def test_generic_keyless_embeddings_isolate_environment_and_do_not_follow_redirects(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(307, headers={"location": "https://elsewhere.test/embeddings"}, request=request)
+
+        transport = httpx.MockTransport(handler)
+        options = compatible_embedding_options("")
+        clients = (options["http_client"], options["http_async_client"])
+        clients[0]._transport = transport
+        clients[1]._transport = transport
+        settings = {
+            "embedding_provider": "openai_compatible",
+            "embedding_model": "embed-model",
+            "openai_compatible_base_url": "https://compatible.test/root",
+            "openai_compatible_api_key": "",
+        }
+        with (
+            mock.patch.dict(os.environ, {"OPENAI_API_KEY": "env-secret", "OPENAI_ORG_ID": "env-org", "OPENAI_PROJECT_ID": "env-project"}),
+            mock.patch("ragtime.indexer.vector_utils.compatible_embedding_options", return_value=options),
+        ):
+            model = await get_embeddings_model(settings)
+            assert model is not None
+            with self.assertRaises(EmbeddingOperationError):
+                await model.aembed_query("raw query")
+        self.assertEqual([request.url.path for request in requests], ["/root/embeddings"])
+        self.assertNotIn("authorization", requests[0].headers)
+        self.assertNotIn("openai-organization", requests[0].headers)
+        self.assertNotIn("openai-project", requests[0].headers)
+        clients[0].close()
+        await clients[1].aclose()
+
+    async def test_generic_embeddings_require_an_explicit_model(self):
+        settings = {
+            "embedding_provider": "openai_compatible",
+            "embedding_model": "",
+            "openai_compatible_base_url": "https://compatible.test/root",
+        }
+        with self.assertRaises(EmbeddingOperationError):
+            await get_embeddings_model(settings)
+        self.assertIsNone(await get_embeddings_model(settings, return_none_on_error=True))
 
     async def test_get_embeddings_model_missing_credentials_returns_none_or_configuration_error(self):
         settings = {

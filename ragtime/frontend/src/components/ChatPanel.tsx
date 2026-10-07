@@ -10476,6 +10476,9 @@ export function ChatPanel({
   const activeComposerRef = useRef<'main' | 'edit'>('main');
   const [editMessageAttachments, setEditMessageAttachments] = useState<AttachmentFile[]>([]);
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
+  const [replayingMessageIdx, setReplayingMessageIdx] = useState<number | null>(null);
+  const isReplayPendingRef = useRef(false);
+  const [isReplayPending, setIsReplayPending] = useState(false);
   const [hitMaxIterations, setHitMaxIterations] = useState(false);
 
   // Chat branching state
@@ -12165,13 +12168,11 @@ export function ChatPanel({
   const [autoHydratingDeferredIndex, setAutoHydratingDeferredIndex] = useState<number | null>(null);
   const autoHydratingDeferredRequestRef = useRef(0);
   const autoHydratingDeferredIndexRef = useRef<number | null>(null);
-  const autoScrollFrameRef = useRef<number | null>(null);
   const navigatorScrollFrameRef = useRef<number | null>(null);
   const pendingUserMessageNavigationTargetRef = useRef<{
     key: string;
     scrollTop: number;
   } | null>(null);
-  const programmaticScrollRef = useRef(false);
   const inputRef = useRef<HTMLDivElement>(null);
   const richInputRef = useRef<RichChatInputHandle>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -13447,44 +13448,8 @@ export function ChatPanel({
     workspaceId,
   ]);
 
-  const scheduleScrollToBottom = useCallback(
-    (behavior: ScrollBehavior) => {
-      if (historyPrependAnchorRef.current) return;
-      if (autoScrollFrameRef.current !== null) {
-        window.cancelAnimationFrame(autoScrollFrameRef.current);
-      }
-
-      autoScrollFrameRef.current = window.requestAnimationFrame(() => {
-        autoScrollFrameRef.current = null;
-        const messagesRoot = chatMessagesRef.current;
-        if (!messagesRoot || !shouldAutoScrollRef.current || historyPrependAnchorRef.current)
-          return;
-
-        programmaticScrollRef.current = true;
-        if (behavior === 'auto') {
-          messagesRoot.scrollTop = messagesRoot.scrollHeight;
-        } else {
-          messagesRoot.scrollTo({
-            top: messagesRoot.scrollHeight,
-            behavior,
-          });
-        }
-
-        window.requestAnimationFrame(() => {
-          programmaticScrollRef.current = false;
-          scheduleUserMessageNavigationActiveKeyUpdate();
-        });
-      });
-    },
-    [scheduleUserMessageNavigationActiveKeyUpdate],
-  );
-
   useEffect(() => {
     return () => {
-      if (autoScrollFrameRef.current !== null) {
-        window.cancelAnimationFrame(autoScrollFrameRef.current);
-        autoScrollFrameRef.current = null;
-      }
       if (navigatorScrollFrameRef.current !== null) {
         window.cancelAnimationFrame(navigatorScrollFrameRef.current);
         navigatorScrollFrameRef.current = null;
@@ -13542,16 +13507,19 @@ export function ChatPanel({
     scheduleUserMessageNavigationActiveKeyUpdate,
   ]);
 
-  // Auto-scroll to bottom when messages change. Use an instant pin so initial
-  // and deferred-entry DOM growth cannot outpace a smooth scroll animation.
-  useEffect(() => {
+  // Auto-scroll to bottom when messages change. Pin synchronously before paint
+  // so ordinary DOM growth never waits for a queued animation frame.
+  useLayoutEffect(() => {
     if (!shouldAutoScrollRef.current || !chatMessagesRef.current) return;
-    scheduleScrollToBottom(isStreaming || !workspaceId ? 'auto' : 'smooth');
+    if (historyPrependAnchorRef.current) return;
+    const messagesRoot = chatMessagesRef.current;
+    messagesRoot.scrollTop = messagesRoot.scrollHeight;
+    scheduleUserMessageNavigationActiveKeyUpdate();
   }, [
     activeConversation?.messages,
     consolidatedSegments,
     isStreaming,
-    scheduleScrollToBottom,
+    scheduleUserMessageNavigationActiveKeyUpdate,
     standaloneSelectedId,
     streamingContent,
     visibleMessageEntries,
@@ -13609,23 +13577,18 @@ export function ChatPanel({
       (element) => element.dataset.chatMessageKey === anchor.key,
     );
     if (!target) return;
-    programmaticScrollRef.current = true;
     historyAnchorRestoreInProgressRef.current = true;
     root.scrollTop +=
       target.getBoundingClientRect().top - root.getBoundingClientRect().top - anchor.offset;
     historyPrependAnchorRef.current = null;
     window.requestAnimationFrame(() => {
       historyAnchorRestoreInProgressRef.current = false;
-      programmaticScrollRef.current = false;
     });
   }, [completedHistoryPrependOperation, standaloneWindow.olderError, visibleMessageEntries]);
 
   const handleScroll = useCallback(() => {
     if (!chatMessagesRef.current) return;
-    if (programmaticScrollRef.current) {
-      if (!historyAnchorRestoreInProgressRef.current) {
-        shouldAutoScrollRef.current = true;
-      }
+    if (historyAnchorRestoreInProgressRef.current) {
       scheduleUserMessageNavigationActiveKeyUpdate();
       return;
     }
@@ -14843,14 +14806,24 @@ export function ChatPanel({
   // Resolve context limit from stored conversation model value.
   // Handles provider-scoped and legacy model id formats to avoid 8k fallback mismatches.
   const getContextLimit = useCallback(
-    (storedModel: string): number => {
+    (storedModel: string): number | null => {
       const selection = resolveConversationModelSelection(storedModel, availableModels);
       if (!selection.modelId) {
         return defaultContextLimit;
       }
 
       if (selection.matchedModel) {
-        return selection.matchedModel.context_limit;
+        if (
+          selection.matchedModel.provider === 'openai_compatible' &&
+          (!selection.matchedModel.context_limit || selection.matchedModel.context_limit <= 0)
+        ) {
+          return null;
+        }
+        return selection.matchedModel.context_limit || defaultContextLimit;
+      }
+
+      if (selection.explicitProvider === 'openai_compatible') {
+        return null;
       }
 
       return defaultContextLimit;
@@ -16055,7 +16028,7 @@ export function ChatPanel({
   };
 
   const resendMessage = () => {
-    if (lastSentMessage && !isStreaming) {
+    if (lastSentMessage && !isStreaming && !isReplayPendingRef.current) {
       setError(null);
       setIsConnectionError(false);
       // Directly send the message without setting inputValue
@@ -16064,7 +16037,7 @@ export function ChatPanel({
   };
 
   const continueConversation = async () => {
-    if (!activeConversationMetadata || isStreaming) return;
+    if (!activeConversationMetadata || isStreaming || isReplayPendingRef.current) return;
     setHitMaxIterations(false);
     setInterruptedTask(null);
     // Directly send the continuation message
@@ -16123,6 +16096,7 @@ export function ChatPanel({
       !message.trim() ||
       !conversation ||
       isStreaming ||
+      isReplayPendingRef.current ||
       (!options?.allowDuringCompaction && isActiveConversationCompacting) ||
       isReadOnly
     )
@@ -16150,6 +16124,13 @@ export function ChatPanel({
     setLastSentMessage(userMessage);
 
     const contextLimit = getContextLimit(conversation.model);
+    if (contextLimit === null) {
+      setError(
+        'This OpenAI-compatible model has no known context limit. Ask an administrator to fetch or configure its documented context limit before chatting.',
+      );
+      return;
+    }
+
     const contextUsage = calculateConversationContextUsage({
       messages: completeConversation?.messages ?? [],
       persistedConversationTokens: conversation.total_tokens,
@@ -16236,6 +16217,7 @@ export function ChatPanel({
       (!hasComposerContent && attachments.length === 0) ||
       !activeConversationMetadata ||
       isStreaming ||
+      isReplayPendingRef.current ||
       isReadOnly
     )
       return;
@@ -16570,6 +16552,7 @@ export function ChatPanel({
         branchSwitchingRef.current ||
         isReadOnly ||
         isStreaming ||
+        isReplayPendingRef.current ||
         Boolean(targetConversation.active_task_id)
       )
         return;
@@ -16680,7 +16663,11 @@ export function ChatPanel({
       if (groups.length === 0) return null;
       const activeBranchId = conversation.active_branch_id;
       const navigationDisabled =
-        branchSwitching || isReadOnly || isStreaming || Boolean(conversation.active_task_id);
+        branchSwitching ||
+        isReadOnly ||
+        isStreaming ||
+        isReplayPending ||
+        Boolean(conversation.active_task_id);
 
       return (
         <span className="chat-branch-nav-stack" data-chat-branch-navigation="true">
@@ -16782,6 +16769,7 @@ export function ChatPanel({
       branchesById,
       isReadOnly,
       isStreaming,
+      isReplayPending,
       switchBranch,
     ],
   );
@@ -16792,6 +16780,7 @@ export function ChatPanel({
         (!activeConversation && !activeConversationMetadata) ||
         isActiveConversationCompacting ||
         isStreaming ||
+        isReplayPendingRef.current ||
         isReadOnly
       )
         return;
@@ -16903,7 +16892,7 @@ export function ChatPanel({
 
   const retryCompactionReview = useCallback(() => {
     const conversation = activeConversation ?? activeConversationMetadata;
-    if (!compactionReviewMarker || !conversation) return;
+    if (!compactionReviewMarker || !conversation || isReplayPendingRef.current) return;
     const marker = compactionReviewMarker;
     closeCompactionReview();
 
@@ -17261,113 +17250,115 @@ export function ChatPanel({
 
   const replayFromMessage = useCallback(
     async (messageIdx: number) => {
-      if ((!activeConversationMetadata && !activeConversation) || isStreaming || isReadOnly) return;
-      const conversation = await ensureFullActiveConversation();
-      const conversationId = conversation.id;
-      const selectedMessage = conversation.messages[messageIdx];
-      if (!selectedMessage) return;
-
-      // Replay always anchors at the user message that drove the (possibly
-      // assistant) selected row, so the branch nav surfaces on the user row
-      // and a single replay creates exactly one new branch.
-      const userIdx = findUserMessageIndexAtOrBefore(conversation.messages, messageIdx);
-      if (userIdx < 0) return;
-
-      const userMsg = conversation.messages[userIdx];
-      const truncateAt = userIdx;
-      const previousConversation = conversation;
-      let replayBranch: ConversationBranchSummary | null = null;
+      if (
+        (!activeConversationMetadata && !activeConversation) ||
+        isStreaming ||
+        isReplayPendingRef.current ||
+        branchSwitchingRef.current ||
+        isReadOnly
+      )
+        return;
+      isReplayPendingRef.current = true;
+      setIsReplayPending(true);
+      setReplayingMessageIdx(messageIdx);
+      const isStillSelected = (id: string) =>
+        workspaceId
+          ? activeConversationRef.current?.id === id && workspaceIdRef.current === workspaceId
+          : standaloneSelectedIdRef.current === id;
+      const initiatingConversationId = workspaceId
+        ? (activeConversationRef.current?.id ?? null)
+        : standaloneSelectedIdRef.current;
+      let conversationId: string | null = null;
+      let replayClaimed = false;
       try {
-        replayBranch = await createBranchForMessageMutation(
-          conversationId,
-          truncateAt,
-          conversation.messages.length,
-          'replay',
-        );
-
-        // Re-send the original user message content verbatim
+        const conversation = await ensureFullActiveConversation();
+        conversationId = conversation.id;
+        if (!conversation.messages[messageIdx]) return;
+        const userIdx = findUserMessageIndexAtOrBefore(conversation.messages, messageIdx);
+        if (userIdx < 0) return;
+        const userMsg = conversation.messages[userIdx];
+        if (!userMsg) return;
+        const blockReason = await getBranchSendBlockReason('replay', conversation);
+        if (blockReason) throw new Error(blockReason);
         const rawContent = userMsg.content;
         const messageToSend =
           typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
-
-        // Optimistic update
-        const messagesToKeep = conversation.messages.slice(0, truncateAt);
-        const optimisticMsg: ChatMessage = {
-          role: 'user',
-          content: rawContent as ChatMessage['content'],
-          timestamp: new Date().toISOString(),
-        };
-        // The backend cleared active_branch_id when it created the new branch
-        // (we are now on the live path). Mirror that here so the branch nav
-        // lineage walk does not still resolve to the prior branch and show
-        // e.g. "5/11" when the user is actually on the new "11/11" branch.
-        const optimisticConv: Conversation = {
-          ...conversation,
-          messages: [...messagesToKeep, optimisticMsg],
-          active_branch_id: null,
-        };
-        setActiveConversation(optimisticConv);
-        setConversations((prev) =>
-          prev.map((c) => (c.id === optimisticConv.id ? optimisticConv : c)),
+        const response = await api.editResendConversationMessage(
+          conversationId,
+          {
+            message: messageToSend,
+            from_message_index: userIdx,
+            branch_kind: 'replay',
+            auto_snapshot: Boolean(workspaceId),
+          },
+          workspaceId,
         );
-
+        replayClaimed = true;
+        if (!isStillSelected(conversationId)) {
+          // The user switched chats while the request was pending. Record the
+          // claimed task without adopting its transcript or stream here.
+          syncConversationActiveTaskId(conversationId, response.task.id);
+          void refreshBranchPoints(conversationId);
+          if (workspaceId) {
+            try {
+              onSnapshotsMaybeChanged?.();
+            } catch (notifyErr) {
+              console.warn('onSnapshotsMaybeChanged threw:', notifyErr);
+            }
+          }
+          return;
+        }
+        setError(null);
+        setActiveConversation(response.conversation);
+        setConversations((prev) =>
+          prev.map((c) => (c.id === response.conversation.id ? response.conversation : c)),
+        );
         shouldAutoScrollRef.current = true;
-        setIsStreaming(true);
         setStreamingConversationId(conversationId);
         setStreamingContent('');
         setStreamingEvents([]);
         setHitMaxIterations(false);
         setIsConnectionError(false);
-
-        const task = await api.sendMessageBackground(conversationId, messageToSend, workspaceId);
-        setActiveTask(task);
-        syncConversationActiveTaskId(conversationId, task.id);
-        await connectTaskStream(task.id, conversationId);
-
-        const replayResult = activeConversationRef.current;
-        if (
-          replayBranch &&
-          replayResult?.id === conversationId &&
-          replayResult.messages.length <= truncateAt
-        ) {
-          const restored = await api.switchConversationBranch(
-            conversationId,
-            replayBranch.id,
-            workspaceId,
-          );
-          setActiveConversation(restored);
-          setConversations((prev) => prev.map((c) => (c.id === restored.id ? restored : c)));
-          syncConversationActiveTaskId(conversationId, restored.active_task_id ?? null);
-        }
-
-        // Refresh branch points after the branch was created
+        // Mark the UI streaming in the same batch that releases the replay guard
+        // so mutation controls never re-enable between claim and stream start.
+        setIsStreaming(true);
+        setActiveTask(response.task);
+        setInterruptedTask(null);
+        syncConversationActiveTaskId(conversationId, response.task.id);
+        void connectTaskStream(response.task.id, conversationId).catch((streamError) => {
+          console.error('Replay task stream failed:', streamError);
+        });
         void refreshBranchPoints(conversationId);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to retry message');
-        setIsStreaming(false);
-        setStreamingContent('');
-        setStreamingEvents([]);
-        if (replayBranch) {
+        if (workspaceId) {
           try {
-            const restored = await api.switchConversationBranch(
-              conversationId,
-              replayBranch.id,
-              workspaceId,
-            );
-            setActiveConversation(restored);
-            setConversations((prev) => prev.map((c) => (c.id === restored.id ? restored : c)));
-            syncConversationActiveTaskId(conversationId, restored.active_task_id ?? null);
-            void refreshBranchPoints(conversationId);
-            return;
-          } catch (restoreErr) {
-            console.error('Failed to restore replay branch after replay error:', restoreErr);
+            onSnapshotsMaybeChanged?.();
+          } catch (notifyErr) {
+            console.warn('onSnapshotsMaybeChanged threw:', notifyErr);
           }
         }
-        setActiveConversation(previousConversation);
-        setConversations((prev) =>
-          prev.map((c) => (c.id === previousConversation.id ? previousConversation : c)),
-        );
-        syncConversationActiveTaskId(conversationId, previousConversation.active_task_id ?? null);
+      } catch (err) {
+        const ownerConversationId = conversationId ?? initiatingConversationId;
+        if (ownerConversationId && isStillSelected(ownerConversationId)) {
+          setError(err instanceof Error ? err.message : 'Failed to retry message');
+        } else {
+          console.warn('Replay failed after leaving its conversation:', err);
+        }
+        if (!replayClaimed && conversationId) {
+          try {
+            const refreshed = await api.getConversation(conversationId, workspaceId);
+            if (isStillSelected(conversationId)) {
+              setActiveConversation(refreshed);
+              setConversations((prev) => prev.map((c) => (c.id === refreshed.id ? refreshed : c)));
+              syncConversationActiveTaskId(conversationId, refreshed.active_task_id ?? null);
+            }
+          } catch (refreshErr) {
+            console.error('Failed to refresh conversation after replay error:', refreshErr);
+          }
+        }
+      } finally {
+        isReplayPendingRef.current = false;
+        setIsReplayPending(false);
+        setReplayingMessageIdx(null);
       }
     },
     [
@@ -17376,18 +17367,26 @@ export function ChatPanel({
       ensureFullActiveConversation,
       isStreaming,
       isReadOnly,
-      createBranchForMessageMutation,
       findUserMessageIndexAtOrBefore,
       workspaceId,
       refreshBranchPoints,
       connectTaskStream,
       syncConversationActiveTaskId,
+      getBranchSendBlockReason,
+      onSnapshotsMaybeChanged,
     ],
   );
 
   const deleteFromMessage = useCallback(
     async (messageIdx: number) => {
-      if ((!activeConversationMetadata && !activeConversation) || isStreaming || isReadOnly) return;
+      if (
+        (!activeConversationMetadata && !activeConversation) ||
+        isStreaming ||
+        isReplayPendingRef.current ||
+        branchSwitchingRef.current ||
+        isReadOnly
+      )
+        return;
       const conversation = await ensureFullActiveConversation();
       const conversationId = conversation.id;
       const selectedMessage = conversation.messages[messageIdx];
@@ -17482,7 +17481,9 @@ export function ChatPanel({
       (!activeConversation && !activeConversationMetadata) ||
       editingMessageIdx === null ||
       (!editHasContent && editMessageAttachments.length === 0) ||
-      isSubmittingEdit
+      isSubmittingEdit ||
+      isReplayPendingRef.current ||
+      branchSwitchingRef.current
     )
       return;
     setIsSubmittingEdit(true);
@@ -17607,6 +17608,16 @@ export function ChatPanel({
     }
 
     const contextLimit = getContextLimit(conversation.model);
+    if (contextLimit === null) {
+      return {
+        currentTokens: 0,
+        totalTokens: conversation.total_tokens,
+        contextLimit: null,
+        contextUsagePercent: 0,
+        projectedInputPercent: 0,
+        hasHeadroom: true,
+      };
+    }
     return calculateConversationContextUsage({
       messages:
         activeConversation?.id === conversation.id
@@ -17643,6 +17654,7 @@ export function ChatPanel({
       autoCompactThresholdPercent >= 100 ||
       isReadOnly ||
       isStreaming ||
+      isReplayPending ||
       isActiveConversationCompacting ||
       hasQueuedCompactionMessageForActiveConversation ||
       contextUsage.contextUsagePercent < autoCompactThresholdPercent
@@ -17683,6 +17695,7 @@ export function ChatPanel({
     hasQueuedCompactionMessageForActiveConversation,
     isActiveConversationCompacting,
     isReadOnly,
+    isReplayPending,
     isStreaming,
   ]);
 
@@ -19188,22 +19201,32 @@ export function ChatPanel({
               </div>
               <div className="chat-header-actions">
                 {inChatSearchOpen && !inChatSearchFloating && renderInChatSearchBar('inline')}
-                <ContextUsagePie
-                  currentTokens={contextUsage.currentTokens}
-                  totalTokens={contextUsage.totalTokens}
-                  contextLimit={contextUsage.contextLimit}
-                  compactThresholdPercent={compactThresholdPercent}
-                  loading={isModelsLoading}
-                  onCompact={
-                    contextUsage.contextUsagePercent >= compactThresholdPercent &&
-                    !isStreaming &&
-                    !isReadOnly &&
-                    !isActiveConversationCompacting
-                      ? compactActiveConversation
-                      : undefined
-                  }
-                  isCompacting={isActiveConversationCompacting}
-                />
+                {contextUsage.contextLimit === null ? (
+                  <span
+                    className="chat-context-usage-unknown"
+                    title="Configure the model context limit before chat"
+                  >
+                    Context unknown
+                  </span>
+                ) : (
+                  <ContextUsagePie
+                    currentTokens={contextUsage.currentTokens}
+                    totalTokens={contextUsage.totalTokens}
+                    contextLimit={contextUsage.contextLimit}
+                    compactThresholdPercent={compactThresholdPercent}
+                    loading={isModelsLoading}
+                    onCompact={
+                      contextUsage.contextUsagePercent >= compactThresholdPercent &&
+                      !isStreaming &&
+                      !isReplayPending &&
+                      !isReadOnly &&
+                      !isActiveConversationCompacting
+                        ? compactActiveConversation
+                        : undefined
+                    }
+                    isCompacting={isActiveConversationCompacting}
+                  />
+                )}
                 <button
                   className={`btn btn-secondary btn-sm btn-icon chat-in-chat-search-trigger chat-in-chat-search-trigger-mobile${inChatSearchOpen ? ' active' : ''}`}
                   onClick={() => (inChatSearchOpen ? closeInChatSearch() : openInChatSearch())}
@@ -19405,30 +19428,38 @@ export function ChatPanel({
                           return (
                             <div
                               key={entry.key}
-                              className={`chat-message chat-message-${entry.preview.role} chat-message-deferred`}
+                              className={`chat-branch-wrapper chat-branch-wrapper-${entry.preview.role} chat-message-deferred`}
                               data-chat-message-key={entry.key}
                               data-chat-message-index={entry.index}
                               aria-busy={isHydrating}
                             >
-                              <div className="chat-message-content">
-                                <div className="chat-message-text markdown-content">
-                                  <MemoizedMarkdown content={entry.preview.content} />
+                              <div className={`chat-message chat-message-${entry.preview.role}`}>
+                                <div className="chat-message-content">
+                                  {entry.preview.role === 'user' ? (
+                                    <div className="chat-message-text chat-message-user-text">
+                                      <LinkifiedText text={entry.preview.content} />
+                                    </div>
+                                  ) : (
+                                    <div className="chat-message-text markdown-content">
+                                      <MemoizedMarkdown content={entry.preview.content} />
+                                    </div>
+                                  )}
                                 </div>
-                                {isHydrating ? (
-                                  <span className="chat-message-deferred-status">
-                                    Loading details
-                                  </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className="btn btn-secondary btn-sm"
-                                    onClick={() => hydrateDeferredEntry(entry.index)}
-                                    disabled={autoHydratingDeferredIndex !== null}
-                                  >
-                                    Retry details
-                                  </button>
-                                )}
                               </div>
+                              {isHydrating ? (
+                                <span className="chat-message-deferred-status">
+                                  Loading details
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => hydrateDeferredEntry(entry.index)}
+                                  disabled={autoHydratingDeferredIndex !== null}
+                                >
+                                  Retry details
+                                </button>
+                              )}
                             </div>
                           );
                         }
@@ -19861,7 +19892,7 @@ export function ChatPanel({
                                           <button
                                             className="chat-action-text-btn primary"
                                             onClick={submitEditMessage}
-                                            disabled={isSubmittingEdit}
+                                            disabled={isSubmittingEdit || isReplayPending}
                                           >
                                             Send
                                           </button>
@@ -19901,6 +19932,7 @@ export function ChatPanel({
                                                 );
                                               }}
                                               title="Edit and resend"
+                                              disabled={isReplayPending || branchSwitching}
                                             >
                                               <Pencil size={12} />
                                             </button>
@@ -19909,9 +19941,24 @@ export function ChatPanel({
                                             <button
                                               className="chat-action-icon-btn"
                                               onClick={() => replayFromMessage(idx)}
-                                              title="Replay from this message"
+                                              title={
+                                                replayingMessageIdx === idx
+                                                  ? 'Replaying…'
+                                                  : 'Replay from this message'
+                                              }
+                                              aria-label={
+                                                replayingMessageIdx === idx
+                                                  ? 'Replaying message'
+                                                  : 'Replay from this message'
+                                              }
+                                              aria-busy={replayingMessageIdx === idx}
+                                              disabled={isReplayPending || branchSwitching}
                                             >
-                                              <RefreshCw size={12} />
+                                              {replayingMessageIdx === idx ? (
+                                                <MiniLoadingSpinner variant="icon" size={12} />
+                                              ) : (
+                                                <RefreshCw size={12} />
+                                              )}
                                             </button>
                                           )}
                                           {!isStreaming && !isReadOnly && (
@@ -19927,6 +19974,7 @@ export function ChatPanel({
                                                   ? 'Delete message and restore workspace snapshot'
                                                   : 'Delete message'
                                               }
+                                              disabled={isReplayPending || branchSwitching}
                                             >
                                               <Trash2 size={12} />
                                             </button>
@@ -20000,9 +20048,24 @@ export function ChatPanel({
                                           <button
                                             className="chat-action-icon-btn"
                                             onClick={() => replayFromMessage(idx)}
-                                            title="Replay from this message"
+                                            title={
+                                              replayingMessageIdx === idx
+                                                ? 'Replaying…'
+                                                : 'Replay from this message'
+                                            }
+                                            aria-label={
+                                              replayingMessageIdx === idx
+                                                ? 'Replaying message'
+                                                : 'Replay from this message'
+                                            }
+                                            aria-busy={replayingMessageIdx === idx}
+                                            disabled={isReplayPending || branchSwitching}
                                           >
-                                            <RefreshCw size={12} />
+                                            {replayingMessageIdx === idx ? (
+                                              <MiniLoadingSpinner variant="icon" size={12} />
+                                            ) : (
+                                              <RefreshCw size={12} />
+                                            )}
                                           </button>
                                         )}
                                         {!isStreaming && !isReadOnly && (
@@ -20018,6 +20081,7 @@ export function ChatPanel({
                                                 ? 'Delete reply and restore workspace snapshot'
                                                 : 'Delete reply'
                                             }
+                                            disabled={isReplayPending || branchSwitching}
                                           >
                                             <Trash2 size={12} />
                                           </button>
@@ -20261,7 +20325,11 @@ export function ChatPanel({
                       <div className="chat-continue-inline">
                         <span className="chat-continue-text">
                           Conversation interrupted,{' '}
-                          <button className="chat-continue-link" onClick={continueConversation}>
+                          <button
+                            className="chat-continue-link"
+                            onClick={continueConversation}
+                            disabled={isReplayPending || branchSwitching}
+                          >
                             continue?
                           </button>
                         </span>
@@ -20380,6 +20448,15 @@ export function ChatPanel({
                   </div>
                   <div className="chat-composer-footer" data-chat-composer-footer>
                     <div className="chat-composer-footer-left">
+                      {isReplayPending && (
+                        <span
+                          className="chat-replay-pending-status"
+                          data-chat-replay-pending-status
+                          role="status"
+                        >
+                          Starting replay…
+                        </span>
+                      )}
                       <FileAttachment
                         attachments={attachments}
                         onAttachmentsChange={setAttachments}
@@ -20502,12 +20579,15 @@ export function ChatPanel({
                           disabled={
                             !renderedConversation ||
                             !contextUsage.hasHeadroom ||
-                            hasQueuedCompactionMessageForActiveConversation
+                            hasQueuedCompactionMessageForActiveConversation ||
+                            isReplayPending
                           }
                           title={
-                            contextUsage.hasHeadroom
-                              ? 'Send message'
-                              : `Context headroom too low (${contextUsage.projectedInputPercent}%)`
+                            isReplayPending
+                              ? 'Starting replay…'
+                              : contextUsage.hasHeadroom
+                                ? 'Send message'
+                                : `Context headroom too low (${contextUsage.projectedInputPercent}%)`
                           }
                           aria-label="Send message"
                         >
@@ -21038,7 +21118,12 @@ export function ChatPanel({
                           e.stopPropagation();
                           setIsEditingCompactionReview(true);
                         }}
-                        disabled={isReadOnly || isActiveConversationCompacting || isStreaming}
+                        disabled={
+                          isReadOnly ||
+                          isActiveConversationCompacting ||
+                          isStreaming ||
+                          isReplayPending
+                        }
                         aria-label="Edit compaction summary"
                         title="Edit"
                       >
@@ -21051,7 +21136,12 @@ export function ChatPanel({
                           e.stopPropagation();
                           retryCompactionReview();
                         }}
-                        disabled={isReadOnly || isActiveConversationCompacting || isStreaming}
+                        disabled={
+                          isReadOnly ||
+                          isActiveConversationCompacting ||
+                          isStreaming ||
+                          isReplayPending
+                        }
                         aria-label="Regenerate compaction"
                         title="Try Again"
                       >

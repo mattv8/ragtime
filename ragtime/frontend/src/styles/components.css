@@ -6099,6 +6099,12 @@ textarea {
   align-items: start;
 }
 
+.openai-compatible-form-row > .form-group {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
 .timeout-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

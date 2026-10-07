@@ -69,6 +69,7 @@ Configure LLM and embedding providers in the Settings UI. Chat (LLM) and embeddi
 | **Anthropic** | API key | Yes | - |
 | **Claude Code** | Claude Pro/Max subscription (CLI/OAuth) | Yes | - |
 | **OpenRouter** | API key | Yes | Yes |
+| **OpenAI-compatible** | API key, if required by the endpoint | Yes | Yes, when supported by the endpoint |
 | **GitHub Copilot** | OAuth device flow or PAT | Yes | - |
 | **Ollama** | Local (self-hosted) | Yes | Yes |
 | **llama.cpp** | Local (self-hosted) | Yes | Yes |
@@ -76,6 +77,24 @@ Configure LLM and embedding providers in the Settings UI. Chat (LLM) and embeddi
 | **oMLX** | Local (self-hosted) | Yes | Yes |
 
 Subscription-backed providers (OpenAI Codex, Claude Code) authenticate from the Settings UI without an API key. Claude Code uses the Claude Code CLI subscription and discovers the full Claude model family your plan serves.
+
+#### Connect an OpenAI-compatible service
+
+**Security:** Public generic OpenAI API model endpoints receive prompts and tool results and can influence tool calls; use only providers you trust. Ragtime shows this notice to administrators when an OpenAI-compatible provider is configured, or when an Ollama, llama.cpp, LM Studio, or oMLX chat endpoint uses a public host.
+
+In the model-provider settings, select **OpenAI-compatible**, enter the service's full API base URL and API key, then fetch its models. Include the API path in the URL (for example, `https://api.example.com/v1`); Ragtime preserves that path and does not add `/v1`. Chat discovery requires a compatible `/models` endpoint. This connection uses the Chat Completions API for chat, streaming, and tool calls. Model and endpoint support for tools can vary. Images use Ragtime's OCR path; this provider does not enable native image input or the Responses API.
+
+For embeddings, select **OpenAI-compatible** under **Embedding Configuration**. Chat and embeddings share the generic connection's URL, key, and provider name, but use separate model selections. Fetch embedding models or enter an exact embedding model ID to probe it through `/embeddings`. Only models that return valid vectors are listed. A manually entered embedding model can be checked even when the service does not expose `/models`.
+
+Use the optional **Provider Name** to label the connection in model pickers; leaving it blank uses **OpenAI-compatible**. This label does not change model IDs or request routing.
+
+**Save LLM Configuration** enables the selected generic chat model in an existing Chat Models allowlist while preserving the other allowed models. Use **Chat Models** to manage the remaining selections.
+
+Model lists do not always include token limits. Ragtime resolves each model's context and output limits from administrator overrides, then endpoint metadata, then an exact model match in an explicitly selected **models.dev catalog reference**. Choose a catalog reference only when it describes your service's limits; the same model can have different limits on different services. Missing values remain unknown. Before using a model with an unknown context limit, enter its documented context limit in the per-model settings. An unknown output limit does not become an invented provider maximum; Ragtime uses the configured response budget and the known context window.
+
+If a successful model listing omits a deployment's model ID, enter that exact ID and its documented context limit to configure it manually. Ragtime keeps these entries separate from models the endpoint explicitly identifies as non-chat models.
+
+The generic connection has its own API key and provider-scoped model IDs (`openai_compatible::model-id`). Changing its base URL clears the loaded key in the form so you can enter credentials for the new endpoint. Settings API updates also clear the previous key when the URL changes unless the update supplies a replacement. API keys use the same encrypted storage and administrator-only settings access as the other providers.
 
 ### Architecture
 
@@ -341,6 +360,10 @@ flowchart LR
          # Optional: mount docker.sock only if you need Docker tool execution.
          # The Docker API can control the host even when the socket is mounted read-only.
          # - /var/run/docker.sock:/var/run/docker.sock:ro
+         # Optional: host SMB/NFS shares. Bind the parent directory with rslave,
+         # never the share mountpoint itself; a share that is down at boot then
+         # cannot stop the container from starting. See README "Docker & Mounts".
+         # - /mnt/shares:/mnt/shares:rslave
        security_opt:
          - no-new-privileges:true
        # Uncomment below if using SMB/NFS mounting inside container (consider mounting via docker volume instead)
@@ -409,6 +432,8 @@ flowchart LR
          RUNTIME_RECONCILE_INTERVAL_SECONDS: ${RUNTIME_RECONCILE_INTERVAL_SECONDS:-15}
        volumes:
          - ./data:/data
+         # Optional: host SMB/NFS shares for User Space; same parent-bind pattern as ragtime.
+         # - /mnt/shares:/mnt/shares:rslave
        security_opt:
          - no-new-privileges:true
        # Uncomment below to enable full runtime sandbox isolation when the host
@@ -712,7 +737,10 @@ Tool read-only mode is a guardrail, not complete isolation. Validators reduce co
 - If you do not need these features, remove or comment out the corresponding lines in your compose file.
 - For NFS/SMB filesystem indexing, the container may require elevated privileges. Consider the security implications before enabling `privileged: true` or `SYS_ADMIN` capabilities.
 - Filesystem sources attached to User Space workspaces only need to be mounted into the `runtime` container (the ragtime container does not need to see the source). The `runtime` container also needs mount authority (`privileged: true` or `cap_add: [SYS_ADMIN]`) so it can bind-mount the source into the workspace sandbox without copying or changing source permissions. Filesystem sources used purely for indexing only need to be mounted into the `ragtime` container; mount them in both services if the same source is used for both indexing and User Space workspaces.
-- If a Docker bind source is itself a host-mounted SMB/NFS share, use bind propagation such as `:rslave` (for example `/mnt/Accounting:/mnt/Accounting:rw,rslave`) and make sure the host mount is active before starting the container. If the host share is mounted after the container starts, recreate the affected container; otherwise Docker can keep exposing the empty local mountpoint directory into User Space.
+- If a source is a host-mounted SMB/NFS share, bind its **parent directory** with `rslave` propagation instead of the share mountpoint itself, for example `/mnt/shares:/mnt/shares:rslave` with the share mounted on the host at `/mnt/shares/Accounting`. Docker refuses to create a container whose bind source is a failed mount (`error mounting ... no such device`) and does not retry, so binding the share directly can keep Ragtime or Runtime down after a reboot. With a parent bind, the containers start even when a share is down, and the share appears inside them as soon as the host mounts it again.
+  - Mount shares on the host with `x-systemd.automount` (plus `_netdev,nofail`) in `/etc/fstab`. Ragtime checks host shares every minute; accessing an idle or failed automount retriggers the host mount, so many outages recover automatically. Because of these checks, automount idle timeouts no longer unmount shares that Ragtime can see.
+  - When a share stays unavailable or stops responding, admins see a **Host Mount Unavailable** banner (with a **Check again** action) and other users see a generic storage notice. Restore the share on the Docker host (for example `sudo systemctl start mnt-shares-Accounting.mount`), then select **Check again**. Restart any User Space workspace that still cannot see the share.
+  - The parent bind exposes everything under that directory, so use a dedicated parent for shares rather than `/mnt` when other mounts live there. Propagation requires a Linux Docker host with shared mount propagation on `/` (the systemd default); Docker Desktop does not support it.
 
 #### Third-Party Data Relay
 Queries and tool calls may forward your data to external services you configure (OpenAI, Anthropic, Ollama, llama.cpp, LM Studio, PostgreSQL, MSSQL, SSH hosts). Only connect to services you trust with your data.

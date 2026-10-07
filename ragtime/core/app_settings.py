@@ -323,6 +323,7 @@ class SettingsCache:
             mcp_password = prisma_settings.mcpDefaultRoutePassword
             lmstudio_api_key = getattr(prisma_settings, "lmstudioApiKey", None) or ""
             omlx_api_key = getattr(prisma_settings, "omlxApiKey", None) or ""
+            openai_compatible_api_key = getattr(prisma_settings, "openaiCompatibleApiKey", "") or ""
 
             openai_key = decrypt_secret(openai_key)
             anthropic_key = decrypt_secret(anthropic_key)
@@ -337,6 +338,7 @@ class SettingsCache:
             postgres_password = decrypt_secret(postgres_password)
             lmstudio_api_key = decrypt_secret(lmstudio_api_key)
             omlx_api_key = decrypt_secret(omlx_api_key)
+            openai_compatible_api_key = decrypt_secret(openai_compatible_api_key)
             # Note: mcp_default_route_password stays encrypted for auth verification
             # It's decrypted in the verification function
 
@@ -503,6 +505,11 @@ class SettingsCache:
                 "openrouter_management_api_key": openrouter_management_key,
                 "lmstudio_api_key": lmstudio_api_key,
                 "omlx_api_key": omlx_api_key,
+                "openai_compatible_base_url": getattr(prisma_settings, "openaiCompatibleBaseUrl", "") or "",
+                "openai_compatible_api_key": openai_compatible_api_key,
+                "openai_compatible_provider_name": str(getattr(prisma_settings, "openaiCompatibleProviderName", "") or "").strip(),
+                "openai_compatible_catalog_provider": getattr(prisma_settings, "openaiCompatibleCatalogProvider", "") or "",
+                "openai_compatible_model_limits": getattr(prisma_settings, "openaiCompatibleModelLimits", {}) or {},
                 "github_models_api_token": github_models_api_token,
                 "github_copilot_access_token": github_copilot_access_token,
                 "github_copilot_refresh_token": github_copilot_refresh_token,
@@ -717,6 +724,11 @@ class SettingsCache:
                 "openrouter_management_api_key": "",
                 "lmstudio_api_key": "",
                 "omlx_api_key": "",
+                "openai_compatible_base_url": "",
+                "openai_compatible_api_key": "",
+                "openai_compatible_provider_name": "",
+                "openai_compatible_catalog_provider": "",
+                "openai_compatible_model_limits": {},
                 "github_models_api_token": "",
                 "github_copilot_access_token": "",
                 "github_copilot_refresh_token": "",

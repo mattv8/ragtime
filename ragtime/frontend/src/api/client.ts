@@ -22,6 +22,7 @@ import type {
   VisionModelsResponse,
   LLMModelsRequest,
   LLMModelsResponse,
+  ModelCatalogProvider,
   EmbeddingModelsRequest,
   EmbeddingModelsResponse,
   LmStudioModelLoadRequest,
@@ -2034,6 +2035,12 @@ export const api = {
       body: JSON.stringify(request),
     });
     return handleResponse<LLMModelsResponse>(response);
+  },
+
+  /** List optional models.dev catalog references for compatible endpoints. */
+  async listModelCatalogProviders(): Promise<ModelCatalogProvider[]> {
+    const response = await apiFetch(`${API_BASE}/llm/model-catalog-providers`);
+    return handleResponse<ModelCatalogProvider[]>(response);
   },
 
   /**
@@ -6237,6 +6244,18 @@ export const api = {
       cache: 'no-store',
     });
     return handleResponse<import('@/types').OpenRouterCreditStatus>(response);
+  },
+
+  async getMountHealth(): Promise<import('@/types').MountHealthStatus> {
+    const response = await apiFetch(`${API_BASE}/system/mount-health`, { cache: 'no-store' });
+    return handleResponse<import('@/types').MountHealthStatus>(response);
+  },
+
+  async recheckMountHealth(): Promise<import('@/types').MountHealthStatus> {
+    const response = await apiFetch(`${API_BASE}/system/mount-health/recheck`, {
+      method: 'POST',
+    });
+    return handleResponse<import('@/types').MountHealthStatus>(response);
   },
 
   async disableWorkspaceAgentAccess(workspaceId: string): Promise<WorkspaceAgentAccessStatus> {

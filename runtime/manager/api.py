@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+import logging
+import time
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import FastAPI
 
+from ragtime.core.mount_health import MountHealthChecker
 from ragtime.core.performance import SlowRequestMiddleware
 from runtime.auth import ManagerAuth, OptionalManagerAuth
 from runtime.manager.models import (
@@ -54,21 +58,65 @@ from runtime.worker.sqlite_history.api import history_router
 from runtime.worker.sqlite_history.bootstrap_api import bootstrap_router
 from runtime.worker.sqlite_history.transfer_api import create_transfer_router
 
+logger = logging.getLogger(__name__)
+_mount_health_checker: MountHealthChecker | None = None
+
+
+def _require_mount_health_checker() -> MountHealthChecker:
+    if _mount_health_checker is None:
+        raise RuntimeError("Mount health checker has not been initialized")
+    return _mount_health_checker
+
+
+def _mount_health_response() -> dict[str, Any]:
+    checker = _require_mount_health_checker()
+    checked_at = checker.last_checked_at()
+    return {
+        "checked_at": checked_at.isoformat() if checked_at else None,
+        "mounts": [entry.to_dict() for entry in checker.snapshot()],
+    }
+
 
 def create_app() -> FastAPI:
     manager = SessionManager()
+    global _mount_health_checker
+    _mount_health_checker = MountHealthChecker(exclude_prefixes=(str(get_worker_service().workspace_root),))
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         await manager.startup()
+        mount_health_task: asyncio.Task[None] | None = None
+        last_mount_health_error_log = 0.0
         try:
             # Including the worker router does not enter its lifespan when it
             # is embedded in the manager app, so start its durable history
             # recovery explicitly.
             await get_worker_service().sqlite_history_coordinator().start()
+
+            async def check_mount_health() -> None:
+                nonlocal last_mount_health_error_log
+                while True:
+                    try:
+                        await _require_mount_health_checker().check_async()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        now = time.monotonic()
+                        if now - last_mount_health_error_log >= 600:
+                            logger.exception("Runtime mount health check failed")
+                            last_mount_health_error_log = now
+                        else:
+                            logger.debug("Runtime mount health check failed: %s", exc)
+                    await asyncio.sleep(60)
+
+            mount_health_task = asyncio.create_task(check_mount_health())
             yield
         finally:
             try:
+                if mount_health_task:
+                    mount_health_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await mount_health_task
                 await manager.shutdown()
             finally:
                 # Also clean up local worker devserver processes (relevant when
@@ -111,6 +159,15 @@ def create_app() -> FastAPI:
             max_sessions=pool["max_sessions"],
             sessions=pool["sessions"],
         )
+
+    @application.get("/mounts/health")
+    async def get_mount_health(_auth: None = ManagerAuth) -> dict[str, Any]:
+        return _mount_health_response()
+
+    @application.post("/mounts/health/recheck")
+    async def recheck_mount_health(_auth: None = ManagerAuth) -> dict[str, Any]:
+        await _require_mount_health_checker().check_async()
+        return _mount_health_response()
 
     @application.post("/sessions/start", response_model=RuntimeSessionResponse)
     async def start_session(

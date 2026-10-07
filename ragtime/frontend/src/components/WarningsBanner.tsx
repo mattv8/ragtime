@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 
 interface WarningsBannerProps {
+  /** Stable unique id for the banner root element. */
+  id?: string;
   /** Array of warning messages to display */
   warnings: string[];
   /** Optional custom title */
@@ -17,6 +19,7 @@ interface WarningsBannerProps {
   action?: {
     label: string;
     onClick: () => void;
+    disabled?: boolean;
   };
 }
 
@@ -36,6 +39,7 @@ function readDismissed(dismissKey: string | undefined, persistDismiss: boolean):
  * Used by GitIndexWizard, UploadForm, and ToolWizard during analysis review.
  */
 export function WarningsBanner({
+  id,
   warnings,
   title = 'Warnings:',
   hidden = false,
@@ -71,14 +75,20 @@ export function WarningsBanner({
   };
 
   return (
-    <div className={bannerClassName}>
+    <div id={id} className={bannerClassName}>
       <div className="warnings-banner-content">
         <strong className="warnings-banner-title">{title}</strong>
         {compact ? <span className="warnings-banner-summary">{summary}</span> : null}
         {action || dismissKey ? (
           <span className="warnings-banner-actions">
             {action ? (
-              <button type="button" onClick={action.onClick} className="btn-link">
+              <button
+                type="button"
+                onClick={action.onClick}
+                className="btn-link"
+                disabled={action.disabled}
+                aria-disabled={action.disabled || undefined}
+              >
                 {action.label}
               </button>
             ) : null}
@@ -92,8 +102,8 @@ export function WarningsBanner({
       </div>
       {!compact ? (
         <ul className="warnings-banner-list">
-          {warnings.map((warning, i) => (
-            <li key={i} className="warnings-banner-item">
+          {warnings.map((warning) => (
+            <li key={warning} className="warnings-banner-item">
               {warning}
             </li>
           ))}

@@ -43,6 +43,11 @@ class RuntimePackageImportTests(unittest.TestCase):
             "assert manager.create_app is api_create_app"
         )
 
+    def test_mount_health_can_be_imported_in_runtime_image(self) -> None:
+        self._assert_child_succeeds(
+            "from ragtime.core.mount_health import MountHealthChecker; assert MountHealthChecker.__module__ == 'ragtime.core.mount_health'"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

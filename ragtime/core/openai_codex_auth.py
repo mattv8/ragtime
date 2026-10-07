@@ -9,6 +9,10 @@ from typing import Any
 
 import httpx
 
+from ragtime.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 OPENAI_CODEX_ISSUER = "https://auth.openai.com"
 OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
@@ -100,7 +104,16 @@ async def ensure_openai_codex_token_fresh(settings: Any | None = None, repositor
     if not refresh_token:
         return access_token
 
-    tokens = await refresh_openai_codex_tokens(refresh_token)
+    try:
+        tokens = await refresh_openai_codex_tokens(refresh_token)
+    except (httpx.HTTPError, ValueError) as exc:
+        detail = f"HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
+        logger.warning("OpenAI Codex token refresh failed (%s). Reconnect OpenAI Codex in Settings.", detail)
+        if access_token and isinstance(expires_at, datetime):
+            expires_utc = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+            if expires_utc > datetime.now(timezone.utc):
+                return access_token
+        return ""
     refreshed_access = str(tokens.get("access_token") or "").strip()
     if not refreshed_access:
         return access_token

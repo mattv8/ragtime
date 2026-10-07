@@ -17,6 +17,7 @@ export const LLM_PROVIDER_KEYS = [
   'llama_cpp',
   'lmstudio',
   'omlx',
+  'openai_compatible',
   'github_copilot',
   'openai_codex',
   'claude_code',
@@ -30,6 +31,7 @@ export const EMBEDDING_PROVIDER_KEYS = [
   'llama_cpp',
   'lmstudio',
   'omlx',
+  'openai_compatible',
 ] as const;
 
 export const KNOWN_PROVIDER_KEYS = new Set<string>([
@@ -218,13 +220,17 @@ export function resolveProviderModelSelection<T extends ProviderModelLike>(
         (model) => providersSame(model.provider, explicitProvider) && model.id === modelId,
       );
     }
-    if (!matchedModel) {
+    if (!matchedModel && explicitProvider !== 'openai_compatible') {
       const candidates = availableModels.filter((model) => model.id === modelId);
       if (candidates.length) {
-        matchedModel = candidates[0];
+        matchedModel = explicitProvider
+          ? candidates.find(
+              (model) => normalizeProviderAlias(model.provider) !== 'openai_compatible',
+            )
+          : candidates[0];
       }
     }
-    if (!matchedModel && modelId.includes('/')) {
+    if (!matchedModel && explicitProvider !== 'openai_compatible' && modelId.includes('/')) {
       const slashIndex = modelId.indexOf('/');
       inferredProvider = inferProviderFromModelId(modelId);
       const providerModelId = modelId.slice(slashIndex + 1);

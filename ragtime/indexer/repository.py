@@ -188,6 +188,10 @@ from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 logger = get_logger(__name__)
 
 _CONVERSATION_WINDOW_PAGE_BUDGET_BYTES = 256 * 1024
+# Branch mutations rewrite whole-transcript JSON and may freeze every legacy
+# branch prefix, which exceeds Prisma's 5 second default on long chats.
+_BRANCH_MUTATION_TX_MAX_WAIT = timedelta(seconds=10)
+_BRANCH_MUTATION_TX_TIMEOUT = timedelta(seconds=30)
 
 
 class ConversationBranchMutationError(RuntimeError):
@@ -1373,6 +1377,7 @@ class IndexerRepository:
         if mcp_password:
             mcp_password = decrypt_secret(mcp_password)
         omlx_api_key = decrypt_secret(getattr(settings, "omlxApiKey", None) or "")
+        openai_compatible_api_key = decrypt_secret(getattr(settings, "openaiCompatibleApiKey", "") or "")
 
         try:
             userspace_preview_sandbox_flags = normalize_userspace_preview_sandbox_flags(getattr(settings, "userspacePreviewSandboxFlags", None))
@@ -1502,6 +1507,11 @@ class IndexerRepository:
                 "llmOmlxBaseUrl",
                 "http://host.docker.internal:8000",
             ),
+            openai_compatible_base_url=getattr(settings, "openaiCompatibleBaseUrl", "") or "",
+            openai_compatible_api_key=openai_compatible_api_key,
+            openai_compatible_provider_name=str(getattr(settings, "openaiCompatibleProviderName", "") or "").strip(),
+            openai_compatible_catalog_provider=getattr(settings, "openaiCompatibleCatalogProvider", "") or "",
+            openai_compatible_model_limits=getattr(settings, "openaiCompatibleModelLimits", {}) or {},
             openai_api_key=openai_key,
             openai_codex_access_token=openai_codex_access_token,
             openai_codex_refresh_token=openai_codex_refresh_token,
@@ -1782,6 +1792,19 @@ class IndexerRepository:
         """Update application settings with provided fields."""
         db = await self._get_db()
 
+        # A credential is bound to its normalized compatible API root. API
+        # callers can omit the key, so enforce the same boundary as the UI.
+        if "openai_compatible_base_url" in updates and "openai_compatible_api_key" not in updates:
+            from ragtime.core.openai_compatible import normalize_base_url
+
+            current_settings = await self.get_settings()
+            old_url = str(current_settings.openai_compatible_base_url or "").strip()
+            new_url = str(updates["openai_compatible_base_url"] or "").strip()
+            old_normalized = normalize_base_url(old_url) if old_url else ""
+            new_normalized = normalize_base_url(new_url) if new_url else ""
+            if old_normalized != new_normalized:
+                updates = {**updates, "openai_compatible_api_key": ""}
+
         # Map snake_case to camelCase for Prisma
         field_mapping = {
             # Server branding
@@ -1844,6 +1867,11 @@ class IndexerRepository:
             "llm_omlx_host": "llmOmlxHost",
             "llm_omlx_port": "llmOmlxPort",
             "llm_omlx_base_url": "llmOmlxBaseUrl",
+            "openai_compatible_base_url": "openaiCompatibleBaseUrl",
+            "openai_compatible_api_key": "openaiCompatibleApiKey",
+            "openai_compatible_provider_name": "openaiCompatibleProviderName",
+            "openai_compatible_catalog_provider": "openaiCompatibleCatalogProvider",
+            "openai_compatible_model_limits": "openaiCompatibleModelLimits",
             "openai_api_key": "openaiApiKey",
             "openai_codex_access_token": "openaiCodexAccessToken",
             "openai_codex_refresh_token": "openaiCodexRefreshToken",
@@ -1955,6 +1983,10 @@ class IndexerRepository:
                 value = updates[snake_key]
                 if snake_key == "default_theme_pack" and isinstance(value, str):
                     value = canonicalize_theme_pack_id(value) or "default"
+                if snake_key == "openai_compatible_provider_name" and isinstance(value, str):
+                    value = value.strip()
+                    if len(value) > 80:
+                        raise ValueError("openai_compatible_provider_name must be at most 80 characters")
                 update_data[camel_key] = value
 
         # Encrypt secret fields before storage
@@ -1973,11 +2005,21 @@ class IndexerRepository:
             "postgres_password",
             "lmstudio_api_key",
             "omlx_api_key",
+            "openai_compatible_api_key",
         ]
         for field in secret_fields:
             if field in updates and updates[field]:
                 camel_key = field_mapping[field]
                 update_data[camel_key] = encrypt_secret(updates[field])
+
+        if "openai_compatible_api_key" in updates and updates["openai_compatible_api_key"] == "":
+            update_data["openaiCompatibleApiKey"] = ""
+
+        if "openai_compatible_model_limits" in updates and updates["openai_compatible_model_limits"] is not None:
+            overrides = updates["openai_compatible_model_limits"]
+            update_data["openaiCompatibleModelLimits"] = Json(
+                {model_id: override.model_dump(exclude_none=True) if hasattr(override, "model_dump") else override for model_id, override in overrides.items()}
+            )
 
         # Special handling for mcp_default_route_password:
         # - Empty string clears the password (set to None)
@@ -4423,7 +4465,7 @@ class IndexerRepository:
         db = await self._get_db()
         try:
             async with self._get_conversation_branch_lock(conversation_id):
-                async with db.tx() as tx:
+                async with db.tx(max_wait=_BRANCH_MUTATION_TX_MAX_WAIT, timeout=_BRANCH_MUTATION_TX_TIMEOUT) as tx:
                     prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
@@ -4497,7 +4539,7 @@ class IndexerRepository:
         db = await self._get_db()
         try:
             async with self._get_conversation_branch_lock(conversation_id):
-                async with db.tx() as tx:
+                async with db.tx(max_wait=_BRANCH_MUTATION_TX_MAX_WAIT, timeout=_BRANCH_MUTATION_TX_TIMEOUT) as tx:
                     prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
@@ -4544,7 +4586,7 @@ class IndexerRepository:
         db = await self._get_db()
         try:
             async with self._get_conversation_branch_lock(conversation_id):
-                async with db.tx() as tx:
+                async with db.tx(max_wait=_BRANCH_MUTATION_TX_MAX_WAIT, timeout=_BRANCH_MUTATION_TX_TIMEOUT) as tx:
                     prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
@@ -5042,7 +5084,7 @@ class IndexerRepository:
         db = await self._get_db()
         try:
             async with self._get_conversation_branch_lock(conversation_id):
-                async with db.tx() as tx:
+                async with db.tx(max_wait=_BRANCH_MUTATION_TX_MAX_WAIT, timeout=_BRANCH_MUTATION_TX_TIMEOUT) as tx:
                     prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                     if not prisma_conv:
                         return None
@@ -5827,7 +5869,10 @@ class IndexerRepository:
             pass
 
         try:
-            async with self._get_conversation_branch_lock(conversation_id), db.tx(max_wait=timedelta(seconds=10), timeout=timedelta(seconds=30)) as tx:
+            async with (
+                self._get_conversation_branch_lock(conversation_id),
+                db.tx(max_wait=_BRANCH_MUTATION_TX_MAX_WAIT, timeout=_BRANCH_MUTATION_TX_TIMEOUT) as tx,
+            ):
                 prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                 if not prisma_conv:
                     return None, None, None, "conversation_not_found"

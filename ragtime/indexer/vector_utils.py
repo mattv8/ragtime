@@ -24,6 +24,8 @@ from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.core.model_providers import resolve_provider_api_key
 from ragtime.core.openai_codex_auth import ensure_openai_codex_token_fresh
+from ragtime.core.openai_compatible import normalize_base_url
+from ragtime.core.openai_compatible_client import compatible_embedding_options
 from ragtime.indexer.embedding_errors import (
     EmbeddingFailureKind,
     EmbeddingOperationError,
@@ -444,7 +446,7 @@ async def get_embeddings_model(
     log = logger_override or logger
 
     provider = str(_get_setting(settings, "embedding_provider", "ollama") or "").lower()
-    model = str(_get_setting(settings, "embedding_model", "nomic-embed-text") or "nomic-embed-text")
+    model = str(_get_setting(settings, "embedding_model", "") or "")
     dimensions = _get_setting(settings, "embedding_dimensions")
     configured_timeout = max(
         1.0,
@@ -484,6 +486,14 @@ async def get_embeddings_model(
             document_timeout_seconds=configured_timeout,
             query_timeout_seconds=query_timeout,
         )
+
+    if provider == "openai_compatible" and not model:
+        try:
+            _raise_configuration("OpenAI-compatible embeddings selected but no embedding model configured in Settings")
+        except StopAsyncIteration:
+            return None
+    if not model:
+        model = "nomic-embed-text"
 
     if provider == "ollama":
         from langchain_ollama import OllamaEmbeddings
@@ -532,7 +542,13 @@ async def get_embeddings_model(
         from langchain_openai import OpenAIEmbeddings
 
         settings_obj = SimpleNamespace(**settings) if isinstance(settings, dict) else settings
-        token = await ensure_openai_codex_token_fresh(settings=settings_obj)
+        try:
+            token = await ensure_openai_codex_token_fresh(settings=settings_obj)
+        except Exception as exc:
+            if allow_missing_api_key or return_none_on_error:
+                log.warning("OpenAI Codex token refresh failed (%s); reconnect OpenAI Codex in Settings.", type(exc).__name__)
+                return None
+            raise build_embedding_configuration_error(settings, operation="configure", cause=exc) from exc
         if not token:
             message = "OpenAI Codex embeddings selected but Codex is not authenticated"
             try:
@@ -581,6 +597,37 @@ async def get_embeddings_model(
                 "base_url": openrouter.DEFAULT_BASE_URL,
                 "check_embedding_ctx_length": False,
                 "max_retries": 0,
+            },
+            document_extra_kwargs={"timeout": httpx.Timeout(configured_timeout, connect=min(configured_timeout, 5.0))},
+            query_extra_kwargs={"timeout": httpx.Timeout(query_timeout, connect=connect_timeout)},
+        )
+
+    if provider == "openai_compatible":
+        from langchain_openai import OpenAIEmbeddings
+
+        base_url = str(_get_setting(settings, "openai_compatible_base_url", "") or "")
+        if not base_url:
+            message = "OpenAI-compatible embeddings selected but no API URL configured in Settings"
+            try:
+                _raise_configuration(message)
+            except StopAsyncIteration:
+                return None
+        try:
+            base_url = normalize_base_url(base_url)
+        except Exception as exc:
+            raise build_embedding_configuration_error(settings, operation="configure", cause=exc, endpoint=base_url) from exc
+        api_key = str(_get_setting(settings, "openai_compatible_api_key", "") or "")
+        client_options = compatible_embedding_options(api_key)
+        return _build_guarded(
+            factory=OpenAIEmbeddings,
+            endpoint=base_url,
+            common_kwargs={
+                "model": model,
+                "base_url": base_url,
+                "check_embedding_ctx_length": False,
+                "max_retries": 0,
+                "model_kwargs": {"encoding_format": "float"},
+                **client_options,
             },
             document_extra_kwargs={"timeout": httpx.Timeout(configured_timeout, connect=min(configured_timeout, 5.0))},
             query_extra_kwargs={"timeout": httpx.Timeout(query_timeout, connect=connect_timeout)},

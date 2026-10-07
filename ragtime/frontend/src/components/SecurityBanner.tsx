@@ -18,11 +18,13 @@ const NOTICE_CORS = 'cors';
 const NOTICE_HTTP = 'http';
 const NOTICE_RUNTIME_AUTH = 'runtime-auth';
 const NOTICE_BRANDING = 'branding-restart';
+const NOTICE_GENERIC_PROVIDER = 'generic-provider';
 
 interface SecurityBannerProps {
   authStatus: AuthStatus | null;
   isAdmin: boolean;
   hidden?: boolean;
+  isUntrustedModelEndpointConfigured?: boolean;
   onNavigateToSettings?: (highlightSetting?: string) => void;
 }
 
@@ -97,7 +99,7 @@ interface NoticeBannerProps {
 
 function NoticeBanner({ notice, onDismiss, onNavigateToSettings }: NoticeBannerProps) {
   return (
-    <div className="security-banner">
+    <div className="security-banner" data-security-notice={notice.id}>
       <div className="security-banner-content">
         <strong>{notice.title}:</strong>
         <span>{notice.message}</span>
@@ -129,6 +131,7 @@ export function SecurityBanner({
   authStatus,
   isAdmin,
   hidden,
+  isUntrustedModelEndpointConfigured = false,
   onNavigateToSettings,
 }: SecurityBannerProps) {
   const [dismissedNoticeIds, setDismissedNoticeIds] = useState<string[]>(readDismissedNoticeIds);
@@ -228,6 +231,15 @@ export function SecurityBanner({
       message: renderRuntimeAuthSecurityWarning(),
       highlightSetting: API_KEY_INFO_HIGHLIGHT,
       visible: showRuntimeAuthWarning && !dismissedNoticeIds.includes(NOTICE_RUNTIME_AUTH),
+    },
+    {
+      id: NOTICE_GENERIC_PROVIDER,
+      title: 'Security',
+      message:
+        'Public generic OpenAI API model endpoints receive prompts and tool results and can influence tool calls; use only providers you trust.',
+      highlightSetting: 'llm_provider',
+      visible:
+        isUntrustedModelEndpointConfigured && !dismissedNoticeIds.includes(NOTICE_GENERIC_PROVIDER),
     },
   ];
 

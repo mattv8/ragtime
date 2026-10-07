@@ -115,7 +115,7 @@ class CiWorkflowContractTests(unittest.TestCase):
         self.assertEqual(buildx_version["run"], "docker buildx version")
         self.assertTrue(any(step.get("uses") == "./.github/actions/managed-buildx" for step in base["jobs"]["build"]["steps"]))
         read_only_resolve = next(step for step in resolve_steps if step.get("id") == "empty-images")
-        self.assertIn("imagetools inspect", read_only_resolve["run"])
+        self.assertNotIn("buildx imagetools inspect", read_only_resolve["run"])
 
         trusted_resolve = next(step for step in resolve_steps if step.get("id") == "digest-images")
         with tempfile.TemporaryDirectory() as directory:
@@ -157,8 +157,21 @@ class CiWorkflowContractTests(unittest.TestCase):
                     0,
                     "frontend_image=\npython_ci_image=\nproduction_image=\nruntime_image=\n",
                 ),
+                (
+                    read_only_resolve["run"],
+                    "success",
+                    0,
+                    "frontend_image=\npython_ci_image=\nproduction_image=\nruntime_image=\n",
+                ),
+                (
+                    read_only_resolve["run"],
+                    "invalid-digest",
+                    0,
+                    "frontend_image=\npython_ci_image=\nproduction_image=\nruntime_image=\n",
+                ),
             ):
                 with self.subTest(mode=mode):
+                    docker_log.write_text("", encoding="utf-8")
                     with tempfile.NamedTemporaryFile() as output:
                         result = subprocess.run(
                             ["bash", "-e", "-c", script],
@@ -170,6 +183,8 @@ class CiWorkflowContractTests(unittest.TestCase):
                         output.seek(0)
                         self.assertEqual(result.returncode, expected_status, result.stderr)
                         self.assertEqual(output.read().decode(), expected_outputs)
+                    if script == read_only_resolve["run"]:
+                        self.assertEqual(docker_log.read_text(encoding="utf-8"), "")
 
             docker_log.write_text("", encoding="utf-8")
             version_result = subprocess.run(

@@ -437,6 +437,11 @@ class WorkerService:
             self._sqlite_history_coordinator = SqliteHistoryCoordinator(self._root, self)
         return self._sqlite_history_coordinator
 
+    @property
+    def workspace_root(self) -> Path:
+        """Return the resolved root for runtime workspaces."""
+        return self._root
+
     def _normalize_file_path(
         self,
         file_path: str,

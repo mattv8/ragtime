@@ -27,6 +27,7 @@ from typing import Any, Awaitable, Callable, Coroutine, List, Literal, Optional,
 from urllib.parse import quote
 
 import httpx
+import openai
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -52,7 +53,7 @@ from langchain_openai.chat_models.base import (
 )
 from PIL import Image, ImageOps, UnidentifiedImageError
 from prisma import Json
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, create_model, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, create_model, field_validator
 
 from ragtime.chat_runtime import chat_runtime_service
 from ragtime.chat_runtime.payloads import (
@@ -155,6 +156,9 @@ from ragtime.core.ollama import (
     warmup_model,
 )
 from ragtime.core.openai_codex_auth import OPENAI_CODEX_DEFAULT_BASE_URL, OPENAI_CODEX_RESPONSES_ENDPOINT, ensure_openai_codex_token_fresh
+from ragtime.core.openai_compatible import CompatibleProviderError
+from ragtime.core.openai_compatible import get_model as get_compatible_model
+from ragtime.core.openai_compatible_client import CompatibleChatOpenAI, compatible_chat_options
 from ragtime.core.openrouter_credits import note_openrouter_payment_required
 from ragtime.core.provider_errors import classify_provider_error, provider_error_message
 from ragtime.core.security import (
@@ -3777,8 +3781,12 @@ class RAGComponents:
         assert self._app_settings is not None  # Set by initialize()
         provider = normalize_provider_name(self._app_settings.get("llm_provider", "openai"))
         model = self._app_settings.get("llm_model", "gpt-4-turbo")
-        max_tokens = await self._resolve_llm_max_tokens(provider, model)
-        self.llm = await self._build_llm(provider, model, max_tokens)
+        try:
+            max_tokens = await self._resolve_llm_max_tokens(provider, model)
+            self.llm = await self._build_llm(provider, model, max_tokens)
+        except (CompatibleProviderError, ValidationError) as exc:
+            self.llm = None
+            logger.warning("OpenAI-compatible LLM initialization deferred (%s)", type(exc).__name__)
 
         if self.llm is None:
             logger.warning("No usable LLM configured - chat features will be disabled until provider credentials and model settings are valid")
@@ -3820,10 +3828,20 @@ class RAGComponents:
         assert self._app_settings is not None
         max_tokens = self._app_settings.get("llm_max_tokens", DEFAULT_LLM_MAX_TOKENS)
 
+        normalized_provider = normalize_provider_name(provider)
+        if normalized_provider == "openai_compatible":
+            metadata = await get_compatible_model(self._app_settings, model)
+            # llm_max_tokens is our request policy, not a claimed upstream
+            # maximum.  Only cap it when this endpoint supplied a limit.
+            if metadata.max_output_tokens:
+                max_tokens = min(max_tokens, metadata.max_output_tokens)
+            if metadata.context_limit:
+                max_tokens = min(max_tokens, metadata.context_limit)
+            return max(1, int(max_tokens))
+
         if max_tokens < 100000:
             return max_tokens
 
-        normalized_provider = normalize_provider_name(provider)
         if normalized_provider in LOCAL_LLM_PROVIDER_NAMES:
             detected_limit = await self._resolve_local_context_limit(normalized_provider, model)
             if detected_limit:
@@ -4216,6 +4234,25 @@ class RAGComponents:
             return _CopilotChatOpenAI(
                 **github_models_kwargs,
             )
+
+        if provider_normalized == "openai_compatible":
+            metadata = await get_compatible_model(self._app_settings, model)
+            base_url = str(self._app_settings.get("openai_compatible_base_url", "") or "").strip()
+            if not base_url:
+                logger.warning("OpenAI-compatible provider selected but no base URL configured")
+                return None
+            api_key = str(self._app_settings.get("openai_compatible_api_key", "") or "")
+            compatible_kwargs: dict[str, Any] = {
+                "model": metadata.id,
+                "temperature": 0,
+                "streaming": True,
+                "base_url": base_url,
+                "max_tokens": max_tokens,
+                "timeout": LLM_REQUEST_TIMEOUT_SECONDS,
+                "use_responses_api": False,
+            }
+            compatible_kwargs.update(compatible_chat_options(api_key))
+            return CompatibleChatOpenAI(**compatible_kwargs)
 
         api_key = self._app_settings.get("openai_api_key", "")
         if not api_key:
@@ -7961,9 +7998,13 @@ class RAGComponents:
 
         return result
 
-    async def _ocr_images_if_model_lacks_support(self, content: Any, model_id: Optional[str], *, context: str) -> Any:
+    async def _ocr_images_if_model_lacks_support(self, content: Any, model_id: Optional[str], *, context: str, provider: Optional[str] = None) -> Any:
         if not self._has_image_content(content) or not model_id:
             return content
+        if normalize_provider_name(provider or "") == "openai_compatible":
+            # Generic endpoint capability metadata is endpoint-scoped; never
+            # consult the legacy bare-model capability cache.
+            return await self._ocr_images_in_content(content)
         if await supports_image_input(model_id):
             return content
 
@@ -7974,8 +8015,10 @@ class RAGComponents:
         )
         return await self._ocr_images_in_content(content)
 
-    async def _ocr_images_after_no_image_support_error(self, content: Any, model_id: Optional[str], *, context: str) -> Any | None:
-        if model_id:
+    async def _ocr_images_after_no_image_support_error(
+        self, content: Any, model_id: Optional[str], *, context: str, provider: Optional[str] = None
+    ) -> Any | None:
+        if model_id and normalize_provider_name(provider or "") != "openai_compatible":
             register_model_image_input_capability(model_id, False)
         if not self._has_image_content(content):
             return None
@@ -16360,6 +16403,8 @@ class RAGComponents:
             configured.append("claude_code")
         if str(s.get("github_copilot_access_token", "") or "").strip():
             configured.append("github_copilot")
+        if str(s.get("openai_compatible_base_url", "") or "").strip():
+            configured.append("openai_compatible")
         # Local providers are considered configured whenever a base URL is set
         # (callers will get a clear error if the local server is offline).
         for provider_key, base_url_field in (
@@ -16451,19 +16496,23 @@ class RAGComponents:
     ) -> list[str]:
         """Build the provider chain to try for a request-scoped model."""
         configured_providers = self._configured_llm_providers()
+        # A generic endpoint is a distinct paid/provider boundary.  Never
+        # substitute a similarly named model from another configured provider.
+        if normalize_provider_name(requested_provider) == "openai_compatible":
+            return ["openai_compatible"]
         allowed_providers = self._allowed_llm_providers_for_model(model_id)
 
         if allowed_providers:
             preferred_provider = normalize_provider_name(provider_override)
-            provider_pool = [provider for provider in allowed_providers if provider in configured_providers]
+            provider_pool = [provider for provider in allowed_providers if provider in configured_providers and provider != "openai_compatible"]
             if not provider_pool:
                 provider_pool = [
                     provider
                     for provider in configured_providers
-                    if any(providers_equivalent(allowed_provider, provider) for allowed_provider in allowed_providers)
+                    if provider != "openai_compatible" and any(providers_equivalent(allowed_provider, provider) for allowed_provider in allowed_providers)
                 ]
             if not provider_pool:
-                provider_pool = allowed_providers
+                provider_pool = [provider for provider in allowed_providers if provider != "openai_compatible"]
             if preferred_provider and any(providers_equivalent(allowed_provider, preferred_provider) for allowed_provider in allowed_providers):
                 if preferred_provider in configured_providers:
                     provider_pool = [preferred_provider, *provider_pool]
@@ -16472,7 +16521,7 @@ class RAGComponents:
                 provider_pool = list(dict.fromkeys(provider_pool))
         else:
             provider_pool = [requested_provider]
-            provider_pool.extend(provider for provider in configured_providers if provider != requested_provider)
+            provider_pool.extend(provider for provider in configured_providers if provider not in {requested_provider, "openai_compatible"})
             provider_pool = list(dict.fromkeys(provider_pool))
 
         ordered = list(dict.fromkeys(normalize_provider_name(provider) for provider in provider_pool if provider))
@@ -16502,6 +16551,8 @@ class RAGComponents:
             return "GitHub Copilot is not connected"
         if normalized == "github_models" and not str(settings.get("github_models_api_token", "") or "").strip():
             return "GitHub Models PAT is missing"
+        if normalized == "openai_compatible" and not str(settings.get("openai_compatible_base_url", "") or "").strip():
+            return "OpenAI-compatible base URL is missing"
         return "provider client could not be initialized"
 
     def _no_llm_configured_message(self, resolution: RequestLLMResolution) -> str:
@@ -16661,9 +16712,13 @@ class RAGComponents:
 
         provider_error = classify_provider_error(exc)
         if provider_error:
-            if provider_error == "payment_required":
+            if provider_error == "payment_required" and normalize_provider_name(getattr(resolution, "provider", "")) == "openrouter":
                 note_openrouter_payment_required()
             return provider_error_message(provider_error)
+
+        generic_error = self._openai_compatible_error(exc, getattr(resolution, "provider", ""))
+        if generic_error:
+            return generic_error[1]
 
         resolution_context = self._llm_error_context(resolution)
         return f"I encountered an error processing your request{resolution_context}: {_format_exception_message(exc)}"
@@ -16676,21 +16731,61 @@ class RAGComponents:
         """Return the terminal, safe event consumed by background task execution."""
         provider = resolution.provider if isinstance(resolution, RequestLLMResolution) else None
         code = classify_provider_error(exc, provider)
-        if not code:
+        generic_error = self._openai_compatible_error(exc, provider)
+        if not code and not generic_error:
             return None
-        return {
+        event = {
             "type": "error",
-            "code": code,
+            "code": code or (generic_error[0] if generic_error else ""),
             "content": self._chat_runtime_error_message(exc, resolution),
         }
+        if provider:
+            event["provider"] = normalize_provider_name(provider)
+        return event
+
+    @staticmethod
+    def _openai_compatible_error(exc: BaseException, provider: object) -> tuple[str, str] | None:
+        """Map generic-provider failures without exposing upstream response bodies."""
+        if normalize_provider_name(str(provider or "")) != "openai_compatible":
+            return None
+        if isinstance(exc, CompatibleProviderError):
+            code = exc.code
+        elif isinstance(exc, (openai.APIError, httpx.HTTPError, asyncio.TimeoutError, TimeoutError)):
+            status_code = _exception_status_code(exc)
+            if status_code in {401, 403}:
+                code = "authentication"
+            elif status_code == 429:
+                code = "rate_limited"
+            elif status_code == 408 or isinstance(exc, (openai.APITimeoutError, asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)):
+                code = "timeout"
+            else:
+                code = "unavailable"
+        else:
+            return None
+        messages = {
+            "authentication": "The configured OpenAI-compatible provider rejected its credentials.",
+            "rate_limited": "The configured OpenAI-compatible provider is rate limited. Please retry shortly.",
+            "timeout": "The configured OpenAI-compatible provider timed out. Please retry shortly.",
+            "model_not_found": "The configured OpenAI-compatible provider did not list this model.",
+            "invalid_base_url": "The configured OpenAI-compatible provider URL is invalid.",
+        }
+        return code, messages.get(code, "The configured OpenAI-compatible provider is unavailable. Please retry later.")
 
     async def _resolve_chat_request_max_tokens(self, provider: str, model: str) -> int:
         """Resolve chat-specific max_tokens, capped to selected model limits when known."""
-        assert self._app_settings is not None
+        settings = self._app_settings
+        assert settings is not None
 
         resolved = await self._resolve_llm_max_tokens(provider, model)
 
         normalized_provider = normalize_provider_name(provider)
+        if normalized_provider == "openai_compatible":
+            metadata = await get_compatible_model(settings, model)
+            if metadata.max_output_tokens:
+                return min(resolved, metadata.max_output_tokens)
+            if metadata.context_limit:
+                return min(resolved, metadata.context_limit)
+            return resolved
         if normalized_provider in LOCAL_LLM_PROVIDER_NAMES:
             model_limit = await self._resolve_local_context_limit(normalized_provider, model)
             if model_limit and resolved > model_limit:
@@ -16808,8 +16903,12 @@ class RAGComponents:
         unavailable_reasons: list[str] = []
         for candidate_provider in candidate_providers:
             attempted.append(candidate_provider)
-            max_tokens = await self._resolve_chat_request_max_tokens(candidate_provider, model_id)
-            request_llm = await self._build_llm(candidate_provider, model_id, max_tokens)
+            try:
+                max_tokens = await self._resolve_chat_request_max_tokens(candidate_provider, model_id)
+                request_llm = await self._build_llm(candidate_provider, model_id, max_tokens)
+            except CompatibleProviderError as exc:
+                unavailable_reasons.append(f"{self._provider_label(candidate_provider)}: {exc.code}")
+                continue
             if request_llm is None:
                 unavailable_reasons.append(f"{self._provider_label(candidate_provider)}: {self._llm_provider_unavailable_reason(candidate_provider)}")
                 continue
@@ -17171,6 +17270,14 @@ class RAGComponents:
 
     async def _resolve_chat_context_limit(self, provider: Optional[str], model: str) -> int:
         normalized_provider = normalize_provider_name(provider)
+        if normalized_provider == "openai_compatible":
+            metadata = await get_compatible_model(self._app_settings, model)
+            if metadata.context_limit:
+                return metadata.context_limit
+            raise ChatContextWindowExceededError(
+                f"OpenAI-compatible model '{model}' has no known context limit. "
+                "Ask an administrator to fetch model metadata or configure its documented context limit before chatting."
+            )
         if normalized_provider in LOCAL_LLM_PROVIDER_NAMES:
             detected = await self._resolve_local_context_limit(normalized_provider, model)
             if detected:
@@ -17354,6 +17461,10 @@ class RAGComponents:
                 requested_max_tokens = 4096
             else:
                 requested_max_tokens = await self._resolve_chat_request_max_tokens(llm_resolution.provider, llm_resolution.model)
+        if normalize_provider_name(llm_resolution.provider) == "openai_compatible":
+            metadata = await get_compatible_model(self._app_settings, llm_resolution.model)
+            if metadata.max_output_tokens:
+                requested_max_tokens = min(requested_max_tokens, metadata.max_output_tokens)
         fit = await self._fit_chat_request_context_window(
             provider=llm_resolution.provider,
             model=llm_resolution.model,
@@ -17428,12 +17539,23 @@ class RAGComponents:
         effective_model_id = model_id or ((self._app_settings or {}).get("llm_model", "gpt-4-turbo") if self._app_settings else "gpt-4-turbo")
         try:
             effective_provider = normalize_provider_name(provider or (self._app_settings or {}).get("llm_provider", "openai"))
+            if effective_provider == "openai_compatible":
+                metadata = await get_compatible_model(self._app_settings, effective_model_id)
+                if not metadata.context_limit:
+                    return ""
+                context_limit = metadata.context_limit
             if effective_provider in LOCAL_LLM_PROVIDER_NAMES:
                 detected = await self._resolve_local_context_limit(effective_provider, effective_model_id)
                 context_limit = max(1, detected or 8192)
-            else:
+            elif effective_provider != "openai_compatible":
                 # OpenAI/Anthropic: use LiteLLM dataset
                 context_limit = max(1, int(await get_context_limit(effective_model_id)))
+        except CompatibleProviderError:
+            # Generic metadata errors must not masquerade as the legacy 8192
+            # context window in the advisory snapshot.
+            if normalize_provider_name(provider or (self._app_settings or {}).get("llm_provider", "openai")) == "openai_compatible":
+                return ""
+            context_limit = 8192
         except Exception:
             context_limit = 8192
 
@@ -17659,6 +17781,7 @@ class RAGComponents:
                 langchain_content,
                 request_model_id,
                 context="non-streaming",
+                provider=llm_resolution.provider,
             )
 
             t_ctx = time.monotonic()
@@ -18147,6 +18270,7 @@ class RAGComponents:
             langchain_content,
             request_model_id,
             context="streaming",
+            provider=llm_resolution.provider,
         )
 
         t_ctx = time.monotonic()

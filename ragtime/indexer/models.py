@@ -81,6 +81,7 @@ from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
 )
+from ragtime.core.openai_compatible import CompatibleProviderError, ModelLimitOverride, normalize_base_url
 from ragtime.core.userspace_limits import (
     ARCHIVE_MAX_FILE_COUNT_DEFAULT,
     ARCHIVE_MAX_FILE_COUNT_MAX,
@@ -724,7 +725,7 @@ class AppSettings(BaseModel):
     # LLM Configuration (for chat/RAG responses)
     llm_provider: str = Field(
         default=DEFAULT_LLM_PROVIDER,
-        description="LLM provider: 'openai', 'openai_codex', 'anthropic', 'claude_code', 'openrouter', 'ollama', 'llama_cpp', 'lmstudio', 'omlx', 'github_copilot', or 'github_models'",
+        description="LLM provider identifier, including 'openai_compatible' for a configurable Chat Completions API.",
     )
     llm_model: str = Field(
         default=DEFAULT_LLM_MODEL,
@@ -800,6 +801,27 @@ class AppSettings(BaseModel):
         default="http://host.docker.internal:8000",
         description="oMLX LLM server URL (computed from protocol/host/port)",
     )
+    openai_compatible_base_url: str = Field(default="", description="Full OpenAI-compatible Chat Completions API root URL")
+    openai_compatible_api_key: str = Field(default="", description="OpenAI-compatible API key")
+    openai_compatible_provider_name: str = Field(default="", max_length=80, description="Optional display name for the OpenAI-compatible provider")
+    openai_compatible_catalog_provider: str = Field(default="", description="Optional exact models.dev catalog provider slug")
+    openai_compatible_model_limits: Dict[str, ModelLimitOverride] = Field(default_factory=dict)
+
+    @field_validator("openai_compatible_base_url")
+    @classmethod
+    def validate_openai_compatible_base_url(cls, value: str) -> str:
+        if not value.strip():
+            return ""
+        try:
+            return normalize_base_url(value)
+        except CompatibleProviderError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("openai_compatible_provider_name", mode="before")
+    @classmethod
+    def normalize_openai_compatible_provider_name(cls, value: str | None) -> str:
+        return str(value or "").strip()
+
     openai_api_key: str = Field(
         default="",
         description="OpenAI API key (used for LLM and optionally embeddings)",
@@ -1268,7 +1290,11 @@ class AppSettings(BaseModel):
     def get_embedding_config_hash(self) -> str:
         """Generate a hash for current embedding provider+model+dimensions configuration."""
         dims = self.embedding_dimensions or "default"
-        return f"{self.embedding_provider}:{self.embedding_model}:{dims}"
+        base = f"{self.embedding_provider}:{self.embedding_model}:{dims}"
+        if self.embedding_provider == "openai_compatible":
+            endpoint = normalize_base_url(self.openai_compatible_base_url) if self.openai_compatible_base_url else ""
+            return f"{base}:{endpoint}"
+        return base
 
     def has_embedding_config_changed(self) -> bool:
         """Check if the embedding configuration has changed from what was indexed."""
@@ -1423,6 +1449,27 @@ class ConfigurationWarning(BaseModel):
     recommendation: Optional[str] = Field(default=None, description="Suggested action to resolve")
 
 
+class MountProblem(BaseModel):
+    """A reported mount failure in the Ragtime or runtime container."""
+
+    container: Literal["ragtime", "runtime"] = Field(description="Container where the mount problem was observed")
+    mount_point: str = Field(description="Mount path in the reporting container")
+    fstype: str = Field(description="Filesystem type")
+    source: str = Field(description="Redacted mount source")
+    state: Literal["failed", "unresponsive"] = Field(description="Current mount failure state")
+    error: Optional[str] = Field(default=None, description="Failure detail when available")
+    failing_since: Optional[datetime] = Field(default=None, description="When the current failure streak began")
+
+
+class MountHealthStatus(BaseModel):
+    """Cached mount health across the Ragtime and runtime containers."""
+
+    status: Literal["ok", "degraded", "unknown"] = Field(description="Overall mount health state")
+    checked_at: Optional[datetime] = Field(default=None, description="When mount health was last checked")
+    runtime_checked: bool = Field(description="Whether runtime container health was available")
+    problems: List[MountProblem] = Field(description="Reported mount problems")
+
+
 class IndexResourceJobStatus(BaseModel):
     """One admitted or waiting document indexing job in the resource snapshot."""
 
@@ -1557,6 +1604,11 @@ class UpdateSettingsRequest(BaseModel):
     llm_omlx_host: Optional[str] = None
     llm_omlx_port: Optional[int] = Field(default=None, ge=1, le=65535)
     llm_omlx_base_url: Optional[str] = None
+    openai_compatible_base_url: Optional[str] = None
+    openai_compatible_api_key: Optional[str] = None
+    openai_compatible_provider_name: Optional[str] = Field(default=None, max_length=80)
+    openai_compatible_catalog_provider: Optional[str] = None
+    openai_compatible_model_limits: Optional[Dict[str, ModelLimitOverride]] = None
     openai_api_key: Optional[str] = None
     openai_codex_access_token: Optional[str] = None
     openai_codex_refresh_token: Optional[str] = None
@@ -1576,6 +1628,31 @@ class UpdateSettingsRequest(BaseModel):
     default_chat_model: Optional[str] = None
     allowed_openapi_models: Optional[List[str]] = None
     openapi_sync_chat_models: Optional[bool] = None
+
+    @field_validator("openai_compatible_base_url")
+    @classmethod
+    def normalize_openai_compatible_base_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not value.strip():
+            return ""
+        try:
+            return normalize_base_url(value)
+        except CompatibleProviderError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("openai_compatible_provider_name", mode="before")
+    @classmethod
+    def normalize_openai_compatible_provider_name(cls, value: Optional[str]) -> Optional[str]:
+        return str(value or "").strip() if value is not None else None
+
+    @field_validator("openai_compatible_model_limits")
+    @classmethod
+    def normalize_openai_compatible_model_limits(cls, value: Optional[Dict[str, ModelLimitOverride]]) -> Optional[Dict[str, ModelLimitOverride]]:
+        if value is None:
+            return None
+        return {str(model_id): override for model_id, override in value.items() if str(model_id)}
+
     max_iterations: Optional[int] = Field(default=None, ge=1, le=100)
     chat_compaction_threshold_percent: Optional[int] = Field(
         default=None,

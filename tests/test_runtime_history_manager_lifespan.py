@@ -30,8 +30,9 @@ class _HistoryService:
 
 
 class _WorkerService:
-    def __init__(self, coordinator: SqliteHistoryCoordinator) -> None:
+    def __init__(self, coordinator: SqliteHistoryCoordinator, workspace_root: Path) -> None:
         self._coordinator = coordinator
+        self.workspace_root = workspace_root
 
     def sqlite_history_coordinator(self) -> SqliteHistoryCoordinator:
         return self._coordinator
@@ -57,7 +58,7 @@ class RuntimeManagerHistoryLifespanTests(unittest.IsolatedAsyncioTestCase):
             # A released liveness lock represents work left by a dead process.
             with coordinator._store.hold_liveness(operation_id):
                 pass
-            worker = _WorkerService(coordinator)
+            worker = _WorkerService(coordinator, root)
             manager = mock.AsyncMock()
             manager.startup = mock.AsyncMock()
             manager.shutdown = mock.AsyncMock()

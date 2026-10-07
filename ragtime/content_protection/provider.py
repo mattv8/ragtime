@@ -15,12 +15,15 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
+import httpx
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import SecretStr
 
 from ragtime.content_protection.models import ContentProtectionConfig, ContentProtectionError
 from ragtime.core import app_settings
 from ragtime.core.model_providers import normalize_provider_name, resolve_provider_api_key, resolve_provider_base_url
+from ragtime.core.openai_compatible import get_model as get_compatible_model
+from ragtime.core.openai_compatible_client import CompatibleChatOpenAI, compatible_chat_options
 
 _MAX_OUTPUT_TOKENS = 256
 _CALL_TIMEOUT_SECONDS = 5
@@ -85,8 +88,12 @@ def _audience_constraints(config: ContentProtectionConfig, envelope: dict[str, o
 
 
 def _client_fingerprint(provider: str, model: str, settings: dict[str, Any]) -> str:
-    connection = resolve_provider_base_url(settings, provider, "llm")
-    key = resolve_provider_api_key(settings, provider, "llm") or ("local" if provider in {"llama_cpp", "lmstudio"} else "")
+    if provider == "openai_compatible":
+        connection = str(settings.get("openai_compatible_base_url", "") or "")
+        key = str(settings.get("openai_compatible_api_key", "") or "")
+    else:
+        connection = resolve_provider_base_url(settings, provider, "llm")
+        key = resolve_provider_api_key(settings, provider, "llm") or ("local" if provider in {"llama_cpp", "lmstudio"} else "")
     # Do not retain plaintext configuration in the pool key or diagnostics.
     return hashlib.sha256(repr((provider, model, connection, key)).encode()).hexdigest()
 
@@ -129,15 +136,23 @@ def _build_client(
             client_kwargs={"timeout": _CALL_TIMEOUT_SECONDS},
         )
 
-    if provider in {"openai", "openrouter", "llama_cpp", "lmstudio", "omlx"}:
+    if provider in {"openai", "openrouter", "llama_cpp", "lmstudio", "omlx", "openai_compatible"}:
         from langchain_openai import ChatOpenAI
 
-        key = resolve_provider_api_key(settings, provider, "llm")
+        key = (
+            str(settings.get("openai_compatible_api_key", "") or "") if provider == "openai_compatible" else resolve_provider_api_key(settings, provider, "llm")
+        )
         if not key and provider in {"llama_cpp", "lmstudio"}:
             key = "local"
-        if not key:
+        if not key and provider != "openai_compatible":
             raise ValueError("missing credentials")
-        base_url = resolve_provider_base_url(settings, provider, "llm")
+        base_url = (
+            str(settings.get("openai_compatible_base_url", "") or "")
+            if provider == "openai_compatible"
+            else resolve_provider_base_url(settings, provider, "llm")
+        )
+        if provider == "openai_compatible" and not base_url:
+            raise ValueError("missing base URL")
         if provider == "openrouter":
             from ragtime.core.openrouter import DEFAULT_BASE_URL
 
@@ -154,6 +169,11 @@ def _build_client(
             "max_retries": 0,
             "streaming": False,
         }
+        if provider == "openai_compatible":
+            # Explicitly avoid environment-derived OpenAI credentials and the
+            # Responses API on an arbitrary Chat Completions endpoint.
+            options["use_responses_api"] = False
+            options.update(compatible_chat_options(key or ""))
         # These APIs support explicit reasoning disablement; only oMLX gets
         # its documented template-level switch among local servers.
         if provider == "openai" and reasoning_effort_supported:
@@ -162,7 +182,7 @@ def _build_client(
             options["extra_body"] = {"reasoning": {"enabled": False}}
         elif provider == "omlx":
             options["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
-        return ChatOpenAI(**options)
+        return CompatibleChatOpenAI(**options) if provider == "openai_compatible" else ChatOpenAI(**options)
 
     raise ValueError("unsupported provider")
 
@@ -286,6 +306,11 @@ async def _preflight_context(
     if provider in {"ollama", "llama_cpp", "lmstudio", "omlx"}:
         context_limit = await _local_context_limit(provider, model, settings)
         if context_limit is None:
+            raise ContentProtectionError("content_unclassifiable", "classifier-context-unknown")
+    elif provider == "openai_compatible":
+        metadata = await get_compatible_model(settings, model)
+        context_limit = metadata.context_limit
+        if not isinstance(context_limit, int) or context_limit <= _MAX_OUTPUT_TOKENS:
             raise ContentProtectionError("content_unclassifiable", "classifier-context-unknown")
     else:
         from ragtime.core.model_limits import get_context_limit, supports_reasoning, supports_reasoning_effort
