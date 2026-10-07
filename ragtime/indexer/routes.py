@@ -69,7 +69,7 @@ from ragtime.content_protection.hosted import (
 )
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.app_settings import _apply_runtime_setting_hooks, invalidate_settings_cache
-from ragtime.core.auth import get_browser_matched_origin
+from ragtime.core.auth import get_browser_matched_origin, get_external_origin
 from ragtime.core.claude_code import (
     ANTHROPIC_API_BASE,
     CLAUDE_CODE_AUTH_SESSION_TTL_SECONDS,
@@ -926,7 +926,7 @@ async def fetch_branches(
 
 @router.get("/{name}/webhook", response_model=GitWebhookConfigResponse)
 async def get_index_webhook(name: str, request: Request, _user: Any = Depends(require_admin)) -> GitWebhookConfigResponse:
-    return await git_webhook_repository.get_index_config(name, str(request.base_url).rstrip("/"))
+    return await git_webhook_repository.get_index_config(name, get_external_origin(request))
 
 
 async def _ensure_git_index_webhook_eligible(name: str) -> None:
@@ -942,25 +942,25 @@ async def _ensure_git_index_webhook_eligible(name: str) -> None:
 @router.post("/{name}/webhook", response_model=GitWebhookEnableResponse, response_model_exclude_none=True)
 async def enable_index_webhook(name: str, request: Request, _user: Any = Depends(require_admin)) -> GitWebhookEnableResponse:
     await _ensure_git_index_webhook_eligible(name)
-    return await git_webhook_repository.enable_index(name, str(request.base_url).rstrip("/"))
+    return await git_webhook_repository.enable_index(name, get_external_origin(request))
 
 
 @router.post("/{name}/webhook/rotate", response_model=GitWebhookEnableResponse, response_model_exclude_none=True)
 async def rotate_index_webhook_secret(name: str, request: Request, _user: Any = Depends(require_admin)) -> GitWebhookEnableResponse:
     await _ensure_git_index_webhook_eligible(name)
-    return await git_webhook_repository.rotate_index_secret(name, str(request.base_url).rstrip("/"))
+    return await git_webhook_repository.rotate_index_secret(name, get_external_origin(request))
 
 
 @router.post("/{name}/webhook/pause", response_model=GitWebhookConfigResponse)
 async def pause_index_webhook(name: str, request: Request, _user: Any = Depends(require_admin)) -> GitWebhookConfigResponse:
     await _ensure_git_index_webhook_eligible(name)
-    return await git_webhook_repository.pause_index(name, str(request.base_url).rstrip("/"))
+    return await git_webhook_repository.pause_index(name, get_external_origin(request))
 
 
 @router.post("/{name}/webhook/resume", response_model=GitWebhookConfigResponse)
 async def resume_index_webhook(name: str, request: Request, _user: Any = Depends(require_admin)) -> GitWebhookConfigResponse:
     await _ensure_git_index_webhook_eligible(name)
-    response = await git_webhook_repository.resume_index(name, str(request.base_url).rstrip("/"))
+    response = await git_webhook_repository.resume_index(name, get_external_origin(request))
     target = await git_webhook_repository.resolve_index_target(name)
     if target is not None:
         git_webhook_service.schedule_target(target)
