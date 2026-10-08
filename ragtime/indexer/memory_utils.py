@@ -14,6 +14,64 @@ from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Finalization runs in a supervised worker whose interpreter and native runtime
+# have a fixed allowance. Text may decode wider than UTF-8, while Python dicts
+# and strings make metadata materially larger than its serialized form. The
+# remaining per-record allowances cover docstore/index mappings and pickle
+# framing. These are deliberately conservative portable heuristics, rather
+# than a multiplier calibrated to one corpus or allocator.
+FINALIZATION_WORKER_BASELINE_BYTES = 512 * 1024 * 1024
+FINALIZATION_DECODED_TEXT_FACTOR = 4
+FINALIZATION_METADATA_OBJECT_FACTOR = 16
+FINALIZATION_RECORD_STRUCTURE_BYTES = 2048
+FINALIZATION_IDENTIFIER_FACTOR = 2
+FINALIZATION_SERIALIZED_RECORD_BYTES = 512
+FINALIZATION_VALIDATION_RECORD_BYTES = 1024
+FINALIZATION_VECTOR_BATCH_SIZE = 256
+
+
+def estimate_faiss_finalization_memory(
+    *,
+    chunk_count: int,
+    dimensions: int,
+    text_bytes: int,
+    metadata_bytes: int,
+    identifier_bytes: int,
+) -> dict[str, int]:
+    """Estimate build, streamed save, and safe-validation peak envelopes.
+
+    Building overlaps FAISS growth with the resident docstore and one bounded
+    vector batch. Saving retains the final vector/docstore graph plus pickle
+    serialization workspace. Safe validation temporarily rebuilds an inert
+    docstore graph while allocator-retained build objects may still exist.
+    """
+    records = max(0, chunk_count)
+    vector_bytes = records * max(0, dimensions) * 4
+    raw_text_bytes = max(0, text_bytes)
+    raw_metadata_bytes = max(0, metadata_bytes)
+    raw_identifier_bytes = max(0, identifier_bytes)
+    docstore_bytes = (
+        raw_text_bytes * FINALIZATION_DECODED_TEXT_FACTOR
+        + raw_metadata_bytes * FINALIZATION_METADATA_OBJECT_FACTOR
+        + records * FINALIZATION_RECORD_STRUCTURE_BYTES
+        + raw_identifier_bytes * FINALIZATION_IDENTIFIER_FACTOR
+    )
+    pickle_bytes = raw_text_bytes + raw_metadata_bytes + raw_identifier_bytes + records * FINALIZATION_SERIALIZED_RECORD_BYTES
+    batch_bytes = min(FINALIZATION_VECTOR_BATCH_SIZE, records) * max(0, dimensions) * 4 * 3
+    baseline = FINALIZATION_WORKER_BASELINE_BYTES
+    build_peak = baseline + vector_bytes * 3 + docstore_bytes + batch_bytes
+    save_peak = baseline + vector_bytes * 2 + docstore_bytes + pickle_bytes
+    validation_peak = baseline + vector_bytes + pickle_bytes + docstore_bytes * 3 + records * FINALIZATION_VALIDATION_RECORD_BYTES
+    return {
+        "worker_baseline_bytes": baseline,
+        "steady_memory_bytes": baseline + vector_bytes + docstore_bytes,
+        "build_peak_bytes": build_peak,
+        "save_peak_bytes": save_peak,
+        "validation_peak_bytes": validation_peak,
+        "peak_memory_bytes": max(build_peak, save_peak, validation_peak),
+        "artifact_bytes": vector_bytes + pickle_bytes,
+    }
+
 
 def estimate_stage_peak_bytes(
     *,

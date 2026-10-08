@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from ragtime.core.app_settings import get_app_settings
-from ragtime.core.auth import get_browser_matched_origin
+from ragtime.core.auth import get_browser_matched_origin, get_external_origin
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.git import check_repo_visibility as git_check_visibility
@@ -1076,7 +1076,7 @@ async def get_workspace_scm_webhook(
 ) -> GitWebhookConfigResponse:
     is_admin = user.role == "admin"
     await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner", is_admin=is_admin)
-    return await git_webhook_repository.get_workspace_config(workspace_id, str(request.base_url).rstrip("/"))
+    return await git_webhook_repository.get_workspace_config(workspace_id, get_external_origin(request))
 
 
 async def _ensure_workspace_scm_webhook_eligible(workspace_id: str) -> None:
@@ -1103,7 +1103,7 @@ async def enable_workspace_scm_webhook(
     is_admin = user.role == "admin"
     await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner", is_admin=is_admin)
     await _ensure_workspace_scm_webhook_eligible(workspace_id)
-    return await git_webhook_repository.enable_workspace(workspace_id, str(request.base_url).rstrip("/"))
+    return await git_webhook_repository.enable_workspace(workspace_id, get_external_origin(request))
 
 
 @router.post(
@@ -1119,7 +1119,7 @@ async def rotate_workspace_scm_webhook_secret(
     is_admin = user.role == "admin"
     await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner", is_admin=is_admin)
     await _ensure_workspace_scm_webhook_eligible(workspace_id)
-    return await git_webhook_repository.rotate_workspace_secret(workspace_id, str(request.base_url).rstrip("/"))
+    return await git_webhook_repository.rotate_workspace_secret(workspace_id, get_external_origin(request))
 
 
 @router.post(
@@ -1134,7 +1134,7 @@ async def pause_workspace_scm_webhook(
     is_admin = user.role == "admin"
     await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner", is_admin=is_admin)
     await _ensure_workspace_scm_webhook_eligible(workspace_id)
-    return await git_webhook_repository.pause_workspace(workspace_id, str(request.base_url).rstrip("/"))
+    return await git_webhook_repository.pause_workspace(workspace_id, get_external_origin(request))
 
 
 @router.post(
@@ -1149,7 +1149,7 @@ async def resume_workspace_scm_webhook(
     is_admin = user.role == "admin"
     await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner", is_admin=is_admin)
     await _ensure_workspace_scm_webhook_eligible(workspace_id)
-    response = await git_webhook_repository.resume_workspace(workspace_id, str(request.base_url).rstrip("/"))
+    response = await git_webhook_repository.resume_workspace(workspace_id, get_external_origin(request))
     target = await git_webhook_repository.resolve_workspace_target(workspace_id)
     if target is not None:
         git_webhook_service.schedule_target(target)

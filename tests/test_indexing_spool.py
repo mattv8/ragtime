@@ -1,3 +1,4 @@
+import json
 import struct
 import tempfile
 import unittest
@@ -29,7 +30,7 @@ class IndexingSpoolTests(unittest.TestCase):
             text.write_text("x")
             record = SpoolRecord("id", "source.txt", 0, "text.txt", {"source": "source.txt"}, 1)
             manifest = spool.root / "documents.jsonl"
-            manifest.write_text(__import__("json").dumps(record.__dict__) + "\n")
+            manifest.write_text(json.dumps(record.__dict__) + "\n")
             output = SpoolTaskOutput("documents.jsonl", 1, 1, 0)
             spool.accept_documents(output)
             spool.accept_documents(output)
@@ -44,14 +45,14 @@ class IndexingSpoolTests(unittest.TestCase):
             first_path.write_text("same")
             first = SpoolRecord("id", "source.txt", 0, "tasks/first/text.txt", {"source": "source.txt"}, 4)
             first_manifest = spool.root / "first.jsonl"
-            first_manifest.write_text(__import__("json").dumps(first.__dict__) + "\n")
+            first_manifest.write_text(json.dumps(first.__dict__) + "\n")
             spool.accept_documents(SpoolTaskOutput("first.jsonl", 1, 4, 0))
             replay_path = spool.root / "tasks/replay/text.txt"
             replay_path.parent.mkdir(parents=True)
             replay_path.write_text("same")
             replay = SpoolRecord("id", "source.txt", 0, "tasks/replay/text.txt", {"source": "source.txt"}, 4)
             replay_manifest = spool.root / "replay.jsonl"
-            replay_manifest.write_text(__import__("json").dumps(replay.__dict__) + "\n")
+            replay_manifest.write_text(json.dumps(replay.__dict__) + "\n")
             spool.accept_documents(SpoolTaskOutput("replay.jsonl", 1, 4, 0))
             self.assertEqual(spool.summary()["document_count"], 1)
             spool.close()
@@ -76,7 +77,7 @@ class IndexingSpoolTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("x")
             manifest = spool.root / "chunks.jsonl"
-            manifest.write_text("\n".join(__import__("json").dumps(record.__dict__) for record in records) + "\n")
+            manifest.write_text("\n".join(json.dumps(record.__dict__) for record in records) + "\n")
             spool.accept_chunks(SpoolTaskOutput("chunks.jsonl", 3, 3, 0))
             vectors = spool.root / "vectors.bin"
             vectors.write_bytes(struct.pack("<6f", 1, 2, 3, 4, 5, 6))
@@ -86,3 +87,43 @@ class IndexingSpoolTests(unittest.TestCase):
             self.assertEqual(batches[1].vector_offset_bytes, 16)
             self.assertEqual([r.record_id for r in batches[1].records], ["id-2"])
             spool.close()
+
+    def test_summary_counts_stored_json_metadata_and_identifier_bytes_for_chunks_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            spool = IndexingSpool.open_attempt(Path(directory), "job", "fingerprint")
+            records = (
+                SpoolRecord("document-id", "source", 0, "document.txt", {"label": "文"}, 1),
+                SpoolRecord("chunk-id", "source", 0, "chunk.txt", {"label": "文"}, 1),
+            )
+            for record in records:
+                (spool.root / record.text_path).write_text("x", encoding="utf-8")
+            for stage, record in zip(("documents", "chunks"), records):
+                manifest = spool.root / f"{stage}.jsonl"
+                manifest.write_text(json.dumps(record.__dict__) + "\n", encoding="utf-8")
+                spool._accept(SpoolTaskOutput(manifest.name, 1, 1, 0), stage)
+
+            summary = spool.summary()
+            self.assertEqual(summary["metadata_bytes"], len(json.dumps({"label": "文"}, sort_keys=True).encode("utf-8")))
+            self.assertEqual(summary["identifier_bytes"], len("chunk-id".encode("utf-8")))
+            spool.close()
+
+    def test_empty_and_readonly_reopened_summary_preserves_totals_after_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            spool = IndexingSpool.open_attempt(Path(directory), "job", "fingerprint")
+            self.assertEqual(spool.summary()["metadata_bytes"], 0)
+            self.assertEqual(spool.summary()["identifier_bytes"], 0)
+            record = SpoolRecord("chunk-id", "source", 0, "chunk.txt", {"source": "文"}, 1)
+            (spool.root / record.text_path).write_text("x", encoding="utf-8")
+            manifest = spool.root / "chunks.jsonl"
+            manifest.write_text(json.dumps(record.__dict__) + "\n", encoding="utf-8")
+            output = SpoolTaskOutput(manifest.name, 1, 1, 0)
+            spool.accept_chunks(output)
+            expected = spool.summary()
+            spool.accept_chunks(output)
+            self.assertEqual(spool.summary(), expected)
+            root = spool.root
+            spool.close()
+
+            reopened = IndexingSpool.open_existing(root, readonly=True)
+            self.assertEqual(reopened.summary(), expected)
+            reopened.close()

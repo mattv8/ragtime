@@ -22,13 +22,14 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
+from ragtime.core.logging import get_logger
 from ragtime.indexer.faiss_serialization import safe_load_faiss
 from ragtime.indexer.indexing_spool import IndexingSpool
-from ragtime.indexer.memory_utils import estimate_index_memory
+from ragtime.indexer.memory_utils import FINALIZATION_VECTOR_BATCH_SIZE, estimate_faiss_finalization_memory
 from ragtime.indexer.resource_governor import resource_governor
 from ragtime.indexer.resource_workers import run_resource_task
 
-_FINALIZATION_COLD_START_BYTES = 512 * 1024 * 1024
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -138,6 +139,16 @@ def _read_vectors(path: Path, offset: int, rows: int, dimensions: int) -> np.nda
     return vectors
 
 
+def _estimate_from_summary(summary: dict[str, int]) -> dict[str, int]:
+    return estimate_faiss_finalization_memory(
+        chunk_count=int(summary.get("chunk_count", 0)),
+        dimensions=int(summary.get("dimensions", 0)),
+        text_bytes=int(summary.get("text_bytes", 0)),
+        metadata_bytes=int(summary.get("metadata_bytes", 0)),
+        identifier_bytes=int(summary.get("identifier_bytes", 0)),
+    )
+
+
 def _build_faiss_generation(
     index_root: Path,
     spool_root: Path,
@@ -159,17 +170,10 @@ def _build_faiss_generation(
         # directory can replace a generation. Reserve enough for the completed
         # pair plus the simultaneously-present staging output; this uses the
         # spool's common reserve policy rather than a second disk threshold.
-        artifact_estimate = estimate_index_memory(
-            chunk_count,
-            dimensions,
-            max(1, int(summary.get("text_bytes", 0)) // chunk_count),
-        )
-        predicted_artifact_bytes = int(artifact_estimate["steady_memory_bytes"])
+        artifact_estimate = _estimate_from_summary(summary)
+        predicted_artifact_bytes = int(artifact_estimate["artifact_bytes"])
         IndexingSpool.ensure_path_disk_space(index_root, predicted_artifact_bytes * 2)
 
-        # The estimate is intentionally computed from the staged corpus before
-        # any native allocation. Admission is owned by run_resource_task.
-        estimate_index_memory(chunk_count, dimensions, max(1, int(summary.get("text_bytes", 0)) // chunk_count))
         if metric not in {"l2", "ip"}:
             raise ValueError(f"Unsupported FAISS metric: {metric}")
         index = faiss.IndexFlatIP(dimensions) if metric == "ip" else faiss.IndexFlatL2(dimensions)
@@ -177,7 +181,7 @@ def _build_faiss_generation(
         index_to_docstore_id: dict[int, str] = {}
 
         row = 0
-        for batch in spool.iter_embeddings(max_rows=256):
+        for batch in spool.iter_embeddings(max_rows=FINALIZATION_VECTOR_BATCH_SIZE):
             records = tuple(batch.records)
             rows = int(batch.rows)
             batch_dimensions = int(batch.dimensions)
@@ -268,21 +272,31 @@ async def prepare_faiss_artifact(
     # C has committed/checkpointed its spool before calling us. SQLite opening
     # and summary reads remain off the API event loop.
     summary = await asyncio.to_thread(read_summary, Path(spool_root))
-    dimensions = int(summary.get("dimensions", 0))
     chunks = int(summary.get("chunk_count", 0))
+    dimensions = int(summary.get("dimensions", 0))
     text_bytes = int(summary.get("text_bytes", 0))
-    steady = max(
-        _FINALIZATION_COLD_START_BYTES,
-        estimate_index_memory(chunks, dimensions, max(1, text_bytes // max(chunks, 1)))["steady_memory_bytes"],
-    )
+    metadata_bytes = int(summary.get("metadata_bytes", 0))
+    identifier_bytes = int(summary.get("identifier_bytes", 0))
+    estimate = _estimate_from_summary(summary)
     request = resource_governor.estimate_request(
         job_id=job_id,
         stage="finalizing",
-        record_count=chunks,
-        dimensions=dimensions,
-        text_bytes=text_bytes,
-        steady_bytes=steady,
+        minimum_peak_bytes=estimate["peak_memory_bytes"],
         kind="document_job",
+    )
+    logger.info(
+        "FAISS finalization admission job_id=%s chunks=%d dimensions=%d text_bytes=%d metadata_bytes=%d identifier_bytes=%d build_peak_bytes=%d save_peak_bytes=%d validation_peak_bytes=%d artifact_bytes=%d requested_peak_bytes=%d",
+        job_id,
+        chunks,
+        dimensions,
+        text_bytes,
+        metadata_bytes,
+        identifier_bytes,
+        estimate["build_peak_bytes"],
+        estimate["save_peak_bytes"],
+        estimate["validation_peak_bytes"],
+        estimate["artifact_bytes"],
+        request.estimated_peak_bytes,
     )
     return await run_resource_task(
         request,
