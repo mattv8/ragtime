@@ -55,12 +55,17 @@ class HostedRecoveryActualFlowTests(unittest.IsolatedAsyncioTestCase):
 
         components._tool_configs = []
         components._app_settings = {}
-        config = ContentProtectionConfig(enabled=True, classifier_model="openai::classifier")
+        config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
 
-        async def classify(_config, envelope, **_kwargs):
+        async def classify(config, envelope, **_kwargs):
+            probabilities = {
+                category.id: 0.0
+                for category in config.categories
+                if envelope["direction"] in {"inbound", "proposed_operation"} or category.id != "rule_override"
+            }
             if envelope["direction"] == "tool_result":
-                return {"verdict": "deny", "reason": "restricted", "reason_code": "restricted"}
-            return {"verdict": "allow", "reason_code": ""}
+                probabilities["company_finance"] = 1.0
+            return {"probabilities": probabilities, "model": "test", "usage": {"input_tokens": 1, "output_tokens": 1}, "transport": "test", "cache_hit": False}
 
         with (
             mock.patch.object(protection_service, "load_config", new=mock.AsyncMock(return_value=config)),

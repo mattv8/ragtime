@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Lock, LockOpen, Info, ExternalLink, Pencil } from 'lucide-react';
+import { Lock, LockOpen, Info, ExternalLink, KeyRound, Pencil } from 'lucide-react';
 import { api } from '@/api';
 import { generateCredentialValue } from '@/utils/credentialGenerator';
 import type {
@@ -44,6 +44,7 @@ import {
   type ObjectStorageSettingsHandle,
 } from './shared/ObjectStorageSettings';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
+import { AccessLevelsModal } from './shared/AccessLevelsModal';
 import { ModelFilterModal } from './ModelFilterModal';
 import { ModelSelector } from './ModelSelector';
 import { CheckboxDropdown } from './shared/CheckboxDropdown';
@@ -654,6 +655,7 @@ interface SettingsPanelProps {
   onServerBackupJobObserved?: (job: ServerBackupJob) => void;
   onServerRestoreJobObserved?: (job: ServerRestoreJob) => void;
   onServerOperationError?: (message: string) => void;
+  onNavigateToSetting?: (settingId: string) => void;
 }
 
 export function SettingsPanel({
@@ -670,6 +672,7 @@ export function SettingsPanel({
   onServerBackupJobObserved,
   onServerRestoreJobObserved,
   onServerOperationError,
+  onNavigateToSetting,
 }: SettingsPanelProps) {
   const settingsPanelRef = useRef<HTMLDivElement | null>(null);
   const hasAuthenticatedPosture = hasAuthenticatedSecurityPosture(authStatus);
@@ -715,6 +718,37 @@ export function SettingsPanel({
     openContentProtection();
     window.addEventListener('hashchange', openContentProtection);
     return () => window.removeEventListener('hashchange', openContentProtection);
+  }, []);
+
+  useEffect(() => {
+    let highlightFrame: number | undefined;
+    let highlightTimer: number | undefined;
+    let highlighted: HTMLElement | null = null;
+    const clearHighlight = () => {
+      if (highlightFrame !== undefined) window.cancelAnimationFrame(highlightFrame);
+      if (highlightTimer !== undefined) window.clearTimeout(highlightTimer);
+      highlighted?.classList.remove('highlight-setting');
+    };
+    const highlightSettings = (event: Event) => {
+      const targetId = (event as CustomEvent<string>).detail;
+      if (targetId !== 'setting-openrouter-api-key') return;
+      clearHighlight();
+      setOpenAccordionSections((current) =>
+        openSettingsAccordionSections(current, ['llm-providers']),
+      );
+      highlightFrame = window.requestAnimationFrame(() => {
+        highlighted =
+          document.getElementById(targetId) || document.getElementById('setting-llm_provider');
+        highlighted?.classList.add('highlight-setting');
+        highlighted?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        highlightTimer = window.setTimeout(clearHighlight, 3000);
+      });
+    };
+    window.addEventListener('highlight-settings', highlightSettings);
+    return () => {
+      window.removeEventListener('highlight-settings', highlightSettings);
+      clearHighlight();
+    };
   }, []);
 
   const savedThemePackRef = useRef<ThemePackId>('default');
@@ -962,6 +996,8 @@ export function SettingsPanel({
   const [authGroups, setAuthGroups] = useState<AuthGroup[]>([]);
   const [showCreateLocalUserModal, setShowCreateLocalUserModal] = useState(false);
   const [showManageAuthGroupsModal, setShowManageAuthGroupsModal] = useState(false);
+  const [showAccessLevelsModal, setShowAccessLevelsModal] = useState(false);
+  const [contentProtectionRefreshKey, setContentProtectionRefreshKey] = useState(0);
   const [ldapUserSearchName, setLdapUserSearchName] = useState('');
   const [ldapUserSearching, setLdapUserSearching] = useState(false);
   const [ldapUserSearchResults, setLdapUserSearchResults] = useState<LdapUserProfile[]>([]);
@@ -4937,6 +4973,7 @@ export function SettingsPanel({
               open={openAccordionSections['content-protection']}
               onToggle={handleToggleAccordionSection}
               searchQuery={settingsFilter.queries[0] || ''}
+              refreshKey={contentProtectionRefreshKey}
             />
           )}
 
@@ -6526,7 +6563,7 @@ export function SettingsPanel({
                   )}
                 </div>
               ) : formData.llm_provider === 'openrouter' ? (
-                <div className="form-group">
+                <div className="form-group" id="setting-openrouter-api-key">
                   <label>OpenRouter API Key</label>
                   <div className="input-with-button">
                     <input
@@ -8749,6 +8786,15 @@ export function SettingsPanel({
                         <Pencil size={16} />
                         Manage Group Memberships
                       </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        id="settings-manage-access-btn"
+                        onClick={() => setShowAccessLevelsModal(true)}
+                      >
+                        <KeyRound size={16} />
+                        Manage Access Levels
+                      </button>
                     </div>
                   </div>
                 </>
@@ -9329,7 +9375,16 @@ export function SettingsPanel({
         onAuthGroupsChange={setAuthGroups}
         onCloseCreateUser={() => setShowCreateLocalUserModal(false)}
         onCloseManageGroups={closeManageAuthGroupsModal}
+        onNavigateToSetting={onNavigateToSetting}
         toast={toast}
+      />
+      <AccessLevelsModal
+        open={showAccessLevelsModal}
+        onClose={() => setShowAccessLevelsModal(false)}
+        onChanged={() => setContentProtectionRefreshKey((key) => key + 1)}
+        authGroups={authGroups}
+        toast={toast}
+        onNavigateToSetting={onNavigateToSetting}
       />
 
       {settings?.updated_at && (

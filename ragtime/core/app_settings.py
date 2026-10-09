@@ -312,6 +312,7 @@ class SettingsCache:
             openai_key = prisma_settings.openaiApiKey or ""
             anthropic_key = prisma_settings.anthropicApiKey or ""
             openrouter_key = getattr(prisma_settings, "openrouterApiKey", "") or ""
+            typesafe_key = getattr(prisma_settings, "typesafeApiKey", "") or ""
             openrouter_management_key = getattr(prisma_settings, "openrouterManagementApiKey", "") or ""
             github_models_api_token = getattr(prisma_settings, "githubModelsApiToken", "") or ""
             github_copilot_access_token = getattr(prisma_settings, "githubCopilotAccessToken", "") or ""
@@ -328,6 +329,7 @@ class SettingsCache:
             openai_key = decrypt_secret(openai_key)
             anthropic_key = decrypt_secret(anthropic_key)
             openrouter_key = decrypt_secret(openrouter_key)
+            typesafe_key = decrypt_secret(typesafe_key)
             openrouter_management_key = decrypt_secret(openrouter_management_key)
             github_models_api_token = decrypt_secret(github_models_api_token)
             github_copilot_access_token = decrypt_secret(github_copilot_access_token)
@@ -499,6 +501,7 @@ class SettingsCache:
                 "anthropic_api_key": anthropic_key,
                 "claude_code_oauth_token": os.getenv(CLAUDE_CODE_OAUTH_TOKEN_ENV, ""),
                 "openrouter_api_key": openrouter_key,
+                "typesafe_api_key": typesafe_key,
                 "userspace_build_model": getattr(prisma_settings, "userspaceBuildModel", None),
                 "openrouter_credit_monitor_enabled": getattr(prisma_settings, "openrouterCreditMonitorEnabled", False),
                 "openrouter_low_credit_threshold_usd": getattr(prisma_settings, "openrouterLowCreditThresholdUsd", 5.0),
@@ -718,6 +721,7 @@ class SettingsCache:
                 "anthropic_api_key": "",
                 "claude_code_oauth_token": os.getenv(CLAUDE_CODE_OAUTH_TOKEN_ENV, ""),
                 "openrouter_api_key": "",
+                "typesafe_api_key": "",
                 "userspace_build_model": None,
                 "openrouter_credit_monitor_enabled": False,
                 "openrouter_low_credit_threshold_usd": 5.0,

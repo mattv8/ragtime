@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Eye, EyeOff, Pencil, Plus } from 'lucide-react';
+import { Eye, EyeOff, Pencil, Plus, ShieldCheck } from 'lucide-react';
 import { api } from '@/api';
 import {
   contentProtectionApi,
-  requirementModeFor,
+  DELETED_ACCESS_LEVEL_MESSAGE,
   updateContentProtectionConfigSlice,
-  withGroupProfile,
+  withExistingAccessLevel,
+  withGroupAccessLevel,
   withRequirement,
 } from '@/api/contentProtection';
 import type { ContentProtectionConfig } from '@/api/contentProtection';
@@ -14,6 +15,8 @@ import type { AuthGroup, UserRole } from '@/types';
 import { DeleteConfirmButton } from '../DeleteConfirmButton';
 import { InlineCopyButton } from './InlineCopyButton';
 import { Popover } from '../Popover';
+import { GroupProtectionPanel, type GroupProtectionPanelHandle } from './GroupProtectionPanel';
+import { AccessDetailHeader } from './AccessDetailHeader';
 
 type ToastActions = {
   success: (message: string, durationMs?: number) => void;
@@ -36,8 +39,12 @@ interface AuthAdminModalHostProps {
   onUsersChanged?: () => void | Promise<void>;
   onCloseCreateUser: () => void;
   onCloseManageGroups: () => void;
+  onNavigateToSetting?: (settingId: string) => void;
   toast: ToastActions;
 }
+
+const UNAVAILABLE_GROUP_MESSAGE =
+  'This group is no longer available. Protection changes are disabled; discard or close this editor.';
 
 const EMPTY_LOCAL_USER_FORM: LocalUserFormState = {
   username: '',
@@ -84,6 +91,7 @@ export function AuthAdminModalHost({
   onUsersChanged,
   onCloseCreateUser,
   onCloseManageGroups,
+  onNavigateToSetting,
   toast,
 }: AuthAdminModalHostProps) {
   const [localUserForm, setLocalUserForm] = useState<LocalUserFormState>(EMPTY_LOCAL_USER_FORM);
@@ -101,8 +109,28 @@ export function AuthAdminModalHost({
   const [authGroupDeletingId, setAuthGroupDeletingId] = useState<string | null>(null);
   const [contentProtectionConfig, setContentProtectionConfig] =
     useState<ContentProtectionConfig | null>(null);
-  const [contentProtectionSavingId, setContentProtectionSavingId] = useState<string | null>(null);
+  const [contentProtectionError, setContentProtectionError] = useState<string | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedGroupSnapshot, setSelectedGroupSnapshot] = useState<AuthGroup | null>(null);
+  const [protectionPanelBusy, setProtectionPanelBusy] = useState(false);
   const inlineEditInputRef = useRef<HTMLInputElement>(null);
+  const protectionPanelRef = useRef<GroupProtectionPanelHandle>(null);
+  const protectionTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const groupRailRef = useRef<HTMLDivElement>(null);
+  const protectionConfigRequest = useRef(0);
+
+  const liveSelectedGroup = selectedGroupId
+    ? authGroups.find((group) => group.id === selectedGroupId)
+    : undefined;
+  // Keep the last known group so a dirty draft survives external removal of the group.
+  const protectedGroup =
+    liveSelectedGroup ??
+    (selectedGroupSnapshot && selectedGroupSnapshot.id === selectedGroupId
+      ? selectedGroupSnapshot
+      : null);
+  const protectedGroupUnavailable = Boolean(
+    selectedGroupId && !liveSelectedGroup && protectedGroup,
+  );
 
   const toastRef = useRef(toast);
   useEffect(() => {
@@ -120,16 +148,36 @@ export function AuthAdminModalHost({
     }
   }, [onAuthGroupsChange]);
 
-  useEffect(() => {
-    if (manageGroupsOpen) {
-      void refreshAuthGroups();
-      setContentProtectionConfig(null);
-      void contentProtectionApi
-        .getConfig()
-        .then(setContentProtectionConfig)
-        .catch(() => setContentProtectionConfig(null));
+  // Only the newest config request may write state; closing or reopening the modal invalidates older ones.
+  const loadProtectionConfig = useCallback(async () => {
+    const requestId = protectionConfigRequest.current + 1;
+    protectionConfigRequest.current = requestId;
+    setContentProtectionError(null);
+    try {
+      const config = await contentProtectionApi.getConfig();
+      if (protectionConfigRequest.current === requestId) setContentProtectionConfig(config);
+    } catch (error) {
+      if (protectionConfigRequest.current === requestId) {
+        setContentProtectionError(
+          error instanceof Error ? error.message : 'Could not load protection config.',
+        );
+      }
     }
-  }, [manageGroupsOpen, refreshAuthGroups]);
+  }, []);
+
+  useEffect(() => {
+    if (!manageGroupsOpen) return undefined;
+    void refreshAuthGroups();
+    setContentProtectionConfig(null);
+    void loadProtectionConfig();
+    return () => {
+      protectionConfigRequest.current += 1;
+    };
+  }, [manageGroupsOpen, loadProtectionConfig, refreshAuthGroups]);
+
+  useEffect(() => {
+    if (liveSelectedGroup) setSelectedGroupSnapshot(liveSelectedGroup);
+  }, [liveSelectedGroup]);
 
   useEffect(() => {
     if (inlineEditId && inlineEditField && inlineEditInputRef.current) {
@@ -156,8 +204,53 @@ export function AuthAdminModalHost({
     setInlineEditValue('');
     setNewGroupMode(false);
     setNewGroupName('');
+    setSelectedGroupId(null);
     onCloseManageGroups();
   }, [onCloseManageGroups]);
+
+  const requestPanelNavigation = useCallback((continueNavigation: () => void) => {
+    if (protectionPanelRef.current)
+      protectionPanelRef.current.requestNavigation(continueNavigation);
+    else continueNavigation();
+  }, []);
+  const navigateToSetting = useCallback(
+    (settingId: string) => {
+      requestPanelNavigation(() => {
+        closeManageGroupsModal();
+        onNavigateToSetting?.(settingId);
+      });
+    },
+    [closeManageGroupsModal, onNavigateToSetting, requestPanelNavigation],
+  );
+
+  const selectGroup = useCallback(
+    (group: AuthGroup, trigger?: HTMLButtonElement) => {
+      const select = () => {
+        if (trigger) protectionTriggerRef.current = trigger;
+        setSelectedGroupId(group.id);
+        requestAnimationFrame(() =>
+          document.getElementById(`group-detail-heading-${group.id}`)?.focus(),
+        );
+      };
+      if (selectedGroupId && selectedGroupId !== group.id) requestPanelNavigation(select);
+      else select();
+    },
+    [requestPanelNavigation, selectedGroupId],
+  );
+
+  const closeProtectionPanel = useCallback(() => {
+    const previousGroupId = selectedGroupId;
+    setSelectedGroupId(null);
+    requestAnimationFrame(() => {
+      const groupRow = [...document.querySelectorAll<HTMLElement>('[data-group-id]')].find(
+        (row) => row.dataset.groupId === previousGroupId,
+      );
+      const rowButton =
+        groupRow?.querySelector<HTMLButtonElement>('.group-protection-button') ??
+        groupRow?.querySelector<HTMLButtonElement>('button');
+      (rowButton ?? groupRailRef.current)?.focus();
+    });
+  }, [selectedGroupId]);
 
   const handleCreateLocalUser = async () => {
     setLocalUserSaving(true);
@@ -247,16 +340,12 @@ export function AuthAdminModalHost({
     }
   };
 
-  const handleDeleteAuthGroup = async (group: AuthGroup) => {
-    if (!isLocalManagedAuthGroup(group)) {
-      toast.error('LDAP-synced groups cannot be deleted manually');
-      await refreshAuthGroups();
-      return;
-    }
+  const deleteAuthGroupNow = async (group: AuthGroup) => {
     setAuthGroupDeletingId(group.id);
     try {
       await api.deleteAuthGroup(group.id);
       onAuthGroupsChange(authGroups.filter((candidate) => candidate.id !== group.id));
+      setSelectedGroupId((current) => (current === group.id ? null : current));
       if (inlineEditId === group.id) {
         handleCancelInlineEdit();
       }
@@ -267,6 +356,17 @@ export function AuthAdminModalHost({
     } finally {
       setAuthGroupDeletingId(null);
     }
+  };
+
+  const handleDeleteAuthGroup = (group: AuthGroup) => {
+    if (!isLocalManagedAuthGroup(group)) {
+      toast.error('LDAP-synced groups cannot be deleted manually');
+      void refreshAuthGroups();
+      return;
+    }
+    // Deleting the open group must first resolve any dirty protection draft.
+    if (selectedGroupId === group.id) requestPanelNavigation(() => void deleteAuthGroupNow(group));
+    else void deleteAuthGroupNow(group);
   };
 
   const handleToggleAuthGroupAssignment = async (
@@ -324,7 +424,6 @@ export function AuthAdminModalHost({
     mode: 'inherit' | 'require',
   ) => {
     if (!contentProtectionConfig) return;
-    setContentProtectionSavingId(`${group.id}:requirement`);
     try {
       const savedConfig = await updateContentProtectionConfigSlice((config) =>
         withRequirement(config, 'group', group.id, mode),
@@ -335,31 +434,35 @@ export function AuthAdminModalHost({
       toast.error(
         err instanceof Error ? err.message : 'Failed to update content protection classification',
       );
-    } finally {
-      setContentProtectionSavingId(null);
     }
   };
 
-  const handleContentProtectionProfileChange = async (group: AuthGroup, profileId: string) => {
+  const handleContentProtectionAccessLevelChange = async (
+    group: AuthGroup,
+    accessLevelId: string,
+    enabled: boolean,
+  ) => {
     if (!contentProtectionConfig) return;
-    setContentProtectionSavingId(`${group.id}:profile`);
     try {
+      // The slice helper may retry after a 409; check the target on every fresh config.
       const savedConfig = await updateContentProtectionConfigSlice((config) =>
-        withGroupProfile(config, group.id, profileId),
+        withExistingAccessLevel(config, accessLevelId, () =>
+          withGroupAccessLevel(config, group.id, accessLevelId, enabled),
+        ),
       );
       setContentProtectionConfig(savedConfig);
-      toast.success('Content protection profile updated');
+      toast.success('Content protection access level updated');
     } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : 'Failed to update content protection profile',
-      );
-    } finally {
-      setContentProtectionSavingId(null);
+      const message =
+        err instanceof Error ? err.message : 'Failed to update content protection access level';
+      toast.error(message);
+      if (message === DELETED_ACCESS_LEVEL_MESSAGE) void loadProtectionConfig();
     }
   };
 
   const handleInlineEditKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Escape') {
+      event.preventDefault();
       handleCancelInlineEdit();
       return;
     }
@@ -391,6 +494,107 @@ export function AuthAdminModalHost({
       label: getAuthGroupProviderLabel(groups[0]),
       groups: sortAuthGroupsByName(groups),
     }));
+
+  const renderGroupDetailControls = (group: AuthGroup) => {
+    const localGroup = isLocalManagedAuthGroup(group);
+    const busy = authGroupDeletingId === group.id || authGroupUpdatingId === group.id;
+    const accessMode = getAuthGroupAccessMode(group);
+
+    return (
+      <div data-group-detail-controls>
+        {localGroup && (
+          <section className="group-detail-section">
+            <h5>Group</h5>
+            <div className="auth-group-row-title-wrap">
+              {inlineEditId === group.id && inlineEditField === 'display_name' ? (
+                <input
+                  ref={inlineEditInputRef}
+                  type="text"
+                  className="auth-group-row-inline-input"
+                  value={inlineEditValue}
+                  onChange={(event) => setInlineEditValue(event.target.value)}
+                  onKeyDown={handleInlineEditKeyDown}
+                  onBlur={() => void handleSaveInlineEdit()}
+                  disabled={inlineEditSaving || protectionPanelBusy}
+                />
+              ) : (
+                <div className="editable-field-wrapper name-wrapper auth-group-row-editable-title editable">
+                  <div className="auth-group-row-title">{group.display_name}</div>
+                  <button
+                    type="button"
+                    className="inline-edit-btn"
+                    onClick={() => handleStartInlineEdit(group, 'display_name')}
+                    disabled={protectionPanelBusy}
+                    aria-label={`Edit ${group.display_name} name`}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                </div>
+              )}
+            </div>
+            {inlineEditId === group.id && inlineEditField === 'description' ? (
+              <input
+                ref={inlineEditInputRef}
+                type="text"
+                className="auth-group-row-inline-input auth-group-row-inline-desc"
+                value={inlineEditValue}
+                onChange={(event) => setInlineEditValue(event.target.value)}
+                onKeyDown={handleInlineEditKeyDown}
+                onBlur={() => void handleSaveInlineEdit()}
+                disabled={inlineEditSaving || protectionPanelBusy}
+                placeholder="Description (optional)"
+              />
+            ) : (
+              <div className="editable-field-wrapper auth-group-row-editable-description editable">
+                <div className="auth-group-row-description">
+                  {group.description || 'Add description'}
+                </div>
+                <button
+                  type="button"
+                  className="inline-edit-btn"
+                  onClick={() => handleStartInlineEdit(group, 'description')}
+                  disabled={protectionPanelBusy}
+                  aria-label={`Edit ${group.display_name} description`}
+                >
+                  <Pencil size={12} />
+                </button>
+              </div>
+            )}
+          </section>
+        )}
+        <div className="group-detail-access-row">
+          <span className="group-detail-access-label">Access</span>
+          <div
+            className="auth-group-access-segment"
+            role="group"
+            aria-label={`Access mode for ${group.display_name}`}
+          >
+            {(['none', 'logon', 'admin'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className={`auth-group-access-option${accessMode === mode ? ' is-active' : ''}`}
+                disabled={busy || protectionPanelBusy || protectedGroupUnavailable}
+                onClick={() => void handleSetAuthGroupAccessMode(group, mode)}
+              >
+                {mode === 'none' ? 'None' : mode === 'logon' ? 'Logon' : 'Admin'}
+              </button>
+            ))}
+          </div>
+          {localGroup && (
+            <DeleteConfirmButton
+              onDelete={() => void handleDeleteAuthGroup(group)}
+              disabled={busy || protectionPanelBusy}
+              deleting={authGroupDeletingId === group.id}
+              className="btn btn-sm btn-danger auth-group-delete-button"
+              title="Delete group"
+              buttonText="Delete"
+            />
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <>
@@ -537,32 +741,62 @@ export function AuthAdminModalHost({
       )}
 
       {manageGroupsOpen && (
-        <div className="modal-overlay" onClick={closeManageGroupsModal}>
+        <div
+          className="modal-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              requestPanelNavigation(
+                selectedGroupId ? closeProtectionPanel : closeManageGroupsModal,
+              );
+            }
+          }}
+        >
           <div
-            className="modal-content modal-large auth-group-manage-modal"
+            className={`modal-content auth-group-manage-modal${selectedGroupId ? ' detail-open' : ''}`}
+            id="manage-group-memberships-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="manage-groups-title"
             onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && !event.defaultPrevented) {
+                event.preventDefault();
+                requestPanelNavigation(
+                  selectedGroupId ? closeProtectionPanel : closeManageGroupsModal,
+                );
+              }
+            }}
           >
             <div className="modal-header">
               <div>
-                <h3>Manage Group Memberships</h3>
+                <h3 id="manage-groups-title">Manage Group Memberships</h3>
                 <p className="auth-group-modal-subtitle">
                   {authGroups.filter(isLocalManagedAuthGroup).length} internal,{' '}
                   {authGroups.filter((group) => group.provider === 'ldap').length} LDAP
                 </p>
               </div>
-              <button className="modal-close" onClick={closeManageGroupsModal}>
+              <button
+                className="modal-close"
+                onClick={() => requestPanelNavigation(closeManageGroupsModal)}
+              >
                 &times;
               </button>
             </div>
-            <div className="modal-body auth-group-manage-body">
-              <div className="auth-group-manage-list-panel">
-                <div className="auth-group-panel-header">
+            <div
+              className="modal-body auth-group-manage-body access-md"
+              data-auth-group-modal-body
+              {...(selectedGroupId ? { 'data-detail-open': '' } : {})}
+            >
+              <div className="auth-group-manage-list-panel access-md-list" data-group-rail>
+                <div className="auth-group-panel-header" data-group-rail-header>
                   <h4>Groups</h4>
                   {!newGroupMode && (
                     <button
                       type="button"
                       className="btn btn-sm btn-secondary"
                       onClick={() => setNewGroupMode(true)}
+                      disabled={protectionPanelBusy}
                     >
                       <Plus size={14} />
                       New Group
@@ -579,6 +813,7 @@ export function AuthAdminModalHost({
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') void handleCreateNewGroup();
                         if (e.key === 'Escape') {
+                          e.preventDefault();
                           setNewGroupMode(false);
                           setNewGroupName('');
                         }
@@ -612,7 +847,14 @@ export function AuthAdminModalHost({
                 {authGroups.length === 0 ? (
                   <div className="auth-group-empty-state">No groups created yet.</div>
                 ) : (
-                  <div className="auth-group-manage-list">
+                  <div
+                    ref={groupRailRef}
+                    className="auth-group-manage-list access-md-list-body"
+                    aria-label="Groups"
+                    role="list"
+                    data-group-list
+                    tabIndex={-1}
+                  >
                     {providerSections.map((section) => (
                       <div key={section.provider} className="auth-group-provider-section">
                         <div className="model-group-header auth-group-provider-section-header">
@@ -633,12 +875,54 @@ export function AuthAdminModalHost({
                               []
                             : [];
                           const accessMode = getAuthGroupAccessMode(group);
-                          const groupProfileId = contentProtectionConfig?.group_profiles.find(
-                            (profile) => profile.group_id === group.id,
-                          )?.profile_id;
-                          const requirementSaving =
-                            contentProtectionSavingId === `${group.id}:requirement`;
-                          const profileSaving = contentProtectionSavingId === `${group.id}:profile`;
+                          const groupAccessLevelIds =
+                            contentProtectionConfig?.group_access_levels
+                              .filter((mapping) => mapping.group_id === group.id)
+                              .map((mapping) => mapping.access_level_id) || [];
+                          const accessLevelSummary = contentProtectionConfig
+                            ? groupAccessLevelIds.length
+                              ? contentProtectionConfig.access_levels
+                                  .filter((level) => groupAccessLevelIds.includes(level.id))
+                                  .map((level) => level.name)
+                                  .join(', ')
+                              : 'Default only'
+                            : 'Protection unavailable';
+                          if (selectedGroupId) {
+                            return (
+                              <div key={group.id} data-group-id={group.id} role="listitem">
+                                <button
+                                  type="button"
+                                  id={`group-rail-row-${group.id}`}
+                                  data-group-rail-row={group.id}
+                                  className={`access-md-rail-row${selectedGroupId === group.id ? ' is-selected' : ''}`}
+                                  aria-current={selectedGroupId === group.id ? 'true' : undefined}
+                                  disabled={protectionPanelBusy}
+                                  onClick={(event) => selectGroup(group, event.currentTarget)}
+                                >
+                                  <span
+                                    className="access-md-rail-row-name"
+                                    title={group.display_name}
+                                  >
+                                    {group.display_name}
+                                  </span>
+                                  <span className="access-md-rail-row-meta">
+                                    <span
+                                      className={`auth-group-provider-badge auth-group-provider-${group.provider}`}
+                                    >
+                                      {getAuthGroupProviderLabel(group)}
+                                    </span>
+                                    <span>
+                                      {group.member_count} member
+                                      {group.member_count === 1 ? '' : 's'}
+                                    </span>
+                                    <span className="auth-group-protection-summary access-md-rail-row-level">
+                                      {accessLevelSummary}
+                                    </span>
+                                  </span>
+                                </button>
+                              </div>
+                            );
+                          }
                           return (
                             <Popover
                               key={group.id}
@@ -689,7 +973,18 @@ export function AuthAdminModalHost({
                               }
                             >
                               <div
-                                className={`auth-group-manage-row${localGroup ? '' : ' is-synced'}${inlineEditId === group.id ? ' is-editing' : ''}`}
+                                className={`auth-group-manage-row${localGroup ? '' : ' is-synced'}${inlineEditId === group.id ? ' is-editing' : ''}${selectedGroupId === group.id ? ' is-selected' : ''}`}
+                                data-group-id={group.id}
+                                aria-current={selectedGroupId === group.id ? 'true' : undefined}
+                                onClick={(event) => {
+                                  if (
+                                    (event.target as HTMLElement).closest(
+                                      'button,input,select,textarea,a',
+                                    )
+                                  )
+                                    return;
+                                  if (!protectionPanelBusy) selectGroup(group);
+                                }}
                               >
                                 <div className="auth-group-row-main">
                                   <div className="auth-group-row-title-wrap">
@@ -711,7 +1006,7 @@ export function AuthAdminModalHost({
                                       <div
                                         className={`editable-field-wrapper name-wrapper auth-group-row-editable-title ${localGroup ? 'editable' : ''}`}
                                         onClick={
-                                          localGroup
+                                          localGroup && !protectionPanelBusy
                                             ? () => handleStartInlineEdit(group, 'display_name')
                                             : undefined
                                         }
@@ -731,6 +1026,7 @@ export function AuthAdminModalHost({
                                               event.stopPropagation();
                                               handleStartInlineEdit(group, 'display_name');
                                             }}
+                                            disabled={protectionPanelBusy}
                                             title="Edit group name"
                                             aria-label={`Edit ${group.display_name} name`}
                                           >
@@ -745,6 +1041,9 @@ export function AuthAdminModalHost({
                                       <span>{group.manual_member_count} manual</span>
                                     </div>
                                   )}
+                                  <div className="auth-group-protection-summary">
+                                    {accessLevelSummary}
+                                  </div>
                                   {inlineEditId === group.id &&
                                   inlineEditField === 'description' ? (
                                     <div className="inline-edit-field auth-group-inline-edit-field description-edit">
@@ -764,7 +1063,7 @@ export function AuthAdminModalHost({
                                     <div
                                       className={`editable-field-wrapper auth-group-row-editable-description ${localGroup ? 'editable' : ''}`}
                                       onClick={
-                                        localGroup
+                                        localGroup && !protectionPanelBusy
                                           ? () => handleStartInlineEdit(group, 'description')
                                           : undefined
                                       }
@@ -791,6 +1090,7 @@ export function AuthAdminModalHost({
                                             event.stopPropagation();
                                             handleStartInlineEdit(group, 'description');
                                           }}
+                                          disabled={protectionPanelBusy}
                                           title="Edit group description"
                                           aria-label={`Edit ${group.display_name} description`}
                                         >
@@ -800,6 +1100,23 @@ export function AuthAdminModalHost({
                                     </div>
                                   )}
                                 </div>
+                                <button
+                                  ref={
+                                    selectedGroupId === group.id ? protectionTriggerRef : undefined
+                                  }
+                                  type="button"
+                                  className="btn btn-sm btn-secondary group-protection-button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    selectGroup(group, event.currentTarget);
+                                  }}
+                                  aria-label={`Edit protection for ${group.display_name}`}
+                                  aria-pressed={selectedGroupId === group.id}
+                                  disabled={protectionPanelBusy}
+                                >
+                                  <ShieldCheck size={14} aria-hidden="true" />
+                                  Access
+                                </button>
                                 <div className="auth-group-row-side">
                                   <div className="auth-group-row-status-pills">
                                     <span
@@ -823,7 +1140,7 @@ export function AuthAdminModalHost({
                                           onDelete={() => {
                                             void handleDeleteAuthGroup(group);
                                           }}
-                                          disabled={busy}
+                                          disabled={busy || protectionPanelBusy}
                                           deleting={authGroupDeletingId === group.id}
                                           className="btn btn-sm btn-danger auth-group-delete-button"
                                           title="Delete group"
@@ -833,68 +1150,6 @@ export function AuthAdminModalHost({
                                     )}
                                   </div>
                                   <div className="auth-group-row-actions">
-                                    {contentProtectionConfig?.enabled && (
-                                      <div
-                                        className="form-group"
-                                        data-content-protection-group-controls={group.id}
-                                      >
-                                        <label htmlFor={`auth-group-classification-${group.id}`}>
-                                          Classification
-                                        </label>
-                                        <select
-                                          id={`auth-group-classification-${group.id}`}
-                                          data-content-protection-group-classification={group.id}
-                                          value={requirementModeFor(
-                                            contentProtectionConfig,
-                                            'group',
-                                            group.id,
-                                          )}
-                                          disabled={requirementSaving || profileSaving}
-                                          onChange={(event) =>
-                                            void handleContentProtectionRequirementChange(
-                                              group,
-                                              event.target.value as 'inherit' | 'require',
-                                            )
-                                          }
-                                        >
-                                          <option value="inherit">Inherit</option>
-                                          <option value="require">Require classification</option>
-                                        </select>
-                                        {contentProtectionConfig.coverage_mode ===
-                                          'all_supported_traffic' && (
-                                          <div className="field-help">
-                                            Coverage is currently All supported traffic; scope
-                                            requirements apply when coverage is Selected scopes.
-                                          </div>
-                                        )}
-                                        <label htmlFor={`auth-group-profile-${group.id}`}>
-                                          Profile
-                                        </label>
-                                        <select
-                                          id={`auth-group-profile-${group.id}`}
-                                          data-content-protection-group-profile={group.id}
-                                          value={groupProfileId || ''}
-                                          disabled={requirementSaving || profileSaving}
-                                          onChange={(event) =>
-                                            void handleContentProtectionProfileChange(
-                                              group,
-                                              event.target.value,
-                                            )
-                                          }
-                                        >
-                                          <option value="">No profile</option>
-                                          {contentProtectionConfig.profiles.map((profile) => (
-                                            <option key={profile.id} value={profile.id}>
-                                              {profile.name}
-                                            </option>
-                                          ))}
-                                        </select>
-                                        <div className="field-help">
-                                          Profile definitions are edited in Settings → Content
-                                          protection.
-                                        </div>
-                                      </div>
-                                    )}
                                     <div
                                       className="auth-group-access-segment"
                                       role="group"
@@ -903,7 +1158,7 @@ export function AuthAdminModalHost({
                                       <button
                                         type="button"
                                         className={`auth-group-access-option${accessMode === 'none' ? ' is-active' : ''}`}
-                                        disabled={busy}
+                                        disabled={busy || protectionPanelBusy}
                                         onClick={() =>
                                           void handleSetAuthGroupAccessMode(group, 'none')
                                         }
@@ -914,7 +1169,7 @@ export function AuthAdminModalHost({
                                       <button
                                         type="button"
                                         className={`auth-group-access-option${accessMode === 'logon' ? ' is-active' : ''}`}
-                                        disabled={busy}
+                                        disabled={busy || protectionPanelBusy}
                                         onClick={() =>
                                           void handleSetAuthGroupAccessMode(group, 'logon')
                                         }
@@ -925,7 +1180,7 @@ export function AuthAdminModalHost({
                                       <button
                                         type="button"
                                         className={`auth-group-access-option${accessMode === 'admin' ? ' is-active' : ''}`}
-                                        disabled={busy}
+                                        disabled={busy || protectionPanelBusy}
                                         onClick={() =>
                                           void handleSetAuthGroupAccessMode(group, 'admin')
                                         }
@@ -945,6 +1200,98 @@ export function AuthAdminModalHost({
                   </div>
                 )}
               </div>
+              {selectedGroupId && protectedGroup && (
+                <div className="access-md-detail" data-group-detail>
+                  <AccessDetailHeader
+                    headingId={`group-detail-heading-${protectedGroup.id}`}
+                    title={protectedGroup.display_name}
+                    meta={
+                      <>
+                        <span
+                          className={`auth-group-provider-badge auth-group-provider-${protectedGroup.provider}`}
+                        >
+                          {getAuthGroupProviderLabel(protectedGroup)}
+                        </span>
+                        <span className="auth-group-row-title-member-count">
+                          {protectedGroup.member_count} member
+                          {protectedGroup.member_count === 1 ? '' : 's'}
+                        </span>
+                        {!isLocalManagedAuthGroup(protectedGroup) && protectedGroup.source_dn && (
+                          <span className="auth-group-detail-dn" title={protectedGroup.source_dn}>
+                            {protectedGroup.source_dn}
+                          </span>
+                        )}
+                      </>
+                    }
+                    onClose={() => requestPanelNavigation(closeProtectionPanel)}
+                  />
+                  <div
+                    className="access-md-detail-body"
+                    data-group-detail-body
+                    role="region"
+                    aria-labelledby={`group-detail-heading-${protectedGroup.id}`}
+                  >
+                    {renderGroupDetailControls(protectedGroup)}
+                    {protectedGroupUnavailable && (
+                      <div
+                        className="error-banner"
+                        role="alert"
+                        data-group-protection-unavailable={protectedGroup.id}
+                      >
+                        {UNAVAILABLE_GROUP_MESSAGE}
+                      </div>
+                    )}
+                    {contentProtectionConfig ? (
+                      <GroupProtectionPanel
+                        key={protectedGroup.id}
+                        ref={protectionPanelRef}
+                        hideHeader
+                        group={protectedGroup}
+                        config={contentProtectionConfig}
+                        authGroups={authGroups}
+                        onConfigSaved={setContentProtectionConfig}
+                        onUpdateMapping={
+                          protectedGroupUnavailable
+                            ? async () => toast.error(UNAVAILABLE_GROUP_MESSAGE)
+                            : (levelId, enabled) =>
+                                handleContentProtectionAccessLevelChange(
+                                  protectedGroup,
+                                  levelId,
+                                  enabled,
+                                )
+                        }
+                        onUpdateRequirement={
+                          protectedGroupUnavailable
+                            ? async () => toast.error(UNAVAILABLE_GROUP_MESSAGE)
+                            : (mode) =>
+                                handleContentProtectionRequirementChange(protectedGroup, mode)
+                        }
+                        onBack={() => requestPanelNavigation(closeProtectionPanel)}
+                        onNavigateToSetting={onNavigateToSetting ? navigateToSetting : undefined}
+                        onBusyChange={setProtectionPanelBusy}
+                        toast={toast}
+                      />
+                    ) : (
+                      <section
+                        className="group-protection-panel"
+                        role="alert"
+                        data-group-protection-config-error
+                      >
+                        {contentProtectionError || 'Loading protection config…'}
+                        {contentProtectionError && (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-secondary"
+                            onClick={() => void loadProtectionConfig()}
+                          >
+                            Retry
+                          </button>
+                        )}
+                      </section>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

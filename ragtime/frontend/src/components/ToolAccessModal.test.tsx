@@ -64,10 +64,20 @@ describe('ToolAccessModal', () => {
     const config: ContentProtectionConfig = {
       revision: 1,
       enabled: true,
-      classifier_model: null,
+      schema_version: 2,
+      share_with_assistant: false,
+      classifier: {
+        backend: 'jev',
+        jev: { transport: 'auto', model: 'jev-latest' },
+        llm_model: null,
+      },
+      strictness: 'strict',
+      categories: [],
+      access_levels: [],
+      group_access_levels: [],
+      default_access_level_id: 'standard',
       coverage_mode: 'selected_scopes' as const,
-      profiles: [],
-      group_profiles: [],
+
       requirements: [],
       user_overrides: [],
     };
@@ -105,10 +115,20 @@ describe('ToolAccessModal', () => {
     contentProtectionMock.getConfig.mockResolvedValue({
       revision: 1,
       enabled: false,
-      classifier_model: null,
+      schema_version: 2,
+      share_with_assistant: false,
+      classifier: {
+        backend: 'jev',
+        jev: { transport: 'auto', model: 'jev-latest' },
+        llm_model: null,
+      },
+      strictness: 'strict',
+      categories: [],
+      access_levels: [],
+      group_access_levels: [],
+      default_access_level_id: 'standard',
       coverage_mode: 'all_supported_traffic',
-      profiles: [],
-      group_profiles: [],
+
       requirements: [],
       user_overrides: [],
     });

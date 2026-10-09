@@ -25,16 +25,23 @@ NON_GENERATIVE_CALL_EXEMPTIONS = {
 }
 
 # The classifier has no agent/tools path and only returns the strict verdict schema.
-SECURITY_CLASSIFICATION_PROVIDER_BOUNDARIES = {
-    ("ragtime/content_protection/provider.py", "classify"),
-    ("ragtime/content_protection/provider.py", "_run"),
+# Exact (path, innermost function, expression) triples: the only model call in
+# provider.py is the nested Noul invoke inside _detect_llm, reachable only via
+# detect(), which requires security_classification_context() (set solely by
+# service._classify). It never falls back to ordinary generation.
+SECURITY_CLASSIFICATION_PROVIDER_CALLS = {
+    ("ragtime/content_protection/provider.py", "invoke", "invocation_client.ainvoke"),
 }
+
+
+def _function_node(path: str, function_name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    tree = ast.parse((ROOT / path).read_text())
+    return next(node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name)
 
 
 def _function_calls(path: str, function_name: str) -> set[str]:
     """Return qualified call names inside one concrete function implementation."""
-    tree = ast.parse((ROOT / path).read_text())
-    function = next(node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name)
+    function = _function_node(path, function_name)
     calls: set[str] = set()
     for node in ast.walk(function):
         if not isinstance(node, ast.Call):
@@ -121,20 +128,17 @@ class GenerationGateInventoryTests(unittest.TestCase):
         self.assertIn("generation_context", _function_calls("ragtime/api/routes.py", "chat_completions"))
 
     def test_security_classifier_is_the_only_provider_gate_exception(self) -> None:
-        self.assertEqual(
-            SECURITY_CLASSIFICATION_PROVIDER_BOUNDARIES,
-            {
-                ("ragtime/content_protection/provider.py", "classify"),
-                ("ragtime/content_protection/provider.py", "_run"),
-            },
-        )
+        provider_calls = {call for call in _all_first_party_model_calls() if call[0] == "ragtime/content_protection/provider.py"}
+        self.assertEqual(provider_calls, SECURITY_CLASSIFICATION_PROVIDER_CALLS)
+        detect_source = ast.unparse(_function_node("ragtime/content_protection/provider.py", "detect"))
+        self.assertIn("_security_classification_authorized.get()", detect_source)
 
     def test_ast_inventory_classifies_every_model_boundary(self) -> None:
         """Every first-party model call is gated or explicitly proven non-generative."""
         calls = _all_first_party_model_calls()
         self.assertGreater(len(calls), 0)
         for path, function_name, expression in calls:
-            if (path, function_name) in SECURITY_CLASSIFICATION_PROVIDER_BOUNDARIES:
+            if (path, function_name, expression) in SECURITY_CLASSIFICATION_PROVIDER_CALLS:
                 continue
             if (path, function_name, expression) in NON_GENERATIVE_CALL_EXEMPTIONS:
                 continue
