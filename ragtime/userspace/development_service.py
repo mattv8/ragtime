@@ -17,7 +17,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from ragtime.content_protection import service as content_protection_service
-from ragtime.content_protection.external import authorize_external_content, external_protection_context, public_error_detail
+from ragtime.content_protection.external import authorize_external_content, context_for_principal, external_protection_context, public_error_detail
 from ragtime.core.database import get_db
 from ragtime.core.tool_access import resolve_tool_access
 from ragtime.http_api.models import HttpApiConnectionConfig, HttpApiRequest
@@ -298,6 +298,9 @@ class DevelopmentService:
         db = await get_db()
         user = await db.user.find_unique(where={"id": principal.user_id})
         context["user"] = {"username": getattr(user, "username", None), "display_name": getattr(user, "displayName", None), "role": getattr(user, "role", None)}
+        context["access_guidance"] = await content_protection_service.access_guidance(
+            content_protection_service.current_context() or context_for_principal(principal, surface="workspace_development", resource_id=workspace_id)
+        )
         catalog = await self._resources(principal, workspace_id)
         mounts, mountable_sources, env_vars, diagnostics = await asyncio.gather(
             userspace_service.list_workspace_mounts(workspace_id, principal.user_id, is_admin=principal.is_admin),

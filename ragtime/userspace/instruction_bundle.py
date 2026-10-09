@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from ragtime.core.entrypoint_status import EntrypointState, EntrypointStatus
 from ragtime.rag.prompts import (
+    build_access_level_prompt_fragment,
     build_current_user_turn_reminder_line,
     build_index_system_prompt,
     build_tool_system_prompt,
@@ -107,6 +108,7 @@ def build_instruction_bundle(context: dict) -> dict:
         mounts=mounts,
         object_storage_enabled=bool(buckets or authorized_resources.get("object_storage_enabled", source.get("object_storage_enabled", False))),
         object_storage_buckets=buckets,
+        access_level_prompt=build_access_level_prompt_fragment(_mapping(source.get("access_guidance"))),
     )
     sections = {key: translate_internal_tool_references(value) for key, value in sections.items()}
     sections["authorized_indexes"] = build_index_system_prompt(authorized_indexes, search_tool_name="index_search")
@@ -163,6 +165,7 @@ def build_instruction_bundle(context: dict) -> dict:
             "runtime_blocker": str(source.get("runtime_status_reminder_line") or ""),
             "diagnostics": normalize_facts(source.get("diagnostics") or []),
             "recent_failure_summaries": [str(value) for value in source.get("recent_failure_summaries", []) if value],
+            "access_guidance_revision": _mapping(source.get("access_guidance")).get("guidance_revision"),
         },
         "unsupported": unsupported,
     }
