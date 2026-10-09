@@ -172,6 +172,29 @@ describe('AccessLevelsModal', () => {
     await waitFor(() => expect(props.onClose).toHaveBeenCalled());
   });
 
+  it('renders rail rows in an ordered list and marks the selected row current', async () => {
+    renderModal();
+    const rail = await screen.findByRole('list');
+
+    expect(rail.tagName).toBe('OL');
+    expect(screen.getByRole('button', { name: /standard/i }).getAttribute('aria-current')).toBe(
+      'true',
+    );
+  });
+
+  it('announces that content protection is off', async () => {
+    vi.spyOn(contentProtectionApi, 'getConfig').mockResolvedValue({
+      ...config(),
+      enabled: false,
+      share_with_assistant: false,
+    });
+    renderModal();
+
+    const message = await screen.findByText(/content protection is off/i);
+    const notice = message.closest('[role="status"]');
+    expect(notice?.hasAttribute('data-access-protection-off')).toBe(true);
+  });
+
   it('shows the default-level delete guard', async () => {
     renderModal();
     await userEvent.click(await screen.findByText('Standard'));

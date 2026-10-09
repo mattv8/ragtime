@@ -499,7 +499,7 @@ function LoadedAccessLevelsModal(props: {
           <div className="access-md-list" data-access-levels-rail>
             <div className="access-levels-rail-header" data-access-levels-rail-header>
               <div className="access-levels-rail-header-top">
-                <h4>Access levels</h4>
+                <h4 className="access-levels-rail-heading">Access levels</h4>
                 <button
                   type="button"
                   className="btn btn-sm btn-secondary"
@@ -517,8 +517,8 @@ function LoadedAccessLevelsModal(props: {
                 </button>
               </div>
               <input
-                type="search"
-                className="form-input access-levels-rail-search"
+                type="text"
+                className="access-levels-rail-search"
                 placeholder="Search access levels"
                 aria-label="Search access levels"
                 data-access-levels-search
@@ -526,19 +526,19 @@ function LoadedAccessLevelsModal(props: {
                 onChange={(event) => setQuery(event.target.value)}
               />
             </div>
-            <ul className="access-md-list-body" data-access-levels-list>
+            <ol className="access-md-list-body" data-access-levels-list>
               {!levels.length && (
-                <li className="auth-group-empty-state" data-levels-empty>
+                <li className="access-md-list-item auth-group-empty-state" data-levels-empty>
                   No access levels configured.
                 </li>
               )}
               {Boolean(levels.length && !filtered.length) && (
-                <li className="auth-group-empty-state" data-levels-no-match>
+                <li className="access-md-list-item auth-group-empty-state" data-levels-no-match>
                   No matching access levels.
                 </li>
               )}
               {filtered.map((level) => (
-                <li key={level.id}>
+                <li className="access-md-list-item" key={level.id}>
                   <button
                     type="button"
                     className={`access-md-rail-row${level.id === selectedId ? ' is-selected' : ''}`}
@@ -577,7 +577,7 @@ function LoadedAccessLevelsModal(props: {
                   </button>
                 </li>
               ))}
-            </ul>
+            </ol>
           </div>
           {selected && (
             <div
@@ -601,12 +601,19 @@ function LoadedAccessLevelsModal(props: {
                 aria-busy={Boolean(savingLevelId || deleting)}
               >
                 {!config.enabled && !config.share_with_assistant && (
-                  <p className="field-help" role="status" data-access-protection-off>
-                    Content protection is off.{' '}
-                    <a href="?view=settings#settings-content-protection">
-                      Enable in Settings → Content protection.
-                    </a>
-                  </p>
+                  <div
+                    className="tool-access-callout tool-access-callout-warning"
+                    role="status"
+                    data-access-protection-off
+                  >
+                    <strong>Content protection is off.</strong>
+                    <span>
+                      <a href="?view=settings#settings-content-protection">
+                        Enable in Settings → Content protection
+                      </a>{' '}
+                      to apply these access levels.
+                    </span>
+                  </div>
                 )}
                 <ContentProtectionAccessLevelCard
                   level={selected}
@@ -710,7 +717,9 @@ function LoadedAccessLevelsModal(props: {
                   data-level-section="preview"
                   data-level-preview
                 >
-                  <summary>Prompt preview {previewLoading && 'Loading…'}</summary>
+                  <summary className="access-level-preview-summary">
+                    Prompt preview {previewLoading && 'Loading…'}
+                  </summary>
                   <p className="field-help">
                     Synthetic scope. This reflects the last saved state while a draft is dirty.
                   </p>
