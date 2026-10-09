@@ -120,10 +120,11 @@ export function ContentProtectionCategoryCard({
           </div>
         </div>
       </div>
-      <label>
-        Name
+      <div className="form-group">
+        <label htmlFor={`content-protection-category-${category.id}-name`}>Name</label>
         <input
-          className="inline-edit-input"
+          id={`content-protection-category-${category.id}-name`}
+          type="text"
           disabled={category.system}
           value={fields.name}
           maxLength={128}
@@ -138,11 +139,13 @@ export function ContentProtectionCategoryCard({
             {fieldErrors.name}
           </p>
         )}
-      </label>
-      <label>
-        Description
+      </div>
+      <div className="form-group">
+        <label htmlFor={`content-protection-category-${category.id}-description`}>
+          Description
+        </label>
         <textarea
-          className="inline-edit-textarea"
+          id={`content-protection-category-${category.id}-description`}
           disabled={category.system}
           value={fields.description}
           maxLength={1000}
@@ -160,11 +163,17 @@ export function ContentProtectionCategoryCard({
             {fieldErrors.description}
           </p>
         )}
-      </label>
-      <label>
-        Denial message <span className="field-help">{category.denial_message.length}/120</span>
+      </div>
+      <div className="form-group">
+        <div className="access-level-field-header">
+          <label htmlFor={`content-protection-category-${category.id}-denial-message`}>
+            Denial message
+          </label>
+          <span className="field-help">{category.denial_message.length}/120</span>
+        </div>
         <input
-          className="inline-edit-input"
+          id={`content-protection-category-${category.id}-denial-message`}
+          type="text"
           disabled={category.system}
           value={fields.denial_message}
           maxLength={120}
@@ -179,12 +188,14 @@ export function ContentProtectionCategoryCard({
             {fieldErrors.denial_message}
           </p>
         )}
-      </label>
+      </div>
       {(['includes', 'excludes', 'examples'] as const).map((field) => (
-        <label key={field}>
-          {field[0].toUpperCase() + field.slice(1)}
+        <div className="form-group" key={field}>
+          <label htmlFor={`content-protection-category-${category.id}-${field}`}>
+            {field[0].toUpperCase() + field.slice(1)}
+          </label>
           <textarea
-            className="inline-edit-textarea"
+            id={`content-protection-category-${category.id}-${field}`}
             disabled={category.system}
             value={lists[field]}
             rows={2}
@@ -193,7 +204,7 @@ export function ContentProtectionCategoryCard({
             }
             onBlur={() => commitList(field)}
           />
-        </label>
+        </div>
       ))}
       {!category.system && (
         <label>

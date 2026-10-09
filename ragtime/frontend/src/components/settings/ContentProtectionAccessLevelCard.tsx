@@ -44,24 +44,26 @@ export function ContentProtectionAccessLevelCard({
           </div>
         </div>
       )}
-      <label>
-        Name
+      <div className="form-group">
+        <label htmlFor={`${descriptionIdPrefix}name`}>Name</label>
         <input
-          className="inline-edit-input"
+          id={`${descriptionIdPrefix}name`}
+          type="text"
           value={level.name}
           maxLength={128}
           disabled={fieldsDisabled}
           onChange={(event) => onUpdate(level.id, { name: event.target.value })}
         />
-      </label>
-      <fieldset>
-        <legend>Granted categories</legend>
+      </div>
+      <fieldset className="content-protection-fieldset">
+        <legend className="access-level-section-heading">Granted categories</legend>
         <div className="content-protection-level-grants">
           {categories
             .filter((category) => category.id !== 'rule_override')
             .map((category) => (
               <label className="checkbox-label" key={category.id}>
                 <input
+                  className="access-level-category-checkbox"
                   aria-label={category.name}
                   aria-describedby={`${descriptionIdPrefix}category-${category.id}-description`}
                   type="checkbox"
@@ -80,17 +82,20 @@ export function ContentProtectionAccessLevelCard({
             ))}
         </div>
       </fieldset>
-      <label>
-        Guidance for assistant <span className="field-help">{level.guidance.length}/4000</span>
+      <div className="form-group">
+        <div className="access-level-field-header">
+          <label htmlFor={`${descriptionIdPrefix}guidance`}>Guidance for assistant</label>
+          <span className="field-help">{level.guidance.length}/4000</span>
+        </div>
         <textarea
-          className="inline-edit-textarea"
+          id={`${descriptionIdPrefix}guidance`}
           rows={4}
           maxLength={4000}
           value={level.guidance}
           disabled={fieldsDisabled}
           onChange={(event) => onUpdate(level.id, { guidance: event.target.value })}
         />
-      </label>
+      </div>
       {onDelete !== undefined && (
         <div className="tool-card-footer">
           <div className="tool-card-actions">

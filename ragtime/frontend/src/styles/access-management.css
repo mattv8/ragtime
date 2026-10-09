@@ -149,6 +149,13 @@
   padding-right: 2px;
 }
 
+.access-levels-modal ol.access-md-list-body {
+  margin: 0;
+  padding-inline: var(--space-sm);
+  padding-block: var(--space-sm);
+  list-style: none;
+}
+
 .access-md-detail {
   grid-column: 2;
   display: flex;
@@ -269,15 +276,17 @@
   justify-content: space-between;
   gap: var(--space-sm);
 }
-.access-levels-rail-header-top h4,
-.access-level-section-heading {
+.access-levels-rail-heading,
+.access-level-section-heading,
+.access-level-preview-summary {
   margin: 0;
+  color: var(--color-text-strong);
   font-size: var(--text-sm);
   font-weight: 600;
-  color: var(--color-text-primary);
 }
 .access-levels-rail-search {
   width: 100%;
+  box-sizing: border-box;
 }
 .access-md-detail .content-protection-level-grants {
   grid-template-columns: 1fr;
@@ -291,7 +300,7 @@
   column-gap: var(--space-xs);
   row-gap: 2px;
 }
-.access-md-detail .content-protection-level-grants .checkbox-label input[type='checkbox'] {
+.access-md-detail .content-protection-level-grants .access-level-category-checkbox {
   grid-column: 1;
   grid-row: 1;
   width: 16px;
@@ -309,10 +318,67 @@
   margin-top: 0;
 }
 .access-md-detail .tool-card.content-protection-level {
-  gap: var(--space-xs);
+  height: auto;
+  gap: var(--space-lg);
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.access-md-detail .content-protection-level > .content-protection-fieldset {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.access-md-detail .content-protection-fieldset > legend {
+  padding-inline: 0;
+}
+.content-protection-level > .form-group,
+.content-protection-category > .form-group {
+  margin-bottom: 0;
+}
+.access-level-field-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+.access-level-field-header label,
+.access-level-field-header .field-help {
+  margin: 0;
+}
+[data-theme-pack='modern'] .access-levels-modal .btn-secondary,
+[data-theme-pack='modern'] .auth-group-manage-modal .btn-secondary,
+[data-theme-pack='modern']
+  .access-levels-modal
+  .btn:not(.btn-danger, .btn-success, [class*='btn-']),
+[data-theme-pack='modern']
+  .auth-group-manage-modal
+  .btn:not(.btn-danger, .btn-success, [class*='btn-']) {
+  border-color: var(--color-border-strong);
+}
+.access-md-detail-header,
+.access-md-footer {
+  padding-inline: var(--space-lg);
 }
 .access-md-detail [data-level-section] {
-  margin-top: var(--space-xs);
-  padding-top: var(--space-md);
-  border-top: 1px solid var(--color-border);
+  display: grid;
+  gap: var(--space-xs);
+  margin-top: var(--space-lg);
+  padding: 0;
+  border: 0;
+}
+.access-md-detail [data-level-section] .field-help,
+.access-md-detail .access-level-groups-chips {
+  margin: 0;
+}
+.access-md-detail [data-level-section] > .btn {
+  justify-self: start;
+}
+.access-md-detail .access-level-danger-zone .btn-danger {
+  border-color: var(--color-error) !important;
+  background: var(--color-error) !important;
+  color: var(--color-text-inverse) !important;
 }
