@@ -285,6 +285,18 @@ describe('ContentProtectionSettingsSection', () => {
     expect(await screen.findByText('85.0%')).toBeTruthy();
     expect(screen.getByText('above threshold')).toBeTruthy();
   });
+  it('exposes the settings highlight target on the always-rendered accordion header', () => {
+    render(<ContentProtectionSettingsSection open={false} onToggle={() => {}} />);
+    const target = document.getElementById('setting-content_protection');
+    expect(target?.getAttribute('aria-controls')).toBe(
+      'settings-accordion-body-content-protection',
+    );
+    expect(
+      target
+        ?.closest('[data-settings-accordion-section]')
+        ?.getAttribute('data-settings-accordion-section'),
+    ).toBe('content-protection');
+  });
   it('shows a retryable load error instead of a permanent loading state', async () => {
     let fails = true;
     vi.stubGlobal(

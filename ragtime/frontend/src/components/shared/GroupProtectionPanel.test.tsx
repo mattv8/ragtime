@@ -102,4 +102,15 @@ describe('GroupProtectionPanel', () => {
     expect(api.saveConfig.mock.calls[1][0]).toBe(2);
     expect(api.saveConfig.mock.calls[1][1].strictness).toBe('permissive');
   });
+
+  it('links the disabled-policy advisory to the highlighted settings target', async () => {
+    api.preview.mockResolvedValue({ prompt_fragment: '' });
+    panel({ config: { ...config, enabled: false } });
+
+    const callout = await screen.findByText(/content protection is off/i);
+    expect(callout.closest('[data-group-protection-advisory]')).toBeTruthy();
+    expect(screen.getByRole('link', { name: /enable in settings/i }).getAttribute('href')).toBe(
+      '?view=settings&highlight=content_protection',
+    );
+  });
 });

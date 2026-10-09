@@ -655,6 +655,7 @@ interface SettingsPanelProps {
   onServerBackupJobObserved?: (job: ServerBackupJob) => void;
   onServerRestoreJobObserved?: (job: ServerRestoreJob) => void;
   onServerOperationError?: (message: string) => void;
+  onNavigateToSetting?: (settingId: string) => void;
 }
 
 export function SettingsPanel({
@@ -671,6 +672,7 @@ export function SettingsPanel({
   onServerBackupJobObserved,
   onServerRestoreJobObserved,
   onServerOperationError,
+  onNavigateToSetting,
 }: SettingsPanelProps) {
   const settingsPanelRef = useRef<HTMLDivElement | null>(null);
   const hasAuthenticatedPosture = hasAuthenticatedSecurityPosture(authStatus);
@@ -9373,6 +9375,7 @@ export function SettingsPanel({
         onAuthGroupsChange={setAuthGroups}
         onCloseCreateUser={() => setShowCreateLocalUserModal(false)}
         onCloseManageGroups={closeManageAuthGroupsModal}
+        onNavigateToSetting={onNavigateToSetting}
         toast={toast}
       />
       <AccessLevelsModal
@@ -9381,6 +9384,7 @@ export function SettingsPanel({
         onChanged={() => setContentProtectionRefreshKey((key) => key + 1)}
         authGroups={authGroups}
         toast={toast}
+        onNavigateToSetting={onNavigateToSetting}
       />
 
       {settings?.updated_at && (
