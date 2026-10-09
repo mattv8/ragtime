@@ -270,6 +270,7 @@ model AppSettings {
   openaiApiKey                       String    @default("") @map("openai_api_key")
   anthropicApiKey                    String    @default("") @map("anthropic_api_key")
   openrouterApiKey                   String    @default("") @map("openrouter_api_key")
+  typesafeApiKey                     String    @default("") @map("typesafe_api_key")
   githubModelsApiToken               String    @default("") @map("github_models_api_token")
   githubCopilotAccessToken           String    @default("") @map("github_copilot_access_token")
   githubCopilotRefreshToken          String    @default("") @map("github_copilot_refresh_token")

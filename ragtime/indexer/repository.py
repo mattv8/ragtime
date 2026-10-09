@@ -1344,6 +1344,7 @@ class IndexerRepository:
         openai_key = settings.openaiApiKey or ""
         anthropic_key = settings.anthropicApiKey or ""
         openrouter_key = getattr(settings, "openrouterApiKey", "") or ""
+        typesafe_key = getattr(settings, "typesafeApiKey", "") or ""
         openrouter_management_key = getattr(settings, "openrouterManagementApiKey", "") or ""
         github_models_api_token = getattr(settings, "githubModelsApiToken", "") or ""
         github_copilot_access_token = getattr(settings, "githubCopilotAccessToken", "") or ""
@@ -1360,6 +1361,8 @@ class IndexerRepository:
             anthropic_key = decrypt_secret(anthropic_key)
         if openrouter_key:
             openrouter_key = decrypt_secret(openrouter_key)
+        if typesafe_key:
+            typesafe_key = decrypt_secret(typesafe_key)
         if openrouter_management_key:
             openrouter_management_key = decrypt_secret(openrouter_management_key)
         if github_models_api_token:
@@ -1521,6 +1524,7 @@ class IndexerRepository:
             has_openai_codex_auth=bool(openai_codex_access_token or openai_codex_refresh_token),
             anthropic_api_key=anthropic_key,
             openrouter_api_key=openrouter_key,
+            typesafe_api_key=typesafe_key,
             userspace_build_model=getattr(settings, "userspaceBuildModel", None),
             openrouter_credit_monitor_enabled=getattr(settings, "openrouterCreditMonitorEnabled", False),
             openrouter_low_credit_threshold_usd=getattr(settings, "openrouterLowCreditThresholdUsd", 5.0),
@@ -1880,6 +1884,7 @@ class IndexerRepository:
             "openai_codex_base_url": "openaiCodexBaseUrl",
             "anthropic_api_key": "anthropicApiKey",
             "openrouter_api_key": "openrouterApiKey",
+            "typesafe_api_key": "typesafeApiKey",
             "github_models_api_token": "githubModelsApiToken",
             "github_copilot_access_token": "githubCopilotAccessToken",
             "github_copilot_refresh_token": "githubCopilotRefreshToken",
@@ -1997,6 +2002,7 @@ class IndexerRepository:
             "openai_codex_refresh_token",
             "anthropic_api_key",
             "openrouter_api_key",
+            "typesafe_api_key",
             "openrouter_management_api_key",
             "github_models_api_token",
             "github_copilot_access_token",
