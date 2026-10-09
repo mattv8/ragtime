@@ -2,6 +2,7 @@
 
 from ragtime.content_protection.models import ContentProtectionError, ProtectionContext
 from ragtime.content_protection.service import (
+    access_guidance,
     authorize_content,
     classification_required,
     current_context,
@@ -13,6 +14,7 @@ __all__ = [
     "ContentProtectionError",
     "ProtectionContext",
     "authorize_content",
+    "access_guidance",
     "classification_required",
     "current_context",
     "protection_context",

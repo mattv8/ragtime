@@ -8,12 +8,20 @@ from ragtime.core import performance
 
 class ContentProtectionObservabilityTests(unittest.IsolatedAsyncioTestCase):
     def _policy(self):
-        return service._ResolvedPolicy(True, "all", {"u"}, {"u": set()}, {"u": None}, [[{"id": "standard", "scope": "ordinary"}]])
+        return service._ResolvedPolicy(
+            True, "all", {"u"}, {"u": set()}, {"u": None}, [[{"id": "standard", "granted_category_ids": ["operational"], "guidance": ""}]], {"operational"}
+        )
+
+    @staticmethod
+    def _detection(config, denied=False):
+        probabilities = {category.id: 0.0 for category in config.categories}
+        if denied:
+            probabilities["company_finance"] = 1.0
+        return {"probabilities": probabilities, "model": "test", "usage": {"input_tokens": 1, "output_tokens": 1}, "transport": "test", "cache_hit": False}
 
     async def test_failed_classifier_wait_is_timed_without_logging_candidate_or_error_details(self) -> None:
-        config = ContentProtectionConfig(enabled=True, classifier_model="openai::classifier")
+        config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
         clock = [0.0]
-        service._decision_cache.clear()
 
         async def fail_classification(*args, **kwargs):
             clock[0] = 2.0
@@ -23,7 +31,7 @@ class ContentProtectionObservabilityTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(service, "load_config", mock.AsyncMock(return_value=config)),
             mock.patch.object(service, "_resolve", mock.AsyncMock(return_value=self._policy())),
             mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
-            mock.patch.object(service, "classify", fail_classification),
+            mock.patch.object(service, "detect", fail_classification),
             mock.patch.object(service, "_audit", mock.AsyncMock()),
             mock.patch.object(performance, "monotonic", side_effect=lambda: clock[0]),
             self.assertLogs("ragtime.performance", level="WARNING") as logs,
@@ -39,15 +47,14 @@ class ContentProtectionObservabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("PRIVATE-PROVIDER-DETAIL", rendered)
 
     async def test_finalized_log_is_payload_free_for_allowed_and_denied_content(self) -> None:
-        config = ContentProtectionConfig(enabled=True, classifier_model="openai::classifier")
+        config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
         canary = "CANARY-SECRET-DO-NOT-LOG"
         for verdict, expected in (("allow", "permitted"), ("deny", "denied")):
-            service._decision_cache.clear()
             with (
                 mock.patch.object(service, "load_config", mock.AsyncMock(return_value=config)),
                 mock.patch.object(service, "_resolve", mock.AsyncMock(return_value=self._policy())),
                 mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
-                mock.patch.object(service, "classify", mock.AsyncMock(return_value={"verdict": verdict, "reason_code": "restricted_content"})),
+                mock.patch.object(service, "detect", mock.AsyncMock(return_value=self._detection(config, denied=verdict == "deny"))),
                 mock.patch.object(service, "_audit", mock.AsyncMock()),
                 mock.patch.object(service.logger, "info") as log,
             ):
@@ -66,13 +73,13 @@ class ContentProtectionObservabilityTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_release_recheck_failure_is_audited(self) -> None:
-        config = ContentProtectionConfig(enabled=True, classifier_model="openai::classifier")
+        config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
         audit = mock.AsyncMock()
         with (
             mock.patch.object(service, "load_config", mock.AsyncMock(side_effect=[config, RuntimeError("db unavailable")])),
             mock.patch.object(service, "_resolve", mock.AsyncMock(return_value=self._policy())),
             mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
-            mock.patch.object(service, "classify", mock.AsyncMock(return_value={"verdict": "allow", "reason_code": "permitted"})),
+            mock.patch.object(service, "detect", mock.AsyncMock(return_value=self._detection(config))),
             mock.patch.object(service, "_audit", audit),
         ):
             with self.assertRaisesRegex(ContentProtectionError, "classifier_unavailable"):
