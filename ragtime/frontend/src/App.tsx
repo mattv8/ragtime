@@ -277,6 +277,10 @@ export function App() {
   // App state
   const [activeView, setActiveView] = useState<ViewType>(getInitialView);
   const [highlightSetting, setHighlightSetting] = useState<string | null>(getInitialHighlight);
+  const navigateToSetting = useCallback((settingId: string) => {
+    setActiveView('settings');
+    setHighlightSetting(settingId);
+  }, []);
   const [initialConversationId] = useState<string | null>(getInitialConversationId);
   const [highlightToolsSection, setHighlightToolsSection] = useState<string | null>(null);
   const [serverName, setServerName] = useState<string>('Ragtime');
@@ -1759,6 +1763,7 @@ export function App() {
                     onServerBackupJobObserved={observeServerBackupJob}
                     onServerRestoreJobObserved={observeServerRestoreJob}
                     onServerOperationError={handleServerOperationError}
+                    onNavigateToSetting={navigateToSetting}
                   />
                 </Suspense>
               </div>
@@ -1784,6 +1789,7 @@ export function App() {
                       if (updatedUser.id !== currentUser.id) return;
                       await refresh('policy-save');
                     }}
+                    onNavigateToSetting={navigateToSetting}
                   />
                 </Suspense>
               </div>

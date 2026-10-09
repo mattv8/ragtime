@@ -8,11 +8,12 @@ interface SettingsAccordionSectionProps {
   onToggle: (id: SettingsAccordionSectionId) => void;
   status?: ReactNode;
   className?: string;
+  highlightId?: string;
   children: ReactNode;
 }
 
 export function SettingsAccordionSection(props: SettingsAccordionSectionProps): JSX.Element {
-  const { id, title, open, onToggle, status, className = '', children } = props;
+  const { id, title, open, onToggle, status, className = '', highlightId, children } = props;
   const bodyId = `settings-accordion-body-${id}`;
 
   return (
@@ -22,6 +23,7 @@ export function SettingsAccordionSection(props: SettingsAccordionSectionProps): 
       data-settings-accordion-open={open ? 'true' : 'false'}
     >
       <button
+        id={highlightId}
         type="button"
         className="settings-accordion-header"
         aria-expanded={open}

@@ -213,6 +213,7 @@ interface UsersPanelProps {
   onOpenWorkspace: (workspaceId: string) => void;
   onOpenChat?: (conversationId: string) => void;
   onGenerationPolicyUpdated?: (user: User) => void | Promise<void>;
+  onNavigateToSetting?: (settingId: string) => void;
 }
 
 interface DerivedUserStats {
@@ -305,6 +306,7 @@ export function UsersPanel({
   onOpenWorkspace,
   onOpenChat,
   onGenerationPolicyUpdated,
+  onNavigateToSetting,
 }: UsersPanelProps) {
   const [activeTab, setActiveTab] = useState<PanelTab>('management');
 
@@ -3069,6 +3071,7 @@ export function UsersPanel({
         onUsersChanged={loadUsers}
         onCloseCreateUser={() => setShowCreateLocalUserModal(false)}
         onCloseManageGroups={() => setShowManageAuthGroupsModal(false)}
+        onNavigateToSetting={onNavigateToSetting}
         toast={toast}
       />
       <AccessLevelsModal
@@ -3077,6 +3080,7 @@ export function UsersPanel({
         onChanged={() => void retryContentProtectionConfig()}
         authGroups={authGroups}
         toast={toast}
+        onNavigateToSetting={onNavigateToSetting}
       />
     </div>
   );

@@ -35,15 +35,41 @@ vi.mock('@/api/contentProtection', async () => ({
 vi.mock('@/theme', () => ({ subscribeToThemeChanges: () => () => {} }));
 vi.mock('react-chartjs-2', () => ({ Bar: () => null, Chart: () => null, Line: () => null }));
 vi.mock('./shared/AuthAdminModals', () => ({
-  AuthAdminModalHost: ({ manageGroupsOpen }: { manageGroupsOpen: boolean }) =>
-    manageGroupsOpen ? <div>Manage Groups</div> : null,
+  AuthAdminModalHost: ({
+    manageGroupsOpen,
+    onNavigateToSetting,
+  }: {
+    manageGroupsOpen: boolean;
+    onNavigateToSetting?: (settingId: string) => void;
+  }) =>
+    manageGroupsOpen ? (
+      <div>
+        Manage Groups
+        <button type="button" onClick={() => onNavigateToSetting?.('content_protection')}>
+          Mock group settings link
+        </button>
+      </div>
+    ) : null,
 }));
 vi.mock('./shared/AccessLevelsModal', () => ({
-  AccessLevelsModal: ({ open, onChanged }: { open: boolean; onChanged?: () => void }) =>
+  AccessLevelsModal: ({
+    open,
+    onChanged,
+    onNavigateToSetting,
+  }: {
+    open: boolean;
+    onChanged?: () => void;
+    onNavigateToSetting?: (settingId: string) => void;
+  }) =>
     open ? (
-      <button type="button" onClick={onChanged}>
-        Mock access change
-      </button>
+      <>
+        <button type="button" onClick={onChanged}>
+          Mock access change
+        </button>
+        <button type="button" onClick={() => onNavigateToSetting?.('content_protection')}>
+          Mock access settings link
+        </button>
+      </>
     ) : null,
 }));
 
@@ -342,5 +368,27 @@ describe('UsersPanel directory and modal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Mock access change' }));
 
     await waitFor(() => expect(contentProtectionMock.getConfig).toHaveBeenCalledOnce());
+  });
+
+  it('passes settings navigation to both access modals', async () => {
+    const onNavigateToSetting = vi.fn();
+    render(
+      <UsersPanel
+        currentUser={user('user-1')}
+        onOpenWorkspace={vi.fn()}
+        onNavigateToSetting={onNavigateToSetting}
+      />,
+    );
+    await screen.findByText('Alex');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mock access settings link' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Manage groups' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Mock group settings link' }));
+
+    expect(onNavigateToSetting.mock.calls).toEqual([
+      ['content_protection'],
+      ['content_protection'],
+    ]);
   });
 });

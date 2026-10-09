@@ -14,11 +14,13 @@ import { ContentProtectionAccessLevelCard } from '../settings/ContentProtectionA
 import { DeleteConfirmButton } from '../DeleteConfirmButton';
 import { AccessDetailHeader } from './AccessDetailHeader';
 import { useAccessLevelDrafts } from './useAccessLevelDrafts';
+import { CONTENT_PROTECTION_SETTING_ID, SettingsHighlightLink } from './SettingsHighlightLink';
 
 interface Props {
   open: boolean;
   onClose: () => void;
   onChanged?: () => void;
+  onNavigateToSetting?: (settingId: string) => void;
   authGroups: AuthGroup[];
   toast: { success: (message: string) => void; error: (message: string) => void };
 }
@@ -37,6 +39,7 @@ export function AccessLevelsModal({
   open,
   onClose,
   onChanged,
+  onNavigateToSetting,
   authGroups,
   toast,
 }: Props): JSX.Element | null {
@@ -187,6 +190,7 @@ export function AccessLevelsModal({
         confirmRef,
         onClose: closeWithFocusRestore,
         onChanged,
+        onNavigateToSetting,
         authGroups,
         toast,
       }}
@@ -215,6 +219,7 @@ function LoadedAccessLevelsModal(props: {
   confirmRef: { current: HTMLDivElement | null };
   onClose: () => void;
   onChanged?: () => void;
+  onNavigateToSetting?: (settingId: string) => void;
   authGroups: AuthGroup[];
   toast: Props['toast'];
 }): JSX.Element {
@@ -239,6 +244,7 @@ function LoadedAccessLevelsModal(props: {
     confirmRef,
     onClose,
     onChanged,
+    onNavigateToSetting,
     authGroups,
     toast,
   } = props;
@@ -608,9 +614,20 @@ function LoadedAccessLevelsModal(props: {
                   >
                     <strong>Content protection is off.</strong>
                     <span>
-                      <a href="?view=settings#settings-content-protection">
+                      <SettingsHighlightLink
+                        settingId={CONTENT_PROTECTION_SETTING_ID}
+                        onNavigate={
+                          onNavigateToSetting
+                            ? (settingId) =>
+                                requestNavigation(() => {
+                                  onClose();
+                                  onNavigateToSetting(settingId);
+                                })
+                            : undefined
+                        }
+                      >
                         Enable in Settings → Content protection
-                      </a>{' '}
+                      </SettingsHighlightLink>{' '}
                       to apply these access levels.
                     </span>
                   </div>

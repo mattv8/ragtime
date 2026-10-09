@@ -206,6 +206,32 @@ describe('AuthAdminModalHost content protection controls', () => {
     expect(document.querySelector('[data-group-detail]')).toBeTruthy();
   });
 
+  it('closes the group modal and navigates from the disabled-policy advisory', async () => {
+    const user = userEvent.setup();
+    getConfig.mockResolvedValue({ ...CONFIG, enabled: false });
+    const props = hostProps({ onNavigateToSetting: vi.fn() });
+    render(<AuthAdminModalHost {...props} />);
+
+    await openProtectionPanel(user);
+    await user.click(screen.getByRole('link', { name: /enable in settings/i }));
+    expect(props.onCloseManageGroups).toHaveBeenCalledOnce();
+    expect(props.onNavigateToSetting).toHaveBeenCalledWith('content_protection');
+  });
+
+  it('keeps the group modal open when the disabled-policy advisory guard is cancelled', async () => {
+    const user = userEvent.setup();
+    getConfig.mockResolvedValue({ ...CONFIG, enabled: false });
+    const props = hostProps({ onNavigateToSetting: vi.fn() });
+    render(<AuthAdminModalHost {...props} />);
+
+    await openProtectionPanel(user);
+    await user.type(screen.getByLabelText('Name'), ' edited');
+    await user.click(screen.getByRole('link', { name: /enable in settings/i }));
+    await user.click(screen.getByText('Keep editing'));
+    expect(props.onCloseManageGroups).not.toHaveBeenCalled();
+    expect(props.onNavigateToSetting).not.toHaveBeenCalled();
+  });
+
   it('focuses the detail heading after selecting a group', async () => {
     const user = userEvent.setup();
     getConfig.mockResolvedValue(CONFIG);

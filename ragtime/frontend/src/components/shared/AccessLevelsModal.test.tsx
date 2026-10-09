@@ -188,11 +188,29 @@ describe('AccessLevelsModal', () => {
       enabled: false,
       share_with_assistant: false,
     });
-    renderModal();
+    const { props } = renderModal({ onNavigateToSetting: vi.fn() });
 
     const message = await screen.findByText(/content protection is off/i);
     const notice = message.closest('[role="status"]');
     expect(notice?.hasAttribute('data-access-protection-off')).toBe(true);
+    await userEvent.click(screen.getByRole('link', { name: /enable in settings/i }));
+    expect(props.onClose).toHaveBeenCalledOnce();
+    expect(props.onNavigateToSetting).toHaveBeenCalledWith('content_protection');
+  });
+
+  it('does not navigate from the off callout when its dirty guard is cancelled', async () => {
+    vi.spyOn(contentProtectionApi, 'getConfig').mockResolvedValue({
+      ...config(),
+      enabled: false,
+      share_with_assistant: false,
+    });
+    const { props } = renderModal({ onNavigateToSetting: vi.fn() });
+
+    await userEvent.type(await screen.findByLabelText('Name'), ' changed');
+    await userEvent.click(screen.getByRole('link', { name: /enable in settings/i }));
+    await userEvent.click(screen.getByText('Keep editing'));
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(props.onNavigateToSetting).not.toHaveBeenCalled();
   });
 
   it('shows the default-level delete guard', async () => {

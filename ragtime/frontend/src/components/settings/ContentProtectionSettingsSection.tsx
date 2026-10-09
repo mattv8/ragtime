@@ -25,6 +25,7 @@ import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { ModelSelector } from '../ModelSelector';
 import { Popover } from '../Popover';
 import { SearchHighlightedText } from '../shared/SearchHighlightedText';
+import { CONTENT_PROTECTION_SETTING_ID } from '../shared/SettingsHighlightLink';
 import { ContentProtectionAccessLevelCard } from './ContentProtectionAccessLevelCard';
 import { ContentProtectionCategoryCard } from './ContentProtectionCategoryCard';
 import { SettingsAccordionSection } from './SettingsAccordionSection';
@@ -534,6 +535,7 @@ export function ContentProtectionSettingsSection({
       open={open}
       onToggle={onToggle}
       status={saved?.enabled ? 'Enabled' : 'Disabled'}
+      highlightId={`setting-${CONTENT_PROTECTION_SETTING_ID}`}
     >
       <section
         id="settings-content-protection"

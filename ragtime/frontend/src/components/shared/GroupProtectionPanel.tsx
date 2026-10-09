@@ -15,6 +15,7 @@ import {
 import type { AuthGroup } from '@/types';
 import { ContentProtectionAccessLevelCard } from '../settings/ContentProtectionAccessLevelCard';
 import { useAccessLevelDrafts } from './useAccessLevelDrafts';
+import { CONTENT_PROTECTION_SETTING_ID, SettingsHighlightLink } from './SettingsHighlightLink';
 type PendingMapping = { levelId: string; enabled: boolean; hiddenDirtyIds: string[] };
 
 export interface GroupProtectionPanelHandle {
@@ -32,6 +33,7 @@ interface Props {
   onBack: () => void;
   onBusyChange?: (busy: boolean) => void;
   hideHeader?: boolean;
+  onNavigateToSetting?: (settingId: string) => void;
   toast: { success: (message: string) => void; error: (message: string) => void };
 }
 
@@ -47,6 +49,7 @@ export const GroupProtectionPanel = forwardRef<GroupProtectionPanelHandle, Props
       onBack,
       onBusyChange,
       hideHeader = false,
+      onNavigateToSetting,
       toast,
     },
     ref,
@@ -269,8 +272,16 @@ export const GroupProtectionPanel = forwardRef<GroupProtectionPanelHandle, Props
             role="status"
             data-group-protection-advisory
           >
-            <strong>Content protection is off.</strong> Enable enforcement or sharing in Settings →
-            Content protection to activate these mappings.
+            <strong>Content protection is off.</strong>
+            <span>
+              <SettingsHighlightLink
+                settingId={CONTENT_PROTECTION_SETTING_ID}
+                onNavigate={onNavigateToSetting}
+              >
+                Enable in Settings → Content protection
+              </SettingsHighlightLink>{' '}
+              to activate these mappings.
+            </span>
           </div>
         )}
         <fieldset

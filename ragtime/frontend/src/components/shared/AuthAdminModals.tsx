@@ -39,6 +39,7 @@ interface AuthAdminModalHostProps {
   onUsersChanged?: () => void | Promise<void>;
   onCloseCreateUser: () => void;
   onCloseManageGroups: () => void;
+  onNavigateToSetting?: (settingId: string) => void;
   toast: ToastActions;
 }
 
@@ -90,6 +91,7 @@ export function AuthAdminModalHost({
   onUsersChanged,
   onCloseCreateUser,
   onCloseManageGroups,
+  onNavigateToSetting,
   toast,
 }: AuthAdminModalHostProps) {
   const [localUserForm, setLocalUserForm] = useState<LocalUserFormState>(EMPTY_LOCAL_USER_FORM);
@@ -211,6 +213,15 @@ export function AuthAdminModalHost({
       protectionPanelRef.current.requestNavigation(continueNavigation);
     else continueNavigation();
   }, []);
+  const navigateToSetting = useCallback(
+    (settingId: string) => {
+      requestPanelNavigation(() => {
+        closeManageGroupsModal();
+        onNavigateToSetting?.(settingId);
+      });
+    },
+    [closeManageGroupsModal, onNavigateToSetting, requestPanelNavigation],
+  );
 
   const selectGroup = useCallback(
     (group: AuthGroup, trigger?: HTMLButtonElement) => {
@@ -1256,6 +1267,7 @@ export function AuthAdminModalHost({
                                 handleContentProtectionRequirementChange(protectedGroup, mode)
                         }
                         onBack={() => requestPanelNavigation(closeProtectionPanel)}
+                        onNavigateToSetting={onNavigateToSetting ? navigateToSetting : undefined}
                         onBusyChange={setProtectionPanelBusy}
                         toast={toast}
                       />
