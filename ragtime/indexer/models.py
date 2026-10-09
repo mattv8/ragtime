@@ -844,6 +844,10 @@ class AppSettings(BaseModel):
         default="",
         description="OpenRouter API key (used when llm_provider is 'openrouter')",
     )
+    typesafe_api_key: str = Field(
+        default="",
+        description="TypeSafe API key used by the Jev content classifier.",
+    )
     github_models_api_token: str = Field(
         default="",
         description="GitHub Models API token/PAT (used when llm_provider is 'github_models')",
@@ -1617,6 +1621,7 @@ class UpdateSettingsRequest(BaseModel):
     openai_codex_base_url: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
+    typesafe_api_key: Optional[str] = None
     github_models_api_token: Optional[str] = None
     github_copilot_access_token: Optional[str] = None
     github_copilot_refresh_token: Optional[str] = None

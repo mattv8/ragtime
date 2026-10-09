@@ -1092,6 +1092,7 @@ export interface AppSettings {
   openai_api_key: string;
   anthropic_api_key: string;
   openrouter_api_key: string;
+  typesafe_api_key: string;
   github_models_api_token: string;
   github_copilot_access_token: string;
   github_copilot_refresh_token: string;
@@ -1273,6 +1274,7 @@ export interface UpdateSettingsRequest {
   openai_api_key?: string;
   anthropic_api_key?: string;
   openrouter_api_key?: string;
+  typesafe_api_key?: string;
   github_models_api_token?: string;
   github_copilot_access_token?: string;
   github_copilot_refresh_token?: string;
