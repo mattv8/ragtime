@@ -44,6 +44,9 @@ const searchSectionState = vi.hoisted(() => ({
   latestProps: null as null | Record<string, unknown>,
   run: null as null | ((props: Record<string, unknown>) => void),
 }));
+const contentProtectionSectionState = vi.hoisted(() => ({
+  refreshKey: null as number | null,
+}));
 const sectionRenderOrder = vi.hoisted(() => [] as string[]);
 const adminUser = { id: 'admin', username: 'admin', role: 'admin' } as User;
 
@@ -383,6 +386,20 @@ vi.mock('./shared/SearchFilterBar', () => ({
   useUrlSearchFilterState: () => searchFilterState,
 }));
 vi.mock('./shared/AuthAdminModals', () => ({ AuthAdminModalHost: () => null }));
+vi.mock('./shared/AccessLevelsModal', () => ({
+  AccessLevelsModal: ({ open, onChanged }: { open: boolean; onChanged?: () => void }) =>
+    open ? (
+      <button type="button" onClick={onChanged}>
+        Mock access change
+      </button>
+    ) : null,
+}));
+vi.mock('./settings/ContentProtectionSettingsSection', () => ({
+  ContentProtectionSettingsSection: ({ refreshKey }: { refreshKey?: number }) => {
+    contentProtectionSectionState.refreshKey = refreshKey ?? null;
+    return <section data-content-protection-settings-section />;
+  },
+}));
 
 function buildSettingsResponse(
   overrides: Record<string, unknown> = {},
@@ -431,6 +448,7 @@ beforeEach(() => {
   agentBehaviorSectionState.latestProps = null;
   searchSectionState.latestProps = null;
   searchSectionState.run = null;
+  contentProtectionSectionState.refreshKey = null;
   sectionRenderOrder.length = 0;
   toastSuccessSpy.mockClear();
   toastErrorSpy.mockClear();
@@ -611,6 +629,18 @@ async function renderAuthProvider(provider: 'github_copilot' | 'openai_codex' | 
 }
 
 describe('SettingsPanel', () => {
+  it('refreshes content protection after an access level change', async () => {
+    render(<SettingsPanel currentUser={adminUser} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Authentication Providers/i }));
+    await screen.findByRole('button', { name: 'Manage Access Levels' });
+    expect(contentProtectionSectionState.refreshKey).toBe(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Manage Access Levels' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mock access change' }));
+
+    await waitFor(() => expect(contentProtectionSectionState.refreshKey).toBe(1));
+  });
+
   it('saves object storage before User Space settings for admins', async () => {
     render(
       <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,

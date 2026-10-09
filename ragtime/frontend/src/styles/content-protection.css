@@ -326,3 +326,157 @@
     animation: none;
   }
 }
+.content-protection-overview {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.content-protection-advisory-preview {
+  display: grid;
+  gap: var(--space-sm);
+}
+.content-protection-advisory-preview pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.content-protection-level-grants {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-xs);
+}
+.tool-card.content-protection-category,
+.tool-card.content-protection-level {
+  display: grid;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+.content-protection-threshold-input {
+  width: 5rem;
+  min-width: 0;
+  padding: var(--space-xs);
+  font-size: var(--text-sm);
+}
+/* =============================================================================
+   GROUP PROTECTION PANEL
+   ============================================================================= */
+/* Legacy .has-protection-panel layout replaced by .access-md. */
+.auth-group-protection-summary,
+.group-protection-level-reach {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.auth-group-protection-summary {
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.auth-group-manage-body.access-md .auth-group-panel-header,
+.auth-group-manage-body.access-md .auth-group-new-group-row {
+  margin: var(--space-md);
+}
+.group-detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--color-border);
+}
+.group-detail-section h5 {
+  margin: 0;
+}
+.group-detail-access-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid var(--color-border);
+}
+.group-detail-access-label {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.auth-group-detail-dn {
+  max-width: 280px;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group-protection-button {
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+.group-protection-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  gap: var(--space-md);
+  padding-left: var(--space-xs);
+}
+.group-protection-panel-header,
+.group-protection-panel-title,
+.group-protection-confirm-actions,
+.group-protection-level-actions,
+.group-protection-shared-level-summary,
+.group-protection-preview-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.group-protection-panel-title {
+  flex-wrap: wrap;
+}
+.group-protection-panel-title h4 {
+  margin: 0;
+}
+.group-protection-level-reach {
+  margin-left: var(--space-xs);
+  font-weight: 400;
+}
+.group-protection-shared-level-summary,
+.group-protection-preview-summary {
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+.group-protection-shared-level-summary::-webkit-details-marker,
+.group-protection-preview-summary::-webkit-details-marker {
+  display: none;
+}
+.group-protection-shared-notice {
+  margin: 0 0 var(--space-xs);
+}
+.group-protection-dirty-badge {
+  color: var(--color-warning);
+}
+.group-protection-level-actions {
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+}
+.group-protection-preview-disclaimer {
+  font-style: italic;
+}
+@media (max-width: 680px) {
+  .content-protection-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .content-protection-level-grants {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 820px) {
+}
+@media (max-width: 440px) {
+  .content-protection-overview {
+    grid-template-columns: 1fr;
+  }
+}

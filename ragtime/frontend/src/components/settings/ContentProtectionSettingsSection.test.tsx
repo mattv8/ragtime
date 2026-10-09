@@ -1,543 +1,492 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import { ContentProtectionSettingsSection } from './ContentProtectionSettingsSection';
-
-const { refreshModels, modelState } = vi.hoisted(() => ({
-  refreshModels: vi.fn(),
-  modelState: { models: [] as Array<{ id: string; name: string; provider: string }> },
-}));
 vi.mock('@/contexts/AvailableModelsContext', () => ({
-  useAvailableModels: () => ({
-    models: modelState.models,
-    loading: false,
-    error: null,
-    refresh: refreshModels,
-  }),
+  useAvailableModels: () => ({ models: [], loading: false, error: null, refresh: vi.fn() }),
 }));
-
 const config = {
+  schema_version: 2 as const,
   revision: 3,
   enabled: true,
-  classifier_model: null,
+  share_with_assistant: false,
+  classifier: {
+    backend: 'jev' as const,
+    jev: { transport: 'auto' as const, model: 'jev-latest' },
+    llm_model: null,
+  },
+  strictness: 'strict' as const,
+  categories: [
+    {
+      id: 'credentials',
+      name: 'Credentials',
+      description: 'Credentials.',
+      includes: [],
+      excludes: [],
+      examples: [],
+      denial_message: 'Restricted.',
+      threshold_override: null,
+      system: false,
+    },
+    {
+      id: 'rule_override',
+      name: 'Rule override',
+      description: 'Overrides.',
+      includes: [],
+      excludes: [],
+      examples: [],
+      denial_message: 'Cannot override.',
+      threshold_override: null,
+      system: true,
+    },
+  ],
+  access_levels: [{ id: 'standard', name: 'Standard', granted_category_ids: [], guidance: '' }],
+  group_access_levels: [],
+  default_access_level_id: 'standard',
   coverage_mode: 'all_supported_traffic' as const,
-  profiles: [{ id: 'standard', name: 'Standard', level: 0, scope: 'Operational content' }],
-  group_profiles: [],
   requirements: [],
   user_overrides: [],
 };
 const catalog = {
   users: [{ id: 'u1', name: 'Ada' }],
   groups: [],
-  tools: [{ id: 'tool-1', name: 'Finance lookup' }],
-  mcp_routes: [{ id: 'route-1', name: 'Finance MCP' }],
-  surfaces: [
-    { id: 'mcp', name: 'MCP' },
-    { id: 'workspace_chat', name: 'Workspace chat' },
-  ],
+  tools: [],
+  mcp_routes: [],
+  surfaces: [{ id: 'chat', name: 'Chat' }],
+  classifier_status: { typesafe_key_configured: false, openrouter_key_configured: false },
 };
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
+function response(body: unknown) {
+  return Promise.resolve(
+    new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }),
+  );
 }
-function installFetch(
-  overrides: Partial<
-    Record<
-      'config' | 'save' | 'preview' | 'readiness' | 'test' | 'decisions',
-      (body?: unknown) => Response | Promise<Response>
-    >
-  > = {},
-) {
+function installFetch(overrides: Record<string, unknown> = {}) {
   const fetch = vi.fn((url: string, options?: RequestInit) => {
-    if (url.endsWith('/config') && options?.method === 'PUT')
-      return (
-        overrides.save?.(JSON.parse(options.body as string)) ||
-        Promise.resolve(json({ ...config, revision: 4 }))
-      );
-    if (url.endsWith('/config')) return overrides.config?.() || Promise.resolve(json(config));
-    if (url.endsWith('/catalog')) return Promise.resolve(json(catalog));
+    if (url.endsWith('/config') && options?.method === 'PUT') return response(config);
+    if (url.endsWith('/config')) return response(config);
+    if (url.endsWith('/catalog')) return response(catalog);
     if (url.endsWith('/preview'))
-      return (
-        overrides.preview?.(JSON.parse(options?.body as string)) ||
-        Promise.resolve(
-          json({ required: true, provenance: 'surface_requirement', profiles: [config.profiles] }),
-        )
-      );
-    if (url.endsWith('/readiness'))
-      return (
-        overrides.readiness?.(JSON.parse(options?.body as string)) ||
-        Promise.resolve(json({ code: 'ready', verdict: 'allow' }))
+      return response(
+        overrides.preview || {
+          required: true,
+          provenance: 'test',
+          access_levels: [config.access_levels],
+          granted_category_ids: [],
+          categories: [],
+          guidance: [],
+          policy_revision: 3,
+          guidance_revision: 'x',
+          share_with_assistant: false,
+        },
       );
     if (url.endsWith('/test'))
-      return (
-        overrides.test?.(JSON.parse(options?.body as string)) ||
-        Promise.resolve(json({ code: 'ready', verdict: 'allow' }))
-      );
-    if (url.endsWith('/decisions'))
-      return overrides.decisions?.() || Promise.resolve(json({ items: [] }));
-    return Promise.resolve(json({ code: 'ready', verdict: 'allow' }));
+      return response(overrides.test || { code: 'ready', verdict: 'allow' });
+    if (url.endsWith('/readiness'))
+      return response(overrides.readiness || { code: 'ready', verdict: 'allow' });
+    return response({ items: [] });
   });
   vi.stubGlobal('fetch', fetch);
   return fetch;
 }
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((nextResolve, nextReject) => {
-    resolve = nextResolve;
-    reject = nextReject;
-  });
-  return { promise, resolve, reject };
-}
-async function openSetup(user = userEvent.setup()) {
+async function openInspect() {
+  const user = userEvent.setup();
   render(<ContentProtectionSettingsSection open onToggle={() => {}} />);
-  await user.click(await screen.findByRole('button', { name: 'Configure protection' }));
-  await screen.findByRole('dialog', { name: 'Configure content protection' });
+  await user.click(await screen.findByRole('button', { name: 'Test & inspect' }));
   return user;
 }
-
+async function openSetup() {
+  const user = userEvent.setup();
+  render(<ContentProtectionSettingsSection open onToggle={() => {}} />);
+  await user.click(await screen.findByRole('button', { name: 'Configure classifier' }));
+  return user;
+}
 afterEach(() => {
   cleanup();
-  refreshModels.mockClear();
-  modelState.models = [];
   vi.unstubAllGlobals();
 });
-
 describe('ContentProtectionSettingsSection', () => {
-  it('links to specific policies without discarding the coverage draft', async () => {
-    installFetch();
-    const user = userEvent.setup();
-    render(<ContentProtectionSettingsSection open onToggle={() => {}} searchQuery="Tool" />);
-
-    await user.click(await screen.findByRole('button', { name: 'Configure protection' }));
-    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Coverage' }), 'selected_scopes');
-
-    const links = [
-      ['User policies', '?view=users#user-policies'],
-      ['Manage groups', '?view=users#manage-groups'],
-      ['Tool access', '?view=tools#tools-connections'],
-      ['MCP routes', '?view=settings#manage-mcp-routes'],
-    ] as const;
-    for (const [label, href] of links) {
-      const link = screen.getByRole('link', { name: label }) as HTMLAnchorElement;
-      expect(link.getAttribute('href')).toBe(href);
-      expect(link.target).toBe('_blank');
-      expect(link.rel).toBe('noopener noreferrer');
-    }
-    expect(screen.getByText('Tool', { selector: 'mark' })).toBeTruthy();
-    expect(screen.queryByText('Existing per-user overrides remain in effect.')).toBeNull();
-    expect(screen.getByText('Opens in a new tab; your draft stays here.')).toBeTruthy();
-
-    await user.click(screen.getByRole('link', { name: 'User policies' }));
-    expect((screen.getByRole('combobox', { name: 'Coverage' }) as HTMLSelectElement).value).toBe(
-      'selected_scopes',
-    );
-    expect(screen.getByRole('dialog', { name: 'Configure content protection' })).toBeTruthy();
-  });
-
-  it('explains coverage and user-policy precedence in help', async () => {
+  it('cancels a category edit with Escape without closing the setup draft', async () => {
     installFetch();
     const user = await openSetup();
-    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
-    await user.click(screen.getByRole('button', { name: 'Coverage help' }));
-
-    expect(
-      await screen.findByText(
-        /All supported traffic applies classification broadly. Selected scopes adds requirements only where configured./,
-      ),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(
-        /Individual user policies can require or skip classification in either mode./,
-      ),
-    ).toBeTruthy();
-  });
-
-  it('preserves the open draft and its revision when the accordion reloads', async () => {
-    let revision = 3;
-    const save = vi.fn((body: unknown) => json((body as { config: unknown }).config));
-    installFetch({ config: () => json({ ...config, revision }), save });
-    const user = userEvent.setup();
-    const { rerender } = render(<ContentProtectionSettingsSection open onToggle={() => {}} />);
-    await user.click(await screen.findByRole('button', { name: 'Configure profiles' }));
-    await user.click(screen.getByRole('button', { name: 'Edit Standard permitted information' }));
-    await user.clear(screen.getByLabelText('Standard scope'));
-    await user.type(screen.getByLabelText('Standard scope'), 'Draft scope');
-    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
-    revision = 8;
-    rerender(<ContentProtectionSettingsSection open={false} onToggle={() => {}} />);
-    rerender(<ContentProtectionSettingsSection open onToggle={() => {}} />);
-    await user.click(screen.getByRole('tab', { name: 'Profiles' }));
-    expect(screen.getByText('Draft scope')).toBeTruthy();
-    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
-    await user.click(screen.getByRole('button', { name: 'Save protection' }));
-    await waitFor(() =>
-      expect(save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          expected_revision: 3,
-          config: expect.objectContaining({
-            revision: 3,
-            profiles: [expect.objectContaining({ scope: 'Draft scope' })],
-          }),
-        }),
-      ),
-    );
-  });
-
-  it('keeps the setup draft open and clears model search on Escape', async () => {
-    modelState.models = [
-      { id: 'old', name: 'Old model', provider: 'provider' },
-      { id: 'new', name: 'New model', provider: 'provider' },
-    ];
-    installFetch({ config: () => json({ ...config, classifier_model: 'provider::old' }) });
-    const user = await openSetup();
-    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Coverage' }), 'selected_scopes');
-    await user.click(screen.getByRole('tab', { name: 'Model' }));
-    await user.click(screen.getByTitle('Provider Old model'));
-    const search = screen.getByLabelText('Filter models');
-    await user.type(search, 'New model');
-
-    await user.keyboard('{Escape}');
-
-    expect(screen.getByRole('dialog', { name: 'Configure content protection' })).toBeTruthy();
-    expect((search as HTMLInputElement).value).toBe('');
-    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
-    expect((screen.getByRole('combobox', { name: 'Coverage' }) as HTMLSelectElement).value).toBe(
-      'selected_scopes',
-    );
-  });
-
-  it('shows a successful session check on the saved model summary without probing on load', async () => {
-    const readiness = vi.fn(() => json({ code: 'ready', verdict: 'allow' }));
-    installFetch({ config: () => json({ ...config, classifier_model: 'omlx::qwen' }), readiness });
-    const user = await openSetup();
-    expect(readiness).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Check selected model' }));
-    await screen.findByLabelText('Model ready');
-    await user.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.getByLabelText('Saved model checked')).toBeTruthy();
-    expect(readiness).toHaveBeenCalledTimes(1);
-  });
-
-  it('refreshes models when opened while keeping the closed SettingsPanel contract safe', async () => {
-    const { rerender } = render(
-      <ContentProtectionSettingsSection open={false} onToggle={() => {}} />,
-    );
-    expect(refreshModels).not.toHaveBeenCalled();
-    rerender(<ContentProtectionSettingsSection open onToggle={() => {}} />);
-    await waitFor(() => expect(refreshModels).toHaveBeenCalledTimes(1));
-  });
-
-  it('uses a disposable setup draft and saves the original revision once', async () => {
-    const fetch = installFetch();
-    const user = await openSetup();
-    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Coverage' }), 'selected_scopes');
-    await user.click(screen.getByRole('button', { name: 'Cancel' }));
-    await user.click(screen.getByRole('button', { name: 'Configure protection' }));
-    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
-    expect((screen.getByRole('combobox', { name: 'Coverage' }) as HTMLSelectElement).value).toBe(
-      'all_supported_traffic',
-    );
-    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
-    await user.click(screen.getByRole('button', { name: 'Save protection' }));
-    await waitFor(() =>
-      expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1),
-    );
-    expect(
-      JSON.parse(
-        fetch.mock.calls.find(([, options]) => options?.method === 'PUT')?.[1]?.body as string,
-      ),
-    ).toEqual({ expected_revision: 3, config });
-  });
-
-  it('retains the draft after a conflict and offers explicit reload', async () => {
-    installFetch({ save: () => Promise.resolve(json({ detail: 'conflict' }, 409)) });
-    const user = await openSetup();
-    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Coverage' }), 'selected_scopes');
-    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
-    await user.click(screen.getByRole('button', { name: 'Save protection' }));
-    expect((await screen.findByRole('alert')).textContent).toMatch(/reload saved settings/i);
-    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
-    expect((screen.getByRole('combobox', { name: 'Coverage' }) as HTMLSelectElement).value).toBe(
-      'selected_scopes',
-    );
-    expect(screen.getByRole('button', { name: 'Reload and discard draft' })).toBeTruthy();
-  });
-
-  it('keeps the conflicted draft when reloading saved settings fails', async () => {
-    let configRequests = 0;
-    installFetch({
-      config: () => {
-        configRequests += 1;
-        return configRequests === 1
-          ? Promise.resolve(json(config))
-          : Promise.resolve(json({ detail: 'reload failed' }, 500));
-      },
-      save: () => Promise.resolve(json({ detail: 'conflict' }, 409)),
-    });
-    const user = await openSetup();
-    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Coverage' }), 'selected_scopes');
-    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
-    await user.click(screen.getByRole('button', { name: 'Save protection' }));
-    await user.click(await screen.findByRole('button', { name: 'Reload and discard draft' }));
-    expect(
-      await screen.findByRole('dialog', { name: 'Configure content protection' }),
-    ).toBeTruthy();
-    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
-    expect((screen.getByRole('combobox', { name: 'Coverage' }) as HTMLSelectElement).value).toBe(
-      'selected_scopes',
-    );
-  });
-
-  it('preserves focus and typed profile text across draft rerenders', async () => {
-    installFetch();
-    const user = await openSetup();
-    await user.click(screen.getByRole('tab', { name: 'Profiles' }));
-    await user.click(screen.getByRole('button', { name: 'Edit Standard name' }));
-    const name = screen.getByLabelText('Standard name');
+    await user.click(screen.getByRole('tab', { name: 'Categories' }));
+    const card = document.getElementById('content-protection-category-credentials')!;
+    const name = within(card).getByRole('textbox', { name: 'Name' }) as HTMLInputElement;
     await user.clear(name);
-    await user.type(name, 'Restricted');
-    expect((name as HTMLInputElement).value).toBe('Restricted');
-    expect(document.activeElement).toBe(name);
+    await user.type(name, 'Uncommitted category name');
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(name.value).toBe('Credentials');
   });
-
-  it('preserves dormant app-area requirements when all-traffic coverage is saved', async () => {
-    const withDormantRequirement = {
-      ...config,
-      coverage_mode: 'selected_scopes' as const,
-      requirements: [
-        { scope_kind: 'surface' as const, scope_key: 'mcp', mode: 'require' as const },
-      ],
-    };
-    let savedBody: unknown;
-    installFetch({
-      config: () => Promise.resolve(json(withDormantRequirement)),
-      save: (body) => {
-        savedBody = body;
-        return Promise.resolve(json({ ...withDormantRequirement, revision: 4 }));
-      },
+  it('saves the exact draft revision and prevents edits or dismissal during the save', async () => {
+    let finishSave!: (response: Response) => void;
+    const pendingSave = new Promise<Response>((resolve) => {
+      finishSave = resolve;
     });
+    const fetch = vi.fn((url: string, options?: RequestInit) => {
+      if (options?.method === 'PUT') return pendingSave;
+      return response(url.endsWith('/catalog') ? catalog : config);
+    });
+    vi.stubGlobal('fetch', fetch);
     const user = await openSetup();
-    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
-    await user.selectOptions(
-      screen.getByRole('combobox', { name: 'Coverage' }),
-      'all_supported_traffic',
-    );
-    expect(screen.queryByLabelText('Coverage for MCP')).toBeNull();
     await user.click(screen.getByRole('tab', { name: 'Review & save' }));
+    await user.selectOptions(screen.getByLabelText('Strictness'), 'balanced');
     await user.click(screen.getByRole('button', { name: 'Save protection' }));
-    await waitFor(() => expect(savedBody).toBeTruthy());
+    const savedBody = JSON.parse(
+      fetch.mock.calls.find(([, options]) => options?.method === 'PUT')?.[1]?.body as string,
+    );
     expect(savedBody).toMatchObject({
       expected_revision: 3,
-      config: {
-        coverage_mode: 'all_supported_traffic',
-        requirements: withDormantRequirement.requirements,
-      },
+      config: { strictness: 'balanced', revision: 3 },
     });
+    expect(screen.getByLabelText('Strictness').matches(':disabled')).toBe(true);
+    expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    await act(async () =>
+      finishSave(new Response(JSON.stringify({ ...savedBody.config, revision: 4 }))),
+    );
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
-  it('hides app-area requirements in a disabled selected-scopes draft without dropping them', async () => {
-    const disabledDraft = {
-      ...config,
-      enabled: false,
-      coverage_mode: 'selected_scopes' as const,
-      requirements: [
-        { scope_kind: 'surface' as const, scope_key: 'mcp', mode: 'require' as const },
-      ],
-    };
-    let savedBody: unknown;
-    installFetch({
-      config: () => Promise.resolve(json(disabledDraft)),
-      save: (body) => {
-        savedBody = body;
-        return Promise.resolve(json({ ...disabledDraft, revision: 4 }));
-      },
+  it('preserves a conflicted draft when reload fails and then adopts the server revision', async () => {
+    let failReload = false;
+    let serverConfig = config;
+    const fetch = vi.fn((url: string, options?: RequestInit) => {
+      if (options?.method === 'PUT') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ detail: 'Conflict' }), { status: 409 }),
+        );
+      }
+      if (url.endsWith('/config') && failReload) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ detail: 'Reload unavailable' }), { status: 503 }),
+        );
+      }
+      return response(url.endsWith('/catalog') ? catalog : serverConfig);
     });
+    vi.stubGlobal('fetch', fetch);
     const user = await openSetup();
-    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
-
-    expect(screen.queryByLabelText('Coverage for MCP')).toBeNull();
-    expect(
-      screen.getByText('Enable protection in Review & save to configure app areas.'),
-    ).toBeTruthy();
+    await user.clear(screen.getByLabelText('Model'));
+    await user.type(screen.getByLabelText('Model'), 'jev-1.13.0');
     await user.click(screen.getByRole('tab', { name: 'Review & save' }));
     await user.click(screen.getByRole('button', { name: 'Save protection' }));
-    await waitFor(() => expect(savedBody).toBeTruthy());
-    expect(savedBody).toMatchObject({ config: { requirements: disabledDraft.requirements } });
+    await screen.findByRole('button', { name: 'Reload and discard draft' });
+    failReload = true;
+    await user.click(screen.getByRole('button', { name: 'Reload and discard draft' }));
+    expect(await screen.findByText('Reload unavailable')).toBeTruthy();
+    await user.click(screen.getByRole('tab', { name: 'Classifier' }));
+    expect((screen.getByLabelText('Model') as HTMLInputElement).value).toBe('jev-1.13.0');
+    failReload = false;
+    serverConfig = { ...config, revision: 5 };
+    await user.click(screen.getByRole('button', { name: 'Reload and discard draft' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await user.click(screen.getByRole('button', { name: 'Configure classifier' }));
+    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
+    await user.click(screen.getByRole('button', { name: 'Save protection' }));
+    const writes = fetch.mock.calls.filter(([, options]) => options?.method === 'PUT');
+    expect(JSON.parse(writes[1][1]?.body as string).expected_revision).toBe(5);
   });
 
-  it('keeps dormant requirements and only sends MCP route or opted-in tool fields', async () => {
-    const previewBodies: unknown[] = [];
-    installFetch({
-      preview: (body) => {
-        previewBodies.push(body);
-        return Promise.resolve(
-          json({ required: true, provenance: 'surface_requirement', profiles: [config.profiles] }),
-        );
-      },
+  it('retains dormant requirements and user overrides when coverage and enforcement change', async () => {
+    const original = {
+      ...config,
+      requirements: [{ scope_kind: 'tool', scope_key: 'preserved-tool', mode: 'require' }],
+      user_overrides: [{ user_id: 'other-user', mode: 'never_classify' }],
+    };
+    const fetch = vi.fn((url: string, options?: RequestInit) => {
+      if (options?.method === 'PUT') return response(JSON.parse(options.body as string).config);
+      return response(url.endsWith('/catalog') ? catalog : original);
     });
+    vi.stubGlobal('fetch', fetch);
     const user = await openSetup();
     await user.click(screen.getByRole('tab', { name: 'Coverage' }));
     await user.selectOptions(screen.getByRole('combobox', { name: 'Coverage' }), 'selected_scopes');
-    await user.selectOptions(screen.getByLabelText('Coverage for MCP'), 'require');
-    await user.selectOptions(
-      screen.getByRole('combobox', { name: 'Coverage' }),
-      'all_supported_traffic',
-    );
-    await user.click(screen.getByRole('button', { name: 'Cancel' }));
-    await user.click(screen.getByRole('button', { name: 'Test & inspect' }));
-    await user.selectOptions(screen.getByLabelText('Where does it run?'), 'workspace_chat');
-    expect(screen.queryByLabelText('MCP route')).toBeNull();
-    await user.click(screen.getByRole('button', { name: /check saved policy/i }));
-    await waitFor(() =>
-      expect(previewBodies[0]).toEqual({ surface: 'workspace_chat', public: false }),
-    );
-    await user.selectOptions(screen.getByLabelText('Where does it run?'), 'mcp');
-    await user.selectOptions(screen.getByLabelText('MCP route'), 'route-1');
-    await user.click(screen.getByLabelText('Include a tool call'));
-    await user.selectOptions(screen.getByLabelText('Tool'), 'tool-1');
-    await user.click(screen.getByRole('button', { name: /check saved policy/i }));
-    await waitFor(() =>
-      expect(previewBodies[1]).toEqual({
-        surface: 'mcp',
-        mcp_route: 'route-1',
-        tool_id: 'tool-1',
-        public: false,
-      }),
-    );
+    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
+    await user.click(screen.getByLabelText('Enable content protection'));
+    await user.click(screen.getByRole('button', { name: 'Save protection' }));
+    const write = fetch.mock.calls.find(([, options]) => options?.method === 'PUT');
+    expect(JSON.parse(write?.[1]?.body as string).config).toMatchObject({
+      enabled: false,
+      coverage_mode: 'selected_scopes',
+      requirements: original.requirements,
+      user_overrides: original.user_overrides,
+    });
   });
 
-  it('invalidates in-flight request and content results while re-enabling their actions', async () => {
-    const previewResponse = deferred<Response>();
-    const testResponse = deferred<Response>();
-    installFetch({
-      config: () => Promise.resolve(json({ ...config, classifier_model: 'provider::model' })),
-      preview: () => previewResponse.promise,
-      test: () => testResponse.promise,
-    });
-    const user = userEvent.setup();
-    render(<ContentProtectionSettingsSection open onToggle={() => {}} />);
-    await user.click(await screen.findByRole('button', { name: 'Test & inspect' }));
-    const check = screen.getByRole('button', { name: /check saved policy/i });
-    await user.click(check);
-    expect((check as HTMLButtonElement).disabled).toBe(true);
-    await user.selectOptions(screen.getByLabelText('Where does it run?'), 'workspace_chat');
-    expect(
-      (screen.getByRole('button', { name: /check saved policy/i }) as HTMLButtonElement).disabled,
-    ).toBe(false);
-    previewResponse.resolve(
-      json({ required: true, provenance: 'stale', profiles: [config.profiles] }),
-    );
-    await waitFor(() => expect(screen.queryByText('Provenance: stale')).toBeNull());
-
-    await user.click(screen.getByRole('tab', { name: 'Test content' }));
-    const sampleInput = screen.getByLabelText('Sample content');
-    await user.type(sampleInput, 'first sample');
-    const runTest = screen.getByRole('button', { name: 'Test content' });
-    await user.click(runTest);
-    expect((screen.getByRole('button', { name: 'Testing…' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
-    await user.type(sampleInput, ' changed');
-    expect(
-      (screen.getByRole('button', { name: 'Test content' }) as HTMLButtonElement).disabled,
-    ).toBe(false);
-    testResponse.resolve(json({ code: 'stale-result', verdict: 'deny' }));
-    await waitFor(() => expect(screen.queryByText(/stale-result/)).toBeNull());
-  });
-
-  it('ignores a late model readiness result after the selected model changes', async () => {
-    modelState.models = [
-      { id: 'old', name: 'Old model', provider: 'provider' },
-      { id: 'new', name: 'New model', provider: 'provider' },
-    ];
-    const readinessResponse = deferred<Response>();
-    installFetch({
-      config: () => Promise.resolve(json({ ...config, classifier_model: 'provider::old' })),
-      readiness: () => readinessResponse.promise,
-    });
-    const user = await openSetup();
-    await user.click(screen.getByRole('button', { name: 'Check selected model' }));
-    expect(screen.getByLabelText('Checking model')).toBeTruthy();
-    await user.click(screen.getByTitle('Provider Old model'));
-    await user.type(screen.getByLabelText('Filter models'), 'New model');
-    await user.click(screen.getByTitle('new'));
-    expect(screen.getByLabelText('Model unchecked')).toBeTruthy();
-    expect(
-      (screen.getByRole('button', { name: 'Check selected model' }) as HTMLButtonElement).disabled,
-    ).toBe(false);
-    readinessResponse.resolve(json({ code: 'stale-ready', verdict: 'allow' }));
-    await waitFor(() => expect(screen.queryByText(/stale-ready/)).toBeNull());
-  });
-
-  it('requests failed decisions at most once per dialog and hides a late failure after close', async () => {
-    const decisionsResponse = deferred<Response>();
-    let decisionRequests = 0;
-    installFetch({
-      decisions: () => {
-        decisionRequests += 1;
-        return decisionsResponse.promise;
-      },
-    });
-    const user = userEvent.setup();
-    render(<ContentProtectionSettingsSection open onToggle={() => {}} />);
-    await user.click(await screen.findByRole('button', { name: 'Test & inspect' }));
-    await user.click(screen.getByRole('tab', { name: 'Recent decisions' }));
-    await user.click(screen.getByRole('tab', { name: 'Check a request' }));
-    await user.click(screen.getByRole('tab', { name: 'Recent decisions' }));
-    expect(decisionRequests).toBe(1);
-    await user.click(screen.getByRole('button', { name: 'Close' }));
-    await act(async () => {
-      decisionsResponse.reject(new Error('decisions unavailable'));
-      await Promise.resolve();
-    });
-    expect(screen.queryByRole('alert')).toBeNull();
-    expect(decisionRequests).toBe(1);
-  });
-
-  it('adds and deletes an unassigned profile from the setup draft', async () => {
+  it('supports keyboard tab navigation and restores focus after Escape', async () => {
     installFetch();
     const user = await openSetup();
-    await user.click(screen.getByRole('tab', { name: 'Profiles' }));
-    await user.click(screen.getByRole('button', { name: 'Add profile' }));
-
-    const newProfile = screen.getByText('New profile').closest('[data-profile-id]');
-    expect(newProfile).toBeTruthy();
-    await user.click(newProfile!.querySelector('button.btn-danger')!);
-
-    expect(screen.queryByText('New profile')).toBeNull();
+    const first = screen.getByRole('tab', { name: 'Classifier' });
+    first.focus();
+    await user.keyboard('{End}');
+    expect(screen.getByRole('tab', { name: 'Review & save' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Configure classifier' }),
+    );
   });
+  it('passes a selected real user to the test API', async () => {
+    const fetch = installFetch();
+    const user = await openInspect();
+    await user.click(screen.getByRole('tab', { name: 'Test content' }));
+    await user.type(screen.getByLabelText('Sample content'), 'secret');
+    await user.selectOptions(screen.getByLabelText('Or test as a real user'), 'u1');
+    await user.click(screen.getByRole('button', { name: 'Test content' }));
+    await waitFor(() =>
+      expect(
+        JSON.parse(
+          fetch.mock.calls.find(([url]) => String(url).endsWith('/test'))?.[1]?.body as string,
+        ),
+      ).toMatchObject({ access_level_ids: [], user_id: 'u1' }),
+    );
+  });
+  it('disables level selection while a real user is selected', async () => {
+    installFetch();
+    const user = await openInspect();
+    await user.click(screen.getByRole('tab', { name: 'Test content' }));
+    await user.selectOptions(screen.getByLabelText('Or test as a real user'), 'u1');
+    expect(
+      (screen.getByRole('group', { name: 'Target access levels' }) as HTMLFieldSetElement).disabled,
+    ).toBe(true);
+  });
+  it('renders advisory prompt fragment only when preview enables sharing', async () => {
+    installFetch({
+      preview: {
+        required: true,
+        provenance: 'test',
+        access_levels: [],
+        granted_category_ids: [],
+        categories: [],
+        guidance: ['different guidance'],
+        prompt_fragment: 'audience fragment',
+        policy_revision: 3,
+        guidance_revision: 'x',
+        share_with_assistant: true,
+      },
+    });
+    const user = await openInspect();
+    await user.click(screen.getByRole('button', { name: 'Check saved policy' }));
+    expect(await screen.findByText('audience fragment')).toBeTruthy();
+  });
+  it('shows category probabilities with threshold denials', async () => {
+    installFetch({
+      test: { code: 'content_denied', verdict: 'deny', probabilities: { credentials: 0.85 } },
+    });
+    const user = await openInspect();
+    await user.click(screen.getByRole('tab', { name: 'Test content' }));
+    await user.type(screen.getByLabelText('Sample content'), 'secret');
+    await user.click(screen.getByRole('button', { name: 'Test content' }));
+    expect(await screen.findByText('85.0%')).toBeTruthy();
+    expect(screen.getByText('above threshold')).toBeTruthy();
+  });
+  it('shows a retryable load error instead of a permanent loading state', async () => {
+    let fails = true;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) =>
+        url.endsWith('/config') && fails
+          ? Promise.resolve(new Response(JSON.stringify({ detail: 'offline' }), { status: 500 }))
+          : response(url.endsWith('/catalog') ? catalog : config),
+      ),
+    );
+    const user = userEvent.setup();
+    render(<ContentProtectionSettingsSection open onToggle={() => {}} />);
+    expect(await screen.findByText('Unable to load content protection settings')).toBeTruthy();
+    fails = false;
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('button', { name: 'Configure classifier' })).toBeTruthy();
+  });
+  it('reloads the saved configuration when refreshKey changes', async () => {
+    const fetch = installFetch();
+    const view = render(
+      <ContentProtectionSettingsSection open onToggle={() => {}} refreshKey={0} />,
+    );
 
-  it('guards assigned profile deletion and closes the dialog on Escape', async () => {
+    await screen.findByRole('button', { name: 'Configure classifier' });
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/config'))).toHaveLength(1);
+
+    view.rerender(<ContentProtectionSettingsSection open onToggle={() => {}} refreshKey={1} />);
+
+    await waitFor(() =>
+      expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/config'))).toHaveLength(2),
+    );
+  });
+  it('sends the selected baseline, MCP route, and tool in a saved preview', async () => {
+    const fetch = installFetch();
+    const user = await openInspect();
+    await user.selectOptions(screen.getByLabelText('Who is making the request?'), 'public');
+    await user.selectOptions(screen.getByLabelText('MCP route (optional)'), '');
+    await user.selectOptions(screen.getByLabelText('Tool (optional)'), '');
+    await user.click(screen.getByRole('button', { name: 'Check saved policy' }));
+    await waitFor(() => {
+      const body = JSON.parse(
+        fetch.mock.calls.find(([url]) => String(url).endsWith('/preview'))?.[1]?.body as string,
+      );
+      expect(body).toMatchObject({ baseline: 'public', public: true, surface: 'chat' });
+    });
+  });
+  it('marks the service preview with the service baseline', async () => {
+    const fetch = installFetch();
+    const user = await openInspect();
+    await user.click(screen.getByRole('button', { name: 'Check saved policy' }));
+    await waitFor(() =>
+      expect(
+        JSON.parse(
+          fetch.mock.calls.find(([url]) => String(url).endsWith('/preview'))?.[1]?.body as string,
+        ),
+      ).toMatchObject({ baseline: 'service', public: false }),
+    );
+  });
+  it('clears a preview when its identity changes', async () => {
+    installFetch();
+    const user = await openInspect();
+    await user.click(screen.getByRole('button', { name: 'Check saved policy' }));
+    expect(await screen.findByText('Classification required')).toBeTruthy();
+    await user.selectOptions(screen.getByLabelText('Who is making the request?'), 'public');
+    expect(screen.queryByText('Classification required')).toBeNull();
+  });
+  it('clears a sample result when the sample changes', async () => {
+    installFetch();
+    const user = await openInspect();
+    await user.click(screen.getByRole('tab', { name: 'Test content' }));
+    const sample = screen.getByLabelText('Sample content');
+    await user.type(sample, 'secret');
+    await user.click(screen.getByRole('button', { name: 'Test content' }));
+    expect(await screen.findByText('allow · ready')).toBeTruthy();
+    await user.type(sample, ' changed');
+    expect(screen.queryByText('allow · ready')).toBeNull();
+  });
+  it('invalidates a readiness result when classifier settings change', async () => {
+    installFetch();
+    const user = await openSetup();
+    await user.click(screen.getByRole('button', { name: /Check readiness/ }));
+    expect(await screen.findByText('Ready')).toBeTruthy();
+    await user.clear(screen.getByLabelText('Model'));
+    await user.type(screen.getByLabelText('Model'), 'jev-pinned');
+    expect(screen.queryByText('Ready')).toBeNull();
+  });
+  it('cancels readiness when the setup dialog is cancelled', async () => {
+    installFetch();
+    const user = await openSetup();
+    await user.click(screen.getByRole('button', { name: /Check readiness/ }));
+    expect(await screen.findByText('Ready')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('ignores a readiness response that arrives after cancel', async () => {
+    let resolveReadiness: ((value: Response) => void) | undefined;
     vi.stubGlobal(
       'fetch',
       vi.fn((url: string) => {
-        if (url.endsWith('/config'))
-          return Promise.resolve(
-            json({ ...config, group_profiles: [{ group_id: 'group-1', profile_id: 'standard' }] }),
-          );
-        if (url.endsWith('/catalog')) return Promise.resolve(json(catalog));
-        return Promise.resolve(json({ items: [] }));
+        if (url.endsWith('/readiness'))
+          return new Promise<Response>((resolve) => {
+            resolveReadiness = resolve;
+          });
+        return response(url.endsWith('/catalog') ? catalog : config);
       }),
     );
     const user = await openSetup();
-    await user.click(screen.getByRole('tab', { name: 'Profiles' }));
-    await user.click(screen.getByRole('button', { name: 'Edit Standard permitted information' }));
-    await user.type(screen.getByLabelText('Standard scope'), ' cancelled');
-    await user.keyboard('{Escape}');
-    expect(screen.getByRole('dialog', { name: 'Configure content protection' })).toBeTruthy();
-    expect(screen.getByText('Operational content')).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'Delete (1 groups)' }));
-    expect(screen.getByRole('alert').textContent).toMatch(/reassign or clear/i);
-    fireEvent.keyDown(document, { key: 'Escape' });
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await user.click(screen.getByRole('button', { name: /Check readiness/ }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    resolveReadiness?.(new Response(JSON.stringify({ code: 'ready' })));
+    await Promise.resolve();
+    await user.click(screen.getByRole('button', { name: 'Configure classifier' }));
+    expect(screen.queryByText('Ready')).toBeNull();
+  });
+  it('keeps Jev transport controls disabled when generic LLM is selected', async () => {
+    installFetch();
+    const user = await openSetup();
+    await user.click(screen.getByLabelText('Use generic LLM'));
+    expect((screen.getByRole('radio', { name: 'auto' }) as HTMLInputElement).disabled).toBe(true);
+  });
+  it('uses one named radio group to select the classifier backend', async () => {
+    installFetch();
+    await openSetup();
+    expect(screen.getByRole('radio', { name: 'Jev' }).getAttribute('name')).toBe(
+      'content-protection-backend',
+    );
+    expect(screen.getByLabelText('Use generic LLM').getAttribute('name')).toBe(
+      'content-protection-backend',
+    );
+  });
+  it('keeps unknown group mappings visible so they can be removed', async () => {
+    const mapped = {
+      ...config,
+      group_access_levels: [{ group_id: 'gone', access_level_id: 'standard' }],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => response(url.endsWith('/catalog') ? catalog : mapped)),
+    );
+    const user = await openSetup();
+    await user.click(screen.getByRole('tab', { name: 'Access levels' }));
+    expect(await screen.findByText(/Missing group gone/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Remove mapping' }));
+    expect(screen.queryByText(/Missing group gone/)).toBeNull();
+  });
+  it('shows an explicit decisions retry after a failed request', async () => {
+    let fail = true;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) =>
+        url.endsWith('/decisions') && fail
+          ? Promise.resolve(
+              new Response(JSON.stringify({ detail: 'unavailable' }), { status: 503 }),
+            )
+          : response(
+              url.endsWith('/catalog') ? catalog : url.endsWith('/config') ? config : { items: [] },
+            ),
+      ),
+    );
+    const user = await openInspect();
+    await user.click(screen.getByRole('tab', { name: 'Recent decisions' }));
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeTruthy();
+    fail = false;
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('No decision metadata available.')).toBeTruthy();
+  });
+  it('links OpenRouter key management to the owning settings field and closes setup', async () => {
+    installFetch();
+    const user = await openSetup();
+    const link = screen.getByRole('link', { name: /Manage the OpenRouter key/ });
+    expect(link.getAttribute('href')).toBe('#setting-openrouter-api-key');
+    await user.click(link);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('renders semantic hooks for preview and advisory results', async () => {
+    installFetch({
+      preview: {
+        required: false,
+        provenance: 'test',
+        access_levels: [],
+        granted_category_ids: [],
+        categories: [],
+        guidance: [],
+        prompt_fragment: 'fragment',
+        policy_revision: 3,
+        guidance_revision: 'x',
+        share_with_assistant: true,
+      },
+    });
+    const user = await openInspect();
+    await user.click(screen.getByRole('button', { name: 'Check saved policy' }));
+    await screen.findByText('Not required');
+    expect(document.querySelector('[data-content-protection-preview-result]')).toBeTruthy();
+    expect(document.querySelector('[data-content-protection-advisory-preview]')).toBeTruthy();
+  });
+  it('keeps policy navigation links in new tabs', async () => {
+    installFetch();
+    const user = await openSetup();
+    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
+    expect(screen.getByRole('link', { name: 'User policies' }).getAttribute('target')).toBe(
+      '_blank',
+    );
+    expect(screen.getByRole('link', { name: 'MCP routes' }).getAttribute('target')).toBe('_blank');
   });
 });

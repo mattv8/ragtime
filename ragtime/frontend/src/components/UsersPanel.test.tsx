@@ -38,14 +38,52 @@ vi.mock('./shared/AuthAdminModals', () => ({
   AuthAdminModalHost: ({ manageGroupsOpen }: { manageGroupsOpen: boolean }) =>
     manageGroupsOpen ? <div>Manage Groups</div> : null,
 }));
+vi.mock('./shared/AccessLevelsModal', () => ({
+  AccessLevelsModal: ({ open, onChanged }: { open: boolean; onChanged?: () => void }) =>
+    open ? (
+      <button type="button" onClick={onChanged}>
+        Mock access change
+      </button>
+    ) : null,
+}));
 
 const config = (): ContentProtectionConfig => ({
   revision: 1,
   enabled: true,
-  classifier_model: null,
+  schema_version: 2,
+  share_with_assistant: false,
+  classifier: { backend: 'jev', jev: { transport: 'auto', model: 'jev-latest' }, llm_model: null },
+  strictness: 'strict',
+  categories: [
+    {
+      id: 'operational',
+      name: 'Operational',
+      description: 'Operational information.',
+      includes: [],
+      excludes: [],
+      examples: [],
+      denial_message: 'Restricted.',
+      threshold_override: null,
+      system: false,
+    },
+    {
+      id: 'rule_override',
+      name: 'Rule override',
+      description: 'Policy override requests.',
+      includes: [],
+      excludes: [],
+      examples: [],
+      denial_message: 'Cannot override.',
+      threshold_override: null,
+      system: true,
+    },
+  ],
+  access_levels: [
+    { id: 'standard', name: 'Standard', granted_category_ids: ['operational'], guidance: '' },
+  ],
+  group_access_levels: [],
+  default_access_level_id: 'standard',
   coverage_mode: 'selected_scopes',
-  profiles: [],
-  group_profiles: [],
   requirements: [],
   user_overrides: [],
 });
@@ -293,5 +331,16 @@ describe('UsersPanel directory and modal', () => {
     expect(screen.getByText(/Content protection settings could not be loaded/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(contentProtectionMock.getConfig).toHaveBeenCalledTimes(2));
+  });
+
+  it('refreshes content protection after an access level change', async () => {
+    render(<UsersPanel currentUser={user('user-1')} onOpenWorkspace={vi.fn()} />);
+    await screen.findByText('Alex');
+    contentProtectionMock.getConfig.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Manage access' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mock access change' }));
+
+    await waitFor(() => expect(contentProtectionMock.getConfig).toHaveBeenCalledOnce());
   });
 });

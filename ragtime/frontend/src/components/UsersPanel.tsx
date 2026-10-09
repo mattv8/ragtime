@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { ArrowDown, ArrowUp, Shield, UserPlus } from 'lucide-react';
+import { ArrowDown, ArrowUp, KeyRound, Shield, UserPlus } from 'lucide-react';
 import { api, ApiError } from '@/api';
 import type {
   AvailableModel,
@@ -38,6 +38,7 @@ import { formatProviderDisplayName, formatModelDisplayName } from '@/utils/model
 import { calculateConversationContextUsage } from '@/utils/contextUsage';
 import { resolveProviderModelSelection } from '@/utils/modelProviders';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
+import { AccessLevelsModal } from './shared/AccessLevelsModal';
 import { UserManagementModal } from './users/UserManagementModal';
 import { JobsTableFrame } from './shared/JobsTableFrame';
 import {
@@ -337,6 +338,7 @@ export function UsersPanel({
   const [contentProtectionConfig, setContentProtectionConfig] =
     useState<ContentProtectionConfig | null>(null);
   const [contentProtectionLoadFailed, setContentProtectionLoadFailed] = useState(false);
+  const [showAccessLevelsModal, setShowAccessLevelsModal] = useState(false);
 
   const [usageSummary, setUsageSummary] = useState<UserUsageSummary[]>([]);
   const [providerBreakdown, setProviderBreakdown] = useState<ProviderModelBreakdown[]>([]);
@@ -2353,6 +2355,7 @@ export function UsersPanel({
                   <button
                     type="button"
                     className="btn btn-secondary"
+                    id="create-internal-user-btn"
                     onClick={() => setShowCreateLocalUserModal(true)}
                   >
                     <UserPlus size={16} />
@@ -2361,6 +2364,16 @@ export function UsersPanel({
                   <button
                     type="button"
                     className="btn btn-secondary"
+                    id="manage-access-btn"
+                    onClick={() => setShowAccessLevelsModal(true)}
+                  >
+                    <KeyRound size={16} />
+                    Manage access
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    id="manage-groups-btn"
                     onClick={() => setShowManageAuthGroupsModal(true)}
                   >
                     <Shield size={16} />
@@ -3056,6 +3069,13 @@ export function UsersPanel({
         onUsersChanged={loadUsers}
         onCloseCreateUser={() => setShowCreateLocalUserModal(false)}
         onCloseManageGroups={() => setShowManageAuthGroupsModal(false)}
+        toast={toast}
+      />
+      <AccessLevelsModal
+        open={showAccessLevelsModal}
+        onClose={() => setShowAccessLevelsModal(false)}
+        onChanged={() => void retryContentProtectionConfig()}
+        authGroups={authGroups}
         toast={toast}
       />
     </div>

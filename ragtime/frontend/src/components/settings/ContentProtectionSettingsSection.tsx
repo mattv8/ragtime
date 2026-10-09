@@ -3,34 +3,48 @@ import {
   useEffect,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
+  type KeyboardEvent,
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, CheckCircle2, CircleHelp, Loader2, TestTube2 } from 'lucide-react';
-
+import { CheckCircle2, CircleHelp, Loader2, TestTube2 } from 'lucide-react';
+import { api } from '@/api/client';
 import {
+  accessLevelSets,
   contentProtectionApi,
-  ContentProtectionApiError,
   requirementModeFor,
+  withRequirement,
+  type AccessLevel,
+  type ContentCategory,
   type ContentProtectionCatalog,
   type ContentProtectionConfig,
-  type ContentProtectionProfile,
-  type ContentProtectionRequirementMode,
+  type ContentProtectionReadinessResult,
   type ContentProtectionTestResult,
-  withRequirement,
 } from '@/api/contentProtection';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { ModelSelector } from '../ModelSelector';
 import { Popover } from '../Popover';
 import { SearchHighlightedText } from '../shared/SearchHighlightedText';
-import { ContentProtectionProfileCard } from './ContentProtectionProfileCard';
+import { ContentProtectionAccessLevelCard } from './ContentProtectionAccessLevelCard';
+import { ContentProtectionCategoryCard } from './ContentProtectionCategoryCard';
 import { SettingsAccordionSection } from './SettingsAccordionSection';
 import type { SettingsAccordionSectionId } from './settingsAccordionState';
 
-type SetupTab = 'model' | 'coverage' | 'profiles' | 'review';
+type SetupTab = 'classifier' | 'categories' | 'access_levels' | 'coverage' | 'review';
 type InspectTab = 'request' | 'content' | 'decisions';
 type PreviewIdentity = `user:${string}` | 'public' | 'service';
+const SETUP_TABS: { id: SetupTab; label: string }[] = [
+  { id: 'classifier', label: 'Classifier' },
+  { id: 'categories', label: 'Categories' },
+  { id: 'access_levels', label: 'Access levels' },
+  { id: 'coverage', label: 'Coverage' },
+  { id: 'review', label: 'Review & save' },
+];
+const INSPECT_TABS: { id: InspectTab; label: string }[] = [
+  { id: 'request', label: 'Check a request' },
+  { id: 'content', label: 'Test content' },
+  { id: 'decisions', label: 'Recent decisions' },
+];
 const EMPTY_CATALOG: ContentProtectionCatalog = {
   users: [],
   groups: [],
@@ -38,57 +52,104 @@ const EMPTY_CATALOG: ContentProtectionCatalog = {
   mcp_routes: [],
   surfaces: [],
 };
-const SETUP_TABS: Array<{ id: SetupTab; label: string }> = [
-  { id: 'model', label: 'Model' },
-  { id: 'coverage', label: 'Coverage' },
-  { id: 'profiles', label: 'Profiles' },
-  { id: 'review', label: 'Review & save' },
-];
-const INSPECT_TABS: Array<{ id: InspectTab; label: string }> = [
-  { id: 'request', label: 'Check a request' },
-  { id: 'content', label: 'Test content' },
-  { id: 'decisions', label: 'Recent decisions' },
-];
-
-function formatLatency(latency: number | undefined): string {
-  return latency == null ? '' : ` · ${Math.round(latency * 1000)} ms`;
-}
-function cloneConfig(config: ContentProtectionConfig): ContentProtectionConfig {
-  return structuredClone(config);
-}
-function profileSets(result: { profiles: ContentProtectionProfile[][] }): string {
+const thresholdFor = (config: ContentProtectionConfig, category: ContentCategory) =>
+  category.threshold_override ??
+  { strict: 0.25, balanced: 0.5, permissive: 0.75 }[config.strictness];
+const cloneConfig = (config: ContentProtectionConfig) => structuredClone(config);
+const classifierSignature = (config: ContentProtectionConfig) =>
+  JSON.stringify({
+    backend: config.classifier.backend,
+    transport: config.classifier.jev.transport,
+    model: config.classifier.jev.model,
+    llmModel: config.classifier.llm_model,
+  });
+const validationError = (config: ContentProtectionConfig): string | null => {
+  if (config.classifier.backend === 'llm' && !config.classifier.llm_model)
+    return 'Select a generic LLM model before saving.';
+  const invalidCategory = config.categories.find(
+    (category) =>
+      !category.system &&
+      (!category.name.trim() || !category.description.trim() || !category.denial_message.trim()),
+  );
+  if (invalidCategory)
+    return `Complete the name, description, and denial message for ${invalidCategory.name || 'each category'}.`;
+  const invalidLevel = config.access_levels.find((level) => !level.name.trim());
+  return invalidLevel ? 'Each access level needs a name.' : null;
+};
+function Tabs<T extends string>({
+  tabs,
+  active,
+  onChange,
+  hook,
+  label,
+}: {
+  tabs: { id: T; label: string }[];
+  active: T;
+  onChange: (tab: T) => void;
+  hook: string;
+  label: string;
+}) {
+  const moveTab = (event: KeyboardEvent<HTMLButtonElement>, current: T) => {
+    const index = tabs.findIndex((tab) => tab.id === current);
+    const next =
+      event.key === 'ArrowRight'
+        ? (index + 1) % tabs.length
+        : event.key === 'ArrowLeft'
+          ? (index - 1 + tabs.length) % tabs.length
+          : event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? tabs.length - 1
+              : index;
+    if (next === index) return;
+    event.preventDefault();
+    onChange(tabs[next].id);
+    document.getElementById(`${hook}-tab-${tabs[next].id}`)?.focus();
+  };
   return (
-    result.profiles.map((set) => set.map((profile) => profile.name).join(', ')).join(' / ') ||
-    'None'
+    <div className="content-protection-tabs" role="tablist" aria-label={label}>
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          id={`${hook}-tab-${tab.id}`}
+          type="button"
+          role="tab"
+          aria-selected={active === tab.id}
+          aria-controls={`${hook}-panel-${tab.id}`}
+          tabIndex={active === tab.id ? 0 : -1}
+          onClick={() => onChange(tab.id)}
+          onKeyDown={(event) => moveTab(event, tab.id)}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
   );
 }
-
-function TabbedDialog<T extends string>({
+function Dialog({
   title,
-  tabs,
-  activeTab,
-  setActiveTab,
-  onClose,
   children,
+  onClose,
   footer,
-  hook,
-  busy = false,
   error,
+  busy = false,
+  hook,
+  activeTab,
 }: {
   title: string;
-  tabs: Array<{ id: T; label: string }>;
-  activeTab: T;
-  setActiveTab: (tab: T) => void;
-  onClose: () => void;
   children: ReactNode;
-  footer: ReactNode;
-  hook: string;
+  onClose: () => void;
+  footer: React.ReactNode;
+  error: string | null;
   busy?: boolean;
-  error?: string | null;
-}): JSX.Element {
+  hook: string;
+  activeTab: string;
+}) {
   const dialogRef = useRef<HTMLDivElement>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  const closeRef = useRef(onClose);
+  const busyRef = useRef(busy);
+  closeRef.current = onClose;
+  busyRef.current = busy;
   const restoreFocus = useRef<HTMLElement | null>(
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
   );
@@ -106,25 +167,23 @@ function TabbedDialog<T extends string>({
     focusable()[0]?.focus();
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented) return;
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && !busyRef.current) {
         event.preventDefault();
-        onCloseRef.current();
+        closeRef.current();
         return;
       }
       if (event.key !== 'Tab') return;
       const items = focusable();
       if (!items.length) return;
-      const first = items[0];
+      const [first] = items;
       const last = items[items.length - 1];
-      if (!dialog?.contains(document.activeElement)) {
+      if (
+        !dialog?.contains(document.activeElement) ||
+        (event.shiftKey && document.activeElement === first) ||
+        (!event.shiftKey && document.activeElement === last)
+      ) {
         event.preventDefault();
         (event.shiftKey ? last : first).focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
       }
     };
     document.addEventListener('keydown', onKeyDown);
@@ -133,24 +192,12 @@ function TabbedDialog<T extends string>({
       previouslyFocused?.focus();
     };
   }, []);
-  const moveTab = (event: ReactKeyboardEvent<HTMLButtonElement>, tab: T) => {
-    const index = tabs.findIndex((item) => item.id === tab);
-    let next = index;
-    if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
-    else if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
-    else if (event.key === 'Home') next = 0;
-    else if (event.key === 'End') next = tabs.length - 1;
-    else return;
-    event.preventDefault();
-    setActiveTab(tabs[next].id);
-    document.getElementById(`${hook}-tab-${tabs[next].id}`)?.focus();
-  };
   return createPortal(
     <div
       className="modal-overlay content-protection-modal-overlay"
       role="presentation"
       onMouseDown={(event) => {
-        if (!busy && event.target === event.currentTarget) onClose();
+        if (!busyRef.current && event.target === event.currentTarget) onClose();
       }}
     >
       <div
@@ -164,32 +211,14 @@ function TabbedDialog<T extends string>({
         <div className="modal-header">
           <h3 id={`${hook}-title`}>{title}</h3>
           <button
-            type="button"
             className="modal-close"
+            type="button"
             aria-label={`Close ${title}`}
             disabled={busy}
             onClick={onClose}
           >
             ×
           </button>
-        </div>
-        <div className="content-protection-tabs" role="tablist" aria-label={`${title} steps`}>
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              id={`${hook}-tab-${tab.id}`}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab.id}
-              aria-controls={`${hook}-panel-${tab.id}`}
-              tabIndex={activeTab === tab.id ? 0 : -1}
-              disabled={busy}
-              onClick={() => setActiveTab(tab.id)}
-              onKeyDown={(event) => moveTab(event, tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
         </div>
         <div
           className="modal-body"
@@ -202,9 +231,7 @@ function TabbedDialog<T extends string>({
               {error}
             </p>
           )}
-          <fieldset className="content-protection-dialog-controls" disabled={busy}>
-            {children}
-          </fieldset>
+          {children}
         </div>
         <div className="modal-footer">{footer}</div>
       </div>
@@ -217,52 +244,53 @@ export function ContentProtectionSettingsSection({
   open,
   onToggle,
   searchQuery = '',
+  refreshKey = 0,
 }: {
   open: boolean;
   onToggle: (id: SettingsAccordionSectionId) => void;
   searchQuery?: string;
+  refreshKey?: number;
 }): JSX.Element {
   const availableModels = useAvailableModels();
   const refreshModelsRef = useRef(availableModels.refresh);
   refreshModelsRef.current = availableModels.refresh;
   const [saved, setSaved] = useState<ContentProtectionConfig | null>(null);
-  const [catalog, setCatalog] = useState<ContentProtectionCatalog>(EMPTY_CATALOG);
-  const [error, setError] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState(EMPTY_CATALOG);
   const [setup, setSetup] = useState<ContentProtectionConfig | null>(null);
-  const [setupTab, setSetupTab] = useState<SetupTab>('model');
-  const [inspectOpen, setInspectOpen] = useState(false);
+  const [tab, setTab] = useState<SetupTab>('classifier');
+  const [inspect, setInspect] = useState(false);
   const [inspectTab, setInspectTab] = useState<InspectTab>('request');
+  const [setupError, setSetupError] = useState<string | null>(null);
+  const [inspectError, setInspectError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [reloading, setReloading] = useState(false);
-  const [saveConflict, setSaveConflict] = useState(false);
-  const [readiness, setReadiness] = useState<ContentProtectionTestResult | null>(null);
-  const [checkedModel, setCheckedModel] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<ContentProtectionReadinessResult | null>(null);
+  const [readinessSignature, setReadinessSignature] = useState<string | null>(null);
   const [readinessBusy, setReadinessBusy] = useState(false);
-  const [readinessError, setReadinessError] = useState<string | null>(null);
-  const readinessToken = useRef(0);
-  const [identity, setIdentity] = useState<PreviewIdentity>('service');
-  const [surface, setSurface] = useState('chat');
-  const [route, setRoute] = useState('');
-  const [includeTool, setIncludeTool] = useState(false);
-  const [tool, setTool] = useState('');
+  const [typesafeKey, setTypesafeKey] = useState('');
+  const [keyBusy, setKeyBusy] = useState(false);
   const [preview, setPreview] = useState<Awaited<
     ReturnType<typeof contentProtectionApi.preview>
   > | null>(null);
-  const previewToken = useRef(0);
-  const [previewBusy, setPreviewBusy] = useState(false);
+  const [identity, setIdentity] = useState<PreviewIdentity>('service');
+  const [surface, setSurface] = useState('chat');
+  const [mcpRoute, setMcpRoute] = useState('');
+  const [toolId, setToolId] = useState('');
   const [sample, setSample] = useState('');
-  const [sampleProfiles, setSampleProfiles] = useState<string[]>([]);
+  const [sampleLevelIds, setSampleLevelIds] = useState<string[]>([]);
+  const [sampleUserId, setSampleUserId] = useState('');
   const [testResult, setTestResult] = useState<ContentProtectionTestResult | null>(null);
   const [testBusy, setTestBusy] = useState(false);
-  const testToken = useRef(0);
+  const [previewBusy, setPreviewBusy] = useState(false);
   const [decisions, setDecisions] = useState<
     Awaited<ReturnType<typeof contentProtectionApi.decisions>>['items'] | null
   >(null);
   const [decisionsBusy, setDecisionsBusy] = useState(false);
   const [decisionsError, setDecisionsError] = useState<string | null>(null);
-  const decisionsRequested = useRef(false);
-  const decisionsToken = useRef(0);
-
+  const requestToken = useRef(0);
+  const readinessToken = useRef(0);
+  const previewToken = useRef(0);
+  const [saveConflict, setSaveConflict] = useState(false);
   const load = useCallback(async () => {
     try {
       const [config, nextCatalog] = await Promise.all([
@@ -271,9 +299,9 @@ export function ContentProtectionSettingsSection({
       ]);
       setSaved(config);
       setCatalog(nextCatalog);
-      setError(null);
+      setLoadError(null);
     } catch (caught) {
-      setError(
+      setLoadError(
         caught instanceof Error ? caught.message : 'Failed to load content protection settings',
       );
     }
@@ -283,71 +311,53 @@ export function ContentProtectionSettingsSection({
       void load();
       refreshModelsRef.current();
     }
-  }, [load, open]);
-  useEffect(() => {
-    setSampleProfiles((current) =>
-      current.filter((id) => saved?.profiles.some((profile) => profile.id === id)),
-    );
-    testToken.current += 1;
-    setTestResult(null);
-    setTestBusy(false);
-  }, [saved]);
-  const openSetup = (tab: SetupTab = 'model') => {
-    if (!saved) return;
-    setError(null);
-    setSaveConflict(false);
-    setReadiness(null);
-    setReadinessError(null);
-    setReadinessBusy(false);
-    readinessToken.current += 1;
-    setSetup(cloneConfig(saved));
-    setSetupTab(tab);
-  };
-  const closeSetup = () => {
-    if (!saving && !reloading) {
+  }, [load, open, refreshKey]);
+  const update = (change: Partial<ContentProtectionConfig>) => {
+    if (change.classifier) {
       readinessToken.current += 1;
+      setReadiness(null);
+      setReadinessSignature(null);
       setReadinessBusy(false);
-      setSetup(null);
-      setError(null);
-      setSaveConflict(false);
     }
-  };
-  const updateDraft = (change: Partial<ContentProtectionConfig>) =>
     setSetup((current) => current && { ...current, ...change });
-  const changeModel = (classifier_model: string) => {
-    readinessToken.current += 1;
+  };
+  const openSetup = (nextTab: SetupTab = 'classifier') => {
+    if (!saved) return;
+    setSetup(cloneConfig(saved));
+    setTab(nextTab);
+    setSetupError(null);
     setReadiness(null);
-    setReadinessError(null);
-    setReadinessBusy(false);
-    updateDraft({ classifier_model });
+    setReadinessSignature(null);
+    readinessToken.current += 1;
+    setSaveConflict(false);
   };
   const save = async () => {
-    if (!setup || !saved) return;
+    if (!setup) return;
+    const invalid = validationError(setup);
+    if (invalid) return setSetupError(invalid);
     setSaving(true);
-    setError(null);
-    setSaveConflict(false);
     try {
       const next = await contentProtectionApi.saveConfig(setup.revision, setup);
       setSaved(next);
-      readinessToken.current += 1;
-      setReadinessBusy(false);
       setSetup(null);
+      setReadiness(null);
+      setReadinessSignature(null);
     } catch (caught) {
-      const conflict = caught instanceof ContentProtectionApiError && caught.status === 409;
-      setSaveConflict(conflict);
-      setError(
-        conflict
+      setSaveConflict(caught instanceof Error && 'status' in caught && caught.status === 409);
+      setSetupError(
+        caught instanceof Error && 'status' in caught && caught.status === 409
           ? 'This policy changed on the server. Reload saved settings and reconcile your draft before saving.'
           : caught instanceof Error
             ? caught.message
-            : 'Failed to save content protection settings',
+            : 'Failed to save content protection',
       );
     } finally {
       setSaving(false);
     }
   };
   const reloadSaved = async () => {
-    setReloading(true);
+    if (saving) return;
+    setSaving(true);
     try {
       const [config, nextCatalog] = await Promise.all([
         contentProtectionApi.getConfig(),
@@ -356,143 +366,167 @@ export function ContentProtectionSettingsSection({
       setSaved(config);
       setCatalog(nextCatalog);
       setSetup(null);
-      setError(null);
       setSaveConflict(false);
+      setSetupError(null);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Failed to reload saved settings');
+      setSetupError(caught instanceof Error ? caught.message : 'Failed to reload saved settings');
     } finally {
-      setReloading(false);
+      setSaving(false);
+    }
+  };
+  const saveKey = async (field: 'typesafe_api_key', value: string) => {
+    if (!value.trim()) return;
+    setKeyBusy(true);
+    try {
+      await api.updateSettings({ [field]: value.trim() });
+      setTypesafeKey('');
+      setCatalog(await contentProtectionApi.getCatalog());
+      readinessToken.current += 1;
+      setReadiness(null);
+      setReadinessSignature(null);
+    } catch (caught) {
+      setSetupError(caught instanceof Error ? caught.message : 'Failed to save classifier key');
+    } finally {
+      setKeyBusy(false);
     }
   };
   const checkReadiness = async () => {
-    if (!setup?.classifier_model) return;
+    if (!setup) return;
     const token = ++readinessToken.current;
     setReadiness(null);
-    setReadinessError(null);
+    setReadinessSignature(null);
     setReadinessBusy(true);
-    const model = setup.classifier_model;
     try {
       const result = await contentProtectionApi.readiness(setup);
       if (token === readinessToken.current) {
         setReadiness(result);
-        setCheckedModel(result.code === 'ready' ? model : null);
+        setReadinessSignature(result.code === 'ready' ? classifierSignature(setup) : null);
       }
     } catch (caught) {
-      if (token === readinessToken.current) {
-        setCheckedModel((current) => (current === model ? null : current));
-        setReadinessError(caught instanceof Error ? caught.message : 'Readiness check failed');
-      }
+      if (token === readinessToken.current)
+        setSetupError(caught instanceof Error ? caught.message : 'Readiness check failed');
+      if (token === readinessToken.current) setReadinessSignature(null);
     } finally {
       if (token === readinessToken.current) setReadinessBusy(false);
     }
   };
-  const clearPreview = () => {
-    previewToken.current += 1;
-    setPreview(null);
-    setPreviewBusy(false);
-    setError(null);
+  const updateCategory = (id: string, change: Partial<ContentCategory>) =>
+    setSetup(
+      (current) =>
+        current && {
+          ...current,
+          categories: current.categories.map((category) =>
+            category.id === id ? { ...category, ...change } : category,
+          ),
+        },
+    );
+  const deleteCategory = (category: ContentCategory) => {
+    if (!setup) return;
+    if (setup.access_levels.some((level) => level.granted_category_ids.includes(category.id))) {
+      setSetupError(`Remove ${category.name} from access levels before deleting.`);
+      return;
+    }
+    update({ categories: setup.categories.filter((item) => item.id !== category.id) });
   };
+  const updateLevel = (id: string, change: Partial<AccessLevel>) =>
+    setSetup(
+      (current) =>
+        current && {
+          ...current,
+          access_levels: current.access_levels.map((level) =>
+            level.id === id ? { ...level, ...change } : level,
+          ),
+        },
+    );
+  const deleteLevel = (level: AccessLevel) => {
+    if (!setup) return;
+    if (level.id === setup.default_access_level_id) {
+      setSetupError('Reassign the default level before deleting it.');
+      return;
+    }
+    const mapped = setup.group_access_levels.filter(
+      (item) => item.access_level_id === level.id,
+    ).length;
+    if (mapped) {
+      setSetupError(`Unassign ${mapped} group(s) from ${level.name} before deleting.`);
+      return;
+    }
+    update({ access_levels: setup.access_levels.filter((item) => item.id !== level.id) });
+  };
+  const updateGroupMapping = (groupId: string, levelId: string, checked: boolean) =>
+    setSetup((current) => {
+      if (!current) return current;
+      const group_access_levels = current.group_access_levels.filter(
+        (item) => item.group_id !== groupId || item.access_level_id !== levelId,
+      );
+      return {
+        ...current,
+        group_access_levels: checked
+          ? [...group_access_levels, { group_id: groupId, access_level_id: levelId }]
+          : group_access_levels,
+      };
+    });
   const runPreview = async () => {
     const token = ++previewToken.current;
-    setPreview(null);
+    setInspectError(null);
     setPreviewBusy(true);
-    setError(null);
     try {
       const result = await contentProtectionApi.preview({
         user_id: identity.startsWith('user:') ? identity.slice(5) : undefined,
         public: identity === 'public',
+        baseline: identity === 'service' ? 'service' : identity === 'public' ? 'public' : 'user',
         surface,
-        mcp_route: surface === 'mcp' ? route || undefined : undefined,
-        tool_id: includeTool ? tool || undefined : undefined,
+        mcp_route: mcpRoute || undefined,
+        tool_id: toolId || undefined,
       });
       if (token === previewToken.current) setPreview(result);
     } catch (caught) {
       if (token === previewToken.current)
-        setError(caught instanceof Error ? caught.message : 'Failed to check saved policy');
+        setInspectError(caught instanceof Error ? caught.message : 'Failed to check saved policy');
     } finally {
       if (token === previewToken.current) setPreviewBusy(false);
     }
   };
   const runTest = async () => {
-    if (!saved?.classifier_model || !sample.trim()) return;
-    const token = ++testToken.current;
+    if (!saved || !sample.trim()) return;
+    const token = ++requestToken.current;
+    setInspectError(null);
     setTestBusy(true);
-    setTestResult(null);
     try {
-      const result = await contentProtectionApi.test(saved, sample, sampleProfiles);
-      if (token === testToken.current) setTestResult(result);
+      const result = await contentProtectionApi.test(
+        saved,
+        sample,
+        sampleLevelIds,
+        sampleUserId || undefined,
+      );
+      if (token === requestToken.current) setTestResult(result);
     } catch (caught) {
-      if (token === testToken.current)
-        setError(caught instanceof Error ? caught.message : 'Sample test failed');
+      if (token === requestToken.current)
+        setInspectError(caught instanceof Error ? caught.message : 'Sample test failed');
     } finally {
-      if (token === testToken.current) setTestBusy(false);
+      if (token === requestToken.current) setTestBusy(false);
+    }
+  };
+  const loadDecisions = async () => {
+    if (decisions || decisionsBusy) return;
+    setDecisionsBusy(true);
+    setDecisionsError(null);
+    try {
+      setDecisions((await contentProtectionApi.decisions()).items);
+    } catch (caught) {
+      setDecisionsError(caught instanceof Error ? caught.message : 'Failed to load decisions');
+    } finally {
+      setDecisionsBusy(false);
     }
   };
   useEffect(() => {
-    if (!inspectOpen || inspectTab !== 'decisions' || decisionsRequested.current) return;
-    decisionsRequested.current = true;
-    const token = ++decisionsToken.current;
-    setDecisionsError(null);
-    setDecisionsBusy(true);
-    void contentProtectionApi
-      .decisions()
-      .then((result) => {
-        if (token === decisionsToken.current) setDecisions(result.items);
-      })
-      .catch((caught) => {
-        if (token === decisionsToken.current)
-          setDecisionsError(
-            caught instanceof Error ? caught.message : 'Failed to load recent decisions',
-          );
-      })
-      .finally(() => {
-        if (token === decisionsToken.current) setDecisionsBusy(false);
-      });
-  }, [inspectOpen, inspectTab]);
-  const updateProfile = (id: string, change: Partial<ContentProtectionProfile>) =>
-    setSetup(
-      (current) =>
-        current && {
-          ...current,
-          profiles: current.profiles.map((profile) =>
-            profile.id === id ? { ...profile, ...change } : profile,
-          ),
-        },
-    );
-  const deleteProfile = (profile: ContentProtectionProfile) => {
-    if (!setup) return;
-    const affected = setup.group_profiles.filter((item) => item.profile_id === profile.id).length;
-    if (affected) {
-      setError(
-        `Reassign or clear ${affected} affected group${affected === 1 ? '' : 's'} before deleting ${profile.name}.`,
-      );
-      return;
-    }
-    setSetup(
-      (current) =>
-        current && {
-          ...current,
-          profiles: current.profiles.filter((item) => item.id !== profile.id),
-        },
-    );
-  };
-  const addProfile = () =>
-    setSetup(
-      (current) =>
-        current && {
-          ...current,
-          profiles: [
-            ...current.profiles,
-            {
-              id: `profile_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`,
-              name: 'New profile',
-              level: 0,
-              scope: 'Describe the information this profile permits.',
-            },
-          ],
-        },
-    );
-
+    previewToken.current += 1;
+    setPreview(null);
+  }, [identity, surface, mcpRoute, toolId, saved?.revision]);
+  useEffect(() => {
+    requestToken.current += 1;
+    setTestResult(null);
+  }, [sample, sampleLevelIds, sampleUserId, saved?.revision]);
   return (
     <SettingsAccordionSection
       id="content-protection"
@@ -506,54 +540,101 @@ export function ContentProtectionSettingsSection({
         className="content-protection-section"
         aria-label="Content protection settings"
       >
-        {error && !setup && !inspectOpen && (
-          <p className="field-error" role="alert">
-            {error}
-          </p>
-        )}
         {!saved ? (
-          <p className="field-help">Loading content protection settings…</p>
+          loadError ? (
+            <div
+              className="content-protection-result"
+              role="alert"
+              data-content-protection-load-error
+            >
+              <strong>Unable to load content protection settings</strong>
+              <span>{loadError}</span>
+              <button className="btn btn-secondary" type="button" onClick={() => void load()}>
+                Retry
+              </button>
+            </div>
+          ) : (
+            <p className="field-help">Loading content protection settings…</p>
+          )
         ) : (
           <>
             <p className="content-protection-status">
               {saved.enabled
                 ? 'Enabled: covered traffic is classified before release.'
-                : 'Disabled: saved rules are ready for preparation but production traffic makes no classifier call.'}
+                : 'Disabled: saved rules are ready for preparation.'}
             </p>
+            {saved.legacy_reset && (
+              <div
+                className="settings-switch-card"
+                data-content-protection-legacy-notice
+                role="status"
+              >
+                <div>
+                  <strong>Configuration reset</strong>
+                  <p className="field-help">
+                    Your previous v1 configuration (
+                    {saved.legacy_was_enabled ? 'was enabled' : 'was disabled'}) was replaced with
+                    disabled v2 defaults. Review and save to dismiss this notice.
+                  </p>
+                </div>
+              </div>
+            )}
             <div className="content-protection-overview" data-content-protection-overview>
               <fieldset
-                id="content-protection-model-summary"
+                id="content-protection-classifier-summary"
                 className="content-protection-summary"
               >
                 <legend>
                   Classifier{' '}
-                  <span
-                    title={
-                      checkedModel === saved.classifier_model && checkedModel
-                        ? 'Selected model passed a check in this session'
-                        : 'Open Configure model to check the selected model'
-                    }
-                  >
-                    {checkedModel === saved.classifier_model && checkedModel ? (
-                      <CheckCircle2
-                        className="content-protection-status-icon is-ready"
-                        aria-label="Saved model checked"
-                      />
-                    ) : (
-                      <CircleHelp
-                        className="content-protection-status-icon"
-                        aria-label="Model not checked"
-                      />
-                    )}
-                  </span>
+                  {readiness?.code === 'ready' &&
+                  readinessSignature === classifierSignature(saved) ? (
+                    <CheckCircle2 className="content-protection-status-icon is-ready" />
+                  ) : (
+                    <CircleHelp className="content-protection-status-icon" />
+                  )}
                 </legend>
-                <p>{saved.classifier_model || 'No model selected'}</p>
+                <p>
+                  {saved.classifier.backend === 'jev'
+                    ? `Jev · ${saved.classifier.jev.transport}`
+                    : 'Generic LLM'}
+                </p>
                 <button
-                  type="button"
                   className="btn btn-secondary"
-                  onClick={() => openSetup('model')}
+                  type="button"
+                  onClick={() => openSetup('classifier')}
                 >
-                  Configure model
+                  Configure classifier
+                </button>
+              </fieldset>
+              <fieldset
+                id="content-protection-categories-summary"
+                className="content-protection-summary"
+              >
+                <legend>Categories</legend>
+                <p>{saved.categories.length} categories</p>
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  onClick={() => openSetup('categories')}
+                >
+                  Configure categories
+                </button>
+              </fieldset>
+              <fieldset
+                id="content-protection-levels-summary"
+                className="content-protection-summary"
+              >
+                <legend>Access levels</legend>
+                <p>
+                  {saved.access_levels.length} levels · {saved.group_access_levels.length} group
+                  mappings
+                </p>
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  onClick={() => openSetup('access_levels')}
+                >
+                  Configure access levels
                 </button>
               </fieldset>
               <fieldset
@@ -567,52 +648,22 @@ export function ContentProtectionSettingsSection({
                     : 'Selected scopes'}
                 </p>
                 <button
-                  type="button"
                   className="btn btn-secondary"
+                  type="button"
                   onClick={() => openSetup('coverage')}
                 >
                   Configure coverage
                 </button>
               </fieldset>
-              <fieldset
-                id="content-protection-profiles-summary"
-                className="content-protection-summary"
-              >
-                <legend>Profiles</legend>
-                <p>
-                  {saved.profiles.length
-                    ? `${saved.profiles.length} permitted information profile${saved.profiles.length === 1 ? '' : 's'}`
-                    : 'No profiles configured'}
-                </p>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => openSetup('profiles')}
-                >
-                  Configure profiles
-                </button>
-              </fieldset>
             </div>
             <div className="form-actions">
-              <button type="button" className="btn" onClick={() => openSetup()}>
-                Configure protection
-              </button>
               <button
-                type="button"
                 className="btn btn-secondary"
+                type="button"
                 onClick={() => {
-                  setError(null);
-                  clearPreview();
-                  testToken.current += 1;
-                  setTestBusy(false);
-                  setTestResult(null);
-                  decisionsToken.current += 1;
-                  decisionsRequested.current = false;
-                  setDecisions(null);
-                  setDecisionsError(null);
-                  setDecisionsBusy(false);
-                  setInspectOpen(true);
+                  setInspect(true);
                   setInspectTab('request');
+                  setInspectError(null);
                 }}
               >
                 Test & inspect
@@ -622,131 +673,448 @@ export function ContentProtectionSettingsSection({
         )}
       </section>
       {setup && (
-        <TabbedDialog
+        <Dialog
           title="Configure content protection"
-          tabs={SETUP_TABS}
-          activeTab={setupTab}
-          setActiveTab={setSetupTab}
-          onClose={closeSetup}
+          error={setupError}
+          onClose={() => {
+            if (saving) return;
+            readinessToken.current += 1;
+            setReadiness(null);
+            setReadinessSignature(null);
+            setSetup(null);
+          }}
+          busy={saving}
           hook="content-protection-setup"
-          busy={saving || reloading}
-          error={error}
+          activeTab={tab}
           footer={
             <>
-              {setupTab !== 'model' && (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  disabled={saving || reloading}
-                  onClick={() =>
-                    setSetupTab(
-                      SETUP_TABS[SETUP_TABS.findIndex((tab) => tab.id === setupTab) - 1].id,
-                    )
-                  }
-                >
-                  Back
+              <button
+                className="btn btn-secondary"
+                type="button"
+                disabled={saving || tab === 'classifier'}
+                onClick={() =>
+                  setTab(SETUP_TABS[SETUP_TABS.findIndex((item) => item.id === tab) - 1].id)
+                }
+              >
+                Back
+              </button>
+              {tab === 'review' ? (
+                <button className="btn" type="button" disabled={saving} onClick={() => void save()}>
+                  {saving ? 'Saving…' : 'Save protection'}
                 </button>
-              )}
-              {setupTab !== 'review' ? (
+              ) : (
                 <button
-                  type="button"
                   className="btn"
-                  disabled={saving || reloading}
+                  type="button"
+                  disabled={saving}
                   onClick={() =>
-                    setSetupTab(
-                      SETUP_TABS[SETUP_TABS.findIndex((tab) => tab.id === setupTab) + 1].id,
-                    )
+                    setTab(SETUP_TABS[SETUP_TABS.findIndex((item) => item.id === tab) + 1].id)
                   }
                 >
                   Next
                 </button>
-              ) : (
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={saving || reloading}
-                  onClick={() => void save()}
-                >
-                  {saving ? 'Saving…' : 'Save protection'}
-                </button>
               )}
               {saveConflict && (
                 <button
-                  type="button"
                   className="btn btn-secondary"
-                  disabled={saving || reloading}
+                  type="button"
+                  disabled={saving}
                   onClick={() => void reloadSaved()}
                 >
-                  {reloading ? 'Reloading…' : 'Reload and discard draft'}
+                  Reload and discard draft
                 </button>
               )}
               <button
-                type="button"
                 className="btn btn-secondary"
-                disabled={saving || reloading}
-                onClick={closeSetup}
+                type="button"
+                disabled={saving}
+                onClick={() => {
+                  readinessToken.current += 1;
+                  setReadiness(null);
+                  setReadinessSignature(null);
+                  setSetup(null);
+                }}
               >
                 Cancel
               </button>
             </>
           }
         >
-          {setupTab === 'model' && (
-            <fieldset
-              id="content-protection-classifier-fieldset"
-              className="content-protection-fieldset"
-            >
-              <legend>
-                Classifier model{' '}
-                <button
-                  type="button"
-                  className={`content-protection-icon-action${readinessError ? ' is-error' : readiness ? ' is-ready' : ''}`}
-                  title="Check selected model"
-                  aria-label="Check selected model"
-                  disabled={!setup.classifier_model || readinessBusy}
-                  onClick={() => void checkReadiness()}
+          <fieldset disabled={saving} className="content-protection-dialog-controls">
+            <Tabs
+              tabs={SETUP_TABS}
+              active={tab}
+              onChange={setTab}
+              hook="content-protection-setup"
+              label="Configure content protection steps"
+            />
+            {tab === 'classifier' && (
+              <>
+                <fieldset
+                  id="content-protection-classifier-fieldset"
+                  className="content-protection-fieldset"
+                  data-content-protection-jev-config
                 >
-                  {readinessBusy ? (
-                    <Loader2 className="content-protection-spinner" aria-label="Checking model" />
-                  ) : readinessError ? (
-                    <AlertCircle aria-label="Model check failed" />
-                  ) : readiness ? (
-                    <CheckCircle2 aria-label="Model ready" />
-                  ) : (
-                    <CircleHelp aria-label="Model unchecked" />
+                  <legend>
+                    <label>
+                      <input
+                        type="radio"
+                        name="content-protection-backend"
+                        checked={setup.classifier.backend === 'jev'}
+                        onChange={() =>
+                          update({ classifier: { ...setup.classifier, backend: 'jev' } })
+                        }
+                      />{' '}
+                      Jev
+                    </label>{' '}
+                    <span className="tool-badge">Recommended</span>
+                  </legend>
+                  <fieldset>
+                    <legend>Transport</legend>
+                    {(['auto', 'typesafe', 'openrouter'] as const).map((transport) => (
+                      <label key={transport}>
+                        <input
+                          type="radio"
+                          name="jev-transport"
+                          disabled={setup.classifier.backend !== 'jev'}
+                          checked={setup.classifier.jev.transport === transport}
+                          onChange={() =>
+                            update({
+                              classifier: {
+                                ...setup.classifier,
+                                backend: 'jev',
+                                jev: { ...setup.classifier.jev, transport },
+                              },
+                            })
+                          }
+                        />{' '}
+                        {transport}
+                      </label>
+                    ))}
+                  </fieldset>
+                  <label htmlFor="jev-model-input">
+                    Model
+                    <input
+                      id="jev-model-input"
+                      value={setup.classifier.jev.model}
+                      onChange={(event) =>
+                        update({
+                          classifier: {
+                            ...setup.classifier,
+                            jev: { ...setup.classifier.jev, model: event.target.value },
+                          },
+                        })
+                      }
+                      onBlur={(event) => {
+                        if (!event.target.value.trim())
+                          update({
+                            classifier: {
+                              ...setup.classifier,
+                              jev: { ...setup.classifier.jev, model: 'jev-latest' },
+                            },
+                          });
+                      }}
+                    />
+                  </label>
+                  <p className="field-help">
+                    <code>jev-latest</code> tracks the current recommended version. Pin a release to
+                    freeze behavior.
+                  </p>
+                  {(setup.classifier.jev.transport === 'auto' ||
+                    setup.classifier.jev.transport === 'typesafe') && (
+                    <KeyRow
+                      id="content-protection-typesafe-key-row"
+                      hook="content-protection-typesafe-key"
+                      label="TypeSafe API key"
+                      configured={catalog.classifier_status?.typesafe_key_configured}
+                      value={typesafeKey}
+                      onChange={setTypesafeKey}
+                      onSave={() => void saveKey('typesafe_api_key', typesafeKey)}
+                      busy={keyBusy}
+                    />
                   )}
-                </button>
-              </legend>
-              <ModelSelector
-                models={availableModels.models || []}
-                selectedModelId={setup.classifier_model || ''}
-                onModelChange={changeModel}
-                getModelSelectionKey={(model) => `${model.provider}::${model.id}`}
-                loading={availableModels.loading || false}
-                disabled={availableModels.loading || saving || false}
-                placeholder="Select a curated model"
-                variant="full"
-              />
-              <p className="field-help">
-                {availableModels.error ||
-                  (availableModels.loading
-                    ? 'Loading curated classifier models…'
-                    : 'The selected provider receives inspected content.')}
-              </p>
-              {readinessError && (
-                <p className="field-help" role="status">
-                  {readinessError}
+                  {(setup.classifier.jev.transport === 'auto' ||
+                    setup.classifier.jev.transport === 'openrouter') && (
+                    <div
+                      id="content-protection-openrouter-key-row"
+                      data-content-protection-openrouter-key
+                    >
+                      <p className="field-help">
+                        {catalog.classifier_status?.openrouter_key_configured
+                          ? 'An OpenRouter key is configured.'
+                          : 'No OpenRouter key is configured.'}{' '}
+                        <a
+                          href="#setting-openrouter-api-key"
+                          onClick={() => {
+                            window.dispatchEvent(
+                              new CustomEvent('highlight-settings', {
+                                detail: 'setting-openrouter-api-key',
+                              }),
+                            );
+                            readinessToken.current += 1;
+                            setReadiness(null);
+                            setReadinessSignature(null);
+                            setSetup(null);
+                          }}
+                        >
+                          Manage the OpenRouter key in provider settings.
+                        </a>
+                      </p>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    disabled={readinessBusy}
+                    onClick={() => void checkReadiness()}
+                  >
+                    {readinessBusy && <Loader2 className="content-protection-spinner" />} Check
+                    readiness
+                  </button>
+                  {readiness && (
+                    <section
+                      id="readiness-result"
+                      className="content-protection-result"
+                      role="status"
+                      data-content-protection-readiness-result
+                    >
+                      <strong>{readiness.code === 'ready' ? 'Ready' : 'Not ready'}</strong>
+                      {readiness.model && (
+                        <span className="tool-badge">
+                          Resolved: {readiness.model} via {readiness.transport}
+                        </span>
+                      )}
+                      {readiness.cases?.map((item) => (
+                        <span key={item.name}>
+                          {item.name}: {item.verdict} ·{' '}
+                          {Object.entries(item.probabilities)
+                            .map(([id, probability]) => `${id} ${(probability * 100).toFixed(0)}%`)
+                            .join(', ')}
+                        </span>
+                      ))}
+                    </section>
+                  )}
+                </fieldset>
+                <details
+                  id="content-protection-llm-advanced"
+                  data-content-protection-llm-advanced
+                  open={setup.classifier.backend === 'llm'}
+                >
+                  <summary>
+                    Advanced: generic LLM classifier{' '}
+                    <span className="tool-badge">Not recommended</span>
+                  </summary>
+                  <p className="field-help">
+                    Generic model probabilities are not calibrated. Retained for evaluation only.
+                  </p>
+                  <label>
+                    <input
+                      type="radio"
+                      name="content-protection-backend"
+                      checked={setup.classifier.backend === 'llm'}
+                      onChange={() =>
+                        update({ classifier: { ...setup.classifier, backend: 'llm' } })
+                      }
+                    />{' '}
+                    Use generic LLM
+                  </label>
+                  {setup.classifier.backend === 'llm' && (
+                    <ModelSelector
+                      models={(availableModels.models || []).filter(
+                        (model) => !/jev/i.test(`${model.provider} ${model.id}`),
+                      )}
+                      selectedModelId={setup.classifier.llm_model || ''}
+                      onModelChange={(llm_model) =>
+                        update({ classifier: { ...setup.classifier, llm_model } })
+                      }
+                      getModelSelectionKey={(model) => `${model.provider}::${model.id}`}
+                      loading={availableModels.loading || false}
+                      disabled={false}
+                      placeholder="Select a generic model"
+                      variant="full"
+                    />
+                  )}
+                </details>
+              </>
+            )}
+            {tab === 'categories' && (
+              <>
+                <p className="field-help">
+                  Categories define what information is classified. System categories cannot be
+                  edited or deleted.
                 </p>
-              )}
-              <p className="field-help">
-                Enabling protection or changing its model while enabled verifies the provider on
-                save.
-              </p>
-            </fieldset>
-          )}
-          {setupTab === 'coverage' && (
-            <>
-              <div className="content-protection-dialog-grid">
+                <div
+                  id="content-protection-category-list"
+                  className="content-protection-profiles"
+                  data-content-protection-category-list
+                >
+                  {setup.categories.map((category) => (
+                    <ContentProtectionCategoryCard
+                      key={category.id}
+                      category={category}
+                      onUpdate={updateCategory}
+                      onDelete={deleteCategory}
+                    />
+                  ))}
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  disabled={setup.categories.length >= 24}
+                  onClick={() =>
+                    update({
+                      categories: [
+                        ...setup.categories,
+                        {
+                          id: `cat_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`,
+                          name: 'New category',
+                          description: 'Describe restricted content.',
+                          includes: [],
+                          excludes: [],
+                          examples: [],
+                          denial_message: 'This information is restricted.',
+                          threshold_override: null,
+                          system: false,
+                        },
+                      ],
+                    })
+                  }
+                >
+                  Add category
+                </button>
+              </>
+            )}
+            {tab === 'access_levels' && (
+              <>
+                <p className="field-help">
+                  Access levels define what categories each audience may see.
+                </p>
+                <div
+                  id="content-protection-level-list"
+                  className="content-protection-profiles"
+                  data-content-protection-level-list
+                >
+                  {setup.access_levels.map((level) => (
+                    <ContentProtectionAccessLevelCard
+                      key={level.id}
+                      level={level}
+                      categories={setup.categories.filter(
+                        (category) => category.id !== 'rule_override',
+                      )}
+                      disabled={
+                        level.id === setup.default_access_level_id ||
+                        setup.group_access_levels.some((item) => item.access_level_id === level.id)
+                      }
+                      onUpdate={updateLevel}
+                      onDelete={deleteLevel}
+                    />
+                  ))}
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  onClick={() =>
+                    update({
+                      access_levels: [
+                        ...setup.access_levels,
+                        {
+                          id: `level_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`,
+                          name: 'New level',
+                          granted_category_ids: [],
+                          guidance: '',
+                        },
+                      ],
+                    })
+                  }
+                >
+                  Add access level
+                </button>
+                <fieldset
+                  id="content-protection-default-level"
+                  className="content-protection-fieldset"
+                >
+                  <legend>Default level</legend>
+                  <select
+                    aria-label="Default level"
+                    value={setup.default_access_level_id}
+                    onChange={(event) => update({ default_access_level_id: event.target.value })}
+                  >
+                    {setup.access_levels.map((level) => (
+                      <option key={level.id} value={level.id}>
+                        {level.name}
+                      </option>
+                    ))}
+                  </select>
+                </fieldset>
+                <section
+                  id="content-protection-group-mappings"
+                  data-content-protection-group-mappings
+                >
+                  <h4>Group mappings</h4>
+                  <p className="field-help">
+                    One group may map to multiple levels; grants are unioned within each user's
+                    mapped levels.
+                  </p>
+                  <div className="content-protection-rows">
+                    {catalog.groups.map((group) => (
+                      <div
+                        className="content-protection-row"
+                        key={group.id}
+                        data-group-id={group.id}
+                      >
+                        <span>{group.name}</span>
+                        <div role="group" aria-label={`Access levels for ${group.name}`}>
+                          {setup.access_levels.map((level) => (
+                            <label className="checkbox-label" key={level.id}>
+                              <input
+                                type="checkbox"
+                                checked={setup.group_access_levels.some(
+                                  (item) =>
+                                    item.group_id === group.id && item.access_level_id === level.id,
+                                )}
+                                onChange={(event) =>
+                                  updateGroupMapping(group.id, level.id, event.target.checked)
+                                }
+                              />{' '}
+                              {level.name}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    {setup.group_access_levels
+                      .filter(
+                        (mapping) => !catalog.groups.some((group) => group.id === mapping.group_id),
+                      )
+                      .map((mapping) => (
+                        <div
+                          className="content-protection-row"
+                          key={`${mapping.group_id}:${mapping.access_level_id}`}
+                          data-content-protection-unknown-group-mapping
+                        >
+                          <span>
+                            Missing group {mapping.group_id} →{' '}
+                            {setup.access_levels.find(
+                              (level) => level.id === mapping.access_level_id,
+                            )?.name || mapping.access_level_id}
+                          </span>
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            type="button"
+                            onClick={() =>
+                              updateGroupMapping(mapping.group_id, mapping.access_level_id, false)
+                            }
+                          >
+                            Remove mapping
+                          </button>
+                        </div>
+                      ))}
+                  </div>
+                </section>
+              </>
+            )}
+            {tab === 'coverage' && (
+              <>
                 <div className="content-protection-coverage-field">
                   <span className="content-protection-coverage-label">
                     <label htmlFor="content-protection-coverage">Coverage</label>
@@ -766,7 +1134,6 @@ export function ContentProtectionSettingsSection({
                         type="button"
                         className="content-protection-icon-action"
                         aria-label="Coverage help"
-                        title="Coverage help"
                       >
                         <CircleHelp />
                       </button>
@@ -776,7 +1143,7 @@ export function ContentProtectionSettingsSection({
                     id="content-protection-coverage"
                     value={setup.coverage_mode}
                     onChange={(event) =>
-                      updateDraft({
+                      update({
                         coverage_mode: event.target
                           .value as ContentProtectionConfig['coverage_mode'],
                       })
@@ -786,15 +1153,9 @@ export function ContentProtectionSettingsSection({
                     <option value="selected_scopes">Selected scopes</option>
                   </select>
                 </div>
-              </div>
-              {setup.enabled && setup.coverage_mode === 'selected_scopes' && (
-                <section id="content-protection-app-areas">
-                  <h4>App areas</h4>
-                  <p className="field-help">
-                    Requirements are additive. Choose No additional requirement to leave the
-                    existing coverage decision unchanged.
-                  </p>
-                  <div id="content-protection-area-options" className="content-protection-rows">
+                {setup.enabled && setup.coverage_mode === 'selected_scopes' && (
+                  <section id="content-protection-app-areas">
+                    <h4>App areas</h4>
                     {catalog.surfaces.map((item) => (
                       <label
                         className="content-protection-row"
@@ -806,12 +1167,12 @@ export function ContentProtectionSettingsSection({
                           aria-label={`Coverage for ${item.name}`}
                           value={requirementModeFor(setup, 'surface', item.id)}
                           onChange={(event) =>
-                            updateDraft({
+                            update({
                               requirements: withRequirement(
                                 setup,
                                 'surface',
                                 item.id,
-                                event.target.value as ContentProtectionRequirementMode,
+                                event.target.value as 'inherit' | 'require',
                               ).requirements,
                             })
                           }
@@ -821,360 +1182,407 @@ export function ContentProtectionSettingsSection({
                         </select>
                       </label>
                     ))}
-                  </div>
-                </section>
-              )}
-              {!setup.enabled && setup.coverage_mode === 'selected_scopes' && (
-                <p className="field-help">
-                  Enable protection in Review &amp; save to configure app areas.
-                </p>
-              )}
-              <div id="content-protection-policy-links" className="content-protection-policy-links">
-                <span className="field-help">Configure specific policies:</span>
-                <a href="?view=users#user-policies" target="_blank" rel="noopener noreferrer">
-                  <SearchHighlightedText text="User policies" query={searchQuery} />
-                </a>
-                <a href="?view=users#manage-groups" target="_blank" rel="noopener noreferrer">
-                  <SearchHighlightedText text="Manage groups" query={searchQuery} />
-                </a>
-                <a href="?view=tools#tools-connections" target="_blank" rel="noopener noreferrer">
-                  <SearchHighlightedText text="Tool access" query={searchQuery} />
-                </a>
-                <a
-                  href="?view=settings#manage-mcp-routes"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <SearchHighlightedText text="MCP routes" query={searchQuery} />
-                </a>
-                <span className="field-help content-protection-policy-links-note">
-                  Opens in a new tab; your draft stays here.
-                </span>
-              </div>
-            </>
-          )}
-          {setupTab === 'profiles' && (
-            <>
-              <p className="field-help">
-                Profiles describe permitted information. Assign groups in Manage Groups; additional
-                profiles add grants and do not narrow existing grants.
-              </p>
-              <div id="content-protection-profile-list" className="content-protection-profiles">
-                {setup.profiles.map((profile) => {
-                  const affected = setup.group_profiles.filter(
-                    (item) => item.profile_id === profile.id,
-                  ).length;
-                  return (
-                    <ContentProtectionProfileCard
-                      key={profile.id}
-                      profile={profile}
-                      affectedGroups={affected}
-                      onUpdate={updateProfile}
-                      onDelete={deleteProfile}
-                    />
-                  );
-                })}
-              </div>
-              <button type="button" className="btn btn-secondary" onClick={addProfile}>
-                Add profile
-              </button>
-            </>
-          )}
-          {setupTab === 'review' && (
-            <>
-              <div className="settings-switch-card" data-content-protection-enable-switch>
-                <div>
-                  <strong>Enable content protection</strong>
+                  </section>
+                )}
+                {!setup.enabled && setup.coverage_mode === 'selected_scopes' && (
                   <p className="field-help">
-                    Turn on classification after reviewing saved coverage.
+                    Enable protection in Review &amp; save to configure app areas. Saved
+                    requirements remain in place while protection is disabled.
                   </p>
+                )}
+                <div
+                  id="content-protection-policy-links"
+                  className="content-protection-policy-links"
+                >
+                  <span className="field-help">
+                    Configure specific policies (opens in a new tab):
+                  </span>
+                  <a href="?view=users#user-policies" target="_blank" rel="noopener noreferrer">
+                    <SearchHighlightedText text="User policies" query={searchQuery} />
+                  </a>
+                  <a href="?view=users#manage-groups" target="_blank" rel="noopener noreferrer">
+                    <SearchHighlightedText text="Manage groups" query={searchQuery} />
+                  </a>
+                  <a href="?view=tools#tools-connections" target="_blank" rel="noopener noreferrer">
+                    <SearchHighlightedText text="Tool access" query={searchQuery} />
+                  </a>
+                  <a
+                    href="?view=settings#manage-mcp-routes"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <SearchHighlightedText text="MCP routes" query={searchQuery} />
+                  </a>
                 </div>
-                <label className="toggle-switch" aria-label="Enable content protection">
-                  <input
-                    type="checkbox"
-                    checked={setup.enabled}
-                    onChange={(event) => updateDraft({ enabled: event.target.checked })}
-                  />
-                  <span className="toggle-slider" />
-                </label>
-              </div>
-              <p className="field-help">
-                {setup.enabled
-                  ? 'Enabled: covered traffic will be classified after you save.'
-                  : 'Disabled: this saved configuration remains available for preparation.'}
-              </p>
-              <dl className="content-protection-review">
-                <dt>Classifier</dt>
-                <dd>{setup.classifier_model || 'No model selected'}</dd>
-                <dt>Coverage</dt>
-                <dd>
-                  {setup.coverage_mode === 'all_supported_traffic'
-                    ? 'All supported traffic'
-                    : 'Selected scopes'}
-                </dd>
-                <dt>Profiles</dt>
-                <dd>{setup.profiles.map((profile) => profile.name).join(', ') || 'None'}</dd>
-              </dl>
-            </>
-          )}
-        </TabbedDialog>
+              </>
+            )}
+            {tab === 'review' && (
+              <>
+                <Switch
+                  hook="content-protection-enable-switch"
+                  label="Enable content protection"
+                  description="Turn on classification after reviewing saved coverage."
+                  checked={setup.enabled}
+                  onChange={(enabled) => update({ enabled })}
+                />
+                <Switch
+                  hook="content-protection-advisory-switch"
+                  label="Share access guidance with assistant"
+                  description="Independent of enforcement; no classifier call is made for guidance alone."
+                  checked={setup.share_with_assistant}
+                  onChange={(share_with_assistant) => update({ share_with_assistant })}
+                />
+                <fieldset
+                  id="content-protection-strictness"
+                  className="content-protection-fieldset"
+                >
+                  <legend>Strictness</legend>
+                  <select
+                    aria-label="Strictness"
+                    value={setup.strictness}
+                    onChange={(event) =>
+                      update({
+                        strictness: event.target.value as ContentProtectionConfig['strictness'],
+                      })
+                    }
+                  >
+                    <option value="strict">Strict — deny at ≥25% probability</option>
+                    <option value="balanced">Balanced — deny at ≥50% probability</option>
+                    <option value="permissive">Permissive — deny at ≥75% probability</option>
+                  </select>
+                  <p className="field-help">
+                    Thresholds are policy parameters, not security guarantees.
+                  </p>
+                </fieldset>
+                <dl className="content-protection-review">
+                  <dt>Classifier</dt>
+                  <dd>
+                    {setup.classifier.backend === 'jev'
+                      ? `Jev · ${setup.classifier.jev.transport} · ${setup.classifier.jev.model}`
+                      : `LLM · ${setup.classifier.llm_model || 'none'}`}
+                  </dd>
+                  <dt>Access levels</dt>
+                  <dd>{setup.access_levels.map((level) => level.name).join(', ')}</dd>
+                  <dt>Advisory guidance</dt>
+                  <dd>{setup.share_with_assistant ? 'Shared with assistant' : 'Off'}</dd>
+                </dl>
+              </>
+            )}
+          </fieldset>
+        </Dialog>
       )}
-      {inspectOpen && (
-        <TabbedDialog
+      {inspect && (
+        <Dialog
           title="Test and inspect content protection"
-          tabs={INSPECT_TABS}
-          activeTab={inspectTab}
-          setActiveTab={(tab) => {
-            setError(null);
-            setInspectTab(tab);
-          }}
-          onClose={() => {
-            previewToken.current += 1;
-            testToken.current += 1;
-            decisionsToken.current += 1;
-            setPreviewBusy(false);
-            setTestBusy(false);
-            setDecisionsBusy(false);
-            setError(null);
-            setInspectOpen(false);
-          }}
+          error={inspectError}
+          onClose={() => setInspect(false)}
           hook="content-protection-inspect"
-          error={error}
+          activeTab={inspectTab}
           footer={
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => {
-                previewToken.current += 1;
-                testToken.current += 1;
-                decisionsToken.current += 1;
-                setPreviewBusy(false);
-                setTestBusy(false);
-                setDecisionsBusy(false);
-                setError(null);
-                setInspectOpen(false);
-              }}
-            >
+            <button className="btn btn-secondary" type="button" onClick={() => setInspect(false)}>
               Close
             </button>
           }
         >
+          <Tabs
+            tabs={INSPECT_TABS}
+            active={inspectTab}
+            onChange={(next) => {
+              setInspectTab(next);
+              if (next === 'decisions') void loadDecisions();
+            }}
+            hook="content-protection-inspect"
+            label="Test and inspect content protection steps"
+          />
           {inspectTab === 'request' && (
             <>
-              <p className="field-help">Checks use the saved policy, not an open setup draft.</p>
               <div className="content-protection-dialog-grid">
                 <label>
                   Who is making the request?
                   <select
                     value={identity}
-                    onChange={(event) => {
-                      setIdentity(event.target.value as PreviewIdentity);
-                      clearPreview();
-                    }}
+                    onChange={(event) => setIdentity(event.target.value as PreviewIdentity)}
                   >
                     <option value="service">Service</option>
                     <option value="public">Public</option>
-                    {catalog.users.map((item) => (
-                      <option key={item.id} value={`user:${item.id}`}>
-                        {item.name}
+                    {catalog.users.map((user) => (
+                      <option key={user.id} value={`user:${user.id}`}>
+                        {user.name}
                       </option>
                     ))}
                   </select>
                 </label>
                 <label>
                   Where does it run?
-                  <select
-                    value={surface}
-                    onChange={(event) => {
-                      setSurface(event.target.value);
-                      clearPreview();
-                    }}
-                  >
+                  <select value={surface} onChange={(event) => setSurface(event.target.value)}>
                     {catalog.surfaces.map((item) => (
                       <option key={item.id} value={item.id}>
                         {item.name}
                       </option>
                     ))}
-                    {!catalog.surfaces.some((item) => item.id === surface) && (
-                      <option value={surface}>{surface}</option>
-                    )}
                   </select>
                 </label>
-                {surface === 'mcp' && (
-                  <label>
-                    MCP route
-                    <select
-                      aria-label="MCP route"
-                      value={route}
-                      onChange={(event) => {
-                        setRoute(event.target.value);
-                        clearPreview();
-                      }}
-                    >
-                      <option value="">No route</option>
-                      {catalog.mcp_routes.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={includeTool}
-                    onChange={(event) => {
-                      setIncludeTool(event.target.checked);
-                      clearPreview();
-                    }}
-                  />{' '}
-                  Include a tool call
+                <label>
+                  MCP route (optional)
+                  <select value={mcpRoute} onChange={(event) => setMcpRoute(event.target.value)}>
+                    <option value="">None</option>
+                    {catalog.mcp_routes.map((route) => (
+                      <option key={route.id} value={route.id}>
+                        {route.name}
+                      </option>
+                    ))}
+                  </select>
                 </label>
-                {includeTool && (
-                  <label>
-                    Tool
-                    <select
-                      aria-label="Tool"
-                      value={tool}
-                      onChange={(event) => {
-                        setTool(event.target.value);
-                        clearPreview();
-                      }}
-                    >
-                      <option value="">No tool</option>
-                      {catalog.tools.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
+                <label>
+                  Tool (optional)
+                  <select value={toolId} onChange={(event) => setToolId(event.target.value)}>
+                    <option value="">None</option>
+                    {catalog.tools.map((tool) => (
+                      <option key={tool.id} value={tool.id}>
+                        {tool.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
               <button
-                type="button"
                 className="btn btn-secondary"
+                type="button"
                 disabled={previewBusy}
                 onClick={() => void runPreview()}
               >
-                <TestTube2 aria-hidden="true" /> {previewBusy ? 'Checking…' : 'Check saved policy'}
+                <TestTube2 /> Check saved policy
               </button>
               {preview && (
                 <section
                   id="content-protection-preview-result"
                   className="content-protection-result"
                   role="status"
+                  data-content-protection-preview-result
                 >
-                  <strong>
-                    {preview.required ? 'Classification required' : 'Classification not required'}
-                  </strong>
-                  <span>Profile sets: {profileSets(preview)}</span>
+                  <strong>{preview.required ? 'Classification required' : 'Not required'}</strong>
+                  <span>Access levels: {accessLevelSets(preview)}</span>
+                  <span>
+                    Granted categories: {preview.granted_category_ids.join(', ') || 'None'}
+                  </span>
+                  {preview.share_with_assistant && (
+                    <span>Advisory guidance active ({preview.guidance.length} segments)</span>
+                  )}
                   <details>
                     <summary>Technical details</summary>
                     <p>
-                      Provenance:{' '}
-                      {typeof preview.provenance === 'string'
-                        ? preview.provenance
-                        : JSON.stringify(preview.provenance)}
+                      Policy revision: {preview.policy_revision} · Guidance revision:{' '}
+                      {preview.guidance_revision}
                     </p>
                   </details>
+                </section>
+              )}
+              {preview?.share_with_assistant && preview.prompt_fragment && (
+                <section
+                  id="content-protection-advisory-preview"
+                  className="content-protection-fieldset content-protection-advisory-preview"
+                  data-content-protection-advisory-preview
+                >
+                  <strong>Access guidance sent to assistant</strong>
+                  <pre>{preview.prompt_fragment}</pre>
                 </section>
               )}
             </>
           )}
           {inspectTab === 'content' && (
             <>
-              <p className="field-help">
-                This test uses the saved configuration. If no target profiles are selected, Standard
-                fallback is used.
-              </p>
               <textarea
                 id="content-protection-sample"
                 aria-label="Sample content"
                 value={sample}
                 maxLength={1048576}
-                onChange={(event) => {
-                  testToken.current += 1;
-                  setSample(event.target.value);
-                  setTestResult(null);
-                  setTestBusy(false);
-                  setError(null);
-                }}
+                onChange={(event) => setSample(event.target.value)}
               />
-              <fieldset>
-                <legend>Target profiles</legend>
-                {saved?.profiles.map((profile) => (
-                  <label key={profile.id} className="checkbox-label">
+              <fieldset id="content-protection-test-levels" disabled={Boolean(sampleUserId)}>
+                <legend>Target access levels</legend>
+                {saved?.access_levels.map((level) => (
+                  <label className="checkbox-label" key={level.id}>
                     <input
                       type="checkbox"
-                      checked={sampleProfiles.includes(profile.id)}
-                      onChange={() => {
-                        testToken.current += 1;
-                        setTestResult(null);
-                        setTestBusy(false);
-                        setError(null);
-                        setSampleProfiles((current) =>
-                          current.includes(profile.id)
-                            ? current.filter((id) => id !== profile.id)
-                            : [...current, profile.id],
-                        );
-                      }}
-                    />
-                    {profile.name}
+                      checked={sampleLevelIds.includes(level.id)}
+                      onChange={() =>
+                        setSampleLevelIds((current) =>
+                          current.includes(level.id)
+                            ? current.filter((id) => id !== level.id)
+                            : [...current, level.id],
+                        )
+                      }
+                    />{' '}
+                    {level.name}
                   </label>
                 ))}
               </fieldset>
+              <label>
+                Or test as a real user
+                <select
+                  value={sampleUserId}
+                  onChange={(event) => setSampleUserId(event.target.value)}
+                >
+                  <option value="">— Use selected levels above —</option>
+                  {catalog.users.map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <button
-                type="button"
                 className="btn btn-secondary"
-                disabled={!saved?.classifier_model || !sample.trim() || testBusy}
+                type="button"
+                disabled={!sample.trim() || testBusy}
                 onClick={() => void runTest()}
               >
                 {testBusy ? 'Testing…' : 'Test content'}
               </button>
-              <p className="field-help">
-                Text only: uninspectable files and payloads over 1 MiB are blocked as
-                unclassifiable.
-              </p>
               {testResult && (
-                <p
+                <section
                   id="content-protection-test-result"
                   className="content-protection-result"
                   role="status"
+                  data-content-protection-test-result
                 >
-                  {testResult.verdict || 'error'} · {testResult.code}
-                  {testResult.reason ? ` · ${testResult.reason}` : ''}
-                  {formatLatency(testResult.latency)}
-                </p>
+                  <strong>
+                    {testResult.verdict || 'error'} · {testResult.code}
+                  </strong>
+                  {testResult.reason && <span>{testResult.reason}</span>}
+                  {testResult.model && (
+                    <span className="tool-badge">
+                      {testResult.model} via {testResult.transport}
+                    </span>
+                  )}
+                  {testResult.probabilities && (
+                    <details id="content-protection-test-probabilities">
+                      <summary>Category probabilities</summary>
+                      <dl className="content-protection-review">
+                        {saved?.categories.map((category) => {
+                          const value = testResult.probabilities?.[category.id];
+                          return value == null ? null : (
+                            <div key={category.id}>
+                              <dt>{category.name}</dt>
+                              <dd data-category-prob={category.id}>
+                                {(value * 100).toFixed(1)}%{' '}
+                                {value >= thresholdFor(saved, category) && (
+                                  <span className="tool-badge">above threshold</span>
+                                )}
+                              </dd>
+                            </div>
+                          );
+                        })}
+                      </dl>
+                    </details>
+                  )}
+                </section>
               )}
             </>
           )}
-          {inspectTab === 'decisions' && (
-            <>
-              {decisionsBusy && <p className="field-help">Loading recent decisions…</p>}
-              {decisionsError && (
-                <p className="field-error" role="alert">
-                  {decisionsError}
-                </p>
-              )}
-              {decisions &&
-                (decisions.length ? (
-                  <ul className="content-protection-decisions">
-                    {decisions.map((item) => (
-                      <li key={item.request_id || item.id}>
-                        {item.created_at || 'Unknown time'} · {item.surface || 'Unknown app area'} ·{' '}
-                        {item.verdict || item.code || 'Unknown result'}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="field-help">No decision metadata available.</p>
+          {inspectTab === 'decisions' &&
+            (decisionsBusy ? (
+              <p className="field-help">Loading decisions…</p>
+            ) : decisionsError ? (
+              <div className="content-protection-result" role="alert">
+                <span>{decisionsError}</span>
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  onClick={() => void loadDecisions()}
+                >
+                  Retry
+                </button>
+              </div>
+            ) : decisions?.length ? (
+              <ul className="content-protection-decisions">
+                {decisions.map((item) => (
+                  <li key={item.request_id || item.id}>
+                    {item.created_at} · {item.verdict || item.code}
+                  </li>
                 ))}
-            </>
-          )}
-        </TabbedDialog>
+              </ul>
+            ) : (
+              <p className="field-help">No decision metadata available.</p>
+            ))}
+        </Dialog>
       )}
     </SettingsAccordionSection>
+  );
+}
+function KeyRow({
+  id,
+  hook,
+  label,
+  configured,
+  value,
+  onChange,
+  onSave,
+  busy,
+}: {
+  id: string;
+  hook: string;
+  label: string;
+  configured?: boolean;
+  value: string;
+  onChange: (value: string) => void;
+  onSave: () => void;
+  busy: boolean;
+}) {
+  return (
+    <div id={id} className="input-with-button" data-content-protection-key={hook}>
+      <label htmlFor={`${hook}-input`}>{label}</label>
+      <input
+        id={`${hook}-input`}
+        type="password"
+        autoComplete="new-password"
+        value={value}
+        placeholder={configured ? '••••••••' : 'Enter key'}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <button
+        type="button"
+        className="btn btn-secondary btn-sm"
+        disabled={!value.trim() || busy}
+        onClick={onSave}
+      >
+        {busy ? 'Saving…' : 'Save key'}
+      </button>
+      <p className="field-help">
+        {configured
+          ? 'A key is configured. Enter a new value to replace it.'
+          : 'No key configured.'}
+      </p>
+    </div>
+  );
+}
+function Switch({
+  hook,
+  label,
+  checked,
+  onChange,
+  description,
+}: {
+  hook: string;
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  description: string;
+}) {
+  return (
+    <div className="settings-switch-card" data-content-protection-switch={hook}>
+      <div>
+        <strong>{label}</strong>
+        <p className="field-help">{description}</p>
+      </div>
+      <label className="toggle-switch" aria-label={label}>
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) => onChange(event.target.checked)}
+        />
+        <span className="toggle-slider" />
+      </label>
+    </div>
   );
 }
