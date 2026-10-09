@@ -48,7 +48,7 @@ def _is_async_generator(value: object) -> TypeGuard[AsyncGenerator[Any, None]]:
 
 class ContentProtectionPersistenceRecoveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.config = ContentProtectionConfig(enabled=True, classifier_model="openai::classifier")
+        self.config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
         self.classifier_contexts: list[tuple[ProtectionContext, service._TurnState]] = []
         self.patches = [
             mock.patch.object(service, "load_config", new=mock.AsyncMock(return_value=self.config)),
@@ -64,13 +64,23 @@ class ContentProtectionPersistenceRecoveryTests(unittest.IsolatedAsyncioTestCase
     async def _identities(self, identities: set[str]) -> tuple[set[str], dict[str, set[str]], dict[str, None]]:
         return set(identities), {identity: set() for identity in identities}, {identity: None for identity in identities}
 
-    async def _allow(self, _config, _envelope, **_kwargs) -> dict[str, str]:
+    async def _allow(self, config, envelope, **_kwargs) -> dict[str, object]:
         context = service.current_context()
         state = service._turn.get()
         assert context is not None
         assert state is not None
         self.classifier_contexts.append((context, state))
-        return {"verdict": "allow", "reason_code": "permitted"}
+        return {
+            "probabilities": {
+                category.id: 0.0
+                for category in config.categories
+                if envelope["direction"] in {"inbound", "proposed_operation"} or category.id != "rule_override"
+            },
+            "model": "test",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "transport": "test",
+            "cache_hit": False,
+        }
 
     async def _stream_response(self, rag_stream: Callable[..., AsyncGenerator[str, None]]) -> list[str]:
         with mock.patch.object(routes, "rag", SimpleNamespace(process_query_stream=rag_stream)):
@@ -208,10 +218,17 @@ class ContentProtectionPersistenceRecoveryTests(unittest.IsolatedAsyncioTestCase
     async def test_nested_recovery_keeps_old_child_terminal_and_persists_successor(self) -> None:
         calls = 0
 
-        async def classify(_config, _envelope, **_kwargs):
+        async def classify(config, envelope, **_kwargs):
             nonlocal calls
             calls += 1
-            return {"verdict": "deny", "reason_code": "restricted_content"} if calls == 1 else {"verdict": "allow", "reason_code": "permitted"}
+            probabilities = {
+                category.id: 0.0
+                for category in config.categories
+                if envelope["direction"] in {"inbound", "proposed_operation"} or category.id != "rule_override"
+            }
+            if calls == 1:
+                probabilities["company_finance"] = 1.0
+            return {"probabilities": probabilities, "model": "test", "usage": {"input_tokens": 1, "output_tokens": 1}, "transport": "test", "cache_hit": False}
 
         with mock.patch.object(service, "_classify", new=classify):
             context = hosted.hosted_context(user_id="caller", owner_user_id="owner")
@@ -232,4 +249,6 @@ class ContentProtectionPersistenceRecoveryTests(unittest.IsolatedAsyncioTestCase
                         old_child.run(service.ensure_active_attempt)
 
         self.assertIs(stale.exception, raised.exception)
-        self.assertEqual(calls, 2)
+        # The recovery response and its persistence boundary are distinct
+        # inspected candidates; final audience allowances are not cached.
+        self.assertEqual(calls, 3)

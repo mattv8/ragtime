@@ -141,7 +141,7 @@ class HostedProtectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_configured_tool_uses_durable_id_and_child_task_keeps_turn_scope(self) -> None:
         policy = ContentProtectionConfig(
             enabled=True,
-            classifier_model="openai::classifier",
+            classifier={"backend": "llm", "llm_model": "openai::classifier"},
             coverage_mode="selected_scopes",
             requirements=[Requirement(scope_kind="tool", scope_key="tool-config-42", mode="require")],
         )

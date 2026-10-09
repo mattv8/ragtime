@@ -6,8 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from mcp.types import CallToolResult, TextContent
 
 from ragtime.content_protection import service
-from ragtime.content_protection.models import ContentProtectionConfig, ContentProtectionError, ProtectionContext
-from ragtime.content_protection.provider import parse_verdict
+from ragtime.content_protection.models import AccessLevel, ContentProtectionConfig, ContentProtectionError, ProtectionContext
 
 
 class ContentProtectionCoreTests(unittest.IsolatedAsyncioTestCase):
@@ -15,22 +14,22 @@ class ContentProtectionCoreTests(unittest.IsolatedAsyncioTestCase):
         candidate = {"text": "unchanged"}
         with (
             mock.patch.object(service, "load_config", mock.AsyncMock(return_value=ContentProtectionConfig(enabled=False))),
-            mock.patch.object(service, "classify", mock.AsyncMock()) as classify,
+            mock.patch.object(service, "detect", mock.AsyncMock()) as detect,
         ):
             await service.authorize_content(candidate, direction="inbound", context=ProtectionContext(user_id="u"))
         self.assertEqual(candidate, {"text": "unchanged"})
-        classify.assert_not_awaited()
+        detect.assert_not_awaited()
 
     async def test_required_binary_candidate_is_rejected_without_provider_call(self) -> None:
         config = ContentProtectionConfig(enabled=True)
         with (
             mock.patch.object(service, "load_config", mock.AsyncMock(return_value=config)),
-            mock.patch.object(service, "classify", mock.AsyncMock()) as classify,
+            mock.patch.object(service, "detect", mock.AsyncMock()) as detect,
         ):
             with self.assertRaises(ContentProtectionError) as raised:
                 await service.authorize_content(b"opaque", direction="inbound", context=ProtectionContext(user_id="u"))
         self.assertEqual(raised.exception.code, "content_unclassifiable")
-        classify.assert_not_awaited()
+        detect.assert_not_awaited()
 
     def test_public_error_contains_reason_and_next_step(self) -> None:
         detail = ContentProtectionError("content_denied", "request-1", reason="Policy excludes this request.", reason_code="restricted_content").public_detail()
@@ -40,20 +39,67 @@ class ContentProtectionCoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(detail["next_step"], detail["message"])
         self.assertEqual(detail["reason_code"], "restricted_content")
 
-    def test_truncated_or_inconsistent_provider_verdict_is_rejected(self) -> None:
+    def test_invalid_probability_contract_is_rejected(self) -> None:
+        config = ContentProtectionConfig(enabled=True)
         with self.assertRaises(ContentProtectionError):
-            parse_verdict('{"verdict":"allow"')
-        with self.assertRaises(ContentProtectionError):
-            parse_verdict('{"verdict":"allow","reason_code":"uncertain"}')
+            service._authorize_probabilities(config, {"operational": "unknown"}, set())
+
+    async def test_readiness_uses_fixed_default_fixture_before_custom_capacity_check(self) -> None:
+        defaults = ContentProtectionConfig()
+        custom = ContentProtectionConfig(
+            categories=[defaults.categories[0], defaults.categories[-1]],
+            access_levels=[AccessLevel(id="standard", name="Standard", granted_category_ids=["operational"])],
+        )
+        calls: list[ContentProtectionConfig] = []
+
+        async def detect(config, envelope):
+            calls.append(config)
+            probabilities = {category.id: 0.0 for category in config.categories}
+            candidate = str(envelope["candidate"])
+            if "forecast" in candidate:
+                probabilities["company_finance"] = 1.0
+            elif "TYPESAFE_API_KEY" in candidate:
+                probabilities["credentials"] = 1.0
+            elif "ignore all rules" in candidate:
+                probabilities["rule_override"] = 1.0
+            return {"probabilities": probabilities, "model": "test", "usage": {"input_tokens": 1, "output_tokens": 1}, "transport": "test", "cache_hit": False}
+
+        with mock.patch.object(service, "detect", new=detect):
+            result = await service.probe_readiness(custom)
+
+        self.assertEqual(result["verdict"], "allow")
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(
+            {category.id for category in calls[0].categories}, {"operational", "company_finance", "personnel", "strategic", "credentials", "rule_override"}
+        )
+        self.assertEqual([category.id for category in calls[-1].categories], ["operational", "rule_override"])
 
     async def test_real_langchain_history_is_losslessly_normalized_for_openai_transport(self) -> None:
-        config = ContentProtectionConfig(enabled=True, classifier_model="openai::classifier")
-        policy = service._ResolvedPolicy(True, "all_supported_traffic", {"u"}, {"u": set()}, {"u": None}, [[{"id": "standard", "scope": "ordinary"}]])
+        config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
+        policy = service._ResolvedPolicy(
+            True,
+            "all_supported_traffic",
+            {"u"},
+            {"u": set()},
+            {"u": None},
+            [[{"id": "standard", "granted_category_ids": ["operational"], "guidance": ""}]],
+            {"operational"},
+        )
         provider_envelopes: list[dict[str, object]] = []
 
-        async def stub_provider(_config, envelope, **_kwargs):
+        async def stub_provider(_config, envelope):
             provider_envelopes.append(envelope)
-            return {"verdict": "allow", "reason_code": "permitted"}
+            return {
+                "probabilities": {
+                    category.id: 0
+                    for category in _config.categories
+                    if envelope["direction"] in {"inbound", "proposed_operation"} or category.id != "rule_override"
+                },
+                "model": "test",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "transport": "test",
+                "cache_hit": False,
+            }
 
         history = [
             HumanMessage(content="earlier request", additional_kwargs={"trace": "one"}),
@@ -64,8 +110,8 @@ class ContentProtectionCoreTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(service, "load_config", new=mock.AsyncMock(return_value=config)),
             mock.patch.object(service, "_resolve", new=mock.AsyncMock(return_value=policy)),
-            mock.patch.object(service, "_provider_settings_identity", new=mock.AsyncMock(return_value="provider")),
-            mock.patch.object(service, "classify", new=stub_provider),
+            mock.patch.object(service, "_provider_settings_identity", new=mock.AsyncMock(return_value="settings")),
+            mock.patch.object(service, "detect", new=stub_provider),
         ):
             await service.authorize_content(history, direction="stored_readback", context=context)
             await service.authorize_content("follow-up", direction="inbound", context=context, supporting_context=history)
@@ -78,10 +124,10 @@ class ContentProtectionCoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider_envelopes[1]["supporting_context"], normalized_history)
 
     async def test_real_langchain_image_history_remains_unclassifiable(self) -> None:
-        config = ContentProtectionConfig(enabled=True, classifier_model="openai::classifier")
+        config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
         with (
             mock.patch.object(service, "load_config", new=mock.AsyncMock(return_value=config)),
-            mock.patch.object(service, "classify", new=mock.AsyncMock()) as classify,
+            mock.patch.object(service, "detect", new=mock.AsyncMock()) as detect,
         ):
             with self.assertRaises(ContentProtectionError) as raised:
                 await service.authorize_content(
@@ -90,7 +136,7 @@ class ContentProtectionCoreTests(unittest.IsolatedAsyncioTestCase):
                     context=ProtectionContext(user_id="u", surface="openai_api"),
                 )
         self.assertEqual(raised.exception.code, "content_unclassifiable")
-        classify.assert_not_awaited()
+        detect.assert_not_awaited()
 
     def test_mcp_transport_wrapper_is_normalized_without_string_coercion(self) -> None:
         wrapper = CallToolResult(content=[TextContent(type="text", text="approved tool response")])

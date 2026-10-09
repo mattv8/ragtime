@@ -160,6 +160,8 @@ def supports_chat(row: dict[str, Any]) -> bool:
     candidate_id = model_id(row).lower()
     if not candidate_id:
         return False
+    if candidate_id.startswith(("typesafe/jev-", "~typesafe/jev-")) and candidate_id not in {"typesafe/jev-router", "~typesafe/jev-router"}:
+        return False
 
     endpoints = supported_endpoints(row)
     if endpoints and not endpoints & CHAT_ENDPOINT_TOKENS:
