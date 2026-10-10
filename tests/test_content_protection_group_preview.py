@@ -64,7 +64,7 @@ class GroupPreviewRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Use operational guidance.", response.json()["prompt_fragment"])
 
     async def test_explicit_null_selector_keeps_verified_user_resolution(self) -> None:
-        identities = ({"user-1"}, {"user-1": set()}, {"user-1": None})
+        identities: tuple[set[str], dict[str, set[str]], dict[str, None]] = ({"user-1"}, {"user-1": set()}, {"user-1": None})
         with mock.patch.object(service, "resolve_identities", new=mock.AsyncMock(return_value=identities)) as resolve:
             response = await self.client.post(
                 "/indexes/content-protection/preview",

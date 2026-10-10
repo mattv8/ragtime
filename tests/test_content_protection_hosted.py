@@ -8,7 +8,7 @@ from unittest import mock
 
 from ragtime.content_protection import hosted
 from ragtime.content_protection import service as protection_service
-from ragtime.content_protection.models import ContentProtectionConfig, ContentProtectionError, ProtectionContext, Requirement
+from ragtime.content_protection.models import ClassifierConfig, ContentProtectionConfig, ContentProtectionError, ProtectionContext, Requirement
 from ragtime.content_protection.policy import resolve_required
 from ragtime.indexer import routes as indexer_routes
 from ragtime.rag.components import RAGComponents
@@ -141,7 +141,7 @@ class HostedProtectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_configured_tool_uses_durable_id_and_child_task_keeps_turn_scope(self) -> None:
         policy = ContentProtectionConfig(
             enabled=True,
-            classifier={"backend": "llm", "llm_model": "openai::classifier"},
+            classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"),
             coverage_mode="selected_scopes",
             requirements=[Requirement(scope_kind="tool", scope_key="tool-config-42", mode="require")],
         )

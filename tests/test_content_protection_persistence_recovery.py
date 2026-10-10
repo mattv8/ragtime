@@ -14,7 +14,7 @@ from prisma.enums import AuthProvider, UserRole
 from prisma.models import User
 
 from ragtime.content_protection import hosted, service
-from ragtime.content_protection.models import ContentProtectionConfig, ContentProtectionError, ProtectionContext
+from ragtime.content_protection.models import ClassifierConfig, ContentProtectionConfig, ContentProtectionError, ProtectionContext
 from ragtime.indexer import routes
 
 NOW = datetime(2026, 7, 13, 12, 0, 0, tzinfo=timezone.utc)
@@ -48,7 +48,7 @@ def _is_async_generator(value: object) -> TypeGuard[AsyncGenerator[Any, None]]:
 
 class ContentProtectionPersistenceRecoveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
+        self.config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
         self.classifier_contexts: list[tuple[ProtectionContext, service._TurnState]] = []
         self.patches = [
             mock.patch.object(service, "load_config", new=mock.AsyncMock(return_value=self.config)),

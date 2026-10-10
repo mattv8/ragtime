@@ -432,10 +432,13 @@ async def probe_readiness(config: ContentProtectionConfig | dict[str, object]) -
                 "resource_id": None,
             },
         )
-        results.append({"name": name, "probabilities": result["probabilities"], **_authorize_probabilities(fixture, result["probabilities"], grants)})
+        probabilities = result.get("probabilities")
+        if not isinstance(probabilities, dict):
+            raise ContentProtectionError("classifier_invalid_response", str(uuid4()))
+        results.append({"name": name, "probabilities": probabilities, **_authorize_probabilities(fixture, probabilities, grants)})
         expected_category = {"operational": "operational", "finance": "company_finance", "credentials": "credentials", "override": "rule_override"}[name]
         # The allow probe may be nonsensitive; only denial probes need a positive restriction signal.
-        if name != "operational" and result["probabilities"].get(expected_category, -1) < 0.25:
+        if name != "operational" and probabilities.get(expected_category, -1) < 0.25:
             raise ContentProtectionError("classifier_invalid_response", str(uuid4()))
     if [item["verdict"] for item in results] != ["allow", "deny", "deny", "deny"]:
         raise ContentProtectionError("classifier_invalid_response", str(uuid4()))

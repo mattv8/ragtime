@@ -3,13 +3,13 @@ import unittest
 from unittest import mock
 
 from ragtime.content_protection import service
-from ragtime.content_protection.models import ContentProtectionConfig, ContentProtectionError, ProtectionContext
+from ragtime.content_protection.models import ClassifierConfig, ContentProtectionConfig, ContentProtectionError, ProtectionContext
 
 
 class ContentProtectionPerformanceTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _config(revision: int = 1) -> ContentProtectionConfig:
-        return ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"}, revision=revision)
+        return ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"), revision=revision)
 
     @staticmethod
     def _policy(user: str = "u") -> service._ResolvedPolicy:

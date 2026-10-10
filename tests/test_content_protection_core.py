@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from mcp.types import CallToolResult, TextContent
 
 from ragtime.content_protection import service
-from ragtime.content_protection.models import AccessLevel, ContentProtectionConfig, ContentProtectionError, ProtectionContext
+from ragtime.content_protection.models import AccessLevel, ClassifierConfig, ContentProtectionConfig, ContentProtectionError, ProtectionContext
 
 
 class ContentProtectionCoreTests(unittest.IsolatedAsyncioTestCase):
@@ -75,7 +75,7 @@ class ContentProtectionCoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([category.id for category in calls[-1].categories], ["operational", "rule_override"])
 
     async def test_real_langchain_history_is_losslessly_normalized_for_openai_transport(self) -> None:
-        config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
+        config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
         policy = service._ResolvedPolicy(
             True,
             "all_supported_traffic",
@@ -124,7 +124,7 @@ class ContentProtectionCoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider_envelopes[1]["supporting_context"], normalized_history)
 
     async def test_real_langchain_image_history_remains_unclassifiable(self) -> None:
-        config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
+        config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
         with (
             mock.patch.object(service, "load_config", new=mock.AsyncMock(return_value=config)),
             mock.patch.object(service, "detect", new=mock.AsyncMock()) as detect,

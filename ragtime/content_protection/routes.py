@@ -21,6 +21,7 @@ from ragtime.content_protection.service import (
 from ragtime.core import app_settings
 from ragtime.core.database import get_db
 from ragtime.core.security import require_admin
+from ragtime.rag.prompts import build_access_level_prompt_fragment
 from ragtime.tools.registry import get_all_tools
 
 router = APIRouter(prefix="/indexes/content-protection", tags=["Content Protection"])
@@ -146,8 +147,6 @@ async def preview(body: PreviewPolicyRequest, _user: Any = Depends(require_admin
         active_config,
         access_level_ids=body.access_level_ids,
     )
-    from ragtime.rag.prompts import build_access_level_prompt_fragment
-
     result["prompt_fragment"] = build_access_level_prompt_fragment(result)
     return result
 

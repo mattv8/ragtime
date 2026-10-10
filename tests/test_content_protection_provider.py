@@ -1,23 +1,29 @@
 import sys
 import unittest
 from types import SimpleNamespace
+from typing import Literal
 from unittest import mock
 
 from ragtime.content_protection import provider
-from ragtime.content_protection.models import ContentProtectionError
+from ragtime.content_protection.models import ClassifierConfig, ContentCategory, ContentProtectionConfig, ContentProtectionError, JevConfig
 
 
-def _config(*, transport: str = "typesafe", model: str = "jev-latest") -> SimpleNamespace:
-    category = SimpleNamespace(
+def _config(
+    *,
+    transport: Literal["auto", "typesafe", "openrouter"] = "typesafe",
+    model: str = "jev-latest",
+) -> ContentProtectionConfig:
+    config = ContentProtectionConfig(classifier=ClassifierConfig(backend="jev", jev=JevConfig(transport=transport, model=model)))
+    category = ContentCategory(
         id="company_finance",
         name="Company finance",
         description="Nonpublic company financial information.",
         includes=["forecasts"],
         excludes=["public financial education"],
         examples=["next quarter revenue forecast"],
-        system=False,
+        denial_message="Company financial information is not available for this audience.",
     )
-    return SimpleNamespace(classifier=SimpleNamespace(backend="jev", jev=SimpleNamespace(transport=transport, model=model)), categories=[category])
+    return config.model_copy(update={"categories": [category]})
 
 
 class JevQuestionTests(unittest.TestCase):
@@ -26,15 +32,25 @@ class JevQuestionTests(unittest.TestCase):
 
         question = questions["company_finance"]
         self.assertEqual(question["type"], "noul")
-        self.assertIn("requests or contains", question["instructions"])
-        self.assertIn("Company finance", question["instructions"])
-        self.assertIn("Untrusted content", question["instructions"])
-        self.assertEqual(question["criteria"]["true"], "The untrusted content matches the category definition.")
+        instructions = question["instructions"]
+        criteria = question["criteria"]
+        assert isinstance(instructions, str)
+        assert isinstance(criteria, dict)
+        self.assertIn("requests or contains", instructions)
+        self.assertIn("Company finance", instructions)
+        self.assertIn("Untrusted content", instructions)
+        self.assertEqual(criteria["true"], "The untrusted content matches the category definition.")
 
     def test_outbound_omits_rule_override(self) -> None:
         config = _config()
         config.categories.append(
-            SimpleNamespace(id="rule_override", name="Rule override", description="Instruction attacks", includes=[], excludes=[], examples=[], system=True)
+            ContentCategory(
+                id="rule_override",
+                name="Rule override",
+                description="Instruction attacks",
+                denial_message="This request cannot override content protection rules.",
+                system=True,
+            )
         )
 
         questions = provider.build_jev_questions(config, {"direction": "assistant", "candidate": "ordinary"})
@@ -43,12 +59,26 @@ class JevQuestionTests(unittest.TestCase):
 
     def test_rule_override_uses_bypass_intent_question(self) -> None:
         config = _config()
-        config.categories.append(SimpleNamespace(id="rule_override", name="Rule override", description="", includes=[], excludes=[], examples=[], system=True))
+        config.categories.append(
+            ContentCategory(
+                id="rule_override",
+                name="Rule override",
+                description="Instruction attacks",
+                denial_message="This request cannot override content protection rules.",
+                system=True,
+            )
+        )
 
         question = provider.build_jev_questions(config, {"direction": "proposed_operation"})["rule_override"]
 
-        self.assertIn("bypass", question["instructions"])
-        self.assertIn("restricted-disclosure intent", question["criteria"]["true"])
+        instructions = question["instructions"]
+        criteria = question["criteria"]
+        assert isinstance(instructions, str)
+        assert isinstance(criteria, dict)
+        true_criterion = criteria["true"]
+        assert isinstance(true_criterion, str)
+        self.assertIn("bypass", instructions)
+        self.assertIn("restricted-disclosure intent", true_criterion)
 
     def test_detection_capacity_rejects_oversized_question_body_before_network(self) -> None:
         with self.assertRaises(ContentProtectionError):
@@ -59,13 +89,15 @@ class JevQuestionTests(unittest.TestCase):
         ollama = mock.Mock(return_value=object())
         openai = mock.Mock(return_value=object())
         settings = {"anthropic_api_key": "secret", "llm_ollama_base_url": "http://ollama", "llm_llama_cpp_base_url": "http://llama"}
-        with mock.patch.dict(
-            sys.modules,
-            {
-                "langchain_anthropic": SimpleNamespace(ChatAnthropic=anthropic),
-                "langchain_ollama": SimpleNamespace(ChatOllama=ollama),
-                "langchain_openai": SimpleNamespace(ChatOpenAI=openai),
-            },
+        with (
+            mock.patch.dict(
+                sys.modules,
+                {
+                    "langchain_anthropic": SimpleNamespace(ChatAnthropic=anthropic),
+                    "langchain_ollama": SimpleNamespace(ChatOllama=ollama),
+                },
+            ),
+            mock.patch.object(provider, "ChatOpenAI", openai),
         ):
             provider._build_client("anthropic", "claude", settings)
             provider._build_client("ollama", "local", settings, context_limit=4096)

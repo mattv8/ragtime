@@ -5,14 +5,18 @@ from types import SimpleNamespace
 from unittest import mock
 
 from ragtime.content_protection import provider
-from ragtime.content_protection.models import ContentProtectionError
+from ragtime.content_protection.models import ClassifierConfig, ContentCategory, ContentProtectionConfig, ContentProtectionError
 
 
-def _config() -> SimpleNamespace:
-    return SimpleNamespace(
-        classifier=SimpleNamespace(backend="llm", jev=SimpleNamespace(transport="auto", model="jev-latest"), llm_model="openai_compatible::guard"),
-        categories=[SimpleNamespace(id="finance", name="Finance", description="Internal finance", includes=[], excludes=[], examples=[], system=False)],
+def _config() -> ContentProtectionConfig:
+    config = ContentProtectionConfig(classifier=ClassifierConfig(backend="llm", llm_model="openai_compatible::guard"))
+    category = ContentCategory(
+        id="finance",
+        name="Finance",
+        description="Internal finance",
+        denial_message="Finance information is not available for this audience.",
     )
+    return config.model_copy(update={"categories": [category]})
 
 
 class JevCompletionRegressionTests(unittest.IsolatedAsyncioTestCase):
@@ -80,7 +84,7 @@ class JevCompletionRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(cancelled.is_set())
 
     def test_chunker_real_multibyte_quote_bounds_serialization_work(self) -> None:
-        envelope = {"direction": "tool_result", "candidate": ['数"据'] * 3_000}
+        envelope: dict[str, object] = {"direction": "tool_result", "candidate": ['数"据'] * 3_000}
         questions = provider.build_jev_questions(_config(), envelope)
         real_json_bytes = provider._json_bytes
 
@@ -104,4 +108,6 @@ class JevCompletionRegressionTests(unittest.IsolatedAsyncioTestCase):
             body = provider._json_bytes({"model": "jev-latest", "state": chunk, "questions": questions})
             self.assertLessEqual(len(body), provider._CONSERVATIVE_BODY_BYTES)
         for current in chunks[:-1]:
-            self.assertGreater(len(current["untrusted_content_chunk_utf8"].encode("utf-8")), provider._OVERLAP_BYTES)
+            current_chunk = current["untrusted_content_chunk_utf8"]
+            assert isinstance(current_chunk, str)
+            self.assertGreater(len(current_chunk.encode("utf-8")), provider._OVERLAP_BYTES)

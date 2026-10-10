@@ -8,7 +8,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import StructuredTool
 
 from ragtime.content_protection import service as protection_service
-from ragtime.content_protection.models import ContentProtectionConfig
+from ragtime.content_protection.models import ClassifierConfig, ContentProtectionConfig
 from ragtime.rag import components as components_module
 from ragtime.rag.components import RAGComponents
 
@@ -55,7 +55,7 @@ class HostedRecoveryActualFlowTests(unittest.IsolatedAsyncioTestCase):
 
         components._tool_configs = []
         components._app_settings = {}
-        config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
+        config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
 
         async def classify(config, envelope, **_kwargs):
             probabilities = {

@@ -18,7 +18,7 @@ from prisma import Json
 from pydantic import ValidationError
 
 from ragtime.content_protection import routes, service, store
-from ragtime.content_protection.models import ContentProtectionConfig, ContentProtectionError, ProtectionContext
+from ragtime.content_protection.models import ClassifierConfig, ContentProtectionConfig, ContentProtectionError, JevConfig, ProtectionContext
 
 ADMIN = SimpleNamespace(id="admin-1", role="admin")
 SECRET = "RAW-SECRET-do-not-leak"
@@ -342,7 +342,7 @@ class ProviderSettingsIdentityTests(unittest.IsolatedAsyncioTestCase):
             return await service._provider_settings_identity(config)
 
     async def test_jev_typesafe_transport_ignores_unrelated_settings(self) -> None:
-        config = ContentProtectionConfig(classifier={"backend": "jev", "jev": {"transport": "typesafe"}})
+        config = ContentProtectionConfig(classifier=ClassifierConfig(backend="jev", jev=JevConfig(transport="typesafe")))
         baseline = await self._identity(config)
         self.assertEqual(await self._identity(config, theme="dark"), baseline)
         self.assertEqual(await self._identity(config, openrouter_api_key="or_key_b"), baseline)
@@ -350,20 +350,20 @@ class ProviderSettingsIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(await self._identity(config, typesafe_api_key="tsf_key_b"), baseline)
 
     async def test_jev_openrouter_transport_tracks_only_openrouter_key(self) -> None:
-        config = ContentProtectionConfig(classifier={"backend": "jev", "jev": {"transport": "openrouter"}})
+        config = ContentProtectionConfig(classifier=ClassifierConfig(backend="jev", jev=JevConfig(transport="openrouter")))
         baseline = await self._identity(config)
         self.assertEqual(await self._identity(config, typesafe_api_key="tsf_key_b"), baseline)
         self.assertNotEqual(await self._identity(config, openrouter_api_key="or_key_b"), baseline)
 
     async def test_jev_auto_transport_tracks_both_provider_keys(self) -> None:
-        config = ContentProtectionConfig(classifier={"backend": "jev", "jev": {"transport": "auto"}})
+        config = ContentProtectionConfig(classifier=ClassifierConfig(backend="jev", jev=JevConfig(transport="auto")))
         baseline = await self._identity(config)
         self.assertEqual(await self._identity(config, theme="dark"), baseline)
         self.assertNotEqual(await self._identity(config, typesafe_api_key="tsf_key_b"), baseline)
         self.assertNotEqual(await self._identity(config, openrouter_api_key="or_key_b"), baseline)
 
     async def test_llm_openai_compatible_endpoint_and_key_changes_alter_identity(self) -> None:
-        config = ContentProtectionConfig(classifier={"backend": "llm", "llm_model": "openai_compatible::classifier"})
+        config = ContentProtectionConfig(classifier=ClassifierConfig(backend="llm", llm_model="openai_compatible::classifier"))
         baseline = await self._identity(config)
         self.assertEqual(await self._identity(config, theme="dark", typesafe_api_key="tsf_key_b", openrouter_api_key="or_key_b"), baseline)
         self.assertNotEqual(await self._identity(config, openai_compatible_base_url="https://other.example.test/v1"), baseline)

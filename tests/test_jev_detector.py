@@ -2,29 +2,36 @@ import json
 import signal
 import unittest
 from types import SimpleNamespace
+from typing import Literal
 from unittest import mock
 
 import httpx
 
 from ragtime.content_protection import provider
-from ragtime.content_protection.models import ContentProtectionError
+from ragtime.content_protection.models import ClassifierConfig, ContentCategory, ContentProtectionConfig, ContentProtectionError, JevConfig
 
 
-def _config(*, transport: str = "typesafe", model: str = "jev-latest", backend: str = "jev") -> SimpleNamespace:
-    return SimpleNamespace(
-        classifier=SimpleNamespace(backend=backend, jev=SimpleNamespace(transport=transport, model=model), llm_model="openai::classifier"),
-        categories=[
-            SimpleNamespace(
-                id="company_finance",
-                name="Company finance",
-                description="Nonpublic forecasts.",
-                includes=["forecasts"],
-                excludes=[],
-                examples=[],
-                system=False,
-            )
-        ],
+def _config(
+    *,
+    transport: Literal["auto", "typesafe", "openrouter"] = "typesafe",
+    model: str = "jev-latest",
+    backend: Literal["jev", "llm"] = "jev",
+) -> ContentProtectionConfig:
+    config = ContentProtectionConfig(
+        classifier=ClassifierConfig(
+            backend=backend,
+            jev=JevConfig(transport=transport, model=model),
+            llm_model="openai::classifier",
+        )
     )
+    category = ContentCategory(
+        id="company_finance",
+        name="Company finance",
+        description="Nonpublic forecasts.",
+        includes=["forecasts"],
+        denial_message="Company financial information is not available for this audience.",
+    )
+    return config.model_copy(update={"categories": [category]})
 
 
 def _response(request: httpx.Request) -> httpx.Response:
@@ -128,7 +135,7 @@ class JevDetectorTests(unittest.IsolatedAsyncioTestCase):
 
         transport = httpx.MockTransport(handler)
         config = _config()
-        envelope = {"direction": "inbound", "candidate": "forecast", "audience_constraints": [{"group": "private"}]}
+        envelope: dict[str, object] = {"direction": "inbound", "candidate": "forecast", "audience_constraints": [{"group": "private"}]}
         with (
             mock.patch("ragtime.core.app_settings.get_app_settings", mock.AsyncMock(return_value={"typesafe_api_key": "key"})),
             mock.patch.object(provider, "_make_http_client", side_effect=lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout)),
@@ -146,13 +153,15 @@ class JevDetectorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(chunks), 2)
         self.assertEqual(chunks[0]["boundary_framing"], {"direction": "inbound", "surface": "tool"})
-        self.assertEqual(
-            chunks[0]["untrusted_content_chunk_utf8"][-provider._OVERLAP_BYTES :], chunks[1]["untrusted_content_chunk_utf8"][: provider._OVERLAP_BYTES]
-        )
+        first_chunk = chunks[0]["untrusted_content_chunk_utf8"]
+        second_chunk = chunks[1]["untrusted_content_chunk_utf8"]
+        assert isinstance(first_chunk, str)
+        assert isinstance(second_chunk, str)
+        self.assertEqual(first_chunk[-provider._OVERLAP_BYTES :], second_chunk[: provider._OVERLAP_BYTES])
 
     def test_chunker_sizes_quote_dense_serialized_request(self) -> None:
         config = _config()
-        envelope = {"direction": "inbound", "surface": "tool", "candidate": '"\\' * 6_000}
+        envelope: dict[str, object] = {"direction": "inbound", "surface": "tool", "candidate": '"\\' * 6_000}
         questions = provider.build_jev_questions(config, envelope)
 
         chunks = provider._chunk_states(envelope, questions, "jev-latest")
@@ -168,7 +177,7 @@ class JevDetectorTests(unittest.IsolatedAsyncioTestCase):
 
     def test_chunker_makes_utf8_progress_under_escaped_body_pressure(self) -> None:
         config = _config()
-        envelope = {"direction": "tool_result", "candidate": ['数"据'] * 3_000}
+        envelope: dict[str, object] = {"direction": "tool_result", "candidate": ['数"据'] * 3_000}
         questions = provider.build_jev_questions(config, envelope)
 
         def timed_out(_signum: int, _frame: object) -> None:
@@ -184,11 +193,12 @@ class JevDetectorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertLessEqual(len(chunks), provider._MAX_CHUNKS)
         for current, following in zip(chunks, chunks[1:]):
-            self.assertGreater(
-                len(current["untrusted_content_chunk_utf8"].encode("utf-8")),
-                provider._OVERLAP_BYTES,
-            )
-            self.assertNotEqual(current["untrusted_content_chunk_utf8"], following["untrusted_content_chunk_utf8"])
+            current_chunk = current["untrusted_content_chunk_utf8"]
+            following_chunk = following["untrusted_content_chunk_utf8"]
+            assert isinstance(current_chunk, str)
+            assert isinstance(following_chunk, str)
+            self.assertGreater(len(current_chunk.encode("utf-8")), provider._OVERLAP_BYTES)
+            self.assertNotEqual(current_chunk, following_chunk)
 
     def test_openrouter_rejects_nonzero_patch_pin(self) -> None:
         with self.assertRaises(ContentProtectionError):

@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from ragtime.content_protection.models import ContentProtectionConfig, ContentProtectionError
@@ -431,8 +432,6 @@ def _build_client(provider: str, model: str, settings: dict[str, Any], *, contex
         )
     if provider not in {"openai", "openrouter", "llama_cpp", "lmstudio", "omlx", "openai_compatible"}:
         raise ValueError("unsupported provider")
-    from langchain_openai import ChatOpenAI
-
     key = str(settings.get("openai_compatible_api_key", "") or "") if provider == "openai_compatible" else resolve_provider_api_key(settings, provider, "llm")
     if not key and provider in {"llama_cpp", "lmstudio"}:
         key = "local"
@@ -489,21 +488,21 @@ async def _local_context_limit(provider: str, model: str, settings: dict[str, An
     base_url, api_key = resolve_provider_base_url(settings, provider, "llm"), resolve_provider_api_key(settings, provider, "llm")
     try:
         if provider == "ollama":
-            from ragtime.core.ollama import get_model_context_length
+            from ragtime.core.ollama import get_model_context_length as get_ollama_context_length
 
-            value = await get_model_context_length(model, base_url)
+            value = await get_ollama_context_length(model, base_url)
         elif provider == "llama_cpp":
-            from ragtime.core.llama_cpp import get_model_context_length
+            from ragtime.core.llama_cpp import get_model_context_length as get_llama_cpp_context_length
 
-            value = await get_model_context_length(model, base_url)
+            value = await get_llama_cpp_context_length(model, base_url)
         elif provider == "lmstudio":
-            from ragtime.core.lmstudio import get_model_context_length
+            from ragtime.core.lmstudio import get_model_context_length as get_lmstudio_context_length
 
-            value = await get_model_context_length(model, base_url, api_key=api_key or None)
+            value = await get_lmstudio_context_length(model, base_url, api_key=api_key or None)
         else:
-            from ragtime.core.omlx import get_model_context_length
+            from ragtime.core.omlx import get_model_context_length as get_omlx_context_length
 
-            value = await get_model_context_length(model, base_url, api_key=api_key or None)
+            value = await get_omlx_context_length(model, base_url, api_key=api_key or None)
     except Exception:
         value = None
     parsed = value if isinstance(value, int) and value > _MAX_OUTPUT_TOKENS else None

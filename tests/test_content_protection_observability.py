@@ -2,7 +2,7 @@ import unittest
 from unittest import mock
 
 from ragtime.content_protection import service
-from ragtime.content_protection.models import ContentProtectionConfig, ContentProtectionError, ProtectionContext
+from ragtime.content_protection.models import ClassifierConfig, ContentProtectionConfig, ContentProtectionError, ProtectionContext
 from ragtime.core import performance
 
 
@@ -20,7 +20,7 @@ class ContentProtectionObservabilityTests(unittest.IsolatedAsyncioTestCase):
         return {"probabilities": probabilities, "model": "test", "usage": {"input_tokens": 1, "output_tokens": 1}, "transport": "test", "cache_hit": False}
 
     async def test_failed_classifier_wait_is_timed_without_logging_candidate_or_error_details(self) -> None:
-        config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
+        config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
         clock = [0.0]
 
         async def fail_classification(*args, **kwargs):
@@ -47,7 +47,7 @@ class ContentProtectionObservabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("PRIVATE-PROVIDER-DETAIL", rendered)
 
     async def test_finalized_log_is_payload_free_for_allowed_and_denied_content(self) -> None:
-        config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
+        config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
         canary = "CANARY-SECRET-DO-NOT-LOG"
         for verdict, expected in (("allow", "permitted"), ("deny", "denied")):
             with (
@@ -73,7 +73,7 @@ class ContentProtectionObservabilityTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_release_recheck_failure_is_audited(self) -> None:
-        config = ContentProtectionConfig(enabled=True, classifier={"backend": "llm", "llm_model": "openai::classifier"})
+        config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
         audit = mock.AsyncMock()
         with (
             mock.patch.object(service, "load_config", mock.AsyncMock(side_effect=[config, RuntimeError("db unavailable")])),

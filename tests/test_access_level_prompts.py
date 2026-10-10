@@ -91,7 +91,9 @@ class ExternalDevelopmentGuidanceTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "stop after guidance boundary"):
                 await development_service._context(principal, "workspace-1")
 
-        context = guidance.await_args.args[0]
+        guidance_call = guidance.await_args
+        assert guidance_call is not None
+        context = guidance_call.args[0]
         self.assertIsInstance(context, ProtectionContext)
         self.assertEqual(context.user_id, "authenticated-user")
         self.assertEqual(context.audience_user_ids, ("authenticated-user",))
