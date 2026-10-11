@@ -85,7 +85,7 @@ describe('AccessLevelsModal data operations', () => {
       .mockReturnValueOnce(first.promise as never)
       .mockResolvedValueOnce({ prompt_fragment: 'other preview' } as never);
     renderModal();
-    await screen.findByDisplayValue('Standard');
+    await screen.findByRole('heading', { name: 'Standard' });
     await userEvent.click(screen.getByRole('button', { name: /other/i }));
     first.resolve({ prompt_fragment: 'old preview' });
     expect(await screen.findByText('other preview')).toBeTruthy();
@@ -108,7 +108,7 @@ describe('AccessLevelsModal data operations', () => {
       new ContentProtectionApiError('conflict', 409),
     );
     renderModal();
-    await screen.findByDisplayValue('Standard');
+    await screen.findByRole('heading', { name: 'Standard' });
     await userEvent.click(screen.getByRole('button', { name: 'Delete level' }));
     await vi.advanceTimersByTimeAsync(3000);
     await userEvent.click(screen.getByRole('button', { name: /confirm/i }));
@@ -128,7 +128,7 @@ describe('AccessLevelsModal data operations', () => {
       .mockRejectedValueOnce(new ContentProtectionApiError('conflict', 409))
       .mockResolvedValueOnce({ ...latest, revision: 3, access_levels: [] });
     renderModal();
-    await screen.findByDisplayValue('Standard');
+    await screen.findByRole('heading', { name: 'Standard' });
     await userEvent.click(screen.getByRole('button', { name: 'Delete level' }));
     await new Promise((resolve) => setTimeout(resolve, 3100));
     await userEvent.click(screen.getByRole('button', { name: /confirm/i }));
@@ -152,7 +152,7 @@ describe('AccessLevelsModal data operations', () => {
       .mockResolvedValueOnce(config())
       .mockResolvedValueOnce(freshWithoutLevel);
     renderModal();
-    await screen.findByDisplayValue('Standard');
+    await screen.findByRole('heading', { name: 'Standard' });
     await userEvent.selectOptions(screen.getByLabelText('Add group to this level'), 'group');
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith('This access level was deleted by another admin.'),
@@ -168,7 +168,7 @@ describe('AccessLevelsModal data operations', () => {
       .mockResolvedValueOnce(config(2, levels));
     vi.spyOn(contentProtectionApi, 'saveConfig').mockResolvedValueOnce(saved);
     renderModal();
-    await screen.findByDisplayValue('Standard');
+    await screen.findByRole('heading', { name: 'Standard' });
     await userEvent.click(screen.getByRole('button', { name: /other/i }));
     await userEvent.click(screen.getByRole('button', { name: 'Make default level' }));
     expect((await screen.findAllByText('Default')).length).toBeGreaterThan(0);
@@ -181,7 +181,7 @@ describe('AccessLevelsModal data operations', () => {
     };
     vi.spyOn(contentProtectionApi, 'getConfig').mockResolvedValue(initial);
     renderModal();
-    await screen.findByDisplayValue('Standard');
+    await screen.findByRole('heading', { name: 'Standard' });
     await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
     expect(screen.getByRole('button', { name: /standard.*1 group.*1 category/i })).toBeTruthy();
   });
@@ -201,9 +201,10 @@ describe('AccessLevelsModal data operations', () => {
       .mockResolvedValueOnce(latest)
       .mockResolvedValueOnce(latest);
     renderModal();
-    const name = await screen.findByLabelText('Name');
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit access level name' }));
+    const name = screen.getByLabelText('Access level name');
     await userEvent.clear(name);
-    await userEvent.type(name, 'Local edit');
+    await userEvent.type(name, 'Local edit{Enter}');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     await screen.findByRole('button', { name: 'Overwrite' });
     await userEvent.click(screen.getByRole('button', { name: 'Overwrite' }));
@@ -241,9 +242,9 @@ describe('AccessLevelsModal data operations', () => {
         access_levels: [...latest.access_levels, level('new', 'New')],
       });
     renderModal();
-    await screen.findByDisplayValue('Standard');
+    await screen.findByRole('heading', { name: 'Standard' });
     await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
-    await userEvent.type(screen.getByLabelText('Name'), 'New');
+    await userEvent.type(screen.getByLabelText('Access level name'), 'New{Enter}');
     await userEvent.click(screen.getByRole('checkbox', { name: /removed/i }));
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByRole('status')).toBeTruthy();

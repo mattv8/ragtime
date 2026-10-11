@@ -8,6 +8,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from ragtime.content_protection.model_catalog import list_jev_models
 from ragtime.content_protection.models import ContentProtectionConfig
 from ragtime.content_protection.service import (
     ProtectionContext,
@@ -67,6 +68,11 @@ class SampleTestRequest(_RequestModel):
 
 class ReadinessRequest(_RequestModel):
     config: ContentProtectionConfig
+
+
+class JevModelsRequest(_RequestModel):
+    transport: Literal["auto", "typesafe", "openrouter"]
+    api_key: str | None = None
 
 
 def _catalog_row(identifier: str, name: str) -> dict[str, str]:
@@ -180,6 +186,13 @@ async def test(body: SampleTestRequest, _user: Any = Depends(require_admin)) -> 
 async def readiness(body: ReadinessRequest, _user: Any = Depends(require_admin)) -> Any:
     """Run the bounded classifier contract probe. Admin only."""
     return await probe_readiness(body.config)
+
+
+@router.post("/models")
+async def models(body: JevModelsRequest, _user: Any = Depends(require_admin)) -> dict[str, Any]:
+    """Load Jev models for an administrator-selected transport."""
+    settings = await app_settings.get_app_settings()
+    return await list_jev_models(body.transport, body.api_key, settings)
 
 
 @router.get("/decisions")

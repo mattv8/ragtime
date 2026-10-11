@@ -2,6 +2,7 @@ import { Shield, Tag } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { ContentCategory } from '@/api/contentProtection';
+import { InlineEditableCardTitle } from './InlineEditableCardTitle';
 
 export function ContentProtectionCategoryCard({
   category,
@@ -13,7 +14,6 @@ export function ContentProtectionCategoryCard({
   onDelete: (category: ContentCategory) => void;
 }): JSX.Element {
   const [fields, setFields] = useState(() => ({
-    name: category.name,
     description: category.description,
     denial_message: category.denial_message,
     threshold_override: category.threshold_override?.toString() ?? '',
@@ -35,12 +35,11 @@ export function ContentProtectionCategoryCard({
   );
   useEffect(() => {
     setFields({
-      name: category.name,
       description: category.description,
       denial_message: category.denial_message,
       threshold_override: category.threshold_override?.toString() ?? '',
     });
-  }, [category.denial_message, category.description, category.name, category.threshold_override]);
+  }, [category.denial_message, category.description, category.threshold_override]);
   const commitList = (field: 'includes' | 'excludes' | 'examples') =>
     onUpdate(category.id, {
       [field]: lists[field]
@@ -71,7 +70,7 @@ export function ContentProtectionCategoryCard({
       cancelField(field);
     }
   };
-  const commitRequiredField = (field: 'name' | 'description' | 'denial_message') => {
+  const commitRequiredField = (field: 'description' | 'denial_message') => {
     if (!fields[field].trim()) {
       setFieldErrors((current) => ({ ...current, [field]: 'This field is required.' }));
       setFields((current) => ({ ...current, [field]: category[field] }));
@@ -108,37 +107,23 @@ export function ContentProtectionCategoryCard({
       <div className="tool-card-header">
         <div className="tool-card-icon">
           {category.system ? (
-            <Shield aria-hidden="true" size={28} />
+            <Shield aria-hidden="true" size={20} />
           ) : (
-            <Tag aria-hidden="true" size={28} />
+            <Tag aria-hidden="true" size={20} />
           )}
         </div>
         <div className="tool-card-header-content">
           <div className="tool-card-header-main">
-            <h3>{category.name}</h3>
+            <InlineEditableCardTitle
+              value={category.name}
+              ariaLabel="Category name"
+              maxLength={128}
+              disabled={category.system}
+              onCommit={(name) => onUpdate(category.id, { name })}
+            />
             {category.system && <span className="tool-badge">System</span>}
           </div>
         </div>
-      </div>
-      <div className="form-group">
-        <label htmlFor={`content-protection-category-${category.id}-name`}>Name</label>
-        <input
-          id={`content-protection-category-${category.id}-name`}
-          type="text"
-          disabled={category.system}
-          value={fields.name}
-          maxLength={128}
-          aria-invalid={Boolean(fieldErrors.name)}
-          aria-describedby={fieldErrors.name ? `${category.id}-name-error` : undefined}
-          onChange={(event) => updateField('name', event.target.value)}
-          onBlur={() => commitRequiredField('name')}
-          onKeyDown={(event) => handleFieldKeyDown('name', event)}
-        />
-        {fieldErrors.name && (
-          <p id={`${category.id}-name-error`} role="alert">
-            {fieldErrors.name}
-          </p>
-        )}
       </div>
       <div className="form-group">
         <label htmlFor={`content-protection-category-${category.id}-description`}>

@@ -86,15 +86,36 @@ describe('ContentProtectionCategoryCard', () => {
       description: 'first line\n  second line  ',
     });
 
-    const name = screen.getByLabelText('Name');
-    await user.clear(name);
+    await user.clear(description);
     await user.tab();
-    expect(onUpdate).not.toHaveBeenCalledWith('operational', { name: '' });
+    expect(onUpdate).not.toHaveBeenCalledWith('operational', { description: '' });
     expect(screen.getByRole('alert')).toBeTruthy();
-    await user.click(name);
-    await user.type(name, 'Changed');
-    await user.keyboard('{Escape}');
-    expect((name as HTMLInputElement).value).toBe('Operational');
+  });
+
+  it('edits the name inline from the card heading', async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    render(
+      <ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} onDelete={vi.fn()} />,
+    );
+
+    expect(screen.queryByLabelText('Category name')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Edit category name' }));
+    const name = screen.getByLabelText('Category name');
+    await user.clear(name);
+    await user.type(name, 'Changed{Escape}');
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: 'Operational' })).toBeTruthy();
+
+    await user.click(screen.getByRole('heading', { name: 'Operational' }));
+    await user.clear(screen.getByLabelText('Category name'));
+    await user.tab();
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('heading', { name: 'Operational' }));
+    await user.clear(screen.getByLabelText('Category name'));
+    await user.type(screen.getByLabelText('Category name'), '  Renamed  {Enter}');
+    expect(onUpdate).toHaveBeenCalledWith('operational', { name: 'Renamed' });
   });
 
   it('leaves system categories read-only', () => {
@@ -106,7 +127,8 @@ describe('ContentProtectionCategoryCard', () => {
       />,
     );
 
-    expect((screen.getByLabelText('Name') as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByRole('heading', { name: 'Operational' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Edit category name' })).toBeNull();
     expect((screen.getByLabelText('Description') as HTMLTextAreaElement).disabled).toBe(true);
     expect(screen.queryByLabelText('Threshold override')).toBeNull();
   });
@@ -167,7 +189,7 @@ describe('ContentProtectionAccessLevelCard', () => {
       />,
     );
 
-    expect((screen.getByLabelText('Name') as HTMLInputElement).disabled).toBe(false);
+    expect(screen.getByRole('heading', { name: 'Standard' })).toBeTruthy();
     expect(screen.queryByLabelText('Rule override')).toBeNull();
     expect(document.querySelector('#settings-level-standard')).toBeTruthy();
   });

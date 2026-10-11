@@ -36,6 +36,7 @@ import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { Popover } from './Popover';
 import { InlineCopyButton } from './shared/InlineCopyButton';
+import { FetchableModelField } from './shared/FetchableModelField';
 import { UserSpaceCodeIndexesModal } from './shared/UserSpaceCodeIndexesModal';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
@@ -5096,6 +5097,12 @@ export function SettingsPanel({
               onToggle={handleToggleAccordionSection}
               searchQuery={settingsFilter.queries[0] || ''}
               refreshKey={contentProtectionRefreshKey}
+              onOpenRouterKeySaved={(apiKey) => {
+                setFormData((current) => ({ ...current, openrouter_api_key: apiKey }));
+                setSettings((current) =>
+                  current ? { ...current, openrouter_api_key: apiKey } : current,
+                );
+              }}
             />
           )}
 
@@ -8289,59 +8296,33 @@ export function SettingsPanel({
                       />
                     </div>
                   )}
-                  <div className="form-group">
-                    <label>Embedding Model</label>
-                    <div className="input-with-button">
-                      {embeddingModelsLoaded && embeddingModels.length > 0 ? (
-                        <select
-                          value={formData.embedding_model || ''}
-                          onChange={(e) =>
-                            setFormData({ ...formData, embedding_model: e.target.value })
-                          }
-                        >
-                          <option value="">Select a model...</option>
-                          {embeddingModels.map((model) => (
-                            <option key={model.id} value={model.id}>
-                              {model.name}
-                              {model.dimensions ? ` (${model.dimensions} dims)` : ''}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type="text"
-                          value={formData.embedding_model || ''}
-                          onChange={(e) =>
-                            setFormData({ ...formData, embedding_model: e.target.value })
-                          }
-                          placeholder={hostedEmbeddingProviderConfig.modelPlaceholder}
-                        />
-                      )}
-                      <button
-                        type="button"
-                        className={`btn btn-test ${embeddingModelsLoaded ? 'btn-connected' : ''}`}
-                        onClick={() =>
-                          fetchEmbeddingModels(
-                            hostedEmbeddingProviderConfig.provider,
-                            hostedEmbeddingProviderConfig.apiKey,
-                          )
-                        }
-                        disabled={embeddingModelsFetching || !hostedEmbeddingProviderConfig.apiKey}
-                      >
-                        {embeddingModelsFetching
-                          ? 'Fetching...'
-                          : embeddingModelsLoaded
-                            ? 'Loaded'
-                            : 'Fetch Models'}
-                      </button>
-                    </div>
-                    {embeddingModelsError && <p className="field-error">{embeddingModelsError}</p>}
-                    <p className="field-help">
-                      {embeddingModelsLoaded
+                  <FetchableModelField
+                    idPrefix="hosted-embedding-model"
+                    label="Embedding Model"
+                    value={formData.embedding_model || ''}
+                    onChange={(embedding_model) => setFormData({ ...formData, embedding_model })}
+                    models={embeddingModels.map((model) => ({
+                      id: model.id,
+                      label: `${model.name}${model.dimensions ? ` (${model.dimensions} dims)` : ''}`,
+                    }))}
+                    loaded={embeddingModelsLoaded}
+                    fetching={embeddingModelsFetching}
+                    error={embeddingModelsError}
+                    onFetch={() =>
+                      fetchEmbeddingModels(
+                        hostedEmbeddingProviderConfig.provider,
+                        hostedEmbeddingProviderConfig.apiKey,
+                      )
+                    }
+                    fetchDisabled={!hostedEmbeddingProviderConfig.apiKey}
+                    placeholder={hostedEmbeddingProviderConfig.modelPlaceholder}
+                    selectPlaceholder="Select a model..."
+                    help={
+                      embeddingModelsLoaded
                         ? hostedEmbeddingProviderConfig.loadedHelp()
-                        : hostedEmbeddingProviderConfig.unloadedHelp}
-                    </p>
-                  </div>
+                        : hostedEmbeddingProviderConfig.unloadedHelp
+                    }
+                  />
 
                   {/* Embedding Dimensions (only for text-embedding-3-* models) */}
                   {(hostedEmbeddingProviderConfig.provider === 'openai' ||

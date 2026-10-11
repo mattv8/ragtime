@@ -434,6 +434,7 @@ export const GroupProtectionPanel = forwardRef<GroupProtectionPanelHandle, Props
                   categories={config.categories}
                   idPrefix={`gpp-${group.id}-`}
                   hideHeader
+                  showNameField
                   fieldsDisabled={busy || deleted}
                   onUpdate={updateDraft}
                 />

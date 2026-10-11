@@ -2,8 +2,9 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ContentProtectionSettingsSection } from './ContentProtectionSettingsSection';
+const refreshModels = vi.hoisted(() => vi.fn());
 vi.mock('@/contexts/AvailableModelsContext', () => ({
-  useAvailableModels: () => ({ models: [], loading: false, error: null, refresh: vi.fn() }),
+  useAvailableModels: () => ({ models: [], loading: false, error: null, refresh: refreshModels }),
 }));
 const config = {
   schema_version: 2 as const,
@@ -65,6 +66,17 @@ function installFetch(overrides: Record<string, unknown> = {}) {
     if (url.endsWith('/config') && options?.method === 'PUT') return response(config);
     if (url.endsWith('/config')) return response(config);
     if (url.endsWith('/catalog')) return response(catalog);
+    if (url.endsWith('/models')) {
+      const models = overrides.models || {
+        success: true,
+        transport: 'typesafe',
+        models: [],
+        default_model: 'jev-latest',
+        message: null,
+      };
+      return typeof models === 'function' ? models() : response(models);
+    }
+    if (url.endsWith('/settings') && options?.method === 'PUT') return response({ settings: {} });
     if (url.endsWith('/preview'))
       return response(
         overrides.preview || {
@@ -94,28 +106,124 @@ async function openInspect() {
   await user.click(await screen.findByRole('button', { name: 'Test & inspect' }));
   return user;
 }
-async function openSetup() {
+async function openSetup(onOpenRouterKeySaved?: (apiKey: string) => void) {
   const user = userEvent.setup();
-  render(<ContentProtectionSettingsSection open onToggle={() => {}} />);
+  render(
+    <ContentProtectionSettingsSection
+      open
+      onToggle={() => {}}
+      onOpenRouterKeySaved={onOpenRouterKeySaved}
+    />,
+  );
   await user.click(await screen.findByRole('button', { name: 'Configure classifier' }));
   return user;
 }
 afterEach(() => {
   cleanup();
+  vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
 describe('ContentProtectionSettingsSection', () => {
+  it('reports a successfully saved trimmed OpenRouter key to the parent', async () => {
+    installFetch();
+    const onOpenRouterKeySaved = vi.fn();
+    const user = await openSetup(onOpenRouterKeySaved);
+
+    await user.type(screen.getByLabelText('API key'), ' sk-or-shared-key ');
+    await user.click(screen.getByRole('button', { name: 'Save key' }));
+
+    await waitFor(() => expect(onOpenRouterKeySaved).toHaveBeenCalledWith('sk-or-shared-key'));
+  });
+
+  it('does not report an OpenRouter key when saving it fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, options?: RequestInit) => {
+        if (url.endsWith('/settings') && options?.method === 'PUT') {
+          return Promise.resolve(
+            new Response(JSON.stringify({ detail: 'offline' }), { status: 503 }),
+          );
+        }
+        return response(url.endsWith('/catalog') ? catalog : config);
+      }),
+    );
+    const onOpenRouterKeySaved = vi.fn();
+    const user = await openSetup(onOpenRouterKeySaved);
+
+    await user.type(screen.getByLabelText('API key'), 'sk-or-shared-key');
+    await user.click(screen.getByRole('button', { name: 'Save key' }));
+
+    expect(await screen.findByText('offline')).toBeTruthy();
+    expect(onOpenRouterKeySaved).not.toHaveBeenCalled();
+  });
+
+  it('does not report a TypeSafe key save to the parent', async () => {
+    installFetch();
+    const onOpenRouterKeySaved = vi.fn();
+    const user = await openSetup(onOpenRouterKeySaved);
+
+    await user.type(screen.getByLabelText('API key'), 'ts_typesafe-key');
+    refreshModels.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Save key' }));
+
+    await waitFor(() =>
+      expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe(''),
+    );
+    expect(refreshModels).not.toHaveBeenCalled();
+    expect(onOpenRouterKeySaved).not.toHaveBeenCalled();
+  });
+
+  it('creates distinct category and access-level IDs without crypto.randomUUID and saves them', async () => {
+    let randomValue = 0;
+    vi.stubGlobal('crypto', {
+      getRandomValues: vi.fn((array: Uint8Array) => {
+        array.fill(randomValue++);
+        return array;
+      }),
+    });
+    const fetch = installFetch();
+    const user = await openSetup();
+
+    await user.click(screen.getByRole('tab', { name: 'Categories' }));
+    await user.click(screen.getByRole('button', { name: 'Add category' }));
+    await user.click(screen.getByRole('button', { name: 'Add category' }));
+    await user.click(screen.getByRole('tab', { name: 'Access levels' }));
+    await user.click(screen.getByRole('button', { name: 'Add access level' }));
+    await user.click(screen.getByRole('button', { name: 'Add access level' }));
+    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
+    await user.click(screen.getByRole('button', { name: 'Save protection' }));
+
+    await waitFor(() =>
+      expect(fetch.mock.calls.some(([, options]) => options?.method === 'PUT')).toBe(true),
+    );
+    const write = fetch.mock.calls.find(([, options]) => options?.method === 'PUT');
+    const savedConfig = JSON.parse(write?.[1]?.body as string).config;
+    const categoryIds = savedConfig.categories
+      .map((item: { id: string }) => item.id)
+      .filter((id: string) => id.startsWith('cat_'));
+    const levelIds = savedConfig.access_levels
+      .map((item: { id: string }) => item.id)
+      .filter((id: string) => id.startsWith('level_'));
+    expect(categoryIds).toHaveLength(2);
+    expect(levelIds).toHaveLength(2);
+    expect(new Set(categoryIds).size).toBe(2);
+    expect(new Set(levelIds).size).toBe(2);
+    expect(categoryIds.every((id: string) => /^cat_[a-z0-9]{12}$/.test(id))).toBe(true);
+    expect(levelIds.every((id: string) => /^level_[a-z0-9]{12}$/.test(id))).toBe(true);
+  });
+
   it('cancels a category edit with Escape without closing the setup draft', async () => {
     installFetch();
     const user = await openSetup();
     await user.click(screen.getByRole('tab', { name: 'Categories' }));
     const card = document.getElementById('content-protection-category-credentials')!;
-    const name = within(card).getByRole('textbox', { name: 'Name' }) as HTMLInputElement;
+    await user.click(within(card).getByRole('button', { name: 'Edit category name' }));
+    const name = within(card).getByRole('textbox', { name: 'Category name' });
     await user.clear(name);
     await user.type(name, 'Uncommitted category name');
     await user.keyboard('{Escape}');
     expect(screen.getByRole('dialog')).toBeTruthy();
-    expect(name.value).toBe('Credentials');
+    expect(within(card).getByRole('heading', { name: 'Credentials' })).toBeTruthy();
   });
   it('saves the exact draft revision and prevents edits or dismissal during the save', async () => {
     let finishSave!: (response: Response) => void;
@@ -411,11 +519,99 @@ describe('ContentProtectionSettingsSection', () => {
     await user.click(screen.getByRole('button', { name: 'Configure classifier' }));
     expect(screen.queryByText('Ready')).toBeNull();
   });
-  it('keeps Jev transport controls disabled when generic LLM is selected', async () => {
+  it('keeps Jev provider controls disabled when generic LLM is selected', async () => {
     installFetch();
     const user = await openSetup();
     await user.click(screen.getByLabelText('Use generic LLM'));
-    expect((screen.getByRole('radio', { name: 'auto' }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('combobox', { name: 'Provider' }) as HTMLSelectElement).disabled).toBe(
+      true,
+    );
+  });
+  it('checks readiness for a generic LLM classifier', async () => {
+    const fetch = installFetch();
+    const user = await openSetup();
+
+    await user.click(screen.getByLabelText('Use generic LLM'));
+    await user.click(screen.getByRole('button', { name: /Check readiness/ }));
+
+    await waitFor(() => {
+      const request = fetch.mock.calls.find(([url]) => String(url).endsWith('/readiness'));
+      expect(JSON.parse(request?.[1]?.body as string)).toMatchObject({
+        config: { classifier: { backend: 'llm' } },
+      });
+    });
+  });
+  it('detects a typed provider and sends the current transport with a trimmed draft key to model discovery', async () => {
+    const fetch = installFetch({
+      models: {
+        success: true,
+        transport: 'typesafe',
+        models: [{ id: 'jev-latest', name: 'Jev latest', description: null, release_date: null }],
+        default_model: 'jev-latest',
+        message: null,
+      },
+    });
+    const user = await openSetup();
+    await user.type(screen.getByLabelText('API key'), ' ts_example ');
+    expect((screen.getByRole('combobox', { name: 'Provider' }) as HTMLSelectElement).value).toBe(
+      'typesafe',
+    );
+    await user.click(screen.getByRole('button', { name: 'Fetch Models' }));
+    await waitFor(() =>
+      expect(
+        JSON.parse(
+          fetch.mock.calls.find(([url]) => String(url).endsWith('/models'))?.[1]?.body as string,
+        ),
+      ).toEqual({ transport: 'typesafe', api_key: 'ts_example' }),
+    );
+    expect(screen.getByRole('combobox', { name: 'Model' })).toBeTruthy();
+  });
+  it('shows catalog failures and empty model results without switching to a model select', async () => {
+    const fetch = installFetch({
+      models: {
+        success: false,
+        transport: null,
+        models: [],
+        default_model: 'jev-latest',
+        message: 'Catalog unavailable',
+      },
+    });
+    const user = await openSetup();
+    await user.type(screen.getByLabelText('API key'), 'ts_example');
+    await user.click(screen.getByRole('button', { name: 'Fetch Models' }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Model' })).toBeTruthy();
+    expect(fetch).toHaveBeenCalled();
+  });
+  it('ignores a model response after the draft key changes', async () => {
+    let resolveModels!: (value: Response) => void;
+    installFetch({
+      models: () =>
+        new Promise<Response>((resolve) => {
+          resolveModels = resolve;
+        }),
+    });
+    const user = await openSetup();
+    const key = screen.getByLabelText('API key');
+    await user.type(key, 'ts_example');
+    await user.click(screen.getByRole('button', { name: 'Fetch Models' }));
+    await user.type(key, 'x');
+    await act(async () =>
+      resolveModels(
+        new Response(
+          JSON.stringify({
+            success: true,
+            transport: 'typesafe',
+            models: [
+              { id: 'jev-latest', name: 'Jev latest', description: null, release_date: null },
+            ],
+            default_model: 'jev-latest',
+            message: null,
+          }),
+        ),
+      ),
+    );
+    expect(screen.getByRole('textbox', { name: 'Model' })).toBeTruthy();
   });
   it('uses one named radio group to select the classifier backend', async () => {
     installFetch();

@@ -51,6 +51,7 @@ const searchSectionState = vi.hoisted(() => ({
 }));
 const contentProtectionSectionState = vi.hoisted(() => ({
   refreshKey: null as number | null,
+  onOpenRouterKeySaved: null as null | ((apiKey: string) => void),
 }));
 const sectionRenderOrder = vi.hoisted(() => [] as string[]);
 const adminUser = { id: 'admin', username: 'admin', role: 'admin' } as User;
@@ -420,9 +421,22 @@ vi.mock('./shared/AccessLevelsModal', () => ({
     ) : null,
 }));
 vi.mock('./settings/ContentProtectionSettingsSection', () => ({
-  ContentProtectionSettingsSection: ({ refreshKey }: { refreshKey?: number }) => {
+  ContentProtectionSettingsSection: ({
+    refreshKey,
+    onOpenRouterKeySaved,
+  }: {
+    refreshKey?: number;
+    onOpenRouterKeySaved?: (apiKey: string) => void;
+  }) => {
     contentProtectionSectionState.refreshKey = refreshKey ?? null;
-    return <section data-content-protection-settings-section />;
+    contentProtectionSectionState.onOpenRouterKeySaved = onOpenRouterKeySaved ?? null;
+    return (
+      <section data-content-protection-settings-section>
+        <button type="button" onClick={() => onOpenRouterKeySaved?.('sk-or-shared-key')}>
+          Save shared OpenRouter key
+        </button>
+      </section>
+    );
   },
 }));
 
@@ -483,6 +497,7 @@ beforeEach(() => {
   searchSectionState.latestProps = null;
   searchSectionState.run = null;
   contentProtectionSectionState.refreshKey = null;
+  contentProtectionSectionState.onOpenRouterKeySaved = null;
   sectionRenderOrder.length = 0;
   toastSuccessSpy.mockClear();
   toastErrorSpy.mockClear();
@@ -666,6 +681,32 @@ async function renderAuthProvider(provider: 'github_copilot' | 'openai_codex' | 
 }
 
 describe('SettingsPanel', () => {
+  it('keeps a shared OpenRouter key for later LLM and embedding saves without discarding other drafts', async () => {
+    render(<SettingsPanel currentUser={adminUser} />);
+
+    await screen.findByRole('button', { name: 'Open chat models' });
+    fireEvent.click(screen.getByRole('button', { name: 'Save shared OpenRouter key' }));
+    fireEvent.click(screen.getByLabelText('Load tools on demand'));
+
+    fireEvent.click(screen.getByRole('button', { name: /LLM Providers/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save LLM Configuration' }));
+    await waitFor(() => expect(apiMock.updateSettings).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateSettings.mock.calls[0]?.[0]).toMatchObject({
+      openrouter_api_key: 'sk-or-shared-key',
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Embedding Configuration/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save Embedding Configuration' }));
+    await waitFor(() => expect(apiMock.updateSettings).toHaveBeenCalledTimes(2));
+    expect(apiMock.updateSettings.mock.calls[1]?.[0]).toMatchObject({
+      openrouter_api_key: 'sk-or-shared-key',
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Agent Behavior' }));
+    await waitFor(() => expect(apiMock.updateSettings).toHaveBeenCalledTimes(3));
+    expect(apiMock.updateSettings.mock.calls[2]?.[0]).toMatchObject({ tool_skills_enabled: false });
+  });
+
   it('refreshes content protection after an access level change', async () => {
     render(<SettingsPanel currentUser={adminUser} />);
     fireEvent.click(await screen.findByRole('button', { name: /Authentication Providers/i }));

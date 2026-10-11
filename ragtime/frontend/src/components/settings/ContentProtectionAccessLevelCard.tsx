@@ -1,5 +1,7 @@
 import { Lock } from 'lucide-react';
 import type { AccessLevel, ContentCategory } from '@/api/contentProtection';
+import { InlineEditableCardTitle } from './InlineEditableCardTitle';
+
 export function ContentProtectionAccessLevelCard({
   level,
   categories,
@@ -8,6 +10,7 @@ export function ContentProtectionAccessLevelCard({
   deleteDisabledReason,
   idPrefix,
   hideHeader,
+  showNameField,
   onUpdate,
   onDelete,
 }: {
@@ -18,6 +21,8 @@ export function ContentProtectionAccessLevelCard({
   deleteDisabledReason?: string;
   idPrefix?: string;
   hideHeader?: boolean;
+  /** Plain Name input for hosts that hide the header and have no other rename control. */
+  showNameField?: boolean;
   onUpdate: (id: string, change: Partial<AccessLevel>) => void;
   onDelete?: (level: AccessLevel) => void;
 }): JSX.Element {
@@ -28,6 +33,7 @@ export function ContentProtectionAccessLevelCard({
         ? [...level.granted_category_ids, categoryId]
         : level.granted_category_ids.filter((id) => id !== categoryId),
     });
+
   return (
     <article
       className="tool-card content-protection-level"
@@ -37,24 +43,36 @@ export function ContentProtectionAccessLevelCard({
       {!hideHeader && (
         <div className="tool-card-header">
           <div className="tool-card-icon">
-            <Lock aria-hidden="true" size={28} />
+            <Lock aria-hidden="true" size={20} />
           </div>
           <div className="tool-card-header-content">
-            <h3>{level.name}</h3>
+            <div className="tool-card-header-main">
+              <InlineEditableCardTitle
+                value={level.name}
+                ariaLabel="Access level name"
+                maxLength={128}
+                disabled={fieldsDisabled}
+                onCommit={(name) => onUpdate(level.id, { name })}
+              />
+            </div>
           </div>
         </div>
       )}
-      <div className="form-group">
-        <label htmlFor={`${descriptionIdPrefix}name`}>Name</label>
-        <input
-          id={`${descriptionIdPrefix}name`}
-          type="text"
-          value={level.name}
-          maxLength={128}
-          disabled={fieldsDisabled}
-          onChange={(event) => onUpdate(level.id, { name: event.target.value })}
-        />
-      </div>
+
+      {showNameField && (
+        <div className="form-group">
+          <label htmlFor={`${descriptionIdPrefix}name`}>Name</label>
+          <input
+            id={`${descriptionIdPrefix}name`}
+            type="text"
+            value={level.name}
+            maxLength={128}
+            disabled={fieldsDisabled}
+            onChange={(event) => onUpdate(level.id, { name: event.target.value })}
+          />
+        </div>
+      )}
+
       <fieldset className="content-protection-fieldset">
         <legend className="access-level-section-heading">Granted categories</legend>
         <div className="content-protection-level-grants">

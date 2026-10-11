@@ -10,6 +10,7 @@ import {
   type ContentProtectionConfig,
 } from '@/api/contentProtection';
 import type { AuthGroup } from '@/types';
+import { generateCredentialValue } from '@/utils/credentialGenerator';
 import { ContentProtectionAccessLevelCard } from '../settings/ContentProtectionAccessLevelCard';
 import { DeleteConfirmButton } from '../DeleteConfirmButton';
 import { AccessDetailHeader } from './AccessDetailHeader';
@@ -26,7 +27,7 @@ interface Props {
 }
 
 const newLevel = (): AccessLevel => ({
-  id: `level_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`,
+  id: `level_${generateCredentialValue(12).toLowerCase()}`,
   name: '',
   granted_category_ids: [],
   guidance: '',
@@ -592,8 +593,18 @@ function LoadedAccessLevelsModal(props: {
               aria-labelledby="access-level-detail-title"
             >
               <AccessDetailHeader
+                key={selected.id}
                 headingId="access-level-detail-title"
-                title={selected.name || '(unnamed)'}
+                title={selected.name}
+                editableTitle={{
+                  ariaLabel: 'Access level name',
+                  maxLength: 128,
+                  disabled: Boolean(
+                    savingLevelId || deleting || conflicts[selected.id]?.type === 'deleted',
+                  ),
+                  startEditing: isUnsaved && !selected.name,
+                  onCommit: (name) => updateDraft(selected.id, { name }),
+                }}
                 meta={
                   selectedId === config.default_access_level_id ? (
                     <span className="access-level-default-badge">Default</span>

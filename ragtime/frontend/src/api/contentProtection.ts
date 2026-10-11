@@ -9,6 +9,19 @@ export interface JevConfig {
   transport: JevTransport;
   model: string;
 }
+export interface JevModel {
+  id: string;
+  name: string;
+  description: string | null;
+  release_date: string | null;
+}
+export interface JevModelsResult {
+  success: boolean;
+  transport: JevTransport | null;
+  models: JevModel[];
+  default_model: string;
+  message: string | null;
+}
 export interface ClassifierConfig {
   backend: ClassifierBackend;
   jev: JevConfig;
@@ -194,8 +207,19 @@ export const contentProtectionApi = {
       method: 'POST',
       body: JSON.stringify({ config }),
     }),
+  listJevModels: ({ transport, api_key }: { transport: JevTransport; api_key?: string | null }) =>
+    request<JevModelsResult>('/models', {
+      method: 'POST',
+      body: JSON.stringify({ transport, api_key: api_key ?? null }),
+    }),
   decisions: () => request<{ items: ContentProtectionDecision[] }>('/decisions'),
 };
+export function detectJevKeyTransport(key: string): Exclude<JevTransport, 'auto'> | null {
+  const normalized = key.trim();
+  if (normalized.startsWith('sk-or-')) return 'openrouter';
+  if (normalized.startsWith('ts_') || normalized.startsWith('ts-')) return 'typesafe';
+  return null;
+}
 export async function updateContentProtectionConfigSlice(
   mutate: (config: ContentProtectionConfig) => ContentProtectionConfig,
 ): Promise<ContentProtectionConfig> {

@@ -139,14 +139,16 @@ describe('AccessLevelsModal remaining data conflicts', () => {
       } as never);
 
       renderModal();
-      await screen.findByDisplayValue('Standard');
+      await screen.findByRole('heading', { name: 'Standard' });
       await userEvent.click(screen.getByRole('button', { name: 'Delete level' }));
       await vi.advanceTimersByTimeAsync(3000);
       await userEvent.click(screen.getByRole('button', { name: 'Confirm?' }));
 
       await waitFor(() => expect(toast.error).toHaveBeenCalledWith(testCase.reason));
       expect(contentProtectionApi.saveConfig).toHaveBeenCalledTimes(1);
-      expect(await screen.findByDisplayValue(testCase.latest.access_levels[0].name)).toBeTruthy();
+      expect(
+        await screen.findByRole('heading', { name: testCase.latest.access_levels[0].name }),
+      ).toBeTruthy();
       expect(screen.getByRole('button', { name: testCase.railName })).toBeTruthy();
     }
   });
@@ -158,7 +160,7 @@ describe('AccessLevelsModal remaining data conflicts', () => {
       return fresh;
     });
     renderModal();
-    await screen.findByDisplayValue('Standard');
+    await screen.findByRole('heading', { name: 'Standard' });
 
     await userEvent.selectOptions(screen.getByLabelText('Add group to this level'), 'group');
     await waitFor(() => expect(contentProtectionMock.updateConfigSlice).toHaveBeenCalledTimes(1));
@@ -189,7 +191,7 @@ describe('AccessLevelsModal remaining data conflicts', () => {
       default_access_level_id: '',
     });
     renderModal();
-    await screen.findByDisplayValue('Standard');
+    await screen.findByRole('heading', { name: 'Standard' });
 
     await userEvent.click(screen.getByRole('button', { name: 'Make default level' }));
 
@@ -206,9 +208,10 @@ describe('AccessLevelsModal remaining data conflicts', () => {
       new ContentProtectionApiError('conflict', 409),
     );
     renderModal();
-    const name = await screen.findByLabelText('Name');
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit access level name' }));
+    const name = screen.getByLabelText('Access level name');
     await userEvent.clear(name);
-    await userEvent.type(name, 'Local Edit');
+    await userEvent.type(name, 'Local Edit{Enter}');
 
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
 
@@ -225,9 +228,10 @@ describe('AccessLevelsModal remaining data conflicts', () => {
       new ContentProtectionApiError('conflict', 409),
     );
     renderModal();
-    const name = await screen.findByLabelText('Name');
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit access level name' }));
+    const name = screen.getByLabelText('Access level name');
     await userEvent.clear(name);
-    await userEvent.type(name, 'Local Edit');
+    await userEvent.type(name, 'Local Edit{Enter}');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     await screen.findByText(/draft is retained read-only/i);
 
@@ -249,7 +253,7 @@ describe('AccessLevelsModal remaining data conflicts', () => {
       default_access_level_id: '',
     });
     renderModal();
-    await screen.findByDisplayValue('Standard');
+    await screen.findByRole('heading', { name: 'Standard' });
 
     await userEvent.selectOptions(screen.getByLabelText('Add group to this level'), 'group');
 

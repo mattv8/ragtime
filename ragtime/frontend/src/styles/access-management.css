@@ -199,6 +199,24 @@
   white-space: nowrap;
 }
 
+/* Editable header title: same box in view and edit mode so the name never shifts. */
+.access-md-detail-header-body .name-wrapper {
+  margin: 0;
+  padding: 3px 6px;
+}
+.access-md-detail-header-body .name-wrapper .access-md-detail-title {
+  flex: 1;
+  min-width: 0;
+}
+.access-md-detail-header-body .inline-edit-input {
+  margin: 0 !important;
+  padding: 3px 6px !important;
+  line-height: inherit;
+}
+.access-md-detail-header-body .editable-field-wrapper:focus-within .inline-edit-btn {
+  opacity: 1;
+}
+
 .access-md-detail-meta {
   display: flex;
   flex-wrap: wrap;

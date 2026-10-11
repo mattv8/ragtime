@@ -40,11 +40,11 @@ describe('AccessLevelsModal interactions', () => {
   it('closes the detail before the modal when Escape is pressed', async () => {
     const onClose = vi.fn();
     render(<AccessLevelsModal open onClose={onClose} authGroups={[]} toast={toast} />);
-    await screen.findByLabelText('Name');
+    await screen.findByRole('heading', { name: 'Standard' });
 
     document.getElementById('access-level-detail-title')?.focus();
     await userEvent.keyboard('{Escape}');
-    expect(screen.queryByLabelText('Name')).toBeNull();
+    expect(document.getElementById('access-level-detail-title')).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
 
     screen.getByLabelText('Search access levels').focus();
@@ -57,12 +57,14 @@ describe('AccessLevelsModal interactions', () => {
     const { rerender } = render(
       <AccessLevelsModal open onClose={onClose} authGroups={[]} toast={toast} />,
     );
-    await screen.findByLabelText('Name');
+    await screen.findByRole('heading', { name: 'Standard' });
     fireEvent.mouseDown(document.getElementById('access-levels-modal-overlay')!);
     expect(onClose).toHaveBeenCalledOnce();
 
     rerender(<AccessLevelsModal open onClose={onClose} authGroups={[]} toast={toast} />);
-    await userEvent.type(await screen.findByLabelText('Name'), ' changed');
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit access level name' }));
+    await userEvent.clear(screen.getByLabelText('Access level name'));
+    await userEvent.type(screen.getByLabelText('Access level name'), 'Standard changed{Enter}');
     fireEvent.mouseDown(document.getElementById('access-levels-modal-overlay')!);
     expect(screen.getByRole('alertdialog', { name: 'Unsaved changes' })).toBeTruthy();
   });
@@ -87,7 +89,7 @@ describe('AccessLevelsModal interactions', () => {
     render(<Launcher />);
     const launcher = screen.getByRole('button', { name: 'Launcher' });
     await userEvent.click(launcher);
-    await screen.findByLabelText('Name');
+    await screen.findByRole('heading', { name: 'Standard' });
     await userEvent.click(screen.getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(document.activeElement).toBe(launcher));
   });
@@ -146,12 +148,12 @@ describe('AccessLevelsModal interactions', () => {
     const { rerender } = render(
       <AccessLevelsModal open onClose={onClose} authGroups={[]} toast={toast} />,
     );
-    await screen.findByDisplayValue('Standard');
+    await screen.findByRole('heading', { name: 'Standard' });
     await userEvent.type(screen.getByLabelText('Search access levels'), 'finance');
     await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
     rerender(<AccessLevelsModal open={false} onClose={onClose} authGroups={[]} toast={toast} />);
     rerender(<AccessLevelsModal open onClose={onClose} authGroups={[]} toast={toast} />);
-    expect(await screen.findByDisplayValue('Standard')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Standard' })).toBeTruthy();
     expect((screen.getByLabelText('Search access levels') as HTMLInputElement).value).toBe('');
   });
 

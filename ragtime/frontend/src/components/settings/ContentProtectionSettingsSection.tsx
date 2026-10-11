@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle2, CircleHelp, Loader2, TestTube2 } from 'lucide-react';
+import { CheckCircle2, CircleHelp, TestTube2 } from 'lucide-react';
 import { api } from '@/api/client';
 import {
   accessLevelSets,
@@ -20,14 +20,18 @@ import {
   type ContentProtectionConfig,
   type ContentProtectionReadinessResult,
   type ContentProtectionTestResult,
+  type JevModel,
+  type JevTransport,
 } from '@/api/contentProtection';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
+import { generateCredentialValue } from '@/utils/credentialGenerator';
 import { ModelSelector } from '../ModelSelector';
 import { Popover } from '../Popover';
 import { SearchHighlightedText } from '../shared/SearchHighlightedText';
 import { CONTENT_PROTECTION_SETTING_ID } from '../shared/SettingsHighlightLink';
 import { ContentProtectionAccessLevelCard } from './ContentProtectionAccessLevelCard';
 import { ContentProtectionCategoryCard } from './ContentProtectionCategoryCard';
+import { JevClassifierFields } from './JevClassifierFields';
 import { SettingsAccordionSection } from './SettingsAccordionSection';
 import type { SettingsAccordionSectionId } from './settingsAccordionState';
 
@@ -108,13 +112,14 @@ function Tabs<T extends string>({
     document.getElementById(`${hook}-tab-${tabs[next].id}`)?.focus();
   };
   return (
-    <div className="content-protection-tabs" role="tablist" aria-label={label}>
+    <div className="modal-tabs" role="tablist" aria-label={label}>
       {tabs.map((tab) => (
         <button
           key={tab.id}
           id={`${hook}-tab-${tab.id}`}
           type="button"
           role="tab"
+          className="modal-tab"
           aria-selected={active === tab.id}
           aria-controls={`${hook}-panel-${tab.id}`}
           tabIndex={active === tab.id ? 0 : -1}
@@ -203,7 +208,7 @@ function Dialog({
     >
       <div
         ref={dialogRef}
-        className="modal-content content-protection-dialog"
+        className="modal-content modal-with-tabs content-protection-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby={`${hook}-title`}
@@ -246,11 +251,13 @@ export function ContentProtectionSettingsSection({
   onToggle,
   searchQuery = '',
   refreshKey = 0,
+  onOpenRouterKeySaved,
 }: {
   open: boolean;
   onToggle: (id: SettingsAccordionSectionId) => void;
   searchQuery?: string;
   refreshKey?: number;
+  onOpenRouterKeySaved?: (apiKey: string) => void;
 }): JSX.Element {
   const availableModels = useAvailableModels();
   const refreshModelsRef = useRef(availableModels.refresh);
@@ -268,8 +275,12 @@ export function ContentProtectionSettingsSection({
   const [readiness, setReadiness] = useState<ContentProtectionReadinessResult | null>(null);
   const [readinessSignature, setReadinessSignature] = useState<string | null>(null);
   const [readinessBusy, setReadinessBusy] = useState(false);
-  const [typesafeKey, setTypesafeKey] = useState('');
+  const [jevKey, setJevKey] = useState('');
   const [keyBusy, setKeyBusy] = useState(false);
+  const [jevModels, setJevModels] = useState<JevModel[]>([]);
+  const [jevModelsLoaded, setJevModelsLoaded] = useState(false);
+  const [jevModelsFetching, setJevModelsFetching] = useState(false);
+  const [jevModelsError, setJevModelsError] = useState<string | null>(null);
   const [preview, setPreview] = useState<Awaited<
     ReturnType<typeof contentProtectionApi.preview>
   > | null>(null);
@@ -290,6 +301,7 @@ export function ContentProtectionSettingsSection({
   const [decisionsError, setDecisionsError] = useState<string | null>(null);
   const requestToken = useRef(0);
   const readinessToken = useRef(0);
+  const jevModelsToken = useRef(0);
   const previewToken = useRef(0);
   const [saveConflict, setSaveConflict] = useState(false);
   const load = useCallback(async () => {
@@ -313,6 +325,13 @@ export function ContentProtectionSettingsSection({
       refreshModelsRef.current();
     }
   }, [load, open, refreshKey]);
+  const resetJevModels = () => {
+    jevModelsToken.current += 1;
+    setJevModels([]);
+    setJevModelsLoaded(false);
+    setJevModelsFetching(false);
+    setJevModelsError(null);
+  };
   const update = (change: Partial<ContentProtectionConfig>) => {
     if (change.classifier) {
       readinessToken.current += 1;
@@ -331,6 +350,8 @@ export function ContentProtectionSettingsSection({
     setReadinessSignature(null);
     readinessToken.current += 1;
     setSaveConflict(false);
+    setJevKey('');
+    resetJevModels();
   };
   const save = async () => {
     if (!setup) return;
@@ -375,20 +396,61 @@ export function ContentProtectionSettingsSection({
       setSaving(false);
     }
   };
-  const saveKey = async (field: 'typesafe_api_key', value: string) => {
+  const saveKey = async (field: 'typesafe_api_key' | 'openrouter_api_key', value: string) => {
     if (!value.trim()) return;
     setKeyBusy(true);
     try {
       await api.updateSettings({ [field]: value.trim() });
-      setTypesafeKey('');
-      setCatalog(await contentProtectionApi.getCatalog());
+      setJevKey('');
+      resetJevModels();
+      if (field === 'openrouter_api_key') {
+        onOpenRouterKeySaved?.(value.trim());
+        refreshModelsRef.current();
+      }
       readinessToken.current += 1;
       setReadiness(null);
       setReadinessSignature(null);
+      try {
+        setCatalog(await contentProtectionApi.getCatalog());
+      } catch (caught) {
+        setSetupError(
+          caught instanceof Error ? caught.message : 'Failed to refresh classifier key status',
+        );
+      }
     } catch (caught) {
       setSetupError(caught instanceof Error ? caught.message : 'Failed to save classifier key');
     } finally {
       setKeyBusy(false);
+    }
+  };
+  const fetchJevModels = async () => {
+    if (!setup) return;
+    const token = ++jevModelsToken.current;
+    setJevModelsFetching(true);
+    setJevModelsError(null);
+    setJevModels([]);
+    setJevModelsLoaded(false);
+    try {
+      const result = await contentProtectionApi.listJevModels({
+        transport: setup.classifier.jev.transport,
+        api_key: jevKey.trim() || null,
+      });
+      if (token !== jevModelsToken.current) return;
+      if (!result.success) {
+        setJevModelsError(result.message || 'Could not load Jev models.');
+        return;
+      }
+      if (!result.models.length) {
+        setJevModelsError('No Jev models returned. Check your API key and provider.');
+        return;
+      }
+      setJevModels(result.models);
+      setJevModelsLoaded(true);
+    } catch (caught) {
+      if (token === jevModelsToken.current)
+        setJevModelsError(caught instanceof Error ? caught.message : 'Could not load Jev models.');
+    } finally {
+      if (token === jevModelsToken.current) setJevModelsFetching(false);
     }
   };
   const checkReadiness = async () => {
@@ -757,8 +819,8 @@ export function ContentProtectionSettingsSection({
                   className="content-protection-fieldset"
                   data-content-protection-jev-config
                 >
-                  <legend>
-                    <label>
+                  <legend className="content-protection-legend-with-badge">
+                    <label className="radio-label">
                       <input
                         type="radio"
                         name="content-protection-backend"
@@ -766,139 +828,68 @@ export function ContentProtectionSettingsSection({
                         onChange={() =>
                           update({ classifier: { ...setup.classifier, backend: 'jev' } })
                         }
-                      />{' '}
-                      Jev
-                    </label>{' '}
+                      />
+                      <span>Jev</span>
+                    </label>
                     <span className="tool-badge">Recommended</span>
                   </legend>
-                  <fieldset>
-                    <legend>Transport</legend>
-                    {(['auto', 'typesafe', 'openrouter'] as const).map((transport) => (
-                      <label key={transport}>
-                        <input
-                          type="radio"
-                          name="jev-transport"
-                          disabled={setup.classifier.backend !== 'jev'}
-                          checked={setup.classifier.jev.transport === transport}
-                          onChange={() =>
-                            update({
-                              classifier: {
-                                ...setup.classifier,
-                                backend: 'jev',
-                                jev: { ...setup.classifier.jev, transport },
-                              },
-                            })
-                          }
-                        />{' '}
-                        {transport}
-                      </label>
-                    ))}
-                  </fieldset>
-                  <label htmlFor="jev-model-input">
-                    Model
-                    <input
-                      id="jev-model-input"
-                      value={setup.classifier.jev.model}
-                      onChange={(event) =>
-                        update({
-                          classifier: {
-                            ...setup.classifier,
-                            jev: { ...setup.classifier.jev, model: event.target.value },
-                          },
-                        })
-                      }
-                      onBlur={(event) => {
-                        if (!event.target.value.trim())
-                          update({
-                            classifier: {
-                              ...setup.classifier,
-                              jev: { ...setup.classifier.jev, model: 'jev-latest' },
-                            },
-                          });
-                      }}
-                    />
-                  </label>
-                  <p className="field-help">
-                    <code>jev-latest</code> tracks the current recommended version. Pin a release to
-                    freeze behavior.
-                  </p>
-                  {(setup.classifier.jev.transport === 'auto' ||
-                    setup.classifier.jev.transport === 'typesafe') && (
-                    <KeyRow
-                      id="content-protection-typesafe-key-row"
-                      hook="content-protection-typesafe-key"
-                      label="TypeSafe API key"
-                      configured={catalog.classifier_status?.typesafe_key_configured}
-                      value={typesafeKey}
-                      onChange={setTypesafeKey}
-                      onSave={() => void saveKey('typesafe_api_key', typesafeKey)}
-                      busy={keyBusy}
-                    />
-                  )}
-                  {(setup.classifier.jev.transport === 'auto' ||
-                    setup.classifier.jev.transport === 'openrouter') && (
-                    <div
-                      id="content-protection-openrouter-key-row"
-                      data-content-protection-openrouter-key
-                    >
-                      <p className="field-help">
-                        {catalog.classifier_status?.openrouter_key_configured
-                          ? 'An OpenRouter key is configured.'
-                          : 'No OpenRouter key is configured.'}{' '}
-                        <a
-                          href="#setting-openrouter-api-key"
-                          onClick={() => {
-                            window.dispatchEvent(
-                              new CustomEvent('highlight-settings', {
-                                detail: 'setting-openrouter-api-key',
-                              }),
-                            );
-                            readinessToken.current += 1;
-                            setReadiness(null);
-                            setReadinessSignature(null);
-                            setSetup(null);
-                          }}
-                        >
-                          Manage the OpenRouter key in provider settings.
-                        </a>
-                      </p>
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    disabled={readinessBusy}
-                    onClick={() => void checkReadiness()}
-                  >
-                    {readinessBusy && <Loader2 className="content-protection-spinner" />} Check
-                    readiness
-                  </button>
-                  {readiness && (
-                    <section
-                      id="readiness-result"
-                      className="content-protection-result"
-                      role="status"
-                      data-content-protection-readiness-result
-                    >
-                      <strong>{readiness.code === 'ready' ? 'Ready' : 'Not ready'}</strong>
-                      {readiness.model && (
-                        <span className="tool-badge">
-                          Resolved: {readiness.model} via {readiness.transport}
-                        </span>
-                      )}
-                      {readiness.cases?.map((item) => (
-                        <span key={item.name}>
-                          {item.name}: {item.verdict} ·{' '}
-                          {Object.entries(item.probabilities)
-                            .map(([id, probability]) => `${id} ${(probability * 100).toFixed(0)}%`)
-                            .join(', ')}
-                        </span>
-                      ))}
-                    </section>
-                  )}
+                  <JevClassifierFields
+                    transport={setup.classifier.jev.transport}
+                    model={setup.classifier.jev.model}
+                    onTransportChange={(transport: JevTransport) => {
+                      resetJevModels();
+                      update({
+                        classifier: {
+                          ...setup.classifier,
+                          backend: 'jev',
+                          jev: { ...setup.classifier.jev, transport },
+                        },
+                      });
+                    }}
+                    onModelChange={(model) =>
+                      update({
+                        classifier: {
+                          ...setup.classifier,
+                          jev: { ...setup.classifier.jev, model },
+                        },
+                      })
+                    }
+                    draftKey={jevKey}
+                    onDraftKeyChange={(key) => {
+                      setJevKey(key);
+                      resetJevModels();
+                    }}
+                    keyBusy={keyBusy}
+                    onSaveKey={(field, value) => void saveKey(field, value)}
+                    typesafeConfigured={Boolean(catalog.classifier_status?.typesafe_key_configured)}
+                    openrouterConfigured={Boolean(
+                      catalog.classifier_status?.openrouter_key_configured,
+                    )}
+                    jevModels={jevModels}
+                    jevModelsLoaded={jevModelsLoaded}
+                    jevModelsFetching={jevModelsFetching}
+                    jevModelsError={jevModelsError}
+                    onFetchModels={() => void fetchJevModels()}
+                    readiness={readiness}
+                    readinessBusy={readinessBusy}
+                    onCheckReadiness={() => void checkReadiness()}
+                    onOpenRouterLinkClick={() => {
+                      window.dispatchEvent(
+                        new CustomEvent('highlight-settings', {
+                          detail: 'setting-openrouter-api-key',
+                        }),
+                      );
+                      readinessToken.current += 1;
+                      setReadiness(null);
+                      setReadinessSignature(null);
+                      setSetup(null);
+                    }}
+                    disabled={setup.classifier.backend !== 'jev'}
+                  />
                 </fieldset>
                 <details
                   id="content-protection-llm-advanced"
+                  className="content-protection-advanced"
                   data-content-protection-llm-advanced
                   open={setup.classifier.backend === 'llm'}
                 >
@@ -909,7 +900,7 @@ export function ContentProtectionSettingsSection({
                   <p className="field-help">
                     Generic model probabilities are not calibrated. Retained for evaluation only.
                   </p>
-                  <label>
+                  <label className="radio-label">
                     <input
                       type="radio"
                       name="content-protection-backend"
@@ -917,8 +908,8 @@ export function ContentProtectionSettingsSection({
                       onChange={() =>
                         update({ classifier: { ...setup.classifier, backend: 'llm' } })
                       }
-                    />{' '}
-                    Use generic LLM
+                    />
+                    <span>Use generic LLM</span>
                   </label>
                   {setup.classifier.backend === 'llm' && (
                     <ModelSelector
@@ -968,7 +959,7 @@ export function ContentProtectionSettingsSection({
                       categories: [
                         ...setup.categories,
                         {
-                          id: `cat_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`,
+                          id: `cat_${generateCredentialValue(12).toLowerCase()}`,
                           name: 'New category',
                           description: 'Describe restricted content.',
                           includes: [],
@@ -1020,7 +1011,7 @@ export function ContentProtectionSettingsSection({
                       access_levels: [
                         ...setup.access_levels,
                         {
-                          id: `level_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`,
+                          id: `level_${generateCredentialValue(12).toLowerCase()}`,
                           name: 'New level',
                           granted_category_ids: [],
                           guidance: '',
@@ -1050,6 +1041,7 @@ export function ContentProtectionSettingsSection({
                 </fieldset>
                 <section
                   id="content-protection-group-mappings"
+                  className="content-protection-block"
                   data-content-protection-group-mappings
                 >
                   <h4>Group mappings</h4>
@@ -1065,7 +1057,11 @@ export function ContentProtectionSettingsSection({
                         data-group-id={group.id}
                       >
                         <span>{group.name}</span>
-                        <div role="group" aria-label={`Access levels for ${group.name}`}>
+                        <div
+                          className="content-protection-options"
+                          role="group"
+                          aria-label={`Access levels for ${group.name}`}
+                        >
                           {setup.access_levels.map((level) => (
                             <label className="checkbox-label" key={level.id}>
                               <input
@@ -1077,8 +1073,8 @@ export function ContentProtectionSettingsSection({
                                 onChange={(event) =>
                                   updateGroupMapping(group.id, level.id, event.target.checked)
                                 }
-                              />{' '}
-                              {level.name}
+                              />
+                              <span>{level.name}</span>
                             </label>
                           ))}
                         </div>
@@ -1156,7 +1152,7 @@ export function ContentProtectionSettingsSection({
                   </select>
                 </div>
                 {setup.enabled && setup.coverage_mode === 'selected_scopes' && (
-                  <section id="content-protection-app-areas">
+                  <section id="content-protection-app-areas" className="content-protection-block">
                     <h4>App areas</h4>
                     {catalog.surfaces.map((item) => (
                       <label
@@ -1353,7 +1349,7 @@ export function ContentProtectionSettingsSection({
                 disabled={previewBusy}
                 onClick={() => void runPreview()}
               >
-                <TestTube2 /> Check saved policy
+                <TestTube2 size={16} /> Check saved policy
               </button>
               {preview && (
                 <section
@@ -1400,28 +1396,35 @@ export function ContentProtectionSettingsSection({
                 maxLength={1048576}
                 onChange={(event) => setSample(event.target.value)}
               />
-              <fieldset id="content-protection-test-levels" disabled={Boolean(sampleUserId)}>
+              <fieldset
+                id="content-protection-test-levels"
+                className="content-protection-radio-group"
+                disabled={Boolean(sampleUserId)}
+              >
                 <legend>Target access levels</legend>
-                {saved?.access_levels.map((level) => (
-                  <label className="checkbox-label" key={level.id}>
-                    <input
-                      type="checkbox"
-                      checked={sampleLevelIds.includes(level.id)}
-                      onChange={() =>
-                        setSampleLevelIds((current) =>
-                          current.includes(level.id)
-                            ? current.filter((id) => id !== level.id)
-                            : [...current, level.id],
-                        )
-                      }
-                    />{' '}
-                    {level.name}
-                  </label>
-                ))}
+                <div className="content-protection-options">
+                  {saved?.access_levels.map((level) => (
+                    <label className="checkbox-label" key={level.id}>
+                      <input
+                        type="checkbox"
+                        checked={sampleLevelIds.includes(level.id)}
+                        onChange={() =>
+                          setSampleLevelIds((current) =>
+                            current.includes(level.id)
+                              ? current.filter((id) => id !== level.id)
+                              : [...current, level.id],
+                          )
+                        }
+                      />
+                      <span>{level.name}</span>
+                    </label>
+                  ))}
+                </div>
               </fieldset>
-              <label>
-                Or test as a real user
+              <div className="form-group" id="content-protection-test-user">
+                <label htmlFor="content-protection-test-user-select">Or test as a real user</label>
                 <select
+                  id="content-protection-test-user-select"
                   value={sampleUserId}
                   onChange={(event) => setSampleUserId(event.target.value)}
                 >
@@ -1432,7 +1435,7 @@ export function ContentProtectionSettingsSection({
                     </option>
                   ))}
                 </select>
-              </label>
+              </div>
               <button
                 className="btn btn-secondary"
                 type="button"
@@ -1510,52 +1513,6 @@ export function ContentProtectionSettingsSection({
         </Dialog>
       )}
     </SettingsAccordionSection>
-  );
-}
-function KeyRow({
-  id,
-  hook,
-  label,
-  configured,
-  value,
-  onChange,
-  onSave,
-  busy,
-}: {
-  id: string;
-  hook: string;
-  label: string;
-  configured?: boolean;
-  value: string;
-  onChange: (value: string) => void;
-  onSave: () => void;
-  busy: boolean;
-}) {
-  return (
-    <div id={id} className="input-with-button" data-content-protection-key={hook}>
-      <label htmlFor={`${hook}-input`}>{label}</label>
-      <input
-        id={`${hook}-input`}
-        type="password"
-        autoComplete="new-password"
-        value={value}
-        placeholder={configured ? '••••••••' : 'Enter key'}
-        onChange={(event) => onChange(event.target.value)}
-      />
-      <button
-        type="button"
-        className="btn btn-secondary btn-sm"
-        disabled={!value.trim() || busy}
-        onClick={onSave}
-      >
-        {busy ? 'Saving…' : 'Save key'}
-      </button>
-      <p className="field-help">
-        {configured
-          ? 'A key is configured. Enter a new value to replace it.'
-          : 'No key configured.'}
-      </p>
-    </div>
   );
 }
 function Switch({

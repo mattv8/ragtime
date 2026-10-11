@@ -89,7 +89,10 @@ beforeEach(() => {
     revision: next.revision + 1,
   }));
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe('AccessLevelsModal', () => {
   it('loads levels, retries a load error, and ignores a stale request after close', async () => {
@@ -121,35 +124,55 @@ describe('AccessLevelsModal', () => {
     });
     renderModal({ authGroups: [authGroup] });
     await userEvent.click(await screen.findByText('Standard'));
-    await userEvent.type(screen.getByLabelText('Name'), ' changed');
+    await userEvent.click(screen.getByRole('button', { name: 'Edit access level name' }));
+    const name = screen.getByLabelText('Access level name');
+    await userEvent.clear(name);
+    await userEvent.type(name, 'Standard changed{Enter}');
     await userEvent.click(screen.getByText('Other'));
     expect(screen.getByRole('alertdialog')).toBeTruthy();
     await userEvent.click(screen.getByText('Keep editing'));
-    expect(screen.getByDisplayValue('Standard changed')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Standard changed' })).toBeTruthy();
     await userEvent.click(screen.getByText('Other'));
     await userEvent.click(screen.getByText('Discard and continue'));
-    expect(await screen.findByDisplayValue('Other')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Other' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
     await userEvent.click(screen.getByLabelText('Close access editor'));
     await userEvent.click(screen.getByText('Discard and continue'));
     expect(screen.queryByText('(new level)')).toBeNull();
   });
 
-  it('inserts a new level', async () => {
+  it('creates and saves distinct levels without crypto.randomUUID', async () => {
+    let randomValue = 0;
+    vi.stubGlobal('crypto', {
+      getRandomValues: vi.fn((array: Uint8Array) => {
+        array.fill(randomValue++);
+        return array;
+      }),
+    });
     const save = vi.spyOn(contentProtectionApi, 'saveConfig');
     renderModal();
     await screen.findByText('Standard');
+
     await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
-    await userEvent.type(screen.getByLabelText('Name'), 'New level');
+    expect(document.activeElement).toBe(screen.getByLabelText('Access level name'));
+    await userEvent.type(screen.getByLabelText('Access level name'), 'First new level{Enter}');
     await userEvent.click(screen.getByText('Save'));
-    await waitFor(() =>
-      expect(save).toHaveBeenCalledWith(
-        1,
-        expect.objectContaining({
-          access_levels: expect.arrayContaining([expect.objectContaining({ name: 'New level' })]),
-        }),
-      ),
-    );
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
+    await userEvent.type(screen.getByLabelText('Access level name'), 'Second new level{Enter}');
+    await userEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+
+    const firstId = save.mock.calls[0][1].access_levels.find(
+      (item) => item.name === 'First new level',
+    )?.id;
+    const secondId = save.mock.calls[1][1].access_levels.find(
+      (item) => item.name === 'Second new level',
+    )?.id;
+    expect(firstId).toMatch(/^level_[a-z0-9]{12}$/);
+    expect(secondId).toMatch(/^level_[a-z0-9]{12}$/);
+    expect(secondId).not.toBe(firstId);
   });
 
   it('renders unsaved mapping and default safeguards', async () => {
@@ -206,7 +229,11 @@ describe('AccessLevelsModal', () => {
     });
     const { props } = renderModal({ onNavigateToSetting: vi.fn() });
 
-    await userEvent.type(await screen.findByLabelText('Name'), ' changed');
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit access level name' }));
+
+    await userEvent.clear(screen.getByLabelText('Access level name'));
+
+    await userEvent.type(screen.getByLabelText('Access level name'), 'Standard changed{Enter}');
     await userEvent.click(screen.getByRole('link', { name: /enable in settings/i }));
     await userEvent.click(screen.getByText('Keep editing'));
     expect(props.onClose).not.toHaveBeenCalled();
