@@ -107,6 +107,47 @@ describe('useSearchTextHighlights', () => {
     expect(highlightRegistry.size).toBe(0);
   });
 
+  it('matches an ampersand in text against an "and" term', async () => {
+    installHighlightApi();
+    const root = document.createElement('section');
+    root.innerHTML = '<p data-highlightable>a&amp;b</p>';
+
+    renderHighlights(root, ['a and b']);
+
+    await waitFor(() => expect(rangeTexts()).toEqual(['a&b']));
+  });
+
+  it('matches an "and" in text against an ampersand term', async () => {
+    installHighlightApi();
+    const root = document.createElement('section');
+    root.innerHTML = '<p data-highlightable>a and b</p>';
+
+    renderHighlights(root, ['a&b']);
+
+    await waitFor(() => expect(rangeTexts()).toEqual(['a and b']));
+  });
+
+  it('matches ampersands surrounded by mixed whitespace', async () => {
+    installHighlightApi();
+    const root = document.createElement('section');
+    root.innerHTML = '<p data-highlightable>Rock  &amp;\n  Roll</p>';
+
+    renderHighlights(root, ['rock   &  roll']);
+
+    await waitFor(() => expect(rangeTexts()).toEqual(['Rock  &\n  Roll']));
+  });
+
+  it('does not match terms across excluded descendant text', async () => {
+    installHighlightApi();
+    const root = document.createElement('section');
+    root.innerHTML =
+      '<label data-highlightable>some<code data-no-highlight>secret</code>text</label>';
+
+    renderHighlights(root, ['sometext', 'text']);
+
+    await waitFor(() => expect(rangeTexts()).toEqual(['text']));
+  });
+
   it('cancels scheduled work, disconnects observation, and removes its registry entry on cleanup', async () => {
     installHighlightApi();
     const disconnect = vi.spyOn(MutationObserver.prototype, 'disconnect');

@@ -38,6 +38,9 @@ interface NormalizedText {
   positions: TextPosition[];
 }
 
+// Marks where excluded DOM text was skipped so matches cannot bridge it.
+const SEGMENT_BOUNDARY = '\u0000';
+
 function getHighlightApi(): HighlightApi | null {
   const browser = globalThis as typeof globalThis & {
     Highlight?: unknown;
@@ -61,7 +64,7 @@ function normalizeValue(value: string): string {
   let normalized = '';
   let previousWasWhitespace = false;
 
-  for (const character of value.trim()) {
+  for (const character of value.replace(/&/g, ' and ').trim()) {
     if (character.trim() === '') {
       if (!previousWasWhitespace && normalized) {
         normalized += ' ';
@@ -70,7 +73,7 @@ function normalizeValue(value: string): string {
       continue;
     }
 
-    normalized += character === '&' ? 'and' : character.toLowerCase();
+    normalized += character.toLowerCase();
     previousWasWhitespace = false;
   }
 
@@ -103,44 +106,51 @@ function normalizeElementText(
   const positions: TextPosition[] = [];
   let normalized = '';
   let previousWasWhitespace = false;
-  let whitespacePosition: TextPosition | null = null;
-  let textNode = walker.nextNode() as Text | null;
 
+  const appendSpace = (position: TextPosition) => {
+    if (!previousWasWhitespace && normalized) {
+      normalized += ' ';
+      positions.push(position);
+      previousWasWhitespace = true;
+    }
+  };
+  const appendValue = (value: string, position: TextPosition) => {
+    normalized += value;
+    for (let index = 0; index < value.length; index += 1) {
+      positions.push(position);
+    }
+    previousWasWhitespace = false;
+  };
+  const appendBoundary = (textNode: Text) => {
+    normalized += SEGMENT_BOUNDARY;
+    positions.push({ startNode: textNode, startOffset: 0, endNode: textNode, endOffset: 0 });
+    previousWasWhitespace = false;
+  };
+
+  let textNode = walker.nextNode() as Text | null;
   while (textNode) {
-    if (!isExcluded(textNode, root, excludeSelector)) {
+    if (isExcluded(textNode, root, excludeSelector)) {
+      appendBoundary(textNode);
+    } else {
       let offset = 0;
       for (const character of textNode.data) {
-        const length = character.length;
+        const position: TextPosition = {
+          startNode: textNode,
+          startOffset: offset,
+          endNode: textNode,
+          endOffset: offset + character.length,
+        };
+        offset += character.length;
+
         if (character.trim() === '') {
-          if (!previousWasWhitespace && normalized) {
-            normalized += ' ';
-            whitespacePosition = {
-              startNode: textNode,
-              startOffset: offset,
-              endNode: textNode,
-              endOffset: offset + length,
-            };
-            positions.push(whitespacePosition);
-          } else if (whitespacePosition) {
-            whitespacePosition.endNode = textNode;
-            whitespacePosition.endOffset = offset + length;
-          }
-          previousWasWhitespace = true;
+          appendSpace(position);
+        } else if (character === '&') {
+          appendSpace(position);
+          appendValue('and', position);
+          appendSpace(position);
         } else {
-          const value = character === '&' ? 'and' : character.toLowerCase();
-          for (const normalizedCharacter of value) {
-            normalized += normalizedCharacter;
-            positions.push({
-              startNode: textNode,
-              startOffset: offset,
-              endNode: textNode,
-              endOffset: offset + length,
-            });
-          }
-          previousWasWhitespace = false;
-          whitespacePosition = null;
+          appendValue(character.toLowerCase(), position);
         }
-        offset += length;
       }
     }
     textNode = walker.nextNode() as Text | null;

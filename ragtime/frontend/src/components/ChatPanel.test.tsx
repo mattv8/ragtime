@@ -2444,17 +2444,19 @@ describe('ChatPanel standalone first-paint loading', () => {
   });
 
   it('does not repeat a full-prefix branch search while body pages hydrate', async () => {
+    const now = Date.now();
+    const isoMinutesBefore = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
     const initial = makeConversation('branch-bootstrap', 'Bootstrap response', {
       title: 'Bootstrap chat',
-      updated_at: '2026-09-11T12:00:02.000Z',
+      updated_at: isoMinutesBefore(60),
     });
     const firstPage = makeConversation('branch-page-1', 'branch needle one', {
       title: 'First branch page',
-      updated_at: '2026-09-11T12:00:01.000Z',
+      updated_at: isoMinutesBefore(120),
     });
     const secondPage = makeConversation('branch-page-2', 'branch needle two', {
       title: 'Second branch page',
-      updated_at: '2026-09-11T12:00:00.000Z',
+      updated_at: isoMinutesBefore(24 * 60),
     });
     apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(initial));
     apiMock.listConversationSummaries.mockResolvedValue([]);
@@ -2463,7 +2465,7 @@ describe('ChatPanel standalone first-paint loading', () => {
       ...Array.from({ length: 49 }, (_, index) =>
         makeConversation(`branch-page-1-${index}`, `branch filler ${index}`, {
           title: `Branch filler ${index}`,
-          updated_at: `2026-09-10T12:${String(index).padStart(2, '0')}:00.000Z`,
+          updated_at: isoMinutesBefore(180 + index),
         }),
       ),
     ];

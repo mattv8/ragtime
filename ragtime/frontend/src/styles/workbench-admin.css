@@ -679,8 +679,8 @@
 }
 
 ::highlight(settings-search) {
-  background: var(--color-primary);
-  color: var(--color-primary-text);
+  background: color-mix(in srgb, var(--color-primary) 45%, var(--color-bg-primary));
+  color: var(--color-text-primary);
 }
 
 [data-theme-pack='modern'] .jobs-table-wrapper,
