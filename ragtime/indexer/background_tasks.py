@@ -1765,7 +1765,8 @@ class BackgroundTaskService:
                     logger.warning(f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}")
                 raise
             except Exception as e:
-                is_protection_error = isinstance(e, ContentProtectionError)
+                protection_error = e if isinstance(e, ContentProtectionError) else None
+                is_protection_error = protection_error is not None
                 detail: dict[str, str] | None = None
                 if is_protection_error:
                     # Do not include classifier/provider exception text in logs,
@@ -1774,12 +1775,12 @@ class BackgroundTaskService:
                 else:
                     logger.exception(f"Background task {task_id} failed")
                 try:
-                    if is_protection_error:
+                    if protection_error is not None:
                         full_response = ""
                         events.clear()
                         tool_calls.clear()
                         try:
-                            await persist_chat_denial(conversation_id, e, task_id=task_id or None)
+                            await persist_chat_denial(conversation_id, protection_error, task_id=task_id or None)
                         except Exception:
                             logger.warning("Could not persist content-protection denial for task %s", task_id)
                     elif reasoning_block_started_at is not None:
@@ -1814,8 +1815,8 @@ class BackgroundTaskService:
                     generic_error = _generic_exception_error(e, resolved_provider)
                     if generic_error and not termination_reason:
                         termination_reason, error_message = generic_error
-                    if is_protection_error:
-                        detail = e.public_detail()
+                    if protection_error is not None:
+                        detail = protection_error.public_detail()
                         error_message = str(detail.get("message") or "This content is not available under your access profile.")
                         termination_reason = str(detail.get("code") or "content_protection")
                     if termination_reason == "payment_required":

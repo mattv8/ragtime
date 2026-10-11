@@ -3053,23 +3053,25 @@ describe('ChatPanel standalone first-paint loading', () => {
   });
 
   it('hydrates body-only search matches and aborts a later page when cleared', async () => {
+    const now = Date.now();
+    const isoMinutesBefore = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
     let resolveFirstSearchPage: ((conversations: Conversation[]) => void) | undefined;
     let resolveLateSearchPage: ((conversations: Conversation[]) => void) | undefined;
     let lateSearchSignal: AbortSignal | undefined;
     const initial = makeConversation('search-bootstrap', 'Bootstrap response', {
       title: 'Bootstrap chat',
-      updated_at: '2026-09-11T12:00:02.000Z',
+      updated_at: isoMinutesBefore(1),
     });
     const bodyMatch = makeConversation('body-match', 'Needle only exists in this message body', {
       title: 'Unrelated title',
-      updated_at: '2026-09-11T12:00:01.000Z',
+      updated_at: isoMinutesBefore(2),
     });
     const lateMatch = makeConversation(
       'late-body-match',
       'Late needle only exists in this message body',
       {
         title: 'Late unrelated title',
-        updated_at: '2026-09-11T12:00:00.000Z',
+        updated_at: isoMinutesBefore(3),
       },
     );
     apiMock.listConversationSummaries

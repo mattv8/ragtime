@@ -1,18 +1,40 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+from datetime import UTC, datetime
+from typing import cast
 from unittest import IsolatedAsyncioTestCase, mock
+
+from prisma import Json
+from prisma.enums import AuthProvider, UserRole
+from prisma.models import User
 
 from ragtime.content_protection.models import ContentProtectionError
 from ragtime.indexer import routes
+from ragtime.indexer.models import Conversation
+
+NOW = datetime(2026, 10, 11, tzinfo=UTC)
+
+
+def _user() -> User:
+    return User(
+        id="caller",
+        username="caller",
+        authProvider=AuthProvider.local,
+        cachedGroups=cast(Json, "[]"),
+        role=UserRole.user,
+        roleManuallySet=False,
+        createdAt=NOW,
+        updatedAt=NOW,
+        securityGeneration=0,
+    )
 
 
 class ChatDenialRouteTests(IsolatedAsyncioTestCase):
     async def test_user_write_protection_failure_keeps_the_original_error_when_notice_storage_fails(self) -> None:
         """Replacing a guarded user-write denial with storage failure loses the protection outcome."""
         error = ContentProtectionError("content_denied", "request-1")
-        conversation = SimpleNamespace(id="conversation-1", user_id="owner", workspace_id=None)
-        user = SimpleNamespace(id="caller")
+        conversation = Conversation(id="conversation-1", user_id="owner")
+        user = _user()
 
         with (
             mock.patch.object(routes, "authorize_inbound", new=mock.AsyncMock()),
@@ -33,15 +55,12 @@ class ChatDenialRouteTests(IsolatedAsyncioTestCase):
     async def test_assistant_write_protection_failure_persists_only_a_safe_notice(self) -> None:
         """Dropping the output write guard would leave protected model output on the normal path."""
         error = ContentProtectionError("content_denied", "request-1")
-        conversation = SimpleNamespace(
+        conversation = Conversation(
             id="conversation-1",
             user_id="owner",
-            workspace_id=None,
             model="test",
-            messages=[],
-            disabled_builtin_tool_ids=[],
         )
-        user = SimpleNamespace(id="caller", username="caller", displayName="Caller", role="user")
+        user = _user()
 
         with (
             mock.patch.object(routes, "authorize_inbound", new=mock.AsyncMock()),
@@ -71,8 +90,8 @@ class ChatDenialRouteTests(IsolatedAsyncioTestCase):
     async def test_background_admission_denial_persists_notice_without_creating_atomic_user_or_task_rows(self) -> None:
         """Removing route admission would let rejected input reach the atomic writer."""
         error = ContentProtectionError("content_denied", "request-1")
-        conversation = SimpleNamespace(id="conversation-1", user_id="owner", workspace_id=None)
-        user = SimpleNamespace(id="caller", role="user")
+        conversation = Conversation(id="conversation-1", user_id="owner")
+        user = _user()
 
         with (
             mock.patch.object(routes, "_assert_workspace_access", new=mock.AsyncMock()),
@@ -92,7 +111,7 @@ class ChatDenialRouteTests(IsolatedAsyncioTestCase):
 
     async def test_unauthorized_background_route_does_not_persist_or_append_a_notice(self) -> None:
         """Moving the admission catch before access checks would disclose a conversation's notice stream."""
-        user = SimpleNamespace(id="caller", role="user")
+        user = _user()
 
         with (
             mock.patch.object(routes, "_assert_workspace_access", new=mock.AsyncMock()),

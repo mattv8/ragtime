@@ -6242,12 +6242,10 @@ class IndexerRepository:
                 updated = await db.chattask.update_many(
                     where={
                         "id": task_id,
-                        "status": {
-                            "in": [
-                                _to_prisma_task_status(ChatTaskStatus.pending),
-                                _to_prisma_task_status(ChatTaskStatus.running),
-                            ]
-                        },
+                        "OR": [
+                            {"status": _to_prisma_task_status(ChatTaskStatus.pending)},
+                            {"status": _to_prisma_task_status(ChatTaskStatus.running)},
+                        ],
                     },
                     data=update_data,  # type: ignore[arg-type]
                 )

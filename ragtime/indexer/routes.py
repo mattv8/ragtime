@@ -15856,7 +15856,8 @@ async def send_message_stream(
             yield "data: [DONE]\n\n"
 
         except Exception as e:
-            is_protection_error = isinstance(e, ContentProtectionError)
+            protection_error = e if isinstance(e, ContentProtectionError) else None
+            is_protection_error = protection_error is not None
             if is_protection_error:
                 logger.warning("Streaming response stopped by content protection")
             else:
@@ -15864,9 +15865,9 @@ async def send_message_stream(
 
             raw_error = str(e)
             friendly_error = "An error occurred while generating the response. Please try again."
-            if is_protection_error:
-                await _persist_content_protection_denial(conversation_id, e)
-                friendly_error = str(e.public_detail().get("message") or "This content is not available under your access profile.")
+            if protection_error is not None:
+                await _persist_content_protection_denial(conversation_id, protection_error)
+                friendly_error = str(protection_error.public_detail().get("message") or "This content is not available under your access profile.")
 
             max_iters = None
             if rag and getattr(rag, "agent_executor", None):
@@ -15913,7 +15914,7 @@ async def send_message_stream(
                 stream_attempt_id,
                 status="failed",
                 output_tokens=output_est,
-                failure_reason=(e.code if is_protection_error else raw_error[:500]) if raw_error else None,
+                failure_reason=(protection_error.code if protection_error is not None else raw_error[:500]) if raw_error else None,
             )
 
             error_chunk = {
@@ -15929,8 +15930,8 @@ async def send_message_stream(
                     }
                 ],
             }
-            if is_protection_error:
-                error_chunk["error"] = e.public_detail()
+            if protection_error is not None:
+                error_chunk["error"] = protection_error.public_detail()
             yield f"data: {json.dumps(error_chunk)}\n\n"
             yield "data: [DONE]\n\n"
         finally:

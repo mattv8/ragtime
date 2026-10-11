@@ -149,8 +149,10 @@ class ContentProtectionDenialRepositoryTests(IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(db.transaction.update_count, 1)
-        self.assertEqual(len(db.transaction.conversation_record.messages), 1)
-        self.assertEqual(db.transaction.conversation_record.messages[0]["message_id"], build_denial_message("conversation-1", error)["message_id"])
+        conversation_record = db.transaction.conversation_record
+        assert conversation_record is not None
+        self.assertEqual(len(conversation_record.messages), 1)
+        self.assertEqual(conversation_record.messages[0]["message_id"], build_denial_message("conversation-1", error)["message_id"])
 
     async def test_distinct_request_ids_append_distinct_denials(self) -> None:
         repository, db = self._repository()
@@ -158,7 +160,9 @@ class ContentProtectionDenialRepositoryTests(IsolatedAsyncioTestCase):
         await repository.record_content_protection_denial("conversation-1", ContentProtectionError("content_denied", "request-1"))
         await repository.record_content_protection_denial("conversation-1", ContentProtectionError("content_denied", "request-2"))
 
-        messages = db.transaction.conversation_record.messages
+        conversation_record = db.transaction.conversation_record
+        assert conversation_record is not None
+        messages = conversation_record.messages
         self.assertEqual(len(messages), 2)
         self.assertNotEqual(messages[0]["message_id"], messages[1]["message_id"])
 
@@ -250,7 +254,11 @@ class _FakeChatTaskTable:
         return self.task if where["id"] == self.task.id else None
 
     async def update_many(self, *, where: dict[str, object], data: dict[str, object]) -> int:
-        if where["id"] != self.task.id or not _status_matches(self.task.status, where.get("status")):
+        status_matches = _status_matches(self.task.status, where.get("status"))
+        alternatives = where.get("OR")
+        if isinstance(alternatives, list):
+            status_matches = any(isinstance(clause, dict) and _status_matches(self.task.status, clause.get("status")) for clause in alternatives)
+        if where["id"] != self.task.id or not status_matches:
             return 0
         for key, value in data.items():
             setattr(self.task, key, getattr(value, "data", value))
