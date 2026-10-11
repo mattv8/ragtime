@@ -53,6 +53,7 @@ export function InlineEditableCardTitle({
   const cancel = () => {
     setDraft(value);
     setEditing(false);
+    if (headingId) requestAnimationFrame(() => document.getElementById(headingId)?.focus());
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {

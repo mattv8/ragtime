@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ComponentPropsWithoutRef,
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -30,6 +31,9 @@ import { generateCredentialValue } from '@/utils/credentialGenerator';
 import { ModelSelector } from '../ModelSelector';
 import { Popover } from '../Popover';
 import { SearchHighlightedText } from '../shared/SearchHighlightedText';
+import { AccessDetailHeader } from '../shared/AccessDetailHeader';
+import { AccessLevelGroupsField } from '../shared/AccessLevelGroupsField';
+import { MasterDetailLayout } from '../shared/MasterDetailLayout';
 import { CONTENT_PROTECTION_SETTING_ID } from '../shared/SettingsHighlightLink';
 import { ContentProtectionAccessLevelCard } from './ContentProtectionAccessLevelCard';
 import { ContentProtectionCategoryCard } from './ContentProtectionCategoryCard';
@@ -41,6 +45,7 @@ import type { SettingsAccordionSectionId } from './settingsAccordionState';
 type SetupTab = 'classifier' | 'categories' | 'access_levels' | 'coverage' | 'review';
 type InspectTab = 'request' | 'content' | 'decisions';
 type PreviewIdentity = `user:${string}` | 'public' | 'service';
+type TabsPresentation = 'tabs' | 'wizard';
 const SETUP_TABS: { id: SetupTab; label: string }[] = [
   { id: 'classifier', label: 'Classifier' },
   { id: 'categories', label: 'Categories' },
@@ -84,19 +89,51 @@ const validationError = (config: ContentProtectionConfig): string | null => {
   const invalidLevel = config.access_levels.find((level) => !level.name.trim());
   return invalidLevel ? 'Each access level needs a name.' : null;
 };
+const keepStepVisible = (progress: HTMLElement, step: HTMLElement, behavior: ScrollBehavior) => {
+  const progressBounds = progress.getBoundingClientRect();
+  const stepBounds = step.getBoundingClientRect();
+  const left =
+    stepBounds.left < progressBounds.left
+      ? progress.scrollLeft + stepBounds.left - progressBounds.left
+      : stepBounds.right > progressBounds.right
+        ? progress.scrollLeft + stepBounds.right - progressBounds.right
+        : null;
+  if (left === null) return;
+  if (typeof progress.scrollTo === 'function') {
+    progress.scrollTo({ behavior, left });
+    return;
+  }
+  progress.scrollLeft = left;
+};
 function Tabs<T extends string>({
   tabs,
   active,
   onChange,
   hook,
   label,
+  presentation = 'tabs',
 }: {
   tabs: { id: T; label: string }[];
   active: T;
   onChange: (tab: T) => void;
   hook: string;
   label: string;
+  presentation?: TabsPresentation;
 }) {
+  const progressRef = useRef<HTMLDivElement>(null);
+  const hasPositionedActiveStep = useRef(false);
+  useEffect(() => {
+    if (presentation !== 'wizard') return;
+    const activeStep = progressRef.current?.querySelector<HTMLElement>('.wizard-step.active');
+    if (!activeStep || !progressRef.current) return;
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    keepStepVisible(
+      progressRef.current,
+      activeStep,
+      hasPositionedActiveStep.current && !reducedMotion ? 'smooth' : 'auto',
+    );
+    hasPositionedActiveStep.current = true;
+  }, [active, presentation]);
   const moveTab = (event: KeyboardEvent<HTMLButtonElement>, current: T) => {
     const index = tabs.findIndex((tab) => tab.id === current);
     const next =
@@ -115,21 +152,36 @@ function Tabs<T extends string>({
     document.getElementById(`${hook}-tab-${tabs[next].id}`)?.focus();
   };
   return (
-    <div className="modal-tabs" role="tablist" aria-label={label}>
-      {tabs.map((tab) => (
+    <div
+      ref={presentation === 'wizard' ? progressRef : undefined}
+      className={presentation === 'wizard' ? 'wizard-progress' : 'modal-tabs'}
+      role="tablist"
+      aria-label={label}
+      {...(presentation === 'wizard' ? { 'data-content-protection-setup-progress': '' } : {})}
+    >
+      {tabs.map((tab, index) => (
         <button
           key={tab.id}
           id={`${hook}-tab-${tab.id}`}
           type="button"
           role="tab"
-          className="modal-tab"
+          className={
+            presentation === 'wizard'
+              ? `wizard-step navigable${active === tab.id ? ' active' : ''}`
+              : 'modal-tab'
+          }
           aria-selected={active === tab.id}
           aria-controls={`${hook}-panel-${tab.id}`}
           tabIndex={active === tab.id ? 0 : -1}
           onClick={() => onChange(tab.id)}
           onKeyDown={(event) => moveTab(event, tab.id)}
         >
-          {tab.label}
+          {presentation === 'wizard' && (
+            <span className="step-number" aria-hidden="true">
+              {index + 1}
+            </span>
+          )}
+          <span className={presentation === 'wizard' ? 'step-title' : undefined}>{tab.label}</span>
         </button>
       ))}
     </div>
@@ -275,6 +327,10 @@ export function ContentProtectionSettingsSection({
   const [catalog, setCatalog] = useState(EMPTY_CATALOG);
   const [setup, setSetup] = useState<ContentProtectionConfig | null>(null);
   const [tab, setTab] = useState<SetupTab>('classifier');
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+  const [selectedLevelId, setSelectedLevelId] = useState<string | null>(null);
+  const [newCategoryId, setNewCategoryId] = useState<string | null>(null);
+  const [newLevelId, setNewLevelId] = useState<string | null>(null);
   const [inspect, setInspect] = useState(false);
   const [inspectTab, setInspectTab] = useState<InspectTab>('request');
   const [setupError, setSetupError] = useState<string | null>(null);
@@ -464,6 +520,10 @@ export function ContentProtectionSettingsSection({
     if (!saved) return;
     setSetup(cloneConfig(saved));
     setTab(nextTab);
+    setSelectedCategoryId(null);
+    setSelectedLevelId(null);
+    setNewCategoryId(null);
+    setNewLevelId(null);
     setSetupError(null);
     setReadiness(null);
     setReadinessSignature(null);
@@ -616,12 +676,14 @@ export function ContentProtectionSettingsSection({
         },
     );
   const deleteCategory = (category: ContentCategory) => {
-    if (!setup) return;
+    if (!setup) return false;
     if (setup.access_levels.some((level) => level.granted_category_ids.includes(category.id))) {
       setSetupError(`Remove ${category.name} from access levels before deleting.`);
-      return;
+      return false;
     }
     update({ categories: setup.categories.filter((item) => item.id !== category.id) });
+    setSelectedCategoryId((selectedId) => (selectedId === category.id ? null : selectedId));
+    return true;
   };
   const updateLevel = (id: string, change: Partial<AccessLevel>) =>
     setSetup(
@@ -634,19 +696,21 @@ export function ContentProtectionSettingsSection({
         },
     );
   const deleteLevel = (level: AccessLevel) => {
-    if (!setup) return;
+    if (!setup) return false;
     if (level.id === setup.default_access_level_id) {
       setSetupError('Reassign the default level before deleting it.');
-      return;
+      return false;
     }
     const mapped = setup.group_access_levels.filter(
       (item) => item.access_level_id === level.id,
     ).length;
     if (mapped) {
       setSetupError(`Unassign ${mapped} group(s) from ${level.name} before deleting.`);
-      return;
+      return false;
     }
     update({ access_levels: setup.access_levels.filter((item) => item.id !== level.id) });
+    setSelectedLevelId((selectedId) => (selectedId === level.id ? null : selectedId));
+    return true;
   };
   const updateGroupMapping = (groupId: string, levelId: string, checked: boolean) =>
     setSetup((current) => {
@@ -722,6 +786,25 @@ export function ContentProtectionSettingsSection({
     requestToken.current += 1;
     setTestResult(null);
   }, [sample, sampleLevelIds, sampleUserId, saved?.revision]);
+  const selectedCategory = setup?.categories.find((category) => category.id === selectedCategoryId);
+  const selectedLevel = setup?.access_levels.find((level) => level.id === selectedLevelId);
+  const selectedLevelGroupIds = setup?.group_access_levels
+    .filter((mapping) => mapping.access_level_id === selectedLevelId)
+    .map((mapping) => mapping.group_id);
+  const selectedLevelDeleteReason = selectedLevel
+    ? selectedLevel.id === setup?.default_access_level_id
+      ? 'Reassign the default level before deleting it.'
+      : selectedLevelGroupIds?.length
+        ? `Unassign ${selectedLevelGroupIds.length} group(s) from ${selectedLevel.name} before deleting.`
+        : undefined
+    : undefined;
+  const changeSetupTab = (next: SetupTab) => {
+    if (next !== tab) {
+      setNewCategoryId(null);
+      setNewLevelId(null);
+    }
+    setTab(next);
+  };
   return (
     <SettingsAccordionSection
       id="content-protection"
@@ -984,7 +1067,7 @@ export function ContentProtectionSettingsSection({
                 type="button"
                 disabled={saving || tab === 'classifier'}
                 onClick={() =>
-                  setTab(SETUP_TABS[SETUP_TABS.findIndex((item) => item.id === tab) - 1].id)
+                  changeSetupTab(SETUP_TABS[SETUP_TABS.findIndex((item) => item.id === tab) - 1].id)
                 }
               >
                 Back
@@ -999,7 +1082,9 @@ export function ContentProtectionSettingsSection({
                   type="button"
                   disabled={saving}
                   onClick={() =>
-                    setTab(SETUP_TABS[SETUP_TABS.findIndex((item) => item.id === tab) + 1].id)
+                    changeSetupTab(
+                      SETUP_TABS[SETUP_TABS.findIndex((item) => item.id === tab) + 1].id,
+                    )
                   }
                 >
                   Next
@@ -1035,9 +1120,10 @@ export function ContentProtectionSettingsSection({
             <Tabs
               tabs={SETUP_TABS}
               active={tab}
-              onChange={setTab}
+              onChange={changeSetupTab}
               hook="content-protection-setup"
               label="Configure content protection steps"
+              presentation="wizard"
             />
             {tab === 'classifier' && (
               <>
@@ -1204,45 +1290,107 @@ export function ContentProtectionSettingsSection({
                   Categories define what information is classified. System categories cannot be
                   edited or deleted.
                 </p>
-                <div
-                  id="content-protection-category-list"
-                  className="content-protection-profiles"
-                  data-content-protection-category-list
-                >
-                  {setup.categories.map((category) => (
-                    <ContentProtectionCategoryCard
-                      key={category.id}
-                      category={category}
-                      onUpdate={updateCategory}
-                      onDelete={deleteCategory}
-                    />
-                  ))}
-                </div>
-                <button
-                  className="btn btn-secondary"
-                  type="button"
-                  disabled={setup.categories.length >= 24}
-                  onClick={() =>
-                    update({
-                      categories: [
-                        ...setup.categories,
-                        {
-                          id: `cat_${generateCredentialValue(12).toLowerCase()}`,
-                          name: 'New category',
-                          description: 'Describe restricted content.',
-                          includes: [],
-                          excludes: [],
-                          examples: [],
-                          denial_message: 'This information is restricted.',
-                          threshold_override: null,
-                          system: false,
-                        },
-                      ],
-                    })
+                <MasterDetailLayout
+                  id="cp-categories"
+                  heading="Categories"
+                  items={setup.categories.map((category) => ({
+                    id: category.id,
+                    name: category.name,
+                    meta: (
+                      <>
+                        <>{category.system && <span className="tool-badge">System</span>}</>
+                        <span>{category.includes.length} included</span>
+                        <span>{category.excludes.length} excluded</span>
+                        {category.threshold_override !== null && (
+                          <span>Threshold {category.threshold_override}</span>
+                        )}
+                      </>
+                    ),
+                  }))}
+                  selectedId={selectedCategoryId}
+                  onSelect={(id) => {
+                    setNewCategoryId(null);
+                    setSelectedCategoryId(id);
+                  }}
+                  onCloseDetail={() => setSelectedCategoryId(null)}
+                  detailLabelledBy="cp-wizard-category-detail-title"
+                  emptyMessage="No categories configured."
+                  busy={saving}
+                  rowHookAttribute="data-category-id"
+                  rootProps={{ 'data-wizard-master-detail': '' } as ComponentPropsWithoutRef<'div'>}
+                  listBodyProps={
+                    {
+                      id: 'content-protection-category-list',
+                      'data-content-protection-category-list': '',
+                    } as ComponentPropsWithoutRef<'ol'>
                   }
-                >
-                  Add category
-                </button>
+                  detailProps={{ 'data-category-detail': '' } as ComponentPropsWithoutRef<'div'>}
+                  headerAction={
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      type="button"
+                      data-new-category
+                      disabled={saving || setup.categories.length >= 24}
+                      onClick={() => {
+                        const id = `cat_${generateCredentialValue(12).toLowerCase()}`;
+                        update({
+                          categories: [
+                            ...setup.categories,
+                            {
+                              id,
+                              name: 'New category',
+                              description: 'Describe restricted content.',
+                              includes: [],
+                              excludes: [],
+                              examples: [],
+                              denial_message: 'This information is restricted.',
+                              threshold_override: null,
+                              system: false,
+                            },
+                          ],
+                        });
+                        setNewCategoryId(id);
+                        setSelectedCategoryId(id);
+                      }}
+                    >
+                      Add category
+                    </button>
+                  }
+                  detail={
+                    selectedCategory && (
+                      <>
+                        <AccessDetailHeader
+                          key={selectedCategory.id}
+                          headingId="cp-wizard-category-detail-title"
+                          title={selectedCategory.name}
+                          meta={
+                            selectedCategory.system ? (
+                              <span className="tool-badge">System</span>
+                            ) : undefined
+                          }
+                          editableTitle={{
+                            ariaLabel: 'Category name',
+                            maxLength: 128,
+                            disabled: selectedCategory.system || saving,
+                            startEditing: newCategoryId === selectedCategory.id,
+                            onCommit: (name) => updateCategory(selectedCategory.id, { name }),
+                          }}
+                          closeLabel="Close category editor"
+                          onClose={() => setSelectedCategoryId(null)}
+                        />
+                        <div className="access-md-detail-body" data-category-detail-body>
+                          <ContentProtectionCategoryCard
+                            key={selectedCategory.id}
+                            category={selectedCategory}
+                            hideHeader
+                            onUpdate={updateCategory}
+                            onDelete={deleteCategory}
+                          />
+                        </div>
+                      </>
+                    )
+                  }
+                />
               </>
             )}
             {tab === 'access_levels' && (
@@ -1250,133 +1398,152 @@ export function ContentProtectionSettingsSection({
                 <p className="field-help">
                   Access levels define what categories each audience may see.
                 </p>
-                <div
-                  id="content-protection-level-list"
-                  className="content-protection-profiles"
-                  data-content-protection-level-list
-                >
-                  {setup.access_levels.map((level) => (
-                    <ContentProtectionAccessLevelCard
-                      key={level.id}
-                      level={level}
-                      categories={setup.categories.filter(
-                        (category) => category.id !== 'rule_override',
-                      )}
-                      disabled={
-                        level.id === setup.default_access_level_id ||
-                        setup.group_access_levels.some((item) => item.access_level_id === level.id)
-                      }
-                      onUpdate={updateLevel}
-                      onDelete={deleteLevel}
-                    />
-                  ))}
-                </div>
-                <button
-                  className="btn btn-secondary"
-                  type="button"
-                  onClick={() =>
-                    update({
-                      access_levels: [
-                        ...setup.access_levels,
-                        {
-                          id: `level_${generateCredentialValue(12).toLowerCase()}`,
-                          name: 'New level',
-                          granted_category_ids: [],
-                          guidance: '',
-                        },
-                      ],
-                    })
+                <MasterDetailLayout
+                  id="cp-levels"
+                  heading="Access levels"
+                  items={setup.access_levels.map((level) => {
+                    const groupCount = setup.group_access_levels.filter(
+                      (mapping) => mapping.access_level_id === level.id,
+                    ).length;
+                    return {
+                      id: level.id,
+                      name: level.name,
+                      meta: (
+                        <>
+                          {level.id === setup.default_access_level_id && (
+                            <span className="access-level-default-badge">Default</span>
+                          )}
+                          {groupCount > 0 && (
+                            <span>
+                              {groupCount} group{groupCount === 1 ? '' : 's'}
+                            </span>
+                          )}
+                          {level.granted_category_ids.length > 0 && (
+                            <span>
+                              {level.granted_category_ids.length}{' '}
+                              {level.granted_category_ids.length === 1 ? 'category' : 'categories'}
+                            </span>
+                          )}
+                        </>
+                      ),
+                    };
+                  })}
+                  selectedId={selectedLevelId}
+                  onSelect={(id) => {
+                    setNewLevelId(null);
+                    setSelectedLevelId(id);
+                  }}
+                  onCloseDetail={() => setSelectedLevelId(null)}
+                  detailLabelledBy="cp-wizard-level-detail-title"
+                  emptyMessage="No access levels configured."
+                  busy={saving}
+                  rowHookAttribute="data-level-id"
+                  rootProps={{ 'data-wizard-master-detail': '' } as ComponentPropsWithoutRef<'div'>}
+                  listBodyProps={
+                    {
+                      id: 'content-protection-level-list',
+                      'data-content-protection-level-list': '',
+                    } as ComponentPropsWithoutRef<'ol'>
                   }
-                >
-                  Add access level
-                </button>
-                <fieldset
-                  id="content-protection-default-level"
-                  className="content-protection-fieldset"
-                >
-                  <legend>Default level</legend>
-                  <select
-                    aria-label="Default level"
-                    value={setup.default_access_level_id}
-                    onChange={(event) => update({ default_access_level_id: event.target.value })}
-                  >
-                    {setup.access_levels.map((level) => (
-                      <option key={level.id} value={level.id}>
-                        {level.name}
-                      </option>
-                    ))}
-                  </select>
-                </fieldset>
-                <section
-                  id="content-protection-group-mappings"
-                  className="content-protection-block"
-                  data-content-protection-group-mappings
-                >
-                  <h4>Group mappings</h4>
-                  <p className="field-help">
-                    One group may map to multiple levels; grants are unioned within each user's
-                    mapped levels.
-                  </p>
-                  <div className="content-protection-rows">
-                    {catalog.groups.map((group) => (
-                      <div
-                        className="content-protection-row"
-                        key={group.id}
-                        data-group-id={group.id}
-                      >
-                        <span>{group.name}</span>
-                        <div
-                          className="content-protection-options"
-                          role="group"
-                          aria-label={`Access levels for ${group.name}`}
-                        >
-                          {setup.access_levels.map((level) => (
-                            <label className="checkbox-label" key={level.id}>
-                              <input
-                                type="checkbox"
-                                checked={setup.group_access_levels.some(
-                                  (item) =>
-                                    item.group_id === group.id && item.access_level_id === level.id,
-                                )}
-                                onChange={(event) =>
-                                  updateGroupMapping(group.id, level.id, event.target.checked)
-                                }
-                              />
-                              <span>{level.name}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                    {setup.group_access_levels
-                      .filter(
-                        (mapping) => !catalog.groups.some((group) => group.id === mapping.group_id),
-                      )
-                      .map((mapping) => (
-                        <div
-                          className="content-protection-row"
-                          key={`${mapping.group_id}:${mapping.access_level_id}`}
-                          data-content-protection-unknown-group-mapping
-                        >
-                          <span>
-                            Missing group {mapping.group_id} →{' '}
-                            {setup.access_levels.find(
-                              (level) => level.id === mapping.access_level_id,
-                            )?.name || mapping.access_level_id}
-                          </span>
-                          <button
-                            className="btn btn-secondary btn-sm"
-                            type="button"
-                            onClick={() =>
-                              updateGroupMapping(mapping.group_id, mapping.access_level_id, false)
+                  detailProps={{ 'data-level-detail': '' } as ComponentPropsWithoutRef<'div'>}
+                  headerAction={
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      type="button"
+                      data-new-access-level
+                      disabled={saving}
+                      onClick={() => {
+                        const id = `level_${generateCredentialValue(12).toLowerCase()}`;
+                        update({
+                          access_levels: [
+                            ...setup.access_levels,
+                            { id, name: 'New level', granted_category_ids: [], guidance: '' },
+                          ],
+                        });
+                        setNewLevelId(id);
+                        setSelectedLevelId(id);
+                      }}
+                    >
+                      Add access level
+                    </button>
+                  }
+                  detail={
+                    selectedLevel && (
+                      <>
+                        <AccessDetailHeader
+                          key={selectedLevel.id}
+                          headingId="cp-wizard-level-detail-title"
+                          title={selectedLevel.name || '(new level)'}
+                          meta={
+                            selectedLevel.id === setup.default_access_level_id ? (
+                              <span className="access-level-default-badge">Default</span>
+                            ) : undefined
+                          }
+                          editableTitle={{
+                            ariaLabel: 'Access level name',
+                            maxLength: 128,
+                            disabled: saving,
+                            startEditing: newLevelId === selectedLevel.id,
+                            onCommit: (name) => updateLevel(selectedLevel.id, { name }),
+                          }}
+                          closeLabel="Close access level editor"
+                          onClose={() => setSelectedLevelId(null)}
+                        />
+                        <div className="access-md-detail-body" data-level-detail-body>
+                          <ContentProtectionAccessLevelCard
+                            key={selectedLevel.id}
+                            level={selectedLevel}
+                            categories={setup.categories.filter(
+                              (category) => category.id !== 'rule_override',
+                            )}
+                            idPrefix={`cpw-level-${selectedLevel.id}-`}
+                            hideHeader
+                            fieldsDisabled={saving}
+                            disabled={Boolean(selectedLevelDeleteReason)}
+                            deleteDisabledReason={selectedLevelDeleteReason}
+                            onUpdate={updateLevel}
+                            onDelete={deleteLevel}
+                          />
+                          <AccessLevelGroupsField
+                            idPrefix={`cpw-level-${selectedLevel.id}-`}
+                            groups={catalog.groups.map((group) => ({
+                              id: group.id,
+                              label: group.name,
+                            }))}
+                            mappedIds={selectedLevelGroupIds ?? []}
+                            onAdd={(groupId) => updateGroupMapping(groupId, selectedLevel.id, true)}
+                            onRemove={(groupId) =>
+                              updateGroupMapping(groupId, selectedLevel.id, false)
                             }
+                            disabled={saving}
+                          />
+                          <section
+                            className="content-protection-fieldset"
+                            data-level-section="default"
                           >
-                            Remove mapping
-                          </button>
+                            <h5 className="access-level-section-heading">Default level</h5>
+                            <p className="field-help">
+                              All verified users with no group mapping receive the default level.
+                            </p>
+                            {selectedLevel.id !== setup.default_access_level_id && (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-secondary"
+                                data-make-default-btn
+                                disabled={saving}
+                                onClick={() =>
+                                  update({ default_access_level_id: selectedLevel.id })
+                                }
+                              >
+                                Make default level
+                              </button>
+                            )}
+                          </section>
                         </div>
-                      ))}
-                  </div>
-                </section>
+                      </>
+                    )
+                  }
+                />
               </>
             )}
             {tab === 'coverage' && (

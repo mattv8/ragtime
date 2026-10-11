@@ -132,6 +132,50 @@ describe('ContentProtectionCategoryCard', () => {
     expect((screen.getByLabelText('Description') as HTMLTextAreaElement).disabled).toBe(true);
     expect(screen.queryByLabelText('Threshold override')).toBeNull();
   });
+
+  it('hides the header while preserving category fields and delete state', () => {
+    const { rerender } = render(
+      <ContentProtectionCategoryCard
+        category={CATEGORY}
+        hideHeader
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    expect(document.querySelector('[data-category-id="operational"]')).toBeTruthy();
+    expect(document.querySelector('.tool-card-header')).toBeNull();
+    for (const label of [
+      'Description',
+      'Denial message',
+      'Includes',
+      'Excludes',
+      'Examples',
+      'Threshold override',
+    ]) {
+      expect(screen.getByLabelText(label)).toBeTruthy();
+    }
+    expect((screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+
+    rerender(
+      <ContentProtectionCategoryCard
+        category={{ ...CATEGORY, system: true }}
+        hideHeader
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    for (const label of ['Description', 'Denial message', 'Includes', 'Excludes', 'Examples']) {
+      expect(
+        (screen.getByLabelText(label) as HTMLTextAreaElement | HTMLInputElement).disabled,
+      ).toBe(true);
+    }
+    expect(screen.queryByLabelText('Threshold override')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+  });
 });
 
 describe('ContentProtectionAccessLevelCard', () => {

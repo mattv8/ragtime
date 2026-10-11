@@ -6,10 +6,12 @@ import { InlineEditableCardTitle } from './InlineEditableCardTitle';
 
 export function ContentProtectionCategoryCard({
   category,
+  hideHeader,
   onUpdate,
   onDelete,
 }: {
   category: ContentCategory;
+  hideHeader?: boolean;
   onUpdate: (id: string, change: Partial<ContentCategory>) => void;
   onDelete: (category: ContentCategory) => void;
 }): JSX.Element {
@@ -40,9 +42,9 @@ export function ContentProtectionCategoryCard({
       threshold_override: category.threshold_override?.toString() ?? '',
     });
   }, [category.denial_message, category.description, category.threshold_override]);
-  const commitList = (field: 'includes' | 'excludes' | 'examples') =>
+  const commitList = (field: 'includes' | 'excludes' | 'examples', value = lists[field]) =>
     onUpdate(category.id, {
-      [field]: lists[field]
+      [field]: value
         .split('\n')
         .map((item) => item.trim())
         .filter(Boolean),
@@ -104,27 +106,29 @@ export function ContentProtectionCategoryCard({
       data-category-id={category.id}
       id={`content-protection-category-${category.id}`}
     >
-      <div className="tool-card-header">
-        <div className="tool-card-icon">
-          {category.system ? (
-            <Shield aria-hidden="true" size={20} />
-          ) : (
-            <Tag aria-hidden="true" size={20} />
-          )}
-        </div>
-        <div className="tool-card-header-content">
-          <div className="tool-card-header-main">
-            <InlineEditableCardTitle
-              value={category.name}
-              ariaLabel="Category name"
-              maxLength={128}
-              disabled={category.system}
-              onCommit={(name) => onUpdate(category.id, { name })}
-            />
-            {category.system && <span className="tool-badge">System</span>}
+      {!hideHeader && (
+        <div className="tool-card-header">
+          <div className="tool-card-icon">
+            {category.system ? (
+              <Shield aria-hidden="true" size={20} />
+            ) : (
+              <Tag aria-hidden="true" size={20} />
+            )}
+          </div>
+          <div className="tool-card-header-content">
+            <div className="tool-card-header-main">
+              <InlineEditableCardTitle
+                value={category.name}
+                ariaLabel="Category name"
+                maxLength={128}
+                disabled={category.system}
+                onCommit={(name) => onUpdate(category.id, { name })}
+              />
+              {category.system && <span className="tool-badge">System</span>}
+            </div>
           </div>
         </div>
-      </div>
+      )}
       <div className="form-group">
         <label htmlFor={`content-protection-category-${category.id}-description`}>
           Description
@@ -188,6 +192,9 @@ export function ContentProtectionCategoryCard({
               setLists((current) => ({ ...current, [field]: event.target.value }))
             }
             onBlur={() => commitList(field)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') commitList(field, event.currentTarget.value);
+            }}
           />
         </div>
       ))}

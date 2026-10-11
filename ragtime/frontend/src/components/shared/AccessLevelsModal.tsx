@@ -14,6 +14,8 @@ import { generateCredentialValue } from '@/utils/credentialGenerator';
 import { ContentProtectionAccessLevelCard } from '../settings/ContentProtectionAccessLevelCard';
 import { DeleteConfirmButton } from '../DeleteConfirmButton';
 import { AccessDetailHeader } from './AccessDetailHeader';
+import { AccessLevelGroupsField } from './AccessLevelGroupsField';
+import { MasterDetailLayout } from './MasterDetailLayout';
 import { useAccessLevelDrafts } from './useAccessLevelDrafts';
 import { CONTENT_PROTECTION_SETTING_ID, SettingsHighlightLink } from './SettingsHighlightLink';
 
@@ -35,6 +37,19 @@ const newLevel = (): AccessLevel => ({
 
 const focusableSelector =
   'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, a[href], [tabindex="0"]';
+
+function visibleFocusableElements(container: HTMLElement | null): HTMLElement[] {
+  if (!container) return [];
+
+  return [...container.querySelectorAll<HTMLElement>(focusableSelector)].filter((element) => {
+    for (let ancestor: HTMLElement | null = element; ancestor; ancestor = ancestor.parentElement) {
+      const style = window.getComputedStyle(ancestor);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      if (ancestor === container) break;
+    }
+    return true;
+  });
+}
 
 export function AccessLevelsModal({
   open,
@@ -112,7 +127,7 @@ export function AccessLevelsModal({
       return;
     }
     if (event.key !== 'Tab') return;
-    const items = [...(modalRef.current?.querySelectorAll<HTMLElement>(focusableSelector) ?? [])];
+    const items = visibleFocusableElements(modalRef.current);
     const index = items.indexOf(document.activeElement as HTMLElement);
     if (!items.length) return;
     if (event.shiftKey && index <= 0) {
@@ -293,8 +308,15 @@ function LoadedAccessLevelsModal(props: {
         .filter((item) => item.access_level_id === selectedId)
         .map((item) => item.group_id)
     : [];
-  const mappedGroups = authGroups.filter((group) => mappedIds.includes(group.id));
-  const unknownGroups = mappedIds.filter((id) => !authGroups.some((group) => group.id === id));
+  const groups = authGroups.map((group) => ({
+    id: group.id,
+    label: group.display_name,
+    badge: (
+      <span className={`auth-group-provider-badge auth-group-provider-${group.provider}`}>
+        {group.provider === 'local_managed' ? 'Internal' : group.provider.toUpperCase()}
+      </span>
+    ),
+  }));
   const hasDeletedConflict = Boolean(selectedId && conflicts[selectedId]?.type === 'deleted');
   const requestNavigation = (action: () => void) => {
     if (deleting || savingLevelId) return;
@@ -452,11 +474,11 @@ function LoadedAccessLevelsModal(props: {
       event.preventDefault();
       if (selectedId) closeDetail();
       else closeModal();
+      return;
     }
     if (event.key !== 'Tab') return;
-    const focusable = modalRef.current?.querySelectorAll<HTMLElement>(focusableSelector);
-    if (!focusable?.length) return;
-    const items = [...focusable];
+    const items = visibleFocusableElements(modalRef.current);
+    if (!items.length) return;
     const index = items.indexOf(document.activeElement as HTMLElement);
     if (event.shiftKey && index <= 0) {
       event.preventDefault();
@@ -498,364 +520,291 @@ function LoadedAccessLevelsModal(props: {
             ×
           </button>
         </div>
-        <div
-          className="modal-body access-levels-modal-body access-md"
-          data-access-levels-modal-body
-          {...(selectedId ? { 'data-detail-open': '' } : {})}
-        >
-          <div className="access-md-list" data-access-levels-rail>
-            <div className="access-levels-rail-header" data-access-levels-rail-header>
-              <div className="access-levels-rail-header-top">
-                <h4 className="access-levels-rail-heading">Access levels</h4>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-secondary"
-                  data-new-access-level
-                  onClick={() =>
-                    requestNavigation(() => {
-                      const level = newLevel();
-                      createLevel(level);
-                      setSelectedId(level.id);
-                    })
-                  }
-                >
-                  <Plus size={14} />
-                  New access level
-                </button>
-              </div>
-              <input
-                type="text"
-                className="access-levels-rail-search"
-                placeholder="Search access levels"
-                aria-label="Search access levels"
-                data-access-levels-search
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </div>
-            <ol className="access-md-list-body" data-access-levels-list>
-              {!levels.length && (
-                <li className="access-md-list-item auth-group-empty-state" data-levels-empty>
-                  No access levels configured.
-                </li>
-              )}
-              {Boolean(levels.length && !filtered.length) && (
-                <li className="access-md-list-item auth-group-empty-state" data-levels-no-match>
-                  No matching access levels.
-                </li>
-              )}
-              {filtered.map((level) => (
-                <li className="access-md-list-item" key={level.id}>
-                  <button
-                    type="button"
-                    className={`access-md-rail-row${level.id === selectedId ? ' is-selected' : ''}`}
-                    data-access-level-id={level.id}
-                    aria-current={level.id === selectedId ? 'true' : undefined}
-                    onClick={() => select(level.id)}
-                  >
-                    <span className="access-md-rail-row-name">{level.name || '(new level)'}</span>
-                    <span className="access-md-rail-row-meta">
-                      {level.id === config.default_access_level_id && (
-                        <span className="access-level-default-badge">Default</span>
-                      )}
-                      {snapshots[level.id] !== null && (
-                        <>
-                          <span>
-                            {
-                              config.group_access_levels.filter(
-                                (mapping) => mapping.access_level_id === level.id,
-                              ).length
-                            }{' '}
-                            group
-                            {config.group_access_levels.filter(
-                              (mapping) => mapping.access_level_id === level.id,
-                            ).length === 1
-                              ? ''
-                              : 's'}
-                          </span>
-                          <span>
-                            {level.granted_category_ids.length}{' '}
-                            {level.granted_category_ids.length === 1 ? 'category' : 'categories'}
-                          </span>
-                        </>
-                      )}
-                      {isDirty(level.id) && <span aria-label="Unsaved changes">●</span>}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ol>
-          </div>
-          {selected && (
-            <div
-              className="access-md-detail"
-              data-access-level-detail
-              aria-labelledby="access-level-detail-title"
+        <MasterDetailLayout
+          id="access-levels"
+          heading="Access levels"
+          headerAction={
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              data-new-access-level
+              onClick={() =>
+                requestNavigation(() => {
+                  const level = newLevel();
+                  createLevel(level);
+                  setSelectedId(level.id);
+                })
+              }
             >
-              <AccessDetailHeader
-                key={selected.id}
-                headingId="access-level-detail-title"
-                title={selected.name}
-                editableTitle={{
-                  ariaLabel: 'Access level name',
-                  maxLength: 128,
-                  disabled: Boolean(
-                    savingLevelId || deleting || conflicts[selected.id]?.type === 'deleted',
-                  ),
-                  startEditing: isUnsaved && !selected.name,
-                  onCommit: (name) => updateDraft(selected.id, { name }),
-                }}
-                meta={
-                  selectedId === config.default_access_level_id ? (
+              <Plus size={14} />
+              New access level
+            </button>
+          }
+          search={
+            <input
+              type="text"
+              className="access-levels-rail-search"
+              placeholder="Search access levels"
+              aria-label="Search access levels"
+              data-access-levels-search
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          }
+          items={filtered.map((level) => {
+            const groupCount = config.group_access_levels.filter(
+              (mapping) => mapping.access_level_id === level.id,
+            ).length;
+            return {
+              id: level.id,
+              name: level.name || '(new level)',
+              meta: (
+                <>
+                  {level.id === config.default_access_level_id && (
                     <span className="access-level-default-badge">Default</span>
-                  ) : undefined
-                }
-                onClose={closeDetail}
-              />
-              <div
-                className="access-md-detail-body"
-                data-access-level-detail-body
-                aria-busy={Boolean(savingLevelId || deleting)}
-              >
-                {!config.enabled && !config.share_with_assistant && (
-                  <div
-                    className="tool-access-callout tool-access-callout-warning"
-                    role="status"
-                    data-access-protection-off
-                  >
-                    <strong>Content protection is off.</strong>
-                    <span>
-                      <SettingsHighlightLink
-                        settingId={CONTENT_PROTECTION_SETTING_ID}
-                        onNavigate={
-                          onNavigateToSetting
-                            ? (settingId) =>
-                                requestNavigation(() => {
-                                  onClose();
-                                  onNavigateToSetting(settingId);
-                                })
-                            : undefined
-                        }
-                      >
-                        Enable in Settings → Content protection
-                      </SettingsHighlightLink>{' '}
-                      to apply these access levels.
-                    </span>
-                  </div>
-                )}
-                <ContentProtectionAccessLevelCard
-                  level={selected}
-                  categories={config.categories}
-                  idPrefix={`alm-${selected.id}-`}
-                  hideHeader
-                  fieldsDisabled={Boolean(
-                    savingLevelId || deleting || conflicts[selected.id]?.type === 'deleted',
                   )}
-                  onUpdate={updateDraft}
-                />
-                <fieldset className="content-protection-fieldset" data-level-section="groups">
-                  <legend className="access-level-section-heading">Groups</legend>
-                  <div className="access-level-groups-chips" data-level-groups-chips>
-                    {mappedGroups.map((group) => (
-                      <span
-                        key={group.id}
-                        className="access-level-group-chip"
-                        data-level-group-chip={group.id}
-                      >
-                        <span
-                          className={`auth-group-provider-badge auth-group-provider-${group.provider}`}
-                        >
-                          {group.provider === 'local_managed'
-                            ? 'Internal'
-                            : group.provider.toUpperCase()}
-                        </span>
-                        {group.display_name}
-                        <button
-                          type="button"
-                          className="access-level-group-chip-remove"
-                          aria-label={`Remove ${group.display_name} from this level`}
-                          disabled={isUnsaved || hasDeletedConflict}
-                          onClick={() => void updateMapping(group.id, false)}
-                        >
-                          ×
-                        </button>
-                      </span>
-                    ))}
-                    {unknownGroups.map((id) => (
-                      <span
-                        key={id}
-                        className="access-level-group-chip access-level-group-chip-unknown"
-                        data-level-group-chip={id}
-                      >
-                        Unknown ({id.slice(0, 8)})
-                        <button
-                          type="button"
-                          className="access-level-group-chip-remove"
-                          aria-label={`Remove unknown group ${id}`}
-                          disabled={isUnsaved || hasDeletedConflict}
-                          onClick={() => void updateMapping(id, false)}
-                        >
-                          ×
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                  {isUnsaved ? (
-                    <p className="field-help">Save this level before mapping groups.</p>
-                  ) : (
-                    <select
-                      aria-label="Add group to this level"
-                      data-add-group-select
-                      value=""
-                      disabled={hasDeletedConflict}
-                      onChange={(event) => {
-                        if (event.target.value) void updateMapping(event.target.value, true);
-                      }}
-                    >
-                      <option value="">Add a group…</option>
-                      {authGroups
-                        .filter((group) => !mappedIds.includes(group.id))
-                        .map((group) => (
-                          <option key={group.id} value={group.id}>
-                            {group.display_name}
-                          </option>
-                        ))}
-                    </select>
-                  )}
-                </fieldset>
-                <section className="content-protection-fieldset" data-level-section="default">
-                  <h5 className="access-level-section-heading">Default level</h5>
-                  <p className="field-help">
-                    All verified users with no group mapping receive the default level.
-                  </p>
-                  {selectedId !== config.default_access_level_id && (
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-secondary"
-                      data-make-default-btn
-                      disabled={isUnsaved || hasDeletedConflict}
-                      onClick={() => void makeDefault()}
-                    >
-                      Make default level
-                    </button>
-                  )}
-                </section>
-                <details
-                  className="content-protection-advisory-preview"
-                  data-level-section="preview"
-                  data-level-preview
-                >
-                  <summary className="access-level-preview-summary">
-                    Prompt preview {previewLoading && 'Loading…'}
-                  </summary>
-                  <p className="field-help">
-                    Synthetic scope. This reflects the last saved state while a draft is dirty.
-                  </p>
-                  {!config.share_with_assistant && (
-                    <p className="field-help">Sharing with assistant is off — prompt not sent.</p>
-                  )}
-                  {isUnsaved ? (
-                    <p className="field-help" data-level-preview-unsaved>
-                      Save to preview.
-                    </p>
-                  ) : previewError ? (
-                    <div className="error-banner" role="alert" data-level-preview-error>
-                      {previewError}
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-secondary"
-                        onClick={() => setPreviewRetry((current) => current + 1)}
-                      >
-                        Retry
-                      </button>
-                    </div>
-                  ) : (
-                    preview && <pre data-level-preview-result>{preview}</pre>
-                  )}
-                </details>
-                {prunedGrantsLevelId === selected.id && (
-                  <p className="field-help" role="status" data-level-pruned-grants-notice>
-                    Removed grants for categories that no longer exist.
-                  </p>
-                )}
-                <section
-                  className="content-protection-fieldset access-level-danger-zone"
-                  data-level-section="danger"
-                  data-level-danger-zone
-                >
-                  <h5 className="access-level-section-heading">Danger zone</h5>
-                  <DeleteConfirmButton
-                    onDelete={() => void deleteLevel()}
-                    disabled={Boolean(deleteReason)}
-                    title={deleteReason}
-                    deleting={deleting}
-                    buttonText="Delete level"
-                  />
-                  {deleteReason && <p className="field-help">{deleteReason}</p>}
-                </section>
-              </div>
-              {conflicts[selected.id] && (
-                <div
-                  className="error-banner"
-                  role="alert"
-                  data-level-conflict={conflicts[selected.id].type}
-                >
-                  {conflicts[selected.id].type === 'deleted' ? (
-                    'This level was deleted by another admin. Your draft is retained read-only.'
-                  ) : (
+                  {snapshots[level.id] !== null && (
                     <>
-                      <span>Another admin updated this level.</span>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-secondary"
-                        onClick={() => loadLatest(selected.id)}
-                      >
-                        Load latest
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-danger"
-                        onClick={() => void saveLevel(selected.id, { overwrite: true })}
-                      >
-                        Overwrite
-                      </button>
+                      <span>
+                        {groupCount} group{groupCount === 1 ? '' : 's'}
+                      </span>
+                      <span>
+                        {level.granted_category_ids.length}{' '}
+                        {level.granted_category_ids.length === 1 ? 'category' : 'categories'}
+                      </span>
                     </>
                   )}
-                </div>
-              )}
-              {saveErrors[selected.id] && (
-                <div className="error-banner" role="alert">
-                  {saveErrors[selected.id]}
-                </div>
-              )}
-              <div className="access-md-footer" data-access-level-footer>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-secondary"
-                  disabled={!isDirty(selected.id)}
-                  onClick={() => {
-                    discardLevel(selected.id);
-                    if (isUnsaved) setSelectedId(null);
+                  {isDirty(level.id) && <span aria-label="Unsaved changes">●</span>}
+                </>
+              ),
+            };
+          })}
+          selectedId={selectedId}
+          onSelect={select}
+          onCloseDetail={closeDetail}
+          detailLabelledBy="access-level-detail-title"
+          emptyMessage="No access levels configured."
+          noMatchMessage={levels.length ? 'No matching access levels.' : undefined}
+          emptyHookAttribute="data-levels-empty"
+          noMatchHookAttribute="data-levels-no-match"
+          busy={Boolean(savingLevelId || deleting)}
+          rootProps={{
+            className: 'modal-body access-levels-modal-body',
+            onKeyDown,
+            ...{ 'data-access-levels-modal-body': '' },
+          }}
+          listProps={{ className: '', ...{ 'data-access-levels-rail': '' } }}
+          detailProps={{ className: '', ...{ 'data-access-level-detail': '' } }}
+          rowHookAttribute="data-access-level-id"
+          detail={
+            selected && (
+              <>
+                <AccessDetailHeader
+                  key={selected.id}
+                  headingId="access-level-detail-title"
+                  title={selected.name}
+                  editableTitle={{
+                    ariaLabel: 'Access level name',
+                    maxLength: 128,
+                    disabled: Boolean(
+                      savingLevelId || deleting || conflicts[selected.id]?.type === 'deleted',
+                    ),
+                    startEditing: isUnsaved && !selected.name,
+                    onCommit: (name) => updateDraft(selected.id, { name }),
                   }}
-                >
-                  Discard
-                </button>
-                <button
-                  type="button"
-                  className={`btn btn-sm${isDirty(selected.id) ? '' : ' btn-secondary'}`}
-                  disabled={
-                    !isDirty(selected.id) ||
-                    !selected.name.trim() ||
-                    Boolean(savingLevelId || deleting || conflicts[selected.id]?.type === 'deleted')
+                  meta={
+                    selectedId === config.default_access_level_id ? (
+                      <span className="access-level-default-badge">Default</span>
+                    ) : undefined
                   }
-                  onClick={() => void saveLevel(selected.id)}
+                  onClose={closeDetail}
+                />
+                <div
+                  className="access-md-detail-body"
+                  data-access-level-detail-body
+                  aria-busy={Boolean(savingLevelId || deleting)}
                 >
-                  Save
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+                  {!config.enabled && !config.share_with_assistant && (
+                    <div
+                      className="tool-access-callout tool-access-callout-warning"
+                      role="status"
+                      data-access-protection-off
+                    >
+                      <strong>Content protection is off.</strong>
+                      <span>
+                        <SettingsHighlightLink
+                          settingId={CONTENT_PROTECTION_SETTING_ID}
+                          onNavigate={
+                            onNavigateToSetting
+                              ? (settingId) =>
+                                  requestNavigation(() => {
+                                    onClose();
+                                    onNavigateToSetting(settingId);
+                                  })
+                              : undefined
+                          }
+                        >
+                          Enable in Settings → Content protection
+                        </SettingsHighlightLink>{' '}
+                        to apply these access levels.
+                      </span>
+                    </div>
+                  )}
+                  <ContentProtectionAccessLevelCard
+                    level={selected}
+                    categories={config.categories}
+                    idPrefix={`alm-${selected.id}-`}
+                    hideHeader
+                    fieldsDisabled={Boolean(
+                      savingLevelId || deleting || conflicts[selected.id]?.type === 'deleted',
+                    )}
+                    onUpdate={updateDraft}
+                  />
+                  <AccessLevelGroupsField
+                    idPrefix={`alm-${selected.id}-`}
+                    groups={groups}
+                    mappedIds={mappedIds}
+                    disabled={isUnsaved || hasDeletedConflict}
+                    disabledHint={isUnsaved ? 'Save this level before mapping groups.' : undefined}
+                    onAdd={(id) => void updateMapping(id, true)}
+                    onRemove={(id) => void updateMapping(id, false)}
+                  />
+                  <section className="content-protection-fieldset" data-level-section="default">
+                    <h5 className="access-level-section-heading">Default level</h5>
+                    <p className="field-help">
+                      All verified users with no group mapping receive the default level.
+                    </p>
+                    {selectedId !== config.default_access_level_id && (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        data-make-default-btn
+                        disabled={isUnsaved || hasDeletedConflict}
+                        onClick={() => void makeDefault()}
+                      >
+                        Make default level
+                      </button>
+                    )}
+                  </section>
+                  <details
+                    className="content-protection-advisory-preview"
+                    data-level-section="preview"
+                    data-level-preview
+                  >
+                    <summary className="access-level-preview-summary">
+                      Prompt preview {previewLoading && 'Loading…'}
+                    </summary>
+                    <p className="field-help">
+                      Synthetic scope. This reflects the last saved state while a draft is dirty.
+                    </p>
+                    {!config.share_with_assistant && (
+                      <p className="field-help">Sharing with assistant is off — prompt not sent.</p>
+                    )}
+                    {isUnsaved ? (
+                      <p className="field-help" data-level-preview-unsaved>
+                        Save to preview.
+                      </p>
+                    ) : previewError ? (
+                      <div className="error-banner" role="alert" data-level-preview-error>
+                        {previewError}
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => setPreviewRetry((current) => current + 1)}
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    ) : (
+                      preview && <pre data-level-preview-result>{preview}</pre>
+                    )}
+                  </details>
+                  {prunedGrantsLevelId === selected.id && (
+                    <p className="field-help" role="status" data-level-pruned-grants-notice>
+                      Removed grants for categories that no longer exist.
+                    </p>
+                  )}
+                  <section
+                    className="content-protection-fieldset access-level-danger-zone"
+                    data-level-section="danger"
+                    data-level-danger-zone
+                  >
+                    <h5 className="access-level-section-heading">Danger zone</h5>
+                    <DeleteConfirmButton
+                      onDelete={() => void deleteLevel()}
+                      disabled={Boolean(deleteReason)}
+                      title={deleteReason}
+                      deleting={deleting}
+                      buttonText="Delete level"
+                    />
+                    {deleteReason && <p className="field-help">{deleteReason}</p>}
+                  </section>
+                </div>
+                {conflicts[selected.id] && (
+                  <div
+                    className="error-banner"
+                    role="alert"
+                    data-level-conflict={conflicts[selected.id].type}
+                  >
+                    {conflicts[selected.id].type === 'deleted' ? (
+                      'This level was deleted by another admin. Your draft is retained read-only.'
+                    ) : (
+                      <>
+                        <span>Another admin updated this level.</span>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => loadLatest(selected.id)}
+                        >
+                          Load latest
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-danger"
+                          onClick={() => void saveLevel(selected.id, { overwrite: true })}
+                        >
+                          Overwrite
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+                {saveErrors[selected.id] && (
+                  <div className="error-banner" role="alert">
+                    {saveErrors[selected.id]}
+                  </div>
+                )}
+                <div className="access-md-footer" data-access-level-footer>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    disabled={!isDirty(selected.id)}
+                    onClick={() => {
+                      discardLevel(selected.id);
+                      if (isUnsaved) setSelectedId(null);
+                    }}
+                  >
+                    Discard
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm${isDirty(selected.id) ? '' : ' btn-secondary'}`}
+                    disabled={
+                      !isDirty(selected.id) ||
+                      !selected.name.trim() ||
+                      Boolean(
+                        savingLevelId || deleting || conflicts[selected.id]?.type === 'deleted',
+                      )
+                    }
+                    onClick={() => void saveLevel(selected.id)}
+                  >
+                    Save
+                  </button>
+                </div>
+              </>
+            )
+          }
+        />
         {pendingNavigation && (
           <div
             ref={confirmRef}

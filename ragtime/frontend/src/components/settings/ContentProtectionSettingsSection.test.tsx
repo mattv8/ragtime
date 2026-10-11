@@ -423,14 +423,15 @@ describe('ContentProtectionSettingsSection', () => {
     installFetch();
     const user = await openSetup();
     await user.click(screen.getByRole('tab', { name: 'Categories' }));
-    const card = document.getElementById('content-protection-category-credentials')!;
-    await user.click(within(card).getByRole('button', { name: 'Edit category name' }));
-    const name = within(card).getByRole('textbox', { name: 'Category name' });
+    await user.click(screen.getByRole('button', { name: /^Credentials\b/ }));
+    const detail = document.querySelector<HTMLElement>('[data-category-detail]')!;
+    await user.click(within(detail).getByRole('button', { name: 'Edit category name' }));
+    const name = within(detail).getByRole('textbox', { name: 'Category name' });
     await user.clear(name);
     await user.type(name, 'Uncommitted category name');
     await user.keyboard('{Escape}');
     expect(screen.getByRole('dialog')).toBeTruthy();
-    expect(within(card).getByRole('heading', { name: 'Credentials' })).toBeTruthy();
+    expect(within(detail).getByRole('heading', { name: 'Credentials' })).toBeTruthy();
   });
   it('saves the exact draft revision and prevents edits or dismissal during the save', async () => {
     let finishSave!: (response: Response) => void;
@@ -547,6 +548,35 @@ describe('ContentProtectionSettingsSection', () => {
     expect(document.activeElement).toBe(
       screen.getByRole('button', { name: 'Configure classifier' }),
     );
+  });
+  it('shows five numbered, freely navigable setup steps without changing inspect tabs', async () => {
+    installFetch();
+    const user = await openSetup();
+
+    const setupSteps = screen.getByRole('tablist', { name: 'Configure content protection steps' });
+    expect(within(setupSteps).getAllByRole('tab')).toHaveLength(5);
+    expect(
+      Array.from(setupSteps.querySelectorAll('.step-number')).map((step) => step.textContent),
+    ).toEqual(['1', '2', '3', '4', '5']);
+    expect(
+      Array.from(setupSteps.querySelectorAll('.step-number')).every(
+        (step) => step.getAttribute('aria-hidden') === 'true',
+      ),
+    ).toBe(true);
+
+    await user.click(within(setupSteps).getByRole('tab', { name: 'Review & save' }));
+    await user.click(within(setupSteps).getByRole('tab', { name: 'Categories' }));
+    expect(
+      within(setupSteps).getByRole('tab', { name: 'Categories' }).getAttribute('aria-selected'),
+    ).toBe('true');
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await user.click(screen.getByRole('button', { name: 'Test & inspect' }));
+    const inspectTabs = screen.getByRole('tablist', {
+      name: 'Test and inspect content protection steps',
+    });
+    expect(inspectTabs.classList.contains('modal-tabs')).toBe(true);
+    expect(inspectTabs.classList.contains('wizard-progress')).toBe(false);
   });
   it('passes a selected real user to the test API', async () => {
     const fetch = installFetch();
@@ -923,9 +953,100 @@ describe('ContentProtectionSettingsSection', () => {
     );
     const user = await openSetup();
     await user.click(screen.getByRole('tab', { name: 'Access levels' }));
-    expect(await screen.findByText(/Missing group gone/)).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'Remove mapping' }));
-    expect(screen.queryByText(/Missing group gone/)).toBeNull();
+    await user.click(screen.getByRole('button', { name: /^Standard\b/ }));
+    expect(await screen.findByText('Unknown (gone)')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Remove unknown group gone' }));
+    expect(screen.queryByText('Unknown (gone)')).toBeNull();
+  });
+  it('saves level group mappings and a selected default level', async () => {
+    const configured = {
+      ...config,
+      access_levels: [
+        ...config.access_levels,
+        { id: 'elevated', name: 'Elevated', granted_category_ids: ['credentials'], guidance: '' },
+      ],
+    };
+    const configuredCatalog = { ...catalog, groups: [{ id: 'admins', name: 'Admins' }] };
+    const fetch = vi.fn((url: string, options?: RequestInit) => {
+      if (url.endsWith('/config') && options?.method === 'PUT') return response(configured);
+      return response(url.endsWith('/catalog') ? configuredCatalog : configured);
+    });
+    vi.stubGlobal('fetch', fetch);
+    const user = await openSetup();
+
+    await user.click(screen.getByRole('tab', { name: 'Access levels' }));
+    await user.click(screen.getByRole('button', { name: /^Standard\b/ }));
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Add group to this level' }),
+      'admins',
+    );
+    await user.click(screen.getByRole('button', { name: /^Elevated\b/ }));
+    await user.click(screen.getByRole('button', { name: 'Make default level' }));
+    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
+    await user.click(screen.getByRole('button', { name: 'Save protection' }));
+
+    await waitFor(() =>
+      expect(fetch.mock.calls.some(([, options]) => options?.method === 'PUT')).toBe(true),
+    );
+    const write = fetch.mock.calls.find(([, options]) => options?.method === 'PUT');
+    expect(JSON.parse(write?.[1]?.body as string).config).toMatchObject({
+      default_access_level_id: 'elevated',
+      group_access_levels: [{ group_id: 'admins', access_level_id: 'standard' }],
+    });
+  });
+  it('keeps category drafts through tab navigation and closes the detail before the dialog', async () => {
+    installFetch();
+    const user = await openSetup();
+
+    await user.click(screen.getByRole('tab', { name: 'Categories' }));
+    await user.click(screen.getByRole('button', { name: /^Credentials\b/ }));
+    const description = screen.getByLabelText('Description');
+    await user.clear(description);
+    await user.type(description, 'Updated category description');
+    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
+    await user.click(screen.getByRole('tab', { name: 'Categories' }));
+    await user.click(screen.getByRole('button', { name: /^Credentials\b/ }));
+
+    expect((screen.getByLabelText('Description') as HTMLTextAreaElement).value).toBe(
+      'Updated category description',
+    );
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(document.querySelector('[data-category-detail]')).toBeNull();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('keeps tab focus when returning to a selected category editor', async () => {
+    installFetch();
+    const user = await openSetup();
+
+    await user.click(screen.getByRole('tab', { name: 'Categories' }));
+    await user.click(screen.getByRole('button', { name: /^Credentials\b/ }));
+    const coverage = screen.getByRole('tab', { name: 'Coverage' });
+    await user.click(coverage);
+    coverage.focus();
+    await user.keyboard('{ArrowLeft}{ArrowLeft}');
+
+    const categories = screen.getByRole('tab', { name: 'Categories' });
+    await waitFor(() => expect(categories.getAttribute('aria-selected')).toBe('true'));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(document.activeElement).toBe(categories);
+  });
+  it('commits a category list edit before Escape closes its detail', async () => {
+    installFetch();
+    const user = await openSetup();
+
+    await user.click(screen.getByRole('tab', { name: 'Categories' }));
+    await user.click(screen.getByRole('button', { name: /^Credentials\b/ }));
+    const includes = screen.getByLabelText('Includes');
+    await user.type(includes, 'Unsaved list edit');
+    await user.keyboard('{Escape}');
+
+    expect(document.querySelector('[data-category-detail]')).toBeNull();
+    await user.click(screen.getByRole('button', { name: /^Credentials\b/ }));
+    expect((screen.getByLabelText('Includes') as HTMLTextAreaElement).value).toBe(
+      'Unsaved list edit',
+    );
   });
   it('shows an explicit decisions retry after a failed request', async () => {
     let fail = true;

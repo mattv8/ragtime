@@ -16,6 +16,7 @@ interface AccessDetailHeaderProps {
   meta?: ReactNode;
   /** When set, the title is renamed in place with the shared hover-click editor. */
   editableTitle?: EditableTitle;
+  closeLabel?: string;
   onClose: () => void;
 }
 
@@ -24,6 +25,7 @@ export function AccessDetailHeader({
   title,
   meta,
   editableTitle,
+  closeLabel = 'Close access editor',
   onClose,
 }: AccessDetailHeaderProps) {
   return (
@@ -31,7 +33,7 @@ export function AccessDetailHeader({
       <button
         type="button"
         className="btn btn-icon btn-sm btn-secondary access-md-collapse"
-        aria-label="Close access editor"
+        aria-label={closeLabel}
         data-access-detail-close
         onClick={onClose}
       >

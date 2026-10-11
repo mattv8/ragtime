@@ -19,3 +19,16 @@ it('labels its detail heading and invokes its single collapse action', () => {
   fireEvent.click(close);
   expect(onClose).toHaveBeenCalledOnce();
 });
+
+it('uses the supplied close label', () => {
+  render(
+    <AccessDetailHeader
+      headingId="detail-title"
+      title="Finance"
+      closeLabel="Return to access levels"
+      onClose={vi.fn()}
+    />,
+  );
+
+  expect(screen.getByRole('button', { name: 'Return to access levels' })).toBeTruthy();
+});

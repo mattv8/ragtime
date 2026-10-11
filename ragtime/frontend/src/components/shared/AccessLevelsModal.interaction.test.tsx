@@ -26,6 +26,19 @@ const config = (): ContentProtectionConfig => ({
 
 const toast = { success: vi.fn(), error: vi.fn() };
 
+function trackPendingAnimationFrames(): () => number {
+  let pending = 0;
+  const requestFrame = window.requestAnimationFrame.bind(window);
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    pending += 1;
+    return requestFrame((time) => {
+      pending -= 1;
+      callback(time);
+    });
+  });
+  return () => pending;
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.spyOn(contentProtectionApi, 'getConfig').mockResolvedValue(config());
@@ -50,6 +63,81 @@ describe('AccessLevelsModal interactions', () => {
     screen.getByLabelText('Search access levels').focus();
     await userEvent.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('clears the detail before closing the modal when Escape is pressed from the header close button', async () => {
+    const onClose = vi.fn();
+    const pendingFrames = trackPendingAnimationFrames();
+    render(<AccessLevelsModal open onClose={onClose} authGroups={[]} toast={toast} />);
+    await screen.findByRole('heading', { name: 'Standard' });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(document.getElementById('access-level-detail-title')),
+    );
+    await waitFor(() => expect(pendingFrames()).toBe(0));
+
+    const close = screen.getByRole('button', { name: 'Close' });
+    close.focus();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(document.activeElement).toBe(close);
+    await userEvent.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(document.getElementById('access-level-detail-title')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Standard\b/ })),
+    );
+    await userEvent.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('cancels an inline title edit before closing the detail or modal with Escape', async () => {
+    const onClose = vi.fn();
+    render(<AccessLevelsModal open onClose={onClose} authGroups={[]} toast={toast} />);
+    await screen.findByRole('heading', { name: 'Standard' });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit access level name' }));
+    const name = screen.getByLabelText('Access level name');
+    await userEvent.clear(name);
+    await userEvent.type(name, 'Changed name{Escape}');
+
+    expect(screen.getByRole('heading', { name: 'Standard' })).toBeTruthy();
+    expect(document.getElementById('access-level-detail-title')).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(document.getElementById('access-level-detail-title')),
+    );
+    await userEvent.keyboard('{Escape}');
+    expect(document.getElementById('access-level-detail-title')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Standard\b/ })),
+    );
+    await userEvent.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('preserves the legacy empty hook', async () => {
+    vi.spyOn(contentProtectionApi, 'getConfig').mockResolvedValueOnce({
+      ...config(),
+      access_levels: [],
+      default_access_level_id: 'standard',
+    });
+    render(<AccessLevelsModal open onClose={vi.fn()} authGroups={[]} toast={toast} />);
+    await screen.findByText('No access levels configured.');
+    expect(document.querySelector('[data-levels-empty]')).toBeTruthy();
+  });
+
+  it('preserves the legacy no-match hook', async () => {
+    render(<AccessLevelsModal open onClose={vi.fn()} authGroups={[]} toast={toast} />);
+    await screen.findByLabelText('Search access levels');
+    fireEvent.change(screen.getByLabelText('Search access levels'), {
+      target: { value: 'missing' },
+    });
+    await screen.findByText('No matching access levels.');
+    expect(document.querySelector('[data-levels-no-match]')).toBeTruthy();
   });
 
   it('closes from a clean overlay click and guards a dirty overlay click', async () => {
@@ -110,6 +198,23 @@ describe('AccessLevelsModal interactions', () => {
     summary.focus();
     fireEvent.keyDown(document.getElementById('manage-access-levels-modal')!, { key: 'Tab' });
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close' }));
+  });
+
+  it('excludes the hidden mobile rail from the focus trap', async () => {
+    render(<AccessLevelsModal open onClose={vi.fn()} authGroups={[]} toast={toast} />);
+    await screen.findByRole('heading', { name: 'Standard' });
+    const rail = document.querySelector<HTMLElement>('[data-access-levels-rail]');
+    expect(rail).toBeTruthy();
+    rail!.style.display = 'none';
+    const close = screen.getByRole('button', { name: 'Close' });
+    close.focus();
+
+    fireEvent.keyDown(document.getElementById('manage-access-levels-modal')!, {
+      key: 'Tab',
+      shiftKey: true,
+    });
+
+    expect(document.activeElement).toBe(screen.getByText('Prompt preview'));
   });
 
   it('handles Escape and traps Tab in loading and error shells', async () => {

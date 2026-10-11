@@ -44,7 +44,8 @@
 .access-md-rail-row.is-selected .auth-group-protection-summary {
   color: var(--color-text-primary);
 }
-.access-md-rail-row.is-selected .access-level-default-badge {
+.access-md-rail-row.is-selected .access-level-default-badge,
+.access-md-rail-row.is-selected .tool-badge {
   border-color: var(--color-text-primary);
   background: var(--color-surface);
   color: var(--color-text-primary);
@@ -122,6 +123,10 @@
   color: var(--color-text-muted);
   cursor: pointer;
 }
+.access-level-group-chip-remove:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
 .auth-group-manage-body.access-md,
 .access-levels-modal-body.access-md {
   height: min(680px, 76vh);
@@ -149,7 +154,7 @@
   padding-right: 2px;
 }
 
-.access-levels-modal ol.access-md-list-body {
+.access-md ol.access-md-list-body {
   margin: 0;
   padding-inline: var(--space-sm);
   padding-block: var(--space-sm);
@@ -399,4 +404,50 @@
   border-color: var(--color-error) !important;
   background: var(--color-error) !important;
   color: var(--color-text-inverse) !important;
+}
+
+[data-theme-pack='modern'] [data-wizard-master-detail] .access-md-detail .btn-danger {
+  border-color: var(--color-error) !important;
+  background: var(--color-error) !important;
+  color: var(--color-text-inverse) !important;
+}
+
+/* Modern keeps wizard and access-level management as adjacent workbench panes. */
+[data-theme-pack='modern'] [data-wizard-master-detail],
+[data-theme-pack='modern'] .access-levels-modal .access-md {
+  gap: var(--workbench-padding);
+  box-sizing: border-box;
+}
+
+[data-theme-pack='modern'] .access-levels-modal .access-md {
+  padding: var(--workbench-padding);
+}
+
+[data-theme-pack='modern'] [data-wizard-master-detail] .access-md-list,
+[data-theme-pack='modern'] [data-wizard-master-detail] .access-md-detail,
+[data-theme-pack='modern'] .access-levels-modal .access-md-list,
+[data-theme-pack='modern'] .access-levels-modal .access-md-detail {
+  box-sizing: border-box;
+  border: var(--workbench-container-border);
+  border-radius: var(--workbench-surface-radius);
+  background: var(--color-panel);
+}
+
+/* Keep the list pane's perimeter when the detail is closed or on mobile. */
+[data-theme-pack='modern'] [data-wizard-master-detail]:not([data-detail-open]) .access-md-list,
+[data-theme-pack='modern'] .access-levels-modal .access-md:not([data-detail-open]) .access-md-list {
+  border-right: var(--workbench-container-border);
+}
+
+[data-theme-pack='modern'] [data-wizard-master-detail] .access-levels-rail-header,
+[data-theme-pack='modern'] [data-wizard-master-detail] .access-md-detail-header,
+[data-theme-pack='modern'] [data-wizard-master-detail] .access-md-detail-body,
+[data-theme-pack='modern'] [data-wizard-master-detail] .access-md-footer,
+[data-theme-pack='modern'] .access-levels-modal .access-levels-rail-header,
+[data-theme-pack='modern'] .access-levels-modal .access-md-detail-header,
+[data-theme-pack='modern'] .access-levels-modal .access-md-detail-body,
+[data-theme-pack='modern'] .access-levels-modal .access-md-footer,
+[data-theme-pack='modern'] [data-wizard-master-detail] ol.access-md-list-body,
+[data-theme-pack='modern'] .access-levels-modal ol.access-md-list-body {
+  padding: var(--workbench-padding);
 }
