@@ -5097,6 +5097,13 @@ export function SettingsPanel({
               onToggle={handleToggleAccordionSection}
               searchQuery={settingsFilter.queries[0] || ''}
               refreshKey={contentProtectionRefreshKey}
+              savedTypesafeKey={settings?.typesafe_api_key ?? ''}
+              savedOpenRouterKey={settings?.openrouter_api_key ?? ''}
+              onTypesafeKeySaved={(apiKey) => {
+                setSettings((current) =>
+                  current ? { ...current, typesafe_api_key: apiKey } : current,
+                );
+              }}
               onOpenRouterKeySaved={(apiKey) => {
                 setFormData((current) => ({ ...current, openrouter_api_key: apiKey }));
                 setSettings((current) =>

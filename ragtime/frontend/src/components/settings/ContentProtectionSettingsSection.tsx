@@ -12,6 +12,7 @@ import { api } from '@/api/client';
 import {
   accessLevelSets,
   contentProtectionApi,
+  detectJevKeyTransport,
   requirementModeFor,
   withRequirement,
   type AccessLevel,
@@ -254,12 +255,18 @@ export function ContentProtectionSettingsSection({
   searchQuery = '',
   refreshKey = 0,
   onOpenRouterKeySaved,
+  onTypesafeKeySaved,
+  savedTypesafeKey = '',
+  savedOpenRouterKey = '',
 }: {
   open: boolean;
   onToggle: (id: SettingsAccordionSectionId) => void;
   searchQuery?: string;
   refreshKey?: number;
   onOpenRouterKeySaved?: (apiKey: string) => void;
+  onTypesafeKeySaved?: (apiKey: string) => void;
+  savedTypesafeKey?: string;
+  savedOpenRouterKey?: string;
 }): JSX.Element {
   const availableModels = useAvailableModels();
   const refreshModelsRef = useRef(availableModels.refresh);
@@ -283,6 +290,8 @@ export function ContentProtectionSettingsSection({
   const [readinessSignature, setReadinessSignature] = useState<string | null>(null);
   const [readinessBusy, setReadinessBusy] = useState(false);
   const [jevKey, setJevKey] = useState('');
+  const [storedTypesafeKey, setStoredTypesafeKey] = useState(savedTypesafeKey);
+  const [storedOpenRouterKey, setStoredOpenRouterKey] = useState(savedOpenRouterKey);
   const [keyBusy, setKeyBusy] = useState(false);
   const [jevModels, setJevModels] = useState<JevModel[]>([]);
   const [jevModelsLoaded, setJevModelsLoaded] = useState(false);
@@ -309,6 +318,8 @@ export function ContentProtectionSettingsSection({
   const requestToken = useRef(0);
   const readinessToken = useRef(0);
   const jevModelsToken = useRef(0);
+  const jevKeyVersion = useRef(0);
+  const jevKeyDirty = useRef(false);
   const previewToken = useRef(0);
   const [saveConflict, setSaveConflict] = useState(false);
   const loadToken = useRef(0);
@@ -352,6 +363,12 @@ export function ContentProtectionSettingsSection({
     }
   }, [disableConfirmation, toggleBusy]);
   useEffect(() => {
+    setStoredTypesafeKey(savedTypesafeKey);
+  }, [savedTypesafeKey]);
+  useEffect(() => {
+    setStoredOpenRouterKey(savedOpenRouterKey);
+  }, [savedOpenRouterKey]);
+  useEffect(() => {
     if (!disableConfirmation || toggleBusy) return;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (
@@ -383,6 +400,14 @@ export function ContentProtectionSettingsSection({
       setReadinessBusy(false);
     }
     setSetup((current) => current && { ...current, ...change });
+  };
+  const savedJevKeyForTransport = (transport: JevTransport): string => {
+    if (transport === 'typesafe') return storedTypesafeKey;
+    if (transport === 'openrouter') return storedOpenRouterKey;
+    if (storedTypesafeKey) {
+      return detectJevKeyTransport(storedTypesafeKey) === 'typesafe' ? storedTypesafeKey : '';
+    }
+    return detectJevKeyTransport(storedOpenRouterKey) === 'openrouter' ? storedOpenRouterKey : '';
   };
   const toggleLocked = toggleBusy || disableConfirmation;
   const saveEnforcement = async (target: boolean) => {
@@ -444,7 +469,9 @@ export function ContentProtectionSettingsSection({
     setReadinessSignature(null);
     readinessToken.current += 1;
     setSaveConflict(false);
-    setJevKey('');
+    jevKeyDirty.current = false;
+    jevKeyVersion.current += 1;
+    setJevKey(savedJevKeyForTransport(saved.classifier.jev.transport));
     resetJevModels();
   };
   const save = async () => {
@@ -495,16 +522,23 @@ export function ContentProtectionSettingsSection({
     }
   };
   const saveKey = async (field: 'typesafe_api_key' | 'openrouter_api_key', value: string) => {
-    if (!value.trim()) return;
+    const submittedKey = value.trim();
+    if (!submittedKey) return;
+    const version = jevKeyVersion.current;
     setKeyBusy(true);
     try {
-      await api.updateSettings({ [field]: value.trim() });
-      setJevKey('');
-      resetJevModels();
-      if (field === 'openrouter_api_key') {
-        onOpenRouterKeySaved?.(value.trim());
+      const updated = await api.updateSettings({ [field]: submittedKey });
+      const savedKey = updated[field]?.trim() || submittedKey;
+      if (field === 'typesafe_api_key') {
+        setStoredTypesafeKey(savedKey);
+        onTypesafeKeySaved?.(savedKey);
+      } else {
+        setStoredOpenRouterKey(savedKey);
+        onOpenRouterKeySaved?.(savedKey);
         refreshModelsRef.current();
       }
+      if (version === jevKeyVersion.current) jevKeyDirty.current = false;
+      resetJevModels();
       readinessToken.current += 1;
       setReadiness(null);
       setReadinessSignature(null);
@@ -1030,6 +1064,8 @@ export function ContentProtectionSettingsSection({
                     model={setup.classifier.jev.model}
                     onTransportChange={(transport: JevTransport) => {
                       resetJevModels();
+                      jevKeyVersion.current += 1;
+                      if (!jevKeyDirty.current) setJevKey(savedJevKeyForTransport(transport));
                       update({
                         classifier: {
                           ...setup.classifier,
@@ -1048,14 +1084,18 @@ export function ContentProtectionSettingsSection({
                     }
                     draftKey={jevKey}
                     onDraftKeyChange={(key) => {
+                      jevKeyVersion.current += 1;
+                      jevKeyDirty.current = true;
                       setJevKey(key);
                       resetJevModels();
                     }}
                     keyBusy={keyBusy}
                     onSaveKey={(field, value) => void saveKey(field, value)}
-                    typesafeConfigured={Boolean(catalog.classifier_status?.typesafe_key_configured)}
+                    typesafeConfigured={Boolean(
+                      catalog.classifier_status?.typesafe_key_configured || storedTypesafeKey,
+                    )}
                     openrouterConfigured={Boolean(
-                      catalog.classifier_status?.openrouter_key_configured,
+                      catalog.classifier_status?.openrouter_key_configured || storedOpenRouterKey,
                     )}
                     jevModels={jevModels}
                     jevModelsLoaded={jevModelsLoaded}

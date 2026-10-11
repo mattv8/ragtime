@@ -106,13 +106,26 @@ async function openInspect() {
   await user.click(await screen.findByRole('button', { name: 'Test & inspect' }));
   return user;
 }
-async function openSetup(onOpenRouterKeySaved?: (apiKey: string) => void) {
+async function openSetup({
+  onOpenRouterKeySaved,
+  onTypesafeKeySaved,
+  savedTypesafeKey,
+  savedOpenRouterKey,
+}: {
+  onOpenRouterKeySaved?: (apiKey: string) => void;
+  onTypesafeKeySaved?: (apiKey: string) => void;
+  savedTypesafeKey?: string;
+  savedOpenRouterKey?: string;
+} = {}) {
   const user = userEvent.setup();
   render(
     <ContentProtectionSettingsSection
       open
       onToggle={() => {}}
       onOpenRouterKeySaved={onOpenRouterKeySaved}
+      onTypesafeKeySaved={onTypesafeKeySaved}
+      savedTypesafeKey={savedTypesafeKey}
+      savedOpenRouterKey={savedOpenRouterKey}
     />,
   );
   await user.click(await screen.findByRole('button', { name: 'Configure classifier' }));
@@ -124,15 +137,168 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe('ContentProtectionSettingsSection', () => {
+  it('binds saved keys according to the selected Jev provider', async () => {
+    installFetch();
+    const user = await openSetup({
+      savedTypesafeKey: 'ts_saved-typesafe',
+      savedOpenRouterKey: 'sk-or-saved-openrouter',
+    });
+    const key = screen.getByLabelText('API key') as HTMLInputElement;
+
+    expect(key.value).toBe('ts_saved-typesafe');
+    await user.selectOptions(screen.getByLabelText('Provider'), 'openrouter');
+    expect(key.value).toBe('sk-or-saved-openrouter');
+    await user.selectOptions(screen.getByLabelText('Provider'), 'typesafe');
+    expect(key.value).toBe('ts_saved-typesafe');
+  });
+
+  it('keeps an unrecognized preferred TypeSafe key server-side for auto model fetches', async () => {
+    const fetch = installFetch();
+    const user = await openSetup({
+      savedTypesafeKey: 'legacy-typesafe-key',
+      savedOpenRouterKey: 'sk-or-saved-openrouter',
+    });
+
+    expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe('');
+    expect(
+      (screen.getByRole('button', { name: 'Fetch Models' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Fetch Models' }));
+
+    await waitFor(() =>
+      expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/models'))).toBe(true),
+    );
+    const modelRequest = fetch.mock.calls.find(([url]) => String(url).endsWith('/models'));
+    expect(JSON.parse(modelRequest?.[1]?.body as string)).toMatchObject({
+      transport: 'auto',
+      api_key: null,
+    });
+  });
+
+  it('uses the saved OpenRouter key in auto mode only when TypeSafe is absent', async () => {
+    installFetch();
+    await openSetup({ savedOpenRouterKey: 'sk-or-saved-openrouter' });
+
+    expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe(
+      'sk-or-saved-openrouter',
+    );
+  });
+
+  it('keeps an edited Jev key when the provider changes or catalog refreshes', async () => {
+    installFetch();
+    const user = await openSetup({
+      savedTypesafeKey: 'ts_saved-typesafe',
+      savedOpenRouterKey: 'sk-or-saved-openrouter',
+    });
+    const key = screen.getByLabelText('API key');
+
+    await user.clear(key);
+    await user.type(key, 'ts_edited-key');
+    await user.selectOptions(screen.getByLabelText('Provider'), 'openrouter');
+    expect((key as HTMLInputElement).value).toBe('ts_edited-key');
+
+    await user.click(screen.getByRole('button', { name: 'Fetch Models' }));
+    await waitFor(() => expect((key as HTMLInputElement).value).toBe('ts_edited-key'));
+  });
+
+  it('does not replace an edited Jev draft when saved-key props refresh', async () => {
+    installFetch();
+    const user = userEvent.setup();
+    const view = render(
+      <ContentProtectionSettingsSection
+        open
+        onToggle={() => {}}
+        savedTypesafeKey="ts_saved-typesafe"
+      />,
+    );
+    await user.click(await screen.findByRole('button', { name: 'Configure classifier' }));
+    const key = screen.getByLabelText('API key');
+    await user.clear(key);
+    await user.type(key, 'ts_edited-key');
+
+    view.rerender(
+      <ContentProtectionSettingsSection
+        open
+        onToggle={() => {}}
+        savedTypesafeKey="ts_refreshed-typesafe"
+      />,
+    );
+    expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe('ts_edited-key');
+  });
+
+  it('does not replace a newer Jev draft when an earlier key save resolves', async () => {
+    let resolveSave!: (response: Response) => void;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, options?: RequestInit) => {
+        if (url.endsWith('/settings') && options?.method === 'PUT') {
+          return new Promise<Response>((resolve) => {
+            resolveSave = resolve;
+          });
+        }
+        return response(url.endsWith('/catalog') ? catalog : config);
+      }),
+    );
+    const user = await openSetup();
+    const key = screen.getByLabelText('API key');
+    await user.type(key, 'ts_saved-key');
+    await user.click(screen.getByRole('button', { name: 'Save key' }));
+    await user.clear(key);
+    await user.type(key, 'ts_newer-draft');
+    await act(async () => resolveSave(new Response(JSON.stringify({ settings: {} }))));
+
+    await waitFor(() => {
+      expect((key as HTMLInputElement).value).toBe('ts_newer-draft');
+      expect((screen.getByRole('button', { name: 'Save key' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    });
+  });
+
+  it('retains successful saved keys for provider switches and reopening setup', async () => {
+    installFetch();
+    const user = await openSetup();
+    const key = screen.getByLabelText('API key');
+
+    await user.type(key, 'ts_saved-after-save');
+    await user.click(screen.getByRole('button', { name: 'Save key' }));
+    await waitFor(() => expect((key as HTMLInputElement).value).toBe('ts_saved-after-save'));
+
+    await user.selectOptions(screen.getByLabelText('Provider'), 'openrouter');
+    await user.clear(key);
+    await user.type(key, 'sk-or-saved-after-save');
+    await user.click(screen.getByRole('button', { name: 'Save key' }));
+    await waitFor(() => expect((key as HTMLInputElement).value).toBe('sk-or-saved-after-save'));
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await user.click(screen.getByRole('button', { name: 'Configure classifier' }));
+    expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe(
+      'ts_saved-after-save',
+    );
+    await user.selectOptions(screen.getByLabelText('Provider'), 'openrouter');
+    expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe(
+      'sk-or-saved-after-save',
+    );
+  });
+
   it('reports a successfully saved trimmed OpenRouter key to the parent', async () => {
     installFetch();
     const onOpenRouterKeySaved = vi.fn();
-    const user = await openSetup(onOpenRouterKeySaved);
+    const user = await openSetup({ onOpenRouterKeySaved });
 
     await user.type(screen.getByLabelText('API key'), ' sk-or-shared-key ');
     await user.click(screen.getByRole('button', { name: 'Save key' }));
 
     await waitFor(() => expect(onOpenRouterKeySaved).toHaveBeenCalledWith('sk-or-shared-key'));
+  });
+
+  it('reports a successfully saved TypeSafe key to the parent', async () => {
+    installFetch();
+    const onTypesafeKeySaved = vi.fn();
+    const user = await openSetup({ onTypesafeKeySaved });
+    await user.type(screen.getByLabelText('API key'), 'ts_saved-typesafe');
+    await user.click(screen.getByRole('button', { name: 'Save key' }));
+    await waitFor(() => expect(onTypesafeKeySaved).toHaveBeenCalledWith('ts_saved-typesafe'));
   });
 
   it('does not report an OpenRouter key when saving it fails', async () => {
@@ -148,26 +314,27 @@ describe('ContentProtectionSettingsSection', () => {
       }),
     );
     const onOpenRouterKeySaved = vi.fn();
-    const user = await openSetup(onOpenRouterKeySaved);
+    const user = await openSetup({ onOpenRouterKeySaved });
 
     await user.type(screen.getByLabelText('API key'), 'sk-or-shared-key');
     await user.click(screen.getByRole('button', { name: 'Save key' }));
 
     expect(await screen.findByText('offline')).toBeTruthy();
     expect(onOpenRouterKeySaved).not.toHaveBeenCalled();
+    expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe('sk-or-shared-key');
   });
 
   it('does not report a TypeSafe key save to the parent', async () => {
     installFetch();
     const onOpenRouterKeySaved = vi.fn();
-    const user = await openSetup(onOpenRouterKeySaved);
+    const user = await openSetup({ onOpenRouterKeySaved });
 
     await user.type(screen.getByLabelText('API key'), 'ts_typesafe-key');
     refreshModels.mockClear();
     await user.click(screen.getByRole('button', { name: 'Save key' }));
 
     await waitFor(() =>
-      expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe(''),
+      expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe('ts_typesafe-key'),
     );
     expect(refreshModels).not.toHaveBeenCalled();
     expect(onOpenRouterKeySaved).not.toHaveBeenCalled();
