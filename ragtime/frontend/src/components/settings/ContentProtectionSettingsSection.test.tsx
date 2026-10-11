@@ -3,8 +3,16 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ContentProtectionSettingsSection } from './ContentProtectionSettingsSection';
 const refreshModels = vi.hoisted(() => vi.fn());
+const availableModels = vi.hoisted(() => ({
+  models: [] as { id: string; name: string; provider: string }[],
+}));
 vi.mock('@/contexts/AvailableModelsContext', () => ({
-  useAvailableModels: () => ({ models: [], loading: false, error: null, refresh: refreshModels }),
+  useAvailableModels: () => ({
+    ...availableModels,
+    loading: false,
+    error: null,
+    refresh: refreshModels,
+  }),
 }));
 const config = {
   schema_version: 2 as const,
@@ -56,6 +64,10 @@ const catalog = {
   surfaces: [{ id: 'chat', name: 'Chat' }],
   classifier_status: { typesafe_key_configured: false, openrouter_key_configured: false },
 };
+const genericModels = [
+  { id: 'generic-a', name: 'Generic model A', provider: 'openai' },
+  { id: 'generic-b', name: 'Generic model B', provider: 'openrouter' },
+];
 function response(body: unknown) {
   return Promise.resolve(
     new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }),
@@ -131,10 +143,20 @@ async function openSetup({
   await user.click(await screen.findByRole('button', { name: 'Configure classifier' }));
   return user;
 }
+async function selectGenericLlmModel(
+  user: ReturnType<typeof userEvent.setup>,
+  providerName: 'OpenAI' | 'OpenRouter' = 'OpenAI',
+) {
+  await user.click(
+    screen.getByRole('button', { name: /^(Select a generic model|OpenAI Generic model A)/ }),
+  );
+  await user.click(screen.getByRole('button', { name: providerName }));
+}
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  availableModels.models = [];
 });
 describe('ContentProtectionSettingsSection', () => {
   it('binds saved keys according to the selected Jev provider', async () => {
@@ -669,18 +691,49 @@ describe('ContentProtectionSettingsSection', () => {
     await user.type(sample, ' changed');
     expect(screen.queryByText('allow · ready')).toBeNull();
   });
-  it('invalidates a readiness result when classifier settings change', async () => {
+  it('makes manual readiness available only to the generic LLM classifier', async () => {
     installFetch();
     const user = await openSetup();
+    expect(screen.queryByRole('button', { name: /Check readiness/ })).toBeNull();
+    expect(
+      document.querySelector(
+        '#content-protection-classifier-summary .content-protection-status-icon',
+      ),
+    ).toBeNull();
+    await user.click(screen.getByLabelText('Use generic LLM'));
+    expect(screen.getByRole('button', { name: /Check readiness/ })).toBeTruthy();
+  });
+  it('requires a generic LLM model before readiness can be checked', async () => {
+    installFetch();
+    availableModels.models = genericModels;
+    const user = await openSetup();
+    await user.click(screen.getByLabelText('Use generic LLM'));
+
+    expect(
+      (screen.getByRole('button', { name: /Check readiness/ }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    await selectGenericLlmModel(user);
+    expect(
+      (screen.getByRole('button', { name: /Check readiness/ }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+  it('invalidates a generic LLM readiness result when its model changes', async () => {
+    installFetch();
+    availableModels.models = genericModels;
+    const user = await openSetup();
+    await user.click(screen.getByLabelText('Use generic LLM'));
+    await selectGenericLlmModel(user);
     await user.click(screen.getByRole('button', { name: /Check readiness/ }));
     expect(await screen.findByText('Ready')).toBeTruthy();
-    await user.clear(screen.getByLabelText('Model'));
-    await user.type(screen.getByLabelText('Model'), 'jev-pinned');
+    await selectGenericLlmModel(user, 'OpenRouter');
     expect(screen.queryByText('Ready')).toBeNull();
   });
   it('cancels readiness when the setup dialog is cancelled', async () => {
     installFetch();
+    availableModels.models = genericModels;
     const user = await openSetup();
+    await user.click(screen.getByLabelText('Use generic LLM'));
+    await selectGenericLlmModel(user);
     await user.click(screen.getByRole('button', { name: /Check readiness/ }));
     expect(await screen.findByText('Ready')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -698,7 +751,10 @@ describe('ContentProtectionSettingsSection', () => {
         return response(url.endsWith('/catalog') ? catalog : config);
       }),
     );
+    availableModels.models = genericModels;
     const user = await openSetup();
+    await user.click(screen.getByLabelText('Use generic LLM'));
+    await selectGenericLlmModel(user);
     await user.click(screen.getByRole('button', { name: /Check readiness/ }));
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     resolveReadiness?.(new Response(JSON.stringify({ code: 'ready' })));
@@ -716,9 +772,11 @@ describe('ContentProtectionSettingsSection', () => {
   });
   it('checks readiness for a generic LLM classifier', async () => {
     const fetch = installFetch();
+    availableModels.models = genericModels;
     const user = await openSetup();
 
     await user.click(screen.getByLabelText('Use generic LLM'));
+    await selectGenericLlmModel(user);
     await user.click(screen.getByRole('button', { name: /Check readiness/ }));
 
     await waitFor(() => {
@@ -727,6 +785,32 @@ describe('ContentProtectionSettingsSection', () => {
         config: { classifier: { backend: 'llm' } },
       });
     });
+  });
+  it('keeps the generic LLM readiness action busy until its request resolves', async () => {
+    let resolveReadiness!: (response: Response) => void;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (url.endsWith('/readiness')) {
+          return new Promise<Response>((resolve) => {
+            resolveReadiness = resolve;
+          });
+        }
+        return response(url.endsWith('/catalog') ? catalog : config);
+      }),
+    );
+    availableModels.models = genericModels;
+    const user = await openSetup();
+    await user.click(screen.getByLabelText('Use generic LLM'));
+    await selectGenericLlmModel(user);
+    const readinessButton = screen.getByRole('button', { name: /Check readiness/ });
+    await user.click(readinessButton);
+
+    expect((readinessButton as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => resolveReadiness(new Response(JSON.stringify({ code: 'ready' }))));
+    expect(
+      (screen.getByRole('button', { name: /Check readiness/ }) as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
   it('detects a typed provider and sends the current transport with a trimmed draft key to model discovery', async () => {
     const fetch = installFetch({
@@ -752,6 +836,24 @@ describe('ContentProtectionSettingsSection', () => {
       ).toEqual({ transport: 'typesafe', api_key: 'ts_example' }),
     );
     expect(screen.getByRole('combobox', { name: 'Model' })).toBeTruthy();
+  });
+  it('does not treat a successful Jev model catalog fetch as readiness', async () => {
+    const fetch = installFetch({
+      models: {
+        success: true,
+        transport: 'typesafe',
+        models: [{ id: 'jev-latest', name: 'Jev latest', description: null, release_date: null }],
+        default_model: 'jev-latest',
+        message: null,
+      },
+    });
+    const user = await openSetup();
+    await user.type(screen.getByLabelText('API key'), 'ts_example');
+    await user.click(screen.getByRole('button', { name: 'Fetch Models' }));
+
+    await screen.findByRole('combobox', { name: 'Model' });
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/readiness'))).toBe(false);
+    expect(screen.queryByText('Ready')).toBeNull();
   });
   it('shows catalog failures and empty model results without switching to a model select', async () => {
     const fetch = installFetch({

@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle2, CircleHelp, TestTube2 } from 'lucide-react';
+import { CheckCircle2, CircleHelp, Loader2, TestTube2 } from 'lucide-react';
 import { api } from '@/api/client';
 import {
   accessLevelSets,
@@ -871,12 +871,13 @@ export function ContentProtectionSettingsSection({
               >
                 <legend>
                   Classifier{' '}
-                  {readiness?.code === 'ready' &&
-                  readinessSignature === classifierSignature(saved) ? (
-                    <CheckCircle2 className="content-protection-status-icon is-ready" />
-                  ) : (
-                    <CircleHelp className="content-protection-status-icon" />
-                  )}
+                  {saved.classifier.backend === 'llm' &&
+                    (readiness?.code === 'ready' &&
+                    readinessSignature === classifierSignature(saved) ? (
+                      <CheckCircle2 className="content-protection-status-icon is-ready" />
+                    ) : (
+                      <CircleHelp className="content-protection-status-icon" />
+                    ))}
                 </legend>
                 <p>
                   {saved.classifier.backend === 'jev'
@@ -1102,9 +1103,6 @@ export function ContentProtectionSettingsSection({
                     jevModelsFetching={jevModelsFetching}
                     jevModelsError={jevModelsError}
                     onFetchModels={() => void fetchJevModels()}
-                    readiness={readiness}
-                    readinessBusy={readinessBusy}
-                    onCheckReadiness={() => void checkReadiness()}
                     onOpenRouterLinkClick={() => {
                       window.dispatchEvent(
                         new CustomEvent('highlight-settings', {
@@ -1144,20 +1142,58 @@ export function ContentProtectionSettingsSection({
                     <span>Use generic LLM</span>
                   </label>
                   {setup.classifier.backend === 'llm' && (
-                    <ModelSelector
-                      models={(availableModels.models || []).filter(
-                        (model) => !/jev/i.test(`${model.provider} ${model.id}`),
+                    <>
+                      <ModelSelector
+                        models={(availableModels.models || []).filter(
+                          (model) => !/jev/i.test(`${model.provider} ${model.id}`),
+                        )}
+                        selectedModelId={setup.classifier.llm_model || ''}
+                        onModelChange={(llm_model) =>
+                          update({ classifier: { ...setup.classifier, llm_model } })
+                        }
+                        getModelSelectionKey={(model) => `${model.provider}::${model.id}`}
+                        loading={availableModels.loading || false}
+                        disabled={false}
+                        placeholder="Select a generic model"
+                        variant="full"
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        disabled={readinessBusy || !setup.classifier.llm_model}
+                        onClick={() => void checkReadiness()}
+                      >
+                        {readinessBusy && (
+                          <Loader2 size={16} className="content-protection-spinner" />
+                        )}{' '}
+                        Check readiness
+                      </button>
+                      {readiness && (
+                        <section
+                          id="readiness-result"
+                          className="content-protection-result"
+                          role="status"
+                          data-content-protection-readiness-result
+                        >
+                          <strong>{readiness.code === 'ready' ? 'Ready' : 'Not ready'}</strong>
+                          {readiness.model && (
+                            <span className="tool-badge">
+                              Resolved: {readiness.model} via {readiness.transport}
+                            </span>
+                          )}
+                          {readiness.cases?.map((item) => (
+                            <span key={item.name}>
+                              {item.name}: {item.verdict} ·{' '}
+                              {Object.entries(item.probabilities)
+                                .map(
+                                  ([id, probability]) => `${id} ${(probability * 100).toFixed(0)}%`,
+                                )
+                                .join(', ')}
+                            </span>
+                          ))}
+                        </section>
                       )}
-                      selectedModelId={setup.classifier.llm_model || ''}
-                      onModelChange={(llm_model) =>
-                        update({ classifier: { ...setup.classifier, llm_model } })
-                      }
-                      getModelSelectionKey={(model) => `${model.provider}::${model.id}`}
-                      loading={availableModels.loading || false}
-                      disabled={false}
-                      placeholder="Select a generic model"
-                      variant="full"
-                    />
+                    </>
                   )}
                 </details>
               </>

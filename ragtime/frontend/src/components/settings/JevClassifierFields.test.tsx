@@ -19,9 +19,6 @@ const props = {
   jevModelsFetching: false,
   jevModelsError: null,
   onFetchModels: vi.fn(),
-  readiness: null,
-  readinessBusy: false,
-  onCheckReadiness: vi.fn(),
   onOpenRouterLinkClick: vi.fn(),
 };
 describe('JevClassifierFields', () => {
@@ -66,13 +63,9 @@ describe('JevClassifierFields', () => {
     expect(document.getElementById('jev-openrouter-shared-warning')).toBeTruthy();
   });
 
-  it('keeps readiness enabled while Jev-only controls are disabled for a generic backend', async () => {
-    const user = userEvent.setup();
+  it('does not expose a manual readiness action in Jev fields', () => {
     render(<JevClassifierFields {...props} disabled draftKey="sk-or-example" />);
-    const readinessButton = screen.getByRole('button', {
-      name: 'Check readiness',
-    }) as HTMLButtonElement;
-    expect(readinessButton.disabled).toBe(false);
+    expect(screen.queryByRole('button', { name: /Check readiness/ })).toBeNull();
     expect((screen.getByRole('combobox') as HTMLSelectElement).disabled).toBe(true);
     expect((document.getElementById('jev-api-key-input') as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Save key' }) as HTMLButtonElement).disabled).toBe(
@@ -80,15 +73,6 @@ describe('JevClassifierFields', () => {
     );
     expect(
       (screen.getByRole('button', { name: 'Fetch Models' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
-    await user.click(readinessButton);
-    expect(props.onCheckReadiness).toHaveBeenCalledTimes(1);
-  });
-
-  it('disables readiness while a readiness check is busy', () => {
-    render(<JevClassifierFields {...props} disabled={false} readinessBusy />);
-    expect(
-      (screen.getByRole('button', { name: /Check readiness/ }) as HTMLButtonElement).disabled,
     ).toBe(true);
   });
 });

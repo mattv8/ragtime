@@ -1,11 +1,5 @@
-import { Loader2 } from 'lucide-react';
 import { useState } from 'react';
-import {
-  detectJevKeyTransport,
-  type ContentProtectionReadinessResult,
-  type JevModel,
-  type JevTransport,
-} from '@/api/contentProtection';
+import { detectJevKeyTransport, type JevModel, type JevTransport } from '@/api/contentProtection';
 import { FetchableModelField } from '../shared/FetchableModelField';
 
 type KeySetting = 'typesafe_api_key' | 'openrouter_api_key';
@@ -25,9 +19,6 @@ interface JevClassifierFieldsProps {
   jevModelsFetching: boolean;
   jevModelsError: string | null;
   onFetchModels: () => void;
-  readiness: ContentProtectionReadinessResult | null;
-  readinessBusy: boolean;
-  onCheckReadiness: () => void;
   onOpenRouterLinkClick: () => void;
   disabled?: boolean;
 }
@@ -186,6 +177,9 @@ export function JevClassifierFields(props: JevClassifierFieldsProps): JSX.Elemen
             : 'jev-latest tracks the current recommended release. Pin a specific version to freeze behavior. Click "Fetch Models" to see available options.'
         }
       />
+      <p className="field-help">
+        Classification is checked automatically when you enable protection.
+      </p>
       {(props.transport === 'auto' || props.transport === 'openrouter') && (
         <div id="jev-openrouter-notice" data-jev-openrouter-notice className="form-group">
           <p className="field-help">
@@ -197,38 +191,6 @@ export function JevClassifierFields(props: JevClassifierFieldsProps): JSX.Elemen
             </a>
           </p>
         </div>
-      )}
-      <button
-        type="button"
-        className="btn btn-secondary"
-        disabled={props.readinessBusy}
-        onClick={props.onCheckReadiness}
-      >
-        {props.readinessBusy && <Loader2 size={16} className="content-protection-spinner" />} Check
-        readiness
-      </button>
-      {props.readiness && (
-        <section
-          id="readiness-result"
-          className="content-protection-result"
-          role="status"
-          data-content-protection-readiness-result
-        >
-          <strong>{props.readiness.code === 'ready' ? 'Ready' : 'Not ready'}</strong>
-          {props.readiness.model && (
-            <span className="tool-badge">
-              Resolved: {props.readiness.model} via {props.readiness.transport}
-            </span>
-          )}
-          {props.readiness.cases?.map((item) => (
-            <span key={item.name}>
-              {item.name}: {item.verdict} ·{' '}
-              {Object.entries(item.probabilities)
-                .map(([id, probability]) => `${id} ${(probability * 100).toFixed(0)}%`)
-                .join(', ')}
-            </span>
-          ))}
-        </section>
       )}
     </>
   );
