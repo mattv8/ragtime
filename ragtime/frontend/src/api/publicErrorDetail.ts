@@ -20,6 +20,7 @@ export function getPublicErrorDetail(value: unknown): PublicErrorDetail | null {
   const nextStep = nonEmptyString(record.next_step);
   const requestId = nonEmptyString(record.request_id);
   const reasonCode = nonEmptyString(record.reason_code);
+  const denialMessageId = nonEmptyString(record.denial_message_id);
   const message = nonEmptyString(record.message);
   if (!code || (!message && !reason && !nextStep && !requestId && !reasonCode)) return null;
 
@@ -30,6 +31,7 @@ export function getPublicErrorDetail(value: unknown): PublicErrorDetail | null {
     next_step: nextStep ?? '',
     request_id: requestId ?? '',
     ...(reasonCode ? { reason_code: reasonCode } : {}),
+    ...(denialMessageId ? { denial_message_id: denialMessageId } : {}),
   };
 }
 

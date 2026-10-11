@@ -31,6 +31,7 @@ from prisma.models import IndexMetadata as PrismaIndexMetadata
 
 from ragtime.chat_runtime.presets import CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.content_protection.hosted import authorize_persistence
+from ragtime.content_protection.models import ContentProtectionError
 from ragtime.core.app_setting_defaults import (
     DEFAULT_AGGREGATE_SEARCH,
     DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
@@ -141,6 +142,7 @@ from ragtime.http_api.secrets import (
     undecryptable_http_api_secret_paths,
 )
 from ragtime.indexer.chat_events import with_event_channel
+from ragtime.indexer.denial_notices import build_denial_message, denial_dedup_key, denial_preview_events, latest_denial_message_id
 from ragtime.indexer.models import (
     DEFAULT_USERSPACE_CODE_INDEX_MAX_CONCURRENCY,
     SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
@@ -3115,6 +3117,7 @@ class IndexerRepository:
             message_id=message.get("message_id"),
             content_truncated=truncated,
             has_details=bool(message.get("events") or message.get("tool_calls")) if has_details is None else has_details,
+            events=denial_preview_events(message),
         )
 
     def _conversation_window_metadata(self, row: dict[str, Any]) -> ConversationWindowMetadata:
@@ -3128,6 +3131,7 @@ class IndexerRepository:
             display_name=row.get("display_name"),
             total_tokens=int(row.get("total_tokens") or 0),
             active_task_id=row.get("active_task_id"),
+            last_denial_message_id=row.get("last_denial_message_id"),
             active_branch_id=row.get("active_branch_id"),
             disabled_builtin_tool_ids=_normalize_string_list(row.get("disabled_builtin_tool_ids")),
             subagents_enabled=bool(row.get("subagents_enabled", True)),
@@ -3147,6 +3151,7 @@ class IndexerRepository:
         if conversation is None:
             return None
         metadata = ConversationWindowMetadata.model_validate(conversation.model_dump(exclude={"messages", "loaded_tool_skill_ids"}))
+        metadata.last_denial_message_id = latest_denial_message_id(conversation.messages)
         metadata.is_subagent = bool(conversation.parent_conversation_id)
         metadata.read_only = bool(conversation.parent_conversation_id)
         entries = [
@@ -3198,6 +3203,24 @@ class IndexerRepository:
             if thin_oversized
             else "e.message"
         )
+        denial_events_patch = """(
+                SELECT CASE WHEN count(*) > 0 THEN jsonb_build_object('events', jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
+                        'type', event.value->'type',
+                        'channel', event.value->'channel',
+                        'code', event.value->'code',
+                        'public_reason', event.value->'public_reason',
+                        'request_id', event.value->'request_id',
+                        'timestamp', event.value->'timestamp'
+                    )) ORDER BY event.ordinality)) ELSE '{}'::jsonb END
+                FROM jsonb_array_elements(CASE WHEN jsonb_typeof(e.message->'events') = 'array' THEN e.message->'events' ELSE '[]'::jsonb END) WITH ORDINALITY AS event(value, ordinality)
+                WHERE jsonb_typeof(event.value) = 'object' AND event.value->>'type' = 'content_protection_denial'
+            )"""
+        latest_exchange_projection = f"""jsonb_set(
+                    (e.message - 'events' - 'tool_calls') || {denial_events_patch},
+                    '{{content}}',
+                    to_jsonb({readable_content}),
+                    true
+                )"""
         force_deferred = f"octet_length(e.message::text) > {_CONVERSATION_WINDOW_PAGE_BUDGET_BYTES}" if thin_oversized else "FALSE"
         entry_source = (
             f"""
@@ -3221,6 +3244,11 @@ class IndexerRepository:
                 SELECT c.*, u.username, u.display_name,
                     CASE WHEN jsonb_typeof(c.messages) = 'array' THEN jsonb_array_length(c.messages) ELSE 0 END AS total_message_count,
                     {latest_user_index} AS latest_user_index,
+                    (array_agg(item.value->>'message_id' ORDER BY item.ordinality DESC) FILTER (
+                        WHERE item.value->>'role' = 'assistant'
+                          AND (CASE WHEN jsonb_typeof(item.value->'events') = 'array' THEN item.value->'events' ELSE '[]'::jsonb END)
+                              @> '[{{"type":"content_protection_denial"}}]'::jsonb
+                    ))[1] AS last_denial_message_id,
                     encode(sha256(convert_to(c.messages::text || coalesce(c.active_branch_id, ''), 'UTF8')), 'hex') AS revision,
                     jsonb_typeof(c.messages) = 'array' AND coalesce(bool_and(jsonb_typeof(item.value) = 'object'), TRUE) AS is_canonical
                 FROM conversations c
@@ -3230,7 +3258,7 @@ class IndexerRepository:
                 GROUP BY c.id, u.username, u.display_name
             ), selected AS (
                 SELECT e.message_index,
-                    {f"jsonb_set(e.message - 'events' - 'tool_calls', '{{content}}', to_jsonb({readable_content}), true)" if latest_exchange else oversized_projection} AS message,
+                    {latest_exchange_projection if latest_exchange else oversized_projection} AS message,
                     (e.message ? 'events' OR e.message ? 'tool_calls') AS has_details,
                     {force_deferred} AS force_deferred,
                     coalesce(e.message->>'message_id', 'legacy:' || e.message_index || ':' || encode(sha256(convert_to(e.message::text, 'UTF8')), 'hex')) AS entry_key
@@ -3239,7 +3267,8 @@ class IndexerRepository:
             SELECT c.id, c.title, c.model, c.user_id, c.workspace_id, c.username, c.display_name, c.total_tokens,
                 c.active_task_id, c.active_branch_id, c.disabled_builtin_tool_ids, c.subagents_enabled,
                 c.parent_conversation_id, c.subagent_role, c.subagent_index, c.tool_selection_mode,
-                c.tool_output_mode, c.created_at, c.updated_at, c.total_message_count, c.revision, c.is_canonical,
+                    c.tool_output_mode, c.created_at, c.updated_at, c.total_message_count, c.revision, c.is_canonical,
+                    c.last_denial_message_id,
                 COALESCE((SELECT jsonb_agg(jsonb_build_object('index', selected.message_index, 'message', selected.message, 'has_details', selected.has_details, 'force_deferred', selected.force_deferred, 'key', selected.entry_key) ORDER BY selected.message_index) FROM selected), '[]'::jsonb) AS entries
             FROM c
         """)
@@ -3566,6 +3595,17 @@ class IndexerRepository:
                 c.parent_conversation_id,
                 c.subagent_role,
                 c.subagent_index,
+                (SELECT item.value->>'message_id'
+                 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(c.messages) = 'array' THEN c.messages ELSE '[]'::jsonb END)
+                      WITH ORDINALITY AS item(value, ordinality)
+                 WHERE item.value->>'role' = 'assistant'
+                   AND EXISTS (
+                       SELECT 1
+                       FROM jsonb_array_elements(CASE WHEN jsonb_typeof(item.value->'events') = 'array' THEN item.value->'events' ELSE '[]'::jsonb END) event(value)
+                       WHERE event.value->>'type' = 'content_protection_denial'
+                   )
+                 ORDER BY item.ordinality DESC
+                 LIMIT 1) AS last_denial_message_id,
                 c.created_at,
                 c.updated_at
             FROM conversations c
@@ -3592,6 +3632,7 @@ class IndexerRepository:
                 parent_conversation_id=row.get("parent_conversation_id"),
                 subagent_role=row.get("subagent_role"),
                 subagent_index=row.get("subagent_index"),
+                last_denial_message_id=row.get("last_denial_message_id"),
                 created_at=cast(datetime, row.get("created_at")),
                 updated_at=cast(datetime, row.get("updated_at")),
             )
@@ -3706,6 +3747,17 @@ class IndexerRepository:
                 c.parent_conversation_id,
                 c.subagent_role,
                 c.subagent_index,
+                (SELECT item.value->>'message_id'
+                 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(c.messages) = 'array' THEN c.messages ELSE '[]'::jsonb END)
+                      WITH ORDINALITY AS item(value, ordinality)
+                 WHERE item.value->>'role' = 'assistant'
+                   AND EXISTS (
+                       SELECT 1
+                       FROM jsonb_array_elements(CASE WHEN jsonb_typeof(item.value->'events') = 'array' THEN item.value->'events' ELSE '[]'::jsonb END) event(value)
+                       WHERE event.value->>'type' = 'content_protection_denial'
+                   )
+                 ORDER BY item.ordinality DESC
+                 LIMIT 1) AS last_denial_message_id,
                 c.created_at,
                 c.updated_at
             FROM conversations c
@@ -3731,6 +3783,7 @@ class IndexerRepository:
                 parent_conversation_id=row.get("parent_conversation_id"),
                 subagent_role=row.get("subagent_role"),
                 subagent_index=row.get("subagent_index"),
+                last_denial_message_id=row.get("last_denial_message_id"),
                 created_at=cast(datetime, row.get("created_at")),
                 updated_at=cast(datetime, row.get("updated_at")),
             )
@@ -4005,6 +4058,34 @@ class IndexerRepository:
                 )
 
         return self._prisma_conversation_to_model(updated)
+
+    async def record_content_protection_denial(
+        self,
+        conversation_id: str,
+        error: ContentProtectionError,
+        *,
+        task_id: str | None = None,
+    ) -> Optional[Conversation]:
+        """Append one validated server control notice, deduplicated under the branch lock."""
+        message = build_denial_message(conversation_id, error, task_id=task_id)
+        message_id = denial_dedup_key(conversation_id, error, task_id)
+        db = await self._get_db()
+
+        async with self._get_conversation_branch_lock(conversation_id):
+            async with db.tx() as tx:
+                prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
+                if not prisma_conv:
+                    return None
+                messages = _normalize_message_payloads(prisma_conv.messages)
+                if not any(str(existing.get("message_id") or "") == message_id for existing in messages):
+                    messages.append(_sanitize_json_for_postgres(message))
+                    prisma_conv = await tx.conversation.update(
+                        where={"id": conversation_id},
+                        data={"messages": Json(messages), "totalTokens": _estimate_effective_conversation_tokens(messages), "updatedAt": utc_now()},
+                        include={"user": True},
+                    )
+
+        return self._prisma_conversation_to_model(prisma_conv)
 
     async def update_message_event_output(
         self,
@@ -6108,6 +6189,7 @@ class IndexerRepository:
         response_content: Optional[str] = None,
         termination_reason: Optional[str] = None,
         outcome_summary: Optional[dict[str, Any]] = None,
+        clear_streaming_state: bool = False,
     ) -> Optional[ChatTask]:
         """Update a chat task's status."""
         db = await self._get_db()
@@ -6137,10 +6219,46 @@ class IndexerRepository:
             update_data["outcomeSummary"] = Json(_sanitize_json_for_postgres(outcome_summary))
 
         try:
-            prisma_task = await db.chattask.update(
-                where={"id": task_id},
-                data=update_data,  # type: ignore[arg-type]
-            )
+            if clear_streaming_state:
+                if status not in (ChatTaskStatus.completed, ChatTaskStatus.failed, ChatTaskStatus.cancelled, ChatTaskStatus.interrupted):
+                    raise ValueError("clear_streaming_state requires a terminal task status")
+                current_task = await db.chattask.find_unique(where={"id": task_id})
+                if current_task is None:
+                    return None
+                raw_streaming_state = getattr(current_task, "streamingState", None)
+                streaming_state = getattr(raw_streaming_state, "data", raw_streaming_state)
+                raw_version = streaming_state.get("version", 0) if isinstance(streaming_state, dict) else 0
+                current_version = raw_version if isinstance(raw_version, int) and not isinstance(raw_version, bool) else 0
+                update_data["streamingState"] = Json(
+                    {
+                        "content": "",
+                        "events": [],
+                        "tool_calls": [],
+                        "hit_max_iterations": False,
+                        "version": current_version + 1,
+                        "content_length": 0,
+                    }
+                )
+                updated = await db.chattask.update_many(
+                    where={
+                        "id": task_id,
+                        "status": {
+                            "in": [
+                                _to_prisma_task_status(ChatTaskStatus.pending),
+                                _to_prisma_task_status(ChatTaskStatus.running),
+                            ]
+                        },
+                    },
+                    data=update_data,  # type: ignore[arg-type]
+                )
+                if not updated:
+                    return None
+                prisma_task = await db.chattask.find_unique(where={"id": task_id})
+            else:
+                prisma_task = await db.chattask.update(
+                    where={"id": task_id},
+                    data=update_data,  # type: ignore[arg-type]
+                )
 
             # Clear active task from conversation for terminal states
             if (
@@ -6195,13 +6313,16 @@ class IndexerRepository:
         }
 
         try:
-            prisma_task = await db.chattask.update(
-                where={"id": task_id},
+            updated = await db.chattask.update_many(
+                where={"id": task_id, "status": _to_prisma_task_status(ChatTaskStatus.running)},
                 data={
                     "streamingState": Json(streaming_state),
                     "lastUpdateAt": utc_now(),
                 },
             )
+            if not updated:
+                return None
+            prisma_task = await db.chattask.find_unique(where={"id": task_id})
             return self._prisma_task_to_model(prisma_task)
         except Exception as e:
             logger.warning(f"Failed to update chat task streaming state: {e}")

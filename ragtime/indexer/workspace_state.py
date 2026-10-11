@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
+from ragtime.indexer.denial_notices import latest_denial_message_id
 from ragtime.indexer.models import (
     ChatTask,
     ChatTaskResponse,
@@ -28,6 +29,7 @@ def _to_conversation_response(conversation: Conversation) -> ConversationRespons
         total_tokens=conversation.total_tokens,
         active_task_id=conversation.active_task_id,
         active_branch_id=conversation.active_branch_id,
+        last_denial_message_id=latest_denial_message_id(conversation.messages),
         disabled_builtin_tool_ids=conversation.disabled_builtin_tool_ids,
         subagents_enabled=conversation.subagents_enabled,
         parent_conversation_id=conversation.parent_conversation_id,
@@ -59,6 +61,7 @@ def summary_to_conversation_response(
         total_tokens=summary.total_tokens,
         active_task_id=summary.active_task_id,
         active_branch_id=summary.active_branch_id,
+        last_denial_message_id=summary.last_denial_message_id,
         subagents_enabled=summary.subagents_enabled,
         parent_conversation_id=summary.parent_conversation_id,
         subagent_role=summary.subagent_role,

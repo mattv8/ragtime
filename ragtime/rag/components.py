@@ -212,6 +212,7 @@ from ragtime.indexer.conversation_tool_options import (
     load_conversation_tool_options,
     resolve_effective_allow_write,
 )
+from ragtime.indexer.denial_notices import is_denial_notice
 from ragtime.indexer.embedding_errors import EmbeddingFailureKind, EmbeddingOperationError, build_embedding_configuration_error
 from ragtime.indexer.export_service import (
     chart_to_table,
@@ -17148,6 +17149,8 @@ class RAGComponents:
 
         formatted_messages: list[str] = []
         for idx, message in enumerate(messages):
+            if is_denial_notice(message):
+                continue
             formatted_messages.append(
                 await self._format_message_for_compaction(
                     message,

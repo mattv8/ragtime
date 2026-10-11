@@ -9,6 +9,7 @@ CHAT_EVENT_CHANNELS_BY_TYPE = {
     "tool": "commentary",
     "content": "final",
     "error": "final",
+    "content_protection_denial": "final",
 }
 
 

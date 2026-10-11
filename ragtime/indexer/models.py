@@ -3124,6 +3124,7 @@ class ConversationResponse(BaseModel):
     total_tokens: int
     active_task_id: Optional[str] = None
     active_branch_id: Optional[str] = None
+    last_denial_message_id: Optional[str] = None
     disabled_builtin_tool_ids: List[str] = Field(default_factory=list)
     subagents_enabled: bool = True
     parent_conversation_id: Optional[str] = None
@@ -3150,6 +3151,7 @@ class ConversationWindowMetadata(BaseModel):
     display_name: Optional[str] = None
     total_tokens: int = 0
     active_task_id: Optional[str] = None
+    last_denial_message_id: Optional[str] = None
     disabled_builtin_tool_ids: List[str] = Field(default_factory=list)
     subagents_enabled: bool = True
     parent_conversation_id: Optional[str] = None
@@ -3174,6 +3176,7 @@ class ConversationMessagePreview(BaseModel):
     message_id: Optional[str] = None
     content_truncated: bool
     has_details: bool
+    events: Optional[List[dict]] = None
 
 
 class ConversationWindowEntry(BaseModel):
@@ -3220,6 +3223,7 @@ class ConversationSummaryResponse(BaseModel):
     total_tokens: int = 0
     active_task_id: Optional[str] = None
     active_branch_id: Optional[str] = None
+    last_denial_message_id: Optional[str] = None
     subagents_enabled: bool = True
     parent_conversation_id: Optional[str] = None
     subagent_role: Optional[str] = None

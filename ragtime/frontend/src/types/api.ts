@@ -2815,7 +2815,21 @@ export interface ErrorMessageEvent {
   reason_code?: string;
 }
 
-export type MessageEvent = ContentEvent | ToolCallEvent | ReasoningEvent | ErrorMessageEvent;
+export interface ContentProtectionDenialEvent {
+  type: 'content_protection_denial';
+  channel: 'final';
+  code: string;
+  public_reason: string;
+  request_id: string;
+  timestamp: string;
+}
+
+export type MessageEvent =
+  | ContentEvent
+  | ToolCallEvent
+  | ReasoningEvent
+  | ErrorMessageEvent
+  | ContentProtectionDenialEvent;
 
 /** Public, user-safe detail returned for a content-protection refusal. */
 export interface PublicErrorDetail {
@@ -2825,6 +2839,7 @@ export interface PublicErrorDetail {
   next_step: string;
   request_id: string;
   reason_code?: string;
+  denial_message_id?: string;
 }
 
 // Multimodal content types
@@ -2934,6 +2949,7 @@ export interface Conversation {
   tool_output_mode: ToolOutputMode; // Per-conversation tool output preference
   created_at: string;
   updated_at: string;
+  last_denial_message_id?: string | null;
 }
 
 export type ConversationWindowMetadata = Omit<Conversation, 'messages'>;
@@ -2945,6 +2961,8 @@ export interface ConversationMessagePreview {
   message_id?: string | null;
   content_truncated: boolean;
   has_details: boolean;
+  /** Safe denial events may be included so an initial window can render a notice. */
+  events?: MessageEvent[] | null;
 }
 
 export type ConversationWindowEntry = {
@@ -2987,6 +3005,7 @@ export interface ConversationSummary {
   read_only?: boolean;
   created_at: string;
   updated_at: string;
+  last_denial_message_id?: string | null;
 }
 
 /** Metadata for a selected-user conversation share received by the current user. */

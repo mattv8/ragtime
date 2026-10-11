@@ -41,6 +41,7 @@ from ragtime.content_protection.hosted import (
 from ragtime.content_protection.hosted import (
     hosted_context as content_protection_context,
 )
+from ragtime.content_protection.models import ContentProtectionError
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.datetimes import coerce_utc_datetime, utc_now
 from ragtime.core.event_bus import task_event_bus
@@ -57,6 +58,7 @@ from ragtime.core.usage_accounting import (
 )
 from ragtime.indexer.chat_attachments import cleanup_expired_chat_attachments
 from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
+from ragtime.indexer.denial_notices import is_denial_notice, persist_chat_denial
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import (
     ChatMessage,
@@ -1059,6 +1061,8 @@ class BackgroundTaskService:
                         parsed_content = strip_images_from_content(parsed_content)
                         chat_history.append(HumanMessage(content=cast(str | list[str | dict[str, Any]], parsed_content)))
                     elif msg.role == "assistant":
+                        if is_denial_notice(msg):
+                            continue
                         if msg.events:
                             # Reconstruct native AIMessage(tool_calls) + ToolMessage pairs
                             chat_history.extend(rebuild_tool_messages_from_events(msg.events, msg_idx, max_tool_output_chars))
@@ -1761,8 +1765,7 @@ class BackgroundTaskService:
                     logger.warning(f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}")
                 raise
             except Exception as e:
-                protection_detail = getattr(e, "public_detail", None)
-                is_protection_error = callable(protection_detail)
+                is_protection_error = isinstance(e, ContentProtectionError)
                 detail: dict[str, str] | None = None
                 if is_protection_error:
                     # Do not include classifier/provider exception text in logs,
@@ -1771,13 +1774,25 @@ class BackgroundTaskService:
                 else:
                     logger.exception(f"Background task {task_id} failed")
                 try:
-                    if reasoning_block_started_at is not None:
+                    if is_protection_error:
+                        full_response = ""
+                        events.clear()
+                        tool_calls.clear()
+                        try:
+                            await persist_chat_denial(conversation_id, e, task_id=task_id or None)
+                        except Exception:
+                            logger.warning("Could not persist content-protection denial for task %s", task_id)
+                    elif reasoning_block_started_at is not None:
                         finalize_reasoning_block(events, reasoning_block_started_at)
                         reasoning_block_started_at = None
-                    if not partial_message_persisted and await _persist_partial_assistant_message(
-                        conversation_id,
-                        full_response,
-                        events,
+                    if (
+                        not is_protection_error
+                        and not partial_message_persisted
+                        and await _persist_partial_assistant_message(
+                            conversation_id,
+                            full_response,
+                            events,
+                        )
                     ):
                         partial_message_persisted = True
                         logger.info(
@@ -1800,7 +1815,7 @@ class BackgroundTaskService:
                     if generic_error and not termination_reason:
                         termination_reason, error_message = generic_error
                     if is_protection_error:
-                        detail = cast(Callable[[], dict[str, str]], protection_detail)()
+                        detail = e.public_detail()
                         error_message = str(detail.get("message") or "This content is not available under your access profile.")
                         termination_reason = str(detail.get("code") or "content_protection")
                     if termination_reason == "payment_required":
@@ -1821,11 +1836,11 @@ class BackgroundTaskService:
                         # an unclassified platform error must not be blamed on the provider.
                         termination_reason=termination_reason,
                         outcome_summary={
-                            "activity": activity_summary(tool_calls),
-                            "warnings": warnings,
+                            **({"activity": activity_summary(tool_calls), "warnings": warnings} if not is_protection_error else {}),
                             **({"refusal": detail} if detail else {}),
                         },
-                        response_content=(f"{full_response}\n\n{error_message}" if full_response else error_message) if detail else full_response or None,
+                        response_content=error_message if detail else full_response or None,
+                        clear_streaming_state=is_protection_error,
                     )
                     await task_event_bus.publish(
                         task_id,

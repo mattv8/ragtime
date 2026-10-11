@@ -200,6 +200,22 @@ class ContentProtectionConfig(BaseModel):
         return self
 
 
+CONTENT_PROTECTION_PUBLIC_DEFAULTS = {
+    "content_denied": (
+        "This content is not available under your access policy.",
+        "Try rephrasing your question or requesting information within your access policy.",
+    ),
+    "operation_completed_response_withheld": (
+        "The operation completed but its response is not available under your access policy.",
+        "Check the result before retrying so you do not repeat a completed operation.",
+    ),
+    "classifier_unavailable": ("Content protection is currently unavailable.", "Try again later or contact an administrator."),
+    "classifier_invalid_response": ("Content protection could not safely validate this request.", "Try again later or contact an administrator."),
+    "content_unclassifiable": ("This content cannot be inspected safely.", "Try a smaller request containing inspectable text."),
+    "policy_changed": ("Content protection policy changed during this request.", "Review the current policy before retrying the request."),
+}
+
+
 class ContentProtectionError(Exception):
     """Fixed, safe error data for transports to serialize."""
 
@@ -227,24 +243,13 @@ class ContentProtectionError(Exception):
         self.recovery_eligible = recovery_eligible
         self.execution_status = execution_status
         self.attempts_remaining = attempts_remaining
+        self.denial_message_id: str | None = None
         super().__init__(code)
 
     def public_detail(self) -> dict[str, str]:
-        defaults = {
-            "content_denied": (
-                "This content is not available under your access policy.",
-                "Try rephrasing your question or requesting information within your access policy.",
-            ),
-            "operation_completed_response_withheld": (
-                "The operation completed but its response is not available under your access policy.",
-                "Check the result before retrying so you do not repeat a completed operation.",
-            ),
-            "classifier_unavailable": ("Content protection is currently unavailable.", "Try again later or contact an administrator."),
-            "classifier_invalid_response": ("Content protection could not safely validate this request.", "Try again later or contact an administrator."),
-            "content_unclassifiable": ("This content cannot be inspected safely.", "Try a smaller request containing inspectable text."),
-            "policy_changed": ("Content protection policy changed during this request.", "Review the current policy before retrying the request."),
-        }
-        fallback_reason, next_step = defaults.get(self.code, ("Content protection request failed.", "Try again later or contact an administrator."))
+        fallback_reason, next_step = CONTENT_PROTECTION_PUBLIC_DEFAULTS.get(
+            self.code, ("Content protection request failed.", "Try again later or contact an administrator.")
+        )
         reason_defaults = {
             "restricted_content": "This request is outside the allowed access policy.",
             "uncertain": "This request could not be safely classified under the access policy.",
@@ -259,4 +264,6 @@ class ContentProtectionError(Exception):
             detail["execution_status"] = self.execution_status
         if self.attempts_remaining is not None:
             detail["attempts_remaining"] = str(self.attempts_remaining)
+        if self.denial_message_id:
+            detail["denial_message_id"] = self.denial_message_id
         return detail
