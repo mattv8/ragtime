@@ -50,7 +50,7 @@ function keyHelpText({
   if (!hasDraftKey) {
     return configuredForTransport
       ? 'A key is configured. Enter a new value to replace it.'
-      : 'No key configured. Enter a TypeSafe (ts_…) or OpenRouter (sk-or-…) key.';
+      : 'No key configured. Enter a TypeSafe (apikey_… or ts_…) or OpenRouter (sk-or-…) key.';
   }
   if (unrecognizedAuto)
     return '⚠ Key prefix not recognized. Choose TypeSafe or OpenRouter to save.';

@@ -22,6 +22,7 @@ import {
   type ContentProtectionTestResult,
   type JevModel,
   type JevTransport,
+  updateContentProtectionConfigSlice,
 } from '@/api/contentProtection';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { generateCredentialValue } from '@/utils/credentialGenerator';
@@ -32,6 +33,7 @@ import { CONTENT_PROTECTION_SETTING_ID } from '../shared/SettingsHighlightLink';
 import { ContentProtectionAccessLevelCard } from './ContentProtectionAccessLevelCard';
 import { ContentProtectionCategoryCard } from './ContentProtectionCategoryCard';
 import { JevClassifierFields } from './JevClassifierFields';
+import { MasterToggle } from './MasterToggle';
 import { SettingsAccordionSection } from './SettingsAccordionSection';
 import type { SettingsAccordionSectionId } from './settingsAccordionState';
 
@@ -271,6 +273,11 @@ export function ContentProtectionSettingsSection({
   const [setupError, setSetupError] = useState<string | null>(null);
   const [inspectError, setInspectError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(open);
+  const [toggleError, setToggleError] = useState<string | null>(null);
+  const [toggleErrorCanConfigure, setToggleErrorCanConfigure] = useState(false);
+  const [toggleBusy, setToggleBusy] = useState(false);
+  const [disableConfirmation, setDisableConfirmation] = useState(false);
   const [saving, setSaving] = useState(false);
   const [readiness, setReadiness] = useState<ContentProtectionReadinessResult | null>(null);
   const [readinessSignature, setReadinessSignature] = useState<string | null>(null);
@@ -304,27 +311,63 @@ export function ContentProtectionSettingsSection({
   const jevModelsToken = useRef(0);
   const previewToken = useRef(0);
   const [saveConflict, setSaveConflict] = useState(false);
-  const load = useCallback(async () => {
+  const loadToken = useRef(0);
+  const enforcementSaving = useRef(false);
+  const restoreToggleFocus = useRef(false);
+  const load = useCallback(async (clearToggleError = false) => {
+    const token = ++loadToken.current;
+    setLoading(true);
     try {
       const [config, nextCatalog] = await Promise.all([
         contentProtectionApi.getConfig(),
         contentProtectionApi.getCatalog(),
       ]);
+      if (token !== loadToken.current) return;
       setSaved(config);
       setCatalog(nextCatalog);
       setLoadError(null);
+      if (clearToggleError) {
+        setToggleError(null);
+        setToggleErrorCanConfigure(false);
+      }
     } catch (caught) {
+      if (token !== loadToken.current) return;
       setLoadError(
         caught instanceof Error ? caught.message : 'Failed to load content protection settings',
       );
+    } finally {
+      if (token === loadToken.current) setLoading(false);
     }
   }, []);
   useEffect(() => {
-    if (open) {
+    if (open && !toggleBusy && !disableConfirmation) {
       void load();
       refreshModelsRef.current();
     }
-  }, [load, open, refreshKey]);
+  }, [disableConfirmation, load, open, refreshKey, toggleBusy]);
+  useEffect(() => {
+    if (restoreToggleFocus.current && !toggleBusy && !disableConfirmation) {
+      restoreToggleFocus.current = false;
+      document.getElementById('content-protection-enabled')?.focus();
+    }
+  }, [disableConfirmation, toggleBusy]);
+  useEffect(() => {
+    if (!disableConfirmation || toggleBusy) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (
+        event.key === 'Escape' &&
+        document
+          .getElementById('content-protection-disable-confirmation')
+          ?.contains(document.activeElement)
+      ) {
+        event.preventDefault();
+        setDisableConfirmation(false);
+        restoreToggleFocus.current = true;
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [disableConfirmation, toggleBusy]);
   const resetJevModels = () => {
     jevModelsToken.current += 1;
     setJevModels([]);
@@ -340,6 +383,57 @@ export function ContentProtectionSettingsSection({
       setReadinessBusy(false);
     }
     setSetup((current) => current && { ...current, ...change });
+  };
+  const toggleLocked = toggleBusy || disableConfirmation;
+  const saveEnforcement = async (target: boolean) => {
+    if (enforcementSaving.current) return;
+    enforcementSaving.current = true;
+    loadToken.current += 1;
+    setToggleBusy(true);
+    setDisableConfirmation(false);
+    setToggleError(null);
+    setToggleErrorCanConfigure(false);
+    try {
+      const next = await updateContentProtectionConfigSlice((config) => {
+        const candidate = { ...config, enabled: target };
+        if (target) {
+          const invalid = validationError(candidate);
+          if (invalid) throw new Error(invalid);
+        }
+        return candidate;
+      });
+      loadToken.current += 1;
+      setSaved(next);
+      setLoadError(null);
+    } catch (caught) {
+      const unavailable = caught instanceof Error && 'status' in caught && caught.status === 503;
+      setToggleError(
+        unavailable
+          ? 'The classifier is unavailable. Configure the classifier and try again.'
+          : caught instanceof Error
+            ? caught.message
+            : 'Unable to update content protection. Please try again.',
+      );
+      setToggleErrorCanConfigure(unavailable);
+    } finally {
+      enforcementSaving.current = false;
+      setToggleBusy(false);
+      restoreToggleFocus.current = true;
+    }
+  };
+  const requestEnforcementChange = (target: boolean) => {
+    if (toggleLocked || setup || inspect || !saved) return;
+    setToggleError(null);
+    setToggleErrorCanConfigure(false);
+    if (!target) {
+      setDisableConfirmation(true);
+      return;
+    }
+    void saveEnforcement(true);
+  };
+  const cancelDisableConfirmation = () => {
+    setDisableConfirmation(false);
+    restoreToggleFocus.current = true;
   };
   const openSetup = (nextTab: SetupTab = 'classifier') => {
     if (!saved) return;
@@ -364,6 +458,8 @@ export function ContentProtectionSettingsSection({
       setSetup(null);
       setReadiness(null);
       setReadinessSignature(null);
+      setToggleError(null);
+      setToggleErrorCanConfigure(false);
     } catch (caught) {
       setSaveConflict(caught instanceof Error && 'status' in caught && caught.status === 409);
       setSetupError(
@@ -390,6 +486,8 @@ export function ContentProtectionSettingsSection({
       setSetup(null);
       setSaveConflict(false);
       setSetupError(null);
+      setToggleError(null);
+      setToggleErrorCanConfigure(false);
     } catch (caught) {
       setSetupError(caught instanceof Error ? caught.message : 'Failed to reload saved settings');
     } finally {
@@ -596,7 +694,15 @@ export function ContentProtectionSettingsSection({
       title="Content protection"
       open={open}
       onToggle={onToggle}
-      status={saved?.enabled ? 'Enabled' : 'Disabled'}
+      status={
+        saved?.enabled
+          ? 'Enabled'
+          : saved
+            ? 'Disabled'
+            : loading || !loadError
+              ? 'Loading…'
+              : 'Unavailable'
+      }
       highlightId={`setting-${CONTENT_PROTECTION_SETTING_ID}`}
     >
       <section
@@ -613,7 +719,7 @@ export function ContentProtectionSettingsSection({
             >
               <strong>Unable to load content protection settings</strong>
               <span>{loadError}</span>
-              <button className="btn btn-secondary" type="button" onClick={() => void load()}>
+              <button className="btn btn-secondary" type="button" onClick={() => void load(true)}>
                 Retry
               </button>
             </div>
@@ -622,11 +728,92 @@ export function ContentProtectionSettingsSection({
           )
         ) : (
           <>
-            <p className="content-protection-status">
-              {saved.enabled
-                ? 'Enabled: covered traffic is classified before release.'
-                : 'Disabled: saved rules are ready for preparation.'}
-            </p>
+            {loadError && (
+              <div
+                className="content-protection-result"
+                role="alert"
+                data-content-protection-saved-refresh-error
+              >
+                <span>{loadError}</span>
+                <button className="btn btn-secondary" type="button" onClick={() => void load(true)}>
+                  Retry
+                </button>
+              </div>
+            )}
+            <MasterToggle
+              settingId="setting-content_protection_enabled"
+              inputId="content-protection-enabled"
+              label="Enable content protection"
+              checked={saved.enabled}
+              disabled={toggleLocked || Boolean(loadError) || Boolean(setup) || inspect}
+              onChange={requestEnforcementChange}
+              help={
+                saved.enabled
+                  ? 'Covered traffic is classified before release.'
+                  : 'Saved rules stay in place; turning on runs a classifier readiness check.'
+              }
+            />
+            {toggleBusy && (
+              <p
+                id="content-protection-toggle-busy"
+                className="field-help"
+                role="status"
+                aria-live="polite"
+                data-content-protection-toggle-busy
+              >
+                {saved.enabled ? 'Saving…' : 'Checking classifier…'}
+              </p>
+            )}
+            {disableConfirmation && (
+              <div
+                id="content-protection-disable-confirmation"
+                className="content-protection-result"
+                role="group"
+                aria-labelledby="content-protection-disable-confirm-heading"
+              >
+                <strong id="content-protection-disable-confirm-heading">
+                  Turn off protection?
+                </strong>
+                <span>Covered traffic will no longer be classified.</span>
+                <div style={{ display: 'flex', gap: 'var(--space-sm)', flexWrap: 'wrap' }}>
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={() => void saveEnforcement(false)}
+                  >
+                    Turn off
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    autoFocus
+                    onClick={cancelDisableConfirmation}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+            {toggleError && (
+              <div
+                id="content-protection-toggle-error"
+                className="content-protection-result"
+                role="alert"
+                data-content-protection-toggle-error
+              >
+                <span>{toggleError}</span>
+                {toggleErrorCanConfigure && (
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    disabled={toggleLocked}
+                    onClick={() => openSetup('classifier')}
+                  >
+                    Configure classifier
+                  </button>
+                )}
+              </div>
+            )}
             {saved.legacy_reset && (
               <div
                 className="settings-switch-card"
@@ -665,6 +852,7 @@ export function ContentProtectionSettingsSection({
                 <button
                   className="btn btn-secondary"
                   type="button"
+                  disabled={toggleLocked}
                   onClick={() => openSetup('classifier')}
                 >
                   Configure classifier
@@ -679,6 +867,7 @@ export function ContentProtectionSettingsSection({
                 <button
                   className="btn btn-secondary"
                   type="button"
+                  disabled={toggleLocked}
                   onClick={() => openSetup('categories')}
                 >
                   Configure categories
@@ -696,6 +885,7 @@ export function ContentProtectionSettingsSection({
                 <button
                   className="btn btn-secondary"
                   type="button"
+                  disabled={toggleLocked}
                   onClick={() => openSetup('access_levels')}
                 >
                   Configure access levels
@@ -714,6 +904,7 @@ export function ContentProtectionSettingsSection({
                 <button
                   className="btn btn-secondary"
                   type="button"
+                  disabled={toggleLocked}
                   onClick={() => openSetup('coverage')}
                 >
                   Configure coverage
@@ -724,6 +915,7 @@ export function ContentProtectionSettingsSection({
               <button
                 className="btn btn-secondary"
                 type="button"
+                disabled={toggleLocked}
                 onClick={() => {
                   setInspect(true);
                   setInspectTab('request');
@@ -1124,7 +1316,9 @@ export function ContentProtectionSettingsSection({
                         <span>
                           All supported traffic applies classification broadly. Selected scopes adds
                           requirements only where configured. Individual user policies can require
-                          or skip classification in either mode.
+                          or skip classification in either mode. The main Enable content protection
+                          control enforces saved rules; the Review &amp; save switch changes only
+                          the configuration draft.
                         </span>
                       }
                     >
@@ -1184,8 +1378,9 @@ export function ContentProtectionSettingsSection({
                 )}
                 {!setup.enabled && setup.coverage_mode === 'selected_scopes' && (
                   <p className="field-help">
-                    Enable protection in Review &amp; save to configure app areas. Saved
-                    requirements remain in place while protection is disabled.
+                    Use the main Enable content protection control to enforce saved rules. The
+                    Review &amp; save switch controls the draft; saved requirements remain in place
+                    while protection is disabled.
                   </p>
                 )}
                 <div

@@ -3,6 +3,7 @@ import {
   ContentProtectionApiError,
   DELETED_ACCESS_LEVEL_MESSAGE,
   contentProtectionApi,
+  detectJevKeyTransport,
   requirementModeFor,
   updateContentProtectionConfigSlice,
   userOverrideMode,
@@ -54,6 +55,10 @@ const config = (revision = 1): ContentProtectionConfig => ({
   user_overrides: [],
 });
 describe('contentProtectionApi', () => {
+  it('recognizes TypeSafe API keys with the apikey prefix', () => {
+    expect(detectJevKeyTransport(' apikey_synthetic-typesafe-key ')).toBe('typesafe');
+  });
+
   it('uses a stable error when the response has no safe detail', async () => {
     vi.stubGlobal(
       'fetch',

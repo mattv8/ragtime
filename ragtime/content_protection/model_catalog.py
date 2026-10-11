@@ -29,7 +29,7 @@ def detect_key_transport(key: str) -> ResolvedTransport | None:
     normalized = key.strip()
     if normalized.startswith("sk-or-"):
         return "openrouter"
-    if normalized.startswith(("ts_", "ts-")):
+    if normalized.startswith(("apikey_", "ts_", "ts-")):
         return "typesafe"
     return None
 

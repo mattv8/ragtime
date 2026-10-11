@@ -173,6 +173,24 @@ describe('ContentProtectionSettingsSection', () => {
     expect(onOpenRouterKeySaved).not.toHaveBeenCalled();
   });
 
+  it('saves an Auto-detected apikey TypeSafe key to the TypeSafe setting', async () => {
+    const fetch = installFetch();
+    const user = await openSetup();
+
+    await user.type(screen.getByLabelText('API key'), 'apikey_synthetic-typesafe-key');
+    const saveKey = screen.getByRole('button', { name: 'Save key' }) as HTMLButtonElement;
+    expect(saveKey.disabled).toBe(false);
+    await user.click(saveKey);
+
+    await waitFor(() =>
+      expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/settings'))).toBe(true),
+    );
+    const settingsWrite = fetch.mock.calls.find(([url]) => String(url).endsWith('/settings'));
+    expect(JSON.parse(settingsWrite?.[1]?.body as string)).toEqual({
+      typesafe_api_key: 'apikey_synthetic-typesafe-key',
+    });
+  });
+
   it('creates distinct category and access-level IDs without crypto.randomUUID and saves them', async () => {
     let randomValue = 0;
     vi.stubGlobal('crypto', {
@@ -313,7 +331,9 @@ describe('ContentProtectionSettingsSection', () => {
     await user.click(screen.getByRole('tab', { name: 'Coverage' }));
     await user.selectOptions(screen.getByRole('combobox', { name: 'Coverage' }), 'selected_scopes');
     await user.click(screen.getByRole('tab', { name: 'Review & save' }));
-    await user.click(screen.getByLabelText('Enable content protection'));
+    await user.click(
+      within(screen.getByRole('dialog')).getByLabelText('Enable content protection'),
+    );
     await user.click(screen.getByRole('button', { name: 'Save protection' }));
     const write = fetch.mock.calls.find(([, options]) => options?.method === 'PUT');
     expect(JSON.parse(write?.[1]?.body as string).config).toMatchObject({

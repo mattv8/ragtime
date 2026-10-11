@@ -217,7 +217,12 @@ export const contentProtectionApi = {
 export function detectJevKeyTransport(key: string): Exclude<JevTransport, 'auto'> | null {
   const normalized = key.trim();
   if (normalized.startsWith('sk-or-')) return 'openrouter';
-  if (normalized.startsWith('ts_') || normalized.startsWith('ts-')) return 'typesafe';
+  if (
+    normalized.startsWith('apikey_') ||
+    normalized.startsWith('ts_') ||
+    normalized.startsWith('ts-')
+  )
+    return 'typesafe';
   return null;
 }
 export async function updateContentProtectionConfigSlice(

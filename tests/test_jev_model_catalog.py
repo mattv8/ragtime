@@ -19,9 +19,27 @@ class JevModelCatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model_catalog.detect_key_transport(" sk-or-key "), "openrouter")
         self.assertEqual(model_catalog.detect_key_transport("ts_key"), "typesafe")
         self.assertEqual(model_catalog.detect_key_transport("ts-key"), "typesafe")
+        self.assertEqual(model_catalog.detect_key_transport("apikey_synthetic-typesafe-key"), "typesafe")
         self.assertIsNone(model_catalog.detect_key_transport("other-key"))
 
     async def test_auto_uses_draft_key_and_rejects_unrecognized_key(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"models": []})
+
+        with mock.patch.object(model_catalog, "_make_http_client", side_effect=lambda timeout: _mock_client(handler)):
+            result = await model_catalog.list_jev_models("auto", "apikey_synthetic-typesafe-key", {})
+        self.assertTrue(result["success"])
+        self.assertEqual(result["transport"], "typesafe")
+        self.assertEqual(seen[0].url, httpx.URL("https://api.typesafe.ai/v1/models"))
+        self.assertEqual(seen[0].headers["Authorization"], "Bearer apikey_synthetic-typesafe-key")
+
+        result = await model_catalog.list_jev_models("auto", "unknown", {})
+        self.assertEqual(result["message"], "Choose TypeSafe or OpenRouter for this key.")
+
+    async def test_auto_uses_openrouter_draft_key(self) -> None:
         seen: list[httpx.Request] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -35,13 +53,16 @@ class JevModelCatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[0].url, httpx.URL("https://openrouter.ai/api/v1/models?output_modalities=decisions"))
         self.assertEqual(seen[0].headers["Authorization"], "Bearer sk-or-draft")
 
-        result = await model_catalog.list_jev_models("auto", "unknown", {})
-        self.assertEqual(result["message"], "Choose TypeSafe or OpenRouter for this key.")
-
     async def test_explicit_transport_rejects_contradictory_key_and_missing_key(self) -> None:
         result = await model_catalog.list_jev_models("typesafe", "sk-or-draft", {})
         self.assertFalse(result["success"])
         self.assertEqual(result["message"], "The API key does not match the selected provider.")
+
+        with mock.patch.object(model_catalog, "_make_http_client") as make_client:
+            result = await model_catalog.list_jev_models("openrouter", "apikey_synthetic-typesafe-key", {})
+        self.assertFalse(result["success"])
+        self.assertEqual(result["message"], "The API key does not match the selected provider.")
+        make_client.assert_not_called()
 
         result = await model_catalog.list_jev_models("auto", None, {})
         self.assertFalse(result["success"])
