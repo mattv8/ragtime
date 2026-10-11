@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Lock, LockOpen, Info, ExternalLink, Pencil } from 'lucide-react';
+import { Lock, LockOpen, Info, ExternalLink, KeyRound, Pencil } from 'lucide-react';
 import { api } from '@/api';
 import { generateCredentialValue } from '@/utils/credentialGenerator';
 import type {
@@ -36,6 +36,7 @@ import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { Popover } from './Popover';
 import { InlineCopyButton } from './shared/InlineCopyButton';
+import { FetchableModelField } from './shared/FetchableModelField';
 import { UserSpaceCodeIndexesModal } from './shared/UserSpaceCodeIndexesModal';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
@@ -44,6 +45,7 @@ import {
   type ObjectStorageSettingsHandle,
 } from './shared/ObjectStorageSettings';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
+import { AccessLevelsModal } from './shared/AccessLevelsModal';
 import { ModelFilterModal } from './ModelFilterModal';
 import { ModelSelector } from './ModelSelector';
 import { CheckboxDropdown } from './shared/CheckboxDropdown';
@@ -94,6 +96,7 @@ import {
 } from '@/utils/modelProviders';
 import { type ThemePackId, resolveThemePackId, applyThemePack } from '@/theme';
 import { SettingsAccordionSection } from './settings/SettingsAccordionSection';
+import { useSearchTextHighlights } from './shared/useSearchTextHighlights';
 import { SearchSettingsSection } from './settings/SearchSettingsSection';
 import { SecuritySettingsSection } from './settings/SecuritySettingsSection';
 import { AppearanceSettingsSection } from './settings/AppearanceSettingsSection';
@@ -107,12 +110,19 @@ import { IndexingResourcesSettings } from './settings/IndexingResourcesSettings'
 import { useIndexResourceStatus } from '@/hooks/useIndexResourceStatus';
 import { getLdapGroupDisplayName, type LdapGroup } from './LdapGroupSelect';
 import {
-  getDefaultSettingsAccordionState,
-  openSettingsAccordionSections,
-  restoreSettingsAccordionState,
+  applySettingsAccordionSearch,
+  clearSettingsAccordionSearch,
+  createSettingsAccordionViewState,
+  getSettingsAccordionVisibleState,
+  openSettingsAccordionNavigation,
+  toggleSettingsAccordionSection,
   type SettingsAccordionSectionId,
-  type SettingsAccordionState,
+  type SettingsAccordionViewState,
 } from './settings/settingsAccordionState';
+import {
+  getSettingsAccordionPreference,
+  setSettingsAccordionPreference,
+} from '@/utils/settingsAccordionPreferences';
 import { getUnconfiguredCloudOAuthProviders } from './settings/cloudOAuthSetupHelp';
 import { AuthenticationTimeouts } from './settings/AuthenticationTimeouts';
 
@@ -233,6 +243,32 @@ const SETTINGS_SEARCH_COMPLETION_SELECTOR = [
   '[data-settings-filter-card="true"] > div > strong',
   '[data-settings-filter-card="true"] h3',
   '[data-settings-filter-card="true"] h4',
+].join(', ');
+
+const SETTINGS_SEARCH_HIGHLIGHT_INCLUDE_SELECTOR = [
+  '.settings-accordion-title',
+  'fieldset > legend',
+  'fieldset label',
+  'fieldset summary',
+  '.api-info-box',
+  '.field-help',
+  '.fieldset-help',
+  'h3',
+  'h4',
+].join(', ');
+
+const SETTINGS_SEARCH_HIGHLIGHT_EXCLUDE_SELECTOR = [
+  'input',
+  'select',
+  'textarea',
+  'option',
+  'button:not(.settings-accordion-header)',
+  'code',
+  'pre',
+  'kbd',
+  '.settings-filter-search',
+  '[aria-hidden="true"]',
+  '[aria-live]',
 ].join(', ');
 
 function collectSettingsSearchCompletionCandidates(root: HTMLElement): string[] {
@@ -654,6 +690,7 @@ interface SettingsPanelProps {
   onServerBackupJobObserved?: (job: ServerBackupJob) => void;
   onServerRestoreJobObserved?: (job: ServerRestoreJob) => void;
   onServerOperationError?: (message: string) => void;
+  onNavigateToSetting?: (settingId: string) => void;
 }
 
 export function SettingsPanel({
@@ -670,6 +707,7 @@ export function SettingsPanel({
   onServerBackupJobObserved,
   onServerRestoreJobObserved,
   onServerOperationError,
+  onNavigateToSetting,
 }: SettingsPanelProps) {
   const settingsPanelRef = useRef<HTMLDivElement | null>(null);
   const hasAuthenticatedPosture = hasAuthenticatedSecurityPosture(authStatus);
@@ -691,31 +729,90 @@ export function SettingsPanel({
   const [settingsFilterCompletionCandidates, setSettingsFilterCompletionCandidates] = useState<
     string[]
   >([]);
+  const [settingsFilterMatchCount, setSettingsFilterMatchCount] = useState(0);
   const settingsFilterInputRef = useRef<HTMLInputElement | null>(null);
   const [activeAuthProviderValue, setActiveAuthProviderValue] =
     useState<(typeof AUTH_PROVIDER_OPTIONS)[number]['value']>('local_managed');
 
-  const [openAccordionSections, setOpenAccordionSections] = useState<SettingsAccordionState>(
-    getDefaultSettingsAccordionState,
+  const accordionOwnerRef = useRef<string | null>(currentUser?.id ?? null);
+  const [accordionView, setAccordionView] = useState<SettingsAccordionViewState>(() =>
+    createSettingsAccordionViewState(getSettingsAccordionPreference(currentUser?.id)),
   );
-  const accordionFilterSnapshotRef = useRef<SettingsAccordionState | null>(null);
+  const openAccordionSections = getSettingsAccordionVisibleState(accordionView);
 
-  const handleToggleAccordionSection = useCallback((id: SettingsAccordionSectionId) => {
-    setOpenAccordionSections((current) => ({ ...current, [id]: !current[id] }));
-  }, []);
+  const updateAccordionView = useCallback(
+    (
+      transition: (view: SettingsAccordionViewState) => SettingsAccordionViewState,
+      persist = true,
+    ) => {
+      setAccordionView((current) => {
+        const next = transition(current);
+        if (persist && accordionOwnerRef.current === currentUser?.id) {
+          setSettingsAccordionPreference(currentUser?.id, next.remembered);
+        }
+        return next;
+      });
+    },
+    [currentUser?.id],
+  );
+
+  const handleToggleAccordionSection = useCallback(
+    (id: SettingsAccordionSectionId) => {
+      updateAccordionView((current) => {
+        const toggled = toggleSettingsAccordionSection(current, id);
+        return settingsFilter.queries.length > 0 ? toggled : clearSettingsAccordionSearch(toggled);
+      });
+    },
+    [settingsFilter.queries.length, updateAccordionView],
+  );
+
+  useEffect(() => {
+    const userId = currentUser?.id ?? null;
+    accordionOwnerRef.current = userId;
+    setAccordionView(createSettingsAccordionViewState(getSettingsAccordionPreference(userId)));
+  }, [currentUser?.id]);
 
   useEffect(() => {
     const openContentProtection = () => {
       if (window.location.hash.startsWith('#content-protection')) {
-        setOpenAccordionSections((current) =>
-          openSettingsAccordionSections(current, ['content-protection']),
+        updateAccordionView((current) =>
+          openSettingsAccordionNavigation(current, ['content-protection']),
         );
       }
     };
     openContentProtection();
     window.addEventListener('hashchange', openContentProtection);
     return () => window.removeEventListener('hashchange', openContentProtection);
-  }, []);
+  }, [updateAccordionView]);
+
+  useEffect(() => {
+    let highlightFrame: number | undefined;
+    let highlightTimer: number | undefined;
+    let highlighted: HTMLElement | null = null;
+    const clearHighlight = () => {
+      if (highlightFrame !== undefined) window.cancelAnimationFrame(highlightFrame);
+      if (highlightTimer !== undefined) window.clearTimeout(highlightTimer);
+      highlighted?.classList.remove('highlight-setting');
+    };
+    const highlightSettings = (event: Event) => {
+      const targetId = (event as CustomEvent<string>).detail;
+      if (targetId !== 'setting-openrouter-api-key') return;
+      clearHighlight();
+      updateAccordionView((current) => openSettingsAccordionNavigation(current, ['llm-providers']));
+      highlightFrame = window.requestAnimationFrame(() => {
+        highlighted =
+          document.getElementById(targetId) || document.getElementById('setting-llm_provider');
+        highlighted?.classList.add('highlight-setting');
+        highlighted?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        highlightTimer = window.setTimeout(clearHighlight, 3000);
+      });
+    };
+    window.addEventListener('highlight-settings', highlightSettings);
+    return () => {
+      window.removeEventListener('highlight-settings', highlightSettings);
+      clearHighlight();
+    };
+  }, [updateAccordionView]);
 
   const savedThemePackRef = useRef<ThemePackId>('default');
   const unconfiguredCloudOAuthProviders = useMemo(
@@ -801,9 +898,7 @@ export function SettingsPanel({
         if (sectionWrapper) {
           const sectionId = sectionWrapper.dataset
             .settingsAccordionSection as SettingsAccordionSectionId;
-          setOpenAccordionSections((current) =>
-            openSettingsAccordionSections(current, [sectionId]),
-          );
+          updateAccordionView((current) => openSettingsAccordionNavigation(current, [sectionId]));
         }
 
         // Add highlight class and scroll after the accordion body has had a frame to expand.
@@ -824,7 +919,7 @@ export function SettingsPanel({
         onHighlightComplete?.();
       }
     }
-  }, [highlightSetting, loading, onHighlightComplete]);
+  }, [highlightSetting, loading, onHighlightComplete, updateAccordionView]);
 
   // Ollama connection state (for embeddings)
   const [ollamaConnecting, setOllamaConnecting] = useState(false);
@@ -962,6 +1057,8 @@ export function SettingsPanel({
   const [authGroups, setAuthGroups] = useState<AuthGroup[]>([]);
   const [showCreateLocalUserModal, setShowCreateLocalUserModal] = useState(false);
   const [showManageAuthGroupsModal, setShowManageAuthGroupsModal] = useState(false);
+  const [showAccessLevelsModal, setShowAccessLevelsModal] = useState(false);
+  const [contentProtectionRefreshKey, setContentProtectionRefreshKey] = useState(0);
   const [ldapUserSearchName, setLdapUserSearchName] = useState('');
   const [ldapUserSearching, setLdapUserSearching] = useState(false);
   const [ldapUserSearchResults, setLdapUserSearchResults] = useState<LdapUserProfile[]>([]);
@@ -4016,25 +4113,20 @@ export function SettingsPanel({
             element.style.display = '';
           });
 
-        fieldset
-          .querySelectorAll<HTMLDetailsElement>('details[data-filter-opened="true"]')
-          .forEach((details) => {
+        fieldset.querySelectorAll<HTMLDetailsElement>('details').forEach((details) => {
+          if (details.hasAttribute('data-filter-opened')) {
             details.open = false;
-            details.removeAttribute('data-filter-opened');
-          });
+          }
+          details.removeAttribute('data-filter-opened');
+          details.removeAttribute('data-filter-manually-toggled');
+        });
       });
 
-      if (accordionFilterSnapshotRef.current) {
-        setOpenAccordionSections(restoreSettingsAccordionState(accordionFilterSnapshotRef.current));
-        accordionFilterSnapshotRef.current = null;
-      }
+      updateAccordionView(clearSettingsAccordionSearch, false);
 
       setSettingsFilterHasMatches(true);
+      setSettingsFilterMatchCount(0);
       return;
-    }
-
-    if (!accordionFilterSnapshotRef.current) {
-      accordionFilterSnapshotRef.current = { ...openAccordionSections };
     }
 
     let hasAnyMatches = false;
@@ -4081,18 +4173,33 @@ export function SettingsPanel({
       detailsElements.forEach((details) => {
         const summaryText = details.querySelector('summary')?.textContent || '';
         const detailText = details.textContent || '';
+        const summaryMatches = searchFilterTextMatchesQuery(summaryText, queries);
+        const descendantLabelMatches = Array.from(details.querySelectorAll('label')).some((label) =>
+          searchFilterTextMatchesQuery(label.textContent, queries),
+        );
         const hasVisibleChild = Array.from(
           details.querySelectorAll<HTMLElement>('.form-group'),
         ).some((group) => group.style.display !== 'none');
         const detailsMatch =
           fieldsetTextMatch ||
           hasVisibleChild ||
-          searchFilterTextMatchesQuery(`${summaryText} ${detailText}`, queries);
+          summaryMatches ||
+          searchFilterTextMatchesQuery(detailText, queries);
         details.style.display = detailsMatch ? '' : 'none';
         if (detailsMatch) {
           visibleDetailsCount += 1;
         }
-        if (detailsMatch && hasVisibleChild && !details.open) {
+        const hasStrongMatch = summaryMatches || descendantLabelMatches;
+        if (details.hasAttribute('data-filter-opened') && !hasStrongMatch) {
+          details.open = false;
+          details.removeAttribute('data-filter-opened');
+        }
+        if (
+          detailsMatch &&
+          hasStrongMatch &&
+          !details.open &&
+          !details.hasAttribute('data-filter-manually-toggled')
+        ) {
           details.open = true;
           details.setAttribute('data-filter-opened', 'true');
         }
@@ -4134,23 +4241,69 @@ export function SettingsPanel({
       const wrapperId = wrapper.dataset.settingsAccordionSection as
         | SettingsAccordionSectionId
         | undefined;
+      const titleMatches = searchFilterTextMatchesQuery(
+        wrapper.querySelector('.settings-accordion-title')?.textContent,
+        queries,
+      );
+      if (wrapperId && titleMatches) {
+        matchingAccordionIds.add(wrapperId);
+        hasAnyMatches = true;
+      }
       wrapper.style.display = wrapperId && matchingAccordionIds.has(wrapperId) ? '' : 'none';
     });
 
-    if (matchingAccordionIds.size > 0) {
-      setOpenAccordionSections((current) =>
-        openSettingsAccordionSections(current, matchingAccordionIds),
-      );
-    }
+    updateAccordionView(
+      (current) => applySettingsAccordionSearch(current, matchingAccordionIds),
+      false,
+    );
 
     setSettingsFilterHasMatches(hasAnyMatches);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setSettingsFilterMatchCount(matchingAccordionIds.size);
   }, [
     settingsFilter.queries,
     loading,
     formData.chat_enabled,
     formData.userspace_generation_enabled,
+    updateAccordionView,
   ]);
+
+  useEffect(() => {
+    if (settingsFilter.queries.length === 0) {
+      return;
+    }
+
+    const root = settingsFormRef.current;
+    if (!root) {
+      return;
+    }
+
+    const rememberManualDetailsToggle = (event: MouseEvent) => {
+      const summary = (event.target as HTMLElement).closest('summary');
+      summary?.closest('details')?.setAttribute('data-filter-manually-toggled', 'true');
+      summary?.closest('details')?.removeAttribute('data-filter-opened');
+    };
+
+    root.addEventListener('click', rememberManualDetailsToggle);
+    return () => root.removeEventListener('click', rememberManualDetailsToggle);
+  }, [settingsFilter.queries]);
+
+  const settingsHighlightTerms = useMemo(() => {
+    if (loading) {
+      return [];
+    }
+
+    const tags = settingsFilter.tags.map((term) => term.trim()).filter(Boolean);
+    const rawInput = settingsFilter.input.trim();
+    return rawInput.length >= 2 ? [...tags, rawInput] : tags;
+  }, [loading, settingsFilter.input, settingsFilter.tags]);
+
+  useSearchTextHighlights({
+    rootRef: settingsPanelRef,
+    terms: settingsHighlightTerms,
+    highlightName: 'settings-search',
+    includeSelector: SETTINGS_SEARCH_HIGHLIGHT_INCLUDE_SELECTOR,
+    excludeSelector: SETTINGS_SEARCH_HIGHLIGHT_EXCLUDE_SELECTOR,
+  });
 
   if (loading) {
     return (
@@ -4708,6 +4861,12 @@ export function SettingsPanel({
       {!settingsFilterHasMatches && settingsFilter.hasActiveFilters && (
         <p className="muted settings-filter-empty">No settings match the current filters.</p>
       )}
+      {settingsFilter.hasActiveFilters && (
+        <p id="settings-filter-status" className="muted" aria-live="polite">
+          {settingsFilterMatchCount} matching settings section
+          {settingsFilterMatchCount === 1 ? '' : 's'}
+        </p>
+      )}
 
       {/* API Endpoint Info */}
       <div
@@ -4937,6 +5096,20 @@ export function SettingsPanel({
               open={openAccordionSections['content-protection']}
               onToggle={handleToggleAccordionSection}
               searchQuery={settingsFilter.queries[0] || ''}
+              refreshKey={contentProtectionRefreshKey}
+              savedTypesafeKey={settings?.typesafe_api_key ?? ''}
+              savedOpenRouterKey={settings?.openrouter_api_key ?? ''}
+              onTypesafeKeySaved={(apiKey) => {
+                setSettings((current) =>
+                  current ? { ...current, typesafe_api_key: apiKey } : current,
+                );
+              }}
+              onOpenRouterKeySaved={(apiKey) => {
+                setFormData((current) => ({ ...current, openrouter_api_key: apiKey }));
+                setSettings((current) =>
+                  current ? { ...current, openrouter_api_key: apiKey } : current,
+                );
+              }}
             />
           )}
 
@@ -6526,7 +6699,7 @@ export function SettingsPanel({
                   )}
                 </div>
               ) : formData.llm_provider === 'openrouter' ? (
-                <div className="form-group">
+                <div className="form-group" id="setting-openrouter-api-key">
                   <label>OpenRouter API Key</label>
                   <div className="input-with-button">
                     <input
@@ -8130,59 +8303,33 @@ export function SettingsPanel({
                       />
                     </div>
                   )}
-                  <div className="form-group">
-                    <label>Embedding Model</label>
-                    <div className="input-with-button">
-                      {embeddingModelsLoaded && embeddingModels.length > 0 ? (
-                        <select
-                          value={formData.embedding_model || ''}
-                          onChange={(e) =>
-                            setFormData({ ...formData, embedding_model: e.target.value })
-                          }
-                        >
-                          <option value="">Select a model...</option>
-                          {embeddingModels.map((model) => (
-                            <option key={model.id} value={model.id}>
-                              {model.name}
-                              {model.dimensions ? ` (${model.dimensions} dims)` : ''}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type="text"
-                          value={formData.embedding_model || ''}
-                          onChange={(e) =>
-                            setFormData({ ...formData, embedding_model: e.target.value })
-                          }
-                          placeholder={hostedEmbeddingProviderConfig.modelPlaceholder}
-                        />
-                      )}
-                      <button
-                        type="button"
-                        className={`btn btn-test ${embeddingModelsLoaded ? 'btn-connected' : ''}`}
-                        onClick={() =>
-                          fetchEmbeddingModels(
-                            hostedEmbeddingProviderConfig.provider,
-                            hostedEmbeddingProviderConfig.apiKey,
-                          )
-                        }
-                        disabled={embeddingModelsFetching || !hostedEmbeddingProviderConfig.apiKey}
-                      >
-                        {embeddingModelsFetching
-                          ? 'Fetching...'
-                          : embeddingModelsLoaded
-                            ? 'Loaded'
-                            : 'Fetch Models'}
-                      </button>
-                    </div>
-                    {embeddingModelsError && <p className="field-error">{embeddingModelsError}</p>}
-                    <p className="field-help">
-                      {embeddingModelsLoaded
+                  <FetchableModelField
+                    idPrefix="hosted-embedding-model"
+                    label="Embedding Model"
+                    value={formData.embedding_model || ''}
+                    onChange={(embedding_model) => setFormData({ ...formData, embedding_model })}
+                    models={embeddingModels.map((model) => ({
+                      id: model.id,
+                      label: `${model.name}${model.dimensions ? ` (${model.dimensions} dims)` : ''}`,
+                    }))}
+                    loaded={embeddingModelsLoaded}
+                    fetching={embeddingModelsFetching}
+                    error={embeddingModelsError}
+                    onFetch={() =>
+                      fetchEmbeddingModels(
+                        hostedEmbeddingProviderConfig.provider,
+                        hostedEmbeddingProviderConfig.apiKey,
+                      )
+                    }
+                    fetchDisabled={!hostedEmbeddingProviderConfig.apiKey}
+                    placeholder={hostedEmbeddingProviderConfig.modelPlaceholder}
+                    selectPlaceholder="Select a model..."
+                    help={
+                      embeddingModelsLoaded
                         ? hostedEmbeddingProviderConfig.loadedHelp()
-                        : hostedEmbeddingProviderConfig.unloadedHelp}
-                    </p>
-                  </div>
+                        : hostedEmbeddingProviderConfig.unloadedHelp
+                    }
+                  />
 
                   {/* Embedding Dimensions (only for text-embedding-3-* models) */}
                   {(hostedEmbeddingProviderConfig.provider === 'openai' ||
@@ -8748,6 +8895,15 @@ export function SettingsPanel({
                       >
                         <Pencil size={16} />
                         Manage Group Memberships
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        id="settings-manage-access-btn"
+                        onClick={() => setShowAccessLevelsModal(true)}
+                      >
+                        <KeyRound size={16} />
+                        Manage Access Levels
                       </button>
                     </div>
                   </div>
@@ -9329,7 +9485,16 @@ export function SettingsPanel({
         onAuthGroupsChange={setAuthGroups}
         onCloseCreateUser={() => setShowCreateLocalUserModal(false)}
         onCloseManageGroups={closeManageAuthGroupsModal}
+        onNavigateToSetting={onNavigateToSetting}
         toast={toast}
+      />
+      <AccessLevelsModal
+        open={showAccessLevelsModal}
+        onClose={() => setShowAccessLevelsModal(false)}
+        onChanged={() => setContentProtectionRefreshKey((key) => key + 1)}
+        authGroups={authGroups}
+        toast={toast}
+        onNavigateToSetting={onNavigateToSetting}
       />
 
       {settings?.updated_at && (

@@ -78,7 +78,7 @@ export function UserConversationRowList({
   }
 
   return (
-    <div className="admin-ws-group-list">
+    <div className="admin-ws-group-list" data-resource-list="conversations">
       {conversations.map((conversation) => {
         const isConfirmingDelete = deleteConfirmId === conversation.id;
         const isActionTarget = actionConversationId === conversation.id;
@@ -100,7 +100,11 @@ export function UserConversationRowList({
         );
 
         return (
-          <div key={conversation.id} className="admin-ws-item-wrapper">
+          <div
+            key={conversation.id}
+            className="admin-ws-item-wrapper"
+            data-conversation-id={conversation.id}
+          >
             <div className="admin-ws-item">
               <button
                 type="button"

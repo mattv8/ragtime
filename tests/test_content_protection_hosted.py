@@ -8,7 +8,7 @@ from unittest import mock
 
 from ragtime.content_protection import hosted
 from ragtime.content_protection import service as protection_service
-from ragtime.content_protection.models import ContentProtectionConfig, ContentProtectionError, ProtectionContext, Requirement
+from ragtime.content_protection.models import ClassifierConfig, ContentProtectionConfig, ContentProtectionError, ProtectionContext, Requirement
 from ragtime.content_protection.policy import resolve_required
 from ragtime.indexer import routes as indexer_routes
 from ragtime.rag.components import RAGComponents
@@ -141,7 +141,7 @@ class HostedProtectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_configured_tool_uses_durable_id_and_child_task_keeps_turn_scope(self) -> None:
         policy = ContentProtectionConfig(
             enabled=True,
-            classifier_model="openai::classifier",
+            classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"),
             coverage_mode="selected_scopes",
             requirements=[Requirement(scope_kind="tool", scope_key="tool-config-42", mode="require")],
         )
@@ -267,8 +267,380 @@ class HostedProtectionTests(unittest.IsolatedAsyncioTestCase):
     def test_route_context_uses_explicit_workspace_and_shared_surfaces(self) -> None:
         workspace = indexer_routes._conversation_protection_context(user_id="caller", owner_user_id="owner", workspace_id="workspace-1")
         shared = indexer_routes._conversation_protection_context(user_id="caller", owner_user_id="owner", shared=True)
+        anonymous_shared = indexer_routes._conversation_protection_context(user_id=None, owner_user_id="owner", shared=True)
         self.assertEqual(workspace.surface, "workspace_chat")
+        self.assertEqual(workspace.user_id, "caller")
+        self.assertEqual(workspace.audience_user_ids, ("caller", "owner"))
         self.assertEqual(shared.surface, "shared_chat")
+        self.assertEqual(shared.audience_user_ids, ("caller", "owner"))
+        self.assertTrue(anonymous_shared.public)
+        self.assertEqual(anonymous_shared.audience_user_ids, (None,))
+
+    async def test_nonstreaming_persistence_uses_bound_workspace_caller_and_owner_context(self) -> None:
+        class StopAfterPersistence(Exception):
+            pass
+
+        config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
+        persisted_contexts: list[ProtectionContext | None] = []
+        conversation = SimpleNamespace(id="conversation-1", user_id="owner", workspace_id="workspace-1")
+
+        async def classify(_config, _envelope):
+            return {
+                "probabilities": {
+                    category.id: 0.37 if category.id == "operational" else 0.0
+                    for category in _config.categories
+                    if _envelope["direction"] == "inbound" or category.id != "rule_override"
+                },
+                "model": "test",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "transport": "test",
+                "cache_hit": False,
+            }
+
+        async def add_message(*_args, **_kwargs):
+            persisted_contexts.append(protection_service.current_context())
+            await hosted.authorize_persistence({"role": "user", "content": "operational request"}, direction="inbound")
+            raise StopAfterPersistence()
+
+        with (
+            mock.patch.object(protection_service, "load_config", new=mock.AsyncMock(return_value=config)),
+            mock.patch.object(
+                protection_service,
+                "resolve_identities",
+                new=mock.AsyncMock(return_value=({"caller", "owner"}, {"caller": set(), "owner": set()}, {"caller": None, "owner": None})),
+            ),
+            mock.patch.object(protection_service, "_provider_settings_identity", new=mock.AsyncMock(return_value="test")),
+            mock.patch.object(protection_service, "_classify", new=classify),
+            mock.patch.object(protection_service, "_audit", new=mock.AsyncMock()),
+            mock.patch.object(indexer_routes.repository, "add_message", side_effect=add_message),
+        ):
+            with self.assertRaises(StopAfterPersistence):
+                await indexer_routes._send_message_to_loaded_conversation(
+                    cast("Conversation", conversation),
+                    indexer_routes.SendMessageRequest(message="operational request"),
+                    cast("User", SimpleNamespace(id="caller", username="caller", displayName="Caller")),
+                    workspace_id="workspace-1",
+                    blocked_tool_names=set(),
+                )
+
+        self.assertEqual(len(persisted_contexts), 1)
+        context = persisted_contexts[0]
+        assert context is not None
+        self.assertEqual(context.user_id, "caller")
+        self.assertEqual(context.audience_user_ids, ("caller", "owner"))
+        self.assertEqual(context.surface, "workspace_chat")
+        self.assertIsNone(protection_service.current_context())
+
+    async def test_streaming_persistence_uses_bound_workspace_caller_and_owner_context(self) -> None:
+        class StopAfterPersistence(Exception):
+            pass
+
+        config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
+        persisted_contexts: list[ProtectionContext | None] = []
+        conversation = SimpleNamespace(id="conversation-1", user_id="owner", workspace_id="workspace-1")
+
+        async def classify(_config, _envelope):
+            return {
+                "probabilities": {
+                    category.id: 0.37 if category.id == "operational" else 0.0
+                    for category in _config.categories
+                    if _envelope["direction"] == "inbound" or category.id != "rule_override"
+                },
+                "model": "test",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "transport": "test",
+                "cache_hit": False,
+            }
+
+        async def add_message(*_args, **_kwargs):
+            persisted_contexts.append(protection_service.current_context())
+            await hosted.authorize_persistence({"role": "user", "content": "operational request"}, direction="inbound")
+            raise StopAfterPersistence()
+
+        with (
+            mock.patch.object(protection_service, "load_config", new=mock.AsyncMock(return_value=config)),
+            mock.patch.object(
+                protection_service,
+                "resolve_identities",
+                new=mock.AsyncMock(return_value=({"caller", "owner"}, {"caller": set(), "owner": set()}, {"caller": None, "owner": None})),
+            ),
+            mock.patch.object(protection_service, "_provider_settings_identity", new=mock.AsyncMock(return_value="test")),
+            mock.patch.object(protection_service, "_classify", new=classify),
+            mock.patch.object(protection_service, "_audit", new=mock.AsyncMock()),
+            mock.patch.object(indexer_routes, "_assert_workspace_access", new=mock.AsyncMock()),
+            mock.patch.object(indexer_routes.repository, "check_conversation_access", new=mock.AsyncMock(return_value=True)),
+            mock.patch.object(indexer_routes.repository, "get_conversation", new=mock.AsyncMock(return_value=conversation)),
+            mock.patch.object(indexer_routes, "_resolve_workspace_runtime_scope", new=mock.AsyncMock(return_value=("workspace-1", set(), None))),
+            mock.patch.object(indexer_routes.repository, "add_message", side_effect=add_message),
+        ):
+            with self.assertRaises(StopAfterPersistence):
+                await indexer_routes.send_message_stream(
+                    "conversation-1",
+                    indexer_routes.SendMessageRequest(message="operational request"),
+                    workspace_id="workspace-1",
+                    user=cast("User", SimpleNamespace(id="caller", role="user")),
+                )
+
+        self.assertEqual(len(persisted_contexts), 1)
+        context = persisted_contexts[0]
+        assert context is not None
+        self.assertEqual(context.user_id, "caller")
+        self.assertEqual(context.audience_user_ids, ("caller", "owner"))
+        self.assertEqual(context.surface, "workspace_chat")
+        self.assertIsNone(protection_service.current_context())
+
+    async def test_nonstreaming_assistant_persistence_keeps_the_turn_context_until_the_repository_guard(self) -> None:
+        class StopAfterRepositoryGuard(Exception):
+            pass
+
+        config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
+        conversation = SimpleNamespace(
+            id="conversation-1",
+            user_id="owner",
+            workspace_id=None,
+            model="test-model",
+            messages=[],
+            disabled_builtin_tool_ids=[],
+        )
+        contexts: list[ProtectionContext | None] = []
+        original_add_message = indexer_routes.repository.add_message
+
+        async def classify(_config, _envelope):
+            return {
+                "probabilities": {
+                    category.id: 0.37 if category.id == "operational" else 0.0
+                    for category in _config.categories
+                    if _envelope["direction"] == "inbound" or category.id != "rule_override"
+                },
+                "model": "test",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "transport": "test",
+                "cache_hit": False,
+            }
+
+        async def add_message(conversation_id, role, content):
+            if role == "user":
+                return conversation
+            return await original_add_message(conversation_id, role, content)
+
+        async def get_db_after_guard():
+            contexts.append(protection_service.current_context())
+            raise StopAfterRepositoryGuard()
+
+        with (
+            mock.patch.object(protection_service, "load_config", new=mock.AsyncMock(return_value=config)),
+            mock.patch.object(
+                protection_service,
+                "resolve_identities",
+                new=mock.AsyncMock(return_value=({"caller", "owner"}, {"caller": set(), "owner": set()}, {"caller": None, "owner": None})),
+            ),
+            mock.patch.object(protection_service, "_provider_settings_identity", new=mock.AsyncMock(return_value="test")),
+            mock.patch.object(protection_service, "_classify", new=classify),
+            mock.patch.object(protection_service, "_audit", new=mock.AsyncMock()),
+            mock.patch.object(indexer_routes.repository, "add_message", side_effect=add_message),
+            mock.patch.object(indexer_routes.repository, "_get_db", side_effect=get_db_after_guard),
+            mock.patch.object(indexer_routes, "rag", SimpleNamespace(process_query=mock.AsyncMock(return_value="operational answer"))),
+            mock.patch.object(indexer_routes, "_validate_generation_ready_after_user_message", new=mock.AsyncMock(return_value="test-model")),
+            mock.patch.object(indexer_routes, "_apply_validated_conversation_model", new=mock.AsyncMock(return_value=conversation)),
+            mock.patch.object(indexer_routes, "_build_chat_history_for_conversation", new=mock.AsyncMock(return_value=[])),
+            mock.patch.object(indexer_routes, "schedule_title_generation"),
+            mock.patch.object(indexer_routes, "create_usage_attempt", new=mock.AsyncMock(return_value="attempt")),
+            mock.patch.object(indexer_routes, "finalize_usage_attempt", new=mock.AsyncMock()),
+        ):
+            with self.assertRaises(StopAfterRepositoryGuard):
+                await indexer_routes._send_message_to_loaded_conversation(
+                    cast("Conversation", conversation),
+                    indexer_routes.SendMessageRequest(message="operational request"),
+                    cast("User", SimpleNamespace(id="caller", username="caller", displayName="Caller")),
+                    workspace_id=None,
+                    blocked_tool_names=set(),
+                )
+
+        self.assertEqual(
+            [(context.user_id, context.audience_user_ids, context.surface) for context in contexts if context],
+            [("caller", ("caller", "owner"), "chat")],
+        )
+        self.assertIsNone(protection_service.current_context())
+
+    async def test_background_shared_persistence_uses_the_caller_owner_context_at_the_repository_guard(self) -> None:
+        class StopAfterRepositoryGuard(Exception):
+            pass
+
+        config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
+        conversation = SimpleNamespace(id="conversation-1", user_id="owner", workspace_id=None)
+        contexts: list[ProtectionContext | None] = []
+
+        async def classify(_config, _envelope):
+            return {
+                "probabilities": {category.id: 0.37 if category.id == "operational" else 0.0 for category in _config.categories},
+                "model": "test",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "transport": "test",
+                "cache_hit": False,
+            }
+
+        async def get_db_after_guard():
+            contexts.append(protection_service.current_context())
+            raise StopAfterRepositoryGuard()
+
+        with (
+            mock.patch.object(protection_service, "load_config", new=mock.AsyncMock(return_value=config)),
+            mock.patch.object(
+                protection_service,
+                "resolve_identities",
+                new=mock.AsyncMock(return_value=({"caller", "owner"}, {"caller": set(), "owner": set()}, {"caller": None, "owner": None})),
+            ),
+            mock.patch.object(protection_service, "_provider_settings_identity", new=mock.AsyncMock(return_value="test")),
+            mock.patch.object(protection_service, "_classify", new=classify),
+            mock.patch.object(protection_service, "_audit", new=mock.AsyncMock()),
+            mock.patch.object(indexer_routes.repository, "get_active_task_for_conversation", new=mock.AsyncMock(return_value=None)),
+            mock.patch.object(indexer_routes.repository, "_get_db", side_effect=get_db_after_guard),
+        ):
+            with self.assertRaises(StopAfterRepositoryGuard):
+                await indexer_routes._send_background_message_to_loaded_conversation(
+                    cast("Conversation", conversation),
+                    indexer_routes.SendMessageRequest(message="operational request"),
+                    cast("User", SimpleNamespace(id="caller")),
+                    workspace_id=None,
+                    blocked_tool_names=set(),
+                    protection_surface="shared_chat",
+                )
+
+        self.assertEqual(
+            [(context.user_id, context.audience_user_ids, context.surface) for context in contexts if context],
+            [("caller", ("caller", "owner"), "shared_chat")],
+        )
+        self.assertIsNone(protection_service.current_context())
+
+    async def test_anonymous_shared_background_persistence_uses_explicit_public_context_over_owner_actor(self) -> None:
+        class StopAfterRepositoryGuard(Exception):
+            pass
+
+        config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
+        conversation = SimpleNamespace(id="conversation-1", user_id="owner", workspace_id=None)
+        contexts: list[ProtectionContext | None] = []
+        persist_notice = mock.AsyncMock(return_value="notice-1")
+
+        def classifier_for(score_by_category: dict[str, float]):
+            async def classify(_config, _envelope):
+                return {
+                    "probabilities": {category.id: score_by_category.get(category.id, 0.0) for category in _config.categories},
+                    "model": "test",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                    "transport": "test",
+                    "cache_hit": False,
+                }
+
+            return classify
+
+        async def get_db_after_guard():
+            contexts.append(protection_service.current_context())
+            raise StopAfterRepositoryGuard()
+
+        def route_context():
+            return indexer_routes._conversation_protection_context(user_id=None, owner_user_id="owner", shared=True)
+
+        async def persist(classify):
+            with (
+                mock.patch.object(protection_service, "load_config", new=mock.AsyncMock(return_value=config)),
+                mock.patch.object(
+                    protection_service,
+                    "resolve_identities",
+                    new=mock.AsyncMock(return_value=({"owner"}, {"owner": set()}, {"owner": None})),
+                ),
+                mock.patch.object(protection_service, "_provider_settings_identity", new=mock.AsyncMock(return_value="test")),
+                mock.patch.object(protection_service, "_classify", new=classify),
+                mock.patch.object(protection_service, "_audit", new=mock.AsyncMock()),
+                mock.patch.object(indexer_routes.repository, "get_active_task_for_conversation", new=mock.AsyncMock(return_value=None)),
+                mock.patch.object(indexer_routes, "persist_chat_denial", new=persist_notice),
+                mock.patch.object(indexer_routes.repository, "_get_db", side_effect=get_db_after_guard),
+            ):
+                await indexer_routes._send_background_message_to_loaded_conversation(
+                    cast("Conversation", conversation),
+                    indexer_routes.SendMessageRequest(message="shared request"),
+                    cast("User", SimpleNamespace(id="owner")),
+                    workspace_id=None,
+                    blocked_tool_names=set(),
+                    protection_context=route_context(),
+                )
+
+        with self.assertRaises(StopAfterRepositoryGuard):
+            await persist(classifier_for({}))
+
+        self.assertEqual(
+            [(context.user_id, context.audience_user_ids, context.surface, context.public) for context in contexts if context],
+            [(None, (None,), "shared_chat", True)],
+        )
+        self.assertIsNone(protection_service.current_context())
+
+        persist_notice.assert_not_awaited()
+        contexts.clear()
+        with self.assertRaises(ContentProtectionError) as denial:
+            await persist(classifier_for({"operational": 0.37}))
+
+        self._assert_notice_attempt(persist_notice, 0, denial.exception)
+        self.assertEqual(contexts, [])
+        self.assertIsNone(protection_service.current_context())
+
+    def _assert_notice_attempt(self, persist_notice: mock.AsyncMock, call_index: int, error: ContentProtectionError) -> None:
+        """Assert one safe notice attempt received the original denial for the conversation."""
+        self.assertEqual(persist_notice.await_args_list[call_index].args, ("conversation-1", error))
+
+    async def test_personnel_denial_prevents_repository_database_access_for_initial_routes(self) -> None:
+        config = ContentProtectionConfig(enabled=True, classifier=ClassifierConfig(backend="llm", llm_model="openai::classifier"))
+        conversation = SimpleNamespace(id="conversation-1", user_id="owner", workspace_id=None)
+
+        async def classify(_config, _envelope):
+            return {
+                "probabilities": {category.id: 0.37 if category.id == "personnel" else 0.0 for category in _config.categories},
+                "model": "test",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "transport": "test",
+                "cache_hit": False,
+            }
+
+        async def assert_no_database_access():
+            raise AssertionError("denied content must not reach the database")
+
+        persist_notice = mock.AsyncMock(return_value="notice-1")
+        with (
+            mock.patch.object(protection_service, "load_config", new=mock.AsyncMock(return_value=config)),
+            mock.patch.object(
+                protection_service,
+                "resolve_identities",
+                new=mock.AsyncMock(return_value=({"caller", "owner"}, {"caller": set(), "owner": set()}, {"caller": None, "owner": None})),
+            ),
+            mock.patch.object(protection_service, "_provider_settings_identity", new=mock.AsyncMock(return_value="test")),
+            mock.patch.object(protection_service, "_classify", new=classify),
+            mock.patch.object(protection_service, "_audit", new=mock.AsyncMock()),
+            mock.patch.object(indexer_routes, "persist_chat_denial", new=persist_notice),
+            mock.patch.object(indexer_routes.repository, "_get_db", side_effect=assert_no_database_access) as get_db,
+        ):
+            with self.assertRaises(ContentProtectionError) as nonstreaming_denial:
+                await indexer_routes._send_message_to_loaded_conversation(
+                    cast("Conversation", conversation),
+                    indexer_routes.SendMessageRequest(message="personnel request"),
+                    cast("User", SimpleNamespace(id="caller")),
+                    workspace_id=None,
+                    blocked_tool_names=set(),
+                )
+            self._assert_notice_attempt(persist_notice, 0, nonstreaming_denial.exception)
+            with (
+                mock.patch.object(indexer_routes, "_assert_workspace_access", new=mock.AsyncMock()),
+                mock.patch.object(indexer_routes.repository, "check_conversation_access", new=mock.AsyncMock(return_value=True)),
+                mock.patch.object(indexer_routes.repository, "get_conversation", new=mock.AsyncMock(return_value=conversation)),
+                mock.patch.object(indexer_routes, "_resolve_workspace_runtime_scope", new=mock.AsyncMock(return_value=(None, set(), None))),
+            ):
+                with self.assertRaises(ContentProtectionError) as streaming_denial:
+                    await indexer_routes.send_message_stream(
+                        "conversation-1",
+                        indexer_routes.SendMessageRequest(message="personnel request"),
+                        user=cast("User", SimpleNamespace(id="caller", role="user")),
+                    )
+
+        self._assert_notice_attempt(persist_notice, 1, streaming_denial.exception)
+        self.assertEqual(persist_notice.await_count, 2)
+        get_db.assert_not_awaited()
 
     async def test_nonstreaming_send_authorizes_once_before_persisting(self) -> None:
         class StopAfterInbound(Exception):
@@ -280,7 +652,10 @@ class HostedProtectionTests(unittest.IsolatedAsyncioTestCase):
         request = indexer_routes.SendMessageRequest(message="safe")
         conversation = SimpleNamespace(id="conversation-1", user_id="owner-1")
         user = SimpleNamespace(id="caller-1")
-        with mock.patch.object(indexer_routes, "authorize_inbound", side_effect=stop_after_inbound) as authorize:
+        with (
+            mock.patch.object(indexer_routes, "authorize_inbound", side_effect=stop_after_inbound) as authorize,
+            mock.patch.object(indexer_routes.repository, "add_message", new=mock.AsyncMock()) as persist,
+        ):
             with self.assertRaises(StopAfterInbound):
                 await indexer_routes._send_message_to_loaded_conversation(
                     cast("Conversation", conversation),
@@ -291,6 +666,7 @@ class HostedProtectionTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         authorize.assert_awaited_once()
+        persist.assert_not_awaited()
         await_args = authorize.await_args
         assert await_args is not None
         self.assertEqual(await_args.kwargs["context"].surface, "workspace_chat")

@@ -18,6 +18,7 @@ _APP_SETTINGS_SECRET_FIELDS: Final[tuple[str, ...]] = (
     "openaiApiKey",
     "anthropicApiKey",
     "openrouterApiKey",
+    "typesafeApiKey",
     "githubModelsApiToken",
     "githubCopilotAccessToken",
     "githubCopilotRefreshToken",

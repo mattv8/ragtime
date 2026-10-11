@@ -92,7 +92,7 @@ from ragtime.content_protection.hosted import (
 from ragtime.content_protection.hosted import (
     wrap_tools as wrap_tools_with_content_protection,
 )
-from ragtime.content_protection.models import ContentProtectionError
+from ragtime.content_protection.models import ContentProtectionError, ProtectionContext
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.app_setting_defaults import (
     DEFAULT_CONTEXT_TOKEN_BUDGET,
@@ -212,6 +212,7 @@ from ragtime.indexer.conversation_tool_options import (
     load_conversation_tool_options,
     resolve_effective_allow_write,
 )
+from ragtime.indexer.denial_notices import is_denial_notice
 from ragtime.indexer.embedding_errors import EmbeddingFailureKind, EmbeddingOperationError, build_embedding_configuration_error
 from ragtime.indexer.export_service import (
     chart_to_table,
@@ -241,6 +242,7 @@ from ragtime.rag.prompts import (
     UI_VISUALIZATION_COMMON_PROMPT,
     UI_VISUALIZATION_USERSPACE_PROMPT,
     USERSPACE_SUBAGENT_GUIDANCE_PROMPT,
+    build_access_level_prompt_fragment,
     build_chat_diagnostics_prompt_addition,
     build_current_time_turn_reminder_line,
     build_current_user_prompt_fragment,
@@ -15692,6 +15694,12 @@ class RAGComponents:
             display_name=display_name,
         )
         current_time_turn_line = self._build_current_time_turn_reminder_line(current_time_context)
+        guidance_context = content_protection_service.current_context() or ProtectionContext(
+            user_id=request_user_id or None,
+            surface=mode,
+            baseline="user" if request_user_id else "anonymous",
+        )
+        access_level_prompt = build_access_level_prompt_fragment(await content_protection_service.access_guidance(guidance_context))
         raw_accessible_modes = (workspace_context or {}).get("accessible_workspace_modes", {})
         request_is_admin = bool((current_user_context or {}).get("is_admin") or (workspace_context or {}).get("is_admin"))
         runtime_tools = await self._apply_conversation_tool_overrides(
@@ -16018,6 +16026,7 @@ class RAGComponents:
                 shared_sqlite_databases=shared_sqlite_databases,
                 mounts_enabled=bool(workspace_mounts),
                 object_storage_enabled=bool(object_storage_config),
+                access_level_prompt=access_level_prompt,
             )
             prompt_additions = userspace_instruction_sections["workspace"] + userspace_instruction_sections["entrypoint"] + prompt_additions
             userspace_diagnostics_turn_hint = build_userspace_diagnostics_turn_reminder_line(
@@ -16058,9 +16067,9 @@ class RAGComponents:
                 prompt_additions += download_export_prompt
 
         if mode == "userspace":
-            prompt_additions = userspace_instruction_sections["identity"] + prompt_additions
-        elif user_identity_prompt_fragment:
-            prompt_additions = user_identity_prompt_fragment + prompt_additions
+            prompt_additions = userspace_instruction_sections["identity"] + userspace_instruction_sections["access_level"] + prompt_additions
+        else:
+            prompt_additions = user_identity_prompt_fragment + access_level_prompt + prompt_additions
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         prompt_bytes = len(prompt_additions.encode("utf-8", errors="replace"))
@@ -17140,6 +17149,8 @@ class RAGComponents:
 
         formatted_messages: list[str] = []
         for idx, message in enumerate(messages):
+            if is_denial_notice(message):
+                continue
             formatted_messages.append(
                 await self._format_message_for_compaction(
                     message,

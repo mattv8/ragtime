@@ -1,155 +1,89 @@
 import unittest
-from typing import Literal
 from unittest import mock
 
 from ragtime.content_protection import service
-from ragtime.content_protection.models import (
-    ContentProtectionConfig,
-    ContentProtectionError,
-    GroupProfile,
-    Profile,
-    ProtectionContext,
-    Requirement,
-    UserOverride,
-)
+from ragtime.content_protection.models import AccessLevel, ContentProtectionConfig, ContentProtectionError, GroupAccessLevel, ProtectionContext
+
+
+def _detection(config: ContentProtectionConfig, **probabilities: float) -> dict[str, object]:
+    return {
+        "probabilities": {category.id: probabilities.get(category.id, 0.0) for category in config.categories},
+        "model": "test",
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+        "transport": "test",
+        "cache_hit": False,
+    }
 
 
 class ContentProtectionEnforcementTests(unittest.IsolatedAsyncioTestCase):
-    def _config(
-        self,
-        *,
-        revision: int = 0,
-        coverage_mode: Literal["all_supported_traffic", "selected_scopes"] = "all_supported_traffic",
-        profiles: list[Profile] | None = None,
-        group_profiles: list[GroupProfile] | None = None,
-        requirements: list[Requirement] | None = None,
-        user_overrides: list[UserOverride] | None = None,
-    ) -> ContentProtectionConfig:
-        return ContentProtectionConfig(
+    async def test_mapped_level_does_not_inherit_default_grants(self) -> None:
+        config = ContentProtectionConfig(
+            access_levels=[
+                AccessLevel(id="standard", name="Standard", granted_category_ids=["operational"]),
+                AccessLevel(id="public_only", name="Public only", granted_category_ids=[]),
+            ],
+            group_access_levels=[GroupAccessLevel(group_id="public", access_level_id="public_only")],
+        )
+        with mock.patch.object(service, "resolve_identities", new=mock.AsyncMock(return_value=({"u"}, {"u": {"public"}}, {"u": None}))):
+            resolved = await service._resolve(config, ProtectionContext(user_id="u"))
+        self.assertEqual(resolved.granted_category_ids, set())
+
+    async def test_service_baseline_without_audience_uses_default_level(self) -> None:
+        config = ContentProtectionConfig()
+        with mock.patch.object(service, "resolve_identities", new=mock.AsyncMock(return_value=(set(), {}, {}))):
+            resolved = await service._resolve(config, ProtectionContext(baseline="service"))
+        self.assertEqual(resolved.granted_category_ids, {"operational"})
+
+    async def test_explicit_none_and_unknown_audience_contribute_empty_grants(self) -> None:
+        config = ContentProtectionConfig()
+        with mock.patch.object(service, "resolve_identities", new=mock.AsyncMock(return_value=({"u"}, {"u": set()}, {"u": None}))):
+            none_recipient = await service._resolve(config, ProtectionContext(user_id="u", audience_user_ids=(None,)))
+            unknown_recipient = await service._resolve(config, ProtectionContext(user_id="u", audience_user_ids=("disabled",)))
+        self.assertEqual(none_recipient.granted_category_ids, set())
+        self.assertEqual(unknown_recipient.granted_category_ids, set())
+
+    async def test_mapped_levels_union_and_audience_intersection(self) -> None:
+        config = ContentProtectionConfig(
             enabled=True,
-            classifier_model="openai::classifier",
-            revision=revision,
-            coverage_mode=coverage_mode,
-            profiles=profiles if profiles is not None else [Profile(id="standard", name="Standard", level=0, scope="ordinary")],
-            group_profiles=group_profiles if group_profiles is not None else [],
-            requirements=requirements if requirements is not None else [],
-            user_overrides=user_overrides if user_overrides is not None else [],
+            access_levels=[
+                AccessLevel(id="standard", name="Standard", granted_category_ids=[]),
+                AccessLevel(id="finance", name="Finance", granted_category_ids=["company_finance"]),
+            ],
+            group_access_levels=[GroupAccessLevel(group_id="finance", access_level_id="finance")],
         )
-
-    async def test_group_requirement_and_standard_baseline_are_sent_as_audience_constraints(self) -> None:
-        config = self._config(
-            coverage_mode="selected_scopes",
-            profiles=[Profile(id="standard", name="Standard", level=0, scope="operational"), Profile(id="finance", name="Finance", level=1, scope="finance")],
-            group_profiles=[GroupProfile(group_id="finance-group", profile_id="finance")],
-            requirements=[Requirement(scope_kind="group", scope_key="finance-group", mode="require")],
-        )
-        with (
-            mock.patch.object(service, "load_config", mock.AsyncMock(side_effect=[config, config])),
-            mock.patch.object(service, "resolve_identities", mock.AsyncMock(return_value=({"u"}, {"u": {"finance-group"}}, {"u": None}))),
-            mock.patch.object(service, "classify", mock.AsyncMock(return_value={"verdict": "allow", "reason_code": "permitted"})) as classify,
-            mock.patch.object(service, "_audit", mock.AsyncMock()),
-            mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
+        with mock.patch.object(
+            service, "resolve_identities", new=mock.AsyncMock(return_value=({"a", "b"}, {"a": {"finance"}, "b": set()}, {"a": None, "b": None}))
         ):
-            await service.authorize_content("report", direction="outbound", context=ProtectionContext(user_id="u"))
-        self.assertEqual(classify.await_count, 1)
-        await_args = classify.await_args
-        assert await_args is not None
-        scopes = await_args.args[1]["audience_constraints"]
-        self.assertEqual({scope["id"] for scope in scopes[0]}, {"standard", "finance"})
+            resolved = await service._resolve(config, ProtectionContext(user_id="a", audience_user_ids=("b",)))
+        self.assertEqual(resolved.granted_category_ids, set())
 
-    async def test_exact_cache_binds_supporting_context_and_rechecks_membership(self) -> None:
-        config = self._config()
-        identities = mock.AsyncMock(return_value=({"u"}, {"u": set()}, {"u": None}))
-        with (
-            mock.patch.object(service, "load_config", mock.AsyncMock(side_effect=[config, config, config, config])),
-            mock.patch.object(service, "resolve_identities", identities),
-            mock.patch.object(service, "classify", mock.AsyncMock(return_value={"verdict": "allow", "reason_code": "permitted"})) as classify,
-            mock.patch.object(service, "_audit", mock.AsyncMock()),
-            mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
-        ):
-            await service.authorize_content("same", direction="inbound", context=ProtectionContext(user_id="u"), supporting_context={"a": 1})
-            await service.authorize_content("same", direction="inbound", context=ProtectionContext(user_id="u"), supporting_context={"a": 2})
-        self.assertEqual(classify.await_count, 2)
-        self.assertGreaterEqual(identities.await_count, 4)
+    async def test_missing_audience_identity_contributes_no_grants(self) -> None:
+        config = ContentProtectionConfig(enabled=True)
+        with mock.patch.object(service, "resolve_identities", new=mock.AsyncMock(return_value=({"a"}, {"a": set()}, {"a": None}))):
+            resolved = await service._resolve(config, ProtectionContext(user_id="a", audience_user_ids=("missing",)))
+        self.assertEqual(resolved.granted_category_ids, set())
 
-    async def test_denial_terminates_nested_turn_before_subsequent_provider_call(self) -> None:
-        config = self._config()
+    async def test_ungranted_category_probability_denies_with_admin_message(self) -> None:
+        config = ContentProtectionConfig(enabled=True)
         with (
-            mock.patch.object(service, "load_config", mock.AsyncMock(return_value=config)),
-            mock.patch.object(service, "resolve_identities", mock.AsyncMock(return_value=({"u"}, {"u": set()}, {"u": None}))),
-            mock.patch.object(
-                service,
-                "classify",
-                mock.AsyncMock(return_value={"verdict": "deny", "reason_code": "restricted_content", "reason": "This request is outside the allowed policy."}),
-            ) as classify,
-            mock.patch.object(service, "_audit", mock.AsyncMock()),
-            mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
-            service.protection_context(ProtectionContext(user_id="u")),
-        ):
-            with self.assertRaisesRegex(ContentProtectionError, "content_denied") as raised:
-                await service.authorize_content("first", direction="inbound")
-            with self.assertRaisesRegex(ContentProtectionError, "content_denied"):
-                await service.authorize_content("second", direction="outbound")
-        self.assertEqual(classify.await_count, 1)
-        self.assertEqual(raised.exception.public_detail()["reason"], "This request is outside the allowed policy.")
-        classify_call = classify.await_args
-        assert classify_call is not None
-        self.assertTrue(classify_call.kwargs["include_reason"])
-
-    async def test_uncertain_denial_uses_honest_fallback_without_auditing_reason(self) -> None:
-        config = self._config()
-        audit = mock.AsyncMock()
-        with (
-            mock.patch.object(service, "load_config", mock.AsyncMock(return_value=config)),
-            mock.patch.object(service, "resolve_identities", mock.AsyncMock(return_value=({"u"}, {"u": set()}, {"u": None}))),
-            mock.patch.object(service, "classify", mock.AsyncMock(return_value={"verdict": "deny", "reason_code": "uncertain"})) as classify,
-            mock.patch.object(service, "_audit", audit),
-            mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
+            mock.patch.object(service, "load_config", new=mock.AsyncMock(return_value=config)),
+            mock.patch.object(service, "resolve_identities", new=mock.AsyncMock(return_value=({"u"}, {"u": set()}, {"u": None}))),
+            mock.patch.object(service, "_provider_settings_identity", new=mock.AsyncMock(return_value="settings")),
+            mock.patch.object(service, "detect", new=mock.AsyncMock(return_value=_detection(config, company_finance=0.25))),
+            mock.patch.object(service, "_audit", new=mock.AsyncMock()),
         ):
             with self.assertRaises(ContentProtectionError) as raised:
-                await service.authorize_content("candidate", direction="inbound", context=ProtectionContext(user_id="u"))
+                await service.authorize_content("financial report", direction="inbound", context=ProtectionContext(user_id="u"))
+        self.assertEqual(raised.exception.reason_code, "restricted_content")
+        self.assertEqual(raised.exception.reason, "Company financial information is not available for this audience.")
 
-        detail = raised.exception.public_detail()
-        self.assertEqual(raised.exception.code, "content_denied")
-        self.assertEqual(detail["reason_code"], "uncertain")
-        self.assertEqual(detail["reason"], "This request could not be safely classified under the access policy.")
-        classify_call = classify.await_args
-        audit_call = audit.await_args
-        assert classify_call is not None and audit_call is not None
-        self.assertTrue(classify_call.kwargs["include_reason"])
-        self.assertNotIn("reason", audit_call.args[1])
-
-    async def test_allow_discards_optional_reason_before_caching_and_audit(self) -> None:
-        service._decision_cache.clear()
-        config = self._config()
-        candidate = {"text": "ordinary"}
-        audit = mock.AsyncMock()
-        with (
-            mock.patch.object(service, "load_config", mock.AsyncMock(return_value=config)),
-            mock.patch.object(service, "resolve_identities", mock.AsyncMock(return_value=({"u"}, {"u": set()}, {"u": None}))),
-            mock.patch.object(service, "classify", mock.AsyncMock(return_value={"verdict": "allow", "reason_code": "permitted", "reason": "Not retained."})),
-            mock.patch.object(service, "_audit", audit),
-            mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
-        ):
-            await service.authorize_content(candidate, direction="inbound", context=ProtectionContext(user_id="u"))
-
-        self.assertEqual(candidate, {"text": "ordinary"})
-        self.assertTrue(service._decision_cache)
-        self.assertTrue(all("reason" not in cached[1] for cached in service._decision_cache.values()))
-        audit_call = audit.await_args
-        assert audit_call is not None
-        self.assertNotIn("reason", audit_call.args[1])
-
-    async def test_revision_change_rechecks_once_then_fails_closed_when_it_changes_again(self) -> None:
-        first = self._config(revision=1)
-        second = self._config(revision=2)
-        third = self._config(revision=3)
-        with (
-            mock.patch.object(service, "load_config", mock.AsyncMock(side_effect=[first, second, second, third])),
-            mock.patch.object(service, "resolve_identities", mock.AsyncMock(return_value=({"u"}, {"u": set()}, {"u": None}))),
-            mock.patch.object(service, "classify", mock.AsyncMock(return_value={"verdict": "allow", "reason_code": "permitted"})),
-            mock.patch.object(service, "_audit", mock.AsyncMock()),
-            mock.patch.object(service, "_provider_settings_identity", mock.AsyncMock(return_value="settings")),
-        ):
-            with self.assertRaisesRegex(ContentProtectionError, "policy_changed"):
-                await service.authorize_content("candidate", direction="outbound", context=ProtectionContext(user_id="u"))
+    def test_thresholds_are_inclusive_and_rule_override_is_ungrantable(self) -> None:
+        config = ContentProtectionConfig(enabled=True)
+        self.assertEqual(
+            service._authorize_probabilities(config, {category.id: 0.0 for category in config.categories} | {"rule_override": 0.25}, {"operational"})[
+                "verdict"
+            ],
+            "deny",
+        )
+        with self.assertRaises(ValueError):
+            ContentProtectionConfig(access_levels=[AccessLevel(id="standard", name="Standard", granted_category_ids=["rule_override"])])

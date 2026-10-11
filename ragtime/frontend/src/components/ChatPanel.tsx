@@ -63,7 +63,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { api, type ChatTaskStreamEvent } from '@/api';
-import { formatPublicErrorDetail } from '@/api/publicErrorDetail';
+import { formatPublicErrorDetail, getPublicErrorDetail } from '@/api/publicErrorDetail';
 import { getThemeFontFamily, subscribeToThemeChanges } from '@/theme';
 import type {
   Conversation,
@@ -153,6 +153,14 @@ import {
   clearInterruptDismiss,
   resolveInterruptDismissTransition,
 } from '@/utils';
+import {
+  getDenialNoticeSeenId,
+  getLatestDenialMessageId,
+  hasDenialRequestId,
+  invalidateDenialNoticeSeen,
+  isDenialOnlyMessage,
+  markDenialNoticeSeen,
+} from '@/utils/denialNotices';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 import { ContextUsagePie } from './shared/ContextUsagePie';
 import { FileDiffOverlay } from './shared/FileDiffOverlay';
@@ -161,6 +169,7 @@ import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { NoticeDialog } from './shared/NoticeDialog';
+import { DenialNotice } from './shared/DenialNotice';
 import {
   ToolSelectorDropdown,
   type ToolGroupInfo,
@@ -10098,6 +10107,52 @@ function getConversationMessageCount(conversation: Conversation | ConversationSu
   );
 }
 
+function mergeConversationDenialSummary(
+  summary: ConversationSummary,
+  conversation: Conversation,
+): ConversationSummary {
+  return {
+    ...summary,
+    active_task_id: conversation.active_task_id,
+    updated_at: conversation.updated_at,
+    last_denial_message_id:
+      conversation.last_denial_message_id ?? getLatestDenialMessageId(conversation.messages),
+  };
+}
+
+interface PendingDenialIdentity {
+  conversationId: string;
+  requestId?: string;
+  messageId?: string;
+  errorMessage: string;
+  errorToken: number;
+}
+
+function getTaskCompletionDenialDetail(event: ChatTaskStreamEvent) {
+  return (
+    getPublicErrorDetail(event.refusal) ??
+    getPublicErrorDetail(event.public_detail) ??
+    getPublicErrorDetail(event)
+  );
+}
+
+function messageMatchesPendingDenial(
+  message: Pick<ChatMessage, 'message_id' | 'events'>,
+  pending: PendingDenialIdentity,
+): boolean {
+  if (pending.messageId && message.message_id !== pending.messageId) return false;
+  if (
+    pending.requestId &&
+    !message.events?.some(
+      (event) =>
+        event.type === 'content_protection_denial' && event.request_id === pending.requestId,
+    )
+  ) {
+    return false;
+  }
+  return Boolean(pending.messageId || pending.requestId);
+}
+
 // Best-effort plain-text view of a message for content searching. Mirrors
 // what the user sees on screen, but flattens to a single string. Tool I/O
 // blobs are intentionally excluded — they're noisy and rarely searchable.
@@ -10452,6 +10507,13 @@ export function ChatPanel({
   const [streamingEvents, setStreamingEvents] = useState<StreamingRenderEvent[]>([]);
   const [activeSubagentRuns, setActiveSubagentRuns] = useState<SubAgentRunInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [, setDenialSeenVersion] = useState(0);
+  const [pendingDenials, setPendingDenials] = useState(
+    () => new Map<string, PendingDenialIdentity>(),
+  );
+  const pendingDenialsRef = useRef(new Map<string, PendingDenialIdentity>());
+  const denialErrorTokenRef = useRef(0);
+  const activeDenialErrorRef = useRef<PendingDenialIdentity | null>(null);
   const [showSidebar, setShowSidebar] = useState(!embedded);
   const [sidebarWidth, setSidebarWidth] = useState(280);
   const [inputAreaHeight, setInputAreaHeight] = useState(MIN_INPUT_AREA_HEIGHT);
@@ -10480,6 +10542,57 @@ export function ChatPanel({
   const isReplayPendingRef = useRef(false);
   const [isReplayPending, setIsReplayPending] = useState(false);
   const [hitMaxIterations, setHitMaxIterations] = useState(false);
+
+  useEffect(() => {
+    const onStorage = () => {
+      invalidateDenialNoticeSeen(currentUser.id);
+      setDenialSeenVersion((version) => version + 1);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [currentUser.id]);
+
+  const trackPendingDenial = useCallback(
+    (
+      conversationId: string,
+      detail: ReturnType<typeof getPublicErrorDetail>,
+      errorMessage: string,
+      showBanner: boolean,
+    ): PendingDenialIdentity | null => {
+      if (!detail?.request_id && !detail?.denial_message_id) return null;
+      const existing = pendingDenialsRef.current.get(conversationId);
+      const sameIdentity =
+        existing &&
+        (!detail.request_id || existing.requestId === detail.request_id) &&
+        (!detail.denial_message_id || existing.messageId === detail.denial_message_id);
+      const pending: PendingDenialIdentity = sameIdentity
+        ? existing
+        : {
+            conversationId,
+            requestId: detail.request_id || undefined,
+            messageId: detail.denial_message_id,
+            errorMessage,
+            errorToken: ++denialErrorTokenRef.current,
+          };
+      if (!sameIdentity) {
+        pendingDenialsRef.current.set(conversationId, pending);
+        setPendingDenials(new Map(pendingDenialsRef.current));
+      }
+      if (showBanner) {
+        activeDenialErrorRef.current = pending;
+        setError(errorMessage);
+      }
+      return pending;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const activeDenialError = activeDenialErrorRef.current;
+    if (activeDenialError && error !== activeDenialError.errorMessage) {
+      activeDenialErrorRef.current = null;
+    }
+  }, [error]);
 
   // Chat branching state
   const [branchPoints, setBranchPoints] = useState<ConversationBranchPointInfo[]>([]);
@@ -10574,6 +10687,80 @@ export function ChatPanel({
     partialOptimisticEntries,
     standaloneWindow.entries,
   ]);
+  useEffect(() => {
+    const conversationId = activeConversationMetadata?.id ?? activeConversationId;
+    if (!conversationId) return;
+    const pending = pendingDenials.get(conversationId);
+    if (!pending) return;
+    const noticeLoaded = visibleMessageEntries.some((entry) => {
+      if (entry.state === 'ready') return messageMatchesPendingDenial(entry.message, pending);
+      const previewMessage = {
+        message_id: entry.preview.message_id ?? undefined,
+        events: entry.preview.events ?? undefined,
+      };
+      return messageMatchesPendingDenial(previewMessage, pending);
+    });
+    if (!noticeLoaded) return;
+
+    if (pendingDenialsRef.current.get(conversationId)?.errorToken === pending.errorToken) {
+      pendingDenialsRef.current.delete(conversationId);
+      setPendingDenials(new Map(pendingDenialsRef.current));
+    }
+    const activeError = activeDenialErrorRef.current;
+    if (
+      activeError?.conversationId === conversationId &&
+      activeError.errorToken === pending.errorToken &&
+      error === activeError.errorMessage
+    ) {
+      activeDenialErrorRef.current = null;
+      setError(null);
+      setIsConnectionError(false);
+    }
+  }, [
+    activeConversationId,
+    activeConversationMetadata?.id,
+    error,
+    pendingDenials,
+    visibleMessageEntries,
+  ]);
+
+  const latestVisibleDenialMessageId = useMemo(() => {
+    const readyMessages = visibleMessageEntries.flatMap((entry) =>
+      entry.state === 'ready' ? [entry.message] : [],
+    );
+    return (
+      activeConversationMetadata?.last_denial_message_id ?? getLatestDenialMessageId(readyMessages)
+    );
+  }, [activeConversationMetadata?.last_denial_message_id, visibleMessageEntries]);
+
+  const handleDenialNoticeVisible = useCallback(
+    (messageId: string) => {
+      const conversationId = activeConversationMetadata?.id ?? activeConversationId;
+      const selectedId = workspaceId
+        ? (activeConversationRef.current?.id ?? null)
+        : activeConversationId;
+      if (
+        currentUser.id === 'anonymous' ||
+        !conversationId ||
+        selectedId !== conversationId ||
+        document.visibilityState !== 'visible' ||
+        messageId !== latestVisibleDenialMessageId ||
+        getDenialNoticeSeenId(currentUser.id, conversationId) === messageId
+      ) {
+        return;
+      }
+
+      markDenialNoticeSeen(currentUser.id, conversationId, messageId);
+      setDenialSeenVersion((version) => version + 1);
+    },
+    [
+      activeConversationMetadata?.id,
+      activeConversationId,
+      currentUser.id,
+      latestVisibleDenialMessageId,
+      workspaceId,
+    ],
+  );
   // Render metadata is deliberately not a partial Conversation.  Transcript
   // rows come exclusively from visibleMessageEntries; history actions hydrate
   // via ensureFullActiveConversation before touching positional data.
@@ -15039,6 +15226,15 @@ export function ChatPanel({
             if (data.event === 'task_completed') {
               const completedSuccessfully = (data.status || 'unknown') === 'completed';
               const isCompactionCompletion = data.task_kind === 'compaction';
+              const completionDetail = getTaskCompletionDenialDetail(data);
+              if (completionDetail) {
+                trackPendingDenial(
+                  conversationId,
+                  completionDetail,
+                  formatPublicErrorDetail(completionDetail, 'Generation failed'),
+                  false,
+                );
+              }
               // The per-task SSE stream already drives streaming UI cleanup;
               // refresh the conversation here so persisted assistant messages
               // and any post-completion state (e.g. interrupted_task) are
@@ -15054,6 +15250,39 @@ export function ChatPanel({
                   );
                   setConversations((prev) =>
                     prev.map((c) => (c.id === conversationId ? { ...c, ...fresh } : c)),
+                  );
+                  setConversationSummaries((prev) =>
+                    prev.map((summary) =>
+                      summary.id === conversationId
+                        ? mergeConversationDenialSummary(summary, fresh)
+                        : summary,
+                    ),
+                  );
+                })
+                .catch(() => {});
+              return;
+            }
+
+            if (data.event === 'denial_persisted') {
+              void api
+                .getConversation(conversationId, workspaceId)
+                .then((fresh) => {
+                  setActiveConversation((prev) =>
+                    prev && prev.id === conversationId ? fresh : prev,
+                  );
+                  setConversations((prev) =>
+                    prev.map((conversation) =>
+                      conversation.id === conversationId
+                        ? { ...conversation, ...fresh }
+                        : conversation,
+                    ),
+                  );
+                  setConversationSummaries((prev) =>
+                    prev.map((summary) =>
+                      summary.id === conversationId
+                        ? mergeConversationDenialSummary(summary, fresh)
+                        : summary,
+                    ),
                   );
                 })
                 .catch(() => {});
@@ -15074,7 +15303,7 @@ export function ChatPanel({
         console.error('Failed to start conversation event stream', e);
       }
     },
-    [markAutoCompactionCandidate, syncConversationActiveTaskId, workspaceId],
+    [markAutoCompactionCandidate, syncConversationActiveTaskId, trackPendingDenial, workspaceId],
   );
 
   // Only subscribe to title events for the ACTIVE conversation to avoid
@@ -15165,6 +15394,7 @@ export function ChatPanel({
       const sinceVersion = taskStreamVersionRef.current.get(taskId) ?? 0;
       lastSeenVersionRef.current = sinceVersion;
       let terminalStatus: string | null = null;
+      let terminalDenial: PendingDenialIdentity | null = null;
       let switchedAway = false;
 
       try {
@@ -15193,12 +15423,15 @@ export function ChatPanel({
             const status = data.status || (data.completed ? 'completed' : 'unknown');
             terminalStatus = status;
             if (status === 'failed' && data.error) {
-              setError(
-                formatPublicErrorDetail(
-                  { ...data, ...(typeof data.error === 'object' ? data.error : {}) },
-                  typeof data.error === 'string' ? data.error : 'Generation failed',
-                ),
+              const errorMessage = formatPublicErrorDetail(
+                { ...data, ...(typeof data.error === 'object' ? data.error : {}) },
+                typeof data.error === 'string' ? data.error : 'Generation failed',
               );
+              const denialDetail = getTaskCompletionDenialDetail(data);
+              terminalDenial = ownerConversationId
+                ? trackPendingDenial(ownerConversationId, denialDetail, errorMessage, true)
+                : null;
+              if (!terminalDenial) setError(errorMessage);
             }
             break; // Exit loop, cleanup below
           }
@@ -15291,7 +15524,23 @@ export function ChatPanel({
             if (completedConversationId) {
               syncConversationActiveTaskId(completedConversationId, null);
               try {
-                if (!activeConversationRef.current && !workspaceId) {
+                if (!activeConversationRef.current && !workspaceId && terminalDenial) {
+                  const updated = await api.getConversation(completedConversationId, workspaceId);
+                  const stillSelected = standaloneSelectedIdRef.current === completedConversationId;
+                  if (stillSelected) {
+                    setActiveConversation(updated);
+                  }
+                  setConversations((previous) =>
+                    previous.map((conversation) =>
+                      conversation.id === updated.id ? updated : conversation,
+                    ),
+                  );
+                  if (stillSelected) {
+                    setPartialOptimisticEntries((previous) =>
+                      previous.filter((item) => item.conversationId !== completedConversationId),
+                    );
+                  }
+                } else if (!activeConversationRef.current && !workspaceId) {
                   await standaloneWindow.reload();
                   setPartialOptimisticEntries((previous) =>
                     previous.filter((item) => item.conversationId !== completedConversationId),
@@ -15344,6 +15593,7 @@ export function ChatPanel({
       onTaskComplete,
       standaloneWindow,
       syncConversationActiveTaskId,
+      trackPendingDenial,
       workspaceId,
     ],
   );
@@ -15488,6 +15738,11 @@ export function ChatPanel({
         (activeConversation?.id === conversationId ? activeConversation : null);
       const previousConversation =
         baseConversation?.id === conversationId ? baseConversation : null;
+      const previousPersistedMessageCount =
+        previousConversation?.messages.length ??
+        (activeConversationMetadata?.id === conversationId
+          ? standaloneWindow.totalMessageCount
+          : 0);
 
       // 1. Optimistic update (User message)
       let content: string | ContentPart[] = message;
@@ -15548,20 +15803,49 @@ export function ChatPanel({
       } catch (err) {
         console.error(err);
         let messagePersisted = false;
+        let denialPersisted = false;
+        const publicDetail =
+          err && typeof err === 'object' && 'publicDetail' in err
+            ? getPublicErrorDetail((err as { publicDetail?: unknown }).publicDetail)
+            : null;
+        const denialRequestId = publicDetail?.request_id || null;
+        const denialMessageId = publicDetail?.denial_message_id || null;
+        setPartialOptimisticEntries((previous) =>
+          previous.filter((entry) => entry.conversationId !== conversationId),
+        );
         if (!startedTaskId) {
           try {
             const refreshed = await api.getConversation(conversationId, workspaceId);
-            const previousMessageCount = previousConversation?.messages.length ?? 0;
-            messagePersisted = refreshed.messages.length > previousMessageCount;
-            setActiveConversation(refreshed);
+            denialPersisted = Boolean(
+              (denialRequestId && hasDenialRequestId(refreshed.messages, denialRequestId)) ||
+              (denialMessageId &&
+                refreshed.messages.some((message) => message.message_id === denialMessageId)),
+            );
+            messagePersisted =
+              !denialPersisted &&
+              refreshed.messages
+                .slice(previousPersistedMessageCount)
+                .some((item) => item.role === 'user');
+            const stillSelected = workspaceId
+              ? activeConversationRef.current?.id === conversationId
+              : standaloneSelectedIdRef.current === conversationId;
+            if (stillSelected) setActiveConversation(refreshed);
             setConversations((prev) => prev.map((c) => (c.id === refreshed.id ? refreshed : c)));
             syncConversationActiveTaskId(conversationId, refreshed.active_task_id ?? null);
+            if (denialPersisted) {
+              pendingDenialsRef.current.delete(conversationId);
+              setPendingDenials(new Map(pendingDenialsRef.current));
+              (err as { denialPersisted?: boolean }).denialPersisted = true;
+            }
           } catch (refreshErr) {
             console.error('Failed to refresh conversation after task start error:', refreshErr);
           }
         }
-        if (!startedTaskId && !messagePersisted && previousConversation) {
-          setActiveConversation(previousConversation);
+        if (!startedTaskId && !messagePersisted && !denialPersisted && previousConversation) {
+          const stillSelected = workspaceId
+            ? activeConversationRef.current?.id === conversationId
+            : standaloneSelectedIdRef.current === conversationId;
+          if (stillSelected) setActiveConversation(previousConversation);
           setConversations((prev) =>
             prev.map((c) => (c.id === conversationId ? previousConversation : c)),
           );
@@ -16179,14 +16463,25 @@ export function ChatPanel({
         'messagePersisted' in err &&
         (err as { messagePersisted?: boolean }).messagePersisted,
       );
+      const denialPersisted = Boolean(
+        err &&
+        typeof err === 'object' &&
+        'denialPersisted' in err &&
+        (err as { denialPersisted?: boolean }).denialPersisted,
+      );
 
-      setIsConnectionError(!messagePersisted && isConnError);
-      setError(messagePersisted ? null : errorMessage);
+      const stillSelected = workspaceId
+        ? activeConversationRef.current?.id === conversation.id
+        : standaloneSelectedIdRef.current === conversation.id;
+      if (stillSelected) {
+        setIsConnectionError(!messagePersisted && isConnError);
+        setError(messagePersisted || denialPersisted ? null : errorMessage);
+      }
 
       setIsStreaming(false);
       setStreamingContent('');
       setStreamingEvents([]);
-      return messagePersisted;
+      return messagePersisted && !denialPersisted;
     }
   };
 
@@ -17798,6 +18093,12 @@ export function ChatPanel({
     const branchSnippet = branchSearchMatch?.snippet?.trim() || null;
     const childCount = conversation.subagent_conversation_ids?.length || 0;
     const hasSubagentChildren = childCount > 0 && !isSubagentChild;
+    const latestDenialMessageId =
+      conversation.last_denial_message_id ?? getLatestDenialMessageId(conversation.messages);
+    const hasUnseenDenial =
+      currentUser.id !== 'anonymous' &&
+      Boolean(latestDenialMessageId) &&
+      getDenialNoticeSeenId(currentUser.id, conversation.id) !== latestDenialMessageId;
     const isSubagentExpanded =
       hasSubagentChildren &&
       Boolean(expandedSubagentParents[conversation.id]) &&
@@ -17877,6 +18178,13 @@ export function ChatPanel({
                   >
                     {isSubagentExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   </button>
+                )}
+                {hasUnseenDenial && (
+                  <span
+                    className="chat-denial-unseen-badge"
+                    aria-label="New blocked request"
+                    title="New blocked request"
+                  />
                 )}
                 {deferredWorkspaceConversationSearchQuery.trim() ? (
                   <HighlightedText
@@ -18150,6 +18458,13 @@ export function ChatPanel({
     const childCount = conv.subagent_conversation_ids?.length || 0;
     const hasSubagentChildren = childCount > 0;
     const isSubagentExpanded = Boolean(expandedSubagentParents[conv.id]);
+    const latestDenialMessageId =
+      conv.last_denial_message_id ??
+      ('messages' in conv ? getLatestDenialMessageId(conv.messages) : null);
+    const hasUnseenDenial =
+      currentUser.id !== 'anonymous' &&
+      Boolean(latestDenialMessageId) &&
+      getDenialNoticeSeenId(currentUser.id, conv.id) !== latestDenialMessageId;
     const handleItemClick =
       options?.onClickOverride ??
       (() => selectConversationFromSearchResult(conv, branchSearchMatch, searchQuery));
@@ -18211,6 +18526,13 @@ export function ChatPanel({
                 <span className="chat-task-indicator" title="Processing in background">
                   <MiniLoadingSpinner variant="icon" size={12} />
                 </span>
+              )}
+              {hasUnseenDenial && (
+                <span
+                  className="chat-denial-unseen-badge"
+                  aria-label="New blocked request"
+                  title="New blocked request"
+                />
               )}
               {searchQuery.trim() ? (
                 <HighlightedText text={conv.title || 'Untitled Chat'} query={searchQuery} />
@@ -19441,7 +19763,28 @@ export function ChatPanel({
                                     </div>
                                   ) : (
                                     <div className="chat-message-text markdown-content">
-                                      <MemoizedMarkdown content={entry.preview.content} />
+                                      {entry.preview.events?.find(
+                                        (event) => event.type === 'content_protection_denial',
+                                      ) ? (
+                                        (() => {
+                                          const denial = entry.preview.events?.find(
+                                            (event) => event.type === 'content_protection_denial',
+                                          );
+                                          return denial?.type === 'content_protection_denial' ? (
+                                            <DenialNotice
+                                              reason={denial.public_reason}
+                                              timestamp={
+                                                denial.timestamp || entry.preview.timestamp
+                                              }
+                                              requestId={denial.request_id}
+                                              messageId={entry.preview.message_id ?? undefined}
+                                              onVisible={handleDenialNoticeVisible}
+                                            />
+                                          ) : null;
+                                        })()
+                                      ) : (
+                                        <MemoizedMarkdown content={entry.preview.content} />
+                                      )}
                                     </div>
                                   )}
                                 </div>
@@ -19752,6 +20095,39 @@ export function ChatPanel({
                                                     />
                                                   </div>,
                                                 );
+                                              } else if (ev.type === 'content_protection_denial') {
+                                                const denialAlreadyRendered =
+                                                  msg.events
+                                                    .slice(0, evIdx)
+                                                    .some(
+                                                      (priorEvent) =>
+                                                        priorEvent.type ===
+                                                          'content_protection_denial' &&
+                                                        priorEvent.request_id === ev.request_id,
+                                                    ) ||
+                                                  visibleMessageEntries.some(
+                                                    (priorEntry) =>
+                                                      priorEntry.state === 'ready' &&
+                                                      priorEntry.index < idx &&
+                                                      priorEntry.message.events?.some(
+                                                        (priorEvent) =>
+                                                          priorEvent.type ===
+                                                            'content_protection_denial' &&
+                                                          priorEvent.request_id === ev.request_id,
+                                                      ),
+                                                  );
+                                                if (!denialAlreadyRendered) {
+                                                  result.push(
+                                                    <DenialNotice
+                                                      key={`denial:${ev.request_id}`}
+                                                      reason={ev.public_reason}
+                                                      timestamp={ev.timestamp || msg.timestamp}
+                                                      requestId={ev.request_id}
+                                                      messageId={msg.message_id}
+                                                      onVisible={handleDenialNoticeVisible}
+                                                    />,
+                                                  );
+                                                }
                                               } else if (ev.type === 'error') {
                                                 result.push(
                                                   <div
@@ -19812,11 +20188,13 @@ export function ChatPanel({
                                         )}
                                       </>
                                     )}
-                                    <div className="chat-message-footer">
-                                      <span className="chat-message-time">
-                                        {formatChatTimestamp(msg.timestamp)}
-                                      </span>
-                                    </div>
+                                    {!isDenialOnlyMessage(msg) && (
+                                      <div className="chat-message-footer">
+                                        <span className="chat-message-time">
+                                          {formatChatTimestamp(msg.timestamp)}
+                                        </span>
+                                      </div>
+                                    )}
                                   </>
                                 )}
                               </div>
@@ -20044,30 +20422,32 @@ export function ChatPanel({
                                         >
                                           {isCopied ? <Check size={12} /> : <Copy size={12} />}
                                         </button>
-                                        {!isStreaming && !isReadOnly && (
-                                          <button
-                                            className="chat-action-icon-btn"
-                                            onClick={() => replayFromMessage(idx)}
-                                            title={
-                                              replayingMessageIdx === idx
-                                                ? 'Replaying…'
-                                                : 'Replay from this message'
-                                            }
-                                            aria-label={
-                                              replayingMessageIdx === idx
-                                                ? 'Replaying message'
-                                                : 'Replay from this message'
-                                            }
-                                            aria-busy={replayingMessageIdx === idx}
-                                            disabled={isReplayPending || branchSwitching}
-                                          >
-                                            {replayingMessageIdx === idx ? (
-                                              <MiniLoadingSpinner variant="icon" size={12} />
-                                            ) : (
-                                              <RefreshCw size={12} />
-                                            )}
-                                          </button>
-                                        )}
+                                        {!isDenialOnlyMessage(msg) &&
+                                          !isStreaming &&
+                                          !isReadOnly && (
+                                            <button
+                                              className="chat-action-icon-btn"
+                                              onClick={() => replayFromMessage(idx)}
+                                              title={
+                                                replayingMessageIdx === idx
+                                                  ? 'Replaying…'
+                                                  : 'Replay from this message'
+                                              }
+                                              aria-label={
+                                                replayingMessageIdx === idx
+                                                  ? 'Replaying message'
+                                                  : 'Replay from this message'
+                                              }
+                                              aria-busy={replayingMessageIdx === idx}
+                                              disabled={isReplayPending || branchSwitching}
+                                            >
+                                              {replayingMessageIdx === idx ? (
+                                                <MiniLoadingSpinner variant="icon" size={12} />
+                                              ) : (
+                                                <RefreshCw size={12} />
+                                              )}
+                                            </button>
+                                          )}
                                         {!isStreaming && !isReadOnly && (
                                           <button
                                             className="chat-action-icon-btn"

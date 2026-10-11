@@ -844,6 +844,10 @@ class AppSettings(BaseModel):
         default="",
         description="OpenRouter API key (used when llm_provider is 'openrouter')",
     )
+    typesafe_api_key: str = Field(
+        default="",
+        description="TypeSafe API key used by the Jev content classifier.",
+    )
     github_models_api_token: str = Field(
         default="",
         description="GitHub Models API token/PAT (used when llm_provider is 'github_models')",
@@ -1617,6 +1621,7 @@ class UpdateSettingsRequest(BaseModel):
     openai_codex_base_url: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
+    typesafe_api_key: Optional[str] = None
     github_models_api_token: Optional[str] = None
     github_copilot_access_token: Optional[str] = None
     github_copilot_refresh_token: Optional[str] = None
@@ -3119,6 +3124,7 @@ class ConversationResponse(BaseModel):
     total_tokens: int
     active_task_id: Optional[str] = None
     active_branch_id: Optional[str] = None
+    last_denial_message_id: Optional[str] = None
     disabled_builtin_tool_ids: List[str] = Field(default_factory=list)
     subagents_enabled: bool = True
     parent_conversation_id: Optional[str] = None
@@ -3145,6 +3151,7 @@ class ConversationWindowMetadata(BaseModel):
     display_name: Optional[str] = None
     total_tokens: int = 0
     active_task_id: Optional[str] = None
+    last_denial_message_id: Optional[str] = None
     disabled_builtin_tool_ids: List[str] = Field(default_factory=list)
     subagents_enabled: bool = True
     parent_conversation_id: Optional[str] = None
@@ -3169,6 +3176,7 @@ class ConversationMessagePreview(BaseModel):
     message_id: Optional[str] = None
     content_truncated: bool
     has_details: bool
+    events: Optional[List[dict]] = None
 
 
 class ConversationWindowEntry(BaseModel):
@@ -3215,6 +3223,7 @@ class ConversationSummaryResponse(BaseModel):
     total_tokens: int = 0
     active_task_id: Optional[str] = None
     active_branch_id: Optional[str] = None
+    last_denial_message_id: Optional[str] = None
     subagents_enabled: bool = True
     parent_conversation_id: Optional[str] = None
     subagent_role: Optional[str] = None

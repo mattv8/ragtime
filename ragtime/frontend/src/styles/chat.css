@@ -209,6 +209,14 @@
   color: var(--color-warning);
   animation: pulse 1.5s ease-in-out infinite;
 }
+.chat-denial-unseen-badge {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--color-warning);
+  flex-shrink: 0;
+}
 .chat-branch-search-indicator {
   display: inline-flex;
   align-items: center;
@@ -615,6 +623,10 @@ textarea.chat-title-input {
   padding: var(--space-sm) var(--space-md);
 }
 .chat-loading-state-retry {
+  align-self: flex-start;
+}
+/* Keep the main error notice content-sized inside the row-flex message region. */
+.chat-loading-state-main.chat-loading-state-error {
   align-self: flex-start;
 }
 .chat-empty-state p {
@@ -2389,6 +2401,53 @@ textarea.chat-header-title-input {
 .chat-message-generation-error svg {
   flex: 0 0 auto;
   margin-top: 2px;
+}
+.chat-denial-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  max-width: min(100%, 560px);
+  padding: var(--space-sm) var(--space-md);
+  border-left: 2px solid var(--color-warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-hover);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+.chat-denial-notice-icon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--color-text-secondary);
+}
+.chat-denial-notice-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.chat-denial-notice-label,
+.chat-denial-notice-reason,
+.chat-denial-notice-time {
+  color: var(--color-text-primary);
+}
+.chat-denial-notice-label {
+  font-weight: 600;
+}
+.chat-denial-notice-time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  white-space: nowrap;
+}
+@media (forced-colors: active) {
+  .chat-denial-notice {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+  .chat-denial-unseen-badge {
+    background: ButtonText;
+  }
 }
 /* =============================================================================
    INPUT AREA

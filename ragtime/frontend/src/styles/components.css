@@ -8549,6 +8549,9 @@ fieldset legend.legend-with-status .legend-divider {
 
 .auth-group-provider-section-header {
   justify-content: space-between;
+  color: var(--color-text-secondary);
+  border-bottom-color: var(--color-border);
+  background: var(--color-surface-alt);
 }
 
 .auth-group-provider-section-count {
@@ -8821,6 +8824,12 @@ fieldset legend.legend-with-status .legend-divider {
 .auth-group-access-option.is-active {
   background: var(--color-primary-light);
   color: var(--color-primary);
+}
+
+.auth-group-access-option:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+  z-index: 1;
 }
 
 .auth-group-access-option:disabled {
