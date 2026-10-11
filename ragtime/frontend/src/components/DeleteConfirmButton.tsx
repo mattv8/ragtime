@@ -54,6 +54,7 @@ export function DeleteConfirmButton({
     <button
       type="button"
       className={className}
+      data-delete-state={deleting ? 'deleting' : confirming ? 'confirming' : 'idle'}
       onClick={handleClick}
       // Don't disable during countdown so we keep focus (and can detect onBlur)
       disabled={disabled || deleting}

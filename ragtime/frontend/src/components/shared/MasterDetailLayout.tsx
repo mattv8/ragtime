@@ -10,6 +10,8 @@ export interface MasterDetailItem {
   id: string;
   name: string;
   meta?: ReactNode;
+  /** Revealed on row hover or focus; rendered beside the row button, never inside it. */
+  action?: ReactNode;
 }
 
 type DataAttributes = { [attribute: `data-${string}`]: string | undefined };
@@ -105,10 +107,12 @@ export function MasterDetailLayout({
       focusElementAfterRender(row, root);
       return;
     }
-    focusElementAfterRender(
-      root?.querySelector<HTMLElement>('[data-new-access-level], [data-new-category]') ?? null,
-      root,
-    );
+    // The closed row was deleted; whoever deleted it may already have moved focus to a neighbor.
+    requestAnimationFrame(() => {
+      const activeElement = document.activeElement;
+      if (root?.contains(activeElement) && activeElement !== root) return;
+      root?.querySelector<HTMLElement>('[data-new-access-level], [data-new-category]')?.focus();
+    });
   }, [detailLabelledBy, rowHookAttribute, selectedId]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -167,7 +171,13 @@ export function MasterDetailLayout({
           {items.map((item) => {
             const isSelected = item.id === selectedId;
             return (
-              <li className="access-md-list-item" key={item.id}>
+              <li
+                className={joinClassNames(
+                  'access-md-list-item',
+                  item.action ? 'has-row-action' : undefined,
+                )}
+                key={item.id}
+              >
                 <button
                   type="button"
                   className={`access-md-rail-row${isSelected ? ' is-selected' : ''}`}
@@ -178,6 +188,7 @@ export function MasterDetailLayout({
                   <span className="access-md-rail-row-name">{item.name}</span>
                   {item.meta && <span className="access-md-rail-row-meta">{item.meta}</span>}
                 </button>
+                {item.action && <span className="access-md-rail-row-action">{item.action}</span>}
               </li>
             );
           })}

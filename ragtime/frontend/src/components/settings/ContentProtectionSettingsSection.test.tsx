@@ -318,8 +318,10 @@ describe('ContentProtectionSettingsSection', () => {
     installFetch();
     const onTypesafeKeySaved = vi.fn();
     const user = await openSetup({ onTypesafeKeySaved });
+
     await user.type(screen.getByLabelText('API key'), 'ts_saved-typesafe');
     await user.click(screen.getByRole('button', { name: 'Save key' }));
+
     await waitFor(() => expect(onTypesafeKeySaved).toHaveBeenCalledWith('ts_saved-typesafe'));
   });
 
@@ -417,6 +419,94 @@ describe('ContentProtectionSettingsSection', () => {
     expect(new Set(levelIds).size).toBe(2);
     expect(categoryIds.every((id: string) => /^cat_[a-z0-9]{12}$/.test(id))).toBe(true);
     expect(levelIds.every((id: string) => /^level_[a-z0-9]{12}$/.test(id))).toBe(true);
+  });
+
+  it('deletes categories from a rail trash button and keeps system categories protected', async () => {
+    installFetch();
+    const user = await openSetup();
+    await user.click(screen.getByRole('tab', { name: 'Categories' }));
+
+    expect(screen.queryByRole('button', { name: 'Delete Rule override' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Delete Credentials' }));
+
+    expect(screen.queryByRole('button', { name: /^Credentials\b/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Rule override\b/ })),
+    );
+  });
+
+  it('deletes a granted category and removes it from access-level grants on save', async () => {
+    const granted = {
+      ...config,
+      categories: [
+        { ...config.categories[0], id: 'operational', name: 'Operational' },
+        ...config.categories,
+      ],
+      access_levels: [{ ...config.access_levels[0], granted_category_ids: ['credentials'] }],
+    };
+    const fetch = vi.fn((url: string, _options?: RequestInit) => {
+      if (url.endsWith('/catalog')) return response(catalog);
+      if (url.endsWith('/config')) return response(granted);
+      return response({ items: [] });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const user = await openSetup();
+    await user.click(screen.getByRole('tab', { name: 'Categories' }));
+
+    const trash = screen.getByRole('button', { name: 'Delete Credentials' });
+    expect(trash.getAttribute('aria-disabled')).toBeNull();
+    await user.click(trash);
+    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
+    await user.click(screen.getByRole('button', { name: 'Save protection' }));
+
+    await waitFor(() =>
+      expect(fetch.mock.calls.some(([, options]) => options?.method === 'PUT')).toBe(true),
+    );
+    const write = fetch.mock.calls.find(([, options]) => options?.method === 'PUT');
+    const savedConfig = JSON.parse(write?.[1]?.body as string).config;
+    expect(savedConfig.categories.map((item: { id: string }) => item.id)).toEqual([
+      'operational',
+      'rule_override',
+    ]);
+    expect(savedConfig.access_levels[0].granted_category_ids).toEqual([]);
+  });
+
+  it('blocks saving enabled protection after every regular category is deleted', async () => {
+    const fetch = installFetch();
+    const user = await openSetup();
+    await user.click(screen.getByRole('tab', { name: 'Categories' }));
+    await user.click(screen.getByRole('button', { name: 'Delete Credentials' }));
+    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
+    await user.click(screen.getByRole('button', { name: 'Save protection' }));
+
+    expect(
+      await screen.findByText('Add at least one category before saving enabled protection.'),
+    ).toBeTruthy();
+    expect(fetch.mock.calls.some(([, options]) => options?.method === 'PUT')).toBe(false);
+  });
+
+  it('explains why the default access level cannot be deleted from the rail', async () => {
+    installFetch();
+    const user = await openSetup();
+    await user.click(screen.getByRole('tab', { name: 'Access levels' }));
+
+    const trash = screen.getByRole('button', { name: 'Delete Standard' });
+    expect(trash.getAttribute('aria-disabled')).toBe('true');
+    expect(trash.getAttribute('title')).toBe(
+      'Cannot delete the default level. Assign a different default first.',
+    );
+    await user.click(trash);
+
+    expect(
+      await screen.findByText(
+        'Cannot delete the default level. Assign a different default first.',
+        {
+          selector: ':not([hidden])',
+        },
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Standard\b/ })).toBeTruthy();
   });
 
   it('cancels a category edit with Escape without closing the setup draft', async () => {
@@ -577,6 +667,46 @@ describe('ContentProtectionSettingsSection', () => {
     });
     expect(inspectTabs.classList.contains('modal-tabs')).toBe(true);
     expect(inspectTabs.classList.contains('wizard-progress')).toBe(false);
+  });
+  it('positions a directly opened setup step within its horizontal progress strip', async () => {
+    installFetch();
+    const scrollToDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTo');
+    const scrollTo = vi.fn();
+    const getBoundingClientRect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.hasAttribute('data-content-protection-setup-progress')) {
+          return { left: 0, right: 100 } as DOMRect;
+        }
+        if (this.id === 'content-protection-setup-tab-categories') {
+          return { left: 120, right: 180 } as DOMRect;
+        }
+        return { left: 0, right: 0 } as DOMRect;
+      });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: scrollTo,
+      writable: true,
+    });
+
+    try {
+      const user = userEvent.setup();
+      render(<ContentProtectionSettingsSection open onToggle={() => {}} />);
+      await user.click(await screen.findByRole('button', { name: 'Configure categories' }));
+
+      const setupSteps = screen.getByRole('tablist', {
+        name: 'Configure content protection steps',
+      });
+      expect(scrollTo).toHaveBeenCalledWith({ behavior: 'auto', left: 80 });
+      expect(scrollTo.mock.instances[0]).toBe(setupSteps);
+    } finally {
+      getBoundingClientRect.mockRestore();
+      if (scrollToDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollTo', scrollToDescriptor);
+      } else {
+        delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
+      }
+    }
   });
   it('passes a selected real user to the test API', async () => {
     const fetch = installFetch();
@@ -1000,6 +1130,11 @@ describe('ContentProtectionSettingsSection', () => {
 
     await user.click(screen.getByRole('tab', { name: 'Categories' }));
     await user.click(screen.getByRole('button', { name: /^Credentials\b/ }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        document.getElementById('cp-wizard-category-detail-title'),
+      ),
+    );
     const description = screen.getByLabelText('Description');
     await user.clear(description);
     await user.type(description, 'Updated category description');

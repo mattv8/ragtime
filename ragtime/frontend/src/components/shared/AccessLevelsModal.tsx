@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Plus } from 'lucide-react';
 import {
   ContentProtectionApiError,
   contentProtectionApi,
@@ -11,11 +10,10 @@ import {
 } from '@/api/contentProtection';
 import type { AuthGroup } from '@/types';
 import { generateCredentialValue } from '@/utils/credentialGenerator';
-import { ContentProtectionAccessLevelCard } from '../settings/ContentProtectionAccessLevelCard';
-import { DeleteConfirmButton } from '../DeleteConfirmButton';
-import { AccessDetailHeader } from './AccessDetailHeader';
-import { AccessLevelGroupsField } from './AccessLevelGroupsField';
-import { MasterDetailLayout } from './MasterDetailLayout';
+import {
+  AccessLevelsMasterDetail,
+  accessLevelDeleteBlockedReason,
+} from './AccessLevelsMasterDetail';
 import { useAccessLevelDrafts } from './useAccessLevelDrafts';
 import { CONTENT_PROTECTION_SETTING_ID, SettingsHighlightLink } from './SettingsHighlightLink';
 
@@ -303,11 +301,11 @@ function LoadedAccessLevelsModal(props: {
   ];
   const filtered = levels.filter((level) => level.name.toLowerCase().includes(query.toLowerCase()));
   const isUnsaved = Boolean(selectedId && snapshots[selectedId] === null);
-  const mappedIds = selectedId
-    ? config.group_access_levels
-        .filter((item) => item.access_level_id === selectedId)
-        .map((item) => item.group_id)
-    : [];
+  const groupIdsForLevel = (levelId: string) =>
+    config.group_access_levels
+      .filter((item) => item.access_level_id === levelId)
+      .map((item) => item.group_id);
+  const busy = Boolean(savingLevelId || deleting);
   const groups = authGroups.map((group) => ({
     id: group.id,
     label: group.display_name,
@@ -379,66 +377,77 @@ function LoadedAccessLevelsModal(props: {
       );
     }
   };
-  const deleteLevel = async () => {
-    if (
-      !selectedId ||
-      !selected ||
-      isUnsaved ||
-      selectedId === config.default_access_level_id ||
-      mappedIds.length ||
-      hasDeletedConflict
-    )
-      return;
-    requestNavigation(async () => {
-      setDeleting(true);
-      const remove = async (base: ContentProtectionConfig) =>
-        contentProtectionApi.saveConfig(base.revision, {
-          ...base,
-          access_levels: base.access_levels.filter((level) => level.id !== selectedId),
-        });
+  const deleteBlockedReason = (level: AccessLevel) => {
+    if (snapshots[level.id] === null || conflicts[level.id]?.type === 'deleted') return undefined;
+    return accessLevelDeleteBlockedReason(
+      level.id === config.default_access_level_id,
+      groupIdsForLevel(level.id).length,
+    );
+  };
+  const forgetLevel = (levelId: string) => {
+    discardLevel(levelId);
+    if (selectedId === levelId) setSelectedId(null);
+  };
+  const deleteLevel = async (level: AccessLevel): Promise<boolean> => {
+    const levelId = level.id;
+    if (snapshots[levelId] === null || conflicts[levelId]?.type === 'deleted') {
+      forgetLevel(levelId);
+      return true;
+    }
+    const blockedReason = deleteBlockedReason(level);
+    if (blockedReason) {
+      toast.error(blockedReason);
+      return false;
+    }
+    if (deleting || savingLevelId) return false;
+    setDeleting(true);
+    const remove = async (base: ContentProtectionConfig) =>
+      contentProtectionApi.saveConfig(base.revision, {
+        ...base,
+        access_levels: base.access_levels.filter((candidate) => candidate.id !== levelId),
+      });
+    try {
+      let saved: ContentProtectionConfig;
       try {
-        let saved: ContentProtectionConfig;
-        try {
-          saved = await remove(config);
-        } catch (deleteError) {
-          if (!(deleteError instanceof ContentProtectionApiError) || deleteError.status !== 409)
-            throw deleteError;
-          const latest = await contentProtectionApi.getConfig();
-          const current = latest.access_levels.find((level) => level.id === selectedId);
-          if (!current) {
-            setConfig(latest);
-            discardLevel(selectedId);
-            setSelectedId(null);
-            toast.success('Access level deleted');
-            return;
-          }
-          const snapshot = snapshots[selectedId];
-          const conflictReason =
-            current.id === latest.default_access_level_id
-              ? 'This access level is now the default level.'
-              : latest.group_access_levels.some((mapping) => mapping.access_level_id === selectedId)
-                ? 'This access level is now mapped to a group.'
-                : !snapshot || JSON.stringify(current) !== JSON.stringify(snapshot)
-                  ? 'This access level was edited by another admin.'
-                  : null;
-          if (conflictReason) {
-            setConfig(latest);
-            throw new Error(conflictReason);
-          }
-          saved = await remove(latest);
-        }
-        saveConfig(saved);
-        discardLevel(selectedId);
-        setSelectedId(null);
-        toast.success('Access level deleted');
+        saved = await remove(config);
       } catch (deleteError) {
-        toast.error(
-          deleteError instanceof Error ? deleteError.message : 'Could not delete access level.',
-        );
-      } finally {
-        setDeleting(false);
+        if (!(deleteError instanceof ContentProtectionApiError) || deleteError.status !== 409)
+          throw deleteError;
+        const latest = await contentProtectionApi.getConfig();
+        const current = latest.access_levels.find((candidate) => candidate.id === levelId);
+        if (!current) {
+          saveConfig(latest);
+          forgetLevel(levelId);
+          toast.success('Access level deleted');
+          return true;
+        }
+        const snapshot = snapshots[levelId];
+        const conflictReason =
+          current.id === latest.default_access_level_id
+            ? 'This access level is now the default level.'
+            : latest.group_access_levels.some((mapping) => mapping.access_level_id === levelId)
+              ? 'This access level is now mapped to a group.'
+              : !snapshot || JSON.stringify(current) !== JSON.stringify(snapshot)
+                ? 'This access level was edited by another admin.'
+                : null;
+        if (conflictReason) {
+          setConfig(latest);
+          throw new Error(conflictReason);
+        }
+        saved = await remove(latest);
       }
-    });
+      saveConfig(saved);
+      forgetLevel(levelId);
+      toast.success('Access level deleted');
+      return true;
+    } catch (deleteError) {
+      toast.error(
+        deleteError instanceof Error ? deleteError.message : 'Could not delete access level.',
+      );
+      return false;
+    } finally {
+      setDeleting(false);
+    }
   };
   useEffect(() => {
     if (!selectedId || isUnsaved) return;
@@ -488,15 +497,6 @@ function LoadedAccessLevelsModal(props: {
       items[0].focus();
     }
   };
-  const deleteReason = hasDeletedConflict
-    ? 'This access level was deleted by another admin.'
-    : isUnsaved
-      ? 'Save this level before deleting.'
-      : selectedId === config.default_access_level_id
-        ? 'Cannot delete the default level. Assign a different default first.'
-        : mappedIds.length
-          ? `Mapped to ${mappedIds.length} group${mappedIds.length === 1 ? '' : 's'}. Remove all group mappings before deleting.`
-          : undefined;
   return (
     <div
       className="modal-overlay"
@@ -520,26 +520,39 @@ function LoadedAccessLevelsModal(props: {
             ×
           </button>
         </div>
-        <MasterDetailLayout
+        <AccessLevelsMasterDetail
           id="access-levels"
-          heading="Access levels"
-          headerAction={
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary"
-              data-new-access-level
-              onClick={() =>
-                requestNavigation(() => {
-                  const level = newLevel();
-                  createLevel(level);
-                  setSelectedId(level.id);
-                })
-              }
-            >
-              <Plus size={14} />
-              New access level
-            </button>
+          idPrefix="alm-"
+          headingId="access-level-detail-title"
+          levels={filtered}
+          selectedLevel={selected}
+          categories={config.categories}
+          groups={groups}
+          defaultLevelId={config.default_access_level_id}
+          groupIdsForLevel={groupIdsForLevel}
+          selectedId={selectedId}
+          onSelect={select}
+          onCloseDetail={closeDetail}
+          onAdd={() =>
+            requestNavigation(() => {
+              const level = newLevel();
+              createLevel(level);
+              setSelectedId(level.id);
+            })
           }
+          onUpdate={updateDraft}
+          onAddGroup={(_levelId, groupId) => void updateMapping(groupId, true)}
+          onRemoveGroup={(_levelId, groupId) => void updateMapping(groupId, false)}
+          onMakeDefault={() => void makeDefault()}
+          onDelete={deleteLevel}
+          deleteBlockedReason={deleteBlockedReason}
+          confirmDelete
+          busy={busy}
+          fieldsDisabled={busy || hasDeletedConflict}
+          levelActionsDisabled={isUnsaved || hasDeletedConflict}
+          groupsDisabledHint={isUnsaved ? 'Save this level before mapping groups.' : undefined}
+          startEditingLevelId={isUnsaved && selected && !selected.name ? selected.id : null}
+          rowIndicator={(level) => isDirty(level.id) && <span aria-label="Unsaved changes">●</span>}
           search={
             <input
               type="text"
@@ -551,195 +564,92 @@ function LoadedAccessLevelsModal(props: {
               onChange={(event) => setQuery(event.target.value)}
             />
           }
-          items={filtered.map((level) => {
-            const groupCount = config.group_access_levels.filter(
-              (mapping) => mapping.access_level_id === level.id,
-            ).length;
-            return {
-              id: level.id,
-              name: level.name || '(new level)',
-              meta: (
-                <>
-                  {level.id === config.default_access_level_id && (
-                    <span className="access-level-default-badge">Default</span>
-                  )}
-                  {snapshots[level.id] !== null && (
-                    <>
-                      <span>
-                        {groupCount} group{groupCount === 1 ? '' : 's'}
-                      </span>
-                      <span>
-                        {level.granted_category_ids.length}{' '}
-                        {level.granted_category_ids.length === 1 ? 'category' : 'categories'}
-                      </span>
-                    </>
-                  )}
-                  {isDirty(level.id) && <span aria-label="Unsaved changes">●</span>}
-                </>
-              ),
-            };
-          })}
-          selectedId={selectedId}
-          onSelect={select}
-          onCloseDetail={closeDetail}
-          detailLabelledBy="access-level-detail-title"
-          emptyMessage="No access levels configured."
           noMatchMessage={levels.length ? 'No matching access levels.' : undefined}
           emptyHookAttribute="data-levels-empty"
           noMatchHookAttribute="data-levels-no-match"
-          busy={Boolean(savingLevelId || deleting)}
+          rowHookAttribute="data-access-level-id"
           rootProps={{
             className: 'modal-body access-levels-modal-body',
-            onKeyDown,
             ...{ 'data-access-levels-modal-body': '' },
           }}
           listProps={{ className: '', ...{ 'data-access-levels-rail': '' } }}
           detailProps={{ className: '', ...{ 'data-access-level-detail': '' } }}
-          rowHookAttribute="data-access-level-id"
-          detail={
+          detailIntro={
+            !config.enabled &&
+            !config.share_with_assistant && (
+              <div
+                className="tool-access-callout tool-access-callout-warning"
+                role="status"
+                data-access-protection-off
+              >
+                <strong>Content protection is off.</strong>
+                <span>
+                  <SettingsHighlightLink
+                    settingId={CONTENT_PROTECTION_SETTING_ID}
+                    onNavigate={
+                      onNavigateToSetting
+                        ? (settingId) =>
+                            requestNavigation(() => {
+                              onClose();
+                              onNavigateToSetting(settingId);
+                            })
+                        : undefined
+                    }
+                  >
+                    Enable in Settings → Content protection
+                  </SettingsHighlightLink>{' '}
+                  to apply these access levels.
+                </span>
+              </div>
+            )
+          }
+          detailExtras={
             selected && (
               <>
-                <AccessDetailHeader
-                  key={selected.id}
-                  headingId="access-level-detail-title"
-                  title={selected.name}
-                  editableTitle={{
-                    ariaLabel: 'Access level name',
-                    maxLength: 128,
-                    disabled: Boolean(
-                      savingLevelId || deleting || conflicts[selected.id]?.type === 'deleted',
-                    ),
-                    startEditing: isUnsaved && !selected.name,
-                    onCommit: (name) => updateDraft(selected.id, { name }),
-                  }}
-                  meta={
-                    selectedId === config.default_access_level_id ? (
-                      <span className="access-level-default-badge">Default</span>
-                    ) : undefined
-                  }
-                  onClose={closeDetail}
-                />
-                <div
-                  className="access-md-detail-body"
-                  data-access-level-detail-body
-                  aria-busy={Boolean(savingLevelId || deleting)}
+                <details
+                  className="content-protection-advisory-preview"
+                  data-level-section="preview"
+                  data-level-preview
                 >
-                  {!config.enabled && !config.share_with_assistant && (
-                    <div
-                      className="tool-access-callout tool-access-callout-warning"
-                      role="status"
-                      data-access-protection-off
-                    >
-                      <strong>Content protection is off.</strong>
-                      <span>
-                        <SettingsHighlightLink
-                          settingId={CONTENT_PROTECTION_SETTING_ID}
-                          onNavigate={
-                            onNavigateToSetting
-                              ? (settingId) =>
-                                  requestNavigation(() => {
-                                    onClose();
-                                    onNavigateToSetting(settingId);
-                                  })
-                              : undefined
-                          }
-                        >
-                          Enable in Settings → Content protection
-                        </SettingsHighlightLink>{' '}
-                        to apply these access levels.
-                      </span>
-                    </div>
+                  <summary className="access-level-preview-summary">
+                    Prompt preview {previewLoading && 'Loading…'}
+                  </summary>
+                  <p className="field-help">
+                    Synthetic scope. This reflects the last saved state while a draft is dirty.
+                  </p>
+                  {!config.share_with_assistant && (
+                    <p className="field-help">Sharing with assistant is off — prompt not sent.</p>
                   )}
-                  <ContentProtectionAccessLevelCard
-                    level={selected}
-                    categories={config.categories}
-                    idPrefix={`alm-${selected.id}-`}
-                    hideHeader
-                    fieldsDisabled={Boolean(
-                      savingLevelId || deleting || conflicts[selected.id]?.type === 'deleted',
-                    )}
-                    onUpdate={updateDraft}
-                  />
-                  <AccessLevelGroupsField
-                    idPrefix={`alm-${selected.id}-`}
-                    groups={groups}
-                    mappedIds={mappedIds}
-                    disabled={isUnsaved || hasDeletedConflict}
-                    disabledHint={isUnsaved ? 'Save this level before mapping groups.' : undefined}
-                    onAdd={(id) => void updateMapping(id, true)}
-                    onRemove={(id) => void updateMapping(id, false)}
-                  />
-                  <section className="content-protection-fieldset" data-level-section="default">
-                    <h5 className="access-level-section-heading">Default level</h5>
-                    <p className="field-help">
-                      All verified users with no group mapping receive the default level.
+                  {isUnsaved ? (
+                    <p className="field-help" data-level-preview-unsaved>
+                      Save to preview.
                     </p>
-                    {selectedId !== config.default_access_level_id && (
+                  ) : previewError ? (
+                    <div className="error-banner" role="alert" data-level-preview-error>
+                      {previewError}
                       <button
                         type="button"
                         className="btn btn-sm btn-secondary"
-                        data-make-default-btn
-                        disabled={isUnsaved || hasDeletedConflict}
-                        onClick={() => void makeDefault()}
+                        onClick={() => setPreviewRetry((current) => current + 1)}
                       >
-                        Make default level
+                        Retry
                       </button>
-                    )}
-                  </section>
-                  <details
-                    className="content-protection-advisory-preview"
-                    data-level-section="preview"
-                    data-level-preview
-                  >
-                    <summary className="access-level-preview-summary">
-                      Prompt preview {previewLoading && 'Loading…'}
-                    </summary>
-                    <p className="field-help">
-                      Synthetic scope. This reflects the last saved state while a draft is dirty.
-                    </p>
-                    {!config.share_with_assistant && (
-                      <p className="field-help">Sharing with assistant is off — prompt not sent.</p>
-                    )}
-                    {isUnsaved ? (
-                      <p className="field-help" data-level-preview-unsaved>
-                        Save to preview.
-                      </p>
-                    ) : previewError ? (
-                      <div className="error-banner" role="alert" data-level-preview-error>
-                        {previewError}
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-secondary"
-                          onClick={() => setPreviewRetry((current) => current + 1)}
-                        >
-                          Retry
-                        </button>
-                      </div>
-                    ) : (
-                      preview && <pre data-level-preview-result>{preview}</pre>
-                    )}
-                  </details>
-                  {prunedGrantsLevelId === selected.id && (
-                    <p className="field-help" role="status" data-level-pruned-grants-notice>
-                      Removed grants for categories that no longer exist.
-                    </p>
+                    </div>
+                  ) : (
+                    preview && <pre data-level-preview-result>{preview}</pre>
                   )}
-                  <section
-                    className="content-protection-fieldset access-level-danger-zone"
-                    data-level-section="danger"
-                    data-level-danger-zone
-                  >
-                    <h5 className="access-level-section-heading">Danger zone</h5>
-                    <DeleteConfirmButton
-                      onDelete={() => void deleteLevel()}
-                      disabled={Boolean(deleteReason)}
-                      title={deleteReason}
-                      deleting={deleting}
-                      buttonText="Delete level"
-                    />
-                    {deleteReason && <p className="field-help">{deleteReason}</p>}
-                  </section>
-                </div>
+                </details>
+                {prunedGrantsLevelId === selected.id && (
+                  <p className="field-help" role="status" data-level-pruned-grants-notice>
+                    Removed grants for categories that no longer exist.
+                  </p>
+                )}
+              </>
+            )
+          }
+          detailFooter={
+            selected && (
+              <>
                 {conflicts[selected.id] && (
                   <div
                     className="error-banner"
@@ -790,11 +700,7 @@ function LoadedAccessLevelsModal(props: {
                     type="button"
                     className={`btn btn-sm${isDirty(selected.id) ? '' : ' btn-secondary'}`}
                     disabled={
-                      !isDirty(selected.id) ||
-                      !selected.name.trim() ||
-                      Boolean(
-                        savingLevelId || deleting || conflicts[selected.id]?.type === 'deleted',
-                      )
+                      !isDirty(selected.id) || !selected.name.trim() || busy || hasDeletedConflict
                     }
                     onClick={() => void saveLevel(selected.id)}
                   >

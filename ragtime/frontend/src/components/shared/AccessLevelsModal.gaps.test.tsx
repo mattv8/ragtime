@@ -106,12 +106,12 @@ describe('AccessLevelsModal remaining data conflicts', () => {
           default_access_level_id: '',
         },
         reason: 'This access level was edited by another admin.',
-        railName: /server edit/i,
+        railName: 'Server Edit',
       },
       {
         latest: config(2, [accessLevel('standard', 'Now Default')]),
         reason: 'This access level is now the default level.',
-        railName: /now default/i,
+        railName: 'Now Default',
       },
       {
         latest: {
@@ -120,7 +120,7 @@ describe('AccessLevelsModal remaining data conflicts', () => {
           group_access_levels: [{ group_id: 'group', access_level_id: 'standard' }],
         },
         reason: 'This access level is now mapped to a group.',
-        railName: /now mapped/i,
+        railName: 'Now Mapped',
       },
     ];
 
@@ -140,16 +140,17 @@ describe('AccessLevelsModal remaining data conflicts', () => {
 
       renderModal();
       await screen.findByRole('heading', { name: 'Standard' });
-      await userEvent.click(screen.getByRole('button', { name: 'Delete level' }));
-      await vi.advanceTimersByTimeAsync(3000);
-      await userEvent.click(screen.getByRole('button', { name: 'Confirm?' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Delete Standard' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
 
       await waitFor(() => expect(toast.error).toHaveBeenCalledWith(testCase.reason));
       expect(contentProtectionApi.saveConfig).toHaveBeenCalledTimes(1);
       expect(
         await screen.findByRole('heading', { name: testCase.latest.access_levels[0].name }),
       ).toBeTruthy();
-      expect(screen.getByRole('button', { name: testCase.railName })).toBeTruthy();
+      expect(
+        screen.getByRole('button', { name: new RegExp(`^${testCase.railName}\\b`, 'i') }),
+      ).toBeTruthy();
     }
   });
 
@@ -235,9 +236,6 @@ describe('AccessLevelsModal remaining data conflicts', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     await screen.findByText(/draft is retained read-only/i);
 
-    expect(
-      (screen.getByRole('button', { name: 'Delete level' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
     expect(
       (screen.getByRole('button', { name: 'Make default level' }) as HTMLButtonElement).disabled,
     ).toBe(true);

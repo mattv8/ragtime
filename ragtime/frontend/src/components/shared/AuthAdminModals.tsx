@@ -574,6 +574,7 @@ export function AuthAdminModalHost({
                 key={mode}
                 type="button"
                 className={`auth-group-access-option${accessMode === mode ? ' is-active' : ''}`}
+                aria-pressed={accessMode === mode}
                 disabled={busy || protectionPanelBusy || protectedGroupUnavailable}
                 onClick={() => void handleSetAuthGroupAccessMode(group, mode)}
               >
@@ -777,7 +778,9 @@ export function AuthAdminModalHost({
                 </p>
               </div>
               <button
+                type="button"
                 className="modal-close"
+                aria-label="Close"
                 onClick={() => requestPanelNavigation(closeManageGroupsModal)}
               >
                 &times;
@@ -856,7 +859,11 @@ export function AuthAdminModalHost({
                     tabIndex={-1}
                   >
                     {providerSections.map((section) => (
-                      <div key={section.provider} className="auth-group-provider-section">
+                      <div
+                        key={section.provider}
+                        className="auth-group-provider-section"
+                        data-group-provider-section={section.provider}
+                      >
                         <div className="model-group-header auth-group-provider-section-header">
                           <span>{section.label}</span>
                           <span className="auth-group-provider-section-count">
@@ -986,7 +993,7 @@ export function AuthAdminModalHost({
                                   if (!protectionPanelBusy) selectGroup(group);
                                 }}
                               >
-                                <div className="auth-group-row-main">
+                                <div className="auth-group-row-header">
                                   <div className="auth-group-row-title-wrap">
                                     {inlineEditId === group.id &&
                                     inlineEditField === 'display_name' ? (
@@ -1011,7 +1018,10 @@ export function AuthAdminModalHost({
                                             : undefined
                                         }
                                       >
-                                        <div className="auth-group-row-title">
+                                        <div
+                                          className="auth-group-row-title"
+                                          title={group.display_name}
+                                        >
                                           {group.display_name}
                                         </div>
                                         <span className="auth-group-row-title-member-count">
@@ -1036,6 +1046,25 @@ export function AuthAdminModalHost({
                                       </div>
                                     )}
                                   </div>
+                                  <div className="auth-group-row-meta-badges">
+                                    <span
+                                      className={`auth-group-provider-badge auth-group-provider-${group.provider}`}
+                                    >
+                                      {getAuthGroupProviderLabel(group)}
+                                    </span>
+                                    {group.role && (
+                                      <span
+                                        className={`auth-group-role-badge${group.role === 'admin' ? ' auth-group-admin-badge' : ''}`}
+                                      >
+                                        {group.role}
+                                      </span>
+                                    )}
+                                    {group.is_logon_group && (
+                                      <span className="auth-group-logon-badge">Logon</span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="auth-group-row-main auth-group-row-body">
                                   {group.manual_member_count > 0 && (
                                     <div className="auth-group-row-meta">
                                       <span>{group.manual_member_count} manual</span>
@@ -1100,96 +1129,87 @@ export function AuthAdminModalHost({
                                     </div>
                                   )}
                                 </div>
-                                <button
-                                  ref={
-                                    selectedGroupId === group.id ? protectionTriggerRef : undefined
-                                  }
-                                  type="button"
-                                  className="btn btn-sm btn-secondary group-protection-button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    selectGroup(group, event.currentTarget);
-                                  }}
-                                  aria-label={`Edit protection for ${group.display_name}`}
-                                  aria-pressed={selectedGroupId === group.id}
-                                  disabled={protectionPanelBusy}
+                                <div
+                                  className="auth-group-row-toolbar"
+                                  data-auth-group-row-toolbar={group.id}
                                 >
-                                  <ShieldCheck size={14} aria-hidden="true" />
-                                  Access
-                                </button>
-                                <div className="auth-group-row-side">
-                                  <div className="auth-group-row-status-pills">
-                                    <span
-                                      className={`auth-group-provider-badge auth-group-provider-${group.provider}`}
+                                  <div
+                                    className="auth-group-access-segment"
+                                    role="group"
+                                    aria-label={`Access mode for ${group.display_name}`}
+                                  >
+                                    <button
+                                      type="button"
+                                      className={`auth-group-access-option${accessMode === 'none' ? ' is-active' : ''}`}
+                                      aria-pressed={accessMode === 'none'}
+                                      disabled={busy || protectionPanelBusy}
+                                      onClick={() =>
+                                        void handleSetAuthGroupAccessMode(group, 'none')
+                                      }
+                                      title="No role grant and not a logon group"
                                     >
-                                      {getAuthGroupProviderLabel(group)}
-                                    </span>
-                                    {group.role && (
-                                      <span
-                                        className={`auth-group-role-badge${group.role === 'admin' ? ' auth-group-admin-badge' : ''}`}
-                                      >
-                                        {group.role}
-                                      </span>
-                                    )}
-                                    {group.is_logon_group && (
-                                      <span className="auth-group-logon-badge">Logon</span>
-                                    )}
-                                    {localGroup && (
-                                      <div className="auth-group-row-status-actions">
-                                        <DeleteConfirmButton
-                                          onDelete={() => {
-                                            void handleDeleteAuthGroup(group);
-                                          }}
-                                          disabled={busy || protectionPanelBusy}
-                                          deleting={authGroupDeletingId === group.id}
-                                          className="btn btn-sm btn-danger auth-group-delete-button"
-                                          title="Delete group"
-                                          buttonText="Delete"
-                                        />
-                                      </div>
-                                    )}
-                                  </div>
-                                  <div className="auth-group-row-actions">
-                                    <div
-                                      className="auth-group-access-segment"
-                                      role="group"
-                                      aria-label={`Access mode for ${group.display_name}`}
+                                      None
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`auth-group-access-option${accessMode === 'logon' ? ' is-active' : ''}`}
+                                      aria-pressed={accessMode === 'logon'}
+                                      disabled={busy || protectionPanelBusy}
+                                      onClick={() =>
+                                        void handleSetAuthGroupAccessMode(group, 'logon')
+                                      }
+                                      title="Allow members of this group to log in"
                                     >
-                                      <button
-                                        type="button"
-                                        className={`auth-group-access-option${accessMode === 'none' ? ' is-active' : ''}`}
-                                        disabled={busy || protectionPanelBusy}
-                                        onClick={() =>
-                                          void handleSetAuthGroupAccessMode(group, 'none')
-                                        }
-                                        title="No role grant and not a logon group"
-                                      >
-                                        None
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className={`auth-group-access-option${accessMode === 'logon' ? ' is-active' : ''}`}
-                                        disabled={busy || protectionPanelBusy}
-                                        onClick={() =>
-                                          void handleSetAuthGroupAccessMode(group, 'logon')
-                                        }
-                                        title="Allow members of this group to log in"
-                                      >
-                                        Logon
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className={`auth-group-access-option${accessMode === 'admin' ? ' is-active' : ''}`}
-                                        disabled={busy || protectionPanelBusy}
-                                        onClick={() =>
-                                          void handleSetAuthGroupAccessMode(group, 'admin')
-                                        }
-                                        title="Promote members of this group to admin"
-                                      >
-                                        Admin
-                                      </button>
-                                    </div>
+                                      Logon
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`auth-group-access-option${accessMode === 'admin' ? ' is-active' : ''}`}
+                                      aria-pressed={accessMode === 'admin'}
+                                      disabled={busy || protectionPanelBusy}
+                                      onClick={() =>
+                                        void handleSetAuthGroupAccessMode(group, 'admin')
+                                      }
+                                      title="Promote members of this group to admin"
+                                    >
+                                      Admin
+                                    </button>
                                   </div>
+                                  <div
+                                    className="auth-group-row-toolbar-spacer"
+                                    aria-hidden="true"
+                                  />
+                                  <button
+                                    ref={
+                                      selectedGroupId === group.id
+                                        ? protectionTriggerRef
+                                        : undefined
+                                    }
+                                    type="button"
+                                    className="btn btn-sm btn-secondary group-protection-button auth-group-protection-trigger"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      selectGroup(group, event.currentTarget);
+                                    }}
+                                    aria-label={`Edit protection for ${group.display_name}`}
+                                    aria-pressed={selectedGroupId === group.id}
+                                    disabled={protectionPanelBusy}
+                                  >
+                                    <ShieldCheck size={14} aria-hidden="true" />
+                                    Access
+                                  </button>
+                                  {localGroup && (
+                                    <DeleteConfirmButton
+                                      onDelete={() => {
+                                        void handleDeleteAuthGroup(group);
+                                      }}
+                                      disabled={busy || protectionPanelBusy}
+                                      deleting={authGroupDeletingId === group.id}
+                                      className="btn btn-sm btn-danger auth-group-delete-button"
+                                      title="Delete group"
+                                      buttonText="Delete"
+                                    />
+                                  )}
                                 </div>
                               </div>
                             </Popover>
@@ -1274,7 +1294,7 @@ export function AuthAdminModalHost({
                     ) : (
                       <section
                         className="group-protection-panel"
-                        role="alert"
+                        role={contentProtectionError ? 'alert' : 'status'}
                         data-group-protection-config-error
                       >
                         {contentProtectionError || 'Loading protection config…'}

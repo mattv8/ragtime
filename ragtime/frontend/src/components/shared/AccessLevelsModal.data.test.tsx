@@ -86,7 +86,7 @@ describe('AccessLevelsModal data operations', () => {
       .mockResolvedValueOnce({ prompt_fragment: 'other preview' } as never);
     renderModal();
     await screen.findByRole('heading', { name: 'Standard' });
-    await userEvent.click(screen.getByRole('button', { name: /other/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^Other\b/ }));
     first.resolve({ prompt_fragment: 'old preview' });
     expect(await screen.findByText('other preview')).toBeTruthy();
     expect(screen.queryByText('old preview')).toBeNull();
@@ -95,7 +95,7 @@ describe('AccessLevelsModal data operations', () => {
   it('shows that an unsaved access level must be saved before previewing', async () => {
     renderModal();
     await screen.findByText('Standard');
-    await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Add access level' }));
     expect(screen.getByText('Save to preview.')).toBeTruthy();
   });
 
@@ -109,11 +109,10 @@ describe('AccessLevelsModal data operations', () => {
     );
     renderModal();
     await screen.findByRole('heading', { name: 'Standard' });
-    await userEvent.click(screen.getByRole('button', { name: 'Delete level' }));
-    await vi.advanceTimersByTimeAsync(3000);
-    await userEvent.click(screen.getByRole('button', { name: /confirm/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete Standard' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Access level deleted'));
-    expect(screen.queryByRole('button', { name: /standard/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Standard\b/ })).toBeNull();
     vi.useRealTimers();
   });
 
@@ -129,9 +128,8 @@ describe('AccessLevelsModal data operations', () => {
       .mockResolvedValueOnce({ ...latest, revision: 3, access_levels: [] });
     renderModal();
     await screen.findByRole('heading', { name: 'Standard' });
-    await userEvent.click(screen.getByRole('button', { name: 'Delete level' }));
-    await new Promise((resolve) => setTimeout(resolve, 3100));
-    await userEvent.click(screen.getByRole('button', { name: /confirm/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete Standard' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
     expect(save.mock.calls[1][0]).toBe(2);
   });
@@ -139,7 +137,7 @@ describe('AccessLevelsModal data operations', () => {
   it('disables mapping and default writes for an unsaved level', async () => {
     renderModal();
     await screen.findByText('Standard');
-    await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Add access level' }));
     expect(screen.queryByLabelText('Add group to this level')).toBeNull();
     expect(
       (screen.getByRole('button', { name: 'Make default level' }) as HTMLButtonElement).disabled,
@@ -169,7 +167,7 @@ describe('AccessLevelsModal data operations', () => {
     vi.spyOn(contentProtectionApi, 'saveConfig').mockResolvedValueOnce(saved);
     renderModal();
     await screen.findByRole('heading', { name: 'Standard' });
-    await userEvent.click(screen.getByRole('button', { name: /other/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^Other\b/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Make default level' }));
     expect((await screen.findAllByText('Default')).length).toBeGreaterThan(0);
   });
@@ -182,8 +180,8 @@ describe('AccessLevelsModal data operations', () => {
     vi.spyOn(contentProtectionApi, 'getConfig').mockResolvedValue(initial);
     renderModal();
     await screen.findByRole('heading', { name: 'Standard' });
-    await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
-    expect(screen.getByRole('button', { name: /standard.*1 group.*1 category/i })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Add access level' }));
+    expect(screen.getByRole('button', { name: /^Standard\b.*1 group.*1 category/i })).toBeTruthy();
   });
 
   it('shows changed-save conflict actions and overwrites at the latest revision', async () => {
@@ -243,7 +241,7 @@ describe('AccessLevelsModal data operations', () => {
       });
     renderModal();
     await screen.findByRole('heading', { name: 'Standard' });
-    await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Add access level' }));
     await userEvent.type(screen.getByLabelText('Access level name'), 'New{Enter}');
     await userEvent.click(screen.getByRole('checkbox', { name: /removed/i }));
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));

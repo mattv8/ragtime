@@ -135,8 +135,8 @@ describe('AccessLevelsModal', () => {
     await userEvent.click(screen.getByText('Other'));
     await userEvent.click(screen.getByText('Discard and continue'));
     expect(await screen.findByRole('heading', { name: 'Other' })).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
-    await userEvent.click(screen.getByLabelText('Close access editor'));
+    await userEvent.click(screen.getByRole('button', { name: 'Add access level' }));
+    await userEvent.click(screen.getByLabelText('Close access level editor'));
     await userEvent.click(screen.getByText('Discard and continue'));
     expect(screen.queryByText('(new level)')).toBeNull();
   });
@@ -153,13 +153,13 @@ describe('AccessLevelsModal', () => {
     renderModal();
     await screen.findByText('Standard');
 
-    await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Add access level' }));
     expect(document.activeElement).toBe(screen.getByLabelText('Access level name'));
     await userEvent.type(screen.getByLabelText('Access level name'), 'First new level{Enter}');
     await userEvent.click(screen.getByText('Save'));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
 
-    await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Add access level' }));
     await userEvent.type(screen.getByLabelText('Access level name'), 'Second new level{Enter}');
     await userEvent.click(screen.getByText('Save'));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
@@ -178,11 +178,11 @@ describe('AccessLevelsModal', () => {
   it('renders unsaved mapping and default safeguards', async () => {
     renderModal();
     await screen.findByText('Standard');
-    await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Add access level' }));
     expect(screen.getByText('Save this level before mapping groups.')).toBeTruthy();
     expect(
-      (screen.getByRole('button', { name: 'Delete level' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+      screen.getByRole('button', { name: 'Delete access level' }).getAttribute('aria-disabled'),
+    ).toBeNull();
   });
 
   it('filters rail rows and closes the modal with Escape', async () => {
@@ -200,7 +200,7 @@ describe('AccessLevelsModal', () => {
     const rail = await screen.findByRole('list');
 
     expect(rail.tagName).toBe('OL');
-    expect(screen.getByRole('button', { name: /standard/i }).getAttribute('aria-current')).toBe(
+    expect(screen.getByRole('button', { name: /^Standard\b/ }).getAttribute('aria-current')).toBe(
       'true',
     );
   });
@@ -243,13 +243,41 @@ describe('AccessLevelsModal', () => {
   it('shows the default-level delete guard', async () => {
     renderModal();
     await userEvent.click(await screen.findByText('Standard'));
-    expect(
-      (screen.getByRole('button', { name: 'Delete level' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    const deleteButton = screen.getByRole('button', { name: 'Delete Standard' });
+    expect(deleteButton.getAttribute('aria-disabled')).toBe('true');
+    expect(deleteButton.getAttribute('title')).toBe(
+      'Cannot delete the default level. Assign a different default first.',
+    );
     vi.spyOn(contentProtectionApi, 'getConfig').mockResolvedValue({
       ...config(),
       default_access_level_id: '',
       group_access_levels: [],
     });
+  });
+
+  it('explains a blocked row delete without confirming or saving', async () => {
+    renderModal();
+    await screen.findByRole('heading', { name: 'Standard' });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete Standard' }));
+
+    expect(toast.error).toHaveBeenCalledWith(
+      'Cannot delete the default level. Assign a different default first.',
+    );
+    expect(screen.queryByRole('group', { name: /^Confirm Delete/ })).toBeNull();
+    expect(contentProtectionApi.saveConfig).not.toHaveBeenCalled();
+  });
+
+  it('discards an unsaved draft from its row trash without saving', async () => {
+    renderModal();
+    await screen.findByRole('heading', { name: 'Standard' });
+    await userEvent.click(screen.getByRole('button', { name: 'Add access level' }));
+    await userEvent.type(screen.getByLabelText('Access level name'), 'Draft{Enter}');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete Draft' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Draft\b/ })).toBeNull());
+    expect(contentProtectionApi.saveConfig).not.toHaveBeenCalled();
   });
 });

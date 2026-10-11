@@ -4,7 +4,6 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
-  type ComponentPropsWithoutRef,
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -32,10 +31,13 @@ import { ModelSelector } from '../ModelSelector';
 import { Popover } from '../Popover';
 import { SearchHighlightedText } from '../shared/SearchHighlightedText';
 import { AccessDetailHeader } from '../shared/AccessDetailHeader';
-import { AccessLevelGroupsField } from '../shared/AccessLevelGroupsField';
+import {
+  AccessLevelsMasterDetail,
+  accessLevelDeleteBlockedReason,
+} from '../shared/AccessLevelsMasterDetail';
+import { RowDeleteButton } from '../shared/RowDeleteButton';
 import { MasterDetailLayout } from '../shared/MasterDetailLayout';
 import { CONTENT_PROTECTION_SETTING_ID } from '../shared/SettingsHighlightLink';
-import { ContentProtectionAccessLevelCard } from './ContentProtectionAccessLevelCard';
 import { ContentProtectionCategoryCard } from './ContentProtectionCategoryCard';
 import { JevClassifierFields } from './JevClassifierFields';
 import { MasterToggle } from './MasterToggle';
@@ -86,6 +88,8 @@ const validationError = (config: ContentProtectionConfig): string | null => {
   );
   if (invalidCategory)
     return `Complete the name, description, and denial message for ${invalidCategory.name || 'each category'}.`;
+  if (config.enabled && !config.categories.some((category) => !category.system))
+    return 'Add at least one category before saving enabled protection.';
   const invalidLevel = config.access_levels.find((level) => !level.name.trim());
   return invalidLevel ? 'Each access level needs a name.' : null;
 };
@@ -676,12 +680,16 @@ export function ContentProtectionSettingsSection({
         },
     );
   const deleteCategory = (category: ContentCategory) => {
-    if (!setup) return false;
-    if (setup.access_levels.some((level) => level.granted_category_ids.includes(category.id))) {
-      setSetupError(`Remove ${category.name} from access levels before deleting.`);
-      return false;
-    }
-    update({ categories: setup.categories.filter((item) => item.id !== category.id) });
+    if (!setup || category.system) return false;
+    update({
+      categories: setup.categories.filter((item) => item.id !== category.id),
+      access_levels: setup.access_levels.map((level) => ({
+        ...level,
+        granted_category_ids: level.granted_category_ids.filter((id) => id !== category.id),
+      })),
+    });
+    setSetupError(null);
+    setNewCategoryId((newId) => (newId === category.id ? null : newId));
     setSelectedCategoryId((selectedId) => (selectedId === category.id ? null : selectedId));
     return true;
   };
@@ -697,18 +705,14 @@ export function ContentProtectionSettingsSection({
     );
   const deleteLevel = (level: AccessLevel) => {
     if (!setup) return false;
-    if (level.id === setup.default_access_level_id) {
-      setSetupError('Reassign the default level before deleting it.');
-      return false;
-    }
-    const mapped = setup.group_access_levels.filter(
-      (item) => item.access_level_id === level.id,
-    ).length;
-    if (mapped) {
-      setSetupError(`Unassign ${mapped} group(s) from ${level.name} before deleting.`);
+    const blockedReason = levelDeleteBlockedReason(level);
+    if (blockedReason) {
+      setSetupError(blockedReason);
       return false;
     }
     update({ access_levels: setup.access_levels.filter((item) => item.id !== level.id) });
+    setSetupError(null);
+    setNewLevelId((newId) => (newId === level.id ? null : newId));
     setSelectedLevelId((selectedId) => (selectedId === level.id ? null : selectedId));
     return true;
   };
@@ -788,16 +792,27 @@ export function ContentProtectionSettingsSection({
   }, [sample, sampleLevelIds, sampleUserId, saved?.revision]);
   const selectedCategory = setup?.categories.find((category) => category.id === selectedCategoryId);
   const selectedLevel = setup?.access_levels.find((level) => level.id === selectedLevelId);
-  const selectedLevelGroupIds = setup?.group_access_levels
-    .filter((mapping) => mapping.access_level_id === selectedLevelId)
-    .map((mapping) => mapping.group_id);
-  const selectedLevelDeleteReason = selectedLevel
-    ? selectedLevel.id === setup?.default_access_level_id
-      ? 'Reassign the default level before deleting it.'
-      : selectedLevelGroupIds?.length
-        ? `Unassign ${selectedLevelGroupIds.length} group(s) from ${selectedLevel.name} before deleting.`
-        : undefined
-    : undefined;
+  const groupIdsForLevel = (levelId: string) =>
+    (setup?.group_access_levels ?? [])
+      .filter((mapping) => mapping.access_level_id === levelId)
+      .map((mapping) => mapping.group_id);
+  const levelDeleteBlockedReason = (level: AccessLevel) =>
+    accessLevelDeleteBlockedReason(
+      level.id === setup?.default_access_level_id,
+      groupIdsForLevel(level.id).length,
+    );
+  const addLevel = () => {
+    if (!setup) return;
+    const id = `level_${generateCredentialValue(12).toLowerCase()}`;
+    update({
+      access_levels: [
+        ...setup.access_levels,
+        { id, name: 'New level', granted_category_ids: [], guidance: '' },
+      ],
+    });
+    setNewLevelId(id);
+    setSelectedLevelId(id);
+  };
   const changeSetupTab = (next: SetupTab) => {
     if (next !== tab) {
       setNewCategoryId(null);
@@ -1298,13 +1313,20 @@ export function ContentProtectionSettingsSection({
                     name: category.name,
                     meta: (
                       <>
-                        <>{category.system && <span className="tool-badge">System</span>}</>
+                        {category.system && <span className="tool-badge">System</span>}
                         <span>{category.includes.length} included</span>
                         <span>{category.excludes.length} excluded</span>
                         {category.threshold_override !== null && (
                           <span>Threshold {category.threshold_override}</span>
                         )}
                       </>
+                    ),
+                    action: !category.system && (
+                      <RowDeleteButton
+                        label={`Delete ${category.name}`}
+                        disabled={saving}
+                        onDelete={() => deleteCategory(category)}
+                      />
                     ),
                   }))}
                   selectedId={selectedCategoryId}
@@ -1317,14 +1339,14 @@ export function ContentProtectionSettingsSection({
                   emptyMessage="No categories configured."
                   busy={saving}
                   rowHookAttribute="data-category-id"
-                  rootProps={{ 'data-wizard-master-detail': '' } as ComponentPropsWithoutRef<'div'>}
-                  listBodyProps={
-                    {
-                      id: 'content-protection-category-list',
-                      'data-content-protection-category-list': '',
-                    } as ComponentPropsWithoutRef<'ol'>
-                  }
-                  detailProps={{ 'data-category-detail': '' } as ComponentPropsWithoutRef<'div'>}
+                  rootProps={{
+                    'data-wizard-master-detail': '',
+                  }}
+                  listBodyProps={{
+                    id: 'content-protection-category-list',
+                    'data-content-protection-category-list': '',
+                  }}
+                  detailProps={{ 'data-category-detail': '' }}
                   headerAction={
                     <button
                       className="btn btn-secondary btn-sm"
@@ -1384,7 +1406,6 @@ export function ContentProtectionSettingsSection({
                             category={selectedCategory}
                             hideHeader
                             onUpdate={updateCategory}
-                            onDelete={deleteCategory}
                           />
                         </div>
                       </>
@@ -1398,151 +1419,40 @@ export function ContentProtectionSettingsSection({
                 <p className="field-help">
                   Access levels define what categories each audience may see.
                 </p>
-                <MasterDetailLayout
+                <AccessLevelsMasterDetail
                   id="cp-levels"
-                  heading="Access levels"
-                  items={setup.access_levels.map((level) => {
-                    const groupCount = setup.group_access_levels.filter(
-                      (mapping) => mapping.access_level_id === level.id,
-                    ).length;
-                    return {
-                      id: level.id,
-                      name: level.name,
-                      meta: (
-                        <>
-                          {level.id === setup.default_access_level_id && (
-                            <span className="access-level-default-badge">Default</span>
-                          )}
-                          {groupCount > 0 && (
-                            <span>
-                              {groupCount} group{groupCount === 1 ? '' : 's'}
-                            </span>
-                          )}
-                          {level.granted_category_ids.length > 0 && (
-                            <span>
-                              {level.granted_category_ids.length}{' '}
-                              {level.granted_category_ids.length === 1 ? 'category' : 'categories'}
-                            </span>
-                          )}
-                        </>
-                      ),
-                    };
-                  })}
+                  idPrefix="cpw-level-"
+                  headingId="cp-wizard-level-detail-title"
+                  levels={setup.access_levels}
+                  selectedLevel={selectedLevel}
+                  categories={setup.categories}
+                  groups={catalog.groups.map((group) => ({ id: group.id, label: group.name }))}
+                  defaultLevelId={setup.default_access_level_id}
+                  groupIdsForLevel={groupIdsForLevel}
                   selectedId={selectedLevelId}
                   onSelect={(id) => {
                     setNewLevelId(null);
                     setSelectedLevelId(id);
                   }}
                   onCloseDetail={() => setSelectedLevelId(null)}
-                  detailLabelledBy="cp-wizard-level-detail-title"
-                  emptyMessage="No access levels configured."
+                  onAdd={addLevel}
+                  onUpdate={updateLevel}
+                  onAddGroup={(levelId, groupId) => updateGroupMapping(groupId, levelId, true)}
+                  onRemoveGroup={(levelId, groupId) => updateGroupMapping(groupId, levelId, false)}
+                  onMakeDefault={(levelId) => update({ default_access_level_id: levelId })}
+                  onDelete={deleteLevel}
+                  deleteBlockedReason={levelDeleteBlockedReason}
                   busy={saving}
+                  fieldsDisabled={saving}
+                  levelActionsDisabled={saving}
+                  startEditingLevelId={newLevelId}
                   rowHookAttribute="data-level-id"
-                  rootProps={{ 'data-wizard-master-detail': '' } as ComponentPropsWithoutRef<'div'>}
-                  listBodyProps={
-                    {
-                      id: 'content-protection-level-list',
-                      'data-content-protection-level-list': '',
-                    } as ComponentPropsWithoutRef<'ol'>
-                  }
-                  detailProps={{ 'data-level-detail': '' } as ComponentPropsWithoutRef<'div'>}
-                  headerAction={
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      type="button"
-                      data-new-access-level
-                      disabled={saving}
-                      onClick={() => {
-                        const id = `level_${generateCredentialValue(12).toLowerCase()}`;
-                        update({
-                          access_levels: [
-                            ...setup.access_levels,
-                            { id, name: 'New level', granted_category_ids: [], guidance: '' },
-                          ],
-                        });
-                        setNewLevelId(id);
-                        setSelectedLevelId(id);
-                      }}
-                    >
-                      Add access level
-                    </button>
-                  }
-                  detail={
-                    selectedLevel && (
-                      <>
-                        <AccessDetailHeader
-                          key={selectedLevel.id}
-                          headingId="cp-wizard-level-detail-title"
-                          title={selectedLevel.name || '(new level)'}
-                          meta={
-                            selectedLevel.id === setup.default_access_level_id ? (
-                              <span className="access-level-default-badge">Default</span>
-                            ) : undefined
-                          }
-                          editableTitle={{
-                            ariaLabel: 'Access level name',
-                            maxLength: 128,
-                            disabled: saving,
-                            startEditing: newLevelId === selectedLevel.id,
-                            onCommit: (name) => updateLevel(selectedLevel.id, { name }),
-                          }}
-                          closeLabel="Close access level editor"
-                          onClose={() => setSelectedLevelId(null)}
-                        />
-                        <div className="access-md-detail-body" data-level-detail-body>
-                          <ContentProtectionAccessLevelCard
-                            key={selectedLevel.id}
-                            level={selectedLevel}
-                            categories={setup.categories.filter(
-                              (category) => category.id !== 'rule_override',
-                            )}
-                            idPrefix={`cpw-level-${selectedLevel.id}-`}
-                            hideHeader
-                            fieldsDisabled={saving}
-                            disabled={Boolean(selectedLevelDeleteReason)}
-                            deleteDisabledReason={selectedLevelDeleteReason}
-                            onUpdate={updateLevel}
-                            onDelete={deleteLevel}
-                          />
-                          <AccessLevelGroupsField
-                            idPrefix={`cpw-level-${selectedLevel.id}-`}
-                            groups={catalog.groups.map((group) => ({
-                              id: group.id,
-                              label: group.name,
-                            }))}
-                            mappedIds={selectedLevelGroupIds ?? []}
-                            onAdd={(groupId) => updateGroupMapping(groupId, selectedLevel.id, true)}
-                            onRemove={(groupId) =>
-                              updateGroupMapping(groupId, selectedLevel.id, false)
-                            }
-                            disabled={saving}
-                          />
-                          <section
-                            className="content-protection-fieldset"
-                            data-level-section="default"
-                          >
-                            <h5 className="access-level-section-heading">Default level</h5>
-                            <p className="field-help">
-                              All verified users with no group mapping receive the default level.
-                            </p>
-                            {selectedLevel.id !== setup.default_access_level_id && (
-                              <button
-                                type="button"
-                                className="btn btn-sm btn-secondary"
-                                data-make-default-btn
-                                disabled={saving}
-                                onClick={() =>
-                                  update({ default_access_level_id: selectedLevel.id })
-                                }
-                              >
-                                Make default level
-                              </button>
-                            )}
-                          </section>
-                        </div>
-                      </>
-                    )
-                  }
+                  rootProps={{ 'data-wizard-master-detail': '' }}
+                  listBodyProps={{
+                    id: 'content-protection-level-list',
+                    'data-content-protection-level-list': '',
+                  }}
+                  detailProps={{ 'data-level-detail': '' }}
                 />
               </>
             )}

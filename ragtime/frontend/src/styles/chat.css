@@ -625,6 +625,10 @@ textarea.chat-title-input {
 .chat-loading-state-retry {
   align-self: flex-start;
 }
+/* Keep the main error notice content-sized inside the row-flex message region. */
+.chat-loading-state-main.chat-loading-state-error {
+  align-self: flex-start;
+}
 .chat-empty-state p {
   margin-bottom: var(--space-md);
 }

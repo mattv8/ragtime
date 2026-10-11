@@ -58,6 +58,67 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+.access-md-list-item.has-row-action {
+  position: relative;
+}
+.access-md-list-item.has-row-action .access-md-rail-row {
+  padding-right: calc(var(--space-sm) + 28px);
+}
+.access-md-rail-row-action {
+  position: absolute;
+  top: 50%;
+  right: var(--space-xs);
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+}
+.access-md-list-item:hover .access-md-rail-row-action,
+.access-md-list-item:focus-within .access-md-rail-row-action,
+.access-md-rail-row-action:has(.access-md-rail-row-confirm) {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none), (pointer: coarse) {
+  .access-md-rail-row-action {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.access-md-rail-row-confirm {
+  display: flex;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+.access-md-rail-row-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.access-md-rail-row-delete:hover:not([aria-disabled='true']) {
+  background: var(--color-surface-active);
+  color: var(--color-error);
+}
+.access-md-rail-row-delete:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+.access-md-rail-row-delete[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.access-md-list-item:has(.access-md-rail-row.is-selected) .access-md-rail-row-delete {
+  color: var(--color-text-primary);
+}
 .access-md-rail-row-name,
 .access-md-rail-row-meta {
   min-width: 0;
@@ -400,12 +461,6 @@
 .access-md-detail [data-level-section] > .btn {
   justify-self: start;
 }
-.access-md-detail .access-level-danger-zone .btn-danger {
-  border-color: var(--color-error) !important;
-  background: var(--color-error) !important;
-  color: var(--color-text-inverse) !important;
-}
-
 [data-theme-pack='modern'] [data-wizard-master-detail] .access-md-detail .btn-danger {
   border-color: var(--color-error) !important;
   background: var(--color-error) !important;
@@ -414,19 +469,23 @@
 
 /* Modern keeps wizard and access-level management as adjacent workbench panes. */
 [data-theme-pack='modern'] [data-wizard-master-detail],
-[data-theme-pack='modern'] .access-levels-modal .access-md {
+[data-theme-pack='modern'] .access-levels-modal .access-md,
+[data-theme-pack='modern'] .auth-group-manage-modal .access-md {
   gap: var(--workbench-padding);
   box-sizing: border-box;
 }
 
-[data-theme-pack='modern'] .access-levels-modal .access-md {
+[data-theme-pack='modern'] .access-levels-modal .access-md,
+[data-theme-pack='modern'] .auth-group-manage-modal .access-md {
   padding: var(--workbench-padding);
 }
 
 [data-theme-pack='modern'] [data-wizard-master-detail] .access-md-list,
 [data-theme-pack='modern'] [data-wizard-master-detail] .access-md-detail,
 [data-theme-pack='modern'] .access-levels-modal .access-md-list,
-[data-theme-pack='modern'] .access-levels-modal .access-md-detail {
+[data-theme-pack='modern'] .access-levels-modal .access-md-detail,
+[data-theme-pack='modern'] .auth-group-manage-modal .access-md-list,
+[data-theme-pack='modern'] .auth-group-manage-modal .access-md-detail {
   box-sizing: border-box;
   border: var(--workbench-container-border);
   border-radius: var(--workbench-surface-radius);
@@ -435,7 +494,11 @@
 
 /* Keep the list pane's perimeter when the detail is closed or on mobile. */
 [data-theme-pack='modern'] [data-wizard-master-detail]:not([data-detail-open]) .access-md-list,
-[data-theme-pack='modern'] .access-levels-modal .access-md:not([data-detail-open]) .access-md-list {
+[data-theme-pack='modern'] .access-levels-modal .access-md:not([data-detail-open]) .access-md-list,
+[data-theme-pack='modern']
+  .auth-group-manage-modal
+  .access-md:not([data-detail-open])
+  .access-md-list {
   border-right: var(--workbench-container-border);
 }
 
@@ -447,7 +510,320 @@
 [data-theme-pack='modern'] .access-levels-modal .access-md-detail-header,
 [data-theme-pack='modern'] .access-levels-modal .access-md-detail-body,
 [data-theme-pack='modern'] .access-levels-modal .access-md-footer,
+[data-theme-pack='modern'] .auth-group-manage-modal .access-md-detail-header,
+[data-theme-pack='modern'] .auth-group-manage-modal .access-md-detail-body,
+[data-theme-pack='modern'] .auth-group-manage-modal .access-md-footer,
 [data-theme-pack='modern'] [data-wizard-master-detail] ol.access-md-list-body,
-[data-theme-pack='modern'] .access-levels-modal ol.access-md-list-body {
+[data-theme-pack='modern'] .access-levels-modal ol.access-md-list-body,
+[data-theme-pack='modern'] .auth-group-manage-modal div.access-md-list-body {
   padding: var(--workbench-padding);
+}
+
+/* Group rail header and new-group row sit inside the 8px workbench gutter. */
+[data-theme-pack='modern'] .auth-group-manage-modal .access-md-list .auth-group-panel-header,
+[data-theme-pack='modern'] .auth-group-manage-modal .access-md-list .auth-group-new-group-row {
+  margin: var(--workbench-padding);
+}
+
+/* Modern active selections use the primary-text contract, not the dark metadata default. */
+[data-theme-pack='modern']
+  .auth-group-manage-modal
+  .access-md-rail-row.is-selected
+  .access-md-rail-row-meta,
+[data-theme-pack='modern']
+  .auth-group-manage-modal
+  .access-md-rail-row.is-selected
+  .auth-group-protection-summary {
+  color: var(--color-primary-text);
+}
+
+/* Group overview rows retain structural layout across packs; Modern supplies the visual hierarchy. */
+.auth-group-manage-modal .auth-group-manage-row {
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.auth-group-manage-modal .auth-group-row-header,
+.auth-group-manage-modal .auth-group-row-body,
+.auth-group-manage-modal .auth-group-row-toolbar {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+
+.auth-group-manage-modal .auth-group-row-header,
+.auth-group-manage-modal .auth-group-row-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.auth-group-manage-modal .auth-group-row-header {
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.auth-group-manage-modal .auth-group-row-title-wrap,
+.auth-group-manage-modal .auth-group-row-body {
+  min-width: 0;
+}
+
+.auth-group-manage-modal .auth-group-row-header .auth-group-row-title-wrap {
+  flex: 1 1 240px;
+}
+
+.auth-group-manage-modal .auth-group-row-meta-badges {
+  display: inline-flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+  max-width: 100%;
+  margin-left: auto;
+}
+
+.auth-group-manage-modal .auth-group-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.auth-group-manage-modal .auth-group-row-toolbar {
+  flex-wrap: wrap;
+}
+
+.auth-group-manage-modal .auth-group-row-toolbar-spacer {
+  flex: 1;
+}
+
+.auth-group-manage-modal .group-detail-access-row {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.auth-group-manage-modal .auth-group-row-title,
+.auth-group-manage-modal .auth-group-row-description {
+  max-width: 100%;
+}
+
+.auth-group-manage-modal .auth-group-row-editable-title:focus-within .inline-edit-btn,
+.auth-group-manage-modal .auth-group-row-editable-description:focus-within .inline-edit-btn {
+  opacity: 1;
+}
+
+/* Modern overview record and toolbar hierarchy. */
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-provider-section-header {
+  background: transparent;
+}
+
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-manage-row,
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-manage-row.is-synced {
+  padding: var(--workbench-padding);
+  border: var(--workbench-container-border);
+  border-radius: var(--workbench-surface-radius);
+  background: var(--color-widget);
+}
+
+[data-theme-pack='modern']
+  .auth-group-manage-modal
+  .auth-group-row-body
+  :is(.auth-group-row-meta, .auth-group-protection-summary, .auth-group-row-editable-description) {
+  margin: 0;
+}
+
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-row-toolbar {
+  padding-top: var(--space-xs);
+  border-top: 1px solid var(--color-border);
+}
+
+/* Canonical 28px Modern controls. The segment frame uses 2px of the control height, so its options are 26px. */
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-access-segment {
+  border-color: var(--color-border);
+  border-radius: var(--workbench-control-radius);
+  background: var(--color-panel);
+}
+
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-access-option {
+  box-sizing: border-box;
+  min-height: calc(var(--workbench-control-height) - 2px);
+  padding-block: 0;
+  padding-inline: var(--space-sm);
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+}
+
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-protection-trigger,
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-delete-button,
+[data-theme-pack='modern'] .auth-group-manage-modal .btn,
+[data-theme-pack='modern'] .auth-group-manage-modal select,
+[data-theme-pack='modern'] .auth-group-manage-modal input[type='text'] {
+  box-sizing: border-box;
+  height: var(--workbench-control-height);
+  min-height: var(--workbench-control-height);
+  padding-block: 0;
+  padding-inline: var(--space-sm);
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+}
+
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-access-option.is-active,
+[data-theme-pack='modern']
+  .auth-group-manage-modal
+  .auth-group-access-option.is-active:hover:not(:disabled),
+[data-theme-pack='modern']
+  .auth-group-manage-modal
+  .auth-group-access-option.is-active:focus-visible {
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+}
+
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-access-option:focus-visible {
+  outline-color: var(--color-focus);
+}
+
+[data-theme-pack='modern']
+  .auth-group-manage-modal
+  .auth-group-access-option.is-active:focus-visible {
+  outline-color: var(--color-primary-text);
+}
+
+/* Neutral idle actions override the generic Modern primary button rules only in this modal. */
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-panel-header .btn {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+[data-theme-pack='modern']
+  .auth-group-manage-modal
+  .auth-group-panel-header
+  .btn:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.auth-group-manage-modal .inline-edit-btn:focus-visible,
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-panel-header .btn:focus-visible {
+  outline: 2px solid var(--color-focus, var(--color-primary));
+  outline-offset: 2px;
+}
+
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-protection-trigger {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+[data-theme-pack='modern']
+  .auth-group-manage-modal
+  .auth-group-protection-trigger:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+[data-theme-pack='modern'] .auth-group-manage-modal .btn-danger[data-delete-state] {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+[data-theme-pack='modern']
+  .auth-group-manage-modal
+  .btn-danger[data-delete-state]:is(
+    :hover:not(:disabled),
+    [data-delete-state='confirming'],
+    [data-delete-state='deleting']
+  ) {
+  border-color: var(--color-error);
+  background: var(--color-error-light);
+  color: var(--color-text-primary);
+}
+
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-protection-trigger:focus-visible,
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-delete-button:focus-visible {
+  outline: 2px solid var(--color-focus, var(--color-primary));
+  outline-offset: 2px;
+}
+
+/* Modern badges: token type and spacing, with semantic Admin and Logon colors kept readable. */
+[data-theme-pack='modern']
+  .auth-group-manage-modal
+  :is(
+    .auth-group-provider-badge,
+    .auth-group-role-badge,
+    .auth-group-admin-badge,
+    .auth-group-logon-badge
+  ) {
+  min-height: calc(var(--workbench-control-height) - var(--space-sm));
+  padding: 0 var(--space-xs);
+  font-size: var(--text-xs);
+}
+
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-provider-badge,
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-role-badge {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+}
+
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-admin-badge {
+  border-color: var(--color-error-border);
+  background: var(--color-error-light);
+  color: var(--color-text-primary);
+}
+
+[data-theme-pack='modern'] .auth-group-manage-modal .auth-group-logon-badge {
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-light);
+  color: var(--color-text-primary);
+}
+
+@media (max-width: 520px) {
+  .auth-group-manage-modal .auth-group-row-toolbar-spacer {
+    display: none;
+  }
+
+  .auth-group-manage-modal .auth-group-row-toolbar .auth-group-access-segment {
+    flex: 1 0 100%;
+  }
+
+  .auth-group-manage-modal .auth-group-row-toolbar .auth-group-access-option {
+    flex: 1;
+  }
+
+  .auth-group-manage-modal .group-detail-access-label {
+    flex-basis: 100%;
+  }
+}
+
+/* Coarse pointers keep 44px targets; nothing in the toolbar caps height or clips the segment. */
+@media (hover: none), (pointer: coarse) {
+  #manage-group-memberships-modal .auth-group-panel-header .btn,
+  #manage-group-memberships-modal .modal-close,
+  #manage-group-memberships-modal .inline-edit-btn,
+  #manage-group-memberships-modal .auth-group-access-option,
+  #manage-group-memberships-modal .btn,
+  #manage-group-memberships-modal select,
+  #manage-group-memberships-modal input[type='text'] {
+    min-width: 44px;
+    min-height: 44px;
+    height: auto;
+  }
+
+  #manage-group-memberships-modal .inline-edit-btn:not(:disabled) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .auth-group-manage-modal .auth-group-row-toolbar .auth-group-access-option,
+  .auth-group-manage-modal .auth-group-row-toolbar .auth-group-protection-trigger,
+  .auth-group-manage-modal .auth-group-row-toolbar .auth-group-delete-button {
+    height: auto;
+    min-height: 44px;
+  }
+
+  .auth-group-manage-modal .auth-group-row-toolbar .auth-group-access-segment {
+    overflow: visible;
+  }
 }

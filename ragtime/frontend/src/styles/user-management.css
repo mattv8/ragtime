@@ -14,7 +14,35 @@
 .user-management-identity {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-xs);
+}
+.user-management-header-identity {
+  min-width: 0;
+  flex: 1;
+}
+.user-management-modal .modal-close {
+  flex-shrink: 0;
+}
+.user-management-header-identity h3,
+.user-management-identity-username {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-management-identity-username {
+  max-width: 100%;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+.user-management-identity .userspace-status-pill,
+.user-management-identity .badge {
+  padding: 0 var(--space-xs);
+  font-size: var(--text-xs);
+}
+.user-management-modal .userspace-status-pill-muted,
+.user-management-modal .badge-muted {
+  color: var(--color-text-secondary);
 }
 .user-management-actions {
   display: flex;
@@ -32,6 +60,11 @@
   flex-direction: column;
   gap: var(--space-sm);
 }
+.user-resources-tab > section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
 .user-resources-tab h4 {
   margin: var(--space-sm) 0 0;
 }
@@ -44,10 +77,91 @@
 .user-resources-heading .field-help {
   margin: 0;
 }
-.user-resource-meta {
+.user-resources-tab .admin-ws-item-select {
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.user-resources-tab .admin-ws-item-copy,
+.user-resources-tab .admin-ws-item-name {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+.user-resources-tab .admin-ws-item-actions {
+  flex-shrink: 0;
+}
+.user-resources-tab .admin-ws-item-select:focus-visible,
+.user-resources-tab .admin-ws-item-actions button:focus-visible {
+  outline: 2px solid var(--color-focus, var(--color-primary));
+  outline-offset: 2px;
+}
+.user-resources-tab .user-resource-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-xs) var(--space-sm);
+  width: 100%;
+  min-width: 0;
   font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  white-space: normal;
+  color: var(--color-text-secondary);
+}
+.user-resources-tab .user-resource-meta-field {
+  display: inline-flex;
+  gap: var(--space-xs);
+  min-width: 0;
+  max-width: 100%;
+}
+.user-resources-tab .user-resource-meta-label {
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.user-resources-tab .user-resource-meta-value {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-resources-tab .user-resource-meta-model {
+  max-width: 160px;
+}
+.user-resources-tab .user-resource-meta-failure {
+  color: var(--color-text-secondary);
+  border-inline-start: 2px solid var(--color-warning);
+  padding-inline-start: var(--space-xs);
+}
+.user-resources-tab .user-resource-meta .userspace-status-pill {
+  flex-shrink: 0;
+  padding: 0 var(--space-xs);
+  font-size: var(--text-xs);
+}
+/* Shared info/warning pill foregrounds fail AA in some packs; labels carry the meaning. */
+.user-resources-tab .user-resource-meta .userspace-status-pill-info,
+.user-resources-tab .user-resource-meta .userspace-status-pill-warning {
+  color: var(--color-text-primary);
+}
+[data-theme-pack='modern']
+  .user-management-modal
+  .userspace-status-pill.userspace-status-pill-info {
+  color: var(--color-info);
+  background: var(--color-info-light);
+  border-color: var(--color-info-border);
+}
+[data-theme-pack='modern']
+  .user-management-modal
+  .userspace-status-pill.userspace-status-pill-warning {
+  color: var(--color-text-primary);
+  background: var(--color-warning-light);
+  border-color: var(--color-warning-border);
+}
+@media (pointer: coarse) {
+  .user-resources-tab .admin-ws-item-actions button {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 .user-management-close-confirm {
   border-top: 1px solid var(--color-border);
@@ -55,10 +169,22 @@
   background: var(--color-surface);
 }
 @media (max-width: 640px) {
+  .user-management-modal .modal-tab {
+    padding-inline: var(--space-sm);
+  }
   .user-management-modal {
     width: 100vw;
     max-height: 100vh;
     height: 100vh;
     border-radius: 0;
+  }
+  .user-resources-tab .user-resource-meta-value:not(.user-resource-meta-model) {
+    max-width: min(200px, 100%);
+  }
+  .user-resources-tab .user-resource-meta-model {
+    max-width: min(160px, 100%);
+  }
+  [data-resource-metadata='workspace'] .user-resource-meta-field:last-child {
+    flex-basis: 100%;
   }
 }

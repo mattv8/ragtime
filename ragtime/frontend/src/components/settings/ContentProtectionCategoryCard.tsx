@@ -8,12 +8,10 @@ export function ContentProtectionCategoryCard({
   category,
   hideHeader,
   onUpdate,
-  onDelete,
 }: {
   category: ContentCategory;
   hideHeader?: boolean;
   onUpdate: (id: string, change: Partial<ContentCategory>) => void;
-  onDelete: (category: ContentCategory) => void;
 }): JSX.Element {
   const [fields, setFields] = useState(() => ({
     description: category.description,
@@ -225,19 +223,6 @@ export function ContentProtectionCategoryCard({
       )}
       {category.id === 'rule_override' && (
         <p className="field-help">Inbound only. Cannot be granted.</p>
-      )}
-      {!category.system && (
-        <div className="tool-card-footer">
-          <div className="tool-card-actions">
-            <button
-              type="button"
-              className="btn btn-sm btn-danger"
-              onClick={() => onDelete(category)}
-            >
-              Delete
-            </button>
-          </div>
-        </div>
       )}
     </article>
   );

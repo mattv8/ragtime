@@ -50,6 +50,41 @@ function LayoutHarness({ removeOnClose = false }: { removeOnClose?: boolean }) {
   );
 }
 
+it('renders a row action beside the row button without selecting the row', async () => {
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+  const onAction = vi.fn();
+  render(
+    <MasterDetailLayout
+      id="access-levels"
+      heading="Access levels"
+      items={[
+        {
+          id: 'finance',
+          name: 'Finance',
+          action: (
+            <button type="button" onClick={onAction}>
+              Delete Finance
+            </button>
+          ),
+        },
+      ]}
+      selectedId={null}
+      onSelect={onSelect}
+      onCloseDetail={vi.fn()}
+      rowHookAttribute="data-access-level-id"
+    />,
+  );
+
+  const row = screen.getByRole('button', { name: 'Finance' });
+  const action = screen.getByRole('button', { name: 'Delete Finance' });
+  expect(row.contains(action)).toBe(false);
+  await user.click(action);
+
+  expect(onAction).toHaveBeenCalledOnce();
+  expect(onSelect).not.toHaveBeenCalled();
+});
+
 it('closes an open detail with Escape and returns focus to its row', async () => {
   const user = userEvent.setup();
   render(<LayoutHarness />);

@@ -24,9 +24,7 @@ describe('ContentProtectionCategoryCard', () => {
   it('commits a typed threshold on blur', async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(
-      <ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} onDelete={vi.fn()} />,
-    );
+    render(<ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} />);
 
     const threshold = screen.getByLabelText('Threshold override');
     await user.clear(threshold);
@@ -39,9 +37,7 @@ describe('ContentProtectionCategoryCard', () => {
   it.each(['0', '1.1'])('keeps the committed threshold after invalid value %s', async (value) => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(
-      <ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} onDelete={vi.fn()} />,
-    );
+    render(<ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} />);
 
     const threshold = screen.getByLabelText('Threshold override');
     await user.clear(threshold);
@@ -56,9 +52,7 @@ describe('ContentProtectionCategoryCard', () => {
   it('clears a threshold explicitly and cancels a draft with Escape', async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(
-      <ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} onDelete={vi.fn()} />,
-    );
+    render(<ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} />);
 
     const threshold = screen.getByLabelText('Threshold override');
     await user.clear(threshold);
@@ -73,9 +67,7 @@ describe('ContentProtectionCategoryCard', () => {
   it('preserves multiline text until blur and cancels required-field drafts', async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(
-      <ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} onDelete={vi.fn()} />,
-    );
+    render(<ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} />);
 
     const description = screen.getByLabelText('Description');
     await user.clear(description);
@@ -95,9 +87,7 @@ describe('ContentProtectionCategoryCard', () => {
   it('edits the name inline from the card heading', async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(
-      <ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} onDelete={vi.fn()} />,
-    );
+    render(<ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} />);
 
     expect(screen.queryByLabelText('Category name')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Edit category name' }));
@@ -120,11 +110,7 @@ describe('ContentProtectionCategoryCard', () => {
 
   it('leaves system categories read-only', () => {
     render(
-      <ContentProtectionCategoryCard
-        category={{ ...CATEGORY, system: true }}
-        onUpdate={vi.fn()}
-        onDelete={vi.fn()}
-      />,
+      <ContentProtectionCategoryCard category={{ ...CATEGORY, system: true }} onUpdate={vi.fn()} />,
     );
 
     expect(screen.getByRole('heading', { name: 'Operational' })).toBeTruthy();
@@ -133,14 +119,9 @@ describe('ContentProtectionCategoryCard', () => {
     expect(screen.queryByLabelText('Threshold override')).toBeNull();
   });
 
-  it('hides the header while preserving category fields and delete state', () => {
+  it('hides the header while preserving category fields', () => {
     const { rerender } = render(
-      <ContentProtectionCategoryCard
-        category={CATEGORY}
-        hideHeader
-        onUpdate={vi.fn()}
-        onDelete={vi.fn()}
-      />,
+      <ContentProtectionCategoryCard category={CATEGORY} hideHeader onUpdate={vi.fn()} />,
     );
 
     expect(document.querySelector('[data-category-id="operational"]')).toBeTruthy();
@@ -155,16 +136,13 @@ describe('ContentProtectionCategoryCard', () => {
     ]) {
       expect(screen.getByLabelText(label)).toBeTruthy();
     }
-    expect((screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
 
     rerender(
       <ContentProtectionCategoryCard
         category={{ ...CATEGORY, system: true }}
         hideHeader
         onUpdate={vi.fn()}
-        onDelete={vi.fn()}
       />,
     );
 

@@ -26,6 +26,7 @@ const config = (): ContentProtectionConfig => ({
 
 const toast = { success: vi.fn(), error: vi.fn() };
 
+/** Tracks animation frames that have been requested but not yet run. */
 function trackPendingAnimationFrames(): () => number {
   let pending = 0;
   const requestFrame = window.requestAnimationFrame.bind(window);
@@ -255,7 +256,7 @@ describe('AccessLevelsModal interactions', () => {
     );
     await screen.findByRole('heading', { name: 'Standard' });
     await userEvent.type(screen.getByLabelText('Search access levels'), 'finance');
-    await userEvent.click(screen.getByRole('button', { name: /new access level/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Add access level' }));
     rerender(<AccessLevelsModal open={false} onClose={onClose} authGroups={[]} toast={toast} />);
     rerender(<AccessLevelsModal open onClose={onClose} authGroups={[]} toast={toast} />);
     expect(await screen.findByRole('heading', { name: 'Standard' })).toBeTruthy();

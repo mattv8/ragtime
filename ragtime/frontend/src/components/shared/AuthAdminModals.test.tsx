@@ -9,14 +9,16 @@ import { AuthAdminModalHost } from './AuthAdminModals';
 
 type HostProps = ComponentProps<typeof AuthAdminModalHost>;
 
-const { getConfig, updateContentProtectionConfigSlice, deleteAuthGroup } = vi.hoisted(() => ({
-  getConfig: vi.fn(),
-  updateContentProtectionConfigSlice: vi.fn(),
-  deleteAuthGroup: vi.fn(),
-}));
+const { getConfig, updateContentProtectionConfigSlice, deleteAuthGroup, updateAuthGroup } =
+  vi.hoisted(() => ({
+    getConfig: vi.fn(),
+    updateContentProtectionConfigSlice: vi.fn(),
+    deleteAuthGroup: vi.fn(),
+    updateAuthGroup: vi.fn(),
+  }));
 
 vi.mock('@/api', () => ({
-  api: { listAuthGroups: vi.fn().mockResolvedValue([]), deleteAuthGroup },
+  api: { listAuthGroups: vi.fn().mockResolvedValue([]), deleteAuthGroup, updateAuthGroup },
 }));
 
 vi.mock('@/api/contentProtection', async () => ({
@@ -147,6 +149,22 @@ afterEach(() => {
 });
 
 describe('AuthAdminModalHost content protection controls', () => {
+  it('exposes the current overview access mode as a pressed state', async () => {
+    getConfig.mockResolvedValue(CONFIG);
+    renderModal();
+
+    const row = document.querySelector('[data-group-id="group-1"]') as HTMLElement;
+    expect(within(row).getByRole('button', { name: 'None' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect(within(row).getByRole('button', { name: 'Logon' }).getAttribute('aria-pressed')).toBe(
+      'false',
+    );
+    expect(within(row).getByRole('button', { name: 'Admin' }).getAttribute('aria-pressed')).toBe(
+      'false',
+    );
+  });
+
   it('uses a compact selected rail and moves group controls into the detail', async () => {
     const user = userEvent.setup();
     getConfig.mockResolvedValue(CONFIG);
@@ -164,6 +182,26 @@ describe('AuthAdminModalHost content protection controls', () => {
       within(controls).getByRole('group', { name: 'Access mode for Engineering' }),
     ).toBeTruthy();
     expect(within(controls).getByRole('button', { name: 'Delete' })).toBeTruthy();
+  });
+
+  it('exposes the selected detail access mode as a pressed state', async () => {
+    const user = userEvent.setup();
+    getConfig.mockResolvedValue(CONFIG);
+    renderModal();
+
+    await openProtectionPanel(user);
+
+    const controls = document.querySelector('[data-group-detail-controls]') as HTMLElement;
+    const segment = within(controls).getByRole('group', { name: 'Access mode for Engineering' });
+    expect(within(segment).getByRole('button', { name: 'None' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect(
+      within(segment).getByRole('button', { name: 'Logon' }).getAttribute('aria-pressed'),
+    ).toBe('false');
+    expect(
+      within(segment).getByRole('button', { name: 'Admin' }).getAttribute('aria-pressed'),
+    ).toBe('false');
   });
 
   it('closes the detail with the header controls and restores focus to its rail row', async () => {
@@ -551,9 +589,14 @@ describe('AuthAdminModalHost protection state guards', () => {
     await user.type(within(panel).getByLabelText('Name'), ' edited');
 
     const row = document.querySelector('[data-group-detail-controls]') as HTMLElement;
-    await user.click(within(row).getByRole('button', { name: 'Delete' }));
+    const deleteButton = within(row).getByRole('button', { name: 'Delete' });
+    expect(deleteButton.getAttribute('data-delete-state')).toBe('idle');
+    await user.click(deleteButton);
     await waitFor(
-      () => expect(within(row).getByRole('button', { name: 'Confirm?' })).toBeTruthy(),
+      () => {
+        const confirmButton = within(row).getByRole('button', { name: 'Confirm?' });
+        expect(confirmButton.getAttribute('data-delete-state')).toBe('confirming');
+      },
       {
         timeout: 4000,
       },
@@ -592,5 +635,131 @@ describe('AuthAdminModalHost protection state guards', () => {
     await waitFor(() => expect(deleteAuthGroup).toHaveBeenCalledTimes(1));
     expect(deleteAuthGroup).toHaveBeenCalledWith('group-1');
     await waitFor(() => expect(document.querySelector('[data-group-protection-panel]')).toBeNull());
+  });
+});
+
+describe('AuthAdminModalHost overview toolbar preservation', () => {
+  function overviewRow(groupId = 'group-1') {
+    return document.querySelector(`[data-group-id="${groupId}"]`) as HTMLElement;
+  }
+
+  it('deletes a local overview group only after idle, countdown, and confirm without opening detail', async () => {
+    getConfig.mockResolvedValue(CONFIG);
+    vi.useFakeTimers();
+    try {
+      render(<AuthAdminModalHost {...hostProps()} />);
+      const row = overviewRow();
+      const deleteButton = within(row).getByRole('button', { name: 'Delete' });
+      expect(deleteButton.getAttribute('data-delete-state')).toBe('idle');
+
+      fireEvent.click(deleteButton);
+      const confirmButton = within(row).getByRole('button', { name: /Confirm\?/ });
+      expect(confirmButton.getAttribute('data-delete-state')).toBe('confirming');
+      expect(confirmButton.textContent).toBe('Confirm? (3)');
+
+      fireEvent.click(confirmButton);
+      expect(deleteAuthGroup).not.toHaveBeenCalled();
+
+      for (const remaining of [2, 1]) {
+        act(() => {
+          vi.advanceTimersByTime(1000);
+        });
+        expect(within(row).getByRole('button', { name: /Confirm\?/ }).textContent).toBe(
+          `Confirm? (${remaining})`,
+        );
+      }
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(within(row).getByRole('button', { name: 'Confirm?' }).textContent).toBe('Confirm?');
+
+      await act(async () => {
+        fireEvent.click(within(row).getByRole('button', { name: 'Confirm?' }));
+      });
+
+      expect(deleteAuthGroup).toHaveBeenCalledTimes(1);
+      expect(deleteAuthGroup).toHaveBeenCalledWith('group-1');
+      expect(document.querySelector('[data-group-detail]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows no Delete control on an LDAP-synced overview row', async () => {
+    getConfig.mockResolvedValue(CONFIG);
+    render(
+      <AuthAdminModalHost
+        {...hostProps({
+          authGroups: [
+            { ...GROUP, provider: 'ldap', source_dn: 'CN=Engineering,DC=example,DC=com' },
+          ],
+        })}
+      />,
+    );
+
+    const row = overviewRow();
+    expect(row.classList.contains('is-synced')).toBe(true);
+    expect(within(row).queryByRole('button', { name: 'Delete' })).toBeNull();
+  });
+
+  it('switches a group to Logon from the overview without selecting or opening detail', async () => {
+    const user = userEvent.setup();
+    getConfig.mockResolvedValue(CONFIG);
+    updateAuthGroup.mockResolvedValue({ ...GROUP, role: null, is_logon_group: true });
+    renderModal();
+
+    const row = overviewRow();
+    await user.click(within(row).getByRole('button', { name: 'Logon' }));
+
+    await waitFor(() =>
+      expect(updateAuthGroup).toHaveBeenCalledWith('group-1', {
+        display_name: 'Engineering',
+        description: '',
+        role: null,
+        is_logon_group: true,
+      }),
+    );
+    expect(updateAuthGroup).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-group-detail]')).toBeNull();
+    expect(
+      document.querySelector('[data-auth-group-modal-body]')?.hasAttribute('data-detail-open'),
+    ).toBe(false);
+    expect(overviewRow().getAttribute('aria-current')).toBeNull();
+  });
+});
+
+describe('AuthAdminModalHost accessibility', () => {
+  it('dismisses Manage Group Memberships from the named close action', async () => {
+    getConfig.mockResolvedValue(CONFIG);
+    const props = hostProps();
+    render(<AuthAdminModalHost {...props} />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+
+    expect(props.onCloseManageGroups).toHaveBeenCalledOnce();
+  });
+
+  it('announces protection config loading as status, not alert', async () => {
+    const user = userEvent.setup();
+    getConfig.mockReturnValue(new Promise<ContentProtectionConfig>(() => {}));
+    renderModal();
+
+    await openProtectionPanel(user);
+
+    expect(await screen.findByRole('status')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('announces protection config load failures as alert', async () => {
+    const user = userEvent.setup();
+    getConfig.mockRejectedValue(new Error('Config offline'));
+    renderModal();
+
+    await openProtectionPanel(user);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Config offline');
+    expect(screen.queryByRole('status')).toBeNull();
   });
 });
