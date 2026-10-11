@@ -678,6 +678,11 @@
   color: var(--color-text-primary);
 }
 
+::highlight(settings-search) {
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+}
+
 [data-theme-pack='modern'] .jobs-table-wrapper,
 [data-theme-pack='modern'] .users-table-wrap {
   overflow: auto;
