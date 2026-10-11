@@ -40,6 +40,8 @@ _OVERLAP_BYTES = 1_600
 _CACHE_TTL_SECONDS = 60.0
 _CACHE_LIMIT = 1_024
 _CHUNKER_VERSION = "jev-json-v1"
+_LATEST_MODEL = "jev-latest"
+_OPENROUTER_LATEST_MODEL = "~typesafe/jev-latest"
 _INBOUND_DIRECTIONS = frozenset({"inbound", "proposed_operation", "sample", "probe"})
 _security_classification_authorized: ContextVar[bool] = ContextVar("security_classification_authorized", default=False)
 _CLIENT_CACHE_LIMIT = 32
@@ -226,7 +228,10 @@ def _resolved_model(transport: str, requested: object) -> str:
         raise _error("classifier_unavailable", "classifier-model-unconfigured")
     if "router" in model.lower():
         raise _error("classifier_unavailable", "classifier-model-invalid")
-    match = re.fullmatch(r"(?:typesafe/)?(jev-(?:latest|\d+\.\d+(?:\.\d+)?))", model)
+    if model == _OPENROUTER_LATEST_MODEL:
+        model = _LATEST_MODEL
+    versions = r"latest|preview|\d+\.\d+(?:\.\d+)?" if transport == "typesafe" else r"latest|\d+\.\d+(?:\.\d+)?"
+    match = re.fullmatch(rf"(?:typesafe/)?(jev-(?:{versions}))", model)
     if match is None:
         raise _error("classifier_unavailable", "classifier-model-invalid")
     normalized = match.group(1)
@@ -236,6 +241,8 @@ def _resolved_model(transport: str, requested: object) -> str:
         normalized = normalized.rsplit(".", 1)[0]
     elif re.fullmatch(r"jev-\d+\.\d+\.\d+", normalized):
         raise _error("classifier_unavailable", "classifier-model-invalid")
+    if normalized == _LATEST_MODEL:
+        return _OPENROUTER_LATEST_MODEL
     return f"typesafe/{normalized}"
 
 

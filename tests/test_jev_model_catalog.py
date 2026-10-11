@@ -32,7 +32,7 @@ class JevModelCatalogTests(unittest.IsolatedAsyncioTestCase):
             result = await model_catalog.list_jev_models("auto", "sk-or-draft", {})
         self.assertTrue(result["success"])
         self.assertEqual(result["transport"], "openrouter")
-        self.assertEqual(seen[0].url, httpx.URL("https://openrouter.ai/api/v1/models"))
+        self.assertEqual(seen[0].url, httpx.URL("https://openrouter.ai/api/v1/models?output_modalities=decisions"))
         self.assertEqual(seen[0].headers["Authorization"], "Bearer sk-or-draft")
 
         result = await model_catalog.list_jev_models("auto", "unknown", {})
@@ -96,6 +96,54 @@ class JevModelCatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["id"] for row in openrouter["models"]], ["jev-latest", "typesafe/jev-2.0"])
         self.assertEqual(typesafe["models"][0]["description"], "Current")
         self.assertEqual(typesafe["models"][0]["release_date"], "2026-01-01")
+
+    async def test_openrouter_latest_alias_keeps_vendor_metadata_once(self) -> None:
+        payload = {
+            "data": [
+                {"id": "~typesafe/jev-latest", "name": "Jev Latest", "description": "Newest Jev model"},
+                {"id": "typesafe/jev-latest", "name": "Legacy Jev Latest"},
+            ]
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=payload)
+
+        with mock.patch.object(model_catalog, "_make_http_client", side_effect=lambda timeout: _mock_client(handler)):
+            result = await model_catalog.list_jev_models("openrouter", None, {"openrouter_api_key": "saved"})
+
+        self.assertEqual(
+            result["models"],
+            [{"id": "jev-latest", "name": "Jev Latest", "description": "Newest Jev model", "release_date": None}],
+        )
+
+    async def test_typesafe_catalog_retains_documented_latest_preview_and_pinned_models(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"models": [{"name": "jev-latest"}, {"name": "jev-preview"}, {"name": "jev-1.13.0"}]})
+
+        with mock.patch.object(model_catalog, "_make_http_client", side_effect=lambda timeout: _mock_client(handler)):
+            result = await model_catalog.list_jev_models("typesafe", None, {"typesafe_api_key": "saved"})
+
+        self.assertEqual(seen[0].url, httpx.URL("https://api.typesafe.ai/v1/models"))
+        self.assertEqual([row["id"] for row in result["models"]], ["jev-latest", "jev-preview", "jev-1.13.0"])
+
+    async def test_openrouter_catalog_requests_decisions_modality_for_jev_models(self) -> None:
+        seen: list[httpx.Request] = []
+        text_payload = {"data": [{"id": "jev-router"}]}
+        decisions_payload = {"data": [{"id": "~typesafe/jev-latest"}, {"id": "typesafe/jev-1.13"}]}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            is_decisions = request.url.params.get("output_modalities") == "decisions"
+            return httpx.Response(200, json=decisions_payload if is_decisions else text_payload)
+
+        with mock.patch.object(model_catalog, "_make_http_client", side_effect=lambda timeout: _mock_client(handler)):
+            result = await model_catalog.list_jev_models("openrouter", None, {"openrouter_api_key": "saved"})
+
+        self.assertEqual(seen[0].url, httpx.URL("https://openrouter.ai/api/v1/models?output_modalities=decisions"))
+        self.assertEqual([row["id"] for row in result["models"]], ["jev-latest", "typesafe/jev-1.13"])
 
     async def test_provider_errors_do_not_leak_keys_or_provider_bodies(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

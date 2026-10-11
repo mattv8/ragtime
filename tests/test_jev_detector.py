@@ -88,6 +88,39 @@ class JevDetectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["transport"], "openrouter")
         self.assertEqual(provider._resolved_model("openrouter", "jev-1.13"), "typesafe/jev-1.13")
 
+    def test_latest_alias_resolution_keeps_transport_contracts(self) -> None:
+        self.assertEqual(provider._resolved_model("openrouter", "~typesafe/jev-latest"), "~typesafe/jev-latest")
+        self.assertEqual(provider._resolved_model("openrouter", "typesafe/jev-latest"), "~typesafe/jev-latest")
+        self.assertEqual(provider._resolved_model("openrouter", "jev-latest"), "~typesafe/jev-latest")
+        self.assertEqual(provider._resolved_model("typesafe", "jev-latest"), "jev-latest")
+        self.assertEqual(provider._resolved_model("typesafe", "typesafe/jev-latest"), "jev-latest")
+        self.assertEqual(provider._resolved_model("typesafe", "~typesafe/jev-latest"), "jev-latest")
+
+    async def test_openrouter_latest_requests_documented_tilde_alias(self) -> None:
+        models: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            model = json.loads(request.content)["model"]
+            models.append(model)
+            if model != "~typesafe/jev-latest":
+                return httpx.Response(400, json={"error": "unknown model"})
+            return _response(request)
+
+        transport = httpx.MockTransport(handler)
+        envelope: dict[str, object] = {"direction": "inbound", "candidate": "forecast"}
+        with (
+            mock.patch("ragtime.core.app_settings.get_app_settings", mock.AsyncMock(return_value={"openrouter_api_key": "router"})),
+            mock.patch.object(provider, "_make_http_client", side_effect=lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout)),
+        ):
+            with provider.security_classification_context():
+                explicit = await provider.detect(_config(transport="openrouter"), envelope)
+                provider._detection_cache.clear()
+                automatic = await provider.detect(_config(transport="auto"), envelope)
+
+        self.assertEqual(models, ["~typesafe/jev-latest", "~typesafe/jev-latest"])
+        self.assertEqual(explicit["transport"], "openrouter")
+        self.assertEqual(automatic["transport"], "openrouter")
+
     async def test_duplicate_or_incomplete_answers_fail_closed(self) -> None:
         duplicate = '{"model":"jev-1","answers":{"company_finance":{"type":"noul","noul":0.2},"company_finance":{"type":"noul","noul":0.9}},"usage":{"input_tokens":1,"output_tokens":1}}'
         transport = httpx.MockTransport(lambda request: httpx.Response(200, content=duplicate))
@@ -203,6 +236,56 @@ class JevDetectorTests(unittest.IsolatedAsyncioTestCase):
     def test_openrouter_rejects_nonzero_patch_pin(self) -> None:
         with self.assertRaises(ContentProtectionError):
             provider._resolved_model("openrouter", "jev-1.13.2")
+
+    def test_preview_model_is_accepted_only_for_typesafe(self) -> None:
+        self.assertEqual(provider._resolved_model("typesafe", "jev-preview"), "jev-preview")
+        self.assertEqual(provider._resolved_model("typesafe", "typesafe/jev-preview"), "jev-preview")
+        for transport, model in [
+            ("openrouter", "jev-preview"),
+            ("openrouter", "typesafe/jev-preview"),
+            ("openrouter", "~typesafe/jev-preview"),
+            ("typesafe", "~typesafe/jev-preview"),
+            ("typesafe", "jev-preview-2026-01-01"),
+            ("typesafe", "openai/jev-latest"),
+            ("typesafe", "jev-router"),
+        ]:
+            with self.subTest(transport=transport, model=model), self.assertRaises(ContentProtectionError):
+                provider._resolved_model(transport, model)
+
+    async def test_typesafe_preview_classification_sends_bare_preview_model(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return _response(request)
+
+        transport = httpx.MockTransport(handler)
+        with (
+            mock.patch("ragtime.core.app_settings.get_app_settings", mock.AsyncMock(return_value={"typesafe_api_key": "key"})),
+            mock.patch.object(provider, "_make_http_client", side_effect=lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout)),
+        ):
+            with provider.security_classification_context():
+                await provider.detect(_config(model="jev-preview"), {"direction": "inbound", "candidate": "forecast"})
+
+        self.assertEqual(json.loads(requests[0].content)["model"], "jev-preview")
+
+    async def test_openrouter_preview_classification_fails_closed_without_request(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return _response(request)
+
+        transport = httpx.MockTransport(handler)
+        with (
+            mock.patch("ragtime.core.app_settings.get_app_settings", mock.AsyncMock(return_value={"openrouter_api_key": "router"})),
+            mock.patch.object(provider, "_make_http_client", side_effect=lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout)),
+        ):
+            with provider.security_classification_context(), self.assertRaises(ContentProtectionError) as raised:
+                await provider.detect(_config(transport="openrouter", model="jev-preview"), {"direction": "inbound", "candidate": "forecast"})
+
+        self.assertEqual(raised.exception.code, "classifier_unavailable")
+        self.assertEqual(requests, [])
 
     async def test_detect_requires_security_classification_context(self) -> None:
         with self.assertRaises(ContentProtectionError) as raised:

@@ -14,7 +14,7 @@ ResolvedTransport = Literal["typesafe", "openrouter"]
 
 _CATALOG_TIMEOUT_SECONDS = 10.0
 _TYPE_SAFE_MODELS_URL = "https://api.typesafe.ai/v1/models"
-_OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+_OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models?output_modalities=decisions"
 _DEFAULT_MODEL = "jev-latest"
 _MISSING_CREDENTIALS_MESSAGE = "Enter or save a TypeSafe or OpenRouter API key first."
 _MAX_API_KEY_LENGTH = 512
