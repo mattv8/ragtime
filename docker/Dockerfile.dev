@@ -38,7 +38,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo "$VERSION_CODENAME")-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client-18 \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs docker-cli \
     && rm -rf /var/lib/apt/lists/*
 
@@ -63,7 +63,8 @@ RUN cd /ragtime/ragtime/frontend \
     && npm ci --loglevel=error \
     && npx playwright install --with-deps chromium
 
-RUN npm install -g @anthropic-ai/claude-code@2.1.186
+# Minimum version supporting the structured-output transport (see docker/Dockerfile).
+RUN npm install -g @anthropic-ai/claude-code@2.1.290
 
 # Copy entrypoint and scripts
 COPY runtime/ /ragtime/runtime/

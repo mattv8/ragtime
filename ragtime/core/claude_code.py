@@ -13,7 +13,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
 CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
@@ -23,8 +23,43 @@ _AUTH_URL_RE = re.compile(r"https://claude\.com/cai/oauth/authorize\?\S+")
 _CLAUDE_STATUS_PROCESS_TIMEOUT_SECONDS = 5.0
 _CLAUDE_AUTH_STATUS_PROCESS_TIMEOUT_SECONDS = 10.0
 _PROCESS_TERMINATE_GRACE_SECONDS = 2.0
+_MINIMUM_CLAUDE_CODE_VERSION = (2, 1, 290)
 _TIMEOUT_EXCEPTIONS = (TimeoutError, asyncio.TimeoutError)
 _TIMEOUT_OR_CANCEL_EXCEPTIONS = (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError)
+_CLAUDE_CODE_SUBSCRIPTION_ENV_EXCLUDED = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_PROFILE",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+    }
+)
+_CLAUDE_CODE_SUBSCRIPTION_ENV_EXCLUDED_PREFIXES = (
+    "ANTHROPIC_BEDROCK_",
+    "ANTHROPIC_FEDERATION_",
+    "ANTHROPIC_FOUNDRY_",
+    "ANTHROPIC_VERTEX_",
+    "CLAUDE_CODE_BEDROCK_",
+    "CLAUDE_CODE_FOUNDRY_",
+    "CLAUDE_CODE_VERTEX_",
+)
+_CLAUDE_CODE_SUBSCRIPTION_ENV_REMOVED = frozenset(
+    {
+        "CLAUDE_CODE_DEBUG_LOGS_DIR",
+        "CLAUDE_CODE_ENABLE_TELEMETRY",
+        "DEBUG",
+        "OTEL_LOG_USER_PROMPTS",
+    }
+)
+_CLAUDE_CODE_SUBSCRIPTION_ENV_FORCED = {
+    "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_ERROR_REPORTING": "1",
+    "DISABLE_TELEMETRY": "1",
+}
 
 # Anthropic REST endpoint and headers for OAuth (Claude Code subscription) calls.
 # This is the same public /v1/models endpoint used for API-key auth, but the
@@ -110,6 +145,29 @@ async def _terminate_process(process: asyncio.subprocess.Process, *, process_gro
         await asyncio.wait_for(process.wait(), timeout=_PROCESS_TERMINATE_GRACE_SECONDS)
 
 
+def build_claude_code_subscription_env(source: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build a Claude subscription CLI environment without competing auth routes."""
+    environment = dict(os.environ if source is None else source)
+    for key in tuple(environment):
+        if (
+            key in _CLAUDE_CODE_SUBSCRIPTION_ENV_EXCLUDED
+            or key in _CLAUDE_CODE_SUBSCRIPTION_ENV_REMOVED
+            or key.startswith(_CLAUDE_CODE_SUBSCRIPTION_ENV_EXCLUDED_PREFIXES)
+        ):
+            environment.pop(key)
+    environment.update(_CLAUDE_CODE_SUBSCRIPTION_ENV_FORCED)
+    return environment
+
+
+def _is_supported_claude_code_version(version: str | None) -> bool:
+    if not version:
+        return False
+    match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", version)
+    if not match:
+        return False
+    return tuple(int(part) for part in match.groups()) >= _MINIMUM_CLAUDE_CODE_VERSION
+
+
 async def _run_claude_command(command: str, *args: str, timeout: float) -> _ClaudeCommandResult:
     """Run a short Claude CLI probe with hard timeout and guaranteed cleanup."""
     process: asyncio.subprocess.Process | None = None
@@ -124,6 +182,7 @@ async def _run_claude_command(command: str, *args: str, timeout: float) -> _Clau
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=build_claude_code_subscription_env(),
             **subprocess_kwargs,
         )
         try:
@@ -205,6 +264,8 @@ async def _probe_claude_code_status() -> ClaudeCodeStatus:
         version = output.splitlines()[0] if output else None
         if version_result.returncode not in (0, None):
             error = output or f"claude --version exited with status {version_result.returncode}."
+        elif not _is_supported_claude_code_version(version):
+            error = "Claude Code CLI 2.1.290 or later is required for chat. Upgrade Claude Code and try again."
 
     has_cli_auth = False
     auth_method: str | None = None
@@ -219,7 +280,6 @@ async def _probe_claude_code_status() -> ClaudeCodeStatus:
         else:
             output = auth_result.output
             if auth_result.returncode in (0, None):
-                has_cli_auth = True
                 try:
                     payload = json.loads(output) if output else {}
                 except json.JSONDecodeError:
@@ -227,6 +287,8 @@ async def _probe_claude_code_status() -> ClaudeCodeStatus:
                 if isinstance(payload, dict):
                     auth_method = str(payload.get("authMethod") or payload.get("auth_method") or "").strip() or None
                     subscription_type = str(payload.get("subscriptionType") or payload.get("subscription_type") or "").strip() or None
+                    logged_in = payload.get("loggedIn") is True or payload.get("logged_in") is True
+                    has_cli_auth = logged_in and auth_method == "claude.ai"
             elif output:
                 auth_error = output
 
@@ -432,21 +494,3 @@ async def complete_claude_code_login(session: ClaudeCodeLoginSession, pasted_cod
     if session.process.returncode not in (0, None):
         raise RuntimeError(text or f"Claude Code login exited with status {session.process.returncode}.")
     return text
-
-
-class ClaudeCodeCLIAdapter:
-    """Placeholder boundary for future Claude Code CLI-backed LLM calls."""
-
-    def __init__(self, *, command: str = CLAUDE_CODE_COMMAND, env: dict[str, str] | None = None) -> None:
-        self.command = command
-        self.env = env or {}
-
-    def build_env(self) -> dict[str, str]:
-        """Build a subprocess environment without manufacturing auth state."""
-        merged = dict(os.environ)
-        merged.update(self.env)
-        return merged
-
-    async def ainvoke(self, _messages: list[Any], **_kwargs: Any) -> Any:
-        """Future chat adapter hook; intentionally not implemented in Phase 2."""
-        raise NotImplementedError("Claude Code chat adapter is scaffolded but not implemented.")

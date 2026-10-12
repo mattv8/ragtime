@@ -78,7 +78,7 @@ class LegacyContainerDependencyTests(unittest.TestCase):
 
         self.assertIn('if [ "$LEGACY_CPU" = "1" ]; then', production_stage)
         self.assertIn("npm install -g @anthropic-ai/claude-code@2.1.112", production_stage)
-        self.assertIn("npm install -g @anthropic-ai/claude-code@2.1.186", production_stage)
+        self.assertIn("npm install -g @anthropic-ai/claude-code@2.1.290", production_stage)
         self.assertIn("claude --version", production_stage)
 
     def _entrypoint_text(self) -> str:

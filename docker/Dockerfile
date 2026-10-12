@@ -75,12 +75,24 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY --from=python-builder /opt/venv /opt/venv
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl tini dos2unix git gnupg docker.io libmagic1t64 openssl openssh-client rsync \
-    nfs-common cifs-utils smbclient libnfs14 libnfs-utils libnfs-dev nodejs npm \
+    nfs-common cifs-utils smbclient libnfs14 libnfs-utils libnfs-dev \
     tesseract-ocr libraw-dev \
     && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo \"$VERSION_CODENAME\")-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
     && apt-get update && apt-get install -y --no-install-recommends postgresql-client-18 \
     && rm -rf /var/lib/apt/lists/* && apt-get clean
+# Node runtime for the frontend npm ci and the Claude Code CLI. Normal images need
+# Node >=22 (NodeSource 22.x, matching docker/Dockerfile.dev); LEGACY_CPU=1 keeps the
+# distro Node 20 that the legacy 2.1.112 CLI was validated against.
+RUN if [ "$LEGACY_CPU" = "1" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends nodejs npm && \
+        rm -rf /var/lib/apt/lists/*; \
+    else \
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+        apt-get install -y --no-install-recommends nodejs && \
+        rm -rf /var/lib/apt/lists/* && \
+        node -e "if (Number(process.versions.node.split('.')[0]) < 22) process.exit(1)"; \
+    fi && node --version && npm --version
 RUN groupadd -r ragtime && useradd -r -g ragtime ragtime && \
     mkdir -p /ragtime/data/faiss_index /ragtime/ragtime/frontend && \
     chown -R ragtime:ragtime /ragtime
@@ -88,9 +100,12 @@ COPY --chown=ragtime:ragtime ragtime/frontend/package.json ragtime/frontend/pack
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     cd /ragtime/ragtime/frontend && npm ci --loglevel=error && npx playwright install --with-deps chromium && \
     chown -R ragtime:ragtime /ragtime/ragtime/frontend
+# Claude Code pin: 2.1.290 is the minimum version supporting the structured-output
+# transport. LEGACY_CPU=1 deliberately keeps 2.1.112 for CPU-only compatibility;
+# do not replace it with the modern binary without validating that hardware.
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     if [ "$LEGACY_CPU" = "1" ]; then npm install -g @anthropic-ai/claude-code@2.1.112; \
-    else npm install -g @anthropic-ai/claude-code@2.1.186; fi && claude --version
+    else npm install -g @anthropic-ai/claude-code@2.1.290; fi && claude --version
 
 # =============================================================================
 # Source assembly and CI gates. A selected external CI base already contains a

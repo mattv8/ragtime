@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 import unittest
 from unittest import mock
@@ -131,6 +132,140 @@ class ClaudeCodeStatusTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, 1)
         self.assertTrue(all(result.available for result in results))
+
+    async def test_status_requires_logged_in_claude_ai_subscription(self) -> None:
+        async def probe_result(*_args: str, **_kwargs: object) -> claude_code._ClaudeCommandResult:
+            if _args[1:] == ("--version",):
+                return claude_code._ClaudeCommandResult(returncode=0, output="2.1.290 (Claude Code)")
+            return claude_code._ClaudeCommandResult(
+                returncode=0,
+                output='{"loggedIn": false, "authMethod": "claude.ai", "subscriptionType": "pro"}',
+            )
+
+        with (
+            mock.patch("ragtime.core.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            mock.patch("ragtime.core.claude_code._run_claude_command", side_effect=probe_result),
+            mock.patch.dict(os.environ, {claude_code.CLAUDE_CODE_OAUTH_TOKEN_ENV: ""}, clear=False),
+        ):
+            status = await claude_code._probe_claude_code_status()
+
+        self.assertFalse(status.has_cli_auth)
+        self.assertFalse(status.available)
+
+    async def test_status_rejects_malformed_and_api_key_auth_payloads(self) -> None:
+        for payload in ("not-json", '{"loggedIn": true, "authMethod": "apiKey"}'):
+            with self.subTest(payload=payload):
+
+                async def probe_result(*_args: str, **_kwargs: object) -> claude_code._ClaudeCommandResult:
+                    if _args[1:] == ("--version",):
+                        return claude_code._ClaudeCommandResult(returncode=0, output="2.1.290 (Claude Code)")
+                    return claude_code._ClaudeCommandResult(returncode=0, output=payload)
+
+                with (
+                    mock.patch("ragtime.core.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+                    mock.patch("ragtime.core.claude_code._run_claude_command", side_effect=probe_result),
+                    mock.patch.dict(os.environ, {claude_code.CLAUDE_CODE_OAUTH_TOKEN_ENV: ""}, clear=False),
+                ):
+                    status = await claude_code._probe_claude_code_status()
+
+                self.assertFalse(status.has_cli_auth)
+                self.assertFalse(status.available)
+
+    async def test_status_accepts_subscription_auth_or_oauth_environment_token(self) -> None:
+        async def subscription_probe(*_args: str, **_kwargs: object) -> claude_code._ClaudeCommandResult:
+            if _args[1:] == ("--version",):
+                return claude_code._ClaudeCommandResult(returncode=0, output="2.1.290 (Claude Code)")
+            return claude_code._ClaudeCommandResult(
+                returncode=0,
+                output='{"logged_in": true, "auth_method": "claude.ai", "subscription_type": "pro"}',
+            )
+
+        with (
+            mock.patch("ragtime.core.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            mock.patch("ragtime.core.claude_code._run_claude_command", side_effect=subscription_probe),
+            mock.patch.dict(os.environ, {claude_code.CLAUDE_CODE_OAUTH_TOKEN_ENV: ""}, clear=False),
+        ):
+            subscription_status = await claude_code._probe_claude_code_status()
+
+        self.assertTrue(subscription_status.has_cli_auth)
+        self.assertTrue(subscription_status.available)
+
+    async def test_status_rejects_legacy_cli_version_before_auth_probe(self) -> None:
+        async def old_version_probe(*_args: str, **_kwargs: object) -> claude_code._ClaudeCommandResult:
+            self.assertEqual(_args[1:], ("--version",))
+            return claude_code._ClaudeCommandResult(returncode=0, output="2.1.186 (Claude Code)")
+
+        with (
+            mock.patch("ragtime.core.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            mock.patch("ragtime.core.claude_code._run_claude_command", side_effect=old_version_probe),
+            mock.patch.dict(os.environ, {claude_code.CLAUDE_CODE_OAUTH_TOKEN_ENV: "oauth-token"}, clear=False),
+        ):
+            status = await claude_code._probe_claude_code_status()
+
+        self.assertFalse(status.available)
+        self.assertIn("2.1.290 or later", status.error or "")
+
+    async def test_status_accepts_oauth_environment_token_without_cli_login(self) -> None:
+        async def token_probe(*_args: str, **_kwargs: object) -> claude_code._ClaudeCommandResult:
+            if _args[1:] == ("--version",):
+                return claude_code._ClaudeCommandResult(returncode=0, output="2.1.290 (Claude Code)")
+            return claude_code._ClaudeCommandResult(returncode=0, output='{"loggedIn": false}')
+
+        with (
+            mock.patch("ragtime.core.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            mock.patch("ragtime.core.claude_code._run_claude_command", side_effect=token_probe),
+            mock.patch.dict(os.environ, {claude_code.CLAUDE_CODE_OAUTH_TOKEN_ENV: "oauth-token"}, clear=False),
+        ):
+            status = await claude_code._probe_claude_code_status()
+
+        self.assertTrue(status.has_oauth_token)
+        self.assertFalse(status.has_cli_auth)
+        self.assertTrue(status.available)
+
+    def test_subscription_environment_filters_competing_auth_without_mutating_parent(self) -> None:
+        parent_environment = {
+            "HOME": "/home/ragtime",
+            "CLAUDE_CONFIG_DIR": "/home/ragtime/.claude",
+            claude_code.CLAUDE_CODE_OAUTH_TOKEN_ENV: "oauth-token",
+            "ANTHROPIC_API_KEY": "api-key",
+            "ANTHROPIC_AUTH_TOKEN": "auth-token",
+            "ANTHROPIC_BASE_URL": "https://gateway.example",
+            "ANTHROPIC_PROFILE": "work",
+            "ANTHROPIC_FEDERATION_REGION": "example",
+            "ANTHROPIC_VERTEX_PROJECT_ID": "project-id",
+            "CLAUDE_CODE_BEDROCK_REGION": "us-east-1",
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "CLAUDE_CODE_USE_VERTEX": "1",
+            "CLAUDE_CODE_USE_FOUNDRY": "1",
+            "CLAUDE_CODE_DISABLE_ATTACHMENTS": "0",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0",
+            "DISABLE_TELEMETRY": "0",
+            "DISABLE_ERROR_REPORTING": "0",
+            "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+            "OTEL_LOG_USER_PROMPTS": "1",
+            "CLAUDE_CODE_DEBUG_LOGS_DIR": "/tmp/claude-debug",
+            "DEBUG": "1",
+        }
+
+        environment = claude_code.build_claude_code_subscription_env(parent_environment)
+
+        self.assertEqual(environment["HOME"], parent_environment["HOME"])
+        self.assertEqual(environment["CLAUDE_CONFIG_DIR"], parent_environment["CLAUDE_CONFIG_DIR"])
+        self.assertEqual(environment[claude_code.CLAUDE_CODE_OAUTH_TOKEN_ENV], "oauth-token")
+        self.assertFalse(any(key.startswith("ANTHROPIC_") for key in environment))
+        self.assertFalse(any(key.startswith("CLAUDE_CODE_BEDROCK_") for key in environment))
+        self.assertFalse(any(key.startswith("CLAUDE_CODE_USE_") for key in environment))
+        self.assertEqual(environment["CLAUDE_CODE_DISABLE_ATTACHMENTS"], "1")
+        self.assertEqual(environment["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1")
+        self.assertEqual(environment["DISABLE_TELEMETRY"], "1")
+        self.assertEqual(environment["DISABLE_ERROR_REPORTING"], "1")
+        self.assertNotIn("CLAUDE_CODE_ENABLE_TELEMETRY", environment)
+        self.assertNotIn("OTEL_LOG_USER_PROMPTS", environment)
+        self.assertNotIn("CLAUDE_CODE_DEBUG_LOGS_DIR", environment)
+        self.assertNotIn("DEBUG", environment)
+        self.assertEqual(parent_environment["ANTHROPIC_API_KEY"], "api-key")
+        self.assertEqual(parent_environment["CLAUDE_CODE_DISABLE_ATTACHMENTS"], "0")
+        self.assertEqual(parent_environment["DEBUG"], "1")
 
 
 if __name__ == "__main__":

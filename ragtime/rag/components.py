@@ -105,6 +105,8 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_TOOL_SKILLS_ENABLED,
 )
 from ragtime.core.app_settings import get_app_settings, get_enabled_tool_configs, get_tool_configs
+from ragtime.core.claude_code import CLAUDE_CODE_COMMAND, get_claude_code_status
+from ragtime.core.claude_code_chat import ClaudeCodeChatModel
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.database import get_db
@@ -4045,8 +4047,16 @@ class RAGComponents:
                 return None
 
         if provider_normalized == "claude_code":
-            logger.warning("Claude Code selected but chat adapter is not implemented yet")
-            return None
+            status = await get_claude_code_status()
+            if not status.available:
+                logger.warning("Claude Code is unavailable or not authenticated")
+                return None
+            return ClaudeCodeChatModel(
+                model=model,
+                command=status.command or CLAUDE_CODE_COMMAND,
+                timeout=LLM_REQUEST_TIMEOUT_SECONDS,
+                max_tokens=max_tokens,
+            )
 
         if provider_normalized == "openai_codex":
             token = await ensure_openai_codex_token_fresh()
@@ -16399,7 +16409,7 @@ class RAGComponents:
         return agent
 
     def _configured_llm_providers(self) -> list[str]:
-        """Return the set of LLM providers that appear to have working credentials/endpoints."""
+        """Return providers with credentials, endpoints, or an installed local adapter."""
         s = self._app_settings or {}
         configured: list[str] = []
         if str(s.get("openai_api_key", "") or "").strip():
@@ -16408,7 +16418,7 @@ class RAGComponents:
             configured.append("openai_codex")
         if str(s.get("anthropic_api_key", "") or "").strip():
             configured.append("anthropic")
-        if str(s.get("claude_code_oauth_token", "") or "").strip():
+        if shutil.which(CLAUDE_CODE_COMMAND):
             configured.append("claude_code")
         if str(s.get("github_copilot_access_token", "") or "").strip():
             configured.append("github_copilot")
@@ -16509,10 +16519,14 @@ class RAGComponents:
         # substitute a similarly named model from another configured provider.
         if normalize_provider_name(requested_provider) == "openai_compatible":
             return ["openai_compatible"]
+        if normalize_provider_name(requested_provider) == "claude_code":
+            return ["claude_code"]
         allowed_providers = self._allowed_llm_providers_for_model(model_id)
 
         if allowed_providers:
             preferred_provider = normalize_provider_name(provider_override)
+            if preferred_provider and preferred_provider != "claude_code":
+                allowed_providers = [provider for provider in allowed_providers if provider != "claude_code"]
             provider_pool = [provider for provider in allowed_providers if provider in configured_providers and provider != "openai_compatible"]
             if not provider_pool:
                 provider_pool = [
@@ -16530,7 +16544,7 @@ class RAGComponents:
                 provider_pool = list(dict.fromkeys(provider_pool))
         else:
             provider_pool = [requested_provider]
-            provider_pool.extend(provider for provider in configured_providers if provider not in {requested_provider, "openai_compatible"})
+            provider_pool.extend(provider for provider in configured_providers if provider not in {requested_provider, "openai_compatible", "claude_code"})
             provider_pool = list(dict.fromkeys(provider_pool))
 
         ordered = list(dict.fromkeys(normalize_provider_name(provider) for provider in provider_pool if provider))
@@ -16551,9 +16565,7 @@ class RAGComponents:
         if normalized == "anthropic" and not str(settings.get("anthropic_api_key", "") or "").strip():
             return "Anthropic API key is missing"
         if normalized == "claude_code":
-            if not str(settings.get("claude_code_oauth_token", "") or "").strip():
-                return "CLAUDE_CODE_OAUTH_TOKEN is missing"
-            return "Claude Code chat adapter is not implemented yet"
+            return "Claude Code is unavailable or not authenticated"
         if normalized == "github_copilot" and not (
             str(settings.get("github_copilot_access_token", "") or "").strip() or str(settings.get("github_copilot_refresh_token", "") or "").strip()
         ):
@@ -16865,7 +16877,7 @@ class RAGComponents:
 
         if not model_id:
             model_id = configured_model
-            if self.llm is not None:
+            if self.llm is not None and configured_provider != "claude_code":
                 await self._ensure_copilot_llm_fresh()
                 return RequestLLMResolution(
                     llm=self.llm,
@@ -16887,6 +16899,7 @@ class RAGComponents:
             and model_id == configured_model
             and self.llm is not None
             and (provider_override is None or providers_same(provider_override, configured_provider))
+            and configured_provider != "claude_code"
         ):
             await self._ensure_copilot_llm_fresh()
             return RequestLLMResolution(
