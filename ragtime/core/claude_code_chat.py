@@ -10,6 +10,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import Any
 
+from langchain_core.callbacks.manager import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
@@ -71,7 +72,13 @@ class ClaudeCodeChatModel(BaseChatModel):
         normalized_choice = self._normalize_tool_choice(tool_choice, tool_names)
         return self.model_copy(update={"bound_tools": normalized_tools, "tool_choice": normalized_choice})
 
-    def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, **kwargs: Any) -> ChatResult:
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
         if kwargs:
             raise ValueError(f"Unsupported invocation parameters: {', '.join(sorted(kwargs))}.")
         try:
@@ -81,7 +88,13 @@ class ClaudeCodeChatModel(BaseChatModel):
                 raise RuntimeError("Use ainvoke from an asynchronous context.") from exc
             raise
 
-    async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, **kwargs: Any) -> ChatResult:
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
         if kwargs:
             raise ValueError(f"Unsupported invocation parameters: {', '.join(sorted(kwargs))}.")
         payload, system_prompt = self._serialize_messages(messages)
@@ -89,12 +102,24 @@ class ClaudeCodeChatModel(BaseChatModel):
         message = self._response_message(response, stop)
         return ChatResult(generations=[ChatGeneration(message=message)])
 
-    def _stream(self, messages: list[BaseMessage], stop: list[str] | None = None, **kwargs: Any) -> Iterator[ChatGenerationChunk]:
-        result = self._generate(messages, stop=stop, **kwargs)
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        result = self._generate(messages, stop, run_manager, **kwargs)
         yield ChatGenerationChunk(message=self._message_chunk(result.generations[0].message))
 
-    async def _astream(self, messages: list[BaseMessage], stop: list[str] | None = None, **kwargs: Any) -> AsyncIterator[ChatGenerationChunk]:
-        result = await self._agenerate(messages, stop=stop, **kwargs)
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        result = await self._agenerate(messages, stop, run_manager, **kwargs)
         yield ChatGenerationChunk(message=self._message_chunk(result.generations[0].message))
 
     @staticmethod
@@ -276,7 +301,7 @@ class ClaudeCodeChatModel(BaseChatModel):
         return environment
 
     def _tool_response_schema(self) -> dict[str, Any]:
-        calls = []
+        calls: list[dict[str, Any]] = []
         for tool in self.bound_tools:
             function = tool["function"]
             calls.append(

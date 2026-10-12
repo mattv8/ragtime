@@ -3,9 +3,11 @@
 import asyncio
 import json
 import os
+import uuid
 from typing import cast
 from unittest import IsolatedAsyncioTestCase, mock
 
+from langchain_core.callbacks.manager import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 
 from ragtime.core.claude_code_chat import ClaudeCodeChatModel
@@ -21,6 +23,30 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
         process.returncode = returncode
         return process
 
+    def test_sync_hooks_accept_positional_callback_manager(self) -> None:
+        process = self._process({"result": "Hello"})
+        run_manager = CallbackManagerForLLMRun(run_id=uuid.uuid4(), handlers=[], inheritable_handlers=[])
+        model = ClaudeCodeChatModel("claude-opus-4-6")
+
+        with mock.patch("ragtime.core.claude_code_chat.asyncio.create_subprocess_exec", return_value=process):
+            result = model._generate([HumanMessage(content="Hi")], None, run_manager)
+            chunks = list(model._stream([HumanMessage(content="Hi")], None, run_manager))
+
+        self.assertEqual(result.generations[0].message.content, "Hello")
+        self.assertEqual(chunks[0].message.content, "Hello")
+
+    async def test_async_hooks_accept_positional_callback_manager(self) -> None:
+        process = self._process({"result": "Hello"})
+        run_manager = AsyncCallbackManagerForLLMRun(run_id=uuid.uuid4(), handlers=[], inheritable_handlers=[])
+        model = ClaudeCodeChatModel("claude-opus-4-6")
+
+        with mock.patch("ragtime.core.claude_code_chat.asyncio.create_subprocess_exec", return_value=process):
+            result = await model._agenerate([HumanMessage(content="Hi")], None, run_manager)
+            chunks = [chunk async for chunk in model._astream([HumanMessage(content="Hi")], None, run_manager)]
+
+        self.assertEqual(result.generations[0].message.content, "Hello")
+        self.assertEqual(chunks[0].message.content, "Hello")
+
     async def test_ainvoke_returns_cli_text_response(self) -> None:
         process = self._process({"result": "Hello", "usage": {"input_tokens": 2, "output_tokens": 1, "cache_read_input_tokens": 3}})
 
@@ -30,9 +56,11 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
         self.assertIsInstance(response, AIMessage)
         self.assertEqual(response.content, "Hello")
         message = cast(AIMessage, response)
-        self.assertIsNotNone(message.usage_metadata)
-        usage = message.usage_metadata or {}
-        self.assertEqual(usage.get("input_token_details", {}).get("cache_read"), 3)
+        usage = message.usage_metadata
+        assert usage is not None
+        input_token_details = usage.get("input_token_details")
+        assert input_token_details is not None
+        self.assertEqual(input_token_details.get("cache_read"), 3)
 
     async def test_serializes_ordered_conversation_and_isolates_cli(self) -> None:
         process = self._process({"result": "Done"})
@@ -155,13 +183,13 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
             response = cast(AIMessage, await ClaudeCodeChatModel("claude-opus-4-6").ainvoke([HumanMessage(content="Hi")]))
             invalid_response = cast(AIMessage, await ClaudeCodeChatModel("claude-opus-4-6").ainvoke([HumanMessage(content="Hi")]))
         usage = response.usage_metadata
-        self.assertIsNotNone(usage)
-        self.assertEqual((usage or {})["input_tokens"], 1503)
-        self.assertEqual((usage or {})["total_tokens"], 1513)
+        assert usage is not None
+        self.assertEqual(usage["input_tokens"], 1503)
+        self.assertEqual(usage["total_tokens"], 1513)
         self.assertIsNone(invalid_response.usage_metadata)
 
     async def test_nonzero_json_failures_have_safe_exact_categories(self) -> None:
-        cases = [
+        cases: list[tuple[dict[str, object], str]] = [
             ({"terminal_reason": "failed", "subtype": "error", "api_error_status": 401, "result": "secret"}, "authentication failed"),
             ({"terminal_reason": "failed", "subtype": "error", "api_error_status": 403, "result": "secret"}, "authentication failed"),
             ({"terminal_reason": "failed", "subtype": "error", "api_error_status": 429, "result": "secret"}, "rate or usage limit"),
@@ -282,7 +310,9 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
         self.assertEqual(len(chunks), 1)
         chunk = cast(AIMessageChunk, chunks[0])
         self.assertEqual(chunk.tool_calls[0]["name"], "lookup")
-        self.assertEqual((chunk.usage_metadata or {})["total_tokens"], 3)
+        usage = chunk.usage_metadata
+        assert usage is not None
+        self.assertEqual(usage["total_tokens"], 3)
 
     def test_public_stream_returns_one_complete_bound_tool_chunk(self) -> None:
         tool = {"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}
