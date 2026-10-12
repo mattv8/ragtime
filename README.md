@@ -78,6 +78,8 @@ Configure LLM and embedding providers in the Settings UI. Chat (LLM) and embeddi
 
 Subscription-backed providers (OpenAI Codex, Claude Code) authenticate from the Settings UI without an API key. Claude Code uses the Claude Code CLI subscription and discovers the full Claude model family your plan serves.
 
+Claude Code chat requires CLI **2.1.290 or newer**. It uses your saved CLI login or `CLAUDE_CODE_OAUTH_TOKEN`, with Ragtime handling tool execution. Responses arrive as complete chunks rather than token-by-token. This transport supports text, not image attachments, and rejects tool schemas larger than 120,000 bytes. The legacy-CPU image retains an older CLI and does not support Claude Code chat; its other providers remain available.
+
 #### Connect an OpenAI-compatible service
 
 **Security:** Public generic OpenAI API model endpoints receive prompts and tool results and can influence tool calls; use only providers you trust. Ragtime shows this notice to administrators when an OpenAI-compatible provider is configured, or when an Ollama, llama.cpp, LM Studio, or oMLX chat endpoint uses a public host.
