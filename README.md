@@ -25,13 +25,10 @@
 </p>
 
 <p align="center">
-  <a href="https://youtu.be/C4FY6gv9gCk">UI Walkthrough Video</a> | <a href="CONTRIBUTING.md">Contributing Guide</a>
+  <a href="CONTRIBUTING.md">Contributing Guide</a>
 </p>
 
-<div align="center">
-  <img src=".github/images/2026-01-12.png" alt="Screenshot 1" height="360" />
-  <img src=".github/images/workspace-safari.png" alt="Ragtime Workspace with a live sales dashboard in a Safari-style browser frame" height="360" />
-</div>
+https://github.com/user-attachments/assets/be21f93e-edec-402e-a861-d6ea7d8f8a4d
 
 ## Table of Contents
 
