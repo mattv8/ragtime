@@ -1516,6 +1516,108 @@ class ConversationCreationPreferenceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_claude_code_authenticated_cli_resolves_a_chat_model_without_env_token(self) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {"claude_code_oauth_token": ""}
+
+        with mock.patch(
+            "ragtime.rag.components.get_claude_code_status",
+            new=mock.AsyncMock(return_value=SimpleNamespace(available=True, command="claude")),
+        ):
+            llm = await rag._build_llm("claude_code", "claude-opus-5-5", 4096)
+
+        self.assertIsNotNone(llm)
+        from langchain_core.language_models.chat_models import BaseChatModel
+
+        self.assertIsInstance(llm, BaseChatModel)
+        self.assertTrue(callable(getattr(llm, "bind_tools", None)))
+
+    def test_explicit_claude_code_provider_does_not_fall_back_to_anthropic(self) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {"anthropic_api_key": "paid-key"}
+
+        with mock.patch("ragtime.rag.components.shutil.which", return_value="/usr/local/bin/claude"):
+            candidates = rag._ordered_llm_candidate_providers(
+                requested_provider="claude_code",
+                model_id="claude-opus-5-5",
+                provider_override="claude_code",
+            )
+
+        self.assertEqual(candidates, ["claude_code"])
+
+    def test_explicit_non_claude_provider_excludes_allowlisted_claude_code(self) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {
+            "anthropic_api_key": "paid-key",
+            "allowed_chat_models": ["claude_code::claude-opus-4-6"],
+        }
+
+        with mock.patch("ragtime.rag.components.shutil.which", return_value="/usr/local/bin/claude"):
+            candidates = rag._ordered_llm_candidate_providers(
+                requested_provider="anthropic",
+                model_id="claude-opus-4-6",
+                provider_override="anthropic",
+            )
+
+        self.assertEqual(candidates, ["anthropic"])
+
+    def test_explicit_openai_override_keeps_copilot_fallback_when_claude_code_allowed(self) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {
+            "openai_api_key": "openai-key",
+            "github_copilot_access_token": "copilot-token",
+            "allowed_chat_models": ["github_copilot::gpt-5.4", "openai::gpt-5.4", "claude_code::gpt-5.4"],
+        }
+
+        with mock.patch("ragtime.rag.components.shutil.which", return_value="/usr/local/bin/claude"):
+            candidates = rag._ordered_llm_candidate_providers(
+                requested_provider="openai",
+                model_id="gpt-5.4",
+                provider_override="openai",
+            )
+
+        self.assertEqual(candidates, ["openai", "github_copilot"])
+
+    def test_explicit_copilot_override_keeps_openai_fallback_when_claude_code_allowed(self) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {
+            "openai_api_key": "openai-key",
+            "github_copilot_access_token": "copilot-token",
+            "allowed_chat_models": ["github_copilot::gpt-5.4", "openai::gpt-5.4", "claude_code::gpt-5.4"],
+        }
+
+        with mock.patch("ragtime.rag.components.shutil.which", return_value="/usr/local/bin/claude"):
+            candidates = rag._ordered_llm_candidate_providers(
+                requested_provider="github_copilot",
+                model_id="gpt-5.4",
+                provider_override="github_copilot",
+            )
+
+        self.assertEqual(candidates, ["github_copilot", "openai"])
+
+    async def test_configured_claude_code_cached_client_rechecks_live_status_and_recovers(self) -> None:
+        rag = RAGComponents()
+        rag.llm = object()
+        rag._app_settings = {
+            "llm_provider": "claude_code",
+            "llm_model": "claude-opus-5-5",
+        }
+        unavailable = SimpleNamespace(available=False, command="claude")
+        available = SimpleNamespace(available=True, command="claude")
+
+        with mock.patch(
+            "ragtime.rag.components.get_claude_code_status",
+            new=mock.AsyncMock(side_effect=[unavailable, available]),
+        ) as get_status:
+            failed_resolution = await rag._get_request_scoped_llm(None)
+            recovered_resolution = await rag._get_request_scoped_llm(None)
+
+        self.assertIsNone(failed_resolution.llm)
+        self.assertIn("unavailable or not authenticated", failed_resolution.error_message or "")
+        self.assertIsNotNone(recovered_resolution.llm)
+        self.assertEqual(recovered_resolution.provider, "claude_code")
+        self.assertEqual(get_status.await_count, 2)
+
     async def test_openai_model_discovery_uses_live_token_limits(self) -> None:
         payload = {
             "data": [
@@ -1942,6 +2044,7 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
             return copilot_llm if provider == "github_copilot" else None
 
         with (
+            mock.patch("ragtime.rag.components.shutil.which", return_value="/usr/local/bin/claude"),
             mock.patch.object(rag, "_build_llm", side_effect=build_llm),
             mock.patch.object(
                 rag,
