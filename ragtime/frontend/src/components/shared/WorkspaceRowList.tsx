@@ -79,7 +79,7 @@ export function WorkspaceRowList({
   const busy = disabled || Boolean(deletingId) || transferSaving;
 
   return (
-    <div className="admin-ws-group-list">
+    <div className="admin-ws-group-list" data-resource-list="workspaces">
       {workspaces.map((ws) => {
         const isConfirming = deleteConfirmId === ws.id;
         const isDeleting = deletingId === ws.id || deletingWorkspaceIds?.has(ws.id) === true;
@@ -97,7 +97,7 @@ export function WorkspaceRowList({
         );
 
         return (
-          <div key={ws.id} className="admin-ws-item-wrapper">
+          <div key={ws.id} className="admin-ws-item-wrapper" data-workspace-id={ws.id}>
             <div className="admin-ws-item">
               {onSelect ? (
                 <button

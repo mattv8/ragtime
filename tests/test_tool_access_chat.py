@@ -8,6 +8,8 @@ from unittest import mock
 
 from prisma.models import User
 
+from ragtime.content_protection import service as content_protection_service
+from ragtime.content_protection.models import ContentProtectionConfig, GroupAccessLevel, ProtectionContext
 from ragtime.indexer.models import Conversation
 from ragtime.indexer.routes import (
     _create_background_chat_task_after_user_message,
@@ -18,6 +20,7 @@ from ragtime.indexer.routes import (
 )
 from ragtime.indexer.tool_selection import resolve_effective_tool_ids
 from ragtime.rag import components as rag_components
+from tests.content_protection_support import use_disabled_content_protection
 
 
 class _FakeConversationToolDb:
@@ -490,6 +493,9 @@ class ConversationToolEndpointAclTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        use_disabled_content_protection(self)
+
     async def test_runtime_tool_catalog_without_global_llm(self) -> None:
         rag = rag_components.RAGComponents()
         rag.llm = None
@@ -573,7 +579,9 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
         runtime_tools = [SimpleNamespace(name="query_flapping_tool")]
         runtime_session_mock = get_runtime_session or mock.AsyncMock(return_value=SimpleNamespace(session=None))
         target_mock = list_accessible_targets or mock.AsyncMock(return_value=[])
-        prompt_mock = build_instruction_sections or mock.Mock(return_value={"identity": "", "entrypoint": "ENTRYPOINT_NUDGE", "workspace": "MODE_PROMPT"})
+        prompt_mock = build_instruction_sections or mock.Mock(
+            return_value={"identity": "", "access_level": "", "entrypoint": "ENTRYPOINT_NUDGE", "workspace": "MODE_PROMPT"}
+        )
 
         with ExitStack() as stack:
             stack.enter_context(
@@ -1026,7 +1034,7 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(
                 mock.patch(
                     "ragtime.rag.components.build_userspace_instruction_sections",
-                    return_value={"identity": "", "entrypoint": "", "workspace": ""},
+                    return_value={"identity": "", "access_level": "", "entrypoint": "", "workspace": ""},
                 )
             )
             stack.enter_context(
@@ -1074,6 +1082,52 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("Flapping Tool", prompt)
         self.assertNotIn("Healthy Tool", prompt)
+
+    async def test_public_runtime_guidance_is_not_broadened_by_finance_actor(self) -> None:
+        config = ContentProtectionConfig(
+            enabled=False,
+            share_with_assistant=True,
+            group_access_levels=[GroupAccessLevel(group_id="finance-group", access_level_id="finance")],
+        )
+        finance_level = next(level for level in config.access_levels if level.id == "finance")
+        finance_level.guidance = "Discuss nonpublic company finance records."
+        prompt_builder = mock.Mock(wraps=rag_components.build_userspace_instruction_sections)
+        fragment_builder = mock.Mock(wraps=rag_components.build_access_level_prompt_fragment)
+        detector = mock.AsyncMock()
+        public_context = ProtectionContext(
+            user_id="finance-actor",
+            audience_user_ids=("shared-viewer",),
+            surface="userspace",
+            public=True,
+            baseline="public",
+        )
+
+        with (
+            mock.patch.object(content_protection_service, "load_config", new=mock.AsyncMock(return_value=config)),
+            mock.patch.object(
+                content_protection_service,
+                "resolve_identities",
+                new=mock.AsyncMock(
+                    return_value=(
+                        {"finance-actor", "shared-viewer"},
+                        {"finance-actor": {"finance-group"}, "shared-viewer": set()},
+                        {"finance-actor": None, "shared-viewer": None},
+                    )
+                ),
+            ),
+            mock.patch.object(content_protection_service, "detect", new=detector),
+            mock.patch.object(rag_components, "build_access_level_prompt_fragment", new=fragment_builder),
+            content_protection_service.protection_context(public_context),
+        ):
+            request_context, _, _, _ = await self._build_userspace_runtime_context_for_prompt_test(build_instruction_sections=prompt_builder)
+
+        snapshot = fragment_builder.call_args.args[0]
+        self.assertEqual(snapshot["granted_category_ids"], [])
+        access_level_prompt = prompt_builder.call_args.kwargs["access_level_prompt"]
+        self.assertIn("Company finance", access_level_prompt)
+        self.assertIn("Company finance", request_context["prompt_additions"])
+        self.assertNotIn("Discuss nonpublic company finance records.", access_level_prompt)
+        detector.assert_not_awaited()
 
     async def test_userspace_runtime_context_uses_active_lease_identity_for_shared_sqlite_targets(self) -> None:
         targets = [

@@ -7,7 +7,12 @@ import { SettingsPanel } from './SettingsPanel';
 
 const modalRenderSpy = vi.hoisted(() => vi.fn());
 const searchFilterBarSpy = vi.hoisted(() => vi.fn());
-const searchFilterState = vi.hoisted(() => ({ queries: [] as string[], hasActiveFilters: false }));
+const searchFilterState = vi.hoisted(() => ({
+  input: '',
+  tags: [] as string[],
+  queries: [] as string[],
+  hasActiveFilters: false,
+}));
 const toastSuccessSpy = vi.hoisted(() => vi.fn());
 const toastErrorSpy = vi.hoisted(() => vi.fn());
 const toastInfoSpy = vi.hoisted(() => vi.fn());
@@ -44,8 +49,32 @@ const searchSectionState = vi.hoisted(() => ({
   latestProps: null as null | Record<string, unknown>,
   run: null as null | ((props: Record<string, unknown>) => void),
 }));
+const contentProtectionSectionState = vi.hoisted(() => ({
+  refreshKey: null as number | null,
+  onOpenRouterKeySaved: null as null | ((apiKey: string) => void),
+}));
 const sectionRenderOrder = vi.hoisted(() => [] as string[]);
 const adminUser = { id: 'admin', username: 'admin', role: 'admin' } as User;
+
+class TestHighlight {
+  ranges = new Set<Range>();
+
+  add(...ranges: Range[]) {
+    ranges.forEach((range) => this.ranges.add(range));
+  }
+}
+
+const settingsHighlightRegistry = new Map<string, TestHighlight>();
+const originalHighlight = globalThis.Highlight;
+const originalCss = globalThis.CSS;
+
+function installSettingsHighlightApi() {
+  Object.defineProperty(globalThis, 'Highlight', { configurable: true, value: TestHighlight });
+  Object.defineProperty(globalThis, 'CSS', {
+    configurable: true,
+    value: { highlights: settingsHighlightRegistry },
+  });
+}
 
 const apiMock = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -383,6 +412,33 @@ vi.mock('./shared/SearchFilterBar', () => ({
   useUrlSearchFilterState: () => searchFilterState,
 }));
 vi.mock('./shared/AuthAdminModals', () => ({ AuthAdminModalHost: () => null }));
+vi.mock('./shared/AccessLevelsModal', () => ({
+  AccessLevelsModal: ({ open, onChanged }: { open: boolean; onChanged?: () => void }) =>
+    open ? (
+      <button type="button" onClick={onChanged}>
+        Mock access change
+      </button>
+    ) : null,
+}));
+vi.mock('./settings/ContentProtectionSettingsSection', () => ({
+  ContentProtectionSettingsSection: ({
+    refreshKey,
+    onOpenRouterKeySaved,
+  }: {
+    refreshKey?: number;
+    onOpenRouterKeySaved?: (apiKey: string) => void;
+  }) => {
+    contentProtectionSectionState.refreshKey = refreshKey ?? null;
+    contentProtectionSectionState.onOpenRouterKeySaved = onOpenRouterKeySaved ?? null;
+    return (
+      <section data-content-protection-settings-section>
+        <button type="button" onClick={() => onOpenRouterKeySaved?.('sk-or-shared-key')}>
+          Save shared OpenRouter key
+        </button>
+      </section>
+    );
+  },
+}));
 
 function buildSettingsResponse(
   overrides: Record<string, unknown> = {},
@@ -417,9 +473,18 @@ function buildSettingsResponse(
 }
 
 beforeEach(() => {
+  document.cookie
+    .split(';')
+    .map((cookie) => cookie.trim().split('=')[0])
+    .filter((name) => name.startsWith('settings_accordion_open_'))
+    .forEach((name) => {
+      document.cookie = `${name}=; max-age=0; path=/`;
+    });
   modalRenderSpy.mockClear();
   searchFilterBarSpy.mockClear();
   searchFilterState.queries = [];
+  searchFilterState.input = '';
+  searchFilterState.tags = [];
   searchFilterState.hasActiveFilters = false;
   serverBackupSectionSpy.mockClear();
   modalState.latestAllowedChatModelsProps = null;
@@ -431,6 +496,8 @@ beforeEach(() => {
   agentBehaviorSectionState.latestProps = null;
   searchSectionState.latestProps = null;
   searchSectionState.run = null;
+  contentProtectionSectionState.refreshKey = null;
+  contentProtectionSectionState.onOpenRouterKeySaved = null;
   sectionRenderOrder.length = 0;
   toastSuccessSpy.mockClear();
   toastErrorSpy.mockClear();
@@ -591,6 +658,9 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.clearAllMocks();
+  settingsHighlightRegistry.clear();
+  Object.defineProperty(globalThis, 'Highlight', { configurable: true, value: originalHighlight });
+  Object.defineProperty(globalThis, 'CSS', { configurable: true, value: originalCss });
 });
 
 async function renderAuthProvider(provider: 'github_copilot' | 'openai_codex' | 'claude_code') {
@@ -611,6 +681,44 @@ async function renderAuthProvider(provider: 'github_copilot' | 'openai_codex' | 
 }
 
 describe('SettingsPanel', () => {
+  it('keeps a shared OpenRouter key for later LLM and embedding saves without discarding other drafts', async () => {
+    render(<SettingsPanel currentUser={adminUser} />);
+
+    await screen.findByRole('button', { name: 'Open chat models' });
+    fireEvent.click(screen.getByRole('button', { name: 'Save shared OpenRouter key' }));
+    fireEvent.click(screen.getByLabelText('Load tools on demand'));
+
+    fireEvent.click(screen.getByRole('button', { name: /LLM Providers/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save LLM Configuration' }));
+    await waitFor(() => expect(apiMock.updateSettings).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateSettings.mock.calls[0]?.[0]).toMatchObject({
+      openrouter_api_key: 'sk-or-shared-key',
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Embedding Configuration/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save Embedding Configuration' }));
+    await waitFor(() => expect(apiMock.updateSettings).toHaveBeenCalledTimes(2));
+    expect(apiMock.updateSettings.mock.calls[1]?.[0]).toMatchObject({
+      openrouter_api_key: 'sk-or-shared-key',
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Agent Behavior' }));
+    await waitFor(() => expect(apiMock.updateSettings).toHaveBeenCalledTimes(3));
+    expect(apiMock.updateSettings.mock.calls[2]?.[0]).toMatchObject({ tool_skills_enabled: false });
+  });
+
+  it('refreshes content protection after an access level change', async () => {
+    render(<SettingsPanel currentUser={adminUser} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Authentication Providers/i }));
+    await screen.findByRole('button', { name: 'Manage Access Levels' });
+    expect(contentProtectionSectionState.refreshKey).toBe(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Manage Access Levels' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mock access change' }));
+
+    await waitFor(() => expect(contentProtectionSectionState.refreshKey).toBe(1));
+  });
+
   it('saves object storage before User Space settings for admins', async () => {
     render(
       <SettingsPanel currentUser={{ id: 'admin', username: 'admin', role: 'admin' } as User} />,
@@ -943,6 +1051,95 @@ describe('SettingsPanel', () => {
         }),
       );
     });
+  });
+
+  it('restores each user’s remembered accordion layout without carrying it to another user', async () => {
+    const alice = { id: 'alice', username: 'alice', role: 'admin' } as User;
+    const bob = { id: 'bob', username: 'bob', role: 'admin' } as User;
+    const view = render(<SettingsPanel currentUser={alice} />);
+
+    const llmProviders = await screen.findByRole('button', { name: /LLM Providers/i });
+    expect(llmProviders.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(llmProviders);
+
+    await waitFor(() => {
+      expect(document.cookie).toContain('settings_accordion_open_alice=llm-providers');
+    });
+
+    view.rerender(<SettingsPanel currentUser={bob} />);
+    expect(
+      screen.getByRole('button', { name: /LLM Providers/i }).getAttribute('aria-expanded'),
+    ).toBe('false');
+
+    view.rerender(<SettingsPanel currentUser={alice} />);
+    expect(
+      screen.getByRole('button', { name: /LLM Providers/i }).getAttribute('aria-expanded'),
+    ).toBe('true');
+  });
+
+  it('highlights initial URL tags after delayed settings loading', async () => {
+    installSettingsHighlightApi();
+    searchFilterState.tags = ['timeout'];
+    searchFilterState.queries = ['timeout'];
+    searchFilterState.hasActiveFilters = true;
+    let resolveSettings: ((value: ReturnType<typeof buildSettingsResponse>) => void) | undefined;
+    apiMock.getSettings.mockImplementationOnce(
+      () =>
+        new Promise<ReturnType<typeof buildSettingsResponse>>((resolve) => {
+          resolveSettings = resolve;
+        }),
+    );
+
+    render(<SettingsPanel currentUser={adminUser} />);
+    resolveSettings?.(buildSettingsResponse());
+
+    await screen.findByRole('button', { name: /User Space/i });
+    await waitFor(() => {
+      const ranges = [...(settingsHighlightRegistry.get('settings-search')?.ranges ?? [])];
+      expect(ranges.some((range) => range.toString().toLowerCase().includes('timeout'))).toBe(true);
+    });
+  });
+
+  it('clears a manually closed advanced-settings override when filters clear', async () => {
+    searchFilterState.queries = ['Mount Auto-Sync Interval'];
+    searchFilterState.hasActiveFilters = true;
+    const view = render(<SettingsPanel currentUser={adminUser} />);
+
+    await screen.findByRole('button', { name: /User Space/i });
+    const details = document.getElementById('setting-userspace_advanced');
+    if (!(details instanceof HTMLDetailsElement)) {
+      throw new Error('Expected User Space advanced settings disclosure');
+    }
+    await waitFor(() => expect(details.open).toBe(true));
+    fireEvent.click(within(details).getByText('Advanced Settings'));
+    expect(details.open).toBe(false);
+
+    searchFilterState.queries = [];
+    searchFilterState.hasActiveFilters = false;
+    view.rerender(<SettingsPanel currentUser={adminUser} />);
+    searchFilterState.queries = ['Mount Auto-Sync Interval'];
+    searchFilterState.hasActiveFilters = true;
+    view.rerender(<SettingsPanel currentUser={adminUser} />);
+
+    await waitFor(() => expect(details.open).toBe(true));
+  });
+
+  it('closes search-opened advanced settings when a strong match becomes help-only', async () => {
+    searchFilterState.queries = ['Mount Auto-Sync Interval'];
+    searchFilterState.hasActiveFilters = true;
+    const view = render(<SettingsPanel currentUser={adminUser} />);
+
+    await screen.findByRole('button', { name: /User Space/i });
+    const details = document.getElementById('setting-userspace_advanced');
+    if (!(details instanceof HTMLDetailsElement)) {
+      throw new Error('Expected User Space advanced settings disclosure');
+    }
+    await waitFor(() => expect(details.open).toBe(true));
+
+    searchFilterState.queries = ['Global default used'];
+    view.rerender(<SettingsPanel currentUser={adminUser} />);
+
+    await waitFor(() => expect(details.open).toBe(false));
   });
 
   it('passes deduplicated rendered settings search candidates into the shared search bar', async () => {

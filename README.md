@@ -25,13 +25,10 @@
 </p>
 
 <p align="center">
-  <a href="https://youtu.be/C4FY6gv9gCk">UI Walkthrough Video</a> | <a href="CONTRIBUTING.md">Contributing Guide</a>
+  <a href="CONTRIBUTING.md">Contributing Guide</a>
 </p>
 
-<div align="center">
-  <img src=".github/images/2026-01-12.png" alt="Screenshot 1" height="360" />
-  <img src=".github/images/workspace-safari.png" alt="Ragtime Workspace with a live sales dashboard in a Safari-style browser frame" height="360" />
-</div>
+https://github.com/user-attachments/assets/be21f93e-edec-402e-a861-d6ea7d8f8a4d
 
 ## Table of Contents
 
@@ -77,6 +74,8 @@ Configure LLM and embedding providers in the Settings UI. Chat (LLM) and embeddi
 | **oMLX** | Local (self-hosted) | Yes | Yes |
 
 Subscription-backed providers (OpenAI Codex, Claude Code) authenticate from the Settings UI without an API key. Claude Code uses the Claude Code CLI subscription and discovers the full Claude model family your plan serves.
+
+Claude Code chat requires CLI **2.1.290 or newer**. It uses your saved CLI login or `CLAUDE_CODE_OAUTH_TOKEN`, with Ragtime handling tool execution. Responses arrive as complete chunks rather than token-by-token. This transport supports text, not image attachments, and rejects tool schemas larger than 120,000 bytes. The legacy-CPU image retains an older CLI and does not support Claude Code chat; its other providers remain available.
 
 #### Connect an OpenAI-compatible service
 

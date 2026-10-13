@@ -67,6 +67,7 @@ from ragtime.content_protection.hosted import (
 from ragtime.content_protection.hosted import (
     hosted_context as content_protection_context,
 )
+from ragtime.content_protection.models import ContentProtectionError
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.app_settings import _apply_runtime_setting_hooks, invalidate_settings_cache
 from ragtime.core.auth import get_browser_matched_origin, get_external_origin
@@ -251,6 +252,7 @@ from ragtime.indexer.conversation_tool_options import (
 from ragtime.indexer.conversation_tool_options import (
     normalize_conversation_tool_options,
 )
+from ragtime.indexer.denial_notices import persist_chat_denial
 from ragtime.indexer.export_service import (
     content_disposition,
     content_source,
@@ -12358,6 +12360,14 @@ def _to_conversation_response(conv: Conversation) -> ConversationResponse:
         total_tokens=conv.total_tokens,
         active_task_id=conv.active_task_id,
         active_branch_id=conv.active_branch_id,
+        last_denial_message_id=next(
+            (
+                message.message_id
+                for message in reversed(conv.messages)
+                if any(event.get("type") == "content_protection_denial" for event in (message.events or []))
+            ),
+            None,
+        ),
         disabled_builtin_tool_ids=_normalize_disabled_builtin_tool_ids(conv.disabled_builtin_tool_ids),
         subagents_enabled=conv.subagents_enabled,
         parent_conversation_id=conv.parent_conversation_id,
@@ -12460,6 +12470,8 @@ async def _build_chat_history_for_conversation(
                 )
             chat_history.append(HumanMessage(content=parsed_content))
         elif msg.role == "assistant":
+            if any(event.get("type") == "content_protection_denial" for event in (msg.events or [])):
+                continue
             if msg.events:
                 chat_history.extend(rebuild_tool_messages_from_events(msg.events, msg_idx))
             elif msg.content and msg.content.strip():
@@ -12746,6 +12758,17 @@ def _conversation_share_role(value: object) -> ConversationShareRole:
     return cast(ConversationShareRole, role if role in {"viewer", "editor"} else "viewer")
 
 
+async def _persist_content_protection_denial(
+    conversation_id: str,
+    error: ContentProtectionError,
+) -> None:
+    """Keep the original protection outcome when durable notice storage is unavailable."""
+    try:
+        await persist_chat_denial(conversation_id, error)
+    except Exception:
+        logger.warning("Could not persist content-protection denial for conversation %s", conversation_id)
+
+
 def _conversation_member_role(value: object) -> Literal["owner", "editor", "viewer"] | None:
     role = str(value or "")
     return cast(Literal["owner", "editor", "viewer"], role) if role in {"owner", "editor", "viewer"} else None
@@ -12802,19 +12825,27 @@ async def _send_message_to_loaded_conversation(
     # The HTTP route is the first persistence boundary.  Background-task
     # checks remain necessary for queued/internal callers, but must not be the
     # first chance to reject a request accepted here.
-    await authorize_inbound(
-        user_message,
-        context=_conversation_protection_context(
-            user_id=user.id,
-            owner_user_id=conv.user_id,
-            workspace_id=workspace_id,
-        ),
+    context = _conversation_protection_context(
+        user_id=user.id,
+        owner_user_id=conv.user_id,
+        workspace_id=workspace_id,
     )
-    updated_conversation = await repository.add_message(
-        conversation_id,
-        "user",
-        user_message,
-    )
+    try:
+        with bind_content_protection_context(context):
+            await authorize_inbound(user_message, context=context)
+    except ContentProtectionError as error:
+        await _persist_content_protection_denial(conversation_id, error)
+        raise
+    try:
+        with bind_content_protection_context(context):
+            updated_conversation = await repository.add_message(
+                conversation_id,
+                "user",
+                user_message,
+            )
+    except ContentProtectionError as error:
+        await _persist_content_protection_denial(conversation_id, error)
+        raise
     if updated_conversation is None:
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
@@ -12886,6 +12917,10 @@ async def _send_message_to_loaded_conversation(
                 output_tokens=output_est,
                 input_tokens=input_est,
             )
+        except ContentProtectionError as error:
+            await finalize_usage_attempt(attempt_id, status="failed", failure_reason=error.code)
+            await _persist_content_protection_denial(conversation_id, error)
+            raise
         except Exception as e:
             logger.exception("Error processing message")
             await finalize_usage_attempt(
@@ -12895,11 +12930,16 @@ async def _send_message_to_loaded_conversation(
             )
             answer = f"Error: {str(e)}"
 
-    updated_conversation = await repository.add_message(
-        conversation_id,
-        "assistant",
-        answer,
-    )
+    try:
+        with bind_content_protection_context(context):
+            updated_conversation = await repository.add_message(
+                conversation_id,
+                "assistant",
+                answer,
+            )
+    except ContentProtectionError as error:
+        await _persist_content_protection_denial(conversation_id, error)
+        raise
     if updated_conversation is None:
         raise HTTPException(status_code=500, detail="Failed to add assistant message")
     conv = updated_conversation
@@ -12924,6 +12964,7 @@ async def _send_background_message_to_loaded_conversation(
     workspace_context: Optional[dict[str, Any]] = None,
     execution_policy: Optional[dict[str, Any]] = None,
     protection_surface: str | None = None,
+    protection_context: Any | None = None,
 ) -> dict[str, Any]:
     conversation_id = conv.id
     protection_surface = protection_surface or ("workspace_chat" if workspace_id else "chat")
@@ -12951,11 +12992,28 @@ async def _send_background_message_to_loaded_conversation(
             "task": _to_chat_task_response(existing_task),
         }
 
-    updated_conversation = await repository.add_message(
-        conversation_id,
-        "user",
-        user_message,
+    context = protection_context or _conversation_protection_context(
+        user_id=user.id,
+        owner_user_id=conv.user_id,
+        workspace_id=workspace_id,
+        shared=protection_surface == "shared_chat",
     )
+    try:
+        with bind_content_protection_context(context):
+            await authorize_inbound(user_message, context=context)
+    except ContentProtectionError as error:
+        await _persist_content_protection_denial(conversation_id, error)
+        raise
+    try:
+        with bind_content_protection_context(context):
+            updated_conversation = await repository.add_message(
+                conversation_id,
+                "user",
+                user_message,
+            )
+    except ContentProtectionError as error:
+        await _persist_content_protection_denial(conversation_id, error)
+        raise
     if updated_conversation is None:
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
@@ -14447,6 +14505,11 @@ async def send_shared_conversation_message(
         workspace_id=conv.workspace_id,
         blocked_tool_names=blocked_tool_names,
         workspace_context=workspace_context,
+        protection_context=_conversation_protection_context(
+            user_id=getattr(user, "id", None),
+            owner_user_id=conv.user_id,
+            shared=True,
+        ),
     )
 
 
@@ -14499,6 +14562,11 @@ async def send_shared_conversation_message_by_slug(
         workspace_id=conv.workspace_id,
         blocked_tool_names=blocked_tool_names,
         workspace_context=workspace_context,
+        protection_context=_conversation_protection_context(
+            user_id=getattr(user, "id", None),
+            owner_user_id=conv.user_id,
+            shared=True,
+        ),
     )
 
 
@@ -15543,12 +15611,19 @@ async def send_message_stream(
     if not user_message:
         raise HTTPException(status_code=400, detail="Message is required")
 
-    # Add user message
-    await authorize_inbound(
-        user_message,
-        context=_conversation_protection_context(user_id=user.id, owner_user_id=conv.user_id, workspace_id=workspace_id),
-    )
-    await repository.add_message(conversation_id, "user", user_message)
+    context = _conversation_protection_context(user_id=user.id, owner_user_id=conv.user_id, workspace_id=workspace_id)
+    try:
+        with bind_content_protection_context(context):
+            await authorize_inbound(user_message, context=context)
+    except ContentProtectionError as error:
+        await _persist_content_protection_denial(conversation_id, error)
+        raise
+    try:
+        with bind_content_protection_context(context):
+            await repository.add_message(conversation_id, "user", user_message)
+    except ContentProtectionError as error:
+        await _persist_content_protection_denial(conversation_id, error)
+        raise
 
     # Refresh conversation to get updated messages
     conv = await repository.get_conversation(conversation_id)
@@ -15781,8 +15856,8 @@ async def send_message_stream(
             yield "data: [DONE]\n\n"
 
         except Exception as e:
-            public_detail = getattr(e, "public_detail", None)
-            is_protection_error = callable(public_detail)
+            protection_error = e if isinstance(e, ContentProtectionError) else None
+            is_protection_error = protection_error is not None
             if is_protection_error:
                 logger.warning("Streaming response stopped by content protection")
             else:
@@ -15790,10 +15865,9 @@ async def send_message_stream(
 
             raw_error = str(e)
             friendly_error = "An error occurred while generating the response. Please try again."
-            if is_protection_error:
-                friendly_error = str(
-                    cast(Callable[[], dict[str, str]], public_detail)().get("message") or "This content is not available under your access profile."
-                )
+            if protection_error is not None:
+                await _persist_content_protection_denial(conversation_id, protection_error)
+                friendly_error = str(protection_error.public_detail().get("message") or "This content is not available under your access profile.")
 
             max_iters = None
             if rag and getattr(rag, "agent_executor", None):
@@ -15803,8 +15877,13 @@ async def send_message_stream(
                 limit_text = f" ({max_iters})" if max_iters else ""
                 friendly_error = f"Stopped after reaching the max_iterations limit{limit_text}. Please narrow the request or retry."
 
-            # Include any in-progress tool call that didn't complete
-            if current_tool_call is not None:
+            # Generic failures retain recoverable progress; a protection denial
+            # must never retain model output or tool payloads.
+            if is_protection_error:
+                full_response = ""
+                chronological_events.clear()
+                current_tool_call = None
+            elif current_tool_call is not None:
                 current_tool_call["output"] = "(interrupted)"
                 chronological_events.append(current_tool_call)
 
@@ -15817,16 +15896,17 @@ async def send_message_stream(
             if friendly_error:
                 combined_response = f"{combined_response}\n\n{friendly_error}" if combined_response else friendly_error
 
-            try:
-                persisted_err_conv = await repository.add_message(
-                    conversation_id,
-                    "assistant",
-                    combined_response,
-                    events=chronological_events if chronological_events else None,
-                )
-                await _link_assistant_snapshot_tool_calls(persisted_err_conv, workspace_id)
-            except Exception:
-                logger.exception("Failed to persist assistant message after error")
+            if not is_protection_error:
+                try:
+                    persisted_err_conv = await repository.add_message(
+                        conversation_id,
+                        "assistant",
+                        combined_response,
+                        events=chronological_events if chronological_events else None,
+                    )
+                    await _link_assistant_snapshot_tool_calls(persisted_err_conv, workspace_id)
+                except Exception:
+                    logger.exception("Failed to persist assistant message after error")
 
             # Finalize usage attempt on failure
             output_est = _estimate_output_tokens(full_response, chronological_events)
@@ -15834,9 +15914,7 @@ async def send_message_stream(
                 stream_attempt_id,
                 status="failed",
                 output_tokens=output_est,
-                failure_reason=(str(cast(Callable[[], dict[str, str]], public_detail)().get("code")) if is_protection_error else raw_error[:500])
-                if raw_error
-                else None,
+                failure_reason=(protection_error.code if protection_error is not None else raw_error[:500]) if raw_error else None,
             )
 
             error_chunk = {
@@ -15852,8 +15930,8 @@ async def send_message_stream(
                     }
                 ],
             }
-            if is_protection_error:
-                error_chunk["error"] = cast(Callable[[], dict[str, str]], public_detail)()
+            if protection_error is not None:
+                error_chunk["error"] = protection_error.public_detail()
             yield f"data: {json.dumps(error_chunk)}\n\n"
             yield "data: [DONE]\n\n"
         finally:
@@ -16654,10 +16732,27 @@ async def send_message_background(
     current_time_context = _build_current_time_prompt_context(request)
     ui_theme_context = _build_ui_theme_prompt_context(request)
 
-    updated_conversation, claimed_task, created_task = await repository.add_user_message_and_create_chat_task_if_idle(
-        conversation_id,
-        user_message,
+    context = _conversation_protection_context(
+        user_id=user.id,
+        owner_user_id=conv.user_id,
+        workspace_id=workspace_id,
     )
+    try:
+        with bind_content_protection_context(context):
+            await authorize_inbound(user_message, context=context)
+    except ContentProtectionError as error:
+        await _persist_content_protection_denial(conversation_id, error)
+        raise
+
+    try:
+        with bind_content_protection_context(context):
+            updated_conversation, claimed_task, created_task = await repository.add_user_message_and_create_chat_task_if_idle(
+                conversation_id,
+                user_message,
+            )
+    except ContentProtectionError as error:
+        await _persist_content_protection_denial(conversation_id, error)
+        raise
     if claimed_task is None:
         raise HTTPException(status_code=500, detail="Failed to create background task")
     if not created_task:

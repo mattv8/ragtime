@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_OPEN_SETTINGS_SECTIONS,
+  applySettingsAccordionSearch,
+  clearSettingsAccordionSearch,
+  createSettingsAccordionViewState,
   getDefaultSettingsAccordionState,
+  getSettingsAccordionVisibleState,
+  openSettingsAccordionNavigation,
   openSettingsAccordionSections,
   restoreSettingsAccordionState,
   SETTINGS_ACCORDION_SECTION_IDS,
+  toggleSettingsAccordionSection,
   type SettingsAccordionSectionId,
   type SettingsAccordionState,
 } from './settingsAccordionState';
@@ -30,22 +36,16 @@ describe('settingsAccordionState', () => {
   });
 
   describe('DEFAULT_OPEN_SETTINGS_SECTIONS', () => {
-    it('defaults to chat, mcp, and userspace', () => {
-      expect(DEFAULT_OPEN_SETTINGS_SECTIONS).toEqual(['chat', 'mcp', 'userspace']);
-    });
-
-    it('keeps agent-behavior closed by default', () => {
-      expect(DEFAULT_OPEN_SETTINGS_SECTIONS).not.toContain('agent-behavior');
+    it('defaults every section to closed', () => {
+      expect(DEFAULT_OPEN_SETTINGS_SECTIONS).toEqual([]);
     });
   });
 
   describe('getDefaultSettingsAccordionState', () => {
-    it('opens the default sections and closes all others', () => {
+    it('closes every section', () => {
       const state = getDefaultSettingsAccordionState();
       for (const id of SETTINGS_ACCORDION_SECTION_IDS) {
-        expect(state[id]).toBe(
-          DEFAULT_OPEN_SETTINGS_SECTIONS.includes(id as SettingsAccordionSectionId),
-        );
+        expect(state[id]).toBe(false);
       }
     });
 
@@ -148,8 +148,83 @@ describe('settingsAccordionState', () => {
       const restored = restoreSettingsAccordionState({
         userspace: false,
       } as SettingsAccordionState);
-      expect(restored.chat).toBe(true);
+      expect(restored.chat).toBe(false);
       expect(restored.userspace).toBe(false);
+    });
+  });
+
+  describe('view state', () => {
+    it('shows remembered sections and opens search matches unless manually toggled', () => {
+      const view = createSettingsAccordionViewState({
+        ...getDefaultSettingsAccordionState(),
+        chat: true,
+      });
+      const searched = applySettingsAccordionSearch(view, ['mcp', 'userspace']);
+      const manuallyClosed = toggleSettingsAccordionSection(searched, 'mcp');
+
+      expect(getSettingsAccordionVisibleState(manuallyClosed)).toMatchObject({
+        chat: true,
+        mcp: false,
+        userspace: true,
+      });
+      expect(manuallyClosed.remembered.mcp).toBe(false);
+      expect(manuallyClosed.searchOpened).toEqual(['mcp', 'userspace']);
+      expect(manuallyClosed.manuallyToggled).toEqual(['mcp']);
+    });
+
+    it('uses the visible value when toggling an automatically opened section', () => {
+      const searched = applySettingsAccordionSearch(
+        createSettingsAccordionViewState(getDefaultSettingsAccordionState()),
+        ['search'],
+      );
+
+      const toggled = toggleSettingsAccordionSection(searched, 'search');
+
+      expect(toggled.remembered.search).toBe(false);
+      expect(getSettingsAccordionVisibleState(toggled).search).toBe(false);
+    });
+
+    it('retains manual overrides across search updates and clears them with search', () => {
+      const searched = applySettingsAccordionSearch(
+        createSettingsAccordionViewState(getDefaultSettingsAccordionState()),
+        ['mcp'],
+      );
+      const manuallyOpened = toggleSettingsAccordionSection(searched, 'chat');
+      const updatedSearch = applySettingsAccordionSearch(manuallyOpened, ['mcp', 'security']);
+      const cleared = clearSettingsAccordionSearch(updatedSearch);
+
+      expect(getSettingsAccordionVisibleState(updatedSearch)).toMatchObject({
+        chat: true,
+        mcp: true,
+        security: true,
+      });
+      expect(cleared.searchOpened).toEqual([]);
+      expect(cleared.manuallyToggled).toEqual([]);
+      expect(getSettingsAccordionVisibleState(cleared).chat).toBe(true);
+    });
+
+    it('remembers navigation openings and supersedes a prior manual close', () => {
+      const searched = applySettingsAccordionSearch(
+        createSettingsAccordionViewState(getDefaultSettingsAccordionState()),
+        ['appearance'],
+      );
+      const manuallyClosed = toggleSettingsAccordionSection(searched, 'appearance');
+      const navigated = openSettingsAccordionNavigation(manuallyClosed, ['appearance']);
+
+      expect(navigated.remembered.appearance).toBe(true);
+      expect(navigated.manuallyToggled).toEqual([]);
+      expect(getSettingsAccordionVisibleState(navigated).appearance).toBe(true);
+    });
+
+    it('does not mutate inputs', () => {
+      const view = createSettingsAccordionViewState(getDefaultSettingsAccordionState());
+      const remembered = { ...view.remembered };
+
+      const next = toggleSettingsAccordionSection(view, 'chat');
+
+      expect(view.remembered).toEqual(remembered);
+      expect(next).not.toBe(view);
+      expect(next.remembered).not.toBe(view.remembered);
     });
   });
 });

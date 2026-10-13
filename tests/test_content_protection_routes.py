@@ -78,6 +78,7 @@ class ContentProtectionRouteTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(routes, "get_db", new=mock.AsyncMock(return_value=db)),
             mock.patch.object(routes, "get_all_tools", return_value={"search_knowledge": object()}),
+            mock.patch.object(routes.app_settings, "get_app_settings", new=mock.AsyncMock(return_value={"typesafe_api_key": "set", "openrouter_api_key": ""})),
         ):
             response = await self.client.get("/indexes/content-protection/catalog")
 
@@ -88,6 +89,7 @@ class ContentProtectionRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn({"id": "tool-1", "name": "Production DB"}, catalog["tools"])
         self.assertEqual(catalog["mcp_routes"][0], {"id": "default", "name": "Default MCP route"})
         self.assertIn({"id": "component", "name": "Component"}, catalog["surfaces"])
+        self.assertEqual(catalog["classifier_status"], {"typesafe_key_configured": True, "openrouter_key_configured": False})
 
 
 @unittest.skipUnless(

@@ -92,7 +92,7 @@ from ragtime.content_protection.hosted import (
 from ragtime.content_protection.hosted import (
     wrap_tools as wrap_tools_with_content_protection,
 )
-from ragtime.content_protection.models import ContentProtectionError
+from ragtime.content_protection.models import ContentProtectionError, ProtectionContext
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.app_setting_defaults import (
     DEFAULT_CONTEXT_TOKEN_BUDGET,
@@ -105,6 +105,8 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_TOOL_SKILLS_ENABLED,
 )
 from ragtime.core.app_settings import get_app_settings, get_enabled_tool_configs, get_tool_configs
+from ragtime.core.claude_code import CLAUDE_CODE_COMMAND, get_claude_code_status
+from ragtime.core.claude_code_chat import ClaudeCodeChatModel
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.database import get_db
@@ -212,6 +214,7 @@ from ragtime.indexer.conversation_tool_options import (
     load_conversation_tool_options,
     resolve_effective_allow_write,
 )
+from ragtime.indexer.denial_notices import is_denial_notice
 from ragtime.indexer.embedding_errors import EmbeddingFailureKind, EmbeddingOperationError, build_embedding_configuration_error
 from ragtime.indexer.export_service import (
     chart_to_table,
@@ -241,6 +244,7 @@ from ragtime.rag.prompts import (
     UI_VISUALIZATION_COMMON_PROMPT,
     UI_VISUALIZATION_USERSPACE_PROMPT,
     USERSPACE_SUBAGENT_GUIDANCE_PROMPT,
+    build_access_level_prompt_fragment,
     build_chat_diagnostics_prompt_addition,
     build_current_time_turn_reminder_line,
     build_current_user_prompt_fragment,
@@ -4043,8 +4047,16 @@ class RAGComponents:
                 return None
 
         if provider_normalized == "claude_code":
-            logger.warning("Claude Code selected but chat adapter is not implemented yet")
-            return None
+            status = await get_claude_code_status()
+            if not status.available:
+                logger.warning("Claude Code is unavailable or not authenticated")
+                return None
+            return ClaudeCodeChatModel(
+                model=model,
+                command=status.command or CLAUDE_CODE_COMMAND,
+                timeout=LLM_REQUEST_TIMEOUT_SECONDS,
+                max_tokens=max_tokens,
+            )
 
         if provider_normalized == "openai_codex":
             token = await ensure_openai_codex_token_fresh()
@@ -15692,6 +15704,12 @@ class RAGComponents:
             display_name=display_name,
         )
         current_time_turn_line = self._build_current_time_turn_reminder_line(current_time_context)
+        guidance_context = content_protection_service.current_context() or ProtectionContext(
+            user_id=request_user_id or None,
+            surface=mode,
+            baseline="user" if request_user_id else "anonymous",
+        )
+        access_level_prompt = build_access_level_prompt_fragment(await content_protection_service.access_guidance(guidance_context))
         raw_accessible_modes = (workspace_context or {}).get("accessible_workspace_modes", {})
         request_is_admin = bool((current_user_context or {}).get("is_admin") or (workspace_context or {}).get("is_admin"))
         runtime_tools = await self._apply_conversation_tool_overrides(
@@ -16018,6 +16036,7 @@ class RAGComponents:
                 shared_sqlite_databases=shared_sqlite_databases,
                 mounts_enabled=bool(workspace_mounts),
                 object_storage_enabled=bool(object_storage_config),
+                access_level_prompt=access_level_prompt,
             )
             prompt_additions = userspace_instruction_sections["workspace"] + userspace_instruction_sections["entrypoint"] + prompt_additions
             userspace_diagnostics_turn_hint = build_userspace_diagnostics_turn_reminder_line(
@@ -16058,9 +16077,9 @@ class RAGComponents:
                 prompt_additions += download_export_prompt
 
         if mode == "userspace":
-            prompt_additions = userspace_instruction_sections["identity"] + prompt_additions
-        elif user_identity_prompt_fragment:
-            prompt_additions = user_identity_prompt_fragment + prompt_additions
+            prompt_additions = userspace_instruction_sections["identity"] + userspace_instruction_sections["access_level"] + prompt_additions
+        else:
+            prompt_additions = user_identity_prompt_fragment + access_level_prompt + prompt_additions
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         prompt_bytes = len(prompt_additions.encode("utf-8", errors="replace"))
@@ -16390,7 +16409,7 @@ class RAGComponents:
         return agent
 
     def _configured_llm_providers(self) -> list[str]:
-        """Return the set of LLM providers that appear to have working credentials/endpoints."""
+        """Return providers with credentials, endpoints, or an installed local adapter."""
         s = self._app_settings or {}
         configured: list[str] = []
         if str(s.get("openai_api_key", "") or "").strip():
@@ -16399,7 +16418,7 @@ class RAGComponents:
             configured.append("openai_codex")
         if str(s.get("anthropic_api_key", "") or "").strip():
             configured.append("anthropic")
-        if str(s.get("claude_code_oauth_token", "") or "").strip():
+        if shutil.which(CLAUDE_CODE_COMMAND):
             configured.append("claude_code")
         if str(s.get("github_copilot_access_token", "") or "").strip():
             configured.append("github_copilot")
@@ -16500,10 +16519,14 @@ class RAGComponents:
         # substitute a similarly named model from another configured provider.
         if normalize_provider_name(requested_provider) == "openai_compatible":
             return ["openai_compatible"]
+        if normalize_provider_name(requested_provider) == "claude_code":
+            return ["claude_code"]
         allowed_providers = self._allowed_llm_providers_for_model(model_id)
 
         if allowed_providers:
             preferred_provider = normalize_provider_name(provider_override)
+            if preferred_provider and preferred_provider != "claude_code":
+                allowed_providers = [provider for provider in allowed_providers if provider != "claude_code"]
             provider_pool = [provider for provider in allowed_providers if provider in configured_providers and provider != "openai_compatible"]
             if not provider_pool:
                 provider_pool = [
@@ -16521,7 +16544,7 @@ class RAGComponents:
                 provider_pool = list(dict.fromkeys(provider_pool))
         else:
             provider_pool = [requested_provider]
-            provider_pool.extend(provider for provider in configured_providers if provider not in {requested_provider, "openai_compatible"})
+            provider_pool.extend(provider for provider in configured_providers if provider not in {requested_provider, "openai_compatible", "claude_code"})
             provider_pool = list(dict.fromkeys(provider_pool))
 
         ordered = list(dict.fromkeys(normalize_provider_name(provider) for provider in provider_pool if provider))
@@ -16542,9 +16565,7 @@ class RAGComponents:
         if normalized == "anthropic" and not str(settings.get("anthropic_api_key", "") or "").strip():
             return "Anthropic API key is missing"
         if normalized == "claude_code":
-            if not str(settings.get("claude_code_oauth_token", "") or "").strip():
-                return "CLAUDE_CODE_OAUTH_TOKEN is missing"
-            return "Claude Code chat adapter is not implemented yet"
+            return "Claude Code is unavailable or not authenticated"
         if normalized == "github_copilot" and not (
             str(settings.get("github_copilot_access_token", "") or "").strip() or str(settings.get("github_copilot_refresh_token", "") or "").strip()
         ):
@@ -16856,7 +16877,7 @@ class RAGComponents:
 
         if not model_id:
             model_id = configured_model
-            if self.llm is not None:
+            if self.llm is not None and configured_provider != "claude_code":
                 await self._ensure_copilot_llm_fresh()
                 return RequestLLMResolution(
                     llm=self.llm,
@@ -16878,6 +16899,7 @@ class RAGComponents:
             and model_id == configured_model
             and self.llm is not None
             and (provider_override is None or providers_same(provider_override, configured_provider))
+            and configured_provider != "claude_code"
         ):
             await self._ensure_copilot_llm_fresh()
             return RequestLLMResolution(
@@ -17140,6 +17162,8 @@ class RAGComponents:
 
         formatted_messages: list[str] = []
         for idx, message in enumerate(messages):
+            if is_denial_notice(message):
+                continue
             formatted_messages.append(
                 await self._format_message_for_compaction(
                     message,

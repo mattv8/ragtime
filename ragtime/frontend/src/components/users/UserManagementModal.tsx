@@ -30,6 +30,14 @@ type DirtySection =
   | 'delete';
 const manualIds = (user: User) => user.manual_group_ids ?? user.local_group_ids ?? [];
 const profileProvider = (user: User) => user.auth_provider === 'local_managed';
+const authProviderLabel = (provider: string) =>
+  provider === 'local_managed'
+    ? 'Internal'
+    : provider === 'local'
+      ? 'Local admin'
+      : provider === 'ldap'
+        ? 'LDAP'
+        : provider;
 const policyValue = (value: boolean | null | undefined) =>
   value == null ? 'inherit' : value ? 'enabled' : 'disabled';
 
@@ -661,13 +669,32 @@ export function UserManagementModal(props: Props) {
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="modal-header">
-          <div>
+          <div className="user-management-header-identity">
             <h3 id={`user-management-title-${user.id}`}>{user.display_name || user.username}</h3>
-            <p className="users-subnum user-management-identity">
-              <span data-user-management-identity="username">@{user.username}</span>
-              <span data-user-management-identity="provider">{user.auth_provider}</span>
-              {isSelf && <span data-user-management-identity="self">You</span>}
-            </p>
+            <div className="users-subnum user-management-identity">
+              <span
+                className="user-management-identity-username"
+                data-user-management-identity="username"
+                title={`@${user.username}`}
+              >
+                @{user.username}
+              </span>
+              <span
+                className="userspace-status-pill userspace-status-pill-muted user-management-identity-provider"
+                data-user-management-identity="provider"
+                title={user.auth_provider}
+              >
+                {authProviderLabel(user.auth_provider)}
+              </span>
+              {isSelf && (
+                <span
+                  className="badge badge-muted user-management-identity-self"
+                  data-user-management-identity="self"
+                >
+                  You
+                </span>
+              )}
+            </div>
           </div>
           <button
             type="button"

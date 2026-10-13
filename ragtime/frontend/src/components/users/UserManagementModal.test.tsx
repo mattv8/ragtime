@@ -238,6 +238,23 @@ describe('UserManagementModal', () => {
       }
     }
   });
+  it.each([
+    { auth_provider: 'local_managed', label: 'Internal' },
+    { auth_provider: 'local', label: 'Local admin' },
+    { auth_provider: 'ldap', label: 'LDAP' },
+    { auth_provider: 'custom_sso', label: 'custom_sso' },
+  ])(
+    'labels the $auth_provider auth provider as $label in the identity header',
+    ({ auth_provider, label }) => {
+      render(<UserManagementModal {...{ ...props(), user: { ...user, auth_provider } as User }} />);
+
+      const provider = document.querySelector<HTMLElement>(
+        '[data-user-management-identity="provider"]',
+      );
+      expect(provider?.textContent).toBe(label);
+      expect(provider?.getAttribute('title')).toBe(auth_provider);
+    },
+  );
   it('loads resource details once per Resources tab activation', () => {
     const p = { ...props(), chatsLoaded: false };
     render(<UserManagementModal {...p} />);

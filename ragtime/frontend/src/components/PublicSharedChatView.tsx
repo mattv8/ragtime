@@ -35,8 +35,10 @@ import { LoginCard } from './LoginPage';
 import { Popover } from './Popover';
 import { ResizeHandle } from './ResizeHandle';
 import { ContextUsagePie } from './shared/ContextUsagePie';
+import { DenialNotice } from './shared/DenialNotice';
 import { UserMenu } from './UserMenu';
 import { UserSpaceSharedView } from './UserSpaceSharedView';
+import { isDenialOnlyMessage } from '@/utils/denialNotices';
 
 const SHARED_CHAT_POLL_INTERVAL_MS = 30000;
 const SHARED_CHAT_SSE_REFRESH_DEBOUNCE_MS = 250;
@@ -618,7 +620,19 @@ function SharedChatSurface({
                                 </>
                               ) : (
                                 <>
-                                  {msg.events && msg.events.length > 0 ? (
+                                  {isDenialOnlyMessage(msg) ? (
+                                    (() => {
+                                      const denial = msg.events?.[0];
+                                      return denial?.type === 'content_protection_denial' ? (
+                                        <DenialNotice
+                                          reason={denial.public_reason}
+                                          timestamp={denial.timestamp || msg.timestamp}
+                                          requestId={denial.request_id}
+                                          messageId={msg.message_id}
+                                        />
+                                      ) : null;
+                                    })()
+                                  ) : msg.events && msg.events.length > 0 ? (
                                     (() => {
                                       const result: React.ReactNode[] = [];
                                       let pendingReasoning = '';
@@ -756,11 +770,13 @@ function SharedChatSurface({
                                   )}
                                 </>
                               )}
-                              <div className="chat-message-footer">
-                                <span className="chat-message-time">
-                                  {formatChatTimestamp(msg.timestamp)}
-                                </span>
-                              </div>
+                              {!isDenialOnlyMessage(msg) && (
+                                <div className="chat-message-footer">
+                                  <span className="chat-message-time">
+                                    {formatChatTimestamp(msg.timestamp)}
+                                  </span>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>

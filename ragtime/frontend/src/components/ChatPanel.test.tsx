@@ -10,6 +10,7 @@ import { cwd } from 'node:process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
+  ChatMessage,
   Conversation,
   ConversationMessageWindow,
   ConversationSummary,
@@ -18,6 +19,7 @@ import type {
   User,
   WorkspaceChatStateResponse,
 } from '@/types';
+import { ApiError } from '@/api/client';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import {
   ChatPanel,
@@ -29,6 +31,7 @@ import {
   type ActiveToolCall,
 } from './ChatPanel';
 import type { ChatMessageNavigationEntry } from './ChatMessageNavigator';
+import { invalidateDenialNoticeSeen } from '@/utils/denialNotices';
 
 const receivedConversationSharesMock = vi.hoisted(() => vi.fn());
 
@@ -303,11 +306,48 @@ class ResizeObserverMock {
   }
 }
 
+class IntersectionObserverMock {
+  static instances: IntersectionObserverMock[] = [];
+  readonly observed = new Set<Element>();
+
+  constructor(readonly callback: IntersectionObserverCallback) {
+    IntersectionObserverMock.instances.push(this);
+  }
+
+  observe(target: Element) {
+    this.observed.add(target);
+  }
+
+  unobserve(target: Element) {
+    this.observed.delete(target);
+  }
+
+  disconnect() {
+    this.observed.clear();
+  }
+
+  static trigger(target: Element, isIntersecting: boolean) {
+    for (const observer of IntersectionObserverMock.instances) {
+      if (!observer.observed.has(target)) continue;
+      observer.callback(
+        [{ target, isIntersecting } as IntersectionObserverEntry],
+        observer as unknown as IntersectionObserver,
+      );
+    }
+  }
+
+  static reset() {
+    IntersectionObserverMock.instances = [];
+  }
+}
+
 vi.stubGlobal('ResizeObserver', ResizeObserverMock);
+vi.stubGlobal('IntersectionObserver', IntersectionObserverMock);
+const localStorageValues = new Map<string, string>();
 vi.stubGlobal('localStorage', {
-  getItem: vi.fn().mockReturnValue(null),
-  setItem: vi.fn(),
-  removeItem: vi.fn(),
+  getItem: vi.fn((key: string) => localStorageValues.get(key) ?? null),
+  setItem: vi.fn((key: string, value: string) => localStorageValues.set(key, value)),
+  removeItem: vi.fn((key: string) => localStorageValues.delete(key)),
 });
 vi.stubGlobal('sessionStorage', {
   getItem: vi.fn().mockReturnValue(null),
@@ -531,6 +571,629 @@ describe('mergeConversationFromWorkspaceSnapshot', () => {
 
     expect(merged.active_branch_id).toBe('branch-empty');
     expect(merged.messages).toEqual([]);
+  });
+});
+
+describe('ChatPanel persisted denial notices', () => {
+  it('renders a persisted denial event as one inline note without using assistant fallback content', async () => {
+    const conversation = makeConversation('denial-conversation', 'Request blocked.', {
+      messages: [
+        {
+          role: 'assistant',
+          content: 'Request blocked.',
+          timestamp: '2026-10-10T12:00:00.000Z',
+          message_id: 'denial-message-1',
+          events: [
+            {
+              type: 'content_protection_denial',
+              channel: 'final',
+              code: 'content_denied',
+              public_reason: 'This request cannot be completed.',
+              request_id: 'denial-request-1',
+              timestamp: '2026-10-10T12:00:00.000Z',
+            },
+          ],
+        },
+      ],
+      last_denial_message_id: 'denial-message-1',
+    });
+    apiMock.getConversation.mockResolvedValue(conversation);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(makeWindow(conversation));
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    const notice = await screen.findByRole('note', { name: 'Request blocked' });
+    expect(notice.getAttribute('data-denial-request-id')).toBe('denial-request-1');
+    expect(screen.getAllByRole('note', { name: 'Request blocked' })).toHaveLength(1);
+    expect(screen.getByText('This request cannot be completed.')).toBeDefined();
+  });
+});
+
+describe('ChatPanel denial send recovery', () => {
+  const denialReason =
+    'This request was blocked by content protection. Rephrase the request and try again.';
+
+  const makeDenialDetail = (requestId: string, denialMessageId?: string) => ({
+    code: 'content_denied',
+    message: denialReason,
+    reason: 'This request was blocked by content protection.',
+    next_step: 'Rephrase the request and try again.',
+    request_id: requestId,
+    ...(denialMessageId ? { denial_message_id: denialMessageId } : {}),
+  });
+
+  const makeDenialMessage = (messageId: string, requestId: string): ChatMessage => ({
+    role: 'assistant',
+    content: 'Request blocked.',
+    timestamp: '2026-10-10T12:05:00.000Z',
+    message_id: messageId,
+    events: [
+      {
+        type: 'content_protection_denial',
+        channel: 'final',
+        code: 'content_denied',
+        public_reason: denialReason,
+        request_id: requestId,
+        timestamp: '2026-10-10T12:05:00.000Z',
+      },
+    ],
+  });
+
+  it('restores the draft, drops the optimistic prompt, and shows one persisted notice after admission denial', async () => {
+    const conversation = makeConversation('denial-send-admission', 'Prior assistant reply');
+    const notice = makeDenialMessage('denial-message-send-1', 'req-denied-1');
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(makeWindow(conversation));
+    apiMock.sendMessageBackground.mockRejectedValueOnce(
+      new ApiError(
+        makeDenialDetail('req-denied-1', 'denial-message-send-1'),
+        403,
+        makeDenialDetail('req-denied-1', 'denial-message-send-1'),
+      ),
+    );
+    apiMock.getConversation.mockResolvedValueOnce({
+      ...conversation,
+      messages: [...conversation.messages, notice],
+      last_denial_message_id: 'denial-message-send-1',
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      renderChatPanel(
+        <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+      );
+
+      await userEvent.setup().type(await screen.findByLabelText('Message'), 'Rejected prompt text');
+      await userEvent.setup().click(await screen.findByTitle('Send message'));
+
+      const notices = await screen.findAllByRole('note', { name: 'Request blocked' });
+      expect(notices).toHaveLength(1);
+      expect(notices[0].getAttribute('data-denial-request-id')).toBe('req-denied-1');
+      expect(screen.getByText(denialReason)).toBeDefined();
+      const transcriptPromptNodes = screen
+        .queryAllByText('Rejected prompt text')
+        .filter((node) => !node.closest('.chat-rich-input'));
+      expect(transcriptPromptNodes).toHaveLength(0);
+      expect(document.querySelector('.chat-error')).toBeNull();
+      expect(screen.getByLabelText('Message').textContent).toContain('Rejected prompt text');
+      expect(apiMock.sendMessageBackground).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('shows an unrelated new request error even when an older persisted notice is present', async () => {
+    const historicalNotice = makeDenialMessage('denial-message-old', 'req-old-1');
+    const conversation = makeConversation('denial-historical', 'Prior assistant reply', {
+      messages: [
+        {
+          role: 'user',
+          content: 'Earlier question',
+          timestamp: '2026-10-10T12:00:00.000Z',
+          message_id: 'msg-earlier',
+        },
+        historicalNotice,
+      ],
+      last_denial_message_id: 'denial-message-old',
+    });
+    const serviceDetail = {
+      code: 'service_unavailable',
+      message: 'The model service is unavailable. Try again shortly.',
+      reason: '',
+      next_step: '',
+      request_id: 'req-new-503',
+    };
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(makeWindow(conversation));
+    apiMock.sendMessageBackground.mockRejectedValueOnce(
+      new ApiError(serviceDetail, 503, serviceDetail),
+    );
+    apiMock.getConversation.mockResolvedValueOnce(conversation);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      renderChatPanel(
+        <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+      );
+
+      await userEvent.setup().type(await screen.findByLabelText('Message'), 'Unrelated prompt');
+      await userEvent.setup().click(await screen.findByTitle('Send message'));
+
+      await waitFor(() =>
+        expect(apiMock.getConversation).toHaveBeenCalledWith(conversation.id, undefined),
+      );
+      expect(apiMock.sendMessageBackground).toHaveBeenCalledWith(
+        conversation.id,
+        'Unrelated prompt',
+        undefined,
+      );
+      const error = await screen.findByText(serviceDetail.message);
+      expect(error.closest('.chat-error')).not.toBeNull();
+      expect(screen.getAllByRole('note', { name: 'Request blocked' })).toHaveLength(1);
+      expect(screen.getByLabelText('Message').textContent).toContain('Unrelated prompt');
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('restores a rejected draft when the visible window omits older persisted user messages', async () => {
+    const messages: ChatMessage[] = Array.from({ length: 50 }, (_, index) => ({
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: `Historical message ${index}`,
+      timestamp: `2026-10-10T11:${String(index).padStart(2, '0')}:00.000Z`,
+      message_id: `historical-message-${index}`,
+    }));
+    const conversation = makeConversation('denial-long-window', '', { messages });
+    const serviceDetail = {
+      code: 'service_unavailable',
+      message: 'The model service is unavailable. Try again shortly.',
+      reason: '',
+      next_step: '',
+      request_id: 'req-long-window-503',
+    };
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, {
+        entries: [],
+        nextCursor: 'older-history-remains',
+        hasMore: true,
+      }),
+    );
+    apiMock.sendMessageBackground.mockRejectedValueOnce(
+      new ApiError(serviceDetail, 503, serviceDetail),
+    );
+    apiMock.getConversation.mockResolvedValueOnce(conversation);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      renderChatPanel(
+        <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+      );
+
+      const composer = await screen.findByLabelText('Message');
+      await userEvent.setup().type(composer, 'Rejected prompt in long history');
+      await userEvent.setup().click(await screen.findByTitle('Send message'));
+
+      const error = await screen.findByText(serviceDetail.message);
+      expect(error.closest('.chat-error')).not.toBeNull();
+      expect(composer.textContent).toContain('Rejected prompt in long history');
+      expect(
+        screen
+          .queryAllByText('Rejected prompt in long history')
+          .filter((node) => !node.closest('.chat-rich-input')),
+      ).toHaveLength(0);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('reconciles a real-shaped failed background completion to one persisted notice', async () => {
+    const conversation = makeConversation('denial-background-reconnect', 'Prior assistant reply');
+    const persistedUser: ChatMessage = {
+      role: 'user',
+      content: 'Accepted background prompt',
+      timestamp: '2026-10-10T12:04:00.000Z',
+      message_id: 'accepted-background-user',
+    };
+    const notice = makeDenialMessage('denial-message-background-1', 'req-background-1');
+    const refreshed = {
+      ...conversation,
+      messages: [...conversation.messages, persistedUser, notice],
+      last_denial_message_id: notice.message_id,
+    };
+    const refusal = makeDenialDetail('req-background-1', notice.message_id);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(makeWindow(conversation));
+    apiMock.getConversation.mockResolvedValueOnce(refreshed);
+    apiMock.streamChatTask.mockImplementationOnce(() =>
+      (async function* () {
+        yield {
+          type: 'completion',
+          completed: true,
+          status: 'failed',
+          error: denialReason,
+          ...refusal,
+          refusal,
+        };
+      })(),
+    );
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    await userEvent
+      .setup()
+      .type(await screen.findByLabelText('Message'), 'Accepted background prompt');
+    await userEvent.setup().click(await screen.findByTitle('Send message'));
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('note', { name: 'Request blocked' })).toHaveLength(1),
+    );
+    expect(document.querySelector('.chat-error')).toBeNull();
+  });
+
+  it('retains the transient denial banner when the standalone completion refresh fails', async () => {
+    const conversation = makeConversation('denial-background-refresh-failure', 'Prior reply');
+    const refusal = makeDenialDetail('req-background-refresh-failure', 'denial-message-missing');
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(makeWindow(conversation));
+    apiMock.getConversation.mockRejectedValueOnce(new Error('Window refresh unavailable'));
+    apiMock.streamChatTask.mockImplementationOnce(() =>
+      (async function* () {
+        yield {
+          type: 'completion',
+          completed: true,
+          status: 'failed',
+          error: denialReason,
+          ...refusal,
+          refusal,
+        };
+      })(),
+    );
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      renderChatPanel(
+        <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+      );
+
+      await userEvent.setup().type(await screen.findByLabelText('Message'), 'Accepted prompt');
+      await userEvent.setup().click(await screen.findByTitle('Send message'));
+
+      const error = await screen.findByText(denialReason);
+      expect(error.closest('.chat-error')).not.toBeNull();
+      expect(screen.queryByRole('note', { name: 'Request blocked' })).toBeNull();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('lets a standalone conversation selected during a pending denial refresh start its own task stream', async () => {
+    const original = makeConversation('denial-standalone-race-original', 'Original reply');
+    const selected = makeConversation('denial-standalone-race-selected', 'Selected reply');
+    const originalAfterDenial: Conversation = {
+      ...original,
+      messages: [
+        ...original.messages,
+        makeDenialMessage('denial-message-standalone-race', 'req-standalone-race'),
+      ],
+      last_denial_message_id: 'denial-message-standalone-race',
+    };
+    const refusal = makeDenialDetail('req-standalone-race', 'denial-message-standalone-race');
+    let releaseDenialStream: (() => void) | undefined;
+    let resolveOriginalRefresh: ((conversation: Conversation) => void) | undefined;
+    apiMock.getConversationLatestExchange.mockImplementation((id: string) =>
+      Promise.resolve(makeLatestExchange(id === original.id ? original : selected)),
+    );
+    apiMock.getConversation.mockImplementation((id: string) =>
+      id === original.id
+        ? new Promise<Conversation>((resolve) => (resolveOriginalRefresh = resolve))
+        : Promise.resolve(selected),
+    );
+    apiMock.sendMessageBackground
+      .mockResolvedValueOnce({ id: 'task-denied-original', status: 'running' })
+      .mockResolvedValueOnce({ id: 'task-selected-after-denial', status: 'running' });
+    apiMock.streamChatTask.mockImplementationOnce(() =>
+      (async function* () {
+        await new Promise<void>((resolve) => (releaseDenialStream = resolve));
+        yield {
+          type: 'completion',
+          completed: true,
+          status: 'failed',
+          error: denialReason,
+          ...refusal,
+          refusal,
+        };
+      })(),
+    );
+    apiMock.streamChatTask.mockImplementationOnce(() =>
+      (async function* () {
+        yield {
+          type: 'state',
+          state: { content: 'Selected streaming text', events: [], version: 1 },
+        };
+        await new Promise(() => undefined);
+      })(),
+    );
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const { rerender } = renderChatPanel(
+        <ChatPanel currentUser={currentUser} initialConversationId={original.id} />,
+      );
+      expect(await screen.findByText('Original reply')).toBeDefined();
+      const user = userEvent.setup();
+      await user.type(await screen.findByLabelText('Message'), 'Prompt for original');
+      await user.click(await screen.findByTitle('Send message'));
+      await waitFor(() => expect(releaseDenialStream).toBeDefined());
+
+      await act(async () => releaseDenialStream?.());
+      await waitFor(() =>
+        expect(apiMock.getConversation).toHaveBeenCalledWith(original.id, undefined),
+      );
+
+      rerender(
+        <AvailableModelsProvider>
+          <ChatPanel currentUser={currentUser} initialConversationId={selected.id} />
+        </AvailableModelsProvider>,
+      );
+      expect(await screen.findByText('Selected reply')).toBeDefined();
+
+      await act(async () => {
+        resolveOriginalRefresh?.(originalAfterDenial);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(screen.getByText('Selected reply')).toBeDefined();
+      expect(screen.queryByText('Original reply')).toBeNull();
+
+      await user.type(screen.getByLabelText('Message'), 'Prompt for selected');
+      await user.click(screen.getByTitle('Send message'));
+      await waitFor(() =>
+        expect(apiMock.streamChatTask).toHaveBeenCalledWith(
+          'task-selected-after-denial',
+          expect.anything(),
+          expect.anything(),
+          undefined,
+        ),
+      );
+      expect(await screen.findByText('Selected streaming text')).toBeDefined();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('keeps the newly selected conversation and its draft when a denied send for another conversation settles', async () => {
+    const original = makeConversation('denial-race-original', 'Original reply', {
+      workspace_id: 'ws-denial',
+    });
+    const other = makeConversation('denial-race-other', 'Other conversation reply', {
+      workspace_id: 'ws-denial',
+    });
+    const originalAfterDenial: Conversation = {
+      ...original,
+      messages: [...original.messages, makeDenialMessage('denial-message-race-1', 'req-race-1')],
+      last_denial_message_id: 'denial-message-race-1',
+    };
+    let rejectSend: ((reason: unknown) => void) | undefined;
+    let resolveOriginalRefresh: ((conversation: Conversation) => void) | undefined;
+    apiMock.sendMessageBackground.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (rejectSend = reject)),
+    );
+    apiMock.getConversation.mockImplementation((id: string) =>
+      id === original.id
+        ? new Promise<Conversation>((resolve) => (resolveOriginalRefresh = resolve))
+        : Promise.resolve(other),
+    );
+    const stateFor = (selectedId: string): WorkspaceChatStateResponse => ({
+      ...makeWorkspaceChatState(selectedId === original.id ? original : other),
+      conversations: [original, other],
+      selected_conversation_id: selectedId,
+      active_task: null,
+    });
+    const renderFor = (selectedId: string) => (
+      <AvailableModelsProvider>
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="ws-denial"
+          workspaceChatState={stateFor(selectedId)}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          embedded
+        />
+      </AvailableModelsProvider>
+    );
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const { rerender } = renderChatPanel(renderFor(original.id));
+      const user = userEvent.setup();
+      await user.type(await screen.findByLabelText('Message'), 'Prompt for original');
+      await user.click(await screen.findByTitle('Send message'));
+      await waitFor(() => expect(rejectSend).toBeDefined());
+
+      rerender(renderFor(other.id));
+      expect(await screen.findByText('Other conversation reply')).toBeDefined();
+      await user.type(screen.getByLabelText('Message'), 'Draft for other');
+
+      await act(async () =>
+        rejectSend?.(
+          new ApiError(
+            makeDenialDetail('req-race-1', 'denial-message-race-1'),
+            403,
+            makeDenialDetail('req-race-1', 'denial-message-race-1'),
+          ),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(apiMock.getConversation).toHaveBeenCalledWith(original.id, 'ws-denial'),
+      );
+      await act(async () => {
+        resolveOriginalRefresh?.(originalAfterDenial);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(screen.getByText('Other conversation reply')).toBeDefined();
+      expect(screen.queryByText('Original reply')).toBeNull();
+      expect(screen.queryByRole('note', { name: 'Request blocked' })).toBeNull();
+      expect(screen.getByLabelText('Message').textContent).toContain('Draft for other');
+      expect(screen.getByLabelText('Message').textContent).not.toContain('Prompt for original');
+
+      apiMock.sendMessageBackground.mockResolvedValueOnce({
+        id: 'task-other-after-denial',
+        status: 'running',
+      });
+      await user.click(screen.getByTitle('Send message'));
+      await waitFor(() =>
+        expect(apiMock.sendMessageBackground).toHaveBeenLastCalledWith(
+          other.id,
+          'Draft for other',
+          'ws-denial',
+        ),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('acknowledges the latest standalone denial only after its rendered notice enters a visible viewport', async () => {
+    const notice = makeDenialMessage('denial-message-unread-1', 'req-unread-1');
+    const conversation = makeConversation('denial-unread-hidden', 'Prior reply', {
+      messages: [
+        {
+          role: 'user',
+          content: 'Blocked question',
+          timestamp: '2026-10-10T12:00:00.000Z',
+          message_id: 'msg-unread-user',
+        },
+        notice,
+      ],
+      last_denial_message_id: 'denial-message-unread-1',
+    });
+    const summary = makeSummary(conversation.id, 'Blocked request chat', {
+      last_denial_message_id: 'denial-message-unread-1',
+    });
+    apiMock.listConversationSummaries.mockResolvedValue([summary]);
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(makeWindow(conversation));
+    const setItem = vi.mocked(localStorage.setItem);
+    setItem.mockClear();
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    try {
+      renderChatPanel(
+        <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+      );
+
+      expect(await screen.findByRole('note', { name: 'Request blocked' })).toBeDefined();
+      await waitFor(() =>
+        expect(
+          document.querySelector('.chat-conversation-item .chat-denial-unseen-badge'),
+        ).not.toBeNull(),
+      );
+      expect(setItem).not.toHaveBeenCalledWith(
+        expect.stringContaining('ragtime:denial-notices:v1:'),
+        expect.anything(),
+      );
+
+      const renderedNotice = screen.getByRole('note', { name: 'Request blocked' });
+      await waitFor(() =>
+        expect(
+          IntersectionObserverMock.instances.some((observer) =>
+            observer.observed.has(renderedNotice),
+          ),
+        ).toBe(true),
+      );
+      await act(async () => IntersectionObserverMock.trigger(renderedNotice, false));
+      expect(setItem).not.toHaveBeenCalledWith(
+        expect.stringContaining('ragtime:denial-notices:v1:'),
+        expect.anything(),
+      );
+
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(setItem).not.toHaveBeenCalledWith(
+        expect.stringContaining('ragtime:denial-notices:v1:'),
+        expect.anything(),
+      );
+
+      await act(async () => IntersectionObserverMock.trigger(renderedNotice, true));
+
+      await waitFor(() =>
+        expect(setItem).toHaveBeenCalledWith(
+          expect.stringContaining('ragtime:denial-notices:v1:'),
+          expect.stringContaining('denial-message-unread-1'),
+        ),
+      );
+      await waitFor(() =>
+        expect(
+          document.querySelector('.chat-conversation-item .chat-denial-unseen-badge'),
+        ).toBeNull(),
+      );
+    } finally {
+      delete (document as unknown as { visibilityState?: string }).visibilityState;
+    }
+  });
+
+  it('ignores a queued denial visibility callback after selecting another conversation', async () => {
+    const notice = makeDenialMessage('denial-message-stale-1', 'req-stale-1');
+    const original = makeConversation('denial-visibility-original', 'Original reply', {
+      workspace_id: 'ws-denial-visibility',
+      messages: [notice],
+      last_denial_message_id: 'denial-message-stale-1',
+    });
+    const other = makeConversation('denial-visibility-other', 'Other reply', {
+      workspace_id: 'ws-denial-visibility',
+    });
+    const stateFor = (conversation: Conversation): WorkspaceChatStateResponse => ({
+      ...makeWorkspaceChatState(conversation),
+      conversations: [original, other],
+      selected_conversation_id: conversation.id,
+      active_task: null,
+    });
+    const renderFor = (conversation: Conversation) => (
+      <AvailableModelsProvider>
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="ws-denial-visibility"
+          workspaceChatState={stateFor(conversation)}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          embedded
+        />
+      </AvailableModelsProvider>
+    );
+
+    const { rerender } = renderChatPanel(renderFor(original));
+    const renderedNotice = await screen.findByRole('note', { name: 'Request blocked' });
+    let staleObserver: IntersectionObserverMock | undefined;
+    await waitFor(() => {
+      staleObserver = IntersectionObserverMock.instances.find((observer) =>
+        observer.observed.has(renderedNotice),
+      );
+      expect(staleObserver).toBeDefined();
+    });
+
+    rerender(renderFor(other));
+    expect(await screen.findByText('Other reply')).toBeDefined();
+    const setItem = vi.mocked(localStorage.setItem);
+    setItem.mockClear();
+
+    await act(async () => {
+      staleObserver?.callback(
+        [{ target: renderedNotice, isIntersecting: true } as unknown as IntersectionObserverEntry],
+        staleObserver as unknown as IntersectionObserver,
+      );
+    });
+
+    expect(setItem).not.toHaveBeenCalledWith(
+      expect.stringContaining('ragtime:denial-notices:v1:'),
+      expect.anything(),
+    );
   });
 });
 
@@ -1278,6 +1941,9 @@ afterEach(() => {
   window.cancelAnimationFrame = originalCancelAnimationFrame;
   MockEventSource.reset();
   ResizeObserverMock.reset();
+  IntersectionObserverMock.reset();
+  localStorageValues.clear();
+  invalidateDenialNoticeSeen();
 });
 
 describe('ChatPanel standalone first-paint loading', () => {
@@ -2387,23 +3053,25 @@ describe('ChatPanel standalone first-paint loading', () => {
   });
 
   it('hydrates body-only search matches and aborts a later page when cleared', async () => {
+    const now = Date.now();
+    const isoMinutesBefore = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
     let resolveFirstSearchPage: ((conversations: Conversation[]) => void) | undefined;
     let resolveLateSearchPage: ((conversations: Conversation[]) => void) | undefined;
     let lateSearchSignal: AbortSignal | undefined;
     const initial = makeConversation('search-bootstrap', 'Bootstrap response', {
       title: 'Bootstrap chat',
-      updated_at: '2026-09-11T12:00:02.000Z',
+      updated_at: isoMinutesBefore(1),
     });
     const bodyMatch = makeConversation('body-match', 'Needle only exists in this message body', {
       title: 'Unrelated title',
-      updated_at: '2026-09-11T12:00:01.000Z',
+      updated_at: isoMinutesBefore(2),
     });
     const lateMatch = makeConversation(
       'late-body-match',
       'Late needle only exists in this message body',
       {
         title: 'Late unrelated title',
-        updated_at: '2026-09-11T12:00:00.000Z',
+        updated_at: isoMinutesBefore(3),
       },
     );
     apiMock.listConversationSummaries
@@ -2444,17 +3112,19 @@ describe('ChatPanel standalone first-paint loading', () => {
   });
 
   it('does not repeat a full-prefix branch search while body pages hydrate', async () => {
+    const now = Date.now();
+    const isoMinutesBefore = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
     const initial = makeConversation('branch-bootstrap', 'Bootstrap response', {
       title: 'Bootstrap chat',
-      updated_at: '2026-09-11T12:00:02.000Z',
+      updated_at: isoMinutesBefore(60),
     });
     const firstPage = makeConversation('branch-page-1', 'branch needle one', {
       title: 'First branch page',
-      updated_at: '2026-09-11T12:00:01.000Z',
+      updated_at: isoMinutesBefore(120),
     });
     const secondPage = makeConversation('branch-page-2', 'branch needle two', {
       title: 'Second branch page',
-      updated_at: '2026-09-11T12:00:00.000Z',
+      updated_at: isoMinutesBefore(24 * 60),
     });
     apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(initial));
     apiMock.listConversationSummaries.mockResolvedValue([]);
@@ -2463,7 +3133,7 @@ describe('ChatPanel standalone first-paint loading', () => {
       ...Array.from({ length: 49 }, (_, index) =>
         makeConversation(`branch-page-1-${index}`, `branch filler ${index}`, {
           title: `Branch filler ${index}`,
-          updated_at: `2026-09-10T12:${String(index).padStart(2, '0')}:00.000Z`,
+          updated_at: isoMinutesBefore(180 + index),
         }),
       ),
     ];
