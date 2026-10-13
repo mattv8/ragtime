@@ -7388,6 +7388,33 @@ textarea {
   border-color: var(--color-warning-border);
 }
 
+.tool-access-callout-info {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  color: var(--color-info);
+  background: var(--color-info-light);
+  border-color: var(--color-info-border);
+}
+
+.info-callout-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.info-callout-body {
+  flex: 1 1 0;
+  color: var(--color-text-primary);
+}
+
+.info-callout-body p {
+  margin: 0;
+}
+
+.info-callout-body p + p {
+  margin-top: var(--space-xs);
+}
+
 .tool-access-search {
   position: relative;
 }
