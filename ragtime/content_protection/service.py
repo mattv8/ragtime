@@ -772,7 +772,8 @@ async def _authorize_content(
     # Reject opaque/oversized values before any identity/provider work when the
     # global policy already covers this boundary. Group-only coverage still
     # needs the authoritative membership read below.
-    preliminary_required = resolve_required(
+    group_skip_configured = any(item.scope_kind == "group" and item.mode == "skip" for item in config.requirements)
+    preliminary_required = not group_skip_configured and resolve_required(
         config,
         ProtectionContext(
             user_id=resolved_context.user_id,

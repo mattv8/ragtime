@@ -44,3 +44,67 @@ class ContentProtectionPolicyTests(unittest.TestCase):
     def test_always_override_requires_even_without_scope_match(self) -> None:
         config = ContentProtectionConfig(enabled=True, coverage_mode="selected_scopes", user_overrides=[UserOverride(user_id="u", mode="always_classify")])
         self.assertEqual(resolve_required(config, ProtectionContext(user_id="u")), (True, "user_override:always_classify"))
+
+    def test_skip_group_exempts_inherited_identity_when_no_other_slot_requires(self) -> None:
+        config = ContentProtectionConfig(
+            enabled=True,
+            coverage_mode="all_supported_traffic",
+            requirements=[Requirement(scope_kind="group", scope_key="skip", mode="skip")],
+        )
+
+        self.assertEqual(
+            resolve_required(config, ProtectionContext(user_id="u"), {"u": {"skip"}}, {"u"}),
+            (False, "group_override:skip"),
+        )
+
+    def test_require_group_wins_over_skip_group(self) -> None:
+        config = ContentProtectionConfig(
+            enabled=True,
+            coverage_mode="selected_scopes",
+            requirements=[
+                Requirement(scope_kind="group", scope_key="skip", mode="skip"),
+                Requirement(scope_kind="group", scope_key="require", mode="require"),
+            ],
+        )
+
+        self.assertEqual(
+            resolve_required(config, ProtectionContext(user_id="u"), {"u": {"skip", "require"}}, {"u"}),
+            (True, "group_override:require"),
+        )
+
+    def test_public_slot_prevents_personal_never_exemption(self) -> None:
+        config = ContentProtectionConfig(
+            enabled=True,
+            user_overrides=[UserOverride(user_id="u", mode="never_classify")],
+        )
+
+        self.assertTrue(resolve_required(config, ProtectionContext(user_id="u", public=True), {}, {"u"})[0])
+
+    def test_personal_never_does_not_exempt_another_required_audience(self) -> None:
+        config = ContentProtectionConfig(
+            enabled=True,
+            coverage_mode="selected_scopes",
+            requirements=[Requirement(scope_kind="group", scope_key="require", mode="require")],
+            user_overrides=[UserOverride(user_id="u", mode="never_classify")],
+        )
+
+        self.assertTrue(resolve_required(config, ProtectionContext(user_id="u", audience_user_ids=("v",)), {"u": {"require"}, "v": {"require"}}, {"u", "v"})[0])
+
+    def test_none_audience_slot_requires_coverage_without_treating_absent_primary_as_slot(self) -> None:
+        config = ContentProtectionConfig(enabled=True, requirements=[Requirement(scope_kind="group", scope_key="skip", mode="skip")])
+
+        self.assertTrue(resolve_required(config, ProtectionContext(audience_user_ids=(None,)), {}, set())[0])
+        self.assertFalse(resolve_required(config, ProtectionContext(audience_user_ids=("u",)), {"u": {"skip"}}, {"u"})[0])
+
+    def test_skip_provenance_is_not_used_when_uncovered_inherited_slot_remains(self) -> None:
+        config = ContentProtectionConfig(
+            enabled=True,
+            coverage_mode="selected_scopes",
+            requirements=[Requirement(scope_kind="group", scope_key="skip", mode="skip")],
+        )
+
+        self.assertEqual(resolve_required(config, ProtectionContext(user_id="u", audience_user_ids=("v",)), {"u": {"skip"}, "v": set()}, {"u", "v"}), (False, "no_requirement"))
+
+    def test_skip_mode_is_rejected_for_non_group_scope(self) -> None:
+        with self.assertRaises(ValidationError):
+            Requirement(scope_kind="surface", scope_key="chat", mode="skip")

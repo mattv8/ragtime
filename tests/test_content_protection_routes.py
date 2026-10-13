@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from prisma import Json
 
 from ragtime.content_protection import routes
+from ragtime.content_protection.conflicts import GroupPolicyConflictError
 from ragtime.content_protection.models import ContentProtectionConfig
 from ragtime.core.database import connect_db, disconnect_db
 
@@ -33,6 +34,10 @@ class ContentProtectionRouteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 403)
 
+        response = await self.client.get("/indexes/content-protection/policy-conflicts")
+
+        self.assertEqual(response.status_code, 403)
+
     async def test_config_revision_conflict_returns_409(self) -> None:
         with mock.patch.object(
             routes,
@@ -49,6 +54,49 @@ class ContentProtectionRouteTests(unittest.IsolatedAsyncioTestCase):
         await_args = save_config.await_args
         assert await_args is not None
         self.assertIsInstance(await_args.args[0], ContentProtectionConfig)
+
+    async def test_config_group_policy_conflict_returns_structured_422(self) -> None:
+        detail = {"code": "conflicting_group_policies", "message": "Conflict", "conflicts": [], "total": 0, "truncated": False}
+        with mock.patch.object(routes, "save_config", new=mock.AsyncMock(side_effect=GroupPolicyConflictError(detail))):
+            response = await self.client.put(
+                "/indexes/content-protection/config",
+                json={"expected_revision": 3, "config": {"revision": 3, "enabled": False}},
+            )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json(), {"detail": detail})
+
+    async def test_policy_conflicts_returns_capped_contract(self) -> None:
+        with (
+            mock.patch.object(routes, "load_config", new=mock.AsyncMock(return_value=ContentProtectionConfig())),
+            mock.patch.object(routes, "find_group_policy_conflicts", new=mock.AsyncMock(return_value=([{"user_id": "u"}], 51, ["require", "skip"]))),
+            mock.patch.object(routes, "get_db", new=mock.AsyncMock(return_value=object())),
+        ):
+            response = await self.client.get("/indexes/content-protection/policy-conflicts")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"conflicts": [{"user_id": "u"}], "total": 51, "truncated": True, "conflicted_group_ids": ["require", "skip"]})
+
+    async def test_policy_conflicts_passes_optional_user_filter(self) -> None:
+        finder = mock.AsyncMock(return_value=([], 0, []))
+        with (
+            mock.patch.object(routes, "load_config", new=mock.AsyncMock(return_value=ContentProtectionConfig())),
+            mock.patch.object(routes, "find_group_policy_conflicts", new=finder),
+            mock.patch.object(routes, "get_db", new=mock.AsyncMock(return_value=object())),
+        ):
+            response = await self.client.get("/indexes/content-protection/policy-conflicts?user_id=user-51")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(finder.await_args.args[2], "user-51")
+
+    async def test_policy_conflicts_invalid_config_returns_safe_409(self) -> None:
+        with mock.patch.object(routes, "load_config", new=mock.AsyncMock(side_effect=ValueError("private parser detail"))):
+            response = await self.client.get("/indexes/content-protection/policy-conflicts")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"]["code"], "invalid_content_protection_config")
+        self.assertIn("must be repaired", response.json()["detail"]["message"])
+        self.assertNotIn("private parser detail", response.text)
 
     async def test_config_uses_the_canonical_client_path(self) -> None:
         config = {"revision": 4, "enabled": False, "coverage_mode": "all_supported_traffic"}

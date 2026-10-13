@@ -9,6 +9,7 @@ from typing import Any, Literal
 from prisma import Json
 from pydantic import BaseModel, ConfigDict, Field
 
+from ragtime.content_protection.conflicts import GroupPolicyConflictError, find_group_policy_conflicts, policy_conflict_detail
 from ragtime.content_protection.models import ContentProtectionConfig
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
@@ -62,7 +63,7 @@ async def load_config_record() -> ContentProtectionConfig:
         return ContentProtectionConfig()
     payload = dict(record.config)
     if payload.get("schema_version") == 2:
-        return ContentProtectionConfig.model_validate(_canonicalize_system_copy(payload))
+        return parse_config_for_policy_checks(payload)
     if not _is_recognizable_legacy_config(payload):
         raise ValueError("invalid_content_protection_config")
     return await _reset_legacy_config(db, record)
@@ -88,6 +89,15 @@ def _canonicalize_system_copy(payload: dict[str, Any]) -> dict[str, Any]:
             normalized_categories.append(category)
     normalized["categories"] = normalized_categories
     return normalized
+
+
+def parse_config_for_policy_checks(payload: dict[str, Any]) -> ContentProtectionConfig:
+    """Parse stored policy without mutating legacy records inside another transaction."""
+    if payload.get("schema_version") == 2:
+        return ContentProtectionConfig.model_validate(_canonicalize_system_copy(payload))
+    if _is_recognizable_legacy_config(payload):
+        return ContentProtectionConfig()
+    raise ValueError("invalid_content_protection_config")
 
 
 def _is_recognizable_legacy_config(payload: dict[str, Any]) -> bool:
@@ -194,6 +204,9 @@ async def save_config_record(config: ContentProtectionConfig, expected_revision:
             raise ValueError("revision_conflict")
         if current is None and expected_revision != 0:
             raise ValueError("revision_conflict")
+        conflicts, total, conflicted_group_ids = await find_group_policy_conflicts(config, tx)
+        if total:
+            raise GroupPolicyConflictError(policy_conflict_detail(conflicts, total, conflicted_group_ids))
         saved = config.model_copy(update={"revision": expected_revision + 1})
         payload = Json(saved.model_dump(mode="json"))
         if current is None:

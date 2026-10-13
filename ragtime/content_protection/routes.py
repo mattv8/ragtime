@@ -8,6 +8,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from ragtime.content_protection.conflicts import GroupPolicyConflictError, find_group_policy_conflicts, policy_conflict_detail
 from ragtime.content_protection.model_catalog import list_jev_models
 from ragtime.content_protection.models import ContentProtectionConfig
 from ragtime.content_protection.service import (
@@ -100,9 +101,29 @@ async def update_config(body: SaveConfigRequest, user: Any = Depends(require_adm
         # letting route handlers serialize provider/database details.
         if getattr(exc, "code", None) == "revision_conflict" or (isinstance(exc, ValueError) and str(exc) == "revision_conflict"):
             raise HTTPException(status_code=409, detail="Content protection configuration changed") from exc
+        if isinstance(exc, GroupPolicyConflictError):
+            raise HTTPException(status_code=422, detail=exc.detail) from exc
         if isinstance(exc, ValueError):
             raise HTTPException(status_code=422, detail="Invalid content protection configuration") from exc
         raise
+
+
+@router.get("/policy-conflicts")
+async def get_policy_conflicts(user_id: str | None = None, _user: Any = Depends(require_admin)) -> dict[str, Any]:
+    """Return active users whose memberships conflict with the saved policy."""
+    try:
+        config = await load_config()
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "invalid_content_protection_config",
+                "message": "Content protection configuration is invalid and must be repaired before viewing policy conflicts.",
+            },
+        ) from None
+    conflicts, total, conflicted_group_ids = await find_group_policy_conflicts(config, await get_db(), user_id)
+    detail = policy_conflict_detail(conflicts, total, conflicted_group_ids)
+    return {key: detail[key] for key in ("conflicts", "total", "truncated", "conflicted_group_ids")}
 
 
 @router.get("/catalog")

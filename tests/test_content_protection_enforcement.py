@@ -2,7 +2,7 @@ import unittest
 from unittest import mock
 
 from ragtime.content_protection import service
-from ragtime.content_protection.models import AccessLevel, ContentProtectionConfig, ContentProtectionError, GroupAccessLevel, ProtectionContext
+from ragtime.content_protection.models import AccessLevel, ContentProtectionConfig, ContentProtectionError, GroupAccessLevel, ProtectionContext, Requirement
 
 
 def _detection(config: ContentProtectionConfig, **probabilities: float) -> dict[str, object]:
@@ -76,6 +76,33 @@ class ContentProtectionEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 await service.authorize_content("financial report", direction="inbound", context=ProtectionContext(user_id="u"))
         self.assertEqual(raised.exception.reason_code, "restricted_content")
         self.assertEqual(raised.exception.reason, "Company financial information is not available for this audience.")
+
+    async def test_skip_group_bypasses_opaque_payload_without_calling_classifier(self) -> None:
+        config = ContentProtectionConfig(
+            enabled=True,
+            requirements=[Requirement(scope_kind="group", scope_key="skip", mode="skip")],
+        )
+        with (
+            mock.patch.object(service, "load_config", new=mock.AsyncMock(return_value=config)),
+            mock.patch.object(service, "resolve_identities", new=mock.AsyncMock(return_value=({"u"}, {"u": {"skip"}}, {"u": None}))),
+            mock.patch.object(service, "detect", new=mock.AsyncMock()) as detect,
+        ):
+            await service.authorize_content(object(), direction="inbound", context=ProtectionContext(user_id="u"))
+
+        detect.assert_not_awaited()
+
+    async def test_covered_opaque_payload_is_denied_before_classifier(self) -> None:
+        config = ContentProtectionConfig(enabled=True)
+        with (
+            mock.patch.object(service, "load_config", new=mock.AsyncMock(return_value=config)),
+            mock.patch.object(service, "resolve_identities", new=mock.AsyncMock(return_value=({"u"}, {"u": set()}, {"u": None}))),
+            mock.patch.object(service, "detect", new=mock.AsyncMock()) as detect,
+        ):
+            with self.assertRaises(ContentProtectionError) as raised:
+                await service.authorize_content(object(), direction="inbound", context=ProtectionContext(user_id="u"))
+
+        self.assertEqual(raised.exception.code, "content_unclassifiable")
+        detect.assert_not_awaited()
 
     def test_thresholds_are_inclusive_and_rule_override_is_ungrantable(self) -> None:
         config = ContentProtectionConfig(enabled=True)

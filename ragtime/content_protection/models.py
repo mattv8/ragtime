@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 CoverageMode = Literal["all_supported_traffic", "selected_scopes"]
-RequirementMode = Literal["require", "inherit"]
+RequirementMode = Literal["require", "inherit", "skip"]
 OverrideMode = Literal["inherit", "always_classify", "never_classify"]
 
 
@@ -77,6 +77,12 @@ class Requirement(BaseModel):
     scope_kind: Literal["group", "tool", "mcp_route", "surface"]
     scope_key: str = Field(min_length=1, max_length=256)
     mode: RequirementMode
+
+    @model_validator(mode="after")
+    def validate_skip_scope(self) -> "Requirement":
+        if self.mode == "skip" and self.scope_kind != "group":
+            raise ValueError("skip requirements are only valid for groups")
+        return self
 
 
 class UserOverride(BaseModel):
