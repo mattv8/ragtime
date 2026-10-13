@@ -113,4 +113,39 @@ describe('GroupProtectionPanel', () => {
       '?view=settings&highlight=content_protection',
     );
   });
+
+  it('shows the Skip explanation without disabling access grants', async () => {
+    api.preview.mockResolvedValue({ prompt_fragment: '' });
+    const user = userEvent.setup();
+    const onUpdateRequirement = vi.fn();
+    panel({
+      onUpdateRequirement,
+      config: {
+        ...config,
+        requirements: [{ scope_kind: 'group', scope_key: group.id, mode: 'skip' }],
+      },
+    });
+
+    expect(document.querySelector('[data-group-skip-warning]')).toBeTruthy();
+    expect(
+      document.querySelector(`[data-group-protection-level-checkboxes="${group.id}"]`),
+    ).not.toHaveProperty('disabled', true);
+    await user.selectOptions(screen.getByLabelText('Classification'), 'inherit');
+    expect(onUpdateRequirement).toHaveBeenCalledWith('inherit');
+  });
+
+  it('shows a capped-summary conflict for a group absent from preview rows', async () => {
+    api.preview.mockResolvedValue({ prompt_fragment: '' });
+    panel({
+      policyConflicts: {
+        conflicts: [],
+        total: 51,
+        truncated: true,
+        conflicted_group_ids: [group.id],
+      },
+    });
+
+    expect(await screen.findByText(/outside the displayed user rows/i)).toBeTruthy();
+    expect(screen.getByText(/Showing 0 of 51 conflicts/i)).toBeTruthy();
+  });
 });

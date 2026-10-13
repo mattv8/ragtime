@@ -24,12 +24,16 @@ const apiMock = vi.hoisted(() => ({
 }));
 const contentProtectionMock = vi.hoisted(() => ({
   getConfig: vi.fn(),
+  getPolicyConflicts: vi.fn(),
   updateContentProtectionConfigSlice: vi.fn(),
 }));
 vi.mock('@/api', () => ({ api: apiMock }));
 vi.mock('@/api/contentProtection', async () => ({
   ...(await vi.importActual<typeof import('@/api/contentProtection')>('@/api/contentProtection')),
-  contentProtectionApi: { getConfig: contentProtectionMock.getConfig },
+  contentProtectionApi: {
+    getConfig: contentProtectionMock.getConfig,
+    getPolicyConflicts: contentProtectionMock.getPolicyConflicts,
+  },
   updateContentProtectionConfigSlice: contentProtectionMock.updateContentProtectionConfigSlice,
 }));
 vi.mock('@/theme', () => ({ subscribeToThemeChanges: () => () => {} }));
@@ -144,6 +148,11 @@ describe('UsersPanel directory and modal', () => {
     apiMock.getUsageRange.mockResolvedValue({ earliest_date: '2025-01-01' });
     apiMock.getUsageUsersDaily.mockResolvedValue({ series: [] });
     contentProtectionMock.getConfig.mockResolvedValue(config());
+    contentProtectionMock.getPolicyConflicts.mockResolvedValue({
+      conflicts: [],
+      total: 0,
+      truncated: false,
+    });
   });
   afterEach(cleanup);
 

@@ -8,6 +8,9 @@ import {
   withExistingAccessLevel,
   withGroupAccessLevel,
   withRequirement,
+  type PolicyConflictDetail,
+  type PolicyConflictResult,
+  parsePolicyConflictError,
 } from '@/api/contentProtection';
 import type { ContentProtectionConfig } from '@/api/contentProtection';
 import { generateCredentialValue } from '@/utils/credentialGenerator';
@@ -17,6 +20,7 @@ import { InlineCopyButton } from './InlineCopyButton';
 import { Popover } from '../Popover';
 import { GroupProtectionPanel, type GroupProtectionPanelHandle } from './GroupProtectionPanel';
 import { AccessDetailHeader } from './AccessDetailHeader';
+import { PolicyConflictList } from './PolicyConflictList';
 
 type ToastActions = {
   success: (message: string, durationMs?: number) => void;
@@ -110,6 +114,9 @@ export function AuthAdminModalHost({
   const [contentProtectionConfig, setContentProtectionConfig] =
     useState<ContentProtectionConfig | null>(null);
   const [contentProtectionError, setContentProtectionError] = useState<string | null>(null);
+  const [policyConflicts, setPolicyConflicts] = useState<PolicyConflictResult | null>(null);
+  const [policyConflictError, setPolicyConflictError] = useState<string | null>(null);
+  const [candidateConflict, setCandidateConflict] = useState<PolicyConflictDetail | null>(null);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedGroupSnapshot, setSelectedGroupSnapshot] = useState<AuthGroup | null>(null);
   const [protectionPanelBusy, setProtectionPanelBusy] = useState(false);
@@ -118,6 +125,7 @@ export function AuthAdminModalHost({
   const protectionTriggerRef = useRef<HTMLButtonElement | null>(null);
   const groupRailRef = useRef<HTMLDivElement>(null);
   const protectionConfigRequest = useRef(0);
+  const policyConflictRequest = useRef(0);
 
   const liveSelectedGroup = selectedGroupId
     ? authGroups.find((group) => group.id === selectedGroupId)
@@ -165,15 +173,35 @@ export function AuthAdminModalHost({
     }
   }, []);
 
+  const loadPolicyConflicts = useCallback(async () => {
+    const requestId = policyConflictRequest.current + 1;
+    policyConflictRequest.current = requestId;
+    try {
+      const result = await contentProtectionApi.getPolicyConflicts();
+      if (policyConflictRequest.current === requestId) {
+        setPolicyConflicts(result);
+        setPolicyConflictError(null);
+      }
+    } catch (error) {
+      if (policyConflictRequest.current === requestId) {
+        setPolicyConflictError(
+          error instanceof Error ? error.message : 'Current conflicts unavailable.',
+        );
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (!manageGroupsOpen) return undefined;
     void refreshAuthGroups();
     setContentProtectionConfig(null);
     void loadProtectionConfig();
+    void loadPolicyConflicts();
     return () => {
       protectionConfigRequest.current += 1;
+      policyConflictRequest.current += 1;
     };
-  }, [manageGroupsOpen, loadProtectionConfig, refreshAuthGroups]);
+  }, [manageGroupsOpen, loadPolicyConflicts, loadProtectionConfig, refreshAuthGroups]);
 
   useEffect(() => {
     if (liveSelectedGroup) setSelectedGroupSnapshot(liveSelectedGroup);
@@ -204,6 +232,7 @@ export function AuthAdminModalHost({
     setInlineEditValue('');
     setNewGroupMode(false);
     setNewGroupName('');
+    setCandidateConflict(null);
     setSelectedGroupId(null);
     onCloseManageGroups();
   }, [onCloseManageGroups]);
@@ -227,6 +256,7 @@ export function AuthAdminModalHost({
     (group: AuthGroup, trigger?: HTMLButtonElement) => {
       const select = () => {
         if (trigger) protectionTriggerRef.current = trigger;
+        if (selectedGroupId !== group.id) setCandidateConflict(null);
         setSelectedGroupId(group.id);
         requestAnimationFrame(() =>
           document.getElementById(`group-detail-heading-${group.id}`)?.focus(),
@@ -240,6 +270,7 @@ export function AuthAdminModalHost({
 
   const closeProtectionPanel = useCallback(() => {
     const previousGroupId = selectedGroupId;
+    setCandidateConflict(null);
     setSelectedGroupId(null);
     requestAnimationFrame(() => {
       const groupRow = [...document.querySelectorAll<HTMLElement>('[data-group-id]')].find(
@@ -421,7 +452,7 @@ export function AuthAdminModalHost({
 
   const handleContentProtectionRequirementChange = async (
     group: AuthGroup,
-    mode: 'inherit' | 'require',
+    mode: 'inherit' | 'require' | 'skip',
   ) => {
     if (!contentProtectionConfig) return;
     try {
@@ -429,13 +460,18 @@ export function AuthAdminModalHost({
         withRequirement(config, 'group', group.id, mode),
       );
       setContentProtectionConfig(savedConfig);
+      setCandidateConflict(null);
+      await loadPolicyConflicts();
       toast.success('Content protection classification updated');
     } catch (err) {
+      setCandidateConflict(parsePolicyConflictError(err));
       toast.error(
         err instanceof Error ? err.message : 'Failed to update content protection classification',
       );
     }
   };
+
+  const conflictedGroupIds = new Set(policyConflicts?.conflicted_group_ids ?? []);
 
   const handleContentProtectionAccessLevelChange = async (
     group: AuthGroup,
@@ -451,8 +487,11 @@ export function AuthAdminModalHost({
         ),
       );
       setContentProtectionConfig(savedConfig);
+      setCandidateConflict(null);
+      await loadPolicyConflicts();
       toast.success('Content protection access level updated');
     } catch (err) {
+      setCandidateConflict(parsePolicyConflictError(err));
       const message =
         err instanceof Error ? err.message : 'Failed to update content protection access level';
       toast.error(message);
@@ -925,6 +964,16 @@ export function AuthAdminModalHost({
                                     <span className="auth-group-protection-summary access-md-rail-row-level">
                                       {accessLevelSummary}
                                     </span>
+                                    {conflictedGroupIds.has(group.id) && (
+                                      <span
+                                        className="badge badge-warning auth-group-conflict-badge"
+                                        aria-label="Policy conflict"
+                                        data-group-conflict-badge={group.id}
+                                        title="This group is involved in a Skip/Require conflict"
+                                      >
+                                        Policy conflict
+                                      </span>
+                                    )}
                                   </span>
                                 </button>
                               </div>
@@ -1061,6 +1110,16 @@ export function AuthAdminModalHost({
                                     )}
                                     {group.is_logon_group && (
                                       <span className="auth-group-logon-badge">Logon</span>
+                                    )}
+                                    {conflictedGroupIds.has(group.id) && (
+                                      <span
+                                        className="badge badge-warning auth-group-conflict-badge"
+                                        aria-label="Policy conflict"
+                                        data-group-conflict-badge={group.id}
+                                        title="This group is involved in a Skip/Require conflict"
+                                      >
+                                        Policy conflict
+                                      </span>
                                     )}
                                   </div>
                                 </div>
@@ -1261,6 +1320,31 @@ export function AuthAdminModalHost({
                         {UNAVAILABLE_GROUP_MESSAGE}
                       </div>
                     )}
+                    {candidateConflict && (
+                      <div
+                        className="tool-access-callout tool-access-callout-warning"
+                        role="alert"
+                        data-group-candidate-policy-conflict
+                      >
+                        <strong>Save blocked: group policy conflicts</strong>
+                        <PolicyConflictList {...candidateConflict} authGroups={authGroups} />
+                      </div>
+                    )}
+                    {policyConflictError && (
+                      <div
+                        className="tool-access-callout tool-access-callout-warning"
+                        role="status"
+                      >
+                        Current conflict status is unavailable: {policyConflictError}{' '}
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => void loadPolicyConflicts()}
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    )}
                     {contentProtectionConfig ? (
                       <GroupProtectionPanel
                         key={protectedGroup.id}
@@ -1288,6 +1372,8 @@ export function AuthAdminModalHost({
                         }
                         onBack={() => requestPanelNavigation(closeProtectionPanel)}
                         onNavigateToSetting={onNavigateToSetting ? navigateToSetting : undefined}
+                        policyConflicts={policyConflicts ?? undefined}
+                        onReloadPolicyConflicts={loadPolicyConflicts}
                         onBusyChange={setProtectionPanelBusy}
                         toast={toast}
                       />

@@ -3,19 +3,25 @@ import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { ContentProtectionConfig } from '@/api/contentProtection';
+import { ContentProtectionApiError, type ContentProtectionConfig } from '@/api/contentProtection';
 import type { AuthGroup } from '@/types';
 import { AuthAdminModalHost } from './AuthAdminModals';
 
 type HostProps = ComponentProps<typeof AuthAdminModalHost>;
 
-const { getConfig, updateContentProtectionConfigSlice, deleteAuthGroup, updateAuthGroup } =
-  vi.hoisted(() => ({
-    getConfig: vi.fn(),
-    updateContentProtectionConfigSlice: vi.fn(),
-    deleteAuthGroup: vi.fn(),
-    updateAuthGroup: vi.fn(),
-  }));
+const {
+  getConfig,
+  getPolicyConflicts,
+  updateContentProtectionConfigSlice,
+  deleteAuthGroup,
+  updateAuthGroup,
+} = vi.hoisted(() => ({
+  getConfig: vi.fn(),
+  getPolicyConflicts: vi.fn().mockResolvedValue({ conflicts: [], total: 0, truncated: false }),
+  updateContentProtectionConfigSlice: vi.fn(),
+  deleteAuthGroup: vi.fn(),
+  updateAuthGroup: vi.fn(),
+}));
 
 vi.mock('@/api', () => ({
   api: { listAuthGroups: vi.fn().mockResolvedValue([]), deleteAuthGroup, updateAuthGroup },
@@ -23,7 +29,7 @@ vi.mock('@/api', () => ({
 
 vi.mock('@/api/contentProtection', async () => ({
   ...(await vi.importActual<typeof import('@/api/contentProtection')>('@/api/contentProtection')),
-  contentProtectionApi: { getConfig, preview: vi.fn(), saveConfig: vi.fn() },
+  contentProtectionApi: { getConfig, getPolicyConflicts, preview: vi.fn(), saveConfig: vi.fn() },
   updateContentProtectionConfigSlice,
 }));
 
@@ -355,9 +361,10 @@ describe('AuthAdminModalHost content protection controls', () => {
       await screen.findByRole('button', { name: 'Edit protection for Engineering' }),
     );
 
-    expect(
-      (await screen.findByLabelText('Require classification')) as HTMLSelectElement,
-    ).toHaveProperty('value', 'inherit');
+    expect((await screen.findByLabelText('Classification')) as HTMLSelectElement).toHaveProperty(
+      'value',
+      'inherit',
+    );
     const accessLevels = screen.getByRole('group', { name: 'Access levels' });
     expect(accessLevels).toBeTruthy();
     expect(within(accessLevels).getByLabelText(/Standard/)).toHaveProperty('checked', false);
@@ -373,7 +380,7 @@ describe('AuthAdminModalHost content protection controls', () => {
       await screen.findByRole('button', { name: 'Edit protection for Engineering' }),
     );
 
-    await user.selectOptions(await screen.findByLabelText('Require classification'), 'require');
+    await user.selectOptions(await screen.findByLabelText('Classification'), 'require');
     await waitFor(() => expect(updateContentProtectionConfigSlice).toHaveBeenCalledTimes(1));
     expect(updateContentProtectionConfigSlice.mock.calls[0][0](CONFIG).requirements).toEqual([
       { scope_kind: 'group', scope_key: 'group-1', mode: 'require' },
@@ -399,7 +406,7 @@ describe('AuthAdminModalHost content protection controls', () => {
       await screen.findByRole('button', { name: 'Edit protection for Engineering' }),
     );
 
-    expect(await screen.findByLabelText('Require classification')).toBeTruthy();
+    expect(await screen.findByLabelText('Classification')).toBeTruthy();
     expect(screen.getByRole('group', { name: 'Access levels' })).toBeTruthy();
     expect(updateContentProtectionConfigSlice).not.toHaveBeenCalled();
   });
@@ -413,9 +420,10 @@ describe('AuthAdminModalHost content protection controls', () => {
       await screen.findByRole('button', { name: 'Edit protection for Engineering' }),
     );
 
-    expect(
-      (await screen.findByLabelText('Require classification')) as HTMLSelectElement,
-    ).toHaveProperty('disabled', false);
+    expect((await screen.findByLabelText('Classification')) as HTMLSelectElement).toHaveProperty(
+      'disabled',
+      false,
+    );
   });
 
   it('shows group controls when classification is advisory-only', async () => {
@@ -427,7 +435,7 @@ describe('AuthAdminModalHost content protection controls', () => {
       await screen.findByRole('button', { name: 'Edit protection for Engineering' }),
     );
 
-    expect(await screen.findByLabelText('Require classification')).toBeTruthy();
+    expect(await screen.findByLabelText('Classification')).toBeTruthy();
     expect(screen.getByRole('group', { name: 'Access levels' })).toBeTruthy();
   });
 
@@ -463,6 +471,109 @@ describe('AuthAdminModalHost content protection controls', () => {
 });
 
 describe('AuthAdminModalHost protection state guards', () => {
+  it('keeps Classification inherited and shows named candidates when a Skip save is rejected', async () => {
+    const user = userEvent.setup();
+    const skipGroup = { ...GROUP, id: 'skip', display_name: 'Skip group' };
+    const requireGroup = { ...GROUP, id: 'require', display_name: 'Require group' };
+    getConfig.mockResolvedValue(CONFIG);
+    updateContentProtectionConfigSlice.mockRejectedValue(
+      new ContentProtectionApiError('Conflicting group policies', 422, {
+        code: 'conflicting_group_policies',
+        message: 'Conflicting group policies',
+        conflicts: [
+          {
+            user_id: 'candidate',
+            username: 'candidate-user',
+            display_name: 'Candidate User',
+            skip_group_ids: ['skip'],
+            require_group_ids: ['require'],
+          },
+        ],
+        total: 1,
+        truncated: false,
+      }),
+    );
+    render(<AuthAdminModalHost {...hostProps({ authGroups: [GROUP, skipGroup, requireGroup] })} />);
+
+    await openProtectionPanel(user);
+    const classification = await screen.findByLabelText('Classification');
+    await user.selectOptions(classification, 'skip');
+
+    const conflict = await waitFor(() => {
+      const candidate = document.querySelector('[data-group-candidate-policy-conflict]');
+      expect(candidate).not.toBeNull();
+      return candidate as HTMLElement;
+    });
+    expect(conflict.textContent).toContain('Candidate User');
+    expect(conflict.textContent).toContain('Skip group');
+    expect(conflict.textContent).toContain('Require group');
+    expect(classification).toHaveProperty('value', 'inherit');
+  });
+
+  it('keeps saved access-level checkboxes unchanged when a mapping save is rejected', async () => {
+    const user = userEvent.setup();
+    const restrictedConfig = {
+      ...CONFIG,
+      access_levels: [
+        ...CONFIG.access_levels,
+        { id: 'restricted', name: 'Restricted', granted_category_ids: [], guidance: '' },
+      ],
+      group_access_levels: [{ group_id: GROUP.id, access_level_id: 'standard' }],
+    };
+    getConfig.mockResolvedValue(restrictedConfig);
+    updateContentProtectionConfigSlice.mockRejectedValue(
+      new ContentProtectionApiError('Conflicting group policies', 422, {
+        code: 'conflicting_group_policies',
+        message: 'Conflicting group policies',
+        conflicts: [
+          {
+            user_id: 'candidate',
+            username: 'candidate-user',
+            display_name: 'Candidate User',
+            skip_group_ids: ['skip'],
+            require_group_ids: ['require'],
+          },
+        ],
+        total: 1,
+        truncated: false,
+      }),
+    );
+    renderModal();
+
+    await openProtectionPanel(user);
+    await user.click(screen.getByLabelText(/Restricted/));
+
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-group-candidate-policy-conflict]')?.textContent,
+      ).toContain('Candidate User'),
+    );
+    expect(screen.getByLabelText(/Standard/)).toHaveProperty('checked', true);
+    expect(screen.getByLabelText(/Restricted/)).toHaveProperty('checked', false);
+  });
+
+  it('uses full conflict group IDs to flag a group absent from capped conflict rows', async () => {
+    const user = userEvent.setup();
+    getConfig.mockResolvedValue(CONFIG);
+    getPolicyConflicts.mockResolvedValue({
+      conflicts: [],
+      total: 51,
+      truncated: true,
+      conflicted_group_ids: [GROUP.id],
+    });
+    renderModal();
+
+    await openProtectionPanel(user);
+
+    const alert = await waitFor(() => {
+      const candidate = document.querySelector('[data-group-policy-conflict]');
+      expect(candidate).not.toBeNull();
+      return candidate as HTMLElement;
+    });
+    expect(alert.textContent).toContain('outside the displayed user rows');
+    expect(alert.textContent).toContain('Showing 0 of 51 conflicts');
+  });
+
   it('ignores a config response from a previous open after close and reopen', async () => {
     const user = userEvent.setup();
     const stale = deferred<ContentProtectionConfig>();
@@ -498,7 +609,7 @@ describe('AuthAdminModalHost protection state guards', () => {
     expect(await screen.findByText(/Config offline/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Retry' }));
 
-    expect(await screen.findByLabelText('Require classification')).toBeTruthy();
+    expect(await screen.findByLabelText('Classification')).toBeTruthy();
     expect(getConfig).toHaveBeenCalledTimes(2);
   });
 
@@ -551,7 +662,7 @@ describe('AuthAdminModalHost protection state guards', () => {
 
     expect(await screen.findByText(/no longer available/)).toBeTruthy();
     expect(within(panel).getByLabelText('Name')).toHaveProperty('value', 'Standard edited');
-    await user.selectOptions(within(panel).getByLabelText('Require classification'), 'require');
+    await user.selectOptions(within(panel).getByLabelText('Classification'), 'require');
     expect(updateContentProtectionConfigSlice).not.toHaveBeenCalled();
     expect(props.toast.error).toHaveBeenCalledWith(expect.stringContaining('no longer available'));
   });
@@ -563,7 +674,7 @@ describe('AuthAdminModalHost protection state guards', () => {
     renderModal();
 
     await openProtectionPanel(user);
-    await user.selectOptions(await screen.findByLabelText('Require classification'), 'require');
+    await user.selectOptions(await screen.findByLabelText('Classification'), 'require');
 
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Edit Engineering name' })).toHaveProperty(
