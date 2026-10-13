@@ -421,19 +421,77 @@ describe('ContentProtectionSettingsSection', () => {
     expect(levelIds.every((id: string) => /^level_[a-z0-9]{12}$/.test(id))).toBe(true);
   });
 
-  it('deletes categories from a rail trash button and keeps system categories protected', async () => {
-    installFetch();
+  it('hides system categories and returns focus to a visible category after deletion', async () => {
+    const categories = {
+      ...config,
+      categories: [
+        { ...config.categories[0], id: 'operational', name: 'Operational' },
+        ...config.categories,
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => response(url.endsWith('/catalog') ? catalog : categories)),
+    );
     const user = await openSetup();
     await user.click(screen.getByRole('tab', { name: 'Categories' }));
 
-    expect(screen.queryByRole('button', { name: 'Delete Rule override' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Rule override/ })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Delete Credentials' }));
 
     expect(screen.queryByRole('button', { name: /^Credentials\b/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+    expect(screen.queryByText('Rule override')).toBeNull();
     await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Rule override\b/ })),
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Operational\b/ })),
     );
+  });
+
+  it('keeps the system category in config while capping all categories at 24 total', async () => {
+    const editableCategories = Array.from({ length: 23 }, (_, index) => ({
+      ...config.categories[0],
+      id: `category-${index}`,
+      name: `Category ${index}`,
+    }));
+    const atCapacity = { ...config, categories: [...editableCategories, config.categories[1]] };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => response(url.endsWith('/catalog') ? catalog : atCapacity)),
+    );
+    const user = await openSetup();
+
+    expect(screen.getByText('23 editable categories')).toBeTruthy();
+    await user.click(screen.getByRole('tab', { name: 'Categories' }));
+    expect(
+      (screen.getByRole('button', { name: 'Add category' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(screen.queryByText('Rule override')).toBeNull();
+  });
+
+  it('uses readable strictness labels in category rows without rounding custom values', async () => {
+    const configured = {
+      ...config,
+      categories: [
+        { ...config.categories[0], threshold_override: 0.25 },
+        {
+          ...config.categories[0],
+          id: 'custom',
+          name: 'Custom category',
+          threshold_override: 0.3333,
+        },
+        config.categories[1],
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => response(url.endsWith('/catalog') ? catalog : configured)),
+    );
+    const user = await openSetup();
+
+    await user.click(screen.getByRole('tab', { name: 'Categories' }));
+    expect(screen.getByText('Strict (≥25%)')).toBeTruthy();
+    expect(screen.getByText('Custom (≥33.33%)')).toBeTruthy();
+    expect(screen.queryByText('Threshold 0.3333')).toBeNull();
   });
 
   it('deletes a granted category and removes it from access-level grants on save', async () => {
@@ -534,8 +592,24 @@ describe('ContentProtectionSettingsSection', () => {
     });
     vi.stubGlobal('fetch', fetch);
     const user = await openSetup();
-    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
+    await user.click(screen.getByRole('tab', { name: 'Classifier' }));
+    expect(document.querySelector('#content-protection-strictness')).toBeNull();
+    expect(screen.queryByLabelText('Strictness')).toBeNull();
+    await user.click(screen.getByRole('tab', { name: 'Coverage' }));
+    const coverageFieldset = document.querySelector<HTMLElement>(
+      'fieldset#content-protection-coverage-fieldset',
+    )!;
+    expect(coverageFieldset.querySelector('legend')?.textContent).toContain('Coverage');
+    expect(within(coverageFieldset).getByRole('button', { name: 'Coverage help' })).toBeTruthy();
+    const strictness = document.querySelector<HTMLElement>('#content-protection-strictness')!;
+    expect(strictness.previousElementSibling).toBe(coverageFieldset);
+    expect(coverageFieldset.lastElementChild?.id).toBe('content-protection-policy-links');
+    expect(
+      within(coverageFieldset).getByText('Configure specific policies (opens in a new tab):'),
+    ).toBeTruthy();
     await user.selectOptions(screen.getByLabelText('Strictness'), 'balanced');
+    await user.click(screen.getByRole('tab', { name: 'Review & save' }));
+    expect(screen.queryByLabelText('Strictness')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Save protection' }));
     const savedBody = JSON.parse(
       fetch.mock.calls.find(([, options]) => options?.method === 'PUT')?.[1]?.body as string,
@@ -544,7 +618,7 @@ describe('ContentProtectionSettingsSection', () => {
       expected_revision: 3,
       config: { strictness: 'balanced', revision: 3 },
     });
-    expect(screen.getByLabelText('Strictness').matches(':disabled')).toBe(true);
+    expect(screen.getByRole('tab', { name: 'Review & save' }).matches(':disabled')).toBe(true);
     expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -761,6 +835,18 @@ describe('ContentProtectionSettingsSection', () => {
     await user.click(screen.getByRole('button', { name: 'Test content' }));
     expect(await screen.findByText('85.0%')).toBeTruthy();
     expect(screen.getByText('above threshold')).toBeTruthy();
+  });
+  it('labels the system detection score as a bypass attempt', async () => {
+    installFetch({
+      test: { code: 'ready', verdict: 'allow', probabilities: { rule_override: 0.2 } },
+    });
+    const user = await openInspect();
+    await user.click(screen.getByRole('tab', { name: 'Test content' }));
+    await user.type(screen.getByLabelText('Sample content'), 'test');
+    await user.click(screen.getByRole('button', { name: 'Test content' }));
+
+    expect(await screen.findByText('Bypass attempt')).toBeTruthy();
+    expect(screen.queryByText('Rule override')).toBeNull();
   });
   it('exposes the settings highlight target on the always-rendered accordion header', () => {
     render(<ContentProtectionSettingsSection open={false} onToggle={() => {}} />);
@@ -1106,10 +1192,8 @@ describe('ContentProtectionSettingsSection', () => {
 
     await user.click(screen.getByRole('tab', { name: 'Access levels' }));
     await user.click(screen.getByRole('button', { name: /^Standard\b/ }));
-    await user.selectOptions(
-      screen.getByRole('combobox', { name: 'Add group to this level' }),
-      'admins',
-    );
+    await user.click(screen.getByRole('button', { name: 'Groups for this level' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Admins' }));
     await user.click(screen.getByRole('button', { name: /^Elevated\b/ }));
     await user.click(screen.getByRole('button', { name: 'Make default level' }));
     await user.click(screen.getByRole('tab', { name: 'Review & save' }));

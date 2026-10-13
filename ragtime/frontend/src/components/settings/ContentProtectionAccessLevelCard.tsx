@@ -33,6 +33,10 @@ export function ContentProtectionAccessLevelCard({
         ? [...level.granted_category_ids, categoryId]
         : level.granted_category_ids.filter((id) => id !== categoryId),
     });
+  const editableCategories = categories.filter((category) => !category.system);
+  const grantAllCategories = () =>
+    onUpdate(level.id, { granted_category_ids: editableCategories.map((category) => category.id) });
+  const clearCategories = () => onUpdate(level.id, { granted_category_ids: [] });
 
   return (
     <article
@@ -75,29 +79,49 @@ export function ContentProtectionAccessLevelCard({
 
       <fieldset className="content-protection-fieldset">
         <legend className="access-level-section-heading">Granted categories</legend>
+        <div className="content-protection-level-grant-actions">
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            data-grant-all
+            aria-label="Grant all categories"
+            disabled={fieldsDisabled}
+            onClick={grantAllCategories}
+          >
+            Select all
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            data-grant-none
+            aria-label="Revoke all categories"
+            disabled={fieldsDisabled}
+            onClick={clearCategories}
+          >
+            Clear
+          </button>
+        </div>
         <div className="content-protection-level-grants">
-          {categories
-            .filter((category) => category.id !== 'rule_override')
-            .map((category) => (
-              <label className="checkbox-label" key={category.id}>
-                <input
-                  className="access-level-category-checkbox"
-                  aria-label={category.name}
-                  aria-describedby={`${descriptionIdPrefix}category-${category.id}-description`}
-                  type="checkbox"
-                  checked={level.granted_category_ids.includes(category.id)}
-                  onChange={(event) => toggleCategory(category.id, event.target.checked)}
-                  disabled={fieldsDisabled}
-                />
-                <span className="checkbox-label-text">{category.name}</span>
-                <span
-                  id={`${descriptionIdPrefix}category-${category.id}-description`}
-                  className="field-help"
-                >
-                  {category.description}
-                </span>
-              </label>
-            ))}
+          {editableCategories.map((category) => (
+            <label className="checkbox-label" key={category.id}>
+              <input
+                className="access-level-category-checkbox"
+                aria-label={category.name}
+                aria-describedby={`${descriptionIdPrefix}category-${category.id}-description`}
+                type="checkbox"
+                checked={level.granted_category_ids.includes(category.id)}
+                onChange={(event) => toggleCategory(category.id, event.target.checked)}
+                disabled={fieldsDisabled}
+              />
+              <span className="checkbox-label-text">{category.name}</span>
+              <span
+                id={`${descriptionIdPrefix}category-${category.id}-description`}
+                className="field-help"
+              >
+                {category.description}
+              </span>
+            </label>
+          ))}
         </div>
       </fieldset>
       <div className="form-group">

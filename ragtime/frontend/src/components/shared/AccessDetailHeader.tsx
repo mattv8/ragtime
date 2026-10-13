@@ -14,6 +14,7 @@ interface AccessDetailHeaderProps {
   headingId: string;
   title: string;
   meta?: ReactNode;
+  actions?: ReactNode;
   /** When set, the title is renamed in place with the shared hover-click editor. */
   editableTitle?: EditableTitle;
   closeLabel?: string;
@@ -24,6 +25,7 @@ export function AccessDetailHeader({
   headingId,
   title,
   meta,
+  actions,
   editableTitle,
   closeLabel = 'Close access editor',
   onClose,
@@ -63,6 +65,11 @@ export function AccessDetailHeader({
           </div>
         )}
       </div>
+      {actions && (
+        <div className="access-md-detail-actions" data-access-detail-actions>
+          {actions}
+        </div>
+      )}
     </header>
   );
 }

@@ -48,7 +48,10 @@ beforeEach(() => {
   } as never);
 });
 
-afterEach(cleanup);
+afterEach(async () => {
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  cleanup();
+});
 
 describe('AccessLevelsModal interactions', () => {
   it('closes the detail before the modal when Escape is pressed', async () => {

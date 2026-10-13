@@ -21,53 +21,67 @@ const CATEGORY: ContentCategory = {
 afterEach(cleanup);
 
 describe('ContentProtectionCategoryCard', () => {
-  it('commits a typed threshold on blur', async () => {
+  it('sets strictness presets and restores the global setting', async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(<ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} />);
+    render(
+      <ContentProtectionCategoryCard
+        category={CATEGORY}
+        globalStrictness="strict"
+        onUpdate={onUpdate}
+      />,
+    );
 
-    const threshold = screen.getByLabelText('Threshold override');
-    await user.clear(threshold);
-    await user.type(threshold, '0.7');
-    await user.tab();
+    const strictness = screen.getByLabelText('Strictness');
+    await user.selectOptions(strictness, 'permissive');
+    await user.selectOptions(strictness, '');
 
-    expect(onUpdate).toHaveBeenCalledWith('operational', { threshold_override: 0.7 });
+    expect(onUpdate).toHaveBeenNthCalledWith(1, 'operational', { threshold_override: 0.75 });
+    expect(onUpdate).toHaveBeenNthCalledWith(2, 'operational', { threshold_override: null });
+    expect(screen.getByRole('option', { name: 'Follow global — Strict (≥25%)' })).toBeTruthy();
   });
 
-  it.each(['0', '1.1'])('keeps the committed threshold after invalid value %s', async (value) => {
-    const user = userEvent.setup();
+  it('preserves a custom threshold with its exact displayed precision', () => {
     const onUpdate = vi.fn();
-    render(<ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} />);
+    render(
+      <ContentProtectionCategoryCard
+        category={{ ...CATEGORY, threshold_override: 0.123456 }}
+        globalStrictness="balanced"
+        onUpdate={onUpdate}
+      />,
+    );
 
-    const threshold = screen.getByLabelText('Threshold override');
-    await user.clear(threshold);
-    await user.type(threshold, value);
-    await user.tab();
-
+    expect(screen.getByRole('option', { name: 'Custom (≥12.3456%)' })).toBeTruthy();
     expect(onUpdate).not.toHaveBeenCalled();
-    expect((threshold as HTMLInputElement).value).toBe('0.5');
-    expect(screen.getByRole('alert')).toBeTruthy();
   });
 
-  it('clears a threshold explicitly and cancels a draft with Escape', async () => {
-    const user = userEvent.setup();
-    const onUpdate = vi.fn();
-    render(<ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} />);
+  it.each([
+    [0.07, '7'],
+    [0.29, '29'],
+    [0.57, '57'],
+    [0.3333, '33.33'],
+  ])('formats %s without floating point display noise', (threshold, percentage) => {
+    render(
+      <ContentProtectionCategoryCard
+        category={{ ...CATEGORY, threshold_override: threshold }}
+        globalStrictness="balanced"
+        onUpdate={vi.fn()}
+      />,
+    );
 
-    const threshold = screen.getByLabelText('Threshold override');
-    await user.clear(threshold);
-    await user.tab();
-    expect(onUpdate).toHaveBeenCalledWith('operational', { threshold_override: null });
-
-    await user.type(threshold, '0.7');
-    await user.keyboard('{Escape}');
-    expect((threshold as HTMLInputElement).value).toBe('0.5');
+    expect(screen.getByRole('option', { name: `Custom (≥${percentage}%)` })).toBeTruthy();
   });
 
   it('preserves multiline text until blur and cancels required-field drafts', async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(<ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} />);
+    render(
+      <ContentProtectionCategoryCard
+        category={CATEGORY}
+        globalStrictness="strict"
+        onUpdate={onUpdate}
+      />,
+    );
 
     const description = screen.getByLabelText('Description');
     await user.clear(description);
@@ -87,7 +101,13 @@ describe('ContentProtectionCategoryCard', () => {
   it('edits the name inline from the card heading', async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(<ContentProtectionCategoryCard category={CATEGORY} onUpdate={onUpdate} />);
+    render(
+      <ContentProtectionCategoryCard
+        category={CATEGORY}
+        globalStrictness="strict"
+        onUpdate={onUpdate}
+      />,
+    );
 
     expect(screen.queryByLabelText('Category name')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Edit category name' }));
@@ -110,18 +130,27 @@ describe('ContentProtectionCategoryCard', () => {
 
   it('leaves system categories read-only', () => {
     render(
-      <ContentProtectionCategoryCard category={{ ...CATEGORY, system: true }} onUpdate={vi.fn()} />,
+      <ContentProtectionCategoryCard
+        category={{ ...CATEGORY, system: true }}
+        globalStrictness="strict"
+        onUpdate={vi.fn()}
+      />,
     );
 
     expect(screen.getByRole('heading', { name: 'Operational' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Edit category name' })).toBeNull();
     expect((screen.getByLabelText('Description') as HTMLTextAreaElement).disabled).toBe(true);
-    expect(screen.queryByLabelText('Threshold override')).toBeNull();
+    expect(screen.queryByLabelText('Strictness')).toBeNull();
   });
 
   it('hides the header while preserving category fields', () => {
     const { rerender } = render(
-      <ContentProtectionCategoryCard category={CATEGORY} hideHeader onUpdate={vi.fn()} />,
+      <ContentProtectionCategoryCard
+        category={CATEGORY}
+        globalStrictness="strict"
+        hideHeader
+        onUpdate={vi.fn()}
+      />,
     );
 
     expect(document.querySelector('[data-category-id="operational"]')).toBeTruthy();
@@ -132,7 +161,7 @@ describe('ContentProtectionCategoryCard', () => {
       'Includes',
       'Excludes',
       'Examples',
-      'Threshold override',
+      'Strictness',
     ]) {
       expect(screen.getByLabelText(label)).toBeTruthy();
     }
@@ -141,6 +170,7 @@ describe('ContentProtectionCategoryCard', () => {
     rerender(
       <ContentProtectionCategoryCard
         category={{ ...CATEGORY, system: true }}
+        globalStrictness="strict"
         hideHeader
         onUpdate={vi.fn()}
       />,
@@ -151,7 +181,7 @@ describe('ContentProtectionCategoryCard', () => {
         (screen.getByLabelText(label) as HTMLTextAreaElement | HTMLInputElement).disabled,
       ).toBe(true);
     }
-    expect(screen.queryByLabelText('Threshold override')).toBeNull();
+    expect(screen.queryByLabelText('Strictness')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
   });
 });
@@ -203,7 +233,10 @@ describe('ContentProtectionAccessLevelCard', () => {
     render(
       <ContentProtectionAccessLevelCard
         level={level}
-        categories={[CATEGORY, { ...CATEGORY, id: 'rule_override', name: 'Rule override' }]}
+        categories={[
+          CATEGORY,
+          { ...CATEGORY, id: 'rule_override', name: 'Rule override', system: true },
+        ]}
         disabled
         idPrefix="settings-"
         onUpdate={vi.fn()}

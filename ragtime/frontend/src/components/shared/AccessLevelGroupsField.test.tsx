@@ -6,7 +6,7 @@ import { AccessLevelGroupsField } from './AccessLevelGroupsField';
 
 afterEach(cleanup);
 
-it('adds available groups and removes mapped known and unknown groups', async () => {
+it('filters searchable groups and updates only the changed mapping while preserving unknown chips', async () => {
   const user = userEvent.setup();
   const onAdd = vi.fn();
   const onRemove = vi.fn();
@@ -30,13 +30,14 @@ it('adds available groups and removes mapped known and unknown groups', async ()
 
   expect(screen.getByText('Internal').className).toBe('provider-badge');
   expect(screen.getByText('Unknown (retired-)')).toBeTruthy();
-  expect(screen.queryByRole('option', { name: 'Finance' })).toBeNull();
-  expect(screen.queryByRole('option', { name: /unknown/i })).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Groups for this level' }));
+  await user.type(screen.getByRole('textbox', { name: 'Filter groups' }), 'Engineering');
 
-  await user.selectOptions(screen.getByLabelText('Add group to this level'), 'engineering');
+  await user.click(screen.getByRole('checkbox', { name: 'Engineering' }));
   await user.click(screen.getByRole('button', { name: 'Remove Finance from this level' }));
   await user.click(screen.getByRole('button', { name: 'Remove unknown group retired-group' }));
 
+  expect(onAdd).toHaveBeenCalledOnce();
   expect(onAdd).toHaveBeenCalledWith('engineering');
   expect(onRemove).toHaveBeenNthCalledWith(1, 'finance');
   expect(onRemove).toHaveBeenNthCalledWith(2, 'retired-group');
@@ -55,7 +56,7 @@ it('shows its disabled hint instead of the add control while keeping mapped grou
     />,
   );
 
-  expect(screen.queryByLabelText('Add group to this level')).toBeNull();
+  expect(screen.queryByLabelText('Groups for this level')).toBeNull();
   expect(screen.getByText('Save this level before mapping groups.')).toBeTruthy();
   expect(
     (screen.getByRole('button', { name: 'Remove Finance from this level' }) as HTMLButtonElement)

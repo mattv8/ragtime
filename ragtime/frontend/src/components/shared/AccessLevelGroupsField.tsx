@@ -1,9 +1,11 @@
 import type { ReactNode } from 'react';
+import { CheckboxDropdown } from './CheckboxDropdown';
 
 export interface AccessLevelGroup {
   id: string;
   label: string;
   badge?: ReactNode;
+  dropdownBadge?: string;
 }
 
 interface AccessLevelGroupsFieldProps {
@@ -63,24 +65,29 @@ export function AccessLevelGroupsField({
       {disabled && disabledHint ? (
         <p className="field-help">{disabledHint}</p>
       ) : (
-        <select
-          aria-label="Add group to this level"
-          data-add-group-select
-          value=""
+        <CheckboxDropdown
+          id={`${idPrefix}groups-dropdown`}
+          ariaLabel="Groups for this level"
+          searchAriaLabel="Filter groups"
+          searchThreshold={0}
+          options={groups.map((group) => ({
+            id: group.id,
+            label: group.label,
+            badge: group.dropdownBadge,
+          }))}
+          selectedIds={mappedIds}
+          triggerLabel={
+            mappedIds.length
+              ? `${mappedIds.length} group${mappedIds.length === 1 ? '' : 's'} selected`
+              : 'Select groups…'
+          }
+          placeholder="Select groups…"
           disabled={disabled}
-          onChange={(event) => {
-            if (event.target.value) onAdd(event.target.value);
+          onChange={(nextIds) => {
+            nextIds.filter((id) => !mappedIds.includes(id)).forEach((id) => onAdd(id));
+            mappedIds.filter((id) => !nextIds.includes(id)).forEach((id) => onRemove(id));
           }}
-        >
-          <option value="">Add a group…</option>
-          {groups
-            .filter((group) => !mappedIds.includes(group.id))
-            .map((group) => (
-              <option key={group.id} value={group.id}>
-                {group.label}
-              </option>
-            ))}
-        </select>
+        />
       )}
     </fieldset>
   );

@@ -71,8 +71,15 @@ export function accessLevelDeleteBlockedReason(
   return undefined;
 }
 
-function DefaultBadge() {
-  return <span className="access-level-default-badge">Default</span>;
+function DefaultBadge({ detail = false }: { detail?: boolean }) {
+  return (
+    <span
+      className="access-level-default-badge"
+      {...(detail ? { 'data-access-detail-default-badge': '' } : {})}
+    >
+      Default
+    </span>
+  );
 }
 
 export function AccessLevelsMasterDetail({
@@ -114,9 +121,9 @@ export function AccessLevelsMasterDetail({
     return {
       id: level.id,
       name: level.name || '(new level)',
+      badge: level.id === defaultLevelId ? <DefaultBadge /> : undefined,
       meta: (
         <>
-          {level.id === defaultLevelId && <DefaultBadge />}
           {groupCount > 0 && <span>{pluralize(groupCount, 'group', 'groups')}</span>}
           {categoryCount > 0 && <span>{pluralize(categoryCount, 'category', 'categories')}</span>}
           {rowIndicator?.(level)}
@@ -167,7 +174,23 @@ export function AccessLevelsMasterDetail({
               key={selectedLevel.id}
               headingId={headingId}
               title={selectedLevel.name}
-              meta={isDefault ? <DefaultBadge /> : undefined}
+              actions={
+                isDefault ? (
+                  <DefaultBadge detail />
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    data-make-default-btn
+                    aria-label="Make default level"
+                    title="Verified users with no group mapping receive this level"
+                    disabled={levelActionsDisabled}
+                    onClick={() => onMakeDefault(selectedLevel.id)}
+                  >
+                    Make default
+                  </button>
+                )
+              }
               editableTitle={{
                 ariaLabel: 'Access level name',
                 maxLength: 128,
@@ -180,6 +203,12 @@ export function AccessLevelsMasterDetail({
             />
             <div className="access-md-detail-body" data-level-detail-body>
               {detailIntro}
+              {isDefault && (
+                <p className="field-help" data-default-level-explanation>
+                  Verified users with no group mapping receive this level. Default is not added to
+                  mapped grants.
+                </p>
+              )}
               <ContentProtectionAccessLevelCard
                 key={selectedLevel.id}
                 level={selectedLevel}
@@ -198,23 +227,6 @@ export function AccessLevelsMasterDetail({
                 onAdd={(groupId) => onAddGroup(selectedLevel.id, groupId)}
                 onRemove={(groupId) => onRemoveGroup(selectedLevel.id, groupId)}
               />
-              <section className="content-protection-fieldset" data-level-section="default">
-                <h5 className="access-level-section-heading">Default level</h5>
-                <p className="field-help">
-                  All verified users with no group mapping receive the default level.
-                </p>
-                {!isDefault && (
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-secondary"
-                    data-make-default-btn
-                    disabled={levelActionsDisabled}
-                    onClick={() => onMakeDefault(selectedLevel.id)}
-                  >
-                    Make default level
-                  </button>
-                )}
-              </section>
               {detailExtras}
             </div>
             {detailFooter}
