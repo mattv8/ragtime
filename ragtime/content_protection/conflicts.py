@@ -34,9 +34,8 @@ def policy_conflict_detail(conflicts: list[dict[str, Any]], total: int, conflict
         "conflicts": conflicts[:_MAX_CONFLICT_ROWS],
         "total": total,
         "truncated": total > _MAX_CONFLICT_ROWS,
-        "conflicted_group_ids": conflicted_group_ids or sorted(
-            {group_id for row in conflicts for group_id in [*row["skip_group_ids"], *row["require_group_ids"]]}
-        ),
+        "conflicted_group_ids": conflicted_group_ids
+        or sorted({group_id for row in conflicts for group_id in [*row["skip_group_ids"], *row["require_group_ids"]]}),
     }
 
 
@@ -75,9 +74,7 @@ def conflicts_for_user(config: ContentProtectionConfig, user: Any, group_ids: se
     ]
 
 
-async def find_group_policy_conflicts(
-    config: ContentProtectionConfig, db: Any, user_id: str | None = None
-) -> tuple[list[dict[str, Any]], int, list[str]]:
+async def find_group_policy_conflicts(config: ContentProtectionConfig, db: Any, user_id: str | None = None) -> tuple[list[dict[str, Any]], int, list[str]]:
     """Find all active membership conflicts, returning only a bounded preview."""
     skip_ids, require_ids = group_policy_ids(config)
     policy_group_ids = skip_ids | require_ids

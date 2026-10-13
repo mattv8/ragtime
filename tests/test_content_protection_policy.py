@@ -103,7 +103,10 @@ class ContentProtectionPolicyTests(unittest.TestCase):
             requirements=[Requirement(scope_kind="group", scope_key="skip", mode="skip")],
         )
 
-        self.assertEqual(resolve_required(config, ProtectionContext(user_id="u", audience_user_ids=("v",)), {"u": {"skip"}, "v": set()}, {"u", "v"}), (False, "no_requirement"))
+        self.assertEqual(
+            resolve_required(config, ProtectionContext(user_id="u", audience_user_ids=("v",)), {"u": {"skip"}, "v": set()}, {"u", "v"}),
+            (False, "no_requirement"),
+        )
 
     def test_skip_mode_is_rejected_for_non_group_scope(self) -> None:
         with self.assertRaises(ValidationError):
