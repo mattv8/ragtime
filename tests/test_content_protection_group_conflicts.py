@@ -1,10 +1,13 @@
 import unittest
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 from fastapi import HTTPException
-from prisma.enums import AuthProvider
+from prisma import Json
+from prisma.enums import AuthProvider, UserRole
+from prisma.models import User
 
 from ragtime.api import auth
 from ragtime.content_protection import store
@@ -48,9 +51,28 @@ class ContentProtectionGroupConflictTests(unittest.IsolatedAsyncioTestCase):
             authgroup=SimpleNamespace(find_many=mock.AsyncMock(return_value=groups)),
             tx=lambda: Context(),
         )
+        admin = User(
+            id="admin",
+            username="admin",
+            displayName="Admin",
+            email="admin@example.com",
+            role=UserRole.admin,
+            authProvider=AuthProvider.local_managed,
+            themePack=None,
+            roleManuallySet=False,
+            sourceProvider=None,
+            sourceSyncedAt=None,
+            sourceExpiresAt=None,
+            cachedGroups=cast(Json, "[]"),
+            chatEnabled=None,
+            userspaceGenerationEnabled=None,
+            createdAt=datetime.now(UTC),
+            updatedAt=datetime.now(UTC),
+            securityGeneration=0,
+        )
         with mock.patch.object(auth, "get_db", new=mock.AsyncMock(return_value=db)):
             with self.assertRaises(HTTPException) as raised:
-                await auth.set_user_groups("target", auth.SetUserGroupsRequest(group_ids=["skip", "require"]), SimpleNamespace(id="admin"))
+                await auth.set_user_groups("target", auth.SetUserGroupsRequest(group_ids=["skip", "require"]), admin)
 
         self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(events, ["lock"])

@@ -87,7 +87,9 @@ class ContentProtectionRouteTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.get("/indexes/content-protection/policy-conflicts?user_id=user-51")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(finder.await_args.args[2], "user-51")
+        await_args = finder.await_args
+        assert await_args is not None
+        self.assertEqual(await_args.args[2], "user-51")
 
     async def test_policy_conflicts_invalid_config_returns_safe_409(self) -> None:
         with mock.patch.object(routes, "load_config", new=mock.AsyncMock(side_effect=ValueError("private parser detail"))):
