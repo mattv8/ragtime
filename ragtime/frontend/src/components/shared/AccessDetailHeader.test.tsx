@@ -32,3 +32,17 @@ it('uses the supplied close label', () => {
 
   expect(screen.getByRole('button', { name: 'Return to access levels' })).toBeTruthy();
 });
+
+it('keeps a right-aligned action separate from a long title', () => {
+  render(
+    <AccessDetailHeader
+      headingId="detail-title"
+      title="A very long access level name that should retain its action"
+      actions={<button type="button">Make default</button>}
+      onClose={vi.fn()}
+    />,
+  );
+
+  expect(document.querySelector('[data-access-detail-actions]')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Make default' })).toBeTruthy();
+});

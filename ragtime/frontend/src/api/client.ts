@@ -426,6 +426,7 @@ function normalizeGitWebhookEnableResponse(
 
 class ApiError extends Error {
   public readonly detail?: string;
+  public readonly structuredDetail?: unknown;
   public readonly publicDetail?: PublicErrorDetail;
 
   constructor(
@@ -438,6 +439,7 @@ class ApiError extends Error {
     super(formatPublicErrorDetail(detail ?? message, fallback));
     this.name = 'ApiError';
     this.detail = typeof detail === 'string' ? detail : undefined;
+    this.structuredDetail = detail;
     this.publicDetail = publicDetail ?? undefined;
   }
 

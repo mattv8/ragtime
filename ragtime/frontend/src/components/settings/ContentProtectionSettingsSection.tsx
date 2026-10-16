@@ -38,7 +38,14 @@ import {
 import { RowDeleteButton } from '../shared/RowDeleteButton';
 import { MasterDetailLayout } from '../shared/MasterDetailLayout';
 import { CONTENT_PROTECTION_SETTING_ID } from '../shared/SettingsHighlightLink';
-import { ContentProtectionCategoryCard } from './ContentProtectionCategoryCard';
+import {
+  AccessLevelsInfoCallout,
+  CategoriesInfoCallout,
+} from '../shared/ContentProtectionInfoCallouts';
+import {
+  categoryStrictnessLabel,
+  ContentProtectionCategoryCard,
+} from './ContentProtectionCategoryCard';
 import { JevClassifierFields } from './JevClassifierFields';
 import { MasterToggle } from './MasterToggle';
 import { SettingsAccordionSection } from './SettingsAccordionSection';
@@ -70,6 +77,9 @@ const EMPTY_CATALOG: ContentProtectionCatalog = {
 const thresholdFor = (config: ContentProtectionConfig, category: ContentCategory) =>
   category.threshold_override ??
   { strict: 0.25, balanced: 0.5, permissive: 0.75 }[config.strictness];
+const categoryDisplayName = (category: Pick<ContentCategory, 'id' | 'name'>) =>
+  category.id === 'rule_override' ? 'Bypass attempt' : category.name;
+const scoreDisplayName = (id: string) => (id === 'rule_override' ? 'Bypass attempt' : id);
 const cloneConfig = (config: ContentProtectionConfig) => structuredClone(config);
 const classifierSignature = (config: ContentProtectionConfig) =>
   JSON.stringify({
@@ -681,6 +691,10 @@ export function ContentProtectionSettingsSection({
     );
   const deleteCategory = (category: ContentCategory) => {
     if (!setup || category.system) return false;
+    const visibleCategories = setup.categories.filter((item) => !item.system);
+    const categoryIndex = visibleCategories.findIndex((item) => item.id === category.id);
+    const nextVisibleCategory =
+      visibleCategories[categoryIndex + 1] ?? visibleCategories[categoryIndex - 1];
     update({
       categories: setup.categories.filter((item) => item.id !== category.id),
       access_levels: setup.access_levels.map((level) => ({
@@ -690,7 +704,9 @@ export function ContentProtectionSettingsSection({
     });
     setSetupError(null);
     setNewCategoryId((newId) => (newId === category.id ? null : newId));
-    setSelectedCategoryId((selectedId) => (selectedId === category.id ? null : selectedId));
+    setSelectedCategoryId((selectedId) =>
+      selectedId === category.id ? (nextVisibleCategory?.id ?? null) : selectedId,
+    );
     return true;
   };
   const updateLevel = (id: string, change: Partial<AccessLevel>) =>
@@ -996,7 +1012,10 @@ export function ContentProtectionSettingsSection({
                 className="content-protection-summary"
               >
                 <legend>Categories</legend>
-                <p>{saved.categories.length} categories</p>
+                <p>
+                  {saved.categories.filter((category) => !category.system).length} editable
+                  categories
+                </p>
                 <button
                   className="btn btn-secondary"
                   type="button"
@@ -1287,7 +1306,8 @@ export function ContentProtectionSettingsSection({
                               {item.name}: {item.verdict} ·{' '}
                               {Object.entries(item.probabilities)
                                 .map(
-                                  ([id, probability]) => `${id} ${(probability * 100).toFixed(0)}%`,
+                                  ([id, probability]) =>
+                                    `${scoreDisplayName(id)} ${(probability * 100).toFixed(0)}%`,
                                 )
                                 .join(', ')}
                             </span>
@@ -1301,34 +1321,32 @@ export function ContentProtectionSettingsSection({
             )}
             {tab === 'categories' && (
               <>
-                <p className="field-help">
-                  Categories define what information is classified. System categories cannot be
-                  edited or deleted.
-                </p>
+                <CategoriesInfoCallout />
                 <MasterDetailLayout
                   id="cp-categories"
                   heading="Categories"
-                  items={setup.categories.map((category) => ({
-                    id: category.id,
-                    name: category.name,
-                    meta: (
-                      <>
-                        {category.system && <span className="tool-badge">System</span>}
-                        <span>{category.includes.length} included</span>
-                        <span>{category.excludes.length} excluded</span>
-                        {category.threshold_override !== null && (
-                          <span>Threshold {category.threshold_override}</span>
-                        )}
-                      </>
-                    ),
-                    action: !category.system && (
-                      <RowDeleteButton
-                        label={`Delete ${category.name}`}
-                        disabled={saving}
-                        onDelete={() => deleteCategory(category)}
-                      />
-                    ),
-                  }))}
+                  items={setup.categories
+                    .filter((category) => !category.system)
+                    .map((category) => ({
+                      id: category.id,
+                      name: category.name,
+                      meta: (
+                        <>
+                          <span>{category.includes.length} included</span>
+                          <span>{category.excludes.length} excluded</span>
+                          {category.threshold_override !== null && (
+                            <span>{categoryStrictnessLabel(category.threshold_override)}</span>
+                          )}
+                        </>
+                      ),
+                      action: (
+                        <RowDeleteButton
+                          label={`Delete ${category.name}`}
+                          disabled={saving}
+                          onDelete={() => deleteCategory(category)}
+                        />
+                      ),
+                    }))}
                   selectedId={selectedCategoryId}
                   onSelect={(id) => {
                     setNewCategoryId(null);
@@ -1404,6 +1422,7 @@ export function ContentProtectionSettingsSection({
                           <ContentProtectionCategoryCard
                             key={selectedCategory.id}
                             category={selectedCategory}
+                            globalStrictness={setup.strictness}
                             hideHeader
                             onUpdate={updateCategory}
                           />
@@ -1416,9 +1435,7 @@ export function ContentProtectionSettingsSection({
             )}
             {tab === 'access_levels' && (
               <>
-                <p className="field-help">
-                  Access levels define what categories each audience may see.
-                </p>
+                <AccessLevelsInfoCallout />
                 <AccessLevelsMasterDetail
                   id="cp-levels"
                   idPrefix="cpw-level-"
@@ -1458,9 +1475,12 @@ export function ContentProtectionSettingsSection({
             )}
             {tab === 'coverage' && (
               <>
-                <div className="content-protection-coverage-field">
-                  <span className="content-protection-coverage-label">
-                    <label htmlFor="content-protection-coverage">Coverage</label>
+                <fieldset
+                  id="content-protection-coverage-fieldset"
+                  className="content-protection-fieldset"
+                >
+                  <legend className="content-protection-legend-with-badge">
+                    Coverage
                     <Popover
                       trigger="click"
                       position="bottom"
@@ -1483,9 +1503,10 @@ export function ContentProtectionSettingsSection({
                         <CircleHelp />
                       </button>
                     </Popover>
-                  </span>
+                  </legend>
                   <select
                     id="content-protection-coverage"
+                    aria-label="Coverage"
                     value={setup.coverage_mode}
                     onChange={(event) =>
                       update({
@@ -1497,87 +1518,73 @@ export function ContentProtectionSettingsSection({
                     <option value="all_supported_traffic">All supported traffic</option>
                     <option value="selected_scopes">Selected scopes</option>
                   </select>
-                </div>
-                {setup.enabled && setup.coverage_mode === 'selected_scopes' && (
-                  <section id="content-protection-app-areas" className="content-protection-block">
-                    <h4>App areas</h4>
-                    {catalog.surfaces.map((item) => (
-                      <label
-                        className="content-protection-row"
-                        key={item.id}
-                        data-surface-id={item.id}
-                      >
-                        <span>{item.name}</span>
-                        <select
-                          aria-label={`Coverage for ${item.name}`}
-                          value={requirementModeFor(setup, 'surface', item.id)}
-                          onChange={(event) =>
-                            update({
-                              requirements: withRequirement(
-                                setup,
-                                'surface',
-                                item.id,
-                                event.target.value as 'inherit' | 'require',
-                              ).requirements,
-                            })
-                          }
+                  {setup.enabled && setup.coverage_mode === 'selected_scopes' && (
+                    <section id="content-protection-app-areas" className="content-protection-block">
+                      <h4>App areas</h4>
+                      {catalog.surfaces.map((item) => (
+                        <label
+                          className="content-protection-row"
+                          key={item.id}
+                          data-surface-id={item.id}
                         >
-                          <option value="require">Require classification</option>
-                          <option value="inherit">No additional requirement</option>
-                        </select>
-                      </label>
-                    ))}
-                  </section>
-                )}
-                {!setup.enabled && setup.coverage_mode === 'selected_scopes' && (
-                  <p className="field-help">
-                    Use the main Enable content protection control to enforce saved rules. The
-                    Review &amp; save switch controls the draft; saved requirements remain in place
-                    while protection is disabled.
-                  </p>
-                )}
-                <div
-                  id="content-protection-policy-links"
-                  className="content-protection-policy-links"
-                >
-                  <span className="field-help">
-                    Configure specific policies (opens in a new tab):
-                  </span>
-                  <a href="?view=users#user-policies" target="_blank" rel="noopener noreferrer">
-                    <SearchHighlightedText text="User policies" query={searchQuery} />
-                  </a>
-                  <a href="?view=users#manage-groups" target="_blank" rel="noopener noreferrer">
-                    <SearchHighlightedText text="Manage groups" query={searchQuery} />
-                  </a>
-                  <a href="?view=tools#tools-connections" target="_blank" rel="noopener noreferrer">
-                    <SearchHighlightedText text="Tool access" query={searchQuery} />
-                  </a>
-                  <a
-                    href="?view=settings#manage-mcp-routes"
-                    target="_blank"
-                    rel="noopener noreferrer"
+                          <span>{item.name}</span>
+                          <select
+                            aria-label={`Coverage for ${item.name}`}
+                            value={requirementModeFor(setup, 'surface', item.id)}
+                            onChange={(event) =>
+                              update({
+                                requirements: withRequirement(
+                                  setup,
+                                  'surface',
+                                  item.id,
+                                  event.target.value as 'inherit' | 'require',
+                                ).requirements,
+                              })
+                            }
+                          >
+                            <option value="require">Require classification</option>
+                            <option value="inherit">No additional requirement</option>
+                          </select>
+                        </label>
+                      ))}
+                    </section>
+                  )}
+                  {!setup.enabled && setup.coverage_mode === 'selected_scopes' && (
+                    <p className="field-help">
+                      Use the main Enable content protection control to enforce saved rules. The
+                      Review &amp; save switch controls the draft; saved requirements remain in
+                      place while protection is disabled.
+                    </p>
+                  )}
+                  <div
+                    id="content-protection-policy-links"
+                    className="content-protection-policy-links"
                   >
-                    <SearchHighlightedText text="MCP routes" query={searchQuery} />
-                  </a>
-                </div>
-              </>
-            )}
-            {tab === 'review' && (
-              <>
-                <Switch
-                  hook="content-protection-enable-switch"
-                  label="Enable content protection"
-                  description="Turn on classification after reviewing saved coverage."
-                  checked={setup.enabled}
-                  onChange={(enabled) => update({ enabled })}
-                />
-                <Switch
-                  hook="content-protection-advisory-switch"
-                  label="Share access guidance with assistant"
-                  description="Independent of enforcement; no classifier call is made for guidance alone."
-                  checked={setup.share_with_assistant}
-                  onChange={(share_with_assistant) => update({ share_with_assistant })}
-                />
+                    <span className="field-help">
+                      Configure specific policies (opens in a new tab):
+                    </span>
+                    <a href="?view=users#user-policies" target="_blank" rel="noopener noreferrer">
+                      <SearchHighlightedText text="User policies" query={searchQuery} />
+                    </a>
+                    <a href="?view=users#manage-groups" target="_blank" rel="noopener noreferrer">
+                      <SearchHighlightedText text="Manage groups" query={searchQuery} />
+                    </a>
+                    <a
+                      href="?view=tools#tools-connections"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <SearchHighlightedText text="Tool access" query={searchQuery} />
+                    </a>
+                    <a
+                      href="?view=settings#manage-mcp-routes"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <SearchHighlightedText text="MCP routes" query={searchQuery} />
+                    </a>
+                  </div>
+                </fieldset>
                 <fieldset
                   id="content-protection-strictness"
                   className="content-protection-fieldset"
@@ -1597,9 +1604,29 @@ export function ContentProtectionSettingsSection({
                     <option value="permissive">Permissive — deny at ≥75% probability</option>
                   </select>
                   <p className="field-help">
-                    Thresholds are policy parameters, not security guarantees.
+                    Thresholds are policy parameters, not security guarantees. Category-level
+                    thresholds override the global setting. Remove a category override to follow the
+                    global setting.
                   </p>
                 </fieldset>
+              </>
+            )}
+            {tab === 'review' && (
+              <>
+                <Switch
+                  hook="content-protection-enable-switch"
+                  label="Enable content protection"
+                  description="Turn on classification after reviewing saved coverage."
+                  checked={setup.enabled}
+                  onChange={(enabled) => update({ enabled })}
+                />
+                <Switch
+                  hook="content-protection-advisory-switch"
+                  label="Share access guidance with assistant"
+                  description="Independent of enforcement; no classifier call is made for guidance alone."
+                  checked={setup.share_with_assistant}
+                  onChange={(share_with_assistant) => update({ share_with_assistant })}
+                />
                 <dl className="content-protection-review">
                   <dt>Classifier</dt>
                   <dd>
@@ -1816,7 +1843,7 @@ export function ContentProtectionSettingsSection({
                           const value = testResult.probabilities?.[category.id];
                           return value == null ? null : (
                             <div key={category.id}>
-                              <dt>{category.name}</dt>
+                              <dt>{categoryDisplayName(category)}</dt>
                               <dd data-category-prob={category.id}>
                                 {(value * 100).toFixed(1)}%{' '}
                                 {value >= thresholdFor(saved, category) && (

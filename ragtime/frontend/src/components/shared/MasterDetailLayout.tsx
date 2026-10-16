@@ -9,6 +9,8 @@ import {
 export interface MasterDetailItem {
   id: string;
   name: string;
+  /** Pinned to the top-right of the row, aligned with the name; never shrinks. */
+  badge?: ReactNode;
   meta?: ReactNode;
   /** Revealed on row hover or focus; rendered beside the row button, never inside it. */
   action?: ReactNode;
@@ -185,7 +187,14 @@ export function MasterDetailLayout({
                   aria-current={isSelected ? 'true' : undefined}
                   onClick={() => onSelect(item.id)}
                 >
-                  <span className="access-md-rail-row-name">{item.name}</span>
+                  {item.badge ? (
+                    <span className="access-md-rail-row-name-line">
+                      <span className="access-md-rail-row-name">{item.name}</span>
+                      <span className="access-md-rail-row-badge">{item.badge}</span>
+                    </span>
+                  ) : (
+                    <span className="access-md-rail-row-name">{item.name}</span>
+                  )}
                   {item.meta && <span className="access-md-rail-row-meta">{item.meta}</span>}
                 </button>
                 {item.action && <span className="access-md-rail-row-action">{item.action}</span>}

@@ -11,6 +11,7 @@ import {
   contentProtectionApi,
   requirementModeFor,
   type ContentProtectionConfig,
+  type PolicyConflictResult,
 } from '@/api/contentProtection';
 import type { AuthGroup } from '@/types';
 import { ContentProtectionAccessLevelCard } from '../settings/ContentProtectionAccessLevelCard';
@@ -29,11 +30,13 @@ interface Props {
   authGroups: AuthGroup[];
   onConfigSaved: (config: ContentProtectionConfig) => void;
   onUpdateMapping: (levelId: string, enabled: boolean) => Promise<void>;
-  onUpdateRequirement: (mode: 'inherit' | 'require') => Promise<void>;
+  onUpdateRequirement: (mode: 'inherit' | 'require' | 'skip') => Promise<void>;
   onBack: () => void;
   onBusyChange?: (busy: boolean) => void;
   hideHeader?: boolean;
   onNavigateToSetting?: (settingId: string) => void;
+  policyConflicts?: PolicyConflictResult;
+  onReloadPolicyConflicts?: () => Promise<void>;
   toast: { success: (message: string) => void; error: (message: string) => void };
 }
 
@@ -50,6 +53,8 @@ export const GroupProtectionPanel = forwardRef<GroupProtectionPanelHandle, Props
       onBusyChange,
       hideHeader = false,
       onNavigateToSetting,
+      policyConflicts,
+      onReloadPolicyConflicts,
       toast,
     },
     ref,
@@ -176,7 +181,7 @@ export const GroupProtectionPanel = forwardRef<GroupProtectionPanelHandle, Props
       }
       await runMapping(levelId, enabled);
     };
-    const changeRequirement = async (mode: 'inherit' | 'require') => {
+    const changeRequirement = async (mode: 'inherit' | 'require' | 'skip') => {
       setClassificationBusy(true);
       try {
         await onUpdateRequirement(mode);
@@ -191,6 +196,13 @@ export const GroupProtectionPanel = forwardRef<GroupProtectionPanelHandle, Props
       return `(${count} group${count === 1 ? '' : 's'})`;
     };
     const controlsDisabled = busy;
+    const groupConflictCount =
+      policyConflicts?.conflicts.filter(
+        (conflict) =>
+          conflict.skip_group_ids.includes(group.id) ||
+          conflict.require_group_ids.includes(group.id),
+      ).length ?? 0;
+    const groupHasConflict = Boolean(policyConflicts?.conflicted_group_ids?.includes(group.id));
 
     return (
       <section
@@ -290,17 +302,61 @@ export const GroupProtectionPanel = forwardRef<GroupProtectionPanelHandle, Props
           disabled={controlsDisabled}
         >
           <legend>Classification</legend>
-          <label htmlFor={`gpp-classification-${group.id}`}>Require classification</label>
+          <label htmlFor={`gpp-classification-${group.id}`}>Classification</label>
           <select
             id={`gpp-classification-${group.id}`}
             value={requirementModeFor(config, 'group', group.id)}
             onChange={(event) =>
-              void changeRequirement(event.target.value as 'inherit' | 'require')
+              void changeRequirement(event.target.value as 'inherit' | 'require' | 'skip')
             }
           >
-            <option value="inherit">Inherit</option>
-            <option value="require">Require classification</option>
+            <option value="inherit">Follow coverage settings</option>
+            <option value="require">Always classify members</option>
+            <option value="skip">Skip content protection</option>
           </select>
+          {requirementModeFor(config, 'group', group.id) === 'skip' && (
+            <div
+              className="tool-access-callout tool-access-callout-warning"
+              role="note"
+              data-group-skip-warning
+            >
+              <strong>Classification skipped for this group.</strong>
+              <span>
+                Content protection is bypassed for members of this group — the classifier does not
+                run and no category enforcement applies, including bypass-attempt detection. Auth
+                and resource permissions still apply. Personal Always/Never policies take precedence
+                over this setting. Access grants remain relevant for shared audiences and personal
+                overrides that require classification.
+              </span>
+            </div>
+          )}
+          {groupHasConflict && (
+            <div
+              className="tool-access-callout tool-access-callout-warning"
+              role="alert"
+              data-group-policy-conflict
+            >
+              <strong>Policy conflict</strong>
+              <span>
+                {groupConflictCount > 0
+                  ? `${groupConflictCount} shown user${groupConflictCount === 1 ? ' has' : 's have'} memberships in both this group and a group with the opposite policy.`
+                  : 'This group is involved in a policy conflict outside the displayed user rows.'}{' '}
+                {policyConflicts?.truncated &&
+                  `Showing ${policyConflicts.conflicts.length} of ${policyConflicts.total} conflicts. `}
+                Config saves are blocked until resolved.
+              </span>
+              {onReloadPolicyConflicts && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-secondary"
+                  data-reload-conflict-count
+                  onClick={() => void onReloadPolicyConflicts()}
+                >
+                  Reload
+                </button>
+              )}
+            </div>
+          )}
           <fieldset
             className="content-protection-dialog-controls"
             data-group-protection-level-checkboxes={group.id}

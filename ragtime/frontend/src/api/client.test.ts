@@ -128,6 +128,22 @@ describe('auth-aware transport', () => {
     unsubscribe();
   });
 
+  it('retains a structured 409 detail from a real fetch response', async () => {
+    const detail = {
+      code: 'conflicting_group_policies',
+      message: 'Membership conflicts with group policy',
+      conflicts: [],
+      total: 0,
+      truncated: false,
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail }, 409));
+
+    await expect(api.getCurrentUser()).rejects.toMatchObject({
+      status: 409,
+      structuredDetail: detail,
+    });
+  });
+
   it('rejects stale successful current-user and pending credential bodies', async () => {
     let resolveBody!: (value: unknown) => void;
     const delayedBody = new Promise<unknown>((resolve) => {

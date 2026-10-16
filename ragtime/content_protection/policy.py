@@ -11,20 +11,18 @@ def resolve_required(
     group_ids_by_user: dict[str, set[str]] | None = None,
     verified_user_ids: Iterable[str] | None = None,
 ) -> tuple[bool, str]:
-    """Resolve additive scope coverage without treating a user bypass as shared."""
+    """Resolve every audience slot without allowing one audience to bypass another."""
     if not config.enabled:
         return False, "master_off"
     overrides = {item.user_id: item.mode for item in config.user_overrides}
-    identities = tuple(dict.fromkeys((context.user_id, *context.audience_user_ids)))
+    primary_identity = (context.user_id,) if context.user_id is not None else ()
+    identities = tuple(dict.fromkeys((*primary_identity, *context.audience_user_ids)))
     allowed_identities = set(verified_user_ids) if verified_user_ids is not None else {identity for identity in identities if identity}
     verified = tuple(identity for identity in identities if identity and identity in allowed_identities)
-    modes = [overrides.get(identity, "inherit") for identity in verified]
-    if "always_classify" in modes:
-        return True, "user_override:always_classify"
     group_ids_by_user = group_ids_by_user or {}
-    scope_matches = []
+    scope_matches: list[str] = []
     for requirement in config.requirements:
-        if requirement.mode != "require":
+        if requirement.mode != "require" or requirement.scope_kind == "group":
             continue
         if requirement.scope_kind == "surface" and requirement.scope_key == context.surface:
             scope_matches.append("surface")
@@ -32,10 +30,32 @@ def resolve_required(
             scope_matches.append("mcp_route")
         elif requirement.scope_kind == "tool" and requirement.scope_key == context.tool_id:
             scope_matches.append("tool")
-        elif requirement.scope_kind == "group" and any(requirement.scope_key in group_ids_by_user.get(identity, set()) for identity in verified):
-            scope_matches.append("group")
     scoped = config.coverage_mode == "all_supported_traffic" or bool(scope_matches)
-    # Never can only suppress its own requirement; anonymous/service never gain it.
-    if scoped and any(mode != "never_classify" for mode in modes) or (scoped and not verified):
+    inherited_slots = 0
+    skipped_slots = 0
+    for identity in verified:
+        override = overrides.get(identity, "inherit")
+        if override == "always_classify":
+            return True, "user_override:always_classify"
+        if override == "never_classify":
+            continue
+        groups = group_ids_by_user.get(identity, set())
+        if any(item.scope_kind == "group" and item.mode == "require" and item.scope_key in groups for item in config.requirements):
+            return True, "group_override:require"
+        if any(item.scope_kind == "group" and item.mode == "skip" and item.scope_key in groups for item in config.requirements):
+            skipped_slots += 1
+            continue
+        inherited_slots += 1
+    has_unverified_identity = any(identity not in allowed_identities for identity in identities)
+    has_baseline_slot = context.public or context.baseline in {"anonymous", "service", "public"}
+    if not verified and not identities:
+        has_baseline_slot = True
+    if has_unverified_identity or has_baseline_slot:
+        inherited_slots += 1
+    if scoped and inherited_slots:
         return True, "scope_requirement"
-    return False, "user_override:never_classify" if modes else "no_requirement"
+    if skipped_slots and not inherited_slots:
+        return False, "group_override:skip"
+    if verified and not inherited_slots:
+        return False, "user_override:never_classify"
+    return False, "no_requirement"

@@ -1,6 +1,12 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { User } from '@/types';
+import {
+  ContentProtectionApiError,
+  type ContentProtectionConfig,
+  type PolicyConflictResult,
+} from '@/api/contentProtection';
+import type { AuthGroup, User } from '@/types';
 import { UserManagementModal } from './UserManagementModal';
 
 const apiMock = vi.hoisted(() => ({
@@ -12,9 +18,16 @@ const apiMock = vi.hoisted(() => ({
   getUser: vi.fn(),
 }));
 vi.mock('@/api', () => ({ api: apiMock }));
-vi.mock('@/api/contentProtection', () => ({
+const contentProtectionMock = vi.hoisted(() => ({
+  getPolicyConflicts: vi.fn().mockResolvedValue({ conflicts: [], total: 0, truncated: false }),
   updateContentProtectionConfigSlice: vi.fn(),
   withUserOverride: vi.fn(),
+}));
+vi.mock('@/api/contentProtection', async () => ({
+  ...(await vi.importActual<typeof import('@/api/contentProtection')>('@/api/contentProtection')),
+  contentProtectionApi: { getPolicyConflicts: contentProtectionMock.getPolicyConflicts },
+  updateContentProtectionConfigSlice: contentProtectionMock.updateContentProtectionConfigSlice,
+  withUserOverride: contentProtectionMock.withUserOverride,
 }));
 vi.mock('./UserSecurityTab', () => ({
   UserSecurityTab: ({ onBusyChange }: { onBusyChange?: (busy: boolean) => void }) => (
@@ -33,6 +46,51 @@ const user = {
   mfa_enabled: false,
   mfa_required: false,
 } as User;
+const CONTENT_PROTECTION_CONFIG: ContentProtectionConfig = {
+  revision: 1,
+  enabled: true,
+  schema_version: 2,
+  share_with_assistant: false,
+  classifier: { backend: 'jev', jev: { transport: 'auto', model: 'jev-latest' }, llm_model: null },
+  strictness: 'strict',
+  categories: [],
+  access_levels: [{ id: 'standard', name: 'Standard', granted_category_ids: [], guidance: '' }],
+  group_access_levels: [],
+  default_access_level_id: 'standard',
+  coverage_mode: 'selected_scopes',
+  requirements: [],
+  user_overrides: [],
+};
+const CONFLICT_DETAIL = {
+  code: 'conflicting_group_policies' as const,
+  message: 'Conflicting group policies',
+  conflicts: [
+    {
+      user_id: user.id,
+      username: user.username,
+      display_name: 'Alex Candidate',
+      skip_group_ids: ['skip'],
+      require_group_ids: ['require'],
+    },
+  ],
+  total: 1,
+  truncated: false,
+};
+function authGroup(id: string, display_name: string): AuthGroup {
+  return {
+    id,
+    key: id,
+    display_name,
+    description: '',
+    provider: 'local_managed',
+    role: null,
+    member_count: 0,
+    manual_member_count: 0,
+    ldap_member_count: 0,
+    member_previews: [],
+    is_logon_group: false,
+  };
+}
 const props = () => ({
   user,
   currentUser: null,
@@ -71,7 +129,10 @@ const props = () => ({
   onContentProtectionConfigChange: vi.fn(),
 });
 describe('UserManagementModal', () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
   it('preserves a profile draft through tab changes and asks before discarding it', () => {
     const p = props();
     render(<UserManagementModal {...p} />);
@@ -267,5 +328,200 @@ describe('UserManagementModal', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Account & access' }));
     fireEvent.click(screen.getByRole('tab', { name: 'Resources' }));
     expect(p.onResourcesOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders a nullable conflict display name with its username fallback', async () => {
+    contentProtectionMock.getPolicyConflicts.mockResolvedValueOnce({
+      conflicts: [
+        {
+          user_id: user.id,
+          username: user.username,
+          display_name: null,
+          skip_group_ids: ['skip'],
+          require_group_ids: ['require'],
+        },
+      ],
+      total: 1,
+      truncated: false,
+    });
+    render(
+      <UserManagementModal
+        {...{
+          ...props(),
+          contentProtectionConfig: { ...CONTENT_PROTECTION_CONFIG, enabled: false },
+        }}
+      />,
+    );
+
+    expect(await screen.findByText('alex')).toBeTruthy();
+  });
+
+  it('retains a membership draft and candidate names after a structured 409, then clears it after retry', async () => {
+    const actor = userEvent.setup();
+    const authGroups = [authGroup('skip', 'Skip group'), authGroup('require', 'Require group')];
+    apiMock.setUserGroups
+      .mockReset()
+      .mockRejectedValueOnce(
+        new ContentProtectionApiError('Conflicting group policies', 409, CONFLICT_DETAIL),
+      )
+      .mockResolvedValueOnce({ ...user, manual_group_ids: ['skip'] });
+    apiMock.getUser.mockResolvedValue({ ...user, manual_group_ids: ['skip'] });
+    contentProtectionMock.getPolicyConflicts
+      .mockResolvedValueOnce({
+        conflicts: CONFLICT_DETAIL.conflicts,
+        total: CONFLICT_DETAIL.total,
+        truncated: CONFLICT_DETAIL.truncated,
+      })
+      .mockResolvedValueOnce({ conflicts: [], total: 0, truncated: false });
+    const p = { ...props(), authGroups, contentProtectionConfig: CONTENT_PROTECTION_CONFIG };
+    render(<UserManagementModal {...p} />);
+
+    await actor.click(screen.getByRole('button', { name: 'No manual groups' }));
+    await actor.click(screen.getByRole('checkbox', { name: 'Skip group' }));
+    expect(await screen.findByText('Current group policy conflict')).toBeTruthy();
+    await actor.click(screen.getByRole('button', { name: 'Save groups' }));
+
+    const candidate = await waitFor(() => {
+      const element = document.querySelector('[data-user-group-policy-conflict]');
+      expect(element).not.toBeNull();
+      return element as HTMLElement;
+    });
+    expect(candidate.textContent).toContain('Alex Candidate');
+    expect(candidate.textContent).toContain('Skip group');
+    expect(candidate.textContent).toContain('Require group');
+    expect(screen.getByRole('button', { name: 'Skip group' }).textContent).toContain('Skip group');
+
+    await actor.click(screen.getByRole('button', { name: 'Save groups' }));
+    await waitFor(() =>
+      expect(p.onUserUpdated).toHaveBeenCalledWith(expect.objectContaining({ id: 'u1' })),
+    );
+    expect(document.querySelector('[data-user-group-policy-conflict]')).toBeNull();
+    await waitFor(() => expect(contentProtectionMock.getPolicyConflicts).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('Current group policy conflict')).toBeNull();
+  });
+
+  it('clears a membership candidate conflict when its draft is discarded', async () => {
+    const actor = userEvent.setup();
+    const authGroups = [authGroup('skip', 'Skip group'), authGroup('require', 'Require group')];
+    apiMock.setUserGroups
+      .mockReset()
+      .mockRejectedValue(
+        new ContentProtectionApiError('Conflicting group policies', 409, CONFLICT_DETAIL),
+      );
+    render(
+      <UserManagementModal
+        {...{ ...props(), authGroups, contentProtectionConfig: CONTENT_PROTECTION_CONFIG }}
+      />,
+    );
+
+    await actor.click(screen.getByRole('button', { name: 'No manual groups' }));
+    await actor.click(screen.getByRole('checkbox', { name: 'Skip group' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Save groups' })).toHaveProperty('disabled', false),
+    );
+    await actor.click(screen.getByRole('button', { name: 'Save groups' }));
+    await waitFor(() =>
+      expect(document.querySelector('[data-user-group-policy-conflict]')).not.toBeNull(),
+    );
+    const groupActions = screen.getByRole('button', { name: 'Save groups' }).parentElement;
+    await actor.click(groupActions!.querySelector<HTMLButtonElement>('button.btn-secondary')!);
+
+    expect(document.querySelector('[data-user-group-policy-conflict]')).toBeNull();
+    expect(screen.getByRole('button', { name: 'No manual groups' })).toBeTruthy();
+  });
+
+  it('keeps a protection conflict beside its policy Save when another section saves', async () => {
+    const actor = userEvent.setup();
+    contentProtectionMock.updateContentProtectionConfigSlice.mockRejectedValueOnce(
+      new ContentProtectionApiError('Conflicting group policies', 422, CONFLICT_DETAIL),
+    );
+    apiMock.updateUserGenerationPolicy.mockResolvedValueOnce(user);
+    render(
+      <UserManagementModal
+        {...{ ...props(), contentProtectionConfig: CONTENT_PROTECTION_CONFIG }}
+      />,
+    );
+
+    await actor.click(screen.getByRole('tab', { name: 'Policies' }));
+    await actor.selectOptions(
+      screen.getByLabelText('Content protection override'),
+      'never_classify',
+    );
+    await actor.click(screen.getByRole('button', { name: 'Save content protection' }));
+    const conflict = await waitFor(() => {
+      const element = document.querySelector('[data-user-protection-policy-conflict]');
+      expect(element).not.toBeNull();
+      return element as HTMLElement;
+    });
+    expect(conflict.textContent).toContain('Alex Candidate');
+    expect(document.querySelector('[data-user-group-policy-conflict]')).toBeNull();
+
+    await actor.selectOptions(screen.getByLabelText('Chat generation'), 'enabled');
+    await actor.click(screen.getByRole('button', { name: 'Save generation settings' }));
+    await waitFor(() => expect(apiMock.updateUserGenerationPolicy).toHaveBeenCalled());
+    expect(document.querySelector('[data-user-protection-policy-conflict]')).not.toBeNull();
+  });
+
+  it('does not let a stale conflict lookup for an earlier user overwrite the current user', async () => {
+    let resolveFirst!: (value: PolicyConflictResult) => void;
+    const first = new Promise<PolicyConflictResult>((resolve) => {
+      resolveFirst = resolve;
+    });
+    contentProtectionMock.getPolicyConflicts
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce({ conflicts: [], total: 0, truncated: false });
+    const { rerender } = render(
+      <UserManagementModal
+        {...{ ...props(), contentProtectionConfig: CONTENT_PROTECTION_CONFIG }}
+      />,
+    );
+    await waitFor(() =>
+      expect(contentProtectionMock.getPolicyConflicts).toHaveBeenCalledWith('u1'),
+    );
+    const laterUser = { ...user, id: 'u2', username: 'casey', display_name: 'Casey' } as User;
+    rerender(
+      <UserManagementModal
+        {...{
+          ...props(),
+          user: laterUser,
+          users: [laterUser],
+          contentProtectionConfig: CONTENT_PROTECTION_CONFIG,
+        }}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(contentProtectionMock.getPolicyConflicts).toHaveBeenCalledWith('u2'),
+    );
+    await act(async () =>
+      resolveFirst({
+        conflicts: CONFLICT_DETAIL.conflicts,
+        total: CONFLICT_DETAIL.total,
+        truncated: CONFLICT_DETAIL.truncated,
+      }),
+    );
+    expect(document.querySelector('[data-user-policy-conflict-unavailable]')).toBeNull();
+    expect(screen.queryByText('Current group policy conflict')).toBeNull();
+    expect(screen.queryByText('Alex Candidate')).toBeNull();
+    expect(contentProtectionMock.getPolicyConflicts).toHaveBeenNthCalledWith(1, 'u1');
+    expect(contentProtectionMock.getPolicyConflicts).toHaveBeenNthCalledWith(2, 'u2');
+  });
+
+  it('retries a failed current-conflict lookup and displays the successful response', async () => {
+    const actor = userEvent.setup();
+    contentProtectionMock.getPolicyConflicts
+      .mockRejectedValueOnce(new Error('Conflict service offline'))
+      .mockResolvedValueOnce({ conflicts: CONFLICT_DETAIL.conflicts, total: 1, truncated: false });
+    render(
+      <UserManagementModal
+        {...{ ...props(), contentProtectionConfig: CONTENT_PROTECTION_CONFIG }}
+      />,
+    );
+
+    expect(await screen.findByText(/Conflict service offline/)).toBeTruthy();
+    await actor.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(await screen.findByText('Current group policy conflict')).toBeTruthy();
+    expect(contentProtectionMock.getPolicyConflicts).toHaveBeenCalledTimes(2);
   });
 });

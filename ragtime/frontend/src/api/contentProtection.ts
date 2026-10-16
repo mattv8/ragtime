@@ -1,5 +1,6 @@
 export type ContentProtectionCoverageMode = 'all_supported_traffic' | 'selected_scopes';
 export type ContentProtectionRequirementMode = 'require' | 'inherit';
+export type ContentProtectionGroupRequirementMode = ContentProtectionRequirementMode | 'skip';
 export type ContentProtectionOverrideMode = 'inherit' | 'always_classify' | 'never_classify';
 export type ClassifierBackend = 'jev' | 'llm';
 export type JevTransport = 'auto' | 'typesafe' | 'openrouter';
@@ -51,7 +52,7 @@ export interface GroupAccessLevel {
 export interface ContentProtectionRequirement {
   scope_kind: 'group' | 'tool' | 'mcp_route' | 'surface';
   scope_key: string;
-  mode: ContentProtectionRequirementMode;
+  mode: ContentProtectionGroupRequirementMode;
 }
 export interface ContentProtectionUserOverride {
   user_id: string;
@@ -140,10 +141,27 @@ export interface ContentProtectionDecision {
   code?: string;
   verdict?: string;
 }
+export interface PolicyConflictUser {
+  user_id: string;
+  username: string;
+  display_name: string | null;
+  skip_group_ids: string[];
+  require_group_ids: string[];
+}
+export interface PolicyConflictDetail {
+  code: 'conflicting_group_policies';
+  message: string;
+  conflicts: PolicyConflictUser[];
+  total: number;
+  truncated: boolean;
+  conflicted_group_ids?: string[];
+}
+export type PolicyConflictResult = Omit<PolicyConflictDetail, 'code' | 'message'>;
 export class ContentProtectionApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly detail?: unknown,
   ) {
     super(message);
     this.name = 'ContentProtectionApiError';
@@ -175,6 +193,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     throw new ContentProtectionApiError(
       errorMessage(body, `Request failed with status ${response.status}`),
       response.status,
+      (body as { detail?: unknown }).detail,
     );
   }
   return response.json() as Promise<T>;
@@ -213,7 +232,40 @@ export const contentProtectionApi = {
       body: JSON.stringify({ transport, api_key: api_key ?? null }),
     }),
   decisions: () => request<{ items: ContentProtectionDecision[] }>('/decisions'),
+  getPolicyConflicts: (userId?: string) =>
+    request<PolicyConflictResult>(
+      `/policy-conflicts${userId ? `?user_id=${encodeURIComponent(userId)}` : ''}`,
+    ),
 };
+function isPolicyConflictDetail(value: unknown): value is PolicyConflictDetail {
+  if (!value || typeof value !== 'object') return false;
+  const detail = value as Partial<PolicyConflictDetail>;
+  return (
+    detail.code === 'conflicting_group_policies' &&
+    typeof detail.message === 'string' &&
+    Array.isArray(detail.conflicts) &&
+    detail.conflicts.every(
+      (conflict) =>
+        conflict &&
+        typeof conflict.user_id === 'string' &&
+        typeof conflict.username === 'string' &&
+        (typeof conflict.display_name === 'string' || conflict.display_name === null) &&
+        Array.isArray(conflict.skip_group_ids) &&
+        conflict.skip_group_ids.every((id) => typeof id === 'string') &&
+        Array.isArray(conflict.require_group_ids) &&
+        conflict.require_group_ids.every((id) => typeof id === 'string'),
+    ) &&
+    typeof detail.total === 'number' &&
+    typeof detail.truncated === 'boolean'
+  );
+}
+export function parsePolicyConflictError(error: unknown): PolicyConflictDetail | null {
+  if (!error || typeof error !== 'object') return null;
+  const detail =
+    (error as { detail?: unknown; structuredDetail?: unknown }).structuredDetail ??
+    (error as { detail?: unknown }).detail;
+  return isPolicyConflictDetail(detail) ? detail : null;
+}
 export function detectJevKeyTransport(key: string): Exclude<JevTransport, 'auto'> | null {
   const normalized = key.trim();
   if (normalized.startsWith('sk-or-')) return 'openrouter';
@@ -258,7 +310,7 @@ export function requirementModeFor(
   config: ContentProtectionConfig,
   scopeKind: ContentProtectionRequirement['scope_kind'],
   scopeKey: string,
-): ContentProtectionRequirementMode {
+): ContentProtectionGroupRequirementMode {
   return (
     config.requirements.find((item) => item.scope_kind === scopeKind && item.scope_key === scopeKey)
       ?.mode || 'inherit'
@@ -268,12 +320,15 @@ export function withRequirement(
   config: ContentProtectionConfig,
   scopeKind: ContentProtectionRequirement['scope_kind'],
   scopeKey: string,
-  mode: ContentProtectionRequirementMode,
+  mode: ContentProtectionGroupRequirementMode,
 ): ContentProtectionConfig {
+  if (mode === 'skip' && scopeKind !== 'group') {
+    throw new Error('Skip is only valid for group requirements.');
+  }
   const requirements = config.requirements.filter(
     (item) => item.scope_kind !== scopeKind || item.scope_key !== scopeKey,
   );
-  if (mode === 'require') requirements.push({ scope_kind: scopeKind, scope_key: scopeKey, mode });
+  if (mode !== 'inherit') requirements.push({ scope_kind: scopeKind, scope_key: scopeKey, mode });
   return { ...config, requirements };
 }
 export function withGroupAccessLevel(

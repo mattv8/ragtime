@@ -4,19 +4,42 @@ import type { KeyboardEvent } from 'react';
 import type { ContentCategory } from '@/api/contentProtection';
 import { InlineEditableCardTitle } from './InlineEditableCardTitle';
 
+const STRICTNESS_PRESETS = {
+  strict: 0.25,
+  balanced: 0.5,
+  permissive: 0.75,
+} as const;
+const STRICTNESS_LABELS = {
+  strict: 'Strict',
+  balanced: 'Balanced',
+  permissive: 'Permissive',
+} as const;
+
+type Strictness = keyof typeof STRICTNESS_PRESETS;
+
+const formatPercentage = (value: number) => String(Number((value * 100).toPrecision(12)));
+
+export const categoryStrictnessLabel = (threshold: number) => {
+  const preset = Object.entries(STRICTNESS_PRESETS).find(([, value]) => value === threshold)?.[0];
+  return preset
+    ? `${STRICTNESS_LABELS[preset as Strictness]} (≥${formatPercentage(threshold)}%)`
+    : `Custom (≥${formatPercentage(threshold)}%)`;
+};
+
 export function ContentProtectionCategoryCard({
   category,
+  globalStrictness,
   hideHeader,
   onUpdate,
 }: {
   category: ContentCategory;
+  globalStrictness: Strictness;
   hideHeader?: boolean;
   onUpdate: (id: string, change: Partial<ContentCategory>) => void;
 }): JSX.Element {
   const [fields, setFields] = useState(() => ({
     description: category.description,
     denial_message: category.denial_message,
-    threshold_override: category.threshold_override?.toString() ?? '',
   }));
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof typeof fields, string>>>({});
   const [lists, setLists] = useState(() => ({
@@ -37,7 +60,6 @@ export function ContentProtectionCategoryCard({
     setFields({
       description: category.description,
       denial_message: category.denial_message,
-      threshold_override: category.threshold_override?.toString() ?? '',
     });
   }, [category.denial_message, category.description, category.threshold_override]);
   const commitList = (field: 'includes' | 'excludes' | 'examples', value = lists[field]) =>
@@ -54,10 +76,7 @@ export function ContentProtectionCategoryCard({
   const cancelField = (field: keyof typeof fields) => {
     setFields((current) => ({
       ...current,
-      [field]:
-        field === 'threshold_override'
-          ? (category.threshold_override?.toString() ?? '')
-          : category[field],
+      [field]: category[field],
     }));
     setFieldErrors((current) => ({ ...current, [field]: undefined }));
   };
@@ -78,26 +97,12 @@ export function ContentProtectionCategoryCard({
     }
     onUpdate(category.id, { [field]: fields[field] });
   };
-  const commitThreshold = () => {
-    const value = fields.threshold_override;
-    if (!value) {
-      onUpdate(category.id, { threshold_override: null });
-      return;
-    }
-    const threshold = Number(value);
-    if (Number.isFinite(threshold) && threshold > 0 && threshold <= 1) {
-      onUpdate(category.id, { threshold_override: threshold });
-      return;
-    }
-    setFieldErrors((current) => ({
-      ...current,
-      threshold_override: 'Enter a threshold greater than 0 and no more than 1.',
-    }));
-    setFields((current) => ({
-      ...current,
-      threshold_override: category.threshold_override?.toString() ?? '',
-    }));
-  };
+  const preset = Object.entries(STRICTNESS_PRESETS).find(
+    ([, value]) => value === category.threshold_override,
+  )?.[0] as Strictness | undefined;
+  const isCustom = category.threshold_override !== null && !preset;
+  const strictnessValue = category.threshold_override === null ? '' : (preset ?? 'custom');
+  const globalPercentage = formatPercentage(STRICTNESS_PRESETS[globalStrictness]);
   return (
     <article
       className="tool-card content-protection-category"
@@ -197,29 +202,41 @@ export function ContentProtectionCategoryCard({
         </div>
       ))}
       {!category.system && (
-        <label>
-          Threshold override
-          <input
-            className="content-protection-threshold-input"
-            type="number"
-            min="0.01"
-            max="1"
-            step="0.01"
-            value={fields.threshold_override}
-            aria-invalid={Boolean(fieldErrors.threshold_override)}
-            aria-describedby={
-              fieldErrors.threshold_override ? `${category.id}-threshold-error` : undefined
-            }
-            onChange={(event) => updateField('threshold_override', event.target.value)}
-            onBlur={commitThreshold}
-            onKeyDown={(event) => handleFieldKeyDown('threshold_override', event)}
-          />
-          {fieldErrors.threshold_override && (
-            <p id={`${category.id}-threshold-error`} role="alert">
-              {fieldErrors.threshold_override}
-            </p>
-          )}
-        </label>
+        <div className="form-group">
+          <label htmlFor={`content-protection-category-${category.id}-strictness`}>
+            Strictness
+          </label>
+          <select
+            id={`content-protection-category-${category.id}-strictness`}
+            value={strictnessValue}
+            onChange={(event) => {
+              const value = event.target.value as Strictness | '' | 'custom';
+              if (value === '') onUpdate(category.id, { threshold_override: null });
+              if (value in STRICTNESS_PRESETS)
+                onUpdate(category.id, {
+                  threshold_override: STRICTNESS_PRESETS[value as Strictness],
+                });
+            }}
+          >
+            <option value="">
+              Follow global — {STRICTNESS_LABELS[globalStrictness]} (≥{globalPercentage}%)
+            </option>
+            {Object.entries(STRICTNESS_PRESETS).map(([value, threshold]) => (
+              <option key={value} value={value}>
+                {categoryStrictnessLabel(threshold)}
+              </option>
+            ))}
+            {isCustom && (
+              <option value="custom">
+                {categoryStrictnessLabel(category.threshold_override!)}
+              </option>
+            )}
+          </select>
+          <p className="field-help">
+            Denied at or above this threshold only for an audience without a grant. Lower thresholds
+            block more.
+          </p>
+        </div>
       )}
       {category.id === 'rule_override' && (
         <p className="field-help">Inbound only. Cannot be granted.</p>

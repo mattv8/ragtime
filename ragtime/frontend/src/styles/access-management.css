@@ -131,6 +131,20 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.access-md-rail-row-name-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  min-width: 0;
+}
+.access-md-rail-row-name-line > .access-md-rail-row-name {
+  flex: 1;
+  min-width: 0;
+}
+.access-md-rail-row-badge {
+  flex-shrink: 0;
+}
 .access-md-rail-row-meta,
 .access-level-groups-chips {
   display: flex;
@@ -243,7 +257,7 @@
   top: 0;
   z-index: 1;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-sm);
   padding: var(--space-sm) var(--space-md);
   border-bottom: 1px solid var(--color-border);
@@ -251,12 +265,23 @@
 }
 
 .access-md-detail-header-body {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
+  max-width: 100%;
+}
+
+.access-md-detail-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: var(--space-sm);
 }
 
 .access-md-detail-title {
   margin: 0;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   color: var(--color-text-primary);
   font-size: var(--text-base);
@@ -267,20 +292,37 @@
 
 /* Editable header title: same box in view and edit mode so the name never shifts. */
 .access-md-detail-header-body .name-wrapper {
+  display: inline-flex;
+  flex: 0 1 auto;
+  width: fit-content;
+  max-width: 100%;
   margin: 0;
   padding: 3px 6px;
 }
 .access-md-detail-header-body .name-wrapper .access-md-detail-title {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
 }
 .access-md-detail-header-body .inline-edit-input {
   margin: 0 !important;
   padding: 3px 6px !important;
   line-height: inherit;
 }
+.access-md-detail-header-body .inline-edit-field {
+  flex: 0 1 32rem;
+  width: min(100%, 32rem);
+  min-width: 0;
+}
 .access-md-detail-header-body .editable-field-wrapper:focus-within .inline-edit-btn {
   opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .access-md-detail-header-body .inline-edit-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .access-md-detail-meta {

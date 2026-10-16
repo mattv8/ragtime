@@ -34,6 +34,9 @@ from prisma.models import User
 from pydantic import BaseModel, Field
 
 from ragtime.config.settings import settings
+from ragtime.content_protection.conflicts import GroupPolicyConflictError, conflicts_for_user, group_policy_ids, policy_conflict_detail, valid_membership_groups
+from ragtime.content_protection.models import ContentProtectionConfig
+from ragtime.content_protection.store import parse_config_for_policy_checks
 from ragtime.core.api_accounting import (
     get_api_daily_trend,
     get_api_provider_model_breakdown,
@@ -3156,23 +3159,46 @@ async def set_user_groups(
                 detail="Manual group assignment only supports internal groups",
             )
 
-    existing = await db.authgroupmembership.find_many(where={"userId": user_id, "sourceProvider": AuthProvider.local_managed})
-    for membership in existing:
-        if membership.groupId not in desired:
-            await db.authgroupmembership.delete(where={"id": membership.id})
-
-    for group in desired_groups:
-        await db.authgroupmembership.upsert(
-            where={"userId_groupId": {"userId": user_id, "groupId": group.id}},
-            data={
-                "create": {
-                    "userId": user_id,
-                    "groupId": group.id,
-                    "sourceProvider": AuthProvider.local_managed,
-                },
-                "update": {"sourceProvider": AuthProvider.local_managed},
+    try:
+        async with db.tx() as tx:
+            await tx.execute_raw("SELECT pg_advisory_xact_lock(hashtext('content-protection-config'))")
+            record = await tx.contentprotectionconfig.find_unique(where={"id": "default"})
+            config = ContentProtectionConfig() if record is None else parse_config_for_policy_checks(dict(record.config))
+            memberships = await tx.authgroupmembership.find_many(where={"userId": user_id})
+            remaining_memberships = [membership for membership in memberships if membership.sourceProvider != AuthProvider.local_managed]
+            effective_groups = valid_membership_groups(remaining_memberships) | {str(group_id) for group_id in desired}
+            conflicts = conflicts_for_user(config, user, effective_groups)
+            skip_group_ids, require_group_ids = group_policy_ids(config)
+            current_groups = valid_membership_groups(memberships)
+            added_policy_groups = (effective_groups - current_groups) & (skip_group_ids | require_group_ids)
+            if conflicts and added_policy_groups:
+                raise GroupPolicyConflictError(policy_conflict_detail(conflicts, len(conflicts)))
+            existing = [membership for membership in memberships if membership.sourceProvider == AuthProvider.local_managed]
+            for membership in existing:
+                if membership.groupId not in desired:
+                    await tx.authgroupmembership.delete(where={"id": membership.id})
+            for group in desired_groups:
+                await tx.authgroupmembership.upsert(
+                    where={"userId_groupId": {"userId": user_id, "groupId": group.id}},
+                    data={
+                        "create": {
+                            "userId": user_id,
+                            "groupId": group.id,
+                            "sourceProvider": AuthProvider.local_managed,
+                        },
+                        "update": {"sourceProvider": AuthProvider.local_managed},
+                    },
+                )
+    except GroupPolicyConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.detail) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "invalid_content_protection_config",
+                "message": "Content protection configuration is invalid and must be repaired before changing group memberships.",
             },
-        )
+        ) from exc
 
     refreshed = await recompute_user_effective_role(user_id)
     if not refreshed:

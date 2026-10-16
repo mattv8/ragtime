@@ -4,6 +4,7 @@ import {
   DELETED_ACCESS_LEVEL_MESSAGE,
   contentProtectionApi,
   detectJevKeyTransport,
+  parsePolicyConflictError,
   requirementModeFor,
   updateContentProtectionConfigSlice,
   userOverrideMode,
@@ -13,6 +14,7 @@ import {
   withUserOverride,
   type ContentProtectionConfig,
 } from './contentProtection';
+import { ApiError } from './client';
 afterEach(() => vi.unstubAllGlobals());
 const config = (revision = 1): ContentProtectionConfig => ({
   schema_version: 2,
@@ -86,6 +88,82 @@ describe('contentProtectionApi', () => {
       '/indexes/content-protection/config',
       expect.objectContaining({ credentials: 'include' }),
     );
+  });
+
+  it('preserves and parses structured group policy conflicts with a nullable display name', async () => {
+    const detail = {
+      code: 'conflicting_group_policies',
+      message: 'Resolve conflicting memberships.',
+      conflicts: [
+        {
+          user_id: 'user-1',
+          username: 'alex',
+          display_name: null,
+          skip_group_ids: ['skip-group'],
+          require_group_ids: ['require-group'],
+        },
+      ],
+      total: 1,
+      truncated: false,
+    };
+    const fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail }), {
+        status: 422,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetch);
+
+    const error = await contentProtectionApi
+      .saveConfig(1, config())
+      .catch((reason: unknown) => reason);
+    expect(error).toMatchObject({ detail });
+    expect(parsePolicyConflictError(error)).toEqual(detail);
+  });
+
+  it('requests current policy conflicts from the canonical endpoint', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ conflicts: [], total: 0, truncated: false })),
+      );
+    vi.stubGlobal('fetch', fetch);
+
+    await expect(contentProtectionApi.getPolicyConflicts()).resolves.toEqual({
+      conflicts: [],
+      total: 0,
+      truncated: false,
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      '/indexes/content-protection/policy-conflicts',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+  });
+
+  it('adds the user filter when requesting a current user conflict', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ conflicts: [], total: 0, truncated: false })),
+      );
+    vi.stubGlobal('fetch', fetch);
+
+    await contentProtectionApi.getPolicyConflicts('user 1');
+    expect(fetch).toHaveBeenCalledWith(
+      '/indexes/content-protection/policy-conflicts?user_id=user%201',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+  });
+
+  it('parses structured details retained by the generic API error', () => {
+    const detail = {
+      code: 'conflicting_group_policies' as const,
+      message: 'Resolve conflicts.',
+      conflicts: [],
+      total: 0,
+      truncated: false,
+    };
+    expect(parsePolicyConflictError(new ApiError(detail.message, 409, detail))).toEqual(detail);
   });
 
   it('sends an explicit access-level selector and preserves the synthetic preview response', async () => {
@@ -179,6 +257,13 @@ describe('content protection config helpers', () => {
     ]);
     expect(withRequirement(repeated, 'tool', 'shared-id', 'inherit').requirements).toEqual(
       initial.requirements,
+    );
+  });
+  it('stores Skip only for group requirements', () => {
+    const skipped = withRequirement(config(), 'group', 'skip-group', 'skip');
+    expect(requirementModeFor(skipped, 'group', 'skip-group')).toBe('skip');
+    expect(() => withRequirement(config(), 'tool', 'tool-1', 'skip')).toThrow(
+      'Skip is only valid for group requirements.',
     );
   });
   it('keeps other access-level mappings while toggling one group level', () => {

@@ -772,19 +772,23 @@ async def _authorize_content(
     # Reject opaque/oversized values before any identity/provider work when the
     # global policy already covers this boundary. Group-only coverage still
     # needs the authoritative membership read below.
-    preliminary_required = resolve_required(
-        config,
-        ProtectionContext(
-            user_id=resolved_context.user_id,
-            audience_user_ids=resolved_context.audience_user_ids,
-            surface=resolved_context.surface,
-            mcp_route=resolved_context.mcp_route,
-            tool_id=tool_id or resolved_context.tool_id,
-            resource_id=resolved_context.resource_id,
-            public=resolved_context.public,
-            baseline=resolved_context.baseline,
-        ),
-    )[0]
+    group_skip_configured = any(item.scope_kind == "group" and item.mode == "skip" for item in config.requirements)
+    preliminary_required = (
+        not group_skip_configured
+        and resolve_required(
+            config,
+            ProtectionContext(
+                user_id=resolved_context.user_id,
+                audience_user_ids=resolved_context.audience_user_ids,
+                surface=resolved_context.surface,
+                mcp_route=resolved_context.mcp_route,
+                tool_id=tool_id or resolved_context.tool_id,
+                resource_id=resolved_context.resource_id,
+                public=resolved_context.public,
+                baseline=resolved_context.baseline,
+            ),
+        )[0]
+    )
     if preliminary_required:
         try:
             preliminary = canonical_serialize(normalize_transport_value(candidate))

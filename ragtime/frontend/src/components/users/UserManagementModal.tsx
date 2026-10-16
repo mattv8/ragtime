@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/api';
 import {
+  contentProtectionApi,
   updateContentProtectionConfigSlice,
+  parsePolicyConflictError,
+  requirementModeFor,
   userOverrideMode,
   withUserOverride,
   type ContentProtectionConfig,
   type ContentProtectionOverrideMode,
+  type PolicyConflictDetail,
+  type PolicyConflictResult,
 } from '@/api/contentProtection';
 import type {
   AuthGroup,
@@ -16,6 +21,7 @@ import type {
 } from '@/types';
 import { CheckboxDropdown } from '../shared/CheckboxDropdown';
 import { ModalTabs, type ModalTab } from '../shared/ModalTabs';
+import { PolicyConflictList } from '../shared/PolicyConflictList';
 import { UserSecurityTab } from './UserSecurityTab';
 import { UserResourcesTab } from './UserResourcesTab';
 
@@ -40,6 +46,31 @@ const authProviderLabel = (provider: string) =>
         : provider;
 const policyValue = (value: boolean | null | undefined) =>
   value == null ? 'inherit' : value ? 'enabled' : 'disabled';
+
+function groupPolicySummary(
+  user: User,
+  groups: AuthGroup[],
+  config: ContentProtectionConfig,
+): string {
+  const personalPolicy = userOverrideMode(config, user.id);
+  if (personalPolicy === 'always_classify')
+    return 'Always classified — personal override takes precedence.';
+  if (personalPolicy === 'never_classify')
+    return 'Never classified — personal exception takes precedence.';
+  const memberGroupIds = [...(user.ldap_group_ids ?? []), ...manualIds(user)];
+  const modes = memberGroupIds.map((id) => requirementModeFor(config, 'group', id));
+  if (modes.includes('require') && modes.includes('skip')) {
+    return 'Conflict: member of both a Skip and a Require group. Require wins at runtime.';
+  }
+  if (modes.includes('require')) return 'Always classified via group Require policy.';
+  if (modes.includes('skip')) return 'Exempt from classification via group Skip policy.';
+  const groupNames = memberGroupIds
+    .map((id) => groups.find((group) => group.id === id)?.display_name ?? id)
+    .join(', ');
+  return groupNames
+    ? `Follows coverage settings. Groups: ${groupNames}.`
+    : 'Follows coverage settings.';
+}
 
 interface Props {
   user: User;
@@ -92,6 +123,14 @@ export function UserManagementModal(props: Props) {
   const [busy, setBusy] = useState<Partial<Record<DirtySection, boolean>>>({});
   const [errors, setErrors] = useState<Partial<Record<DirtySection, string>>>({});
   const [notices, setNotices] = useState<Partial<Record<DirtySection, string>>>({});
+  const [groupCandidateConflict, setGroupCandidateConflict] = useState<PolicyConflictDetail | null>(
+    null,
+  );
+  const [protectionCandidateConflict, setProtectionCandidateConflict] =
+    useState<PolicyConflictDetail | null>(null);
+  const [currentConflict, setCurrentConflict] = useState<PolicyConflictResult | null>(null);
+  const [currentConflictError, setCurrentConflictError] = useState<string | null>(null);
+  const [conflictRefresh, setConflictRefresh] = useState(0);
   const [role, setRole] = useState(user.role);
   const [groups, setGroups] = useState(manualIds(user));
   const [name, setName] = useState(user.display_name ?? '');
@@ -114,6 +153,11 @@ export function UserManagementModal(props: Props) {
   const markDirty = (section: DirtySection, value = true) =>
     setDirty((current) => ({ ...current, [section]: value }));
   const sectionError = (section: DirtySection, error: unknown) => {
+    if (section === 'groups' || section === 'protection') {
+      (section === 'groups' ? setGroupCandidateConflict : setProtectionCandidateConflict)(
+        parsePolicyConflictError(error),
+      );
+    }
     setErrors((current) => ({
       ...current,
       [section]:
@@ -126,6 +170,8 @@ export function UserManagementModal(props: Props) {
     try {
       await task();
       markDirty(section, false);
+      if (section === 'groups') setGroupCandidateConflict(null);
+      if (section === 'protection') setProtectionCandidateConflict(null);
     } catch (error) {
       sectionError(section, error);
     } finally {
@@ -148,6 +194,22 @@ export function UserManagementModal(props: Props) {
     if (!props.contentProtectionConfig || dirty.protection) return;
     setProtection(userOverrideMode(props.contentProtectionConfig, user.id));
   }, [dirty.protection, props.contentProtectionConfig, user.id]);
+  useEffect(() => {
+    if (!props.contentProtectionConfig) return;
+    let active = true;
+    setCurrentConflictError(null);
+    void contentProtectionApi
+      .getPolicyConflicts(user.id)
+      .then((result) => {
+        if (active) setCurrentConflict(result);
+      })
+      .catch((error) => {
+        if (active) setCurrentConflictError(error instanceof Error ? error.message : 'Unavailable');
+      });
+    return () => {
+      active = false;
+    };
+  }, [conflictRefresh, props.contentProtectionConfig, user.id]);
 
   const hasPendingMutation = Object.values(busy).some(Boolean);
   const requestClose = (origin?: HTMLElement) => {
@@ -395,6 +457,7 @@ export function UserManagementModal(props: Props) {
                   onClick={() =>
                     void run('groups', async () => {
                       props.onUserUpdated(await api.setUserGroups(user.id, { group_ids: groups }));
+                      setConflictRefresh((current) => current + 1);
                     })
                   }
                 >
@@ -405,12 +468,58 @@ export function UserManagementModal(props: Props) {
                   disabled={!dirty.groups}
                   onClick={() => {
                     setGroups(manualIds(user));
+                    setGroupCandidateConflict(null);
                     markDirty('groups', false);
                   }}
                 >
                   Discard
                 </button>
               </div>
+              {groupCandidateConflict && (
+                <div
+                  className="tool-access-callout tool-access-callout-warning"
+                  role="alert"
+                  data-user-group-policy-conflict
+                >
+                  <strong>Group membership change blocked by a policy conflict.</strong>
+                  <PolicyConflictList {...groupCandidateConflict} authGroups={props.authGroups} />
+                </div>
+              )}
+              {props.contentProtectionConfig && (
+                <section
+                  id={`user-content-protection-policy-${user.id}`}
+                  data-user-content-protection-policy
+                  className="user-management-content-protection"
+                >
+                  <h4>Content protection policy</h4>
+                  <p>
+                    {props.contentProtectionConfig.enabled
+                      ? groupPolicySummary(user, props.authGroups, props.contentProtectionConfig)
+                      : 'Content protection is off — these settings have no effect.'}
+                  </p>
+                  <p className="field-help">
+                    Personal Always and Never policies take precedence over group settings. Require
+                    wins at runtime when a user belongs to both a Skip and Require group.
+                  </p>
+                  {currentConflictError ? (
+                    <p className="field-help" role="status" data-user-policy-conflict-unavailable>
+                      Current group-conflict status is unavailable: {currentConflictError}
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        onClick={() => setConflictRefresh((current) => current + 1)}
+                      >
+                        Retry
+                      </button>
+                    </p>
+                  ) : currentConflict && currentConflict.total > 0 ? (
+                    <div className="tool-access-callout tool-access-callout-warning" role="alert">
+                      <strong>Current group policy conflict</strong>
+                      <PolicyConflictList {...currentConflict} authGroups={props.authGroups} />
+                    </div>
+                  ) : null}
+                </section>
+              )}
               <div className="user-management-danger">
                 <h4>Delete user</h4>
                 <p>
@@ -600,6 +709,7 @@ export function UserManagementModal(props: Props) {
                         withUserOverride(config, user.id, protection),
                       );
                       props.onContentProtectionConfigChange(updated);
+                      setConflictRefresh((current) => current + 1);
                     })
                   }
                 >
@@ -614,12 +724,26 @@ export function UserManagementModal(props: Props) {
                         ? userOverrideMode(props.contentProtectionConfig, user.id)
                         : 'inherit',
                     );
+                    setProtectionCandidateConflict(null);
                     markDirty('protection', false);
                   }}
                 >
                   Discard
                 </button>
               </div>
+              {protectionCandidateConflict && (
+                <div
+                  className="tool-access-callout tool-access-callout-warning"
+                  role="alert"
+                  data-user-protection-policy-conflict
+                >
+                  <strong>Content protection change blocked by a policy conflict.</strong>
+                  <PolicyConflictList
+                    {...protectionCandidateConflict}
+                    authGroups={props.authGroups}
+                  />
+                </div>
+              )}
             </>
           )}
         </div>

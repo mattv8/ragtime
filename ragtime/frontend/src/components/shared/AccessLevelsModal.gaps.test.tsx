@@ -163,7 +163,8 @@ describe('AccessLevelsModal remaining data conflicts', () => {
     renderModal();
     await screen.findByRole('heading', { name: 'Standard' });
 
-    await userEvent.selectOptions(screen.getByLabelText('Add group to this level'), 'group');
+    await userEvent.click(screen.getByRole('button', { name: 'Groups for this level' }));
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Group' }));
     await waitFor(() => expect(contentProtectionMock.updateConfigSlice).toHaveBeenCalledTimes(1));
     const addMutator = contentProtectionMock.updateConfigSlice.mock.calls[0][0];
     expect(addMutator(config()).group_access_levels).toEqual([
@@ -239,7 +240,7 @@ describe('AccessLevelsModal remaining data conflicts', () => {
     expect(
       (screen.getByRole('button', { name: 'Make default level' }) as HTMLButtonElement).disabled,
     ).toBe(true);
-    expect((screen.getByLabelText('Add group to this level') as HTMLSelectElement).disabled).toBe(
+    expect((screen.getByLabelText('Groups for this level') as HTMLButtonElement).disabled).toBe(
       true,
     );
   });
@@ -253,7 +254,8 @@ describe('AccessLevelsModal remaining data conflicts', () => {
     renderModal();
     await screen.findByRole('heading', { name: 'Standard' });
 
-    await userEvent.selectOptions(screen.getByLabelText('Add group to this level'), 'group');
+    await userEvent.click(screen.getByRole('button', { name: 'Groups for this level' }));
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Group' }));
 
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith('Could not update group mapping.'),

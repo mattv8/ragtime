@@ -138,7 +138,7 @@ describe('AccessLevelsModal data operations', () => {
     renderModal();
     await screen.findByText('Standard');
     await userEvent.click(screen.getByRole('button', { name: 'Add access level' }));
-    expect(screen.queryByLabelText('Add group to this level')).toBeNull();
+    expect(screen.queryByLabelText('Groups for this level')).toBeNull();
     expect(
       (screen.getByRole('button', { name: 'Make default level' }) as HTMLButtonElement).disabled,
     ).toBe(true);
@@ -151,7 +151,8 @@ describe('AccessLevelsModal data operations', () => {
       .mockResolvedValueOnce(freshWithoutLevel);
     renderModal();
     await screen.findByRole('heading', { name: 'Standard' });
-    await userEvent.selectOptions(screen.getByLabelText('Add group to this level'), 'group');
+    await userEvent.click(screen.getByRole('button', { name: 'Groups for this level' }));
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Group' }));
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith('This access level was deleted by another admin.'),
     );

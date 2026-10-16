@@ -16,6 +16,7 @@ import {
 } from './AccessLevelsMasterDetail';
 import { useAccessLevelDrafts } from './useAccessLevelDrafts';
 import { CONTENT_PROTECTION_SETTING_ID, SettingsHighlightLink } from './SettingsHighlightLink';
+import { AccessLevelsInfoCallout } from './ContentProtectionInfoCallouts';
 
 interface Props {
   open: boolean;
@@ -284,7 +285,10 @@ function LoadedAccessLevelsModal(props: {
     prunedGrantsLevelId,
   } = draftsApi;
   const previewGeneration = useRef(0);
+  const mappingQueue = useRef(Promise.resolve());
+  const pendingMappings = useRef(0);
   const [previewRetry, setPreviewRetry] = useState(0);
+  const [mappingBusy, setMappingBusy] = useState(false);
   useEffect(() => {
     if (!selectedId)
       setSelectedId(config.default_access_level_id || config.access_levels[0]?.id || null);
@@ -305,10 +309,11 @@ function LoadedAccessLevelsModal(props: {
     config.group_access_levels
       .filter((item) => item.access_level_id === levelId)
       .map((item) => item.group_id);
-  const busy = Boolean(savingLevelId || deleting);
+  const busy = Boolean(savingLevelId || deleting || mappingBusy);
   const groups = authGroups.map((group) => ({
     id: group.id,
     label: group.display_name,
+    dropdownBadge: group.provider === 'local_managed' ? 'Internal' : group.provider.toUpperCase(),
     badge: (
       <span className={`auth-group-provider-badge auth-group-provider-${group.provider}`}>
         {group.provider === 'local_managed' ? 'Internal' : group.provider.toUpperCase()}
@@ -346,19 +351,32 @@ function LoadedAccessLevelsModal(props: {
     setPreviewError(null);
     setPreviewLoading(false);
   }, [selectedId, setPreview, setPreviewError, setPreviewLoading]);
-  const updateMapping = async (groupId: string, enabled: boolean) => {
+  const updateMapping = (groupId: string, enabled: boolean) => {
     if (!selectedId || isUnsaved || hasDeletedConflict) return;
-    try {
-      const saved = await updateContentProtectionConfigSlice((fresh) => {
-        withExistingAccessLevel(fresh, selectedId, () => undefined);
-        return withGroupAccessLevel(fresh, groupId, selectedId, enabled);
+    const levelId = selectedId;
+    pendingMappings.current += 1;
+    setMappingBusy(true);
+    mappingQueue.current = mappingQueue.current
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          const saved = await updateContentProtectionConfigSlice((fresh) => {
+            withExistingAccessLevel(fresh, levelId, () => undefined);
+            return withGroupAccessLevel(fresh, groupId, levelId, enabled);
+          });
+          saveConfig(saved);
+        } catch (mappingError) {
+          toast.error(
+            mappingError instanceof Error
+              ? mappingError.message
+              : 'Could not update group mapping.',
+          );
+        }
+      })
+      .finally(() => {
+        pendingMappings.current -= 1;
+        if (!pendingMappings.current) setMappingBusy(false);
       });
-      saveConfig(saved);
-    } catch (mappingError) {
-      toast.error(
-        mappingError instanceof Error ? mappingError.message : 'Could not update group mapping.',
-      );
-    }
   };
   const makeDefault = async () => {
     if (!selectedId || isUnsaved || hasDeletedConflict) return;
@@ -520,6 +538,7 @@ function LoadedAccessLevelsModal(props: {
             ×
           </button>
         </div>
+        <AccessLevelsInfoCallout />
         <AccessLevelsMasterDetail
           id="access-levels"
           idPrefix="alm-"
@@ -541,8 +560,8 @@ function LoadedAccessLevelsModal(props: {
             })
           }
           onUpdate={updateDraft}
-          onAddGroup={(_levelId, groupId) => void updateMapping(groupId, true)}
-          onRemoveGroup={(_levelId, groupId) => void updateMapping(groupId, false)}
+          onAddGroup={(_levelId, groupId) => updateMapping(groupId, true)}
+          onRemoveGroup={(_levelId, groupId) => updateMapping(groupId, false)}
           onMakeDefault={() => void makeDefault()}
           onDelete={deleteLevel}
           deleteBlockedReason={deleteBlockedReason}
