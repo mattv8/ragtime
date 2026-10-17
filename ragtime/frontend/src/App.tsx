@@ -1293,7 +1293,7 @@ export function App() {
           ? 'Try connecting again'
           : 'Check session again';
     return (
-      <>
+      <AvailableModelsProvider>
         <div id="public-shared-route">
           <Suspense fallback={<RouteViewFallback />}>
             {userspaceSharedRoute.mode === 'token' ? (
@@ -1358,7 +1358,7 @@ export function App() {
             </button>
           </div>
         )}
-      </>
+      </AvailableModelsProvider>
     );
   }
 

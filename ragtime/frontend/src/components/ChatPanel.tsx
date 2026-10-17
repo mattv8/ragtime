@@ -19559,7 +19559,7 @@ export function ChatPanel({
                 >
                   <Search size={14} />
                 </button>
-                {canShareConversation && !embedded && activeConversation && (
+                {canShareConversation && !embedded && renderedConversation && (
                   <button
                     className="btn btn-secondary btn-sm btn-icon"
                     onClick={onOpenShareModal}

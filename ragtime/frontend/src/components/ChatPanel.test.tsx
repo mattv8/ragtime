@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ReactElement, ReactNode } from 'react';
+import { useState, type ReactElement, type ReactNode } from 'react';
 import userEvent from '@testing-library/user-event';
 // @ts-expect-error Vitest runs in Node, but the frontend tsconfig omits Node types.
 import { readFileSync } from 'node:fs';
@@ -1455,6 +1455,28 @@ function renderChatPanel(ui: ReactElement) {
   return render(<AvailableModelsProvider>{ui}</AvailableModelsProvider>);
 }
 
+function StandaloneShareHarness({
+  embedded = false,
+  onOpenShareModal,
+  sharingEnabled = true,
+}: {
+  embedded?: boolean;
+  onOpenShareModal: () => void;
+  sharingEnabled?: boolean;
+}) {
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+
+  return (
+    <ChatPanel
+      currentUser={currentUser}
+      embedded={embedded}
+      canShareConversation={sharingEnabled && Boolean(activeConversationId)}
+      onActiveConversationChange={setActiveConversationId}
+      onOpenShareModal={onOpenShareModal}
+    />
+  );
+}
+
 function setChatLayoutCookie(userId: string, layout: Record<string, unknown>) {
   document.cookie = `${encodeURIComponent(`chat_layout_${userId}`)}=${encodeURIComponent(JSON.stringify(layout))}; path=/`;
 }
@@ -1947,6 +1969,54 @@ afterEach(() => {
 });
 
 describe('ChatPanel standalone first-paint loading', () => {
+  it('opens share conversation for a metadata-backed chat without loading its full transcript', async () => {
+    const selected = makeConversation('metadata-share', 'Deferred share preview');
+    const onOpenShareModal = vi.fn();
+    apiMock.listConversationSummaries.mockResolvedValueOnce([
+      makeSummary(selected.id, selected.title),
+    ]);
+    apiMock.getConversationLatestExchange.mockResolvedValueOnce(makeLatestExchange(selected));
+    apiMock.getConversationMessageWindow.mockImplementationOnce(
+      () => new Promise<ConversationMessageWindow>(() => {}),
+    );
+
+    renderChatPanel(<StandaloneShareHarness onOpenShareModal={onOpenShareModal} />);
+
+    const shareButton = await screen.findByRole('button', { name: 'Share conversation' });
+    await userEvent.setup().click(shareButton);
+
+    expect(onOpenShareModal).toHaveBeenCalledOnce();
+    expect(apiMock.getConversation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { embedded: false, sharingEnabled: false, description: 'sharing capability is absent' },
+    { embedded: true, sharingEnabled: true, description: 'panel is embedded' },
+  ])(
+    'does not expose share conversation when $description',
+    async ({ embedded, sharingEnabled }) => {
+      const selected = makeConversation('metadata-share-restricted', 'Deferred share preview');
+      apiMock.listConversationSummaries.mockResolvedValueOnce([
+        makeSummary(selected.id, selected.title),
+      ]);
+      apiMock.getConversationLatestExchange.mockResolvedValueOnce(makeLatestExchange(selected));
+      apiMock.getConversationMessageWindow.mockImplementationOnce(
+        () => new Promise<ConversationMessageWindow>(() => {}),
+      );
+
+      renderChatPanel(
+        <StandaloneShareHarness
+          embedded={embedded}
+          sharingEnabled={sharingEnabled}
+          onOpenShareModal={vi.fn()}
+        />,
+      );
+
+      await screen.findByText('Deferred share preview');
+      expect(screen.queryByRole('button', { name: 'Share conversation' })).toBeNull();
+    },
+  );
+
   it('keeps received shares visible for a recipient with no personal chats during bootstrap', async () => {
     let releaseBootstrap: ((rows: ConversationSummary[]) => void) | undefined;
     apiMock.listConversationSummaries.mockImplementation(
