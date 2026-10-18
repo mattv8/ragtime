@@ -25,8 +25,10 @@ import zipfile
 from collections import defaultdict
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Coroutine, Dict, List, Literal, Optional, cast
 
 import httpx
@@ -242,8 +244,9 @@ from ragtime.indexer.background_tasks import (
     background_task_service,
     parse_message_content,
     rebuild_tool_messages_from_events,
+    register_successful_chat_completion_handler,
 )
-from ragtime.indexer.chat_attachments import store_chat_attachment_upload
+from ragtime.indexer.chat_attachments import CHAT_ATTACHMENT_SOURCE, resolve_chat_attachment, store_chat_attachment_upload
 from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
 from ragtime.indexer.conversation_reads import get_conversation_read_metadata
 from ragtime.indexer.conversation_tool_options import (
@@ -277,6 +280,8 @@ from ragtime.indexer.models import (
     AppSettings,
     ChatAttachmentUploadResponse,
     ChatMessage,
+    ChatQueuedMessageResponse,
+    ChatQueueResponse,
     ChatTaskResponse,
     ChatTaskStatus,
     CheckRepoVisibilityRequest,
@@ -340,6 +345,7 @@ from ragtime.indexer.models import (
     ProviderPromptDebugListResponse,
     ProviderPromptDebugRecord,
     PublicShareTargetResponse,
+    QueueMessageRequest,
     ReceivedConversationShare,
     RefreshLiveVisualizationRequest,
     RefreshLiveVisualizationResponse,
@@ -9269,6 +9275,7 @@ async def _validate_generation_ready_after_user_message(
     user_id: Optional[str] = None,
     caller_user_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
+    persist_failure: bool = True,
 ) -> str:
     """Validate generation readiness after the submitted user message is saved."""
     try:
@@ -9282,7 +9289,8 @@ async def _validate_generation_ready_after_user_message(
             workspace_id=workspace_id,
         )
     except Exception as exc:
-        await _persist_generation_failure_message(conversation_id, exc)
+        if persist_failure:
+            await _persist_generation_failure_message(conversation_id, exc)
         raise
 
 
@@ -14895,19 +14903,24 @@ async def compact_conversation(
             detail="Conversation does not have enough older uncompressed history to compact yet.",
         )
 
-    task_id = await background_task_service.start_compaction_async(
-        conversation_id,
-        model=conv.model,
-        messages_to_summarize=messages_to_summarize,
-        compaction_index=split_index,
-        snapshot_message_count=snapshot_message_count,
-        snapshot_tail_message_id=snapshot_tail_message_id,
-        snapshot_user_id=user.id,
-        snapshot_parent_branch_id=conv.active_branch_id,
-        caller_user_id=user.id,
-        replace_message_id=request.replace_message_id,
-        replace_message_index=replace_marker_index,
-    )
+    try:
+        task_id = await background_task_service.start_compaction_async(
+            conversation_id,
+            model=conv.model,
+            messages_to_summarize=messages_to_summarize,
+            compaction_index=split_index,
+            snapshot_message_count=snapshot_message_count,
+            snapshot_tail_message_id=snapshot_tail_message_id,
+            snapshot_user_id=user.id,
+            snapshot_parent_branch_id=conv.active_branch_id,
+            caller_user_id=user.id,
+            replace_message_id=request.replace_message_id,
+            replace_message_index=replace_marker_index,
+        )
+    except RuntimeError as exc:
+        if str(exc) == "Conversation is busy":
+            raise HTTPException(status_code=409, detail="Conversation is busy") from exc
+        raise
     task = await repository.get_chat_task(task_id)
     if not task:
         raise HTTPException(status_code=500, detail="Failed to start compaction task")
@@ -15399,7 +15412,7 @@ async def edit_resend_conversation_branch(
             workspace_id=conv.workspace_id,
         )
         conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
-    except Exception:
+    except BaseException:
         await repository.cancel_chat_task(claimed_task.id)
         raise
 
@@ -15416,7 +15429,7 @@ async def edit_resend_conversation_branch(
             disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
             existing_task_id=claimed_task.id,
         )
-    except Exception:
+    except BaseException:
         await repository.cancel_chat_task(claimed_task.id)
         raise
 
@@ -16644,6 +16657,223 @@ async def retry_terminal_tool(
 # =============================================================================
 
 
+def _queued_message_response(item: Any) -> ChatQueuedMessageResponse:
+    def json_value(value: Any, fallback: Any) -> Any:
+        raw = getattr(value, "data", value)
+        return raw if isinstance(raw, type(fallback)) else fallback
+
+    return ChatQueuedMessageResponse(
+        id=str(item.id),
+        conversation_id=str(item.conversationId),
+        message=str(item.message),
+        segments=json_value(getattr(item, "segments", None), []),
+        request_context=json_value(getattr(item, "requestContext", None), {}),
+        seq=str(item.seq),
+        dispatch_error=getattr(item, "dispatchError", None),
+        created_at=item.createdAt,
+    )
+
+
+async def _assert_queue_access(conversation_id: str, workspace_id: Optional[str], user: User) -> Conversation:
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
+    if not await repository.check_conversation_access(conversation_id, user.id, is_admin=(user.role == "admin"), workspace_id=workspace_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation = await repository.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(conversation)
+    return conversation
+
+
+def _queue_message_content(request: QueueMessageRequest) -> str:
+    return request.message.strip()
+
+
+async def _validate_queue_attachments(message: str, conversation_id: str, user_id: str, workspace_id: Optional[str]) -> None:
+    content_parts = parse_message_content(message)
+    if not isinstance(content_parts, list):
+        return
+    for part in content_parts:
+        if not isinstance(part, dict):
+            raise HTTPException(status_code=422, detail="Attachment content is invalid")
+        if part.get("type") != "file" or part.get("attachment_source") != CHAT_ATTACHMENT_SOURCE:
+            continue
+        attachment_id = str(part.get("attachment_id") or "")
+        try:
+            resolve_chat_attachment(attachment_id, conversation_id=conversation_id, user_id=user_id, workspace_id=workspace_id)
+        except (FileNotFoundError, PermissionError) as exc:
+            name = str(part.get("name") or attachment_id or "attachment")
+            raise HTTPException(status_code=409, detail=f"Attachment {name} is no longer available") from exc
+
+
+@dataclass(frozen=True)
+class _QueueDispatchAdmission:
+    user: Any
+    conversation: Conversation
+    blocked_tool_names: Optional[set[str]]
+    workspace_context: Optional[dict[str, Any]]
+    request: QueueMessageRequest
+    resolved_model: str
+
+
+async def _prepare_queued_message_dispatch(conversation_id: str, item: Any) -> _QueueDispatchAdmission:
+    request_context = getattr(getattr(item, "requestContext", None), "data", getattr(item, "requestContext", {})) or {}
+    segments = getattr(getattr(item, "segments", None), "data", getattr(item, "segments", [])) or []
+    workspace_id = getattr(item, "workspaceId", None)
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": item.userId}) if getattr(item, "userId", None) else None
+    if user is None:
+        raise HTTPException(status_code=403, detail="Queued message submitter is unavailable")
+    conversation = await _assert_queue_access(conversation_id, workspace_id, user)
+    await _validate_queue_attachments(str(item.message), conversation_id, user.id, workspace_id)
+    _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(conversation, user, workspace_id, "editor")
+    context = _conversation_protection_context(user_id=user.id, owner_user_id=conversation.user_id, workspace_id=workspace_id)
+    with bind_content_protection_context(context):
+        await authorize_inbound(str(item.message), context=context)
+    request = QueueMessageRequest(message=str(item.message), segments=segments, **request_context)
+    resolved_model = await _validate_generation_ready_after_user_message(
+        conversation_id, conversation.model, user_id=conversation.user_id, caller_user_id=user.id, workspace_id=conversation.workspace_id, persist_failure=False
+    )
+    return _QueueDispatchAdmission(user, conversation, blocked_tool_names, workspace_context, request, resolved_model)
+
+
+async def _start_claimed_queue_task(
+    conversation_id: str, item: Any, task_id: str, admission: _QueueDispatchAdmission, claimed_conversation: Conversation
+) -> ChatTaskResponse:
+    if claimed_conversation.model != admission.conversation.model:
+        admission = await _prepare_queued_message_dispatch(conversation_id, item)
+    conversation = await _apply_validated_conversation_model(conversation_id, claimed_conversation, admission.resolved_model)
+    schedule_title_generation(conversation_id, str(item.message), user_id=admission.user.id)
+    task = await _create_background_chat_task_after_user_message(
+        conversation_id=conversation_id,
+        user_message=str(item.message),
+        user=admission.user,
+        conv=conversation,
+        blocked_tool_names=admission.blocked_tool_names,
+        workspace_context=admission.workspace_context,
+        current_time_context=_build_current_time_prompt_context(admission.request, server_received_at=getattr(item, "createdAt", None)),
+        ui_theme_context=_build_ui_theme_prompt_context(admission.request),
+        disabled_builtin_tool_ids=set(conversation.disabled_builtin_tool_ids),
+        existing_task_id=task_id,
+    )
+    return _to_chat_task_response(task)
+
+
+@router.get("/conversations/{conversation_id}/queue", response_model=ChatQueueResponse)
+async def get_conversation_queue(conversation_id: str, workspace_id: Optional[str] = None, user: User = Depends(get_current_user)):
+    await _assert_queue_access(conversation_id, workspace_id, user)
+    items, active_task_id, held = await repository.list_queued_chat_messages(conversation_id)
+    return ChatQueueResponse(items=[_queued_message_response(item) for item in items], active_task_id=active_task_id, held=held)
+
+
+@router.post("/conversations/{conversation_id}/queue")
+async def enqueue_conversation_message(
+    conversation_id: str, request: QueueMessageRequest, workspace_id: Optional[str] = None, user: User = Depends(get_current_user)
+):
+    conversation = await _assert_queue_access(conversation_id, workspace_id, user)
+    content = _queue_message_content(request)
+    if not content:
+        raise HTTPException(status_code=400, detail="Message is required")
+    request_context = request.model_dump(include={"client_clock", "ui_theme"}, exclude_none=True)
+    queue_item = SimpleNamespace(message=content, segments=request.segments, requestContext=request_context, workspaceId=workspace_id, userId=user.id)
+    try:
+        admission = await _prepare_queued_message_dispatch(conversation_id, queue_item)
+    except ContentProtectionError as error:
+        await _persist_content_protection_denial(conversation_id, error)
+        raise
+    status, result = await repository.enqueue_chat_message(
+        conversation_id, user_id=user.id, workspace_id=workspace_id, message=content, segments=request.segments, request_context=request_context
+    )
+    if status == "missing":
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if status == "queued":
+        await task_event_bus.publish(f"conversation:{conversation_id}", {"event": "queue_changed", "conversation_id": conversation_id})
+        return {"status": "queued", "item": _queued_message_response(result)}
+    updated_conversation, claimed_task = result
+    try:
+        task = await _start_claimed_queue_task(conversation_id, queue_item, claimed_task.id, admission, updated_conversation)
+    except BaseException:
+        await repository.cancel_chat_task(claimed_task.id)
+        raise
+    return {"status": "started", "task": task}
+
+
+@router.delete("/conversations/{conversation_id}/queue/{item_id}", response_model=ChatQueuedMessageResponse)
+async def remove_conversation_queue_item(conversation_id: str, item_id: str, workspace_id: Optional[str] = None, user: User = Depends(get_current_user)):
+    await _assert_queue_access(conversation_id, workspace_id, user)
+    item = await repository.remove_queued_chat_message(conversation_id, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Queued message not found")
+    await task_event_bus.publish(f"conversation:{conversation_id}", {"event": "queue_changed", "conversation_id": conversation_id})
+    return _queued_message_response(item)
+
+
+@router.post("/conversations/{conversation_id}/queue/dispatch")
+async def dispatch_conversation_queue(conversation_id: str, workspace_id: Optional[str] = None, user: User = Depends(get_current_user)):
+    await _assert_queue_access(conversation_id, workspace_id, user)
+    items, _, _ = await repository.list_queued_chat_messages(conversation_id)
+    if not items:
+        return {"status": "empty"}
+    head = items[0]
+    try:
+        admission = await _prepare_queued_message_dispatch(conversation_id, head)
+    except Exception as exc:
+        db = await get_db()
+        await db.chatqueuedmessage.update_many(
+            where={"id": head.id, "conversationId": conversation_id}, data={"dispatchError": _generation_failure_message(exc)}
+        )
+        if isinstance(exc, ContentProtectionError):
+            await _persist_content_protection_denial(conversation_id, exc)
+            raise
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=422, detail=_generation_failure_message(exc)) from exc
+    status, result = await repository.claim_queued_chat_message(conversation_id, expected_item_id=head.id)
+    if status != "started":
+        return {"status": "busy" if status == "changed" else status}
+    claimed_item, updated_conversation, claimed_task = result
+    try:
+        task = await _start_claimed_queue_task(conversation_id, claimed_item, claimed_task.id, admission, updated_conversation)
+    except BaseException:
+        await repository.cancel_chat_task(claimed_task.id)
+        raise
+    await task_event_bus.publish(f"conversation:{conversation_id}", {"event": "queue_changed", "conversation_id": conversation_id})
+    return {"status": "started", "task": task}
+
+
+async def _dispatch_queue_after_normal_completion(conversation_id: str) -> None:
+    """Advance one queued message after a normal task only; compaction never calls this seam."""
+    if background_task_service._shutdown:
+        return
+    items, _, _ = await repository.list_queued_chat_messages(conversation_id)
+    if not items:
+        return
+    head = items[0]
+    try:
+        admission = await _prepare_queued_message_dispatch(conversation_id, head)
+    except Exception as exc:
+        db = await get_db()
+        await db.chatqueuedmessage.update_many(
+            where={"id": head.id, "conversationId": conversation_id}, data={"dispatchError": _generation_failure_message(exc)}
+        )
+        if isinstance(exc, ContentProtectionError):
+            await _persist_content_protection_denial(conversation_id, exc)
+        return
+    status, result = await repository.claim_queued_chat_message(conversation_id, expected_item_id=head.id)
+    if status != "started":
+        return
+    item, claimed_conversation, task = result
+    try:
+        await _start_claimed_queue_task(conversation_id, item, task.id, admission, claimed_conversation)
+    except BaseException:
+        await repository.cancel_chat_task(task.id)
+        raise
+    await task_event_bus.publish(f"conversation:{conversation_id}", {"event": "queue_changed", "conversation_id": conversation_id})
+
+
+register_successful_chat_completion_handler(_dispatch_queue_after_normal_completion)
+
+
 @router.post(
     "/conversations/{conversation_id}/attachments",
     response_model=ChatAttachmentUploadResponse,
@@ -17108,7 +17338,7 @@ async def cancel_chat_task(
         raise HTTPException(status_code=403, detail="Access denied")
 
     if task.status not in (ChatTaskStatus.pending, ChatTaskStatus.running):
-        raise HTTPException(status_code=400, detail="Task is not running")
+        return _to_chat_task_response(task)
 
     # Cancel the task
     background_task_service.cancel_task(task_id)
@@ -17122,21 +17352,10 @@ async def cancel_chat_task(
     updated_task = await repository.cancel_chat_task(task_id)
 
     if not updated_task:
-        raise HTTPException(status_code=500, detail="Failed to cancel task")
-
-    return ChatTaskResponse(
-        id=updated_task.id,
-        conversation_id=updated_task.conversation_id,
-        status=updated_task.status,
-        user_message=updated_task.user_message,
-        streaming_state=updated_task.streaming_state,
-        response_content=updated_task.response_content,
-        error_message=updated_task.error_message,
-        created_at=updated_task.created_at,
-        started_at=updated_task.started_at,
-        completed_at=updated_task.completed_at,
-        last_update_at=updated_task.last_update_at,
-    )
+        updated_task = await repository.get_chat_task(task_id)
+        if not updated_task:
+            raise HTTPException(status_code=404, detail="Task not found")
+    return _to_chat_task_response(updated_task)
 
 
 @router.get("/conversations/{conversation_id}/members")

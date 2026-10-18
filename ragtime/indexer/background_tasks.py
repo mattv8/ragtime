@@ -15,7 +15,7 @@ import json
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, Awaitable, Dict, List, Optional, Union, cast
 
 import httpx
 import openai
@@ -75,6 +75,44 @@ from ragtime.indexer.utils import safe_tool_name
 from ragtime.rag import rag
 
 logger = get_logger(__name__)
+
+_successful_chat_completion_handler: Callable[[str], Awaitable[None]] | None = None
+_detached_completion_handlers: set[asyncio.Task[None]] = set()
+
+
+def register_successful_chat_completion_handler(handler: Callable[[str], Awaitable[None]]) -> None:
+    """Register the route-layer queue dispatcher without importing routes here."""
+    global _successful_chat_completion_handler
+    _successful_chat_completion_handler = handler
+
+
+async def _run_successful_completion_handler(handler: Callable[[str], Awaitable[None]], conversation_id: str) -> None:
+    await handler(conversation_id)
+
+
+def _schedule_successful_completion_handler(
+    conversation_id: str,
+    service: "BackgroundTaskService | None" = None,
+) -> None:
+    handler = _successful_chat_completion_handler
+    if handler is None:
+        return
+    if service is not None and service._shutdown:
+        return
+    task: asyncio.Task[None] = contextvars.Context().run(lambda: asyncio.create_task(_run_successful_completion_handler(handler, conversation_id)))
+    handlers = service._detached_completion_handlers if service is not None else _detached_completion_handlers
+    handlers.add(task)
+
+    def report_error(completed: asyncio.Task[None]) -> None:
+        handlers.discard(completed)
+        if completed.cancelled():
+            return
+        try:
+            completed.result()
+        except Exception:
+            logger.exception("Queued-message dispatch failed after successful task completion")
+
+    task.add_done_callback(report_error)
 
 
 DEV_SERVER_INTERRUPT_MESSAGE = "Chat run interrupted by dev server reload or shutdown before it finished."
@@ -352,7 +390,11 @@ def parse_message_content(content: str) -> Union[str, List[Dict[str, Any]]]:
     # Direct list of content parts
     if isinstance(parsed, list):
         if parsed and isinstance(parsed[0], dict) and "type" in parsed[0]:
-            logger.debug(f"Parsed multimodal content: {len(parsed)} parts, types={[p.get('type') for p in parsed]}")
+            logger.debug(
+                "Parsed multimodal content: %s parts, types=%s",
+                len(parsed),
+                [part.get("type") if isinstance(part, dict) else type(part).__name__ for part in parsed],
+            )
             return parsed
         return content
 
@@ -503,6 +545,7 @@ class BackgroundTaskService:
         self._running_tasks: Dict[str, asyncio.Task] = {}
         self._subagent_children_by_parent_task: Dict[str, set[str]] = {}
         self._shutdown = False
+        self._detached_completion_handlers: set[asyncio.Task[None]] = set()
         self._cleanup_task: Optional[asyncio.Task] = None
         self._filesystem_scheduler_task: Optional[asyncio.Task] = None
         self._schema_scheduler_task: Optional[asyncio.Task] = None
@@ -527,6 +570,12 @@ class BackgroundTaskService:
         """Stop the background task service."""
         logger.info("Background task service stopping")
         self._shutdown = True
+
+        detached_handlers = tuple(self._detached_completion_handlers)
+        for task in detached_handlers:
+            task.cancel()
+        if detached_handlers:
+            await asyncio.gather(*detached_handlers, return_exceptions=True)
 
         # Cancel cleanup task
         if self._cleanup_task and not self._cleanup_task.done():
@@ -587,21 +636,21 @@ class BackgroundTaskService:
 
             count = 0
             for prisma_task in stale_tasks:
-                # Mark as interrupted instead of resuming
-                await db.chattask.update(
-                    where={"id": prisma_task.id},
+                # Mark as interrupted instead of resuming, without overwriting
+                # a task another worker has already finalized.
+                updated = await db.chattask.update_many(
+                    where={"id": prisma_task.id, "status": {"in": ["pending", "running"]}},
                     data={
                         "status": "interrupted",
                         "completedAt": utc_now(),
                         "lastUpdateAt": utc_now(),
                     },
                 )
-                # Clear the active task reference from the conversation
-                await db.conversation.update(
-                    where={"id": prisma_task.conversationId},
-                    data={"activeTaskId": None},
-                )
-                count += 1
+                if updated:
+                    await db.execute_raw(
+                        f"UPDATE conversations SET active_task_id = NULL WHERE id = '{prisma_task.conversationId}' AND active_task_id = '{prisma_task.id}'"
+                    )
+                    count += 1
 
             if count > 0:
                 logger.info(f"Marked {count} stale task(s) as interrupted")
@@ -1700,6 +1749,7 @@ class BackgroundTaskService:
                         status="completed",
                         output_tokens=_estimate_output_tokens(full_response, events),
                     )
+                _schedule_successful_completion_handler(conversation_id, self)
 
             except asyncio.CancelledError:
                 # Save partial response before cancelling
@@ -1918,7 +1968,9 @@ class BackgroundTaskService:
         replace_message_index: Optional[int] = None,
     ) -> str:
         """Start conversation compaction as a linked background task."""
-        task = await repository.create_chat_task(conversation_id, COMPACTION_TASK_USER_MESSAGE)
+        task = await repository.create_chat_task_if_idle(conversation_id, COMPACTION_TASK_USER_MESSAGE)
+        if task is None:
+            raise RuntimeError("Conversation is busy")
 
         asyncio_task = asyncio.create_task(
             self._run_compaction_task(
