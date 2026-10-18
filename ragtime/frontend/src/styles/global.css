@@ -8,6 +8,7 @@
 @import './access-management.css';
 @import './layout.css';
 @import './chat.css';
+@import './chat-queue.css';
 @import './attachments.css';
 @import './database-history.css';
 @import './workbench.css';

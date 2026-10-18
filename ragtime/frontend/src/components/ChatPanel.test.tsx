@@ -32,6 +32,7 @@ import {
 } from './ChatPanel';
 import type { ChatMessageNavigationEntry } from './ChatMessageNavigator';
 import { invalidateDenialNoticeSeen } from '@/utils/denialNotices';
+import * as FileAttachmentModule from './FileAttachment';
 
 const receivedConversationSharesMock = vi.hoisted(() => vi.fn());
 
@@ -61,6 +62,7 @@ const { apiMock, applyMutableApiMockDefaults } = vi.hoisted(() => {
     getConversationTaskState: vi
       .fn()
       .mockResolvedValue({ active_task: null, interrupted_task: null }),
+    getChatTask: vi.fn(),
     getConversationTools: vi.fn().mockResolvedValue({
       tool_selection_mode: 'default_all',
       tool_config_ids: [],
@@ -78,6 +80,14 @@ const { apiMock, applyMutableApiMockDefaults } = vi.hoisted(() => {
       onmessage: null,
     }),
     streamChatTask: vi.fn(),
+    getConversationMessageQueue: vi.fn().mockResolvedValue({
+      items: [],
+      active_task_id: null,
+      held: false,
+    }),
+    enqueueConversationMessage: vi.fn(),
+    deleteConversationMessageQueueItem: vi.fn(),
+    dispatchConversationMessageQueue: vi.fn(),
     sendMessageBackground: vi.fn().mockResolvedValue({
       id: 'task-window-send',
       status: 'running',
@@ -90,6 +100,12 @@ const { apiMock, applyMutableApiMockDefaults } = vi.hoisted(() => {
     editResendConversationMessage: vi.fn(),
   };
   const applyMutableApiMockDefaults = () => {
+    mock.getConversationMessageQueue.mockResolvedValue({
+      items: [],
+      active_task_id: null,
+      held: false,
+    });
+    mock.getChatTask.mockResolvedValue(null);
     mock.getConversation.mockResolvedValue(null);
     mock.getConversationLatestExchange.mockResolvedValue({
       conversation: null,
@@ -165,8 +181,10 @@ function resetMutableChatApiMocks() {
     apiMock.getConversation,
     apiMock.getConversationLatestExchange,
     apiMock.getConversationMessageWindow,
+    apiMock.getConversationMessageQueue,
     apiMock.getConversationWindowMessage,
     apiMock.streamChatTask,
+    apiMock.getChatTask,
     apiMock.editResendConversationMessage,
   ]) {
     mock.mockReset();
@@ -3601,6 +3619,247 @@ describe('ChatPanel standalone first-paint loading', () => {
       await act(async () => {
         releaseStream?.();
       });
+    }
+  });
+
+  it('queues a streaming draft from standalone partial-window metadata without clearing it first', async () => {
+    const conversation = makeConversation('partial-queue', 'Prior assistant reply', {
+      total_tokens: 100,
+    });
+    let releaseStream: (() => void) | undefined;
+    const streamCompletion = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, { entries: [], nextCursor: null, hasMore: false }),
+    );
+    apiMock.streamChatTask.mockReturnValue(
+      (async function* () {
+        yield {
+          type: 'state',
+          content: '',
+          version: 1,
+          tool_calls: [],
+          events: [],
+        };
+        await streamCompletion;
+      })(),
+    );
+    apiMock.enqueueConversationMessage.mockResolvedValue({ status: 'queued' });
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    try {
+      await waitFor(() =>
+        expect(apiMock.getConversationMessageQueue).toHaveBeenCalledWith(
+          conversation.id,
+          undefined,
+        ),
+      );
+      const user = userEvent.setup();
+      const composer = await screen.findByLabelText('Message');
+      await user.type(composer, 'Start the stream');
+      await user.click(await screen.findByTitle('Send message'));
+      await user.type(composer, 'Keep this queued draft');
+      await user.click(await screen.findByRole('button', { name: 'Queue message' }));
+
+      await waitFor(() =>
+        expect(apiMock.enqueueConversationMessage).toHaveBeenCalledWith(
+          conversation.id,
+          expect.objectContaining({ message: 'Keep this queued draft' }),
+          undefined,
+        ),
+      );
+    } finally {
+      await act(async () => {
+        releaseStream?.();
+      });
+    }
+  });
+
+  it('does not open a chat stream for a compaction task reported by the queue', async () => {
+    const conversation = makeConversation('queue-compaction', 'Prior assistant reply');
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, { entries: [], nextCursor: null, hasMore: false }),
+    );
+    apiMock.getConversationMessageQueue.mockResolvedValue({
+      items: [],
+      active_task_id: 'compaction-task',
+      held: false,
+    });
+    apiMock.getChatTask.mockResolvedValue({
+      id: 'compaction-task',
+      conversation_id: conversation.id,
+      status: 'running',
+      user_message: '__ragtime_compaction__',
+      streaming_state: null,
+      response_content: null,
+      error_message: null,
+      created_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      last_update_at: new Date().toISOString(),
+    });
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    await waitFor(() =>
+      expect(apiMock.getChatTask).toHaveBeenCalledWith('compaction-task', undefined, undefined),
+    );
+    expect(apiMock.streamChatTask).not.toHaveBeenCalled();
+  });
+
+  it('keeps the next queued task streaming when the previous task finishes refreshing', async () => {
+    const conversation = makeConversation('queue-stream-handoff', 'Prior assistant reply', {
+      active_task_id: 'task-parent-1',
+    });
+    const nextTask = {
+      id: 'task-queued-next',
+      conversation_id: conversation.id,
+      status: 'running',
+      user_message: 'Queued follow-up',
+      streaming_state: null,
+      response_content: null,
+      error_message: null,
+      created_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      last_update_at: new Date().toISOString(),
+    };
+    let releaseFirstTask: (() => void) | undefined;
+    let releaseConversationRefresh: ((conversation: Conversation) => void) | undefined;
+    let releaseNextTask: (() => void) | undefined;
+    const firstTaskCompletion = new Promise<void>((resolve) => (releaseFirstTask = resolve));
+    const conversationRefresh = new Promise<Conversation>(
+      (resolve) => (releaseConversationRefresh = resolve),
+    );
+    const nextTaskCompletion = new Promise<void>((resolve) => (releaseNextTask = resolve));
+
+    apiMock.getConversationMessageQueue
+      .mockResolvedValueOnce({ items: [], active_task_id: 'task-parent-1', held: false })
+      .mockResolvedValue({ items: [], active_task_id: nextTask.id, held: false });
+    apiMock.getChatTask.mockImplementation((taskId: string) =>
+      Promise.resolve(taskId === nextTask.id ? nextTask : null),
+    );
+    apiMock.getConversation.mockReturnValue(conversationRefresh);
+    apiMock.streamChatTask.mockImplementation((taskId: string) => {
+      if (taskId === 'task-parent-1') {
+        return (async function* () {
+          await firstTaskCompletion;
+          yield { type: 'completion', completed: true, status: 'completed' };
+        })();
+      }
+      return (async function* () {
+        yield { type: 'state', content: 'Next queued reply', version: 1, events: [] };
+        await nextTaskCompletion;
+      })();
+    });
+
+    try {
+      renderChatPanel(
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="queue-workspace"
+          workspaceChatState={makeWorkspaceChatState(conversation)}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          embedded
+        />,
+      );
+
+      expect(await screen.findByRole('button', { name: 'Stop generating' })).toBeDefined();
+      await act(async () => releaseFirstTask?.());
+      await waitFor(() =>
+        expect(apiMock.getConversation).toHaveBeenCalledWith(conversation.id, 'queue-workspace'),
+      );
+
+      const conversationEvents = MockEventSource.instances.find(
+        (source) => source.url === '/events',
+      );
+      expect(conversationEvents).toBeDefined();
+      await act(async () => conversationEvents?.emitMessage({ event: 'queue_changed' }));
+      expect(await screen.findByText('Next queued reply')).toBeDefined();
+
+      await act(async () =>
+        releaseConversationRefresh?.({ ...conversation, active_task_id: nextTask.id }),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Stop generating' })).toBeDefined(),
+      );
+      expect(screen.getByText('Next queued reply')).toBeDefined();
+    } finally {
+      releaseFirstTask?.();
+      releaseConversationRefresh?.(conversation);
+      releaseNextTask?.();
+    }
+  });
+
+  it('restores canonical content and every attachment after an async queued edit race', async () => {
+    const conversation = makeConversation('queue-edit-race', 'Prior assistant reply');
+    let resolveDelete: ((item: unknown) => void) | undefined;
+    const deleted = new Promise<unknown>((resolve) => (resolveDelete = resolve));
+    const imageUrl = 'data:image/png;base64,AA==';
+    const queuedItem = {
+      id: 'queued-edit-race-item',
+      conversation_id: conversation.id,
+      message: JSON.stringify([
+        { type: 'text', text: 'Canonical queued text' },
+        { type: 'image_url', image_url: { url: imageUrl } },
+        {
+          type: 'file',
+          filename: 'notes.txt',
+          size_bytes: 4,
+          mime_type: 'text/plain',
+          attachment_id: 'file-1',
+          attachment_source: 'chat_upload',
+        },
+      ]),
+      segments: [],
+      request_context: {},
+      seq: '1',
+      dispatch_error: null,
+      created_at: new Date().toISOString(),
+    };
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, { entries: [], nextCursor: null, hasMore: false }),
+    );
+    apiMock.getConversationMessageQueue.mockResolvedValue({
+      items: [queuedItem],
+      active_task_id: null,
+      held: true,
+    });
+    apiMock.deleteConversationMessageQueueItem.mockReturnValue(deleted);
+    apiMock.enqueueConversationMessage.mockResolvedValue({ status: 'queued' });
+    const resize = vi
+      .spyOn(FileAttachmentModule, 'resizeAttachmentImageDataUrl')
+      .mockRejectedValue(new Error('resize failed'));
+
+    try {
+      renderChatPanel(
+        <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+      );
+      await userEvent
+        .setup()
+        .click(await screen.findByRole('button', { name: 'Edit queued message' }));
+      const composer = await screen.findByLabelText('Message');
+      await userEvent.setup().type(composer, 'Draft typed during restore');
+      await act(async () => resolveDelete?.(queuedItem));
+
+      await waitFor(() =>
+        expect(composer.textContent).toBe('Draft typed during restore\nCanonical queued text'),
+      );
+      expect((await screen.findByAltText('Attached Image')).getAttribute('src')).toBe(imageUrl);
+      expect(await screen.findByText('notes.txt')).toBeDefined();
+    } finally {
+      resize.mockRestore();
     }
   });
 

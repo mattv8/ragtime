@@ -112,7 +112,9 @@ import {
 } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { useChatSendMode } from '@/hooks/useChatSendMode';
+import { QueueRaceError, useConversationMessageQueue } from '@/hooks/useConversationMessageQueue';
 import { ChatSendModeControl } from './ChatSendModeControl';
+import { QueuedMessagesStrip } from './QueuedMessagesStrip';
 import '../styles/chat-composer.css';
 import { ResizeHandle } from './ResizeHandle';
 import { ChatMessageNavigator, type ChatMessageNavigationEntry } from './ChatMessageNavigator';
@@ -10480,6 +10482,10 @@ export function ChatPanel({
   // handlers (e.g. deciding insert-vs-merge before React commits state).
   const messageSegmentsRef = useRef<RichChatSegment[]>(EMPTY_RICH_SEGMENTS);
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
+  const [queueItemErrors, setQueueItemErrors] = useState<Record<string, string>>({});
+  const [isQueueing, setIsQueueing] = useState(false);
+  const isQueueingRef = useRef(false);
+  const attachmentsRef = useRef<AttachmentFile[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [deleteMessageError, setDeleteMessageError] = useState<string | null>(null);
   // Tracks which conversation the active stream belongs to so streaming output
@@ -10665,6 +10671,11 @@ export function ChatPanel({
     if (activeConversation?.id === standaloneSelectedId) return activeConversation;
     return standaloneWindow.metadata;
   }, [activeConversation, standaloneSelectedId, standaloneWindow.metadata, workspaceId]);
+  const conversationQueue = useConversationMessageQueue(
+    activeConversationMetadata?.id ?? null,
+    workspaceId,
+  );
+  const queueRefetch = conversationQueue.refetch;
   const visibleMessageEntries = useMemo<ConversationWindowEntry[]>(() => {
     if (activeConversation && activeConversation.id === activeConversationMetadata?.id) {
       return activeConversation.messages.map((message, index) => ({
@@ -13120,6 +13131,10 @@ export function ChatPanel({
     messageSegments,
   ]);
 
+  useLayoutEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
   // onChange from the rich composer: update the segment model and resize.
   const handleSegmentsChange = useCallback(
     (next: RichChatSegment[]) => {
@@ -15108,6 +15123,7 @@ export function ChatPanel({
             // newly-running task immediately instead of waiting for the
             // periodic /task-state poll, which makes streaming feel instant.
             if (data.event === 'task_started' && data.task_id) {
+              void queueRefetch();
               if (data.task_kind === 'compaction') {
                 setIsCompacting(true);
                 setCompactingConversationId(conversationId);
@@ -15224,6 +15240,7 @@ export function ChatPanel({
             }
 
             if (data.event === 'task_completed') {
+              void queueRefetch();
               const completedSuccessfully = (data.status || 'unknown') === 'completed';
               const isCompactionCompletion = data.task_kind === 'compaction';
               const completionDetail = getTaskCompletionDenialDetail(data);
@@ -15260,6 +15277,11 @@ export function ChatPanel({
                   );
                 })
                 .catch(() => {});
+              return;
+            }
+
+            if (data.event === 'queue_changed') {
+              void queueRefetch();
               return;
             }
 
@@ -15303,7 +15325,13 @@ export function ChatPanel({
         console.error('Failed to start conversation event stream', e);
       }
     },
-    [markAutoCompactionCandidate, syncConversationActiveTaskId, trackPendingDenial, workspaceId],
+    [
+      queueRefetch,
+      markAutoCompactionCandidate,
+      syncConversationActiveTaskId,
+      trackPendingDenial,
+      workspaceId,
+    ],
   );
 
   // Only subscribe to title events for the ACTIVE conversation to avoid
@@ -15569,18 +15597,20 @@ export function ChatPanel({
               }
             }
 
-            setIsStreaming(false);
-            setStreamingConversationId(null);
-            setStreamingContent('');
-            setStreamingEvents([]);
-            taskStreamVersionRef.current.delete(taskId);
+            if (!abortControllerRef.current || abortControllerRef.current === abortController) {
+              setIsStreaming(false);
+              setStreamingConversationId(null);
+              setStreamingContent('');
+              setStreamingEvents([]);
+              taskStreamVersionRef.current.delete(taskId);
 
-            // Notify parent that the task finished (e.g. refresh workspace preview)
-            if (onTaskComplete) {
-              try {
-                onTaskComplete();
-              } catch (e) {
-                console.error(e);
+              // Notify parent that the task finished (e.g. refresh workspace preview)
+              if (onTaskComplete) {
+                try {
+                  onTaskComplete();
+                } catch (e) {
+                  console.error(e);
+                }
               }
             }
           }
@@ -15912,6 +15942,42 @@ export function ChatPanel({
       connectTaskStreamRef.current = null;
     };
   }, [connectTaskStream]);
+
+  useEffect(() => {
+    const taskId = conversationQueue.state.activeTaskId;
+    const conversationId = activeConversationMetadata?.id;
+    if (!taskId || !conversationId) return;
+    let cancelled = false;
+    void api
+      .getChatTask(taskId, undefined, workspaceId)
+      .then((task) => {
+        const selectedConversationId =
+          activeConversationRef.current?.id ??
+          (workspaceId ? null : standaloneSelectedIdRef.current);
+        if (
+          cancelled ||
+          !task ||
+          task.conversation_id !== conversationId ||
+          isCompactionTask(task) ||
+          selectedConversationId !== conversationId
+        ) {
+          return;
+        }
+        connectTaskStreamRef.current?.(taskId, conversationId);
+      })
+      .catch((queueTaskError) => {
+        if (!cancelled) {
+          setError(
+            queueTaskError instanceof Error
+              ? queueTaskError.message
+              : 'Could not reconnect to queued message',
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeConversationMetadata?.id, conversationQueue.state.activeTaskId, workspaceId]);
 
   useEffect(() => {
     watchCompactionTaskRef.current = (taskId: string, conversationId: string) => {
@@ -16265,10 +16331,17 @@ export function ChatPanel({
       abortControllerRef.current = null;
     }
 
-    // Cancel background task if active
-    if (activeTask && (activeTask.status === 'pending' || activeTask.status === 'running')) {
+    // Queue reconciliation may reconnect before the task-state safety poll has
+    // hydrated `activeTask`, so fall back to the queue snapshot's task id.
+    const taskIdToCancel =
+      activeTask && (activeTask.status === 'pending' || activeTask.status === 'running')
+        ? activeTask.id
+        : conversationQueue.state.activeTaskId === compactionTaskRef.current
+          ? null
+          : conversationQueue.state.activeTaskId;
+    if (taskIdToCancel) {
       try {
-        await api.cancelChatTask(activeTask.id, workspaceId);
+        await api.cancelChatTask(taskIdToCancel, workspaceId);
       } catch (err) {
         console.error('Failed to cancel task:', err);
       }
@@ -16306,6 +16379,7 @@ export function ChatPanel({
     }
 
     // Always clear streaming state at the end
+    await conversationQueue.refetch();
     setStreamingContent('');
     setStreamingEvents([]);
     setIsStreaming(false);
@@ -16580,14 +16654,19 @@ export function ChatPanel({
         return match?.[1] || 'image/png';
       };
 
-      const mapped = await Promise.all(
+      return Promise.all(
         parts
           .filter((p) => p.type === 'image_url' || p.type === 'file')
           .map(async (p, i) => {
             if (p.type === 'image_url') {
               const url = p.image_url.url;
               const mimeType = extractMimeFromDataUrl(url);
-              const resized = await resizeAttachmentImageDataUrl(url, mimeType);
+              let resized = url;
+              try {
+                resized = await resizeAttachmentImageDataUrl(url, mimeType);
+              } catch {
+                // Keep the original image when the optional resize step fails.
+              }
               return {
                 id: `edit-attachment-${i}-${Date.now()}`,
                 type: 'image' as const,
@@ -16621,11 +16700,120 @@ export function ChatPanel({
             } as AttachmentFile;
           }),
       );
-
-      return mapped;
     },
     [],
   );
+
+  const queueMessage = async () => {
+    if (
+      isQueueingRef.current ||
+      !activeConversationMetadata ||
+      isReadOnly ||
+      hasQueuedCompactionMessageForActiveConversation ||
+      (segmentsAreEmpty(messageSegments) && attachments.length === 0)
+    ) {
+      return;
+    }
+    const queuedSegments = messageSegments;
+    const queuedAttachments = attachments;
+    const serializedMessage = serializeRichChatSegments(queuedSegments);
+    const message = queuedAttachments.length
+      ? JSON.stringify(attachmentsToContentParts(serializedMessage, queuedAttachments))
+      : serializedMessage;
+    isQueueingRef.current = true;
+    setIsQueueing(true);
+    try {
+      const response = await conversationQueue.enqueue({ message, segments: queuedSegments });
+      if (
+        messageSegmentsRef.current === queuedSegments &&
+        attachmentsRef.current === queuedAttachments
+      ) {
+        messageSegmentsRef.current = EMPTY_RICH_SEGMENTS;
+        attachmentsRef.current = [];
+        setMessageSegments(EMPTY_RICH_SEGMENTS);
+        setAttachments([]);
+      }
+      if (response?.status === 'started') {
+        syncConversationActiveTaskId(activeConversationMetadata.id, response.task.id);
+        setActiveTask(response.task);
+        const refreshed = await api.getConversation(activeConversationMetadata.id, workspaceId);
+        if (activeConversationRef.current?.id === refreshed.id) {
+          setActiveConversation(refreshed);
+          setConversations((current) =>
+            current.map((conversation) =>
+              conversation.id === refreshed.id ? refreshed : conversation,
+            ),
+          );
+        }
+      }
+    } catch (queueError) {
+      setError(queueError instanceof Error ? queueError.message : 'Failed to queue message');
+    } finally {
+      isQueueingRef.current = false;
+      setIsQueueing(false);
+    }
+  };
+
+  const restoreQueuedMessage = async (itemId: string) => {
+    if (!segmentsAreEmpty(messageSegmentsRef.current) || attachmentsRef.current.length > 0) return;
+    try {
+      const item = await conversationQueue.deleteItem(itemId);
+      const parsedMessage = parseMessageContent(item.message);
+      const restoredSegments = item.segments.length
+        ? (item.segments as RichChatSegment[])
+        : plainTextToSegments(parsedMessage.text);
+      const restoredAttachments = await contentPartsToAttachments(parsedMessage.attachments);
+      const currentSegments = messageSegmentsRef.current;
+      const currentAttachments = attachmentsRef.current;
+      const restoredDraftSeparator: RichChatSegment = { type: 'text', text: '\n' };
+      const mergedSegments = segmentsAreEmpty(currentSegments)
+        ? restoredSegments
+        : [...currentSegments, restoredDraftSeparator, ...restoredSegments];
+      const mergedAttachments = [...currentAttachments, ...restoredAttachments];
+      messageSegmentsRef.current = mergedSegments;
+      attachmentsRef.current = mergedAttachments;
+      setMessageSegments(mergedSegments);
+      setAttachments(mergedAttachments);
+    } catch (queueError) {
+      if (!(queueError instanceof QueueRaceError)) {
+        setError(
+          queueError instanceof Error ? queueError.message : 'Failed to edit queued message',
+        );
+      }
+    }
+  };
+
+  const submitComposerMessage = () => {
+    if (isStreaming || conversationQueue.state.items.length > 0) {
+      void queueMessage();
+      return;
+    }
+    void sendMessage();
+  };
+
+  const dispatchQueuedMessages = () => {
+    void conversationQueue.dispatch().catch((dispatchError) => {
+      setError(dispatchError instanceof Error ? dispatchError.message : 'Failed to resume queue');
+    });
+  };
+
+  const removeQueuedMessage = async (itemId: string) => {
+    try {
+      await conversationQueue.deleteItem(itemId);
+      setQueueItemErrors((current) => {
+        const { [itemId]: _removed, ...remaining } = current;
+        return remaining;
+      });
+    } catch (queueError) {
+      if (!(queueError instanceof QueueRaceError)) {
+        setQueueItemErrors((current) => ({
+          ...current,
+          [itemId]:
+            queueError instanceof Error ? queueError.message : 'Failed to remove queued message',
+        }));
+      }
+    }
+  };
 
   const startEditMessage = async (
     idx: number,
@@ -20786,6 +20974,18 @@ export function ChatPanel({
                     : { height: `${inputAreaHeight}px`, minHeight: `${inputAreaHeight}px` }
                 }
               >
+                {activeConversationMetadata && (
+                  <QueuedMessagesStrip
+                    conversationId={activeConversationMetadata.id}
+                    state={conversationQueue.state}
+                    draftIsEmpty={segmentsAreEmpty(messageSegments) && attachments.length === 0}
+                    itemErrors={queueItemErrors}
+                    onEdit={restoreQueuedMessage}
+                    onDelete={removeQueuedMessage}
+                    onDispatch={dispatchQueuedMessages}
+                    onRetry={() => void queueRefetch()}
+                  />
+                )}
                 {isReadOnly && (
                   <div className="chat-readonly-note" role="status">
                     {effectiveReadOnlyMessage}
@@ -20809,7 +21009,7 @@ export function ChatPanel({
                       elementRef={inputRef}
                       segments={messageSegments}
                       onChange={handleSegmentsChange}
-                      onSubmit={sendMessage}
+                      onSubmit={submitComposerMessage}
                       onPasteText={markPendingPasteCheck}
                       onFocus={() => {
                         activeComposerRef.current = 'main';
@@ -20843,11 +21043,7 @@ export function ChatPanel({
                         conversationId={renderedConversation.id}
                         workspaceId={workspaceId}
                         showPreviews={false}
-                        disabled={
-                          isReadOnly ||
-                          isStreaming ||
-                          hasQueuedCompactionMessageForActiveConversation
-                        }
+                        disabled={isReadOnly || hasQueuedCompactionMessageForActiveConversation}
                       />
                       {showInlineToolSelector && (
                         <ToolSelectorDropdown
@@ -20901,11 +21097,7 @@ export function ChatPanel({
                       <ChatSendModeControl
                         mode={sendMode}
                         onChange={setSendMode}
-                        disabled={
-                          isReadOnly ||
-                          isStreaming ||
-                          hasQueuedCompactionMessageForActiveConversation
-                        }
+                        disabled={isReadOnly || hasQueuedCompactionMessageForActiveConversation}
                       />
                       <div data-chat-composer-model>
                         <ModelSelector
@@ -20933,34 +21125,51 @@ export function ChatPanel({
                         />
                       </div>
                       {isStreaming ? (
-                        <button
-                          type="button"
-                          className="btn chat-stop-btn-inline"
-                          onClick={stopStreaming}
-                          title="Stop generating"
-                          aria-label="Stop generating"
-                        >
-                          <svg
-                            width="20"
-                            height="20"
-                            viewBox="0 0 24 24"
-                            fill="currentColor"
-                            aria-hidden="true"
+                        <>
+                          <button
+                            type="button"
+                            className="btn chat-stop-btn-inline"
+                            onClick={stopStreaming}
+                            title="Stop generating"
+                            aria-label="Stop generating"
                           >
-                            <rect x="6" y="6" width="12" height="12" rx="2"></rect>
-                          </svg>
-                        </button>
+                            <svg
+                              width="20"
+                              height="20"
+                              viewBox="0 0 24 24"
+                              fill="currentColor"
+                              aria-hidden="true"
+                            >
+                              <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+                            </svg>
+                          </button>
+                          {!isReadOnly &&
+                            !hasQueuedCompactionMessageForActiveConversation &&
+                            (!segmentsAreEmpty(messageSegments) || attachments.length > 0) && (
+                              <button
+                                type="button"
+                                className="btn btn-primary chat-queue-btn-inline"
+                                onClick={queueMessage}
+                                disabled={isQueueing}
+                                aria-label="Queue message"
+                                title="Queue message"
+                              >
+                                Queue
+                              </button>
+                            )}
+                        </>
                       ) : !isReadOnly &&
                         (!segmentsAreEmpty(messageSegments) || attachments.length > 0) ? (
                         <button
                           type="button"
                           className="btn chat-send-btn-inline"
-                          onClick={sendMessage}
+                          onClick={submitComposerMessage}
                           disabled={
                             !renderedConversation ||
                             !contextUsage.hasHeadroom ||
                             hasQueuedCompactionMessageForActiveConversation ||
-                            isReplayPending
+                            isReplayPending ||
+                            isQueueing
                           }
                           title={
                             isReplayPending

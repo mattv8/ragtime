@@ -66,6 +66,10 @@ import type {
   ConversationCountResponse,
   CreateConversationRequest,
   SendMessageRequest,
+  ConversationMessageQueue,
+  QueueDispatchResponse,
+  QueueMessageResponse,
+  QueuedMessageItem,
   UiThemeContext,
   ChatMessage,
   AvailableModelsResponse,
@@ -3514,6 +3518,58 @@ export const api = {
       },
     );
     return handleResponse<{ message: ChatMessage; conversation: Conversation }>(response);
+  },
+
+  async getConversationMessageQueue(
+    conversationId: string,
+    workspaceId?: string,
+  ): Promise<ConversationMessageQueue> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/queue`, workspaceId),
+    );
+    return handleResponse<ConversationMessageQueue>(response);
+  },
+
+  async enqueueConversationMessage(
+    conversationId: string,
+    request: SendMessageRequest & { segments?: unknown[] },
+    workspaceId?: string,
+  ): Promise<QueueMessageResponse> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/queue`, workspaceId),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withClientClock(request)),
+      },
+    );
+    return handleResponse<QueueMessageResponse>(response);
+  },
+
+  async deleteConversationMessageQueueItem(
+    conversationId: string,
+    itemId: string,
+    workspaceId?: string,
+  ): Promise<QueuedMessageItem> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/queue/${itemId}`,
+        workspaceId,
+      ),
+      { method: 'DELETE' },
+    );
+    return handleResponse<QueuedMessageItem>(response);
+  },
+
+  async dispatchConversationMessageQueue(
+    conversationId: string,
+    workspaceId?: string,
+  ): Promise<QueueDispatchResponse> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/queue/dispatch`, workspaceId),
+      { method: 'POST' },
+    );
+    return handleResponse<QueueDispatchResponse>(response);
   },
 
   /**

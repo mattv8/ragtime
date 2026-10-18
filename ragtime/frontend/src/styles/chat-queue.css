@@ -1,0 +1,107 @@
+.queue-strip {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  align-items: stretch;
+  min-height: 40px;
+  background: var(--color-input-bg);
+  border-bottom: 1px solid var(--color-border);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  font-size: var(--text-xs);
+}
+.queue-strip-header,
+.queue-strip-row,
+.queue-strip-single {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  min-height: 40px;
+  padding-inline: var(--space-md) var(--space-sm);
+}
+.queue-strip-count,
+.queue-strip-preview {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-strip-paused-badge {
+  color: var(--color-warning);
+}
+.queue-strip-error-text,
+.queue-strip-item-error {
+  color: var(--color-error);
+}
+.queue-strip-list {
+  flex: 0 0 auto;
+  width: 100%;
+  max-height: 160px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.chat-input-area:has(.queue-strip-list) {
+  min-height: 320px !important;
+}
+.queue-strip-list .queue-strip-item + .queue-strip-item {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+}
+.queue-strip-send-now-btn {
+  white-space: nowrap;
+}
+.queue-strip-single .queue-strip-item {
+  flex: 1;
+  min-width: 0;
+}
+.queue-strip-single .queue-strip-row {
+  width: auto;
+  padding-inline: 0;
+}
+.queue-strip-item-error {
+  padding: 0 var(--space-md) var(--space-xs);
+}
+.queue-strip-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.queue-strip--loading,
+.queue-strip--error {
+  padding: var(--space-xs) var(--space-md);
+}
+.queue-strip-skeleton-row {
+  width: 100%;
+}
+[data-theme-pack='modern'] .queue-strip {
+  border-bottom-color: color-mix(in srgb, var(--color-border) 60%, transparent);
+  border-radius: 0;
+}
+@media (pointer: coarse) {
+  .queue-strip button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .queue-strip,
+  .queue-strip * {
+    transition-duration: 0.01ms !important;
+  }
+}
+@media (max-width: 480px) {
+  .queue-strip-single {
+    flex-wrap: wrap;
+  }
+  .queue-strip-single .queue-strip-send-now-btn {
+    margin-inline-start: auto;
+  }
+}
