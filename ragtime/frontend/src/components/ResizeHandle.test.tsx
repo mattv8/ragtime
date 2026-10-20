@@ -32,6 +32,7 @@ beforeAll(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   document.body.style.cursor = '';
   document.body.style.userSelect = '';
 });
@@ -237,6 +238,74 @@ describe('ResizeHandle', () => {
     expect(onResizeEnd).toHaveBeenCalledTimes(1);
     expect(document.body.style.cursor).toBe('');
     expect(document.body.style.userSelect).toBe('');
+  });
+
+  it('cancels a captured drag when the handle collapses and permits a new restore drag', () => {
+    const onResize = vi.fn();
+    const onResizeTo = vi.fn();
+    const onResizeEnd = vi.fn();
+    const frameCallbacks = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 1;
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback) => {
+        const frameId = nextFrameId++;
+        frameCallbacks.set(frameId, callback);
+        return frameId;
+      });
+    const cancelAnimationFrameSpy = vi
+      .spyOn(window, 'cancelAnimationFrame')
+      .mockImplementation((frameId) => {
+        frameCallbacks.delete(frameId);
+      });
+
+    const renderHandle = (collapsed?: 'before') => (
+      <ResizeHandle
+        direction="horizontal"
+        ariaLabel="Resize pane"
+        value={collapsed ? 0 : 200}
+        min={100}
+        max={400}
+        valueUnit="pixels"
+        collapsed={collapsed}
+        collapsible={{ side: 'before', restoreValue: 200 }}
+        onResize={onResize}
+        onResizeTo={onResizeTo}
+        onResizeEnd={onResizeEnd}
+      />
+    );
+    const { rerender } = render(renderHandle());
+    const separator = screen.getByRole('separator', { name: 'Resize pane' });
+
+    fireEvent.pointerDown(separator, { pointerId: 3, clientX: 100 });
+    fireEvent.pointerMove(separator, { pointerId: 3, clientX: 120 });
+    frameCallbacks.get(1)?.(0);
+    fireEvent.pointerMove(separator, { pointerId: 3, clientX: 140 });
+
+    expect(onResize).toHaveBeenCalledTimes(1);
+
+    rerender(renderHandle('before'));
+
+    expect(cancelAnimationFrameSpy).toHaveBeenCalledWith(2);
+    expect(document.body.style.cursor).toBe('');
+    expect(document.body.style.userSelect).toBe('');
+
+    fireEvent.pointerMove(separator, { pointerId: 3, clientX: 180 });
+    fireEvent.pointerUp(separator, { pointerId: 3, clientX: 180 });
+
+    expect(requestAnimationFrameSpy).toHaveBeenCalledTimes(2);
+    expect(onResize).toHaveBeenCalledTimes(1);
+    expect(onResizeEnd).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(separator, { pointerId: 4, clientX: 180 });
+    rerender(renderHandle());
+    fireEvent.pointerMove(separator, { pointerId: 4, clientX: 200 });
+    frameCallbacks.get(3)?.(0);
+    fireEvent.pointerUp(separator, { pointerId: 4, clientX: 200 });
+
+    expect(onResizeTo).toHaveBeenCalledWith(200);
+    expect(onResize).toHaveBeenCalledTimes(2);
+    expect(onResizeEnd).toHaveBeenCalledTimes(1);
   });
 
   it('cleans up body drag styles when unmounted mid-drag', () => {

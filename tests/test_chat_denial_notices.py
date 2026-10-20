@@ -208,6 +208,7 @@ class ContentProtectionDenialRepositoryTests(IsolatedAsyncioTestCase):
 
                 async def lock_conversation(*_: object) -> SimpleNamespace:
                     events.append("conversation-lock")
+                    assert conversation is not None
                     return conversation
 
                 db.transaction.chattask = SimpleNamespace(find_unique=find_active_task)

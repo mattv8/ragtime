@@ -110,7 +110,7 @@ export function ResizeHandle({
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+      if (!isDragging.current || !e.currentTarget.hasPointerCapture(e.pointerId)) return;
       e.preventDefault();
       const pos = direction === 'horizontal' ? e.clientX : e.clientY;
       const delta = pos - startPos.current;
