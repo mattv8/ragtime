@@ -12769,10 +12769,15 @@ def _conversation_share_role(value: object) -> ConversationShareRole:
 async def _persist_content_protection_denial(
     conversation_id: str,
     error: ContentProtectionError,
+    *,
+    suppress_if_task_active: bool = False,
 ) -> None:
     """Keep the original protection outcome when durable notice storage is unavailable."""
     try:
-        await persist_chat_denial(conversation_id, error)
+        if suppress_if_task_active:
+            await persist_chat_denial(conversation_id, error, suppress_if_task_active=True)
+        else:
+            await persist_chat_denial(conversation_id, error)
     except Exception:
         logger.warning("Could not persist content-protection denial for conversation %s", conversation_id)
 
@@ -16779,7 +16784,7 @@ async def enqueue_conversation_message(
     try:
         admission = await _prepare_queued_message_dispatch(conversation_id, queue_item)
     except ContentProtectionError as error:
-        await _persist_content_protection_denial(conversation_id, error)
+        await _persist_content_protection_denial(conversation_id, error, suppress_if_task_active=True)
         raise
     status, result = await repository.enqueue_chat_message(
         conversation_id, user_id=user.id, workspace_id=workspace_id, message=content, segments=request.segments, request_context=request_context
@@ -16811,7 +16816,9 @@ async def remove_conversation_queue_item(conversation_id: str, item_id: str, wor
 @router.post("/conversations/{conversation_id}/queue/dispatch")
 async def dispatch_conversation_queue(conversation_id: str, workspace_id: Optional[str] = None, user: User = Depends(get_current_user)):
     await _assert_queue_access(conversation_id, workspace_id, user)
-    items, _, _ = await repository.list_queued_chat_messages(conversation_id)
+    items, active_task_id, _ = await repository.list_queued_chat_messages(conversation_id)
+    if active_task_id:
+        return {"status": "busy"}
     if not items:
         return {"status": "empty"}
     head = items[0]
@@ -16823,7 +16830,7 @@ async def dispatch_conversation_queue(conversation_id: str, workspace_id: Option
             where={"id": head.id, "conversationId": conversation_id}, data={"dispatchError": _generation_failure_message(exc)}
         )
         if isinstance(exc, ContentProtectionError):
-            await _persist_content_protection_denial(conversation_id, exc)
+            await _persist_content_protection_denial(conversation_id, exc, suppress_if_task_active=True)
             raise
         if isinstance(exc, HTTPException):
             raise
@@ -16845,7 +16852,9 @@ async def _dispatch_queue_after_normal_completion(conversation_id: str) -> None:
     """Advance one queued message after a normal task only; compaction never calls this seam."""
     if background_task_service._shutdown:
         return
-    items, _, _ = await repository.list_queued_chat_messages(conversation_id)
+    items, active_task_id, _ = await repository.list_queued_chat_messages(conversation_id)
+    if active_task_id:
+        return
     if not items:
         return
     head = items[0]
@@ -16857,7 +16866,7 @@ async def _dispatch_queue_after_normal_completion(conversation_id: str) -> None:
             where={"id": head.id, "conversationId": conversation_id}, data={"dispatchError": _generation_failure_message(exc)}
         )
         if isinstance(exc, ContentProtectionError):
-            await _persist_content_protection_denial(conversation_id, exc)
+            await _persist_content_protection_denial(conversation_id, exc, suppress_if_task_active=True)
         return
     status, result = await repository.claim_queued_chat_message(conversation_id, expected_item_id=head.id)
     if status != "started":

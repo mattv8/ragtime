@@ -3680,6 +3680,105 @@ describe('ChatPanel standalone first-paint loading', () => {
     }
   });
 
+  it('keeps a rejected queued draft and active stream out of the transcript', async () => {
+    const conversation = makeConversation('streaming-queue-denial', 'Prior assistant reply');
+    const denialReason =
+      'This request was blocked by content protection. Rephrase the request and try again.';
+    let continueStream: (() => void) | undefined;
+    let completeStream: (() => void) | undefined;
+    const nextStreamState = new Promise<void>((resolve) => (continueStream = resolve));
+    const streamCompletion = new Promise<void>((resolve) => (completeStream = resolve));
+    const denialDetail = {
+      code: 'content_denied',
+      message: denialReason,
+      reason: 'This request was blocked by content protection.',
+      next_step: 'Rephrase the request and try again.',
+      request_id: 'streaming-queue-denial-request',
+    };
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(
+      makeWindow(conversation, { entries: [], nextCursor: null, hasMore: false }),
+    );
+    apiMock.streamChatTask.mockReturnValue(
+      (async function* () {
+        yield { type: 'state', content: 'Initial streamed reply', version: 1, events: [] };
+        await nextStreamState;
+        yield { type: 'state', content: 'Continued streamed reply', version: 2, events: [] };
+        await streamCompletion;
+      })(),
+    );
+    apiMock.enqueueConversationMessage.mockRejectedValueOnce(
+      new ApiError(denialDetail, 403, denialDetail),
+    );
+
+    try {
+      renderChatPanel(
+        <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+      );
+      const user = userEvent.setup();
+      const composer = await screen.findByLabelText('Message');
+      await user.type(composer, 'Start streaming');
+      await user.click(await screen.findByTitle('Send message'));
+      expect(await screen.findByText('Initial streamed reply')).toBeDefined();
+
+      await user.type(composer, 'Rejected queued draft');
+      await user.click(await screen.findByRole('button', { name: 'Queue message' }));
+
+      await waitFor(() =>
+        expect(apiMock.enqueueConversationMessage).toHaveBeenCalledWith(
+          conversation.id,
+          expect.objectContaining({ message: 'Rejected queued draft' }),
+          undefined,
+        ),
+      );
+      expect(await screen.findByText(denialReason)).toBeDefined();
+      expect(composer.textContent).toContain('Rejected queued draft');
+      expect(screen.queryByRole('note', { name: 'Request blocked' })).toBeNull();
+      expect(document.querySelector('.chat-messages')?.textContent).not.toContain(
+        'Request blocked.',
+      );
+
+      await act(async () => continueStream?.());
+      expect(await screen.findByText('Continued streamed reply')).toBeDefined();
+    } finally {
+      await act(async () => {
+        continueStream?.();
+        completeStream?.();
+      });
+    }
+  });
+
+  it('keeps queued messages in the composer boundary below the transcript', async () => {
+    const conversation = makeConversation('queued-composer-boundary', 'Prior assistant reply');
+    apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));
+    apiMock.getConversationMessageWindow.mockResolvedValue(makeWindow(conversation));
+    apiMock.getConversationMessageQueue.mockResolvedValue({
+      items: [
+        {
+          id: 'queued-composer-boundary-item',
+          conversation_id: conversation.id,
+          message: 'Queued composer follow-up',
+          segments: [{ type: 'text', text: 'Queued composer follow-up' }],
+          request_context: {},
+          seq: '1',
+          dispatch_error: null,
+          created_at: new Date().toISOString(),
+        },
+      ],
+      active_task_id: 'streaming-task',
+      held: false,
+    });
+
+    renderChatPanel(
+      <ChatPanel currentUser={currentUser} initialConversationId={conversation.id} />,
+    );
+
+    const strip = await screen.findByRole('group', { name: 'Queued messages' });
+    const transcript = document.querySelector('.chat-messages');
+    expect(strip.closest('#chat-workbench-composer')).not.toBeNull();
+    expect(transcript?.contains(strip)).toBe(false);
+  });
+
   it('does not open a chat stream for a compaction task reported by the queue', async () => {
     const conversation = makeConversation('queue-compaction', 'Prior assistant reply');
     apiMock.getConversationLatestExchange.mockResolvedValue(makeLatestExchange(conversation));

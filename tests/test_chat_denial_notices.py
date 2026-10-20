@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import unittest
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -100,11 +101,27 @@ class PersistChatDenialTests(IsolatedAsyncioTestCase):
 
         self.assertEqual(error.denial_message_id, message_id)
 
+    async def test_suppressed_notice_leaves_error_unannotated_and_does_not_publish(self) -> None:
+        error = ContentProtectionError("content_denied", "request-1")
+        from ragtime.indexer.repository import repository
+
+        with (
+            mock.patch.object(repository, "record_content_protection_denial", new=mock.AsyncMock(return_value=None)) as record,
+            mock.patch.object(denial_notices.task_event_bus, "publish", new=mock.AsyncMock()) as publish,
+        ):
+            message_id = await denial_notices.persist_chat_denial("conversation-1", error, suppress_if_task_active=True)
+
+        self.assertIsNone(message_id)
+        self.assertIsNone(error.denial_message_id)
+        record.assert_awaited_once_with("conversation-1", error, task_id=None, suppress_if_task_active=True)
+        publish.assert_not_awaited()
+
 
 class _FakeTransaction:
     def __init__(self, conversation: SimpleNamespace | None) -> None:
         self.conversation_record = conversation
         self.conversation = SimpleNamespace(update=self.update)
+        self.chattask: SimpleNamespace | None = None
         self.update_count = 0
 
     async def __aenter__(self) -> "_FakeTransaction":
@@ -175,6 +192,57 @@ class ContentProtectionDenialRepositoryTests(IsolatedAsyncioTestCase):
 
         self.assertIsNone(message_id)
         self.assertIsNone(error.denial_message_id)
+
+    async def test_live_task_suppresses_denial_after_conversation_lock(self) -> None:
+        for status in (ChatTaskStatus.pending, ChatTaskStatus.running):
+            with self.subTest(status=status):
+                repository, db = self._repository()
+                conversation = db.transaction.conversation_record
+                assert conversation is not None
+                conversation.activeTaskId = "task-1"
+                events: list[str] = []
+
+                async def find_active_task(**_: object) -> SimpleNamespace:
+                    events.append("task-read")
+                    return SimpleNamespace(status=_to_prisma_task_status(status))
+
+                async def lock_conversation(*_: object) -> SimpleNamespace:
+                    events.append("conversation-lock")
+                    return conversation
+
+                db.transaction.chattask = SimpleNamespace(find_unique=find_active_task)
+                repository._lock_conversation_for_branch_mutation = mock.AsyncMock(side_effect=lock_conversation)  # type: ignore[method-assign]
+
+                result = await repository.record_content_protection_denial(
+                    "conversation-1", ContentProtectionError("content_denied", "request-1"), suppress_if_task_active=True
+                )
+
+                self.assertIsNone(result)
+                self.assertEqual(events, ["conversation-lock", "task-read"])
+                self.assertEqual(db.transaction.update_count, 0)
+
+    async def test_stale_task_and_default_behavior_persist_denial(self) -> None:
+        cases = ((True, ChatTaskStatus.completed, True), (False, ChatTaskStatus.running, True), (True, None, False))
+        for suppress_if_task_active, task_status, has_active_task in cases:
+            with self.subTest(suppress_if_task_active=suppress_if_task_active, task_status=task_status):
+                repository, db = self._repository()
+                conversation = db.transaction.conversation_record
+                assert conversation is not None
+                if has_active_task:
+                    assert task_status is not None
+                    conversation.activeTaskId = "task-1"
+                    db.transaction.chattask = SimpleNamespace(
+                        find_unique=mock.AsyncMock(return_value=SimpleNamespace(status=_to_prisma_task_status(task_status)))
+                    )
+
+                result = await repository.record_content_protection_denial(
+                    "conversation-1",
+                    ContentProtectionError("content_denied", "request-1"),
+                    suppress_if_task_active=suppress_if_task_active,
+                )
+
+                self.assertIsNotNone(result)
+                self.assertEqual(db.transaction.update_count, 1)
 
 
 def test_window_preview_exposes_only_typed_denial_event_fields() -> None:
@@ -283,9 +351,32 @@ def _chat_task(status: ChatTaskStatus) -> SimpleNamespace:
     )
 
 
-def _task_repository(task: SimpleNamespace) -> tuple[IndexerRepository, SimpleNamespace]:
-    conversation = SimpleNamespace(update=mock.AsyncMock())
-    db = SimpleNamespace(chattask=_FakeChatTaskTable(task), conversation=conversation)
+_CLEAR_ACTIVE_TASK_SQL = re.compile(r"UPDATE conversations SET active_task_id = NULL WHERE id = '((?:[^']|'')*)' AND active_task_id = '((?:[^']|'')*)'")
+
+
+def _clear_active_task_sql(conversation: SimpleNamespace) -> mock.AsyncMock:
+    """Mirrors the production conditional clear: null the pointer only when it still names the task."""
+
+    async def execute_raw(query: str) -> int:
+        match = _CLEAR_ACTIVE_TASK_SQL.fullmatch(query)
+        if match is None:
+            raise AssertionError(f"fake database does not understand SQL: {query}")
+        conversation_id, task_id = (literal.replace("''", "'") for literal in match.groups())
+        if conversation.id != conversation_id or conversation.activeTaskId != task_id:
+            return 0
+        conversation.activeTaskId = None
+        return 1
+
+    return mock.AsyncMock(side_effect=execute_raw)
+
+
+def _task_repository(task: SimpleNamespace, *, active_task_id: str | None = "task-1") -> tuple[IndexerRepository, SimpleNamespace]:
+    conversation = SimpleNamespace(id="conversation-1", activeTaskId=active_task_id)
+    db = SimpleNamespace(
+        chattask=_FakeChatTaskTable(task),
+        conversation=conversation,
+        execute_raw=_clear_active_task_sql(conversation),
+    )
     repository = IndexerRepository()
     repository._get_db = mock.AsyncMock(return_value=db)  # type: ignore[method-assign]
     repository._prisma_task_to_model = mock.Mock(side_effect=lambda row: row)  # type: ignore[method-assign]
@@ -308,7 +399,8 @@ class ChatTaskTerminalStateTests(IsolatedAsyncioTestCase):
         self.assertEqual(task.streamingState["events"], [])
         self.assertEqual(task.streamingState["tool_calls"], [])
         self.assertEqual(task.streamingState["version"], 5)
-        db.conversation.update.assert_awaited_once_with(where={"id": "conversation-1"}, data={"activeTaskId": None})
+        self.assertIsNone(db.conversation.activeTaskId)
+        db.execute_raw.assert_awaited_once()
 
     async def test_pending_task_denied_before_running_fails_and_clears_active_task(self) -> None:
         task = _chat_task(ChatTaskStatus.pending)
@@ -325,7 +417,19 @@ class ChatTaskTerminalStateTests(IsolatedAsyncioTestCase):
         self.assertEqual(task.streamingState["events"], [])
         self.assertEqual(task.streamingState["tool_calls"], [])
         self.assertEqual(task.streamingState["version"], 5)
-        db.conversation.update.assert_awaited_once_with(where={"id": "conversation-1"}, data={"activeTaskId": None})
+        self.assertIsNone(db.conversation.activeTaskId)
+        db.execute_raw.assert_awaited_once()
+
+    async def test_terminal_clear_leaves_a_different_active_task_pointer_untouched(self) -> None:
+        task = _chat_task(ChatTaskStatus.running)
+        repository, db = _task_repository(task, active_task_id="task-2")
+
+        result = await repository.update_chat_task_status("task-1", ChatTaskStatus.failed, "Request blocked.", clear_streaming_state=True)
+
+        self.assertIs(result, task)
+        self.assertEqual(task.status, _to_prisma_task_status(ChatTaskStatus.failed))
+        self.assertEqual(db.conversation.activeTaskId, "task-2")
+        db.execute_raw.assert_awaited_once()
 
     async def test_terminal_clear_never_downgrades_an_already_terminal_task(self) -> None:
         for terminal_status in (ChatTaskStatus.failed, ChatTaskStatus.cancelled):
@@ -339,7 +443,8 @@ class ChatTaskTerminalStateTests(IsolatedAsyncioTestCase):
                 self.assertEqual(task.status, _to_prisma_task_status(terminal_status))
                 self.assertEqual(task.streamingState["content"], "private partial")
                 self.assertEqual(task.streamingState["version"], 4)
-                db.conversation.update.assert_not_awaited()
+                self.assertEqual(db.conversation.activeTaskId, "task-1")
+                db.execute_raw.assert_not_awaited()
 
     async def test_late_stream_write_after_terminal_clear_is_rejected(self) -> None:
         task = _chat_task(ChatTaskStatus.pending)

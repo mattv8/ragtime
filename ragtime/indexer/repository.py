@@ -4065,6 +4065,7 @@ class IndexerRepository:
         error: ContentProtectionError,
         *,
         task_id: str | None = None,
+        suppress_if_task_active: bool = False,
     ) -> Optional[Conversation]:
         """Append one validated server control notice, deduplicated under the branch lock."""
         message = build_denial_message(conversation_id, error, task_id=task_id)
@@ -4076,6 +4077,9 @@ class IndexerRepository:
                 prisma_conv = await self._lock_conversation_for_branch_mutation(tx, conversation_id)
                 if not prisma_conv:
                     return None
+                if suppress_if_task_active and await self._conversation_task_is_live(tx, prisma_conv):
+                    logger.info("Skipped content-protection denial notice while conversation task is active: %s", conversation_id)
+                    return None
                 messages = _normalize_message_payloads(prisma_conv.messages)
                 if not any(str(existing.get("message_id") or "") == message_id for existing in messages):
                     messages.append(_sanitize_json_for_postgres(message))
@@ -4086,6 +4090,18 @@ class IndexerRepository:
                     )
 
         return self._prisma_conversation_to_model(prisma_conv)
+
+    @staticmethod
+    async def _conversation_task_is_live(tx: Any, conversation: Any) -> bool:
+        """Return whether the locked conversation currently points to a live task."""
+        active_task_id = getattr(conversation, "activeTaskId", None)
+        if not active_task_id:
+            return False
+        task_table = getattr(tx, "chattask", None)
+        if task_table is None:
+            return False
+        task = await task_table.find_unique(where={"id": active_task_id})
+        return bool(task and task.status in {PrismaChatTaskStatus.pending, PrismaChatTaskStatus.running})
 
     async def update_message_event_output(
         self,

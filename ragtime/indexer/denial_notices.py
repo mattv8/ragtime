@@ -78,12 +78,23 @@ def denial_preview_events(message: dict[str, Any]) -> list[dict[str, str]] | Non
     ] or None
 
 
-async def persist_chat_denial(conversation_id: str, error: ContentProtectionError, *, task_id: str | None = None) -> str | None:
+async def persist_chat_denial(
+    conversation_id: str,
+    error: ContentProtectionError,
+    *,
+    task_id: str | None = None,
+    suppress_if_task_active: bool = False,
+) -> str | None:
     """Persist a denial notice and announce its safe opaque identifiers."""
     from ragtime.indexer.repository import repository
 
     try:
-        conversation = await repository.record_content_protection_denial(conversation_id, error, task_id=task_id)
+        conversation = await repository.record_content_protection_denial(
+            conversation_id,
+            error,
+            task_id=task_id,
+            suppress_if_task_active=suppress_if_task_active,
+        )
     except Exception:
         logger.warning("Could not persist content-protection denial notice")
         return None

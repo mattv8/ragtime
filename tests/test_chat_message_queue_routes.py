@@ -146,7 +146,7 @@ class QueueRouteTests(unittest.IsolatedAsyncioTestCase):
                 await routes.dispatch_conversation_queue("conversation-1", user=_user("caller"))
 
         self.assertIs(raised.exception, denial)
-        persist.assert_awaited_once_with("conversation-1", denial)
+        persist.assert_awaited_once_with("conversation-1", denial, suppress_if_task_active=True)
         self.assertEqual(db.chatqueuedmessage.update_many.await_args.kwargs["data"]["dispatchError"], "content_denied")
 
     async def test_auto_dispatch_persists_content_protection_denial_and_holds_item(self) -> None:
@@ -162,9 +162,47 @@ class QueueRouteTests(unittest.IsolatedAsyncioTestCase):
         ):
             await routes._dispatch_queue_after_normal_completion("conversation-1")
 
-        persist.assert_awaited_once_with("conversation-1", denial)
+        persist.assert_awaited_once_with("conversation-1", denial, suppress_if_task_active=True)
         self.assertEqual(db.chatqueuedmessage.update_many.await_args.kwargs["data"]["dispatchError"], "content_denied")
         claim.assert_not_awaited()
+
+    async def test_enqueue_persists_denial_with_live_task_suppression(self) -> None:
+        denial = ContentProtectionError("content_denied", "request-1")
+        request = QueueMessageRequest(message="blocked")
+        conversation = SimpleNamespace(user_id="user-1", workspace_id=None)
+        with (
+            mock.patch.object(routes, "_assert_queue_access", new=mock.AsyncMock(return_value=conversation)),
+            mock.patch.object(routes, "_prepare_queued_message_dispatch", new=mock.AsyncMock(side_effect=denial)),
+            mock.patch.object(routes, "_persist_content_protection_denial", new=mock.AsyncMock()) as persist,
+            mock.patch.object(routes.repository, "enqueue_chat_message", new=mock.AsyncMock()) as enqueue,
+        ):
+            with self.assertRaises(ContentProtectionError):
+                await routes.enqueue_conversation_message("conversation-1", request, user=_user())
+
+        persist.assert_awaited_once_with("conversation-1", denial, suppress_if_task_active=True)
+        enqueue.assert_not_awaited()
+
+    async def test_manual_dispatch_skips_preflight_while_task_is_active(self) -> None:
+        head = SimpleNamespace(id="queued-1")
+        with (
+            mock.patch.object(routes, "_assert_queue_access", new=mock.AsyncMock()),
+            mock.patch.object(routes.repository, "list_queued_chat_messages", new=mock.AsyncMock(return_value=([head], "task-1", False))),
+            mock.patch.object(routes, "_prepare_queued_message_dispatch", new=mock.AsyncMock()) as prepare,
+        ):
+            response = await routes.dispatch_conversation_queue("conversation-1", user=_user())
+
+        self.assertEqual(response, {"status": "busy"})
+        prepare.assert_not_awaited()
+
+    async def test_auto_dispatch_skips_preflight_while_task_is_active(self) -> None:
+        head = SimpleNamespace(id="queued-1")
+        with (
+            mock.patch.object(routes.repository, "list_queued_chat_messages", new=mock.AsyncMock(return_value=([head], "task-1", False))),
+            mock.patch.object(routes, "_prepare_queued_message_dispatch", new=mock.AsyncMock()) as prepare,
+        ):
+            await routes._dispatch_queue_after_normal_completion("conversation-1")
+
+        prepare.assert_not_awaited()
 
     async def test_enqueue_drops_oversized_display_segments_without_changing_canonical_message(self) -> None:
         message = "canonical message"
@@ -217,3 +255,30 @@ class QueueRouteTests(unittest.IsolatedAsyncioTestCase):
             response = await routes.cancel_chat_task("task-1", user=user)
 
         self.assertEqual(response.status, ChatTaskStatus.completed)
+
+
+class ContentProtectionDenialWrapperTests(unittest.IsolatedAsyncioTestCase):
+    async def test_wrapper_forwards_live_task_suppression_to_persistence(self) -> None:
+        denial = ContentProtectionError("content_denied", "request-1")
+        with mock.patch.object(routes, "persist_chat_denial", new=mock.AsyncMock(return_value=None)) as persist:
+            await routes._persist_content_protection_denial("conversation-1", denial, suppress_if_task_active=True)
+
+        persist.assert_awaited_once_with("conversation-1", denial, suppress_if_task_active=True)
+
+    async def test_wrapper_default_persists_without_suppression_argument(self) -> None:
+        denial = ContentProtectionError("content_denied", "request-1")
+        with mock.patch.object(routes, "persist_chat_denial", new=mock.AsyncMock(return_value=None)) as persist:
+            await routes._persist_content_protection_denial("conversation-1", denial)
+
+        persist.assert_awaited_once_with("conversation-1", denial)
+
+    async def test_wrapper_swallows_persistence_failure_so_protection_outcome_is_kept(self) -> None:
+        denial = ContentProtectionError("content_denied", "request-1")
+        with mock.patch.object(
+            routes,
+            "persist_chat_denial",
+            new=mock.AsyncMock(side_effect=RuntimeError("database unavailable")),
+        ) as persist:
+            await routes._persist_content_protection_denial("conversation-1", denial, suppress_if_task_active=True)
+
+        persist.assert_awaited_once_with("conversation-1", denial, suppress_if_task_active=True)
