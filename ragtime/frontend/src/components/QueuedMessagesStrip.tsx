@@ -139,6 +139,8 @@ export function QueuedMessagesStrip({
     return (
       <div
         className="queue-strip queue-strip--loading"
+        id={`queue-strip-${conversationId}`}
+        data-queue-state="loading"
         role="group"
         aria-busy="true"
         aria-label="Loading queued messages"
@@ -150,7 +152,12 @@ export function QueuedMessagesStrip({
     );
   if (state.error)
     return (
-      <div className="queue-strip queue-strip--error" role="alert">
+      <div
+        className="queue-strip queue-strip--error"
+        id={`queue-strip-${conversationId}`}
+        data-queue-state="error"
+        role="alert"
+      >
         <span className="queue-strip-error-text">Could not load queue</span>
         <button type="button" className="chat-action-icon-btn" aria-label="Retry" onClick={onRetry}>
           <RefreshCw size={14} aria-hidden="true" />
@@ -164,6 +171,7 @@ export function QueuedMessagesStrip({
     <div
       className="queue-strip"
       id={`queue-strip-${conversationId}`}
+      data-queue-state="success"
       role="group"
       aria-label="Queued messages"
     >

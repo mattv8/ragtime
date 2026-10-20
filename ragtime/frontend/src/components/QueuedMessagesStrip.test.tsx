@@ -110,4 +110,78 @@ describe('QueuedMessagesStrip', () => {
 
     expect(screen.getByText('Large pasted message')).toBeDefined();
   });
+
+  it('exposes a stable identity and loading state on the loading root', () => {
+    const { container } = render(
+      <QueuedMessagesStrip
+        conversationId="conversation-1"
+        state={{ items: [], activeTaskId: null, held: false, loading: true, error: null }}
+        draftIsEmpty
+        onDelete={vi.fn()}
+        onEdit={vi.fn()}
+        onDispatch={vi.fn()}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.id).toBe('queue-strip-conversation-1');
+    expect(root.dataset.queueState).toBe('loading');
+    expect(root.getAttribute('aria-busy')).toBe('true');
+    expect(root.getAttribute('aria-label')).toBe('Loading queued messages');
+  });
+
+  it('keeps the retry control inside the error root after the error text', async () => {
+    const onRetry = vi.fn();
+    const { container } = render(
+      <QueuedMessagesStrip
+        conversationId="conversation-1"
+        state={{
+          items: [],
+          activeTaskId: null,
+          held: false,
+          loading: false,
+          error: new Error('boom'),
+        }}
+        draftIsEmpty
+        onDelete={vi.fn()}
+        onEdit={vi.fn()}
+        onDispatch={vi.fn()}
+        onRetry={onRetry}
+      />,
+    );
+
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.id).toBe('queue-strip-conversation-1');
+    expect(root.dataset.queueState).toBe('error');
+    expect(root.getAttribute('role')).toBe('alert');
+
+    const errorText = screen.getByText('Could not load queue');
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect(root.contains(retry)).toBe(true);
+    expect(
+      errorText.compareDocumentPosition(retry) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await userEvent.click(retry);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the populated strip root with its identity and success state', () => {
+    const { container } = render(
+      <QueuedMessagesStrip
+        conversationId="conversation-1"
+        state={{ items: [item], activeTaskId: null, held: false, loading: false, error: null }}
+        draftIsEmpty
+        onDelete={vi.fn()}
+        onEdit={vi.fn()}
+        onDispatch={vi.fn()}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.id).toBe('queue-strip-conversation-1');
+    expect(root.dataset.queueState).toBe('success');
+  });
 });

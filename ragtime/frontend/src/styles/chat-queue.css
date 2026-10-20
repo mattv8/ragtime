@@ -1,12 +1,14 @@
 .queue-strip {
+  --queue-strip-row-min-height: 40px;
+  --queue-strip-block-padding: var(--space-xs);
   display: flex;
   flex-direction: column;
   flex: 0 0 auto;
   align-items: stretch;
-  min-height: 40px;
+  min-height: var(--queue-strip-row-min-height);
   background: var(--color-input-bg);
-  border-bottom: 1px solid var(--color-border);
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  border: 1px solid var(--color-input-border);
+  border-radius: var(--radius-lg);
   font-size: var(--text-xs);
 }
 .queue-strip-header,
@@ -16,7 +18,7 @@
   align-items: center;
   gap: var(--space-xs);
   width: 100%;
-  min-height: 40px;
+  min-height: var(--queue-strip-row-min-height);
   padding-inline: var(--space-md) var(--space-sm);
 }
 .queue-strip-count,
@@ -76,19 +78,40 @@
 }
 .queue-strip--loading,
 .queue-strip--error {
-  padding: var(--space-xs) var(--space-md);
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--queue-strip-block-padding) var(--space-md);
+}
+.queue-strip--error .queue-strip-error-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-strip--error .chat-action-icon-btn {
+  flex: 0 0 auto;
 }
 .queue-strip-skeleton-row {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
 }
 [data-theme-pack='modern'] .queue-strip {
-  border-bottom-color: color-mix(in srgb, var(--color-border) 60%, transparent);
-  border-radius: 0;
+  --queue-strip-row-min-height: var(--workbench-control-height);
+  --queue-strip-block-padding: 0;
+  background: var(--color-panel);
+  border: var(--workbench-container-border);
+  border-radius: var(--workbench-surface-radius);
+  box-shadow: none;
 }
 @media (pointer: coarse) {
   .queue-strip button {
     min-width: 44px;
     min-height: 44px;
+  }
+  .queue-strip-list {
+    max-height: calc(4 * 44px + 3px);
   }
 }
 @media (prefers-reduced-motion: reduce) {

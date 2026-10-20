@@ -6015,7 +6015,7 @@ textarea:focus {
   cursor: row-resize;
 }
 
-/* Collapsed state: clickable strip with expand chevron */
+/* Collapsed state: clickable restore strip with grip */
 .resize-handle-collapsed {
   display: flex;
   align-items: center;
@@ -6031,11 +6031,6 @@ textarea:focus {
 .resize-handle-collapsed.resize-handle-vertical {
   height: 16px;
   cursor: row-resize;
-}
-
-.resize-handle-chevron {
-  color: var(--color-text-muted);
-  pointer-events: none;
 }
 
 .resize-handle-grip {
@@ -6054,10 +6049,6 @@ textarea:focus {
 }
 .resize-handle-vertical .resize-handle-grip {
   flex-direction: row;
-}
-
-.resize-handle-collapsed .resize-handle-grip {
-  display: none;
 }
 
 .resize-handle-grip-dot {
