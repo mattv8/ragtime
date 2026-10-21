@@ -168,9 +168,10 @@ function ClaudeGuide({
       <Alternative summary="Troubleshooting and changes" disclosure="claude-troubleshooting">
         <p>
           After header or credential changes, remove and re-add the Claude connector and have
-          members reconnect. If you see authentication errors, verify the Ragtime instance has OAuth
-          enabled for the default <code>/mcp</code> route (Settings → Enable MCP Server, Require
-          authentication for default /mcp route, Authentication Method: OAuth2).
+          members reconnect. If OAuth sign-in or workspace tools fail, verify the shared{' '}
+          <code>/mcp</code> route uses OAuth2 (Settings → Enable MCP Server, Require authentication
+          for default /mcp route, Authentication Method: OAuth2) and that the signed-in user already
+          has access to this workspace.
         </p>
       </Alternative>
       <section
@@ -299,7 +300,7 @@ export function CodingAgentClientGuide({ clientId, mcpUrl, workspaceId }: Props)
               If OAuth is unavailable, verify the Ragtime instance has it enabled for the default{' '}
               <code>/mcp</code> route (Settings → Enable MCP Server, Require authentication for
               default /mcp route, Authentication Method: OAuth2) and that your account has the
-              required permissions.
+              existing workspace access required for the development tools you use.
             </p>
           </Alternative>
           <Docs href={docs} />

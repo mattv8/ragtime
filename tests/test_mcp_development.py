@@ -1,13 +1,16 @@
+import asyncio
 import json
 import unittest
 from unittest import mock
 
 from fastapi import HTTPException
-from mcp.types import TextContent
+from mcp.server import Server
+from mcp.types import CallToolRequest, CallToolRequestParams, CallToolResult, ListToolsRequest, ListToolsResult, TextContent, Tool
 
 from ragtime.content_protection.models import ContentProtectionError
 from ragtime.mcp import routes as mcp_routes
 from ragtime.mcp import server as mcp_server
+from ragtime.mcp.tools import MCPToolAdapter, MCPToolDefinition
 from ragtime.userspace.development_access import DevelopmentPrincipal
 from ragtime.userspace.development_service import development_service
 
@@ -189,13 +192,63 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(content.text)["error"], detail)
 
     async def test_oauth_user_becomes_request_local_development_principal(self) -> None:
-        scope = {"type": "http", "headers": [], "_mcp_oauth_user": mock.Mock(id="user-1", role="admin")}
+        scope = {"type": "http", "headers": [], "_mcp_oauth_user": mock.Mock(id="user-1", role="admin"), "_mcp_user_id": "user-1"}
 
         principal = await mcp_routes._resolve_default_development_principal(  # pyright: ignore[reportPrivateUsage]
             scope, auth_method="oauth2", resolved_auth_method="oauth2"
         )
 
-        self.assertEqual(principal, DevelopmentPrincipal(user_id="user-1", is_admin=True))
+        self.assertEqual(principal, DevelopmentPrincipal(user_id="user-1", is_admin=True, general_tools_allowed=True))
+
+    async def test_development_only_oauth_principal_cannot_use_general_tools(self) -> None:
+        scope = {"type": "http", "headers": [], "_mcp_oauth_user": mock.Mock(id="user-1", role="user"), "_mcp_user_id": "user-1"}
+
+        principal = await mcp_routes._resolve_default_development_principal(  # pyright: ignore[reportPrivateUsage]
+            scope, auth_method="oauth2", resolved_auth_method="oauth2_development"
+        )
+
+        assert principal is not None
+        self.assertFalse(principal.general_tools_allowed)
+        self.assertFalse(mcp_server._general_tools_allowed(principal))  # pyright: ignore[reportPrivateUsage]
+
+    def test_open_route_without_a_bound_principal_retains_general_tools(self) -> None:
+        self.assertTrue(mcp_server._general_tools_allowed(None))  # pyright: ignore[reportPrivateUsage]
+
+    async def test_development_only_principal_is_denied_from_registered_general_tool_handlers(self) -> None:
+        server = Server("development-only-denial")
+        adapter = MCPToolAdapter()
+        general_tool = MCPToolDefinition(
+            name="ssh_transfer",
+            description="general synthetic tool",
+            input_schema={},
+            tool_config={},
+            execute_fn=mock.AsyncMock(return_value="executed"),
+        )
+        mcp_server._register_handlers(server, adapter)  # pyright: ignore[reportPrivateUsage]
+        principal = DevelopmentPrincipal(user_id="user-1", is_admin=False)
+
+        with (
+            mock.patch.object(adapter, "get_available_tools", new=mock.AsyncMock(return_value=[general_tool])),
+            mock.patch.object(adapter, "resolve_canonical_tool_id", new=mock.AsyncMock(return_value="ssh-transfer")),
+            mock.patch.object(adapter, "execute_tool", new=mock.AsyncMock(return_value="executed")) as execute_tool,
+            mock.patch(
+                "ragtime.mcp.server._development_tools_for_principal",
+                new=mock.AsyncMock(return_value=[Tool(name="workspace_development", description="dev", inputSchema={})]),
+            ),
+            mock.patch("ragtime.mcp.server.authorize_external_content", new=mock.AsyncMock()),
+        ):
+            with mcp_server.mcp_request_context(principal):
+                listed = await server.request_handlers[ListToolsRequest](ListToolsRequest())
+                self.assertIsInstance(listed.root, ListToolsResult)
+                assert isinstance(listed.root, ListToolsResult)
+                self.assertEqual([tool.name for tool in listed.root.tools], ["workspace_development"])
+                for name in ("guessed_general_tool", "ssh_transfer"):
+                    result = await server.request_handlers[CallToolRequest](CallToolRequest(params=CallToolRequestParams(name=name, arguments={})))
+                    self.assertIsInstance(result.root, CallToolResult)
+                    assert isinstance(result.root, CallToolResult)
+                    self.assertTrue(result.root.isError)
+
+        execute_tool.assert_not_awaited()
 
     async def test_client_credentials_never_resolve_as_development_principal(self) -> None:
         scope = {"type": "http", "headers": []}
@@ -220,6 +273,40 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(mcp_server.get_request_development_principal(), principal)
         mcp_server._development_principal.set(None)  # pyright: ignore[reportPrivateUsage]
         mcp_server._mcp_route_id.set("default")  # pyright: ignore[reportPrivateUsage]
+
+    async def test_stateful_session_explicit_none_context_replaces_cached_principal(self) -> None:
+        principal = DevelopmentPrincipal(user_id="user-1", is_admin=False, scopes=frozenset({"read"}))
+        session = mock.MagicMock()
+        server = mock.MagicMock()
+        server.request_context.session = session
+
+        with mcp_server.mcp_request_context(principal, "default"):
+            mcp_server._bind_session_request_context(server)  # pyright: ignore[reportPrivateUsage]
+        with mcp_server.mcp_request_context(None, "default"):
+            mcp_server._bind_session_request_context(server)  # pyright: ignore[reportPrivateUsage]
+
+        mcp_server._bind_session_request_context(server)  # pyright: ignore[reportPrivateUsage]
+        self.assertIsNone(mcp_server.get_request_development_principal())
+        mcp_server._development_principal.set(None)  # pyright: ignore[reportPrivateUsage]
+        mcp_server._mcp_route_id.set("default")  # pyright: ignore[reportPrivateUsage]
+
+    async def test_concurrent_session_callbacks_keep_each_principal_isolated(self) -> None:
+        first = DevelopmentPrincipal(user_id="first", is_admin=False, scopes=frozenset({"read"}))
+        second = DevelopmentPrincipal(user_id="second", is_admin=False, scopes=frozenset({"read"}))
+
+        async def bind_principal(principal: DevelopmentPrincipal) -> str:
+            server = mock.MagicMock()
+            server.request_context.session = mock.MagicMock()
+            with mcp_server.mcp_request_context(principal, "default"):
+                await asyncio.sleep(0)
+                mcp_server._bind_session_request_context(server)  # pyright: ignore[reportPrivateUsage]
+                bound_principal = mcp_server.get_request_development_principal()
+                assert bound_principal is not None
+                return str(bound_principal.user_id)
+
+        first_user, second_user = await asyncio.gather(bind_principal(first), bind_principal(second))
+
+        self.assertEqual((first_user, second_user), ("first", "second"))
 
 
 if __name__ == "__main__":

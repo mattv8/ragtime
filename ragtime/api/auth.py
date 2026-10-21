@@ -1798,7 +1798,6 @@ class OAuth2ErrorResponse(BaseModel):
     },
     tags=["OAuth2"],
 )
-@limiter.limit(LOGIN_RATE_LIMIT)
 async def oauth2_token(
     request: Request,
     response: Response,

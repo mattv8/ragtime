@@ -220,6 +220,10 @@ flowchart LR
    # This marks cookies as Secure. Auto-enabled when ENABLE_HTTPS=true.
    SESSION_COOKIE_SECURE=false
 
+   # Trust forwarded headers only from named reverse-proxy peer IPs. The proxy must
+   # remove client-supplied forwarded headers before adding its own. Never use *.
+   # FORWARDED_ALLOW_IPS=127.0.0.1
+
    # -----------------------------------------------------------------------------
    # Runtime Configuration
    # -----------------------------------------------------------------------------
@@ -571,6 +575,8 @@ Workspace owners and admins can open **Share Workspace > Agent Collaboration**, 
 
 Ragtime can provide the workspace control plane while an external agent harness (Claude Desktop, Codex, OpenCode, etc.) supplies reasoning.
 
+For hosted clients such as Claude Cowork, connect through the shared OAuth-protected `/mcp` route and sign in with your Ragtime account. A configured default group gates general MCP tools; other signed-in users can still use workspace-development tools only in workspaces their existing roles authorize.
+
 **Chat** and **User Space AI generation** are independently controlled:
 
 - **Settings > Chat > Enable chat**: Default for Chat UI generation (titles, responses, background inference). Default: on. Administrators can set each user's Chat policy in **Users > User policies** to use the default, enable it, or disable it. An enabled user override works even when the global default is off.
@@ -714,6 +720,7 @@ from the registry. Pull requests run validation only and do not publish images.
 - **Restrict `ALLOWED_ORIGINS`** to trusted domains. The application default is loopback-only when unset; avoid using `*` in network-accessible deployments because it is permissive with `allow_credentials=True`.
 - **Enable MCP route authentication** via Settings UI if `/mcp` is network-accessible. MCP is disabled by default; when MCP is enabled, the default route is open unless you turn on route authentication.
 - MCP authentication supports password-based headers (including `MCP-Password` and bearer form) and OAuth2/client_credentials route modes.
+- **Trust forwarded headers narrowly.** If a reverse proxy forwards client details, configure `FORWARDED_ALLOW_IPS` with only that proxy's peer IPs. The proxy must remove client-supplied forwarded headers before adding its own; never use `*`.
 - **Protect workspace external-agent URLs.** These URLs contain revocable bearer tokens. Use them only in private sessions with trusted agents, keep them out of generated files and public issue trackers, and rotate or disable a URL when access is no longer needed.
 - Set a strong `LOCAL_ADMIN_PASSWORD` when deploying.
 - **Review trusted external redirects carefully.** OAuth callbacks and other external redirect allowlists should only include destinations you control. Redirecting users to third-party domains can expose authorization codes, tokens, or sensitive workflow context if those destinations are compromised or misconfigured.

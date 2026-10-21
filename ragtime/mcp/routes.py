@@ -19,6 +19,7 @@ Default route supports LDAP group-based tool filtering when OAuth2 auth is enabl
 import hmac
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any
 
 import anyio
@@ -71,11 +72,12 @@ def _protection_principal(scope: Scope, development_principal: Any | None = None
     """Use only server-verified request identity, never a cached MCP server."""
     if development_principal is not None:
         return development_principal
+    general_tools_allowed = bool(scope.get("_mcp_general_tools_allowed"))
     user = scope.get("_mcp_oauth_user")
     if user is not None:
-        return type("McpPrincipal", (), {"user_id": getattr(user, "id", None)})()
+        return SimpleNamespace(user_id=getattr(user, "id", None), general_tools_allowed=general_tools_allowed)
     user_id = scope.get("_mcp_user_id")
-    return type("McpPrincipal", (), {"user_id": user_id})() if user_id else None
+    return SimpleNamespace(user_id=user_id, general_tools_allowed=general_tools_allowed) if user_id else None
 
 
 router = APIRouter(prefix="/mcp-debug", tags=["MCP Debug"])
@@ -334,6 +336,7 @@ async def _validate_oauth2_token(scope: Scope, allowed_group_dn: str | None = No
 
         # Annotate scope for downstream MCP request logging
         scope["_mcp_user_id"] = token_data.user_id
+        scope["_mcp_oauth_user"] = user
 
         if not allowed_group_dn:
             return True
@@ -348,6 +351,7 @@ async def _validate_oauth2_token(scope: Scope, allowed_group_dn: str | None = No
             logger.debug(f"User {user.username} matches group {allowed_group_dn}")
         else:
             logger.debug(f"User {user.username} does not match group {allowed_group_dn}")
+            scope["_mcp_oauth_group_mismatch"] = True
         return matched
 
     except Exception as e:
@@ -389,10 +393,14 @@ async def _resolve_default_development_principal(
         if auth_method in {"client_credentials", "password"} or resolved_auth_method in {"client_credentials", "password"}:
             return None
         oauth_user = scope.get("_mcp_oauth_user")
-        if oauth_user is not None:
+        if auth_method == "oauth2" and resolved_auth_method in {"oauth2", "oauth2_development"}:
+            expected_user_id = str(scope.get("_mcp_user_id") or "")
+            if oauth_user is None or not expected_user_id or str(getattr(oauth_user, "id", "")) != expected_user_id:
+                return None
             return DevelopmentPrincipal(
                 user_id=str(oauth_user.id),
                 is_admin=str(getattr(oauth_user, "role", "")) == "admin",
+                general_tools_allowed=resolved_auth_method == "oauth2",
             )
         # Session credentials remain valid on the external development surface.
         # Do not attempt to reinterpret MCP grant or client credentials here.
@@ -408,6 +416,7 @@ async def _validate_oauth2_or_password_fallback(
     *,
     allowed_group_dn: str | None,
     encrypted_password: str | None,
+    allow_development_only: bool = False,
 ) -> tuple[bool, str | None, str | None]:
     """Validate OAuth2 first, then optional explicit MCP-Password fallback."""
     has_bearer = _has_bearer_authorization(scope)
@@ -425,6 +434,9 @@ async def _validate_oauth2_or_password_fallback(
         password_valid = await _validate_route_password(scope, encrypted_password, allow_bearer=False)
         if password_valid:
             return True, "password", None
+
+    if allow_development_only and scope.get("_mcp_oauth_group_mismatch"):
+        return True, "oauth2_development", None
 
     if not fallback_enabled:
         if has_bearer:
@@ -662,6 +674,7 @@ class MCPTransportEndpoint:
                     scope,
                     allowed_group_dn=allowed_group,
                     encrypted_password=encrypted_password,
+                    allow_development_only=True,
                 )
                 resolved_auth_method = oauth2_auth_method or "none"
             elif auth_method == "client_credentials":
@@ -717,6 +730,24 @@ class MCPTransportEndpoint:
                 return
 
         principal = await _resolve_default_development_principal(scope, auth_method=auth_method, resolved_auth_method=resolved_auth_method)
+        if resolved_auth_method == "oauth2_development" and principal is None:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"application/json"), (b"www-authenticate", b'Bearer realm="mcp"')],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b'{"error": "Unauthorized", "detail": "OAuth2 token is invalid, expired, or unauthorized."}',
+                }
+            )
+            await _log_mcp(scope, auth_method=resolved_auth_method, status_code=401)
+            return
+        if require_auth:
+            scope["_mcp_general_tools_allowed"] = resolved_auth_method != "oauth2_development" and not _is_development_credential(scope)
 
         # If using OAuth2 auth, check for LDAP group-based tool filtering
         if require_auth and auth_method == "oauth2" and resolved_auth_method == "oauth2":
@@ -968,6 +999,8 @@ class MCPCustomRouteEndpoint:
                     status_code=401,
                 )
                 return
+
+            scope["_mcp_general_tools_allowed"] = True
 
         # Handle request directly with the server (bypasses session manager)
         send_with_status, response_state = _wrap_send_for_status(send)

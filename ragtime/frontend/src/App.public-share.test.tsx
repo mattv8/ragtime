@@ -109,6 +109,11 @@ function mockAuthenticatedViewer(): void {
   mockSharedConversationApi(true);
 }
 
+async function renderAppWithSharedViewReady(): Promise<void> {
+  await import('./components/PublicSharedChatView');
+  render(<App />);
+}
+
 function mockAnonymousVisitor(): void {
   apiMock.getAuthStatus.mockResolvedValue(anonymousAuthStatus);
   apiMock.getCurrentUser.mockRejectedValue(new Error('Not signed in'));
@@ -189,7 +194,7 @@ describe('App public share route provider boundary', () => {
     mockAuthenticatedViewer();
     const user = userEvent.setup();
 
-    render(<App />);
+    await renderAppWithSharedViewReady();
 
     await screen.findByRole('heading', { name: SHARED_TITLE });
     expect(screen.getByText(SHARED_MESSAGE)).toBeTruthy();
@@ -205,7 +210,7 @@ describe('App public share route provider boundary', () => {
   it('keeps an anonymous shared conversation without a composer and offers sign-in', async () => {
     mockAnonymousVisitor();
 
-    render(<App />);
+    await renderAppWithSharedViewReady();
 
     const title = await screen.findByRole('heading', { name: SHARED_TITLE });
     const shell = title.closest('#public-shared-route') as HTMLElement;

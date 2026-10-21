@@ -72,6 +72,7 @@ _DOCUMENT_OFFSET_SCHEMA = {
 # MCP task.
 _development_principal: contextvars.ContextVar[Any | None] = contextvars.ContextVar("mcp_development_principal", default=None)
 _mcp_route_id: contextvars.ContextVar[str] = contextvars.ContextVar("mcp_route_id", default="default")
+_request_context_bound: contextvars.ContextVar[bool] = contextvars.ContextVar("mcp_request_context_bound", default=False)
 _session_request_contexts: weakref.WeakKeyDictionary[ServerSession, tuple[Any | None, str]] = weakref.WeakKeyDictionary()
 
 
@@ -79,15 +80,22 @@ _session_request_contexts: weakref.WeakKeyDictionary[ServerSession, tuple[Any | 
 def development_principal_context(principal: Any | None) -> Iterator[None]:
     """Bind an authenticated development principal for one MCP request."""
     token = _development_principal.set(principal)
+    bound_token = _request_context_bound.set(True)
     try:
         yield
     finally:
+        _request_context_bound.reset(bound_token)
         _development_principal.reset(token)
 
 
 def get_request_development_principal() -> Any | None:
     """Return the request-local principal; never cache this value."""
     return _development_principal.get()
+
+
+def _general_tools_allowed(principal: Any | None) -> bool:
+    """Keep legacy open/no-principal routes while default-denying bound identities."""
+    return principal is None or bool(getattr(principal, "general_tools_allowed", False))
 
 
 def _bind_session_request_context(server: Server) -> None:
@@ -102,15 +110,14 @@ def _bind_session_request_context(server: Server) -> None:
         session = server.request_context.session
     except LookupError:
         return
-    principal = _development_principal.get()
-    route_id = _mcp_route_id.get()
-    if principal is not None or route_id != "default":
+    if _request_context_bound.get():
+        principal = _development_principal.get()
+        route_id = _mcp_route_id.get()
         _session_request_contexts[session] = (principal, route_id)
         return
     saved = _session_request_contexts.get(session)
-    if saved is not None:
-        _development_principal.set(saved[0])
-        _mcp_route_id.set(saved[1])
+    _development_principal.set(saved[0] if saved is not None else None)
+    _mcp_route_id.set(saved[1] if saved is not None else "default")
 
 
 @contextmanager
@@ -118,10 +125,12 @@ def mcp_request_context(principal: Any | None, route_id: str = "default") -> Ite
     """Bind identity and canonical route for one request, never a cached server."""
     principal_token = _development_principal.set(principal)
     route_token = _mcp_route_id.set(route_id or "default")
+    bound_token = _request_context_bound.set(True)
     try:
         with external_protection_context(principal, surface="mcp", mcp_route=route_id or "default"):
             yield
     finally:
+        _request_context_bound.reset(bound_token)
         _mcp_route_id.reset(route_token)
         _development_principal.reset(principal_token)
 
@@ -578,7 +587,7 @@ def _register_handlers(
             # A workspace development credential is deliberately not a general
             # MCP route credential. It can see only its workspace development
             # tools, never the legacy global tool catalog.
-            if getattr(principal, "credential_id", None) is None:
+            if _general_tools_allowed(principal):
                 tool_definitions = await tool_adapter.get_available_tools(route_filter=route_filter)
 
                 for tool_def in tool_definitions:
@@ -655,8 +664,9 @@ def _register_handlers(
                     return _development_error("tool_not_available", "Workspace development tools are available only on the default MCP route.")
                 return await _execute_development_tool(name, arguments)
 
-            if getattr(get_request_development_principal(), "credential_id", None) is not None:
-                return _development_error("tool_not_available", "Workspace development credentials cannot call legacy MCP tools.")
+            principal = get_request_development_principal()
+            if not _general_tools_allowed(principal):
+                return _development_error("tool_not_available", "This identity cannot call legacy MCP tools.")
 
             # If a route filter is active, validate the tool is allowed
             if route_filter is not None:

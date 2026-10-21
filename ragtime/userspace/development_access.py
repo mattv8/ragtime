@@ -28,6 +28,7 @@ _SECRET_BYTES = 32
 class DevelopmentPrincipal:
     user_id: str
     is_admin: bool
+    general_tools_allowed: bool = False
     credential_id: str | None = None
     workspace_id: str | None = None
     scopes: FrozenSet[str] = frozenset({"read", "write", "exec"})
@@ -98,7 +99,11 @@ async def resolve_development_principal(request: Request) -> DevelopmentPrincipa
     # Preserve the existing fail-closed session JWT parser for cookie/JWT auth.
     token = request.cookies.get("ragtime_session") or bearer
     user = await get_current_user(token=token)
-    return DevelopmentPrincipal(user_id=str(user.id), is_admin=str(getattr(user, "role", "")) == "admin")
+    return DevelopmentPrincipal(
+        user_id=str(user.id),
+        is_admin=str(getattr(user, "role", "")) == "admin",
+        general_tools_allowed=True,
+    )
 
 
 async def create_workspace_development_credential(

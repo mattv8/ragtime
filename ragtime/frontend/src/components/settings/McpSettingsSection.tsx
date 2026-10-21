@@ -246,7 +246,7 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
                       })
                     }
                     groups={ldapDiscoveredGroups}
-                    emptyOptionLabel="Any authenticated LDAP user"
+                    emptyOptionLabel="Any authenticated user"
                   />
                   <LdapGroupChips
                     selectedDns={selectedMcpAllowedGroup ? [selectedMcpAllowedGroup] : []}
@@ -260,11 +260,15 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
                   />
                 </div>
                 <p className="field-help">
-                  Restrict access to members of a specific LDAP group. Leave empty to allow all
-                  authenticated LDAP users.
+                  Restrict general MCP tools to members of a specific LDAP group. Other
+                  authenticated users can still use workspace-development tools in workspaces their
+                  existing roles authorize. Leave empty to allow general MCP tools to all
+                  authenticated users.
                 </p>
                 {selectedMcpAllowedGroup && hasConfiguredOAuthFallbackPassword && (
-                  <div className="field-warning">MCP-Password bypasses this group restriction.</div>
+                  <div className="field-warning">
+                    MCP-Password bypasses this group restriction for the default MCP route.
+                  </div>
                 )}
               </div>
             )}
