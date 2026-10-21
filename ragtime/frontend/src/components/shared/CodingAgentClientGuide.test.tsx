@@ -48,6 +48,21 @@ describe('CodingAgentClientGuide', () => {
     expect(screen.queryByText(/YOUR_WORKSPACE_CREDENTIAL/)).toBeNull();
   });
 
+  it('directs ChatGPT users to their existing workspace access', () => {
+    render(
+      <CodingAgentClientGuide
+        clientId="chatgpt"
+        mcpUrl="https://ragtime.example.test/mcp"
+        workspaceId="workspace-1"
+      />,
+    );
+
+    const troubleshooting = screen.getByText('Troubleshooting').closest('details');
+    expect(troubleshooting?.textContent).toContain(
+      'existing workspace access required for the development tools you use',
+    );
+  });
+
   it('provides OAuth MCP endpoint copy for Claude and keeps advanced alternatives collapsed', () => {
     render(
       <CodingAgentClientGuide
@@ -66,6 +81,20 @@ describe('CodingAgentClientGuide', () => {
     expect(advancedDetails?.textContent).toContain('limited-organization beta');
     expect(screen.getByText(/Desktop-only local bridge/i).closest('details')?.open).toBe(false);
     expect(screen.getByRole('link', { name: /illustrated remote mcp/i })).toBeTruthy();
+  });
+
+  it('explains that Claude OAuth uses shared MCP and existing workspace access', () => {
+    render(
+      <CodingAgentClientGuide
+        clientId="claude-desktop"
+        mcpUrl="https://ragtime.example.test/mcp"
+        workspaceId="workspace-1"
+      />,
+    );
+
+    const troubleshooting = screen.getByText(/Troubleshooting and changes/i).closest('details');
+    expect(troubleshooting?.textContent).toContain('shared /mcp route uses OAuth2');
+    expect(troubleshooting?.textContent).toContain('already has access to this workspace');
   });
 
   it('provides a source fallback when a Claude example image fails to load', () => {

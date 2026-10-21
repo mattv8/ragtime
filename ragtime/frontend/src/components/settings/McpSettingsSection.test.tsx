@@ -306,7 +306,7 @@ describe('McpSettingsSection', () => {
     expect(screen.getByRole('button', { name: 'Clear' })).toBeTruthy();
   });
 
-  it('shows the exact LDAP bypass warning when an OAuth2 group restriction and fallback password are both configured', async () => {
+  it('explains default-route group admission and password fallback when both are configured', async () => {
     const user = userEvent.setup();
 
     renderSection({
@@ -321,8 +321,14 @@ describe('McpSettingsSection', () => {
       'CN=MCP Users,OU=Groups,DC=example,DC=com',
     );
 
+    expect(screen.getByRole('option', { name: 'Any authenticated user' })).toBeTruthy();
     expect(
-      screen.getByText('MCP-Password bypasses this group restriction.').closest('.field-warning'),
+      screen.getByText(/Other authenticated users can still use workspace-development tools/),
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByText('MCP-Password bypasses this group restriction for the default MCP route.')
+        .closest('.field-warning'),
     ).toBeTruthy();
   });
 });

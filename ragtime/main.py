@@ -83,7 +83,7 @@ from ragtime.core.mfa import (
 from ragtime.core.oauth_grants import cleanup_expired_grants
 from ragtime.core.openrouter_credits import start_openrouter_credit_monitor, stop_openrouter_credit_monitor
 from ragtime.core.performance import SlowRequestMiddleware
-from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
+from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, OAuthTokenRateLimitMiddleware, limiter
 from ragtime.core.runtime_manager_client import close_runtime_manager_client
 from ragtime.core.ssl import setup_ssl
 from ragtime.git_webhooks.routes import router as git_webhook_router
@@ -498,6 +498,7 @@ else:
     else:
         logger.info(f"CORS: Allowing origins: {origins}")
 
+app.add_middleware(OAuthTokenRateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
