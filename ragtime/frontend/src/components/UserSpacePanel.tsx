@@ -1586,6 +1586,10 @@ export function UserSpacePanel({
         el.style.width = `${next}px`;
       }
     }
+    if (next === 0 && prev !== 0) {
+      setSidebarCollapsed(true);
+      setSidebarWidth(0);
+    }
   }, []);
 
   const handleResizeSidebarTo = useCallback((nextValue: number) => {
@@ -1644,6 +1648,19 @@ export function UserSpacePanel({
 
     if (next === 1 && rightPaneRef.current) rightPaneRef.current.style.display = 'none';
     else if (rightPaneRef.current) rightPaneRef.current.style.display = '';
+
+    // Collapse as soon as the threshold is crossed (like the chat sidebar) so the
+    // restore handle immediately takes its collapsed position instead of insetting
+    // the remaining pane until the drag ends.
+    if (next === 0 && prev !== 0) {
+      setRightPaneCollapsed(false);
+      setLeftPaneCollapsed(true);
+      setLeftPaneFraction(0);
+    } else if (next === 1 && prev !== 1) {
+      setLeftPaneCollapsed(false);
+      setRightPaneCollapsed(true);
+      setLeftPaneFraction(1);
+    }
   }, []);
 
   const handleResizeMainSplitTo = useCallback(

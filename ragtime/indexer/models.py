@@ -3464,6 +3464,91 @@ class SendMessageRequest(BaseModel):
     )
 
 
+_MAX_DISPLAY_SEGMENTS = 200
+_MAX_DISPLAY_TEXT_CHARS = 100_000
+_MAX_DISPLAY_REFERENCE_PATH_CHARS = 4096
+
+
+def _display_segments_exceed_bounds(segments: list[Any]) -> bool:
+    if len(segments) > _MAX_DISPLAY_SEGMENTS:
+        return True
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        if segment.get("type") == "text" and isinstance(segment.get("text"), str):
+            if len(segment["text"]) > _MAX_DISPLAY_TEXT_CHARS:
+                return True
+        reference = segment.get("reference")
+        if segment.get("type") == "ref" and isinstance(reference, dict) and isinstance(reference.get("path"), str):
+            if len(reference["path"]) > _MAX_DISPLAY_REFERENCE_PATH_CHARS:
+                return True
+    return False
+
+
+def _validate_rich_segment_shapes(segments: list[Any]) -> list[Any]:
+    for segment in segments:
+        if not isinstance(segment, dict) or segment.get("type") not in {"text", "ref"}:
+            raise ValueError("Segments must be text or reference segments")
+        if segment["type"] == "text":
+            if set(segment) != {"type", "text"} or not isinstance(segment.get("text"), str):
+                raise ValueError("Text segments must contain bounded text")
+            continue
+        reference = segment.get("reference")
+        if not isinstance(reference, dict) or not isinstance(reference.get("path"), str) or not reference["path"].strip():
+            raise ValueError("Reference segments require a bounded reference path")
+        if not isinstance(reference.get("id"), str) or not reference["id"].strip() or reference.get("source") not in {"selection", "file"}:
+            raise ValueError("Reference segments require an id and source")
+        for line in ("startLine", "endLine"):
+            if line in reference and (not isinstance(reference[line], int) or reference[line] < 1):
+                raise ValueError("Reference line numbers must be positive integers")
+        if reference.get("startLine") and reference.get("endLine") and reference["endLine"] < reference["startLine"]:
+            raise ValueError("Reference end line must not precede start line")
+    return segments
+
+
+class QueueMessageRequest(SendMessageRequest):
+    """A queued message with optional composer display metadata."""
+
+    segments: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("segments", mode="before")
+    @classmethod
+    def drop_oversized_display_segments(cls, value: Any) -> Any:
+        """Drop all display segments when any bound is exceeded.
+
+        Partial segments would silently truncate user text on Edit, so the
+        canonical message is used instead. Malformed shapes are still rejected.
+        """
+        if not isinstance(value, list):
+            return value
+        if _display_segments_exceed_bounds(value):
+            _validate_rich_segment_shapes(value)
+            return []
+        return value
+
+    @field_validator("segments")
+    @classmethod
+    def validate_rich_segments(cls, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return _validate_rich_segment_shapes(segments)
+
+
+class ChatQueuedMessageResponse(BaseModel):
+    id: str
+    conversation_id: str
+    message: str
+    segments: list[dict[str, Any]] = Field(default_factory=list)
+    request_context: dict[str, Any] = Field(default_factory=dict)
+    seq: str
+    dispatch_error: str | None = None
+    created_at: datetime
+
+
+class ChatQueueResponse(BaseModel):
+    items: list[ChatQueuedMessageResponse] = Field(default_factory=list)
+    active_task_id: str | None = None
+    held: bool
+
+
 class ChatAttachmentUploadResponse(BaseModel):
     """Descriptor returned after uploading a chat attachment."""
 

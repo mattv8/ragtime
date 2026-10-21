@@ -3147,6 +3147,35 @@ export interface SendMessageRequest {
   ui_theme?: UiThemeContext;
 }
 
+export type QueuedMessageSegment =
+  | { type: 'text'; text: string }
+  | { type: 'ref'; reference: ChatContextReference };
+
+export interface QueuedMessageItem {
+  id: string;
+  conversation_id: string;
+  message: string;
+  segments: QueuedMessageSegment[];
+  request_context: Record<string, unknown>;
+  seq: string;
+  dispatch_error: string | null;
+  created_at: string;
+}
+
+export interface ConversationMessageQueue {
+  items: QueuedMessageItem[];
+  active_task_id: string | null;
+  held: boolean;
+}
+
+export type QueueMessageResponse =
+  | { status: 'started'; task: ChatTask }
+  | { status: 'queued'; item: QueuedMessageItem };
+
+export type QueueDispatchResponse =
+  | { status: 'started'; task: ChatTask }
+  | { status: 'busy' | 'empty' };
+
 export interface ChatContextReference {
   id: string;
   path: string;

@@ -87,7 +87,8 @@
 .chat-composer-card .chat-composer-expand-btn,
 .chat-composer-card .btn-attach-menu,
 .chat-composer-card .chat-send-btn-inline,
-.chat-composer-card .chat-stop-btn-inline {
+.chat-composer-card .chat-stop-btn-inline,
+.chat-composer-card .chat-queue-btn-inline {
   flex: 0 0 auto;
 }
 
@@ -152,7 +153,9 @@
 }
 
 .chat-composer-card .chat-send-btn-inline:hover:not(:disabled),
-.chat-composer-card .chat-send-btn-inline:focus-visible {
+.chat-composer-card .chat-send-btn-inline:focus-visible,
+.chat-composer-card .chat-queue-btn-inline:hover:not(:disabled),
+.chat-composer-card .chat-queue-btn-inline:focus-visible {
   box-shadow: var(--shadow-md);
 }
 
@@ -179,19 +182,23 @@
 }
 
 [data-theme-pack='modern'] .chat-composer-card .chat-send-btn-inline,
-[data-theme-pack='modern'] .chat-composer-card .chat-stop-btn-inline {
+[data-theme-pack='modern'] .chat-composer-card .chat-stop-btn-inline,
+[data-theme-pack='modern'] .chat-composer-card .chat-queue-btn-inline {
   box-shadow: none;
   transform: none;
 }
 
 [data-theme-pack='modern'] .chat-composer-card .chat-send-btn-inline:hover:not(:disabled),
-[data-theme-pack='modern'] .chat-composer-card .chat-send-btn-inline:focus-visible {
+[data-theme-pack='modern'] .chat-composer-card .chat-send-btn-inline:focus-visible,
+[data-theme-pack='modern'] .chat-composer-card .chat-queue-btn-inline:hover:not(:disabled),
+[data-theme-pack='modern'] .chat-composer-card .chat-queue-btn-inline:focus-visible {
   box-shadow: none;
   transform: none;
 }
 
 [data-theme-pack='modern'] .chat-composer-card .chat-send-btn-inline:active:not(:disabled),
-[data-theme-pack='modern'] .chat-composer-card .chat-stop-btn-inline:active:not(:disabled) {
+[data-theme-pack='modern'] .chat-composer-card .chat-stop-btn-inline:active:not(:disabled),
+[data-theme-pack='modern'] .chat-composer-card .chat-queue-btn-inline:active:not(:disabled) {
   transform: none;
 }
 
@@ -250,6 +257,7 @@
   .chat-composer-card .btn-attach-menu,
   .chat-composer-card .chat-send-btn-inline,
   .chat-composer-card .chat-stop-btn-inline,
+  .chat-composer-card .chat-queue-btn-inline,
   .chat-composer-card .chat-composer-send-mode-select,
   .chat-composer-card .chat-composer-model-trigger,
   .chat-composer-card .chat-composer-footer-left .userspace-toolbar-action-btn {
