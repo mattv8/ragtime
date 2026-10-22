@@ -2,6 +2,7 @@ import asyncio
 import json
 import unittest
 from contextlib import nullcontext
+from typing import Any, Mapping, cast
 from unittest.mock import AsyncMock, call, patch
 
 from fastapi import HTTPException
@@ -13,6 +14,10 @@ from ragtime.userspace.development_service import DevelopmentService
 
 def _principal() -> DevelopmentPrincipal:
     return DevelopmentPrincipal(user_id="user-1", is_admin=False, auth_source="user")
+
+
+def _read_resources_with_dynamic_arguments(context: Mapping[str, object], arguments: Mapping[str, object]) -> None:
+    read_resources(context, **cast(Any, arguments))
 
 
 class DevelopmentResourceReaderTests(unittest.TestCase):
@@ -84,7 +89,7 @@ class DevelopmentResourceReaderTests(unittest.TestCase):
         context: dict[str, object] = {"capabilities": {"authorized_tools": [], "authorized_indexes": []}}
         for arguments in ({"offset": -1}, {"offset": True}, {"limit": 0}, {"limit": 101}, {"limit": "20"}, {"query": 1}):
             with self.subTest(arguments=arguments), self.assertRaises(HTTPException) as raised:
-                read_resources(context, **arguments)
+                _read_resources_with_dynamic_arguments(context, arguments)
             self.assertEqual(raised.exception.status_code, 422)
 
     def test_catalog_accessor_uses_protection_and_audit_without_context_loading(self) -> None:

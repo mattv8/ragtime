@@ -1,8 +1,10 @@
 from types import SimpleNamespace
+from typing import FrozenSet, Literal
 from unittest import IsolatedAsyncioTestCase, mock
 
 from fastapi import HTTPException
 
+from ragtime.userspace.development_access import DevelopmentPrincipal
 from ragtime.userspace.development_management import (
     MANAGEMENT_OPERATIONS,
     execute_management_operation,
@@ -10,8 +12,14 @@ from ragtime.userspace.development_management import (
 )
 
 
-def _principal(*, scopes=frozenset({"read", "write"}), auth_source="user", workspace_id=None, is_admin=False):
-    return SimpleNamespace(
+def _principal(
+    *,
+    scopes: FrozenSet[str] = frozenset({"read", "write"}),
+    auth_source: Literal["user", "workspace_credential"] | None = "user",
+    workspace_id: str | None = None,
+    is_admin: bool = False,
+) -> DevelopmentPrincipal:
+    return DevelopmentPrincipal(
         user_id="user-1",
         is_admin=is_admin,
         scopes=scopes,
@@ -30,9 +38,11 @@ class DevelopmentManagementTests(IsolatedAsyncioTestCase):
         ):
             result = await execute_management_operation(principal, "ws-1", "workspace_metadata_update", {"name": "Renamed"})
 
-        request = update.await_args.args[1]
+        call_args = update.await_args
+        assert call_args is not None
+        request = call_args.args[1]
         self.assertEqual(request.model_dump(exclude_none=True), {"name": "Renamed"})
-        self.assertFalse(update.await_args.kwargs["is_admin"])
+        self.assertFalse(call_args.kwargs["is_admin"])
         self.assertEqual(result["name"], "Renamed")
 
     async def test_placeholder_preserves_value_and_hides_it_from_response(self):
@@ -44,7 +54,9 @@ class DevelopmentManagementTests(IsolatedAsyncioTestCase):
         ):
             result = await execute_management_operation(principal, "ws-1", "env_placeholder_upsert", {"key": "REPORT_API_KEY"})
 
-        request = upsert.await_args.args[2]
+        call_args = upsert.await_args
+        assert call_args is not None
+        request = call_args.args[2]
         self.assertIsNone(request.value)
         self.assertNotIn("value", result)
 
@@ -72,7 +84,9 @@ class DevelopmentManagementTests(IsolatedAsyncioTestCase):
         ):
             await execute_management_operation(principal, "ws-1", "workspace_tools_set", {"mode": "custom", "selected_tool_ids": []})
 
-        request = update.await_args.args[1]
+        call_args = update.await_args
+        assert call_args is not None
+        request = call_args.args[1]
         self.assertEqual(request.selected_tool_ids, [])
         self.assertEqual(request.selected_tool_group_ids, [])
         self.assertIsNone(request.tool_options)
@@ -182,7 +196,9 @@ class DevelopmentManagementTests(IsolatedAsyncioTestCase):
         ):
             result = await execute_management_operation(principal, "ws-1", "workspace_tools_set", {"mode": "default_all"})
 
-        request = update.await_args.args[1]
+        call_args = update.await_args
+        assert call_args is not None
+        request = call_args.args[1]
         self.assertNotIn("tool_options", request.model_fields_set)
         self.assertNotIn("selected_tool_group_ids", request.model_fields_set)
         self.assertNotIn("selected_tool_ids", request.model_fields_set)
