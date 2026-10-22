@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from ragtime.userspace.instruction_content import build_external_guidance_documents
+from ragtime.userspace.instruction_content import GUIDANCE_TOPIC_METADATA, build_external_guidance_documents
 
 MAX_MCP_RESPONSE_BYTES = 24 * 1024
 # Native clients load a skill file as a single artifact, so keep its frontmatter
@@ -291,6 +291,7 @@ def build_compact_context(
             "id": key,
             "sha256": content_hash(value),
             "bytes": len(value.encode("utf-8")),
+            **GUIDANCE_TOPIC_METADATA[key],
             "read_arguments": {"workspace_id": resolved_workspace_id, "document_id": key, "revision": content_hash(value), "offset": 0},
         }
         for key, value in sorted(docs.items())
@@ -320,6 +321,7 @@ def build_compact_context(
             "Use operation contracts before calling an operation.",
             "Refresh context after relevant live facts change.",
         ],
+        "guidance_index_note": "Application architecture guidance is in the Workspace and Runtime documents.",
         "resources": {
             "total_tools": len(catalog.get("authorized_tools", [])),
             "total_indexes": len(catalog.get("authorized_indexes", [])),
@@ -362,7 +364,7 @@ def _invalid_utf8_offset(encoded: bytes, offset: int) -> bool:
     return False
 
 
-_VOLATILE_FACT_KEYS = frozenset({"runtime", "runtime_status", "diagnostics", "recent_failures"})
+_VOLATILE_FACT_KEYS = frozenset({"runtime", "runtime_status", "runtime_observation", "diagnostics", "recent_failures"})
 
 
 def _facts_payload(full_context: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -382,7 +384,55 @@ def _bounded_fresh_status(status: Mapping[str, Any]) -> dict[str, Any]:
     candidate = dict(status)
     if len(serialize_mcp_payload(candidate, limit=None).encode("utf-8")) <= 2048:
         return candidate
-    return {"available": bool(candidate), "truncated": True}
+    observation = _runtime_observation(candidate)
+    result: dict[str, Any] = {"available": bool(candidate), "truncated": True}
+    if observation is not None:
+        result["runtime_observation"] = observation
+    if len(serialize_mcp_payload(result, limit=None).encode("utf-8")) > 2048:
+        raise HTTPException(status_code=413, detail="Fresh status summary exceeds bounded delivery limit")
+    return result
+
+
+def _runtime_observation(status: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Retain the small runtime-evidence warning when bulky fresh facts trim."""
+    candidates = (
+        status.get("runtime_observation"),
+        status.get("observation"),
+        status.get("runtime_status", {}).get("observation") if isinstance(status.get("runtime_status"), Mapping) else None,
+        status.get("runtime", {}).get("observation") if isinstance(status.get("runtime"), Mapping) else None,
+    )
+    source = next((item for item in candidates if isinstance(item, Mapping)), None)
+    if source is None:
+        return None
+    observation: dict[str, Any] = {}
+    if "state" in source:
+        observation["state"] = _bounded_observation_text(source.get("state"), 128)
+    if "devserver_running" in source:
+        liveness = source.get("devserver_running")
+        observation["devserver_running"] = liveness if isinstance(liveness, bool) or liveness is None else None
+    if "observed_at" in source:
+        observation["observed_at"] = _bounded_observation_text(source.get("observed_at"), 128)
+    if "warning" in source:
+        observation["warning"] = _bounded_observation_text(source.get("warning"), 1200)
+    return observation
+
+
+def _bounded_observation_text(value: Any, maximum_serialized_bytes: int) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if len(json.dumps(text).encode("utf-8")) <= maximum_serialized_bytes:
+        return text
+    low, high, best = 0, len(text), ""
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = f"{text[:middle]}…"
+        if len(json.dumps(candidate).encode("utf-8")) <= maximum_serialized_bytes:
+            best = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
 
 
 def read_context_facts(full_context: Mapping[str, Any], revision: str | None, *, offset: int = 0) -> dict[str, Any]:
@@ -473,6 +523,19 @@ def _resource_summary(resource: Any) -> dict[str, Any]:
     for key in ("tool_type", "enabled"):
         if key in value and len(serialize_mcp_payload(value[key], limit=None).encode("utf-8")) <= 512:
             summary[key] = value[key]
+    identity_fields = (("name", "name"), ("component_id", "component_id")) if summary["kind"] == "tool" else (("index_name", "index_name" if "index_name" in value else "name"),)
+    for summary_key, raw_key in identity_fields:
+        if raw_key not in value:
+            continue
+        if len(serialize_mcp_payload(value[raw_key], limit=None).encode("utf-8")) <= 512:
+            summary[summary_key] = value[raw_key]
+        else:
+            summary[f"{summary_key}_reference"] = {
+                "reader": "workspace_development_resource_contract",
+                "resource_id": resource_id,
+                "sha256": content_hash(resource),
+                "complete": True,
+            }
     description = value.get("description")
     if isinstance(description, str):
         if len(description.encode("utf-8")) <= MAX_INLINE_DESCRIPTION_BYTES:
@@ -494,10 +557,14 @@ def _resource_summary(resource: Any) -> dict[str, Any]:
     return summary
 
 
-def read_resources(full_context: Mapping[str, Any], *, offset: int = 0, limit: int = 20) -> dict[str, Any]:
+def read_resources(full_context: Mapping[str, Any], *, offset: int = 0, limit: int = 20, query: str | None = None) -> dict[str, Any]:
     catalog = _catalog(full_context)
     resources = list(catalog.get("authorized_tools", [])) + list(catalog.get("authorized_indexes", []))
-    offset, limit = max(offset, 0), max(1, min(limit, 100))
+    _validate_resource_page(offset, limit, query)
+    if query:
+        query = query.strip().casefold()
+        if query:
+            resources = [resource for resource in resources if _resource_matches_query(resource, query)]
     items: list[dict[str, Any]] = []
     for resource in resources[offset : offset + limit]:
         candidate = _resource_summary(resource)
@@ -511,6 +578,22 @@ def read_resources(full_context: Mapping[str, Any], *, offset: int = 0, limit: i
     if not items and offset < len(resources):
         raise HTTPException(status_code=413, detail="A resource summary exceeds bounded delivery limit")
     return _bounded({"items": items, "offset": offset, "next_offset": next_offset if next_offset < len(resources) else None, "total": len(resources)})
+
+
+def _validate_resource_page(offset: int, limit: int, query: str | None) -> None:
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise HTTPException(status_code=422, detail="offset must be an integer greater than or equal to zero")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise HTTPException(status_code=422, detail="limit must be an integer from 1 through 100")
+    if query is not None and (not isinstance(query, str) or len(query) > 120):
+        raise HTTPException(status_code=422, detail="query must be a string no longer than 120 characters")
+
+
+def _resource_matches_query(resource: Any, query: str) -> bool:
+    if not isinstance(resource, Mapping):
+        return False
+    fields = ("name", "component_id", "index_name", "description")
+    return any(query in value.casefold() for key in fields if isinstance((value := resource.get(key)), str))
 
 
 def read_resource_description(full_context: Mapping[str, Any], *, resource_id: str, revision: str | None, offset: int = 0) -> dict[str, Any]:

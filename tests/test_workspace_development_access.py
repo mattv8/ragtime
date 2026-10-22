@@ -34,6 +34,7 @@ class WorkspaceDevelopmentAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(principal.workspace_id, "workspace-1")
         self.assertEqual(principal.scopes, frozenset({"read", "exec"}))
         self.assertTrue(principal.is_admin)
+        self.assertEqual(principal.auth_source, "workspace_credential")
 
     async def test_revoked_development_credential_is_rejected(self) -> None:
         token, selector, token_hash = development_access.build_development_credential_token()
@@ -74,3 +75,4 @@ class WorkspaceDevelopmentAccessTests(unittest.IsolatedAsyncioTestCase):
             principal = await development_access.resolve_development_principal(_request("session-jwt"))
         current_user.assert_awaited_once_with(token="session-jwt")
         self.assertIsNone(principal.credential_id)
+        self.assertEqual(principal.auth_source, "user")

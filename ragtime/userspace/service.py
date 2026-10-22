@@ -29,7 +29,7 @@ from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any, Callable, Literal, Optional, Protocol, Sequence, TypedDict, cast
 from urllib.parse import quote, urlsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import HTTPException
@@ -309,6 +309,16 @@ from runtime.core.sqlite_recovery import capture_database
 from runtime.core.workspace_ops import is_managed_sqlite_artifact, iter_managed_sqlite_database_paths
 
 logger = get_logger(__name__)
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 _sqlite_history_operation_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("sqlite_history_operation_id", default=None)
 
 
@@ -13305,6 +13315,8 @@ class UserSpaceService:
         offset: int = 0,
         limit: int = 50,
         is_admin: bool = False,
+        *,
+        query: str | None = None,
     ) -> PaginatedWorkspacesResponse:
         db = await get_db()
 
@@ -13316,6 +13328,19 @@ class UserSpaceService:
                     {"members": {"some": {"userId": user_id}}},
                 ]
             }
+        cleaned_query = (query or "").strip()
+        if cleaned_query:
+            matching_clause: dict[str, Any]
+            if _is_uuid(cleaned_query):
+                matching_clause = {"id": str(UUID(cleaned_query))}
+            else:
+                matching_clause = {
+                    "OR": [
+                        {"name": {"contains": cleaned_query, "mode": "insensitive"}},
+                        {"description": {"contains": cleaned_query, "mode": "insensitive"}},
+                    ]
+                }
+            where_clause = {"AND": [where_clause, matching_clause]} if where_clause else matching_clause
 
         rows = await db.workspace.find_many(
             where=cast(Any, where_clause),
@@ -13731,12 +13756,27 @@ class UserSpaceService:
             raise HTTPException(status_code=503, detail="Resolved workspace entitlements exceed the supported header size")
         return resolved_list
 
-    async def create_workspace(self, request: CreateWorkspaceRequest, user_id: str) -> UserSpaceWorkspace:
+    async def create_workspace(
+        self,
+        request: CreateWorkspaceRequest,
+        user_id: str,
+        *,
+        creation_workspace_id: str | None = None,
+        creation_request_id: str | None = None,
+    ) -> UserSpaceWorkspace:
+        if (creation_workspace_id is None) != (creation_request_id is None):
+            raise ValueError("Creation workspace and request IDs must be supplied together")
+        if creation_workspace_id is not None:
+            try:
+                UUID(creation_workspace_id)
+                UUID(cast(str, creation_request_id))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Creation workspace and request IDs must be UUIDs") from exc
         db = await get_db()
         is_admin = await self._is_admin_user(user_id)
 
         now = utc_now()
-        workspace_id = str(uuid4())
+        workspace_id = creation_workspace_id or str(uuid4())
         requested_name = (request.name or "").strip()
 
         if requested_name:
@@ -13827,6 +13867,7 @@ class UserSpaceService:
         storage_provisioning_started = False
         workspace_dir: Path | None = None
         created_workspace_dir = False
+        provisioning_complete = False
         try:
             files_dir = self._workspace_files_dir(workspace_id)
             workspace_dir = files_dir.parent
@@ -13854,16 +13895,34 @@ class UserSpaceService:
             )
             if not refreshed:
                 raise HTTPException(status_code=500, detail="Failed to create workspace")
-            return self._workspace_from_record(refreshed)
+            result = self._workspace_from_record(refreshed)
+            provisioning_complete = True
+            if creation_request_id is not None:
+                from ragtime.userspace.development_creation_receipts import CompletionUnconfirmed, publish_completion_receipt
+
+                try:
+                    await asyncio.to_thread(
+                        publish_completion_receipt,
+                        workspace_dir,
+                        workspace_id=workspace_id,
+                        request_id=creation_request_id,
+                        user_id=user_id,
+                    )
+                except BaseException as exc:
+                    if isinstance(exc, (asyncio.CancelledError, SystemExit, KeyboardInterrupt)):
+                        raise
+                    raise CompletionUnconfirmed("Workspace provisioning completed but completion recording is unconfirmed") from exc
+            return result
         except BaseException:
-            await asyncio.shield(
-                self._cleanup_failed_workspace_creation(
-                    db,
-                    workspace_id,
-                    storage_provisioning_started=storage_provisioning_started,
-                    workspace_dir=workspace_dir if created_workspace_dir else None,
+            if not provisioning_complete:
+                await asyncio.shield(
+                    self._cleanup_failed_workspace_creation(
+                        db,
+                        workspace_id,
+                        storage_provisioning_started=storage_provisioning_started,
+                        workspace_dir=workspace_dir if created_workspace_dir else None,
+                    )
                 )
-            )
             raise
 
     async def _cleanup_failed_workspace_creation(

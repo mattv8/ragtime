@@ -1752,6 +1752,24 @@ model Workspace {
   @@map("workspaces")
 }
 
+/// Durable idempotency ledger for account-scoped development workspace creates.
+model WorkspaceDevelopmentCreateRequest {
+  id             String    @id @default(uuid())
+  userId         String    @map("user_id")
+  idempotencyKey String    @map("idempotency_key")
+  payloadHash    String    @map("payload_hash")
+  workspaceId    String    @unique @map("workspace_id")
+  state          String    @default("accepted")
+  errorCode      String?   @map("error_code")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+  completedAt    DateTime? @map("completed_at")
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@map("workspace_development_create_requests")
+}
+
 model WorkspacePublishedEndpoint {
   id               String    @id @default(uuid())
   workspaceId      String    @map("workspace_id")

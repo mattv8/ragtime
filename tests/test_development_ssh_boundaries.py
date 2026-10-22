@@ -343,6 +343,7 @@ class DevelopmentSshBoundaryTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(mock.patch("ragtime.userspace.development_service.repository.get_tool_config", new=mock.AsyncMock(return_value=config)))
             stack.enter_context(mock.patch("ragtime.userspace.development_service.get_db", new=mock.AsyncMock(return_value=fake_db)))
             resources = await development_service.execute(principal, self.workspace_id, "resources", {})
+        self.assertEqual(set(resources), {"tools", "indexes", "catalog_revision"})
         resource = resources["tools"][0]
         metadata = resource["ssh_operations"]
         self.assertFalse(metadata["ssh_execute"]["supported"])

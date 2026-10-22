@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS workspace_development_create_requests;

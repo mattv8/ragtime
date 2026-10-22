@@ -11,7 +11,7 @@ from mcp.types import CallToolRequest, CallToolRequestParams, CallToolResult, Li
 from starlette.types import Message, Receive, Scope, Send
 
 from ragtime.mcp import routes, server
-from ragtime.mcp.tools import MCPToolAdapter, MCPToolDefinition
+from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, MCPToolDefinition
 from ragtime.userspace.development_access import DevelopmentPrincipal
 from ragtime.userspace.development_service import development_service
 
@@ -77,11 +77,16 @@ def _is_error_result(result: ServerResult | None) -> bool:
 
 
 class McpByohEndpointTests(unittest.IsolatedAsyncioTestCase):
-    def _server_with_general_tool(self) -> tuple[Server, MCPToolAdapter, mock.AsyncMock]:
+    def _server_with_general_tool(
+        self,
+        route_filter: McpRouteFilter | None = None,
+        *,
+        development_tools: bool = True,
+    ) -> tuple[Server, MCPToolAdapter, mock.AsyncMock]:
         registered_server = Server("endpoint-test")
         adapter = MCPToolAdapter()
         execute_tool = mock.AsyncMock(return_value="executed")
-        server._register_handlers(registered_server, adapter)
+        server._register_handlers(registered_server, adapter, route_filter, development_tools=development_tools)
         return registered_server, adapter, execute_tool
 
     def _endpoint_patches(
@@ -137,7 +142,7 @@ class McpByohEndpointTests(unittest.IsolatedAsyncioTestCase):
         execute_tool.assert_not_awaited()
 
     async def test_group_member_uses_filtered_handler_and_policy_is_rechecked_per_request(self) -> None:
-        registered_server, adapter, execute_tool = self._server_with_general_tool()
+        registered_server, adapter, execute_tool = self._server_with_general_tool(McpRouteFilter(tool_config_ids=[]))
         general_tool = MCPToolDefinition("execute", "general", {}, {}, execute_tool)
         user = SimpleNamespace(id="user-1", role="user", username="member")
         dispatcher = _RegisteredHandlerDispatcher(ListToolsRequest())
@@ -170,7 +175,7 @@ class McpByohEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(_listed_tool_names(manager.result), ["workspace_development"])
 
     async def test_custom_oauth_member_keeps_general_tools_and_nonmember_is_unauthorized(self) -> None:
-        registered_server, adapter, _execute_tool = self._server_with_general_tool()
+        registered_server, adapter, _execute_tool = self._server_with_general_tool(McpRouteFilter(tool_config_ids=[]), development_tools=False)
         general_tool = MCPToolDefinition("execute", "general", {}, {}, mock.AsyncMock(return_value="executed"))
         user = SimpleNamespace(id="user-1", role="user", username="member")
         dispatcher = _RegisteredHandlerDispatcher(ListToolsRequest())
