@@ -40,7 +40,13 @@ from ragtime.indexer.utils import safe_tool_name
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, mcp_tool_adapter
 from ragtime.rag import rag
 from ragtime.tools.ssh_transfer import build_workspace_file_callbacks
+from ragtime.userspace.development_accounts import (
+    AccountWorkspaceCreateRequest,
+    AccountWorkspaceListRequest,
+    account_development_service,
+)
 from ragtime.userspace.development_bootstrap import (
+    _validate_resource_page,
     build_compact_context,
     read_context_facts,
     read_document,
@@ -66,6 +72,29 @@ _DOCUMENT_OFFSET_SCHEMA = {
     "minimum": 0,
     "description": "UTF-8 byte offset. Start at 0; then pass the exact next_offset returned by the preceding page.",
 }
+_ACCOUNT_TOOL_NAMES = frozenset({"workspace_development_workspaces", "workspace_development_create"})
+_READER_TOOL_NAMES = frozenset(
+    {
+        "workspace_development_document",
+        "workspace_development_contract",
+        "workspace_development_resources",
+        "workspace_development_resource_description",
+        "workspace_development_resource_contract",
+        "workspace_development_facts",
+    }
+)
+_DEVELOPMENT_TOOL_NAMES = frozenset({"workspace_development", "workspace_development_context", *_READER_TOOL_NAMES, *_ACCOUNT_TOOL_NAMES})
+_READ_ONLY_ANNOTATIONS = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True)
+_SAFE_ACCOUNT_ERROR_CODES = frozenset(
+    {
+        "account_tools_unavailable",
+        "idempotency_key_conflict",
+        "workspace_create_throttled",
+        "workspace_name_conflict",
+        "workspace_unavailable",
+        "workspace_create_failed",
+    }
+)
 
 # Server and tool definitions are shared; caller identity must not be. This
 # context is reset after every HTTP request and inherited only by that request's
@@ -137,7 +166,7 @@ def mcp_request_context(principal: Any | None, route_id: str = "default") -> Ite
 
 async def _get_development_operations(principal: Any) -> list[dict[str, Any]]:
     """Get only operations whose declared scope is present on this credential."""
-    operations = development_service.list_operations()
+    operations = development_service.list_operations(principal=principal)
     scopes = set(getattr(principal, "scopes", frozenset()))
     return [operation for operation in operations if str(operation.get("scope", "read")) in scopes]
 
@@ -148,7 +177,7 @@ async def _development_tools_for_principal(principal: Any) -> list[Tool]:
         return []
     operation_names = [str(operation["name"]) for operation in operations if operation.get("name")]
     operation_descriptions = ", ".join(operation_names)
-    return [
+    tools = [
         Tool(
             name="workspace_development",
             description=(
@@ -190,6 +219,7 @@ async def _development_tools_for_principal(principal: Any) -> list[Tool]:
                 "required": ["workspace_id", "document_id"],
                 "additionalProperties": False,
             },
+            annotations=_READ_ONLY_ANNOTATIONS,
         ),
         Tool(
             name="workspace_development_contract",
@@ -205,6 +235,7 @@ async def _development_tools_for_principal(principal: Any) -> list[Tool]:
                 "required": ["workspace_id", "operation"],
                 "additionalProperties": False,
             },
+            annotations=_READ_ONLY_ANNOTATIONS,
         ),
         Tool(
             name="workspace_development_resources",
@@ -215,10 +246,12 @@ async def _development_tools_for_principal(principal: Any) -> list[Tool]:
                     "workspace_id": {"type": "string"},
                     "offset": {"type": "integer", "minimum": 0, "description": "Item offset; use next_offset from the preceding resource page."},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "query": {"type": "string", "maxLength": 120},
                 },
                 "required": ["workspace_id"],
                 "additionalProperties": False,
             },
+            annotations=_READ_ONLY_ANNOTATIONS,
         ),
         Tool(
             name="workspace_development_resource_description",
@@ -234,6 +267,7 @@ async def _development_tools_for_principal(principal: Any) -> list[Tool]:
                 "required": ["workspace_id", "resource_id"],
                 "additionalProperties": False,
             },
+            annotations=_READ_ONLY_ANNOTATIONS,
         ),
         Tool(
             name="workspace_development_resource_contract",
@@ -249,6 +283,7 @@ async def _development_tools_for_principal(principal: Any) -> list[Tool]:
                 "required": ["workspace_id", "resource_id"],
                 "additionalProperties": False,
             },
+            annotations=_READ_ONLY_ANNOTATIONS,
         ),
         Tool(
             name="workspace_development_facts",
@@ -259,6 +294,7 @@ async def _development_tools_for_principal(principal: Any) -> list[Tool]:
                 "required": ["workspace_id"],
                 "additionalProperties": False,
             },
+            annotations=_READ_ONLY_ANNOTATIONS,
         ),
         Tool(
             name="workspace_development_context",
@@ -271,8 +307,30 @@ async def _development_tools_for_principal(principal: Any) -> list[Tool]:
                 "required": ["workspace_id"],
                 "additionalProperties": False,
             },
+            annotations=_READ_ONLY_ANNOTATIONS,
         ),
     ]
+    if getattr(principal, "auth_source", None) == "user" and account_development_service.can_use_account_tools(principal):
+        tools.extend(
+            (
+                Tool(
+                    name="workspace_development_workspaces",
+                    description="List workspaces available to the verified user. Use full workspace IDs for later calls.",
+                    inputSchema=AccountWorkspaceListRequest.model_json_schema(),
+                    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+                ),
+                Tool(
+                    name="workspace_development_create",
+                    description=(
+                        "Create a workspace only when the user explicitly requests it, using a required idempotency key. "
+                        "Retry an uncertain outcome with the same key; do not change keys to retry."
+                    ),
+                    inputSchema=AccountWorkspaceCreateRequest.model_json_schema(),
+                    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
+                ),
+            )
+        )
+    return tools
 
 
 def _development_error(code: str, message: Any) -> CallToolResult:
@@ -283,6 +341,24 @@ def _development_error(code: str, message: Any) -> CallToolResult:
     except Exception:
         text = serialize_mcp_payload({"error": {"code": safe_code, "message": "Error response truncated", "truncated": True}})
     return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+
+
+def _account_error(exc: Exception, *, operation: str) -> CallToolResult:
+    """Return only stable account-operation failures and bounded retry metadata."""
+    status_code = getattr(exc, "status_code", None)
+    detail = getattr(exc, "detail", None)
+    detail_code = detail.get("code") if isinstance(detail, dict) else detail
+    safe_detail_code = detail_code if isinstance(detail_code, str) and detail_code in _SAFE_ACCOUNT_ERROR_CODES else None
+    code = safe_detail_code or ("create_unavailable" if operation == "workspace_development_create" else "operation_failed")
+    if status_code == 503 and detail_code == "account_tools_unavailable":
+        code = "account_tools_unavailable"
+    if status_code == 409 and detail_code == "idempotency_key_conflict":
+        code = "idempotency_key_conflict"
+    payload: dict[str, Any] = {"code": code, "message": "Account workspace operation failed."}
+    retry_after = detail.get("retry_after") if isinstance(detail, dict) else None
+    if status_code == 429 and isinstance(retry_after, int) and not isinstance(retry_after, bool) and retry_after >= 0:
+        payload["retry_after"] = retry_after
+    return CallToolResult(content=[TextContent(type="text", text=serialize_mcp_payload({"error": payload}))], isError=True)
 
 
 def _development_refusal_detail(exc: Exception) -> dict[str, str] | None:
@@ -312,7 +388,7 @@ def _development_refusal_error(detail: dict[str, str]) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
 
 
-async def _development_result(result: Any, *, operation: str) -> CallToolResult:
+async def _development_result(result: Any, *, operation: str, execution_completed: bool = True) -> CallToolResult:
     """Release development resource/context bundles only after authorization."""
     await authorize_external_content(
         result,
@@ -322,7 +398,7 @@ async def _development_result(result: Any, *, operation: str) -> CallToolResult:
         mcp_route=_mcp_route_id.get(),
         tool_id=operation,
         operation=operation,
-        execution_completed=True,
+        execution_completed=execution_completed,
     )
     return CallToolResult(content=[TextContent(type="text", text=serialize_mcp_payload(result, limit=None))])
 
@@ -333,17 +409,13 @@ async def _execute_development_tool(name: str, arguments: dict[str, Any]) -> Cal
     if principal is None:
         return _development_error("authentication_required", "A session, MCP OAuth user token, or workspace development credential is required.")
 
+    if name in _ACCOUNT_TOOL_NAMES:
+        return await _execute_account_tool(name, principal, arguments)
+
     workspace_id = arguments.get("workspace_id")
     if not isinstance(workspace_id, str) or not workspace_id:
         return _development_error("invalid_arguments", "workspace_id is required.")
-    reader_names = {
-        "workspace_development_document",
-        "workspace_development_contract",
-        "workspace_development_resources",
-        "workspace_development_resource_description",
-        "workspace_development_resource_contract",
-        "workspace_development_facts",
-    }
+    reader_names = _READER_TOOL_NAMES
     operation = "context" if name == "workspace_development_context" else arguments.get("operation")
     if name not in reader_names and (not isinstance(operation, str) or not operation):
         return _development_error("invalid_arguments", "operation is required.")
@@ -359,8 +431,10 @@ async def _execute_development_tool(name: str, arguments: dict[str, Any]) -> Cal
             operations = await development_service.list_authorized_operations(principal, workspace_id)
             if name in {"workspace_development_document", "workspace_development_contract"}:
                 full_context = {}
-            else:
+            elif name == "workspace_development_facts":
                 full_context = await development_service.execute(principal, workspace_id, "context", {})
+            else:
+                full_context = {"capabilities": await development_service.get_resource_catalog(principal, workspace_id)}
             if name == "workspace_development_document":
                 result = read_document(str(arguments.get("document_id", "")), arguments.get("revision"), offset=int(arguments.get("offset", 0)))
             elif name == "workspace_development_contract":
@@ -378,13 +452,26 @@ async def _execute_development_tool(name: str, arguments: dict[str, Any]) -> Cal
             elif name == "workspace_development_facts":
                 result = read_context_facts(full_context, arguments.get("revision"), offset=int(arguments.get("offset", 0)))
             else:
-                result = read_resources(full_context, offset=int(arguments.get("offset", 0)), limit=int(arguments.get("limit", 20)))
+                result = read_resources(full_context, offset=arguments.get("offset", 0), limit=arguments.get("limit", 20), query=arguments.get("query"))
             return await _development_result(result, operation=name)
         if operation not in allowed_names:
             return _development_error("operation_not_allowed", "The requested operation is not available for this credential.")
         if operation == "resources":
-            full_context = await development_service.execute(principal, workspace_id, "context", {})
-            result = read_resources(full_context, offset=0, limit=20)
+            unknown_resource_arguments = set(operation_arguments) - {"offset", "limit", "query"}
+            if unknown_resource_arguments:
+                return _development_error("invalid_arguments", "Resource paging arguments are invalid.")
+            _validate_resource_page(
+                operation_arguments.get("offset", 0),
+                operation_arguments.get("limit", 20),
+                operation_arguments.get("query"),
+            )
+            catalog = await development_service.get_resource_catalog(principal, workspace_id)
+            result = read_resources(
+                {"capabilities": catalog},
+                offset=operation_arguments.get("offset", 0),
+                limit=operation_arguments.get("limit", 20),
+                query=operation_arguments.get("query"),
+            )
             return await _development_result(result, operation=operation)
         result = await development_service.execute(principal, workspace_id, operation, operation_arguments)
         if operation == "context":
@@ -405,6 +492,49 @@ async def _execute_development_tool(name: str, arguments: dict[str, Any]) -> Cal
             else ("operation_failed" if status_code is None else f"http_{status_code}")
         )
         return _development_error(code, message or "Workspace development operation failed.")
+
+
+async def _execute_account_tool(name: str, principal: Any, arguments: dict[str, Any]) -> CallToolResult:
+    """Run an account operation with transport protection around every outcome."""
+    if not account_development_service.can_use_account_tools(principal):
+        return _development_error("account_tools_unavailable", "Account workspace tools are unavailable for this identity.")
+    request_model = AccountWorkspaceListRequest if name == "workspace_development_workspaces" else AccountWorkspaceCreateRequest
+    try:
+        request = request_model.model_validate(arguments)
+    except Exception:
+        return _development_error("invalid_arguments", "Account workspace arguments are invalid.")
+    try:
+        await authorize_external_content(
+            request.model_dump(), direction="inbound", principal=principal, surface="development", mcp_route=_mcp_route_id.get(), tool_id=name, operation=name
+        )
+        if name == "workspace_development_workspaces":
+            assert isinstance(request, AccountWorkspaceListRequest)
+            result = await account_development_service.list_workspaces(principal, request)
+        else:
+            assert isinstance(request, AccountWorkspaceCreateRequest)
+            result = await account_development_service.create_workspace(principal, request)
+        return await _development_result(result, operation=name, execution_completed=result.get("status") == "completed")
+    except Exception as exc:
+        refusal = _development_refusal_detail(exc)
+        if refusal is not None:
+            return _development_refusal_error(refusal)
+        try:
+            await authorize_external_content(
+                {"error": "Account workspace operation failed."},
+                direction="outbound",
+                principal=principal,
+                surface="development",
+                mcp_route=_mcp_route_id.get(),
+                tool_id=name,
+                operation=name,
+            )
+        except Exception as release_exc:
+            release_refusal = _development_refusal_detail(release_exc)
+            if release_refusal is not None:
+                return _development_refusal_error(release_refusal)
+            return _development_error("operation_failed", "Account workspace operation failed.")
+        logger.warning("Account workspace MCP dispatch failed exception_type=%s", type(exc).__name__)
+        return _account_error(exc, operation=name)
 
 
 # Default MCP server identity (brandable from settings)
@@ -440,7 +570,7 @@ def _create_server(server_id: str) -> Server:
     """Create a new MCP server instance with default handlers registered."""
     server = Server(server_id)
     _enable_dynamic_tool_refresh(server)
-    _register_handlers(server)
+    _register_handlers(server, development_tools=True)
     return server
 
 
@@ -564,6 +694,8 @@ def _register_handlers(
     server: Server,
     adapter: MCPToolAdapter | None = None,
     route_filter: McpRouteFilter | None = None,
+    *,
+    development_tools: bool = True,
 ) -> None:
     """Register MCP protocol handlers on the server instance."""
 
@@ -609,7 +741,7 @@ def _register_handlers(
                             )
                         )
 
-            if principal is not None and route_filter is None:
+            if principal is not None and development_tools:
                 # Definitions are rebuilt per request because the operation
                 # list is scope-dependent. The shared adapter remains cached.
                 tools.extend(await _development_tools_for_principal(principal))
@@ -650,17 +782,8 @@ def _register_handlers(
                 tool_id=canonical_tool_id,
                 operation="tools/call",
             )
-            if name in {
-                "workspace_development",
-                "workspace_development_context",
-                "workspace_development_document",
-                "workspace_development_contract",
-                "workspace_development_resources",
-                "workspace_development_resource_description",
-                "workspace_development_resource_contract",
-                "workspace_development_facts",
-            }:
-                if route_filter is not None:
+            if name in _DEVELOPMENT_TOOL_NAMES:
+                if not development_tools:
                     return _development_error("tool_not_available", "Workspace development tools are available only on the default MCP route.")
                 return await _execute_development_tool(name, arguments)
 
@@ -790,7 +913,7 @@ async def get_custom_route_server(
 
     server = Server(route_server_name)
     _enable_dynamic_tool_refresh(server)
-    _register_handlers(server, adapter, route_filter)
+    _register_handlers(server, adapter, route_filter, development_tools=False)
     _custom_route_servers[route_path] = server
 
     logger.info(f"Created custom MCP server for route: /mcp/{route_path}")
@@ -860,7 +983,7 @@ async def get_default_route_filtered_server(
 
     server = Server(filter_server_name)
     _enable_dynamic_tool_refresh(server)
-    _register_handlers(server, adapter, route_filter)
+    _register_handlers(server, adapter, route_filter, development_tools=True)
     _default_filter_servers[filter_id] = server
 
     logger.info(f"Created filtered MCP server for default route filter: {f.name}")

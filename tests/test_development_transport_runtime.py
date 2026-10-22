@@ -39,7 +39,7 @@ class DevelopmentTransportRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.db = await connect_db()
         self.owner_id, self.other_id = str(uuid4()), str(uuid4())
         self.workspace_id, self.other_workspace_id = str(uuid4()), str(uuid4())
-        self.workspace_ids = (self.workspace_id, self.other_workspace_id)
+        self.workspace_ids = [self.workspace_id, self.other_workspace_id]
         for user_id, label in ((self.owner_id, "owner"), (self.other_id, "other")):
             await self.db.user.create(
                 data={
@@ -61,7 +61,9 @@ class DevelopmentTransportRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await userspace_service._ensure_workspace_git_repo(workspace_id)
 
     async def asyncTearDown(self) -> None:
-        for workspace_id in self.workspace_ids:
+        owned_workspaces = await self.db.workspace.find_many(where={"ownerUserId": {"in": [self.owner_id, self.other_id]}})
+        workspace_ids = set(self.workspace_ids) | {str(workspace.id) for workspace in owned_workspaces}
+        for workspace_id in workspace_ids:
             await self.db.workspace.delete_many(where={"id": workspace_id})
             shutil.rmtree(userspace_service._workspace_dir(workspace_id), ignore_errors=True)
         await self.db.user.delete_many(where={"id": {"in": [self.owner_id, self.other_id]}})
@@ -115,8 +117,23 @@ class DevelopmentTransportRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     self._mcp_json(client, read_credential["token"], _mcp_request("tools/list", {}, 3)),
                     self._mcp_json(client, exec_credential["token"], _mcp_request("tools/list", {}, 4)),
                 )
-                self.assertEqual({tool["name"] for tool in read_tools["result"]["tools"]}, {"workspace_development", "workspace_development_context"})
-                self.assertEqual({tool["name"] for tool in exec_tools["result"]["tools"]}, {"workspace_development", "workspace_development_context"})
+                expected_rtdev_tools = {
+                    "workspace_development",
+                    "workspace_development_context",
+                    "workspace_development_document",
+                    "workspace_development_contract",
+                    "workspace_development_resources",
+                    "workspace_development_resource_description",
+                    "workspace_development_resource_contract",
+                    "workspace_development_facts",
+                }
+                account_tools = {"workspace_development_workspaces", "workspace_development_create"}
+                read_tool_names = {tool["name"] for tool in read_tools["result"]["tools"]}
+                exec_tool_names = {tool["name"] for tool in exec_tools["result"]["tools"]}
+                self.assertEqual(read_tool_names, expected_rtdev_tools)
+                self.assertEqual(exec_tool_names, expected_rtdev_tools)
+                self.assertTrue(read_tool_names.isdisjoint(account_tools))
+                self.assertTrue(exec_tool_names.isdisjoint(account_tools))
                 read_ops = next(tool for tool in read_tools["result"]["tools"] if tool["name"] == "workspace_development")["inputSchema"]["properties"][
                     "operation"
                 ]["enum"]
@@ -139,6 +156,108 @@ class DevelopmentTransportRuntimeTests(unittest.IsolatedAsyncioTestCase):
         finally:
             mcp_routes._mcp_http_state["session_manager"] = previous_manager
 
+    async def test_account_create_replay_and_workspace_operations_use_real_transport_services(self) -> None:
+        app = FastAPI()
+        for route in mcp_routes.get_mcp_routes():
+            app.router.routes.append(route)
+        settings = {
+            "mcp_enabled": True,
+            "mcp_default_route_auth": True,
+            "mcp_default_route_auth_method": "oauth2",
+            "server_name": "byo-account-transport-smoke",
+        }
+        authenticated_user = SimpleNamespace(id=self.owner_id, role="user")
+
+        async def authenticate_user(scope: dict, _allowed_group: str | None = None) -> bool:
+            scope["_mcp_user_id"] = self.owner_id
+            scope["_mcp_oauth_user"] = authenticated_user
+            return True
+
+        previous_manager = mcp_routes._mcp_http_state["session_manager"]
+        mcp_routes._mcp_http_state["session_manager"] = None
+        try:
+            async with AsyncExitStack() as stack:
+                stack.enter_context(mock.patch.object(mcp_routes, "get_app_settings", new=mock.AsyncMock(return_value=settings)))
+                stack.enter_context(mock.patch.object(mcp_server, "get_app_settings", new=mock.AsyncMock(return_value=settings)))
+                stack.enter_context(mock.patch.object(mcp_routes, "_validate_oauth2_token", new=authenticate_user))
+                stack.enter_context(mock.patch.object(mcp_routes, "_get_user_matching_filter", new=mock.AsyncMock(return_value=None)))
+                ensure_storage = stack.enter_context(mock.patch("ragtime.userspace.service.object_storage_control.ensure_workspace", new=mock.AsyncMock()))
+                await stack.enter_async_context(mcp_routes.mcp_lifespan_manager())
+                client = await stack.enter_async_context(httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test"))
+                token = "test-only-user-token"
+                initialization = {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}}
+                await self._mcp_json(client, token, _mcp_request("initialize", initialization, 20))
+
+                tools = await self._mcp_json(client, token, _mcp_request("tools/list", {}, 21))
+                tool_names = {tool["name"] for tool in tools["result"]["tools"]}
+                self.assertTrue({"workspace_development_workspaces", "workspace_development_create"}.issubset(tool_names))
+
+                listed = await self._call_tool(
+                    client,
+                    token,
+                    "workspace_development_workspaces",
+                    {"query": f"byo-transport-primary-{self.workspace_id}"},
+                    22,
+                )
+                self.assertEqual([item["workspace_id"] for item in listed["items"]], [self.workspace_id])
+
+                create_arguments = {
+                    "name": f"byo-created-{uuid4()}",
+                    "description": "Synthetic transport integration workspace",
+                    "idempotency_key": f"transport-{uuid4()}",
+                    "tool_selection_mode": "custom",
+                    "selected_tool_ids": [],
+                }
+                created = await self._call_tool(client, token, "workspace_development_create", create_arguments, 23)
+                self.assertEqual(created["status"], "completed")
+                self.assertFalse(created["replayed"])
+                created_workspace_id = created["workspace_id"]
+                self.workspace_ids.append(created_workspace_id)
+                ensure_storage.assert_awaited_once_with(created_workspace_id)
+
+                replayed = await self._call_tool(client, token, "workspace_development_create", create_arguments, 24)
+                self.assertEqual(replayed["workspace_id"], created_workspace_id)
+                self.assertTrue(replayed["replayed"])
+                self.assertEqual(await self.db.conversation.count(where={"workspaceId": created_workspace_id}), 0)
+
+                context = await self._workspace_operation(client, token, created_workspace_id, "context", {}, 25)
+                self.assertEqual(context["workspace"]["id"], created_workspace_id)
+                self.assertEqual(await self.db.conversation.count(where={"workspaceId": created_workspace_id}), 0)
+
+                written = await self._workspace_operation(
+                    client,
+                    token,
+                    created_workspace_id,
+                    "file_write",
+                    {"path": "index.html", "content": "<h1>transport smoke</h1>", "expected_hash": None},
+                    26,
+                )
+                file_result = await self._workspace_operation(
+                    client,
+                    token,
+                    created_workspace_id,
+                    "file_read",
+                    {"path": "index.html"},
+                    27,
+                )
+                self.assertEqual(file_result["content"], "<h1>transport smoke</h1>")
+                self.assertEqual(file_result["content_hash"], written["content_hash"])
+
+                validation = await self._workspace_operation(client, token, created_workspace_id, "validate", {}, 28)
+                self.assertIn("valid", validation)
+                snapshot = await self._workspace_operation(
+                    client,
+                    token,
+                    created_workspace_id,
+                    "snapshot_create",
+                    {"message": "Transport integration snapshot"},
+                    29,
+                )
+                self.assertEqual(snapshot["workspace_id"], created_workspace_id)
+                self.assertEqual(snapshot["message"], "Transport integration snapshot")
+        finally:
+            mcp_routes._mcp_http_state["session_manager"] = previous_manager
+
     async def test_runtime_manager_exec_job_lifecycle_preserves_workspace_file(self) -> None:
         manager_url = os.environ.get("RUNTIME_MANAGER_URL")
         manager_token = os.environ.get("RUNTIME_AUTH_TOKEN")
@@ -146,10 +265,15 @@ class DevelopmentTransportRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.skipTest("requires isolated runtime manager URL and token")
         provider_session_id = f"byo-runtime-{self.workspace_id[:12]}"
         headers = {"Authorization": f"Bearer {manager_token}"}
+        start_payload = {
+            "workspace_id": self.workspace_id,
+            "leased_by_user_id": self.owner_id,
+            "provider_session_id": provider_session_id,
+            "bridge_credential_mode": "worker_file",
+            "bridge_token_file_initial_token": f"test-only-bridge-{self.workspace_id}",
+        }
         async with httpx.AsyncClient(base_url=manager_url, headers=headers, timeout=30) as client:
-            started = await client.post(
-                "/sessions/start", json={"workspace_id": self.workspace_id, "leased_by_user_id": self.owner_id, "provider_session_id": provider_session_id}
-            )
+            started = await client.post("/sessions/start", json=start_payload)
             self.assertEqual(started.status_code, 200, started.text)
             try:
                 await self._wait_for_runtime_startup(client, provider_session_id)
@@ -180,9 +304,7 @@ class DevelopmentTransportRuntimeTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await client.post(f"/sessions/{provider_session_id}/stop")
 
-            restarted = await client.post(
-                "/sessions/start", json={"workspace_id": self.workspace_id, "leased_by_user_id": self.owner_id, "provider_session_id": provider_session_id}
-            )
+            restarted = await client.post("/sessions/start", json=start_payload)
             self.assertEqual(restarted.status_code, 200, restarted.text)
             try:
                 await self._wait_for_runtime_startup(client, provider_session_id)
@@ -193,6 +315,35 @@ class DevelopmentTransportRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("runtime-smoke", (await self._terminal_job(client, provider_session_id, preserved.json()["id"]))["output"])
             finally:
                 await client.post(f"/sessions/{provider_session_id}/stop")
+
+    async def _call_tool(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        name: str,
+        arguments: dict,
+        request_id: int,
+    ) -> dict:
+        response = await self._mcp_json(client, token, _mcp_request("tools/call", {"name": name, "arguments": arguments}, request_id))
+        self.assertFalse(response["result"].get("isError", False), response)
+        return json.loads(response["result"]["content"][0]["text"])
+
+    async def _workspace_operation(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        workspace_id: str,
+        operation: str,
+        arguments: dict,
+        request_id: int,
+    ) -> dict:
+        return await self._call_tool(
+            client,
+            token,
+            "workspace_development",
+            {"workspace_id": workspace_id, "operation": operation, "arguments": arguments},
+            request_id,
+        )
 
     async def _wait_for_runtime_startup(self, client: httpx.AsyncClient, provider_session_id: str) -> dict:
         async def wait_for_startup() -> dict:

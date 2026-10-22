@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import posixpath
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import HTTPException
@@ -26,12 +27,13 @@ from ragtime.indexer.models import SCHEMA_INDEXER_CAPABLE_TOOL_TYPES, ToolType
 from ragtime.indexer.pdm_service import search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import search_schema_index
-from ragtime.rag.components import rag
+from ragtime.rag.components import RAGComponents, rag
 from ragtime.tools.filesystem_indexer import search_filesystem_index
 from ragtime.userspace.agent_read_service import agent_read_service
 from ragtime.userspace.development_access import DevelopmentPrincipal
+from ragtime.userspace.development_management import MANAGEMENT_OPERATIONS, execute_management_operation, management_operation_visible
 from ragtime.userspace.instruction_bundle import build_instruction_bundle
-from ragtime.userspace.instruction_facts import build_env_var_turn_hint, normalize_facts
+from ragtime.userspace.instruction_facts import build_env_var_turn_hint, build_runtime_observation_turn_hint, normalize_facts
 from ragtime.userspace.models import ExecuteComponentRequest, UpsertWorkspaceFileRequest
 from ragtime.userspace.planning_service import planning_service
 from ragtime.userspace.service import (
@@ -125,7 +127,12 @@ _OPERATIONS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
     ("runtime_start", "Start the workspace runtime (non-retry-safe).", "exec", _schema({})),
     ("runtime_stop", "Stop the workspace runtime.", "exec", _schema({})),
     ("preview_launch", "Launch an authenticated workspace preview.", "exec", _schema({"control_plane_origin": {"type": "string"}})),
-    ("resources", "List caller-authorized selected tools and granted indexes.", "read", _schema({})),
+    (
+        "resources",
+        "List caller-authorized selected tools and granted indexes.",
+        "read",
+        _schema({"query": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}),
+    ),
     (
         "http_api_catalog_search",
         "Search an authorized HTTP API OpenAPI catalog.",
@@ -189,16 +196,17 @@ _OPERATIONS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
             ["source", "destination"],
         ),
     ),
-)
+) + MANAGEMENT_OPERATIONS
 
 
 class DevelopmentService:
-    def list_operations(self, scopes: frozenset[str] | None = None) -> list[dict[str, Any]]:
+    def list_operations(self, scopes: frozenset[str] | None = None, *, principal: DevelopmentPrincipal | None = None) -> list[dict[str, Any]]:
         """Return registry operations, optionally limited to credential scopes."""
         return [
             {"name": name, "description": description, "scope": scope, "input_schema": schema}
             for name, description, scope, schema in _OPERATIONS
-            if scopes is None or scope in scopes
+            if (scopes is None or scope in scopes)
+            and (principal is None or management_operation_visible(principal, name) or name not in {item[0] for item in MANAGEMENT_OPERATIONS})
         ]
 
     async def list_authorized_operations(
@@ -208,10 +216,10 @@ class DevelopmentService:
     ) -> list[dict[str, Any]]:
         """Return operations available to an authorized workspace caller."""
         await self._workspace(principal, workspace_id, "read")
-        return self.list_operations(principal.scopes)
+        return self.list_operations(principal.scopes, principal=principal)
 
     async def _workspace(self, principal: DevelopmentPrincipal, workspace_id: str, scope: str) -> Any:
-        if principal.workspace_id and principal.workspace_id != workspace_id:
+        if principal.workspace_id is not None and principal.workspace_id != workspace_id:
             raise HTTPException(status_code=403, detail="Development credential is bound to another workspace")
         if scope not in principal.scopes:
             raise HTTPException(status_code=403, detail=f"Development credential lacks {scope} scope")
@@ -242,6 +250,12 @@ class DevelopmentService:
                 or ("integer" in allowed and isinstance(value, int) and not isinstance(value, bool))
                 or ("boolean" in allowed and isinstance(value, bool))
                 or ("null" in allowed and value is None)
+                or (
+                    "array" in allowed
+                    and isinstance(value, list)
+                    and all(isinstance(item, str) for item in value)
+                    and (not isinstance(definition.get("items"), dict) or definition["items"].get("type") in {None, "string"})
+                )
             )
             if not valid:
                 raise HTTPException(status_code=422, detail=f"arguments.{key} has an invalid type")
@@ -309,7 +323,7 @@ class DevelopmentService:
             userspace_service.list_workspace_preview_diagnostic_summary(workspace_id),
         )
         try:
-            runtime_status = await userspace_runtime_service.get_devserver_status(workspace_id, principal.user_id)
+            runtime_status = await userspace_runtime_service.get_devserver_status(workspace_id, principal.user_id, allow_recovery=False)
         except Exception:
             # Context export must remain available when a transient provider
             # readiness read fails; do not substitute a guessed runtime state.
@@ -349,11 +363,25 @@ class DevelopmentService:
         context["env_vars"] = [{"key": item.key, "has_value": item.has_value} for item in env_vars]
         context["diagnostics"] = normalize_facts(diagnostics)
         context["runtime_status"] = normalize_facts(runtime_status)
-        from ragtime.rag.components import RAGComponents
+        context["runtime_observation"] = (normalize_facts(runtime_status.observation) if runtime_status is not None else None) or {
+            "state": "unavailable",
+            "devserver_running": None,
+            "warning": "Runtime observation is unavailable; recorded runtime state is not current evidence.",
+        }
         from ragtime.rag.prompts import build_userspace_diagnostics_turn_reminder_line
 
         context["env_var_reminder_line"] = build_env_var_turn_hint(env_vars)
-        context["runtime_status_reminder_line"] = RAGComponents._build_userspace_runtime_status_turn_hint(runtime_status) if runtime_status else ""
+        observation_hint = build_runtime_observation_turn_hint(context["runtime_observation"])
+        runtime_blocker_hint = ""
+        if runtime_status is not None:
+            runtime_blocker_hint = RAGComponents._build_userspace_runtime_status_turn_hint(runtime_status)
+            if (context["runtime_observation"] or {}).get("state") != "observed":
+                runtime_blocker_hint = runtime_blocker_hint.replace(
+                    "- Current runtime blocker:",
+                    "- Recorded runtime blocker (not current liveness evidence):",
+                )
+        context["runtime_blocker_line"] = runtime_blocker_hint
+        context["runtime_status_reminder_line"] = observation_hint + runtime_blocker_hint
         context["diagnostics_reminder_line"] = build_userspace_diagnostics_turn_reminder_line(diagnostics)
         return build_instruction_bundle(context)
 
@@ -568,7 +596,33 @@ class DevelopmentService:
                 return await self._execute_with_context(principal, workspace_id, operation, arguments)
         return await self._execute_with_context(principal, workspace_id, operation, arguments)
 
-    async def _execute_with_context(self, principal: DevelopmentPrincipal, workspace_id: str, operation: str, arguments: dict[str, Any] | None = None) -> Any:
+    async def get_resource_catalog(self, principal: DevelopmentPrincipal, workspace_id: str) -> dict[str, Any]:
+        """Return the protected, selected-resource catalog for bounded readers.
+
+        This intentionally bypasses the public operation registry: the catalog is
+        an implementation detail, not an unpaged development operation.
+        """
+
+        async def read_catalog() -> dict[str, Any]:
+            await self._workspace(principal, workspace_id, "read")
+            await self._audit_operation(principal, workspace_id, "resources_catalog", "read")
+            resources = await self._resources(principal, workspace_id)
+            return {"authorized_tools": resources["tools"], "authorized_indexes": resources["indexes"]}
+
+        if content_protection_service.current_context() is None:
+            with external_protection_context(principal, surface="development", resource_id=workspace_id):
+                return await self._execute_with_context(principal, workspace_id, "resources_catalog", dispatch=read_catalog)
+        return await self._execute_with_context(principal, workspace_id, "resources_catalog", dispatch=read_catalog)
+
+    async def _execute_with_context(
+        self,
+        principal: DevelopmentPrincipal,
+        workspace_id: str,
+        operation: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        dispatch: Callable[[], Awaitable[Any]] | None = None,
+    ) -> Any:
         candidate = {"workspace_id": workspace_id, "operation": operation, "arguments": arguments or {}}
         try:
             await authorize_external_content(
@@ -580,7 +634,7 @@ class DevelopmentService:
                 resource_id=workspace_id,
                 operation=operation,
             )
-            result = await self._execute_unprotected(principal, workspace_id, operation, arguments)
+            result = await dispatch() if dispatch is not None else await self._execute_unprotected(principal, workspace_id, operation, arguments)
             await authorize_external_content(
                 result,
                 direction="outbound",
@@ -620,22 +674,11 @@ class DevelopmentService:
         args = self._validate_arguments(op[3], args)
         scope = op[2]
         workspace = await self._workspace(principal, workspace_id, scope)
-        # Reuse the existing workspace runtime audit sink for minimal external
-        # operation attribution. Arguments are intentionally omitted because
-        # they can contain file contents, queries, or commands.
-        from ragtime.userspace.runtime_service import userspace_runtime_service
-
-        await userspace_runtime_service._audit(
-            workspace_id,
-            "development_operation",
-            user_id=principal.user_id,
-            session_id=None,
-            payload={"operation": operation, "credential_id": principal.credential_id, "scope": scope},
-        )
+        await self._audit_operation(principal, workspace_id, operation, scope)
         if operation == "context":
             return await self._context(principal, workspace_id)
         if operation == "operation_describe":
-            contract = next((item for item in self.list_operations(principal.scopes) if item["name"] == args["operation"]), None)
+            contract = next((item for item in self.list_operations(principal.scopes, principal=principal) if item["name"] == args["operation"]), None)
             if contract is None:
                 raise HTTPException(status_code=404, detail="Operation is not authorized")
             return contract
@@ -730,8 +773,16 @@ class DevelopmentService:
             if operation == "runtime_status":
                 # Refresh provider-backed readiness first; this is read-only and
                 # deliberately does not start or reconcile a runtime session.
-                await userspace_runtime_service.get_devserver_status(workspace_id, principal.user_id)
-                return (await userspace_runtime_service.get_runtime_session(workspace_id, principal.user_id)).model_dump()
+                observed_status = await userspace_runtime_service.get_devserver_status(workspace_id, principal.user_id, allow_recovery=False)
+                session_response = await userspace_runtime_service.get_runtime_session(workspace_id, principal.user_id)
+                session = session_response.session.model_dump() if session_response.session is not None else None
+                return {
+                    "workspace_id": workspace_id,
+                    "session": session,
+                    "observed_status": observed_status.model_dump(),
+                    "observation": observed_status.observation.model_dump() if observed_status.observation else None,
+                    "session_record": {"source": "database", "liveness_authoritative": False},
+                }
             if operation == "runtime_start":
                 return (await userspace_runtime_service.start_runtime_session(workspace_id, principal.user_id)).model_dump()
             if operation == "runtime_stop":
@@ -741,7 +792,19 @@ class DevelopmentService:
                 await userspace_runtime_service.issue_workspace_preview_launch(workspace_id, principal.user_id, control_plane_origin=origin, auto_start=True)
             ).model_dump()
         if operation == "resources":
-            return await self._resources(principal, workspace_id)
+            if not args:
+                return await self._resources(principal, workspace_id)
+            from ragtime.userspace.development_bootstrap import read_resources
+
+            catalog = await self.get_resource_catalog(principal, workspace_id)
+            return read_resources(
+                {"capabilities": catalog},
+                offset=args.get("offset", 0),
+                limit=args.get("limit", 20),
+                query=args.get("query"),
+            )
+        if operation in {item[0] for item in MANAGEMENT_OPERATIONS}:
+            return await execute_management_operation(principal, workspace_id, operation, args)
         if operation in {"ssh_execute", "ssh_transfer"}:
             from ragtime.userspace.development_ssh import execute as ssh_execute
             from ragtime.userspace.development_ssh import transfer as ssh_transfer
@@ -831,6 +894,19 @@ class DevelopmentService:
         if operation.startswith("exec_"):
             return await self._exec(principal, workspace_id, operation, args)
         raise HTTPException(status_code=400, detail="Invalid development operation state")
+
+    @staticmethod
+    async def _audit_operation(principal: DevelopmentPrincipal, workspace_id: str, operation: str, scope: str) -> None:
+        """Record a development action without retaining its caller arguments."""
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        await userspace_runtime_service._audit(
+            workspace_id,
+            "development_operation",
+            user_id=principal.user_id,
+            session_id=None,
+            payload={"operation": operation, "credential_id": principal.credential_id, "scope": scope},
+        )
 
 
 development_service = DevelopmentService()

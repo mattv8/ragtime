@@ -187,3 +187,25 @@ class WorkspaceCreationFailureTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.status_code, 403)
         self.assertEqual(self.db.workspace.records, {})
+
+    async def test_ledger_receipt_failure_after_provisioning_keeps_workspace(self) -> None:
+        cleanup_storage = mock.AsyncMock()
+        receipt_failure = mock.AsyncMock(side_effect=OSError("directory fsync failed"))
+        with (
+            self._patches(mock.AsyncMock(return_value={}), cleanup_storage),
+            mock.patch.object(self.service, "_is_admin_user", mock.AsyncMock(return_value=False)),
+            mock.patch.object(self.service, "_filter_workspace_selection_inputs_for_owner", mock.AsyncMock(return_value=([], []))),
+            mock.patch.object(self.service, "_normalize_workspace_tool_options_for_request", mock.AsyncMock(return_value={})),
+            mock.patch.object(self.service, "_ensure_workspace_git_repo", mock.AsyncMock()),
+            mock.patch("ragtime.userspace.service.asyncio.to_thread", receipt_failure),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "completion recording is unconfirmed"):
+                await self.service.create_workspace(
+                    self.request,
+                    "owner-1",
+                    creation_workspace_id="00000000-0000-4000-8000-000000000001",
+                    creation_request_id="00000000-0000-4000-8000-000000000002",
+                )
+
+        self.assertEqual(len(self.db.workspace.records), 1)
+        cleanup_storage.assert_not_awaited()

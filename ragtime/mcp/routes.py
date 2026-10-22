@@ -401,6 +401,7 @@ async def _resolve_default_development_principal(
                 user_id=str(oauth_user.id),
                 is_admin=str(getattr(oauth_user, "role", "")) == "admin",
                 general_tools_allowed=resolved_auth_method == "oauth2",
+                auth_source="user",
             )
         # Session credentials remain valid on the external development surface.
         # Do not attempt to reinterpret MCP grant or client credentials here.

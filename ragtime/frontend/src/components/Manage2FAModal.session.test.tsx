@@ -212,7 +212,7 @@ describe('Manage2FAModal account enrollment session lifecycle', () => {
     const generationBeforeEnrollment = sessionLifecycle.generation;
 
     fireEvent.change(verificationCode, { target: { value: '111111' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Finish setup' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Finish setup' }));
 
     await screen.findByText('Save these recovery codes now. They will not be shown again.');
     expect(screen.getByText('synthetic-recovery-one')).toBeTruthy();
@@ -260,7 +260,7 @@ describe('Manage2FAModal account enrollment session lifecycle', () => {
     await screen.findByText('Signed in as account-under-test');
     const verificationCode = await screen.findByLabelText('Verification code');
     fireEvent.change(verificationCode, { target: { value: '111111' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Finish setup' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Finish setup' }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh session' }));
 
     await waitFor(() => expect(screen.getByText('Manage 2FA')).toBeTruthy());

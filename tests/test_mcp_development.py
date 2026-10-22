@@ -90,15 +90,11 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
     async def test_generic_resources_operation_returns_the_bounded_reader_page(self) -> None:
         principal = DevelopmentPrincipal(user_id="user-1", is_admin=False, scopes=frozenset({"read"}))
         operations = [{"name": "resources", "description": "Resources", "scope": "read", "input_schema": {}}]
-        context = {"capabilities": {"authorized_tools": [{"component_id": "tool-1", "description": "x" * 70000}], "authorized_indexes": []}}
-
-        async def execute(_principal, _workspace_id, operation, _arguments):
-            self.assertEqual(operation, "context")
-            return context
+        catalog = {"authorized_tools": [{"component_id": "tool-1", "description": "x" * 70000}], "authorized_indexes": []}
 
         with (
             mock.patch.object(development_service, "list_operations", return_value=operations),
-            mock.patch.object(development_service, "execute", new=execute),
+            mock.patch.object(development_service, "get_resource_catalog", new=mock.AsyncMock(return_value=catalog)) as get_resource_catalog,
             mock.patch("ragtime.mcp.server.authorize_external_content", new=mock.AsyncMock()),
         ):
             with mcp_server.development_principal_context(principal):
@@ -112,6 +108,7 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(page["items"][0]["description"])
         self.assertEqual(page["items"][0]["description_reference"]["reader"], "workspace_development_resource_description")
         self.assertLessEqual(len(content.text.encode()), 24 * 1024)
+        get_resource_catalog.assert_awaited_once_with(principal, "workspace-1")
 
     async def test_error_response_with_huge_code_and_body_is_explicitly_truncated(self) -> None:
         result = mcp_server._development_error("x" * 100000, "\x00" * 100000)  # pyright: ignore[reportPrivateUsage]
@@ -198,7 +195,7 @@ class McpDevelopmentTests(unittest.IsolatedAsyncioTestCase):
             scope, auth_method="oauth2", resolved_auth_method="oauth2"
         )
 
-        self.assertEqual(principal, DevelopmentPrincipal(user_id="user-1", is_admin=True, general_tools_allowed=True))
+        self.assertEqual(principal, DevelopmentPrincipal(user_id="user-1", is_admin=True, general_tools_allowed=True, auth_source="user"))
 
     async def test_development_only_oauth_principal_cannot_use_general_tools(self) -> None:
         scope = {"type": "http", "headers": [], "_mcp_oauth_user": mock.Mock(id="user-1", role="user"), "_mcp_user_id": "user-1"}

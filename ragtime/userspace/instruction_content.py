@@ -16,6 +16,36 @@ from ragtime.rag.prompts import (
 )
 from ragtime.userspace.instruction_facts import translate_internal_tool_references
 
+GUIDANCE_TOPIC_METADATA: dict[str, dict[str, str]] = {
+    "workspace": {
+        "title": "Workspace workflow",
+        "purpose": "Edit, validate, and snapshot workspace files safely.",
+        "when_to_read": "Read first for workspace tasks and file changes.",
+    },
+    "runtime": {
+        "title": "Workspace runtime",
+        "purpose": "Build, start, debug, and preview workspace runtimes.",
+        "when_to_read": "Read before runtime, preview, or application architecture work.",
+    },
+    "live-data": {
+        "title": "Live data",
+        "purpose": "Connect authorized live data tools to dashboards.",
+        "when_to_read": "Read when using selected live data tools.",
+    },
+    "persistence": {
+        "title": "Persistence",
+        "purpose": "Apply SQLite persistence boundaries.",
+        "when_to_read": "Read when workspace facts enable SQLite persistence.",
+    },
+    "identity": {
+        "title": "Identity",
+        "purpose": "Add identity-aware application behavior.",
+        "when_to_read": "Read when adding authentication or identity-aware UI.",
+    },
+    "ui": {"title": "User Space UI", "purpose": "Build UI that follows User Space theme rules.", "when_to_read": "Read before changing workspace UI."},
+    "storage": {"title": "Storage", "purpose": "Use authorized mounts and object storage.", "when_to_read": "Read before using mounts or object storage."},
+}
+
 _CONTENT_PROTECTION_REFUSAL_RELAY_GUIDANCE = """
 ## Content-protection refusals
 
@@ -85,4 +115,7 @@ def build_external_guidance_documents() -> dict[str, str]:
             + _USERSPACE_OBJECT_STORAGE_SDK_GUIDANCE
         ),
     }
+    documents["workspace"] += (
+        "\n## Environment value redaction\n\nEnvironment values are intentionally absent from external guidance and facts. Only `has_value` indicates whether a variable is set or missing; it never reveals the value.\n"
+    )
     return {topic: translate_internal_tool_references(text) for topic, text in documents.items()}
