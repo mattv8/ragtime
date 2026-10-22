@@ -2,13 +2,17 @@ import asyncio
 import json
 import unittest
 from contextlib import nullcontext
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
 
 from fastapi import HTTPException
 
+from ragtime.userspace.development_access import DevelopmentPrincipal
 from ragtime.userspace.development_bootstrap import content_hash, read_resource_contract, read_resources
 from ragtime.userspace.development_service import DevelopmentService
+
+
+def _principal() -> DevelopmentPrincipal:
+    return DevelopmentPrincipal(user_id="user-1", is_admin=False, auth_source="user")
 
 
 class DevelopmentResourceReaderTests(unittest.TestCase):
@@ -77,7 +81,7 @@ class DevelopmentResourceReaderTests(unittest.TestCase):
         self.assertTrue(oversized["name_reference"]["complete"])
 
     def test_invalid_page_arguments_are_rejected_without_coercion(self) -> None:
-        context = {"capabilities": {"authorized_tools": [], "authorized_indexes": []}}
+        context: dict[str, object] = {"capabilities": {"authorized_tools": [], "authorized_indexes": []}}
         for arguments in ({"offset": -1}, {"offset": True}, {"limit": 0}, {"limit": 101}, {"limit": "20"}, {"query": 1}):
             with self.subTest(arguments=arguments), self.assertRaises(HTTPException) as raised:
                 read_resources(context, **arguments)
@@ -85,7 +89,7 @@ class DevelopmentResourceReaderTests(unittest.TestCase):
 
     def test_catalog_accessor_uses_protection_and_audit_without_context_loading(self) -> None:
         service = DevelopmentService()
-        principal = SimpleNamespace(user_id="user-1", credential_id=None)
+        principal = _principal()
         resources = {"tools": [{"component_id": "tool-1"}], "indexes": [{"name": "workspace_code"}]}
 
         with (
@@ -131,8 +135,8 @@ class DevelopmentResourceReaderTests(unittest.TestCase):
 
     def test_catalog_accessor_binds_protection_context_when_none_is_prebound(self) -> None:
         service = DevelopmentService()
-        principal = SimpleNamespace(user_id="user-1", credential_id=None)
-        resources = {"tools": [], "indexes": []}
+        principal = _principal()
+        resources: dict[str, list[dict[str, str]]] = {"tools": [], "indexes": []}
 
         with (
             patch("ragtime.userspace.development_service.content_protection_service.current_context", return_value=None),
@@ -148,7 +152,7 @@ class DevelopmentResourceReaderTests(unittest.TestCase):
 
     def test_resources_catalog_cannot_be_called_or_discovered_publicly(self) -> None:
         service = DevelopmentService()
-        principal = SimpleNamespace(user_id="user-1", credential_id=None)
+        principal = _principal()
 
         self.assertNotIn("resources_catalog", {item["name"] for item in service.list_operations()})
         with (

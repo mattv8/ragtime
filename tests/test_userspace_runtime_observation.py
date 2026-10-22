@@ -65,6 +65,7 @@ class RuntimeObservationTests(unittest.IsolatedAsyncioTestCase):
         start.assert_not_awaited()
         update.assert_not_awaited()
         preview_probe.assert_not_awaited()
+        assert status.observation is not None
         self.assertEqual(status.observation.state, "observed")
         self.assertTrue(status.devserver_running)
         self.assertEqual(status.observation.provider_updated_at, datetime(2020, 1, 1, tzinfo=UTC))
@@ -83,6 +84,7 @@ class RuntimeObservationTests(unittest.IsolatedAsyncioTestCase):
                 allow_recovery=False,
             )
 
+        assert status.observation is not None
         self.assertEqual(status.observation.state, "observed")
         self.assertIsNone(status.observation.devserver_running)
         self.assertFalse(status.devserver_running)
@@ -102,6 +104,7 @@ class RuntimeObservationTests(unittest.IsolatedAsyncioTestCase):
                 allow_recovery=False,
             )
 
+        assert status.observation is not None
         self.assertEqual(status.observation.state, "not_found")
         self.assertIsNone(status.observation.devserver_running)
         self.assertFalse(status.devserver_running)
@@ -123,6 +126,7 @@ class RuntimeObservationTests(unittest.IsolatedAsyncioTestCase):
                 allow_recovery=False,
             )
 
+        assert status.observation is not None
         self.assertEqual(status.observation.state, "unavailable")
         self.assertIsNone(status.observation.devserver_running)
         self.assertFalse(status.devserver_running)
@@ -160,7 +164,9 @@ class RuntimeObservationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status.launch_cwd, "/new-workspace")
         self.assertEqual(status.devserver_port, 3000)
         self.assertEqual(status.last_error, "npm crashed")
+        assert status.bridge_status is not None
         self.assertEqual(status.bridge_status.state, "not_running")
+        assert status.observation is not None
         self.assertIsNone(status.observation.provider_updated_at)
         self.assertIsNone(status.runtime_operation_started_at)
         self.assertIsNone(status.runtime_operation_updated_at)
@@ -179,6 +185,7 @@ class RuntimeObservationTests(unittest.IsolatedAsyncioTestCase):
                 allow_recovery=False,
             )
 
+        assert status.observation is not None
         self.assertEqual(status.observation.state, "unavailable")
         self.assertIsNone(status.observation.devserver_running)
         self.assertFalse(status.devserver_running)
@@ -196,6 +203,7 @@ class RuntimeObservationTests(unittest.IsolatedAsyncioTestCase):
                 allow_recovery=False,
             )
 
+        assert status.observation is not None
         self.assertEqual(status.observation.state, "unavailable")
 
     async def test_nonrecovering_status_without_a_session_is_not_applicable(self) -> None:
@@ -206,6 +214,7 @@ class RuntimeObservationTests(unittest.IsolatedAsyncioTestCase):
                 allow_recovery=False,
             )
 
+        assert status.observation is not None
         self.assertEqual(status.observation.state, "not_applicable")
         self.assertFalse(status.observation.devserver_running)
         self.assertFalse(status.devserver_running)
@@ -225,6 +234,7 @@ class RuntimeObservationTests(unittest.IsolatedAsyncioTestCase):
                 allow_recovery=False,
             )
 
+        assert status.observation is not None
         self.assertEqual(status.observation.state, "not_found")
         update.assert_not_awaited()
         preview_probe.assert_not_awaited()

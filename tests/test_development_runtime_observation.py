@@ -39,7 +39,9 @@ class DevelopmentRuntimeObservationTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(service, "_workspace", new=mock.AsyncMock()),
             mock.patch.object(service, "_audit_operation", new=mock.AsyncMock()),
-            mock.patch("ragtime.userspace.runtime_service.userspace_runtime_service.get_devserver_status", new=mock.AsyncMock(return_value=status)) as get_status,
+            mock.patch(
+                "ragtime.userspace.runtime_service.userspace_runtime_service.get_devserver_status", new=mock.AsyncMock(return_value=status)
+            ) as get_status,
             mock.patch("ragtime.userspace.runtime_service.userspace_runtime_service.get_runtime_session", new=mock.AsyncMock(return_value=session)),
         ):
             result = await service._execute_unprotected(principal, "workspace-1", "runtime_status", {})  # pyright: ignore[reportPrivateUsage]
@@ -94,7 +96,9 @@ class DevelopmentRuntimeObservationTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(service, "_workspace", new=mock.AsyncMock()),
             mock.patch.object(service, "_audit_operation", new=mock.AsyncMock()),
-            mock.patch("ragtime.userspace.development_service.execute_management_operation", new=mock.AsyncMock(return_value={"selected_tool_ids": []})) as execute,
+            mock.patch(
+                "ragtime.userspace.development_service.execute_management_operation", new=mock.AsyncMock(return_value={"selected_tool_ids": []})
+            ) as execute,
         ):
             result = await service._execute_unprotected(  # pyright: ignore[reportPrivateUsage]
                 principal,
@@ -125,16 +129,23 @@ class DevelopmentRuntimeObservationTests(unittest.IsolatedAsyncioTestCase):
         )
         db = SimpleNamespace(user=mock.AsyncMock(find_unique=mock.AsyncMock(return_value=SimpleNamespace(username="Ada", displayName="Ada", role="user"))))
         with (
-            mock.patch("ragtime.userspace.development_service.planning_service.get_workspace_context", new=mock.AsyncMock(return_value={"workspace": {"id": "workspace-1"}})),
+            mock.patch(
+                "ragtime.userspace.development_service.planning_service.get_workspace_context",
+                new=mock.AsyncMock(return_value={"workspace": {"id": "workspace-1"}}),
+            ),
             mock.patch("ragtime.userspace.development_service.get_db", new=mock.AsyncMock(return_value=db)),
             mock.patch("ragtime.userspace.development_service.content_protection_service.access_guidance", new=mock.AsyncMock(return_value={})),
             mock.patch.object(service, "_resources", new=mock.AsyncMock(return_value={"tools": [], "indexes": []})),
             mock.patch("ragtime.userspace.development_service.userspace_service.list_workspace_mounts", new=mock.AsyncMock(return_value=[])),
             mock.patch("ragtime.userspace.development_service.userspace_service.list_mountable_sources", new=mock.AsyncMock(return_value=[])),
             mock.patch("ragtime.userspace.development_service.userspace_service.list_workspace_env_var_summaries", new=mock.AsyncMock(return_value=[])),
-            mock.patch("ragtime.userspace.development_service.userspace_service.list_workspace_preview_diagnostic_summary", new=mock.AsyncMock(return_value=[])),
+            mock.patch(
+                "ragtime.userspace.development_service.userspace_service.list_workspace_preview_diagnostic_summary", new=mock.AsyncMock(return_value=[])
+            ),
             mock.patch("ragtime.userspace.development_service.userspace_service.get_workspace_object_storage_summary", new=mock.AsyncMock(return_value=None)),
-            mock.patch("ragtime.userspace.development_service.userspace_service.list_accessible_cross_workspace_sqlite_targets", new=mock.AsyncMock(return_value=[])),
+            mock.patch(
+                "ragtime.userspace.development_service.userspace_service.list_accessible_cross_workspace_sqlite_targets", new=mock.AsyncMock(return_value=[])
+            ),
             mock.patch("ragtime.userspace.runtime_service.userspace_runtime_service.get_devserver_status", new=mock.AsyncMock(return_value=status)),
         ):
             bundle = await service._context(principal, "workspace-1")  # pyright: ignore[reportPrivateUsage]

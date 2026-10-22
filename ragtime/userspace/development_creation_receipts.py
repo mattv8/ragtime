@@ -63,7 +63,9 @@ def read_completion_receipt(workspace_dir: Path, *, workspace_id: str, request_i
     return payload
 
 
-def publish_completion_receipt(workspace_dir: Path, *, workspace_id: str, request_id: str, user_id: str, completed_at: datetime | None = None) -> dict[str, Any]:
+def publish_completion_receipt(
+    workspace_dir: Path, *, workspace_id: str, request_id: str, user_id: str, completed_at: datetime | None = None
+) -> dict[str, Any]:
     """Atomically publish the completion receipt after provisioning is complete."""
     payload = {
         "version": RECEIPT_VERSION,

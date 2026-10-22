@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import TypedDict
 from unittest import mock
 
 from ragtime.userspace.development_creation_receipts import (
@@ -14,12 +15,22 @@ from ragtime.userspace.development_creation_receipts import (
 )
 
 
+class ReceiptIdentity(TypedDict):
+    workspace_id: str
+    request_id: str
+    user_id: str
+
+
 class DevelopmentCreationReceiptTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.workspace_dir = Path(self.temp_dir.name)
-        self.expected = {"workspace_id": "workspace-1", "request_id": "request-1", "user_id": "user-1"}
+        self.expected: ReceiptIdentity = {
+            "workspace_id": "workspace-1",
+            "request_id": "request-1",
+            "user_id": "user-1",
+        }
 
     def test_published_receipt_is_readable_only_for_its_exact_identity(self) -> None:
         publish_completion_receipt(self.workspace_dir, **self.expected)

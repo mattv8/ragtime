@@ -523,7 +523,11 @@ def _resource_summary(resource: Any) -> dict[str, Any]:
     for key in ("tool_type", "enabled"):
         if key in value and len(serialize_mcp_payload(value[key], limit=None).encode("utf-8")) <= 512:
             summary[key] = value[key]
-    identity_fields = (("name", "name"), ("component_id", "component_id")) if summary["kind"] == "tool" else (("index_name", "index_name" if "index_name" in value else "name"),)
+    identity_fields = (
+        (("name", "name"), ("component_id", "component_id"))
+        if summary["kind"] == "tool"
+        else (("index_name", "index_name" if "index_name" in value else "name"),)
+    )
     for summary_key, raw_key in identity_fields:
         if raw_key not in value:
             continue

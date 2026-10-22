@@ -65,7 +65,9 @@ class DevelopmentManagementTests(IsolatedAsyncioTestCase):
             mock.patch("ragtime.userspace.development_management.repository.list_healthy_enabled_tool_ids", mock.AsyncMock(return_value=["tool-1"])),
             mock.patch("ragtime.userspace.development_management.repository.list_tool_configs", mock.AsyncMock(return_value=[config])),
             mock.patch("ragtime.userspace.development_management.resolve_tool_access", mock.AsyncMock(return_value={"tool-1": "read"})),
-            mock.patch("ragtime.userspace.development_management.userspace_service.filter_tool_ids_for_workspace_owner", mock.AsyncMock(return_value=["tool-1"])),
+            mock.patch(
+                "ragtime.userspace.development_management.userspace_service.filter_tool_ids_for_workspace_owner", mock.AsyncMock(return_value=["tool-1"])
+            ),
             mock.patch("ragtime.userspace.development_management.userspace_service.update_workspace", mock.AsyncMock(return_value=updated)) as update,
         ):
             await execute_management_operation(principal, "ws-1", "workspace_tools_set", {"mode": "custom", "selected_tool_ids": []})
@@ -85,10 +87,18 @@ class DevelopmentManagementTests(IsolatedAsyncioTestCase):
         ]
         with (
             mock.patch("ragtime.userspace.development_management.userspace_service.enforce_workspace_role", mock.AsyncMock(return_value=workspace)),
-            mock.patch("ragtime.userspace.development_management.repository.list_healthy_enabled_tool_ids", mock.AsyncMock(return_value=[item.id for item in configs])),
+            mock.patch(
+                "ragtime.userspace.development_management.repository.list_healthy_enabled_tool_ids", mock.AsyncMock(return_value=[item.id for item in configs])
+            ),
             mock.patch("ragtime.userspace.development_management.repository.list_tool_configs", mock.AsyncMock(return_value=configs)),
-            mock.patch("ragtime.userspace.development_management.resolve_tool_access", mock.AsyncMock(return_value={"allowed": "read", "caller-denied": "deny", "owner-denied": "read"})),
-            mock.patch("ragtime.userspace.development_management.userspace_service.filter_tool_ids_for_workspace_owner", mock.AsyncMock(return_value=["allowed", "caller-denied"])),
+            mock.patch(
+                "ragtime.userspace.development_management.resolve_tool_access",
+                mock.AsyncMock(return_value={"allowed": "read", "caller-denied": "deny", "owner-denied": "read"}),
+            ),
+            mock.patch(
+                "ragtime.userspace.development_management.userspace_service.filter_tool_ids_for_workspace_owner",
+                mock.AsyncMock(return_value=["allowed", "caller-denied"]),
+            ),
         ):
             result = await execute_management_operation(principal, "ws-1", "workspace_tools_available", {"query": "accounting", "limit": 1})
 
@@ -192,10 +202,16 @@ class DevelopmentManagementTests(IsolatedAsyncioTestCase):
         workspace = SimpleNamespace(owner_user_id="user-1")
         with (
             mock.patch("ragtime.userspace.development_management.userspace_service.enforce_workspace_role", mock.AsyncMock(return_value=workspace)),
-            mock.patch("ragtime.userspace.development_management.repository.list_healthy_enabled_tool_ids", mock.AsyncMock(return_value=[config.id for config in configs])),
+            mock.patch(
+                "ragtime.userspace.development_management.repository.list_healthy_enabled_tool_ids",
+                mock.AsyncMock(return_value=[config.id for config in configs]),
+            ),
             mock.patch("ragtime.userspace.development_management.repository.list_tool_configs", mock.AsyncMock(return_value=configs)),
             mock.patch("ragtime.userspace.development_management.resolve_tool_access", mock.AsyncMock(return_value={config.id: "read" for config in configs})),
-            mock.patch("ragtime.userspace.development_management.userspace_service.filter_tool_ids_for_workspace_owner", mock.AsyncMock(return_value=[config.id for config in configs])),
+            mock.patch(
+                "ragtime.userspace.development_management.userspace_service.filter_tool_ids_for_workspace_owner",
+                mock.AsyncMock(return_value=[config.id for config in configs]),
+            ),
         ):
             result = await execute_management_operation(principal, "ws-1", "workspace_tools_available", {"limit": 50})
         self.assertEqual(result["items"][0]["component_id"], "first")
@@ -204,9 +220,12 @@ class DevelopmentManagementTests(IsolatedAsyncioTestCase):
         self.assertLess(result["next_offset"], result["total"])
 
     def test_registry_scopes_are_canonical(self):
-        self.assertEqual({name: scope for name, _description, scope, _schema in MANAGEMENT_OPERATIONS}, {
-            "workspace_metadata_update": "write",
-            "env_placeholder_upsert": "write",
-            "workspace_tools_available": "read",
-            "workspace_tools_set": "write",
-        })
+        self.assertEqual(
+            {name: scope for name, _description, scope, _schema in MANAGEMENT_OPERATIONS},
+            {
+                "workspace_metadata_update": "write",
+                "env_placeholder_upsert": "write",
+                "workspace_tools_available": "read",
+                "workspace_tools_set": "write",
+            },
+        )

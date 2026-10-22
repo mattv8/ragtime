@@ -112,11 +112,7 @@ class AccountDevelopmentService:
 
     @staticmethod
     def can_use_account_tools(principal: DevelopmentPrincipal) -> bool:
-        return (
-            principal.auth_source == "user"
-            and principal.credential_id is None
-            and principal.workspace_id is None
-        )
+        return principal.auth_source == "user" and principal.credential_id is None and principal.workspace_id is None
 
     @staticmethod
     def _require_account_principal(principal: DevelopmentPrincipal) -> None:
@@ -261,9 +257,7 @@ class AccountDevelopmentService:
         except BaseException as finalize_error:
             _account_operation_log(str(claim.userId), "create", "finalize_failed", str(claim.id), finalize_error)
             if not finalize_task.done():
-                finalize_task.add_done_callback(
-                    lambda task: self._log_finalize_task_failure(task, str(claim.userId), str(claim.id))
-                )
+                finalize_task.add_done_callback(lambda task: self._log_finalize_task_failure(task, str(claim.userId), str(claim.id)))
             if isinstance(finalize_error, (asyncio.CancelledError, SystemExit, KeyboardInterrupt)):
                 raise
             return False

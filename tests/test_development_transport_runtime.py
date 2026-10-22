@@ -181,9 +181,7 @@ class DevelopmentTransportRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 stack.enter_context(mock.patch.object(mcp_server, "get_app_settings", new=mock.AsyncMock(return_value=settings)))
                 stack.enter_context(mock.patch.object(mcp_routes, "_validate_oauth2_token", new=authenticate_user))
                 stack.enter_context(mock.patch.object(mcp_routes, "_get_user_matching_filter", new=mock.AsyncMock(return_value=None)))
-                ensure_storage = stack.enter_context(
-                    mock.patch("ragtime.userspace.service.object_storage_control.ensure_workspace", new=mock.AsyncMock())
-                )
+                ensure_storage = stack.enter_context(mock.patch("ragtime.userspace.service.object_storage_control.ensure_workspace", new=mock.AsyncMock()))
                 await stack.enter_async_context(mcp_routes.mcp_lifespan_manager())
                 client = await stack.enter_async_context(httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test"))
                 token = "test-only-user-token"

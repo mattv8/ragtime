@@ -31,7 +31,9 @@ class McpWorkspaceManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("workspace_development_workspaces", {tool.name for tool in tools})
         self.assertFalse(result.isError)
         list_workspaces.assert_awaited_once()
-        request = list_workspaces.await_args.args[1]
+        list_workspaces_call = list_workspaces.await_args
+        assert list_workspaces_call is not None
+        request = list_workspaces_call.args[1]
         self.assertIsInstance(request, AccountWorkspaceListRequest)
         content = result.content[0]
         assert isinstance(content, TextContent)
@@ -73,7 +75,9 @@ class McpWorkspaceManagementTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertFalse(result.isError)
-        self.assertIsInstance(create_workspace.await_args.args[1], AccountWorkspaceCreateRequest)
+        create_workspace_call = create_workspace.await_args
+        assert create_workspace_call is not None
+        self.assertIsInstance(create_workspace_call.args[1], AccountWorkspaceCreateRequest)
 
     async def test_account_errors_use_safe_codes_and_retry_after(self) -> None:
         principal = DevelopmentPrincipal(user_id="user-1", is_admin=False, auth_source="user")
@@ -105,11 +109,15 @@ class McpWorkspaceManagementTests(unittest.IsolatedAsyncioTestCase):
                 core = SimpleNamespace(
                     ProtectionContext=content_protection_external.service.ProtectionContext,
                     protection_context=lambda _context: nullcontext(),
-                    authorize_content=mock.AsyncMock(side_effect=[None, ContentProtectionError("content_denied", "request-1", reason="Result release denied.")]),
+                    authorize_content=mock.AsyncMock(
+                        side_effect=[None, ContentProtectionError("content_denied", "request-1", reason="Result release denied.")]
+                    ),
                 )
                 result_body = {"status": status, "workspace_id": "workspace-1"}
                 with (
-                    mock.patch("ragtime.mcp.server.account_development_service.create_workspace", new=mock.AsyncMock(return_value=result_body)) as create_workspace,
+                    mock.patch(
+                        "ragtime.mcp.server.account_development_service.create_workspace", new=mock.AsyncMock(return_value=result_body)
+                    ) as create_workspace,
                     mock.patch.object(content_protection_external, "_core", return_value=core),
                 ):
                     with mcp_server.mcp_request_context(principal):
@@ -125,7 +133,9 @@ class McpWorkspaceManagementTests(unittest.IsolatedAsyncioTestCase):
                 create_workspace.assert_awaited_once()
 
     async def test_ineligible_account_calls_fail_before_argument_or_classifier_work(self) -> None:
-        principal = DevelopmentPrincipal(user_id="user-1", is_admin=False, credential_id="rtdev-1", workspace_id="workspace-1", auth_source="workspace_credential")
+        principal = DevelopmentPrincipal(
+            user_id="user-1", is_admin=False, credential_id="rtdev-1", workspace_id="workspace-1", auth_source="workspace_credential"
+        )
         with mock.patch("ragtime.mcp.server.authorize_external_content", new=mock.AsyncMock()) as authorize:
             with mcp_server.mcp_request_context(principal):
                 result = await mcp_server._execute_development_tool("workspace_development_create", {"unexpected": "value"})  # pyright: ignore[reportPrivateUsage]

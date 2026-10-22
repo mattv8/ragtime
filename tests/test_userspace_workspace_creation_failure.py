@@ -200,7 +200,12 @@ class WorkspaceCreationFailureTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("ragtime.userspace.service.asyncio.to_thread", receipt_failure),
         ):
             with self.assertRaisesRegex(RuntimeError, "completion recording is unconfirmed"):
-                await self.service.create_workspace(self.request, "owner-1", creation_workspace_id="00000000-0000-4000-8000-000000000001", creation_request_id="00000000-0000-4000-8000-000000000002")
+                await self.service.create_workspace(
+                    self.request,
+                    "owner-1",
+                    creation_workspace_id="00000000-0000-4000-8000-000000000001",
+                    creation_request_id="00000000-0000-4000-8000-000000000002",
+                )
 
         self.assertEqual(len(self.db.workspace.records), 1)
         cleanup_storage.assert_not_awaited()

@@ -32,11 +32,7 @@ class _Ledger:
 
     async def find_first(self, *, where: dict[str, Any]) -> SimpleNamespace | None:
         return next(
-            (
-                row
-                for row in self.rows
-                if row.userId == where["userId"] and row.idempotencyKey == where["idempotencyKey"]
-            ),
+            (row for row in self.rows if row.userId == where["userId"] and row.idempotencyKey == where["idempotencyKey"]),
             None,
         )
 
@@ -132,7 +128,9 @@ class AccountCreateLifecycleTests(IsolatedAsyncioTestCase):
                         receipt_path(workspace_dir).write_text("not json")
                     service = AccountDevelopmentService()
                     with (
-                        mock.patch.object(service, "_authorized_workspace", new=mock.AsyncMock(return_value=SimpleNamespace(id="workspace-1", name="row only"))),
+                        mock.patch.object(
+                            service, "_authorized_workspace", new=mock.AsyncMock(return_value=SimpleNamespace(id="workspace-1", name="row only"))
+                        ),
                         mock.patch("ragtime.userspace.development_accounts.userspace_service._workspace_files_dir", return_value=workspace_dir / "files"),
                     ):
                         result = await service._replay_claim(_Database(_Ledger([claim])), _principal(), claim)
@@ -172,7 +170,9 @@ class AccountCreateLifecycleTests(IsolatedAsyncioTestCase):
 
         with (
             mock.patch("ragtime.userspace.development_accounts.get_db", new=mock.AsyncMock(return_value=database)),
-            mock.patch("ragtime.userspace.development_accounts.userspace_service.create_workspace", new=mock.AsyncMock(side_effect=RuntimeError("storage failed"))),
+            mock.patch(
+                "ragtime.userspace.development_accounts.userspace_service.create_workspace", new=mock.AsyncMock(side_effect=RuntimeError("storage failed"))
+            ),
             mock.patch.object(service, "_finalize_claim", new=finalize),
         ):
             create_task = asyncio.create_task(service.create_workspace(_principal(), _request()))
@@ -286,7 +286,7 @@ class AccountRequestAndDiscoveryTests(TestCase):
         for value in (True, "1", 1.0):
             with self.subTest(value=value):
                 with self.assertRaises(ValidationError):
-                    AccountWorkspaceListRequest(offset=value)
+                    AccountWorkspaceListRequest.model_validate({"offset": value})
 
     def test_default_selection_hash_matches_explicit_default_all_with_absent_lists(self) -> None:
         implicit = _request()
@@ -298,7 +298,9 @@ class AccountRequestAndDiscoveryTests(TestCase):
         huge_name = "é" * (ACCOUNT_LIST_MAX_BYTES // 2)
         workspaces = [
             SimpleNamespace(id="workspace-1", name="Duplicate", owner_user_id="user-1", updated_at=updated, members=[]),
-            SimpleNamespace(id="workspace-2", name="Duplicate", owner_user_id="other", updated_at=updated, members=[SimpleNamespace(user_id="user-1", role="editor")]),
+            SimpleNamespace(
+                id="workspace-2", name="Duplicate", owner_user_id="other", updated_at=updated, members=[SimpleNamespace(user_id="user-1", role="editor")]
+            ),
             SimpleNamespace(id="workspace-3", name=huge_name, owner_user_id="user-1", updated_at=updated, members=[]),
         ]
         page = SimpleNamespace(items=workspaces, total=3, offset=7)

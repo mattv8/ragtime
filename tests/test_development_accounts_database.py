@@ -40,9 +40,7 @@ class DevelopmentAccountsDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.user_ids = [str(uuid4()), str(uuid4())]
         self.created_request_ids: list[str] = []
         for user_id in self.user_ids:
-            await self.first.user.create(
-                data={"id": user_id, "username": f"byoh-account-db-{user_id}", "authProvider": AuthProvider.local}
-            )
+            await self.first.user.create(data={"id": user_id, "username": f"byoh-account-db-{user_id}", "authProvider": AuthProvider.local})
         self._database_patch = mock.patch("ragtime.userspace.development_accounts.get_db", new=_get_task_db)
         self._database_patch.start()
 
@@ -110,23 +108,28 @@ class DevelopmentAccountsDatabaseTests(unittest.IsolatedAsyncioTestCase):
         ):
             requests = [self._request(f"first-user-key-{number:02d}") for number in range(6)]
             results = await asyncio.gather(
-                *(self._create(first_service if number % 2 == 0 else second_service, self.first if number % 2 == 0 else self.second, self.user_ids[0], request) for number, request in enumerate(requests)),
+                *(
+                    self._create(
+                        first_service if number % 2 == 0 else second_service, self.first if number % 2 == 0 else self.second, self.user_ids[0], request
+                    )
+                    for number, request in enumerate(requests)
+                ),
                 return_exceptions=True,
             )
             admitted = [(request, result) for request, result in zip(requests, results) if isinstance(result, dict)]
-            limited = [result for result in results if isinstance(result, HTTPException)]
+            limited_errors = [result for result in results if isinstance(result, HTTPException)]
             self.assertEqual(len(admitted), 5)
-            self.assertEqual(len(limited), 1)
-            self.assertEqual(limited[0].status_code, 429)
+            self.assertEqual(len(limited_errors), 1)
+            self.assertEqual(limited_errors[0].status_code, 429)
             self.assertEqual(dispatch.await_count, 5)
 
             replay = await self._create(second_service, self.second, self.user_ids[0], admitted[0][0])
             self.assertTrue(replay["replayed"])
             self.assertEqual(dispatch.await_count, 5)
 
-            with self.assertRaises(HTTPException) as limited:
+            with self.assertRaises(HTTPException) as limited_error:
                 await self._create(second_service, self.second, self.user_ids[0], self._request("first-user-key-06"))
-            self.assertEqual(limited.exception.status_code, 429)
+            self.assertEqual(limited_error.exception.status_code, 429)
 
             isolated = await self._create(second_service, self.second, self.user_ids[1], self._request("first-user-key-00"))
             self.assertEqual(isolated["status"], "completed")

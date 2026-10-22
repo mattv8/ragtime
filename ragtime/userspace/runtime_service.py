@@ -3215,7 +3215,15 @@ class UserSpaceRuntimeService:
             runtime_operation_id = str(provider_status.get("runtime_operation_id") or "").strip() or None
             phase_value = str(provider_status.get("runtime_operation_phase") or "").strip() or None
             allowed_runtime_phases = {
-                "queued", "provisioning", "bootstrapping", "deps_install", "launching", "probing", "ready", "failed", "stopped",
+                "queued",
+                "provisioning",
+                "bootstrapping",
+                "deps_install",
+                "launching",
+                "probing",
+                "ready",
+                "failed",
+                "stopped",
             }
             if phase_value in allowed_runtime_phases:
                 runtime_operation_phase = cast(RuntimeOperationPhase, phase_value)

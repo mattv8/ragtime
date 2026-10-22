@@ -205,7 +205,8 @@ class DevelopmentService:
         return [
             {"name": name, "description": description, "scope": scope, "input_schema": schema}
             for name, description, scope, schema in _OPERATIONS
-            if (scopes is None or scope in scopes) and (principal is None or management_operation_visible(principal, name) or name not in {item[0] for item in MANAGEMENT_OPERATIONS})
+            if (scopes is None or scope in scopes)
+            and (principal is None or management_operation_visible(principal, name) or name not in {item[0] for item in MANAGEMENT_OPERATIONS})
         ]
 
     async def list_authorized_operations(

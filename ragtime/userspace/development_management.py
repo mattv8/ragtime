@@ -70,7 +70,12 @@ MANAGEMENT_OPERATIONS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
         _schema(
             {
                 "mode": {"type": "string", "enum": ["custom", "default_all"], "description": "custom requires selected_tool_ids; default_all forbids them."},
-                "selected_tool_ids": {"type": "array", "items": {"type": "string"}, "maxItems": _MAX_SELECTED_TOOL_IDS, "description": "Authorized IDs for custom mode, including an empty list."},
+                "selected_tool_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": _MAX_SELECTED_TOOL_IDS,
+                    "description": "Authorized IDs for custom mode, including an empty list.",
+                },
             },
             ["mode"],
         ),

@@ -345,7 +345,12 @@ class DevelopmentBootstrapTests(unittest.TestCase):
                     "facts": {
                         "runtime_status": {
                             "diagnostics": "x" * 5000,
-                            "observation": {"state": "unavailable", "devserver_running": None, "observed_at": "2026-10-22T00:00:00Z", "warning": "Provider did not return current liveness."},
+                            "observation": {
+                                "state": "unavailable",
+                                "devserver_running": None,
+                                "observed_at": "2026-10-22T00:00:00Z",
+                                "warning": "Provider did not return current liveness.",
+                            },
                         }
                     }
                 }
@@ -358,7 +363,16 @@ class DevelopmentBootstrapTests(unittest.TestCase):
 
     def test_fresh_status_truncation_remains_bounded_with_unexpected_observation_values(self) -> None:
         compact = build_compact_context(
-            {"instruction_bundle": {"facts": {"runtime_status": {"diagnostics": "x" * 5000, "observation": {"state": "\x00" * 1000, "observed_at": "\x00" * 1000, "warning": "liveness unavailable: " + ("\x00" * 5000)}}}}},
+            {
+                "instruction_bundle": {
+                    "facts": {
+                        "runtime_status": {
+                            "diagnostics": "x" * 5000,
+                            "observation": {"state": "\x00" * 1000, "observed_at": "\x00" * 1000, "warning": "liveness unavailable: " + ("\x00" * 5000)},
+                        }
+                    }
+                }
+            },
             guidance=self.guidance,
         )
 

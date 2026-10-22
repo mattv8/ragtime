@@ -115,7 +115,9 @@ class InstructionBundleTests(unittest.TestCase):
     def test_bundle_keeps_recorded_blocker_and_live_data_timeout_guidance_with_unknown_observation(self):
         context = self._context()
         context["runtime_observation"] = {"state": "unavailable", "devserver_running": None, "warning": "Provider unavailable."}
-        context["runtime_blocker_line"] = "- Recorded runtime blocker (not current liveness evidence): Last runtime error: startup failed.\n- WARNING Live data query TIMEOUT: retry after narrowing the query.\n"
+        context["runtime_blocker_line"] = (
+            "- Recorded runtime blocker (not current liveness evidence): Last runtime error: startup failed.\n- WARNING Live data query TIMEOUT: retry after narrowing the query.\n"
+        )
 
         bundle = build_instruction_bundle(context)
 
