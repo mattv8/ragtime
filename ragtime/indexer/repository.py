@@ -2554,6 +2554,13 @@ class IndexerRepository:
                 where={"id": config_id},
                 data=update_data,  # type: ignore[arg-type]
             )
+            if updates.get("enabled") is True:
+                # A pairing draft becomes durable when its tool is first saved.
+                # Keep this marker independent from later enable/disable toggles.
+                await db.execute_raw(
+                    "UPDATE remote_pairings SET is_draft = false, updated_at = CURRENT_TIMESTAMP WHERE tool_id = $1 AND is_draft = true",
+                    config_id,
+                )
             logger.info(f"Updated tool config {config_id}: {list(update_data.keys())}")
             return await self.get_tool_config(config_id)
         except Exception as e:
@@ -2590,6 +2597,15 @@ class IndexerRepository:
         db = await self._get_db()
 
         try:
+            pairing_rows = await db.query_raw(
+                "UPDATE remote_pairings SET status = 'revoked', updated_at = CURRENT_TIMESTAMP WHERE tool_id = $1 AND status <> 'revoked' RETURNING id",
+                config_id,
+            )
+            if pairing_rows:
+                from ragtime.remote_client.relay import relay_manager
+
+                for pairing in pairing_rows:
+                    await relay_manager.revoke(str(pairing["id"]))
             await db.toolconfig.delete(where={"id": config_id})
             logger.info(f"Deleted tool config {config_id}")
             return True

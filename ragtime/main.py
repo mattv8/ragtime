@@ -120,6 +120,9 @@ from ragtime.oauth_redirects import DEFAULT_ALLOWED_ORIGINS, build_allowed_origi
 from ragtime.pdm_automation.routes import router as pdm_automation_router
 from ragtime.pdm_automation.service import pdm_automation_service
 from ragtime.rag import rag
+from ragtime.remote_client import router as remote_client_router
+from ragtime.remote_client.relay import relay_manager
+from ragtime.remote_client.repository import remote_pairing_repository
 from ragtime.userspace.agent_routes import (
     agent_management_router,
     agent_router,
@@ -182,6 +185,18 @@ async def _auth_cleanup_loop() -> None:
         except Exception:
             logger.exception("Expired auth record cleanup failed")
         await asyncio.sleep(_AUTH_CLEANUP_INTERVAL_SECONDS)
+
+
+async def _remote_draft_gc_loop() -> None:
+    """Collect abandoned enrollment drafts without making startup availability depend on GC."""
+    while True:
+        try:
+            await remote_pairing_repository.gc_drafts()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Remote pairing draft cleanup failed")
+        await asyncio.sleep(3600)
 
 
 def _schedule_pid1_sigterm(callback: Any, *args: object) -> None:
@@ -342,22 +357,34 @@ async def lifespan(app: FastAPI):
     await workspace_code_index_service.start()
     await git_webhook_service.start()
     await pdm_automation_service.start()
+    try:
+        await remote_pairing_repository.gc_drafts()
+    except Exception:
+        logger.exception("Initial remote pairing draft cleanup failed")
+    await relay_manager.start()
     # Start cleanup after readiness-critical initialization. It is deliberately
     # independent of startup success and always cancelled before DB teardown.
     auth_cleanup_task = asyncio.create_task(_auth_cleanup_loop(), name="auth-expiry-cleanup")
+    remote_draft_gc_task = asyncio.create_task(_remote_draft_gc_loop(), name="remote-draft-gc")
     # Start MCP session manager (enable/disable checked at request time)
     try:
         async with mcp_lifespan_manager():
             yield
     finally:
         auth_cleanup_task.cancel()
+        remote_draft_gc_task.cancel()
         try:
             await auth_cleanup_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await remote_draft_gc_task
         except asyncio.CancelledError:
             pass
 
     # Cleanup - cancel the startup Git policy reconciliation task
     await pdm_automation_service.stop()
+    await relay_manager.stop()
     await git_webhook_service.stop()
     await workspace_code_index_service.stop()
     await userspace_service.shutdown_git_drift_reconciliation()
@@ -555,6 +582,7 @@ app.include_router(pdm_automation_router)
 
 # Include indexer routes
 app.include_router(indexer_router)
+app.include_router(remote_client_router)
 app.include_router(content_protection_router)
 app.include_router(server_backup_router)
 app.include_router(userspace_router)
