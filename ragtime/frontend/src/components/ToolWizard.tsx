@@ -23,6 +23,8 @@ import type {
   HttpApiFixedSecretField,
   HttpApiSecretField,
   PdmWebhookEnableResponse,
+  RemotePairingCreatedResponse,
+  RemotePairingResponse,
 } from '@/types';
 import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO, HTTP_API_SECRET_FIELDS } from '@/types';
 import { DisabledPopover } from './Popover';
@@ -37,6 +39,7 @@ import { defaultScheduleStartMinute, defaultScheduleTimezone } from './ScheduleS
 import { PdmWebhookSettings } from './PdmWebhookSettings';
 import { DirectoryBrowser } from './DirectoryBrowser';
 import { HttpApiConnectionPanel } from './HttpApiConnectionPanel';
+import { RemoteClientPairingPanel } from './RemoteClientPairingPanel';
 import {
   ToolAccessEditor,
   type ToolAccessGroupOption,
@@ -2320,7 +2323,7 @@ export function ToolWizard({
     let steps = BASE_WIZARD_STEPS;
     if (toolType === 'http_api') steps = HTTP_API_WIZARD_STEPS;
     else if (toolType === 'solidworks_pdm') steps = PDM_WIZARD_STEPS;
-    else if (toolType === 'ssh_shell') steps = SSH_WIZARD_STEPS;
+    else if (toolType === 'ssh_shell' || toolType === 'windows_shell') steps = SSH_WIZARD_STEPS;
     else if (toolType === 'odoo_shell') steps = ODOO_WIZARD_STEPS;
     else if (toolType === 'filesystem_indexer')
       steps = mountOnly ? FILESYSTEM_MOUNT_ONLY_WIZARD_STEPS : FILESYSTEM_WIZARD_STEPS;
@@ -2524,7 +2527,7 @@ export function ToolWizard({
   );
 
   const [sshConfig, setSshConfig] = useState<SSHShellConnectionConfig>(
-    existingTool?.tool_type === 'ssh_shell'
+    existingTool?.tool_type === 'ssh_shell' || existingTool?.tool_type === 'windows_shell'
       ? (existingTool.connection_config as SSHShellConnectionConfig)
       : {
           host: '',
@@ -2536,8 +2539,24 @@ export function ToolWizard({
           key_passphrase: '',
           password: '',
           command_prefix: '',
+          shell: toolType === 'windows_shell' ? 'powershell' : 'posix',
         },
   );
+  const [connectionMode, setConnectionMode] = useState<'quick' | 'manual'>(
+    existingTool?.tool_type === 'ssh_shell' || existingTool?.tool_type === 'windows_shell'
+      ? sshConfig.pairing_id
+        ? 'quick'
+        : 'manual'
+      : 'quick',
+  );
+  const [remotePairingId, setRemotePairingId] = useState<string | null>(
+    sshConfig.pairing_id ?? null,
+  );
+  const [remotePairingStatus, setRemotePairingStatus] = useState<
+    RemotePairingResponse['status'] | null
+  >(null);
+  // Track the created tool ID for new tools that get auto-saved during analysis or pairing.
+  const [createdToolId, setCreatedToolId] = useState<string | null>(null);
 
   // Filesystem Indexer config state
   const [filesystemConfig, setFilesystemConfig] = useState<FilesystemConnectionConfig>(() => {
@@ -3019,6 +3038,16 @@ export function ToolWizard({
       case 'odoo_shell':
         return { ...odooConfig, mode: odooConnectionMode };
       case 'ssh_shell':
+      case 'windows_shell':
+        if (connectionMode === 'quick') {
+          const pairedConfig = { ...sshConfig };
+          delete pairedConfig.key_path;
+          delete pairedConfig.key_content;
+          delete pairedConfig.public_key;
+          delete pairedConfig.key_passphrase;
+          delete pairedConfig.password;
+          return pairedConfig;
+        }
         return sshConfig;
       case 'filesystem_indexer':
         // Use the tool name as the index_name (Step 3 Name field)
@@ -3413,7 +3442,7 @@ export function ToolWizard({
           ssh_key_path: '', // Clear path when using content
           // Keep the passphrase that was set before generation
         });
-      } else if (toolType === 'ssh_shell') {
+      } else if (toolType === 'ssh_shell' || toolType === 'windows_shell') {
         setSshConfig({
           ...sshConfig,
           key_content: result.private_key,
@@ -3607,7 +3636,16 @@ export function ToolWizard({
     setError(null);
 
     try {
-      if (toolType === 'http_api' && isEditing && existingTool) {
+      const savedRemoteToolId =
+        (toolType === 'ssh_shell' || toolType === 'windows_shell') &&
+        connectionMode === 'quick' &&
+        remotePairingStatus === 'paired'
+          ? (existingTool?.id ?? createdToolId)
+          : null;
+      if (savedRemoteToolId) {
+        const result = await api.testSavedToolConnection(savedRemoteToolId);
+        setTestResult(result);
+      } else if (toolType === 'http_api' && isEditing && existingTool) {
         await api.updateToolConfig(existingTool.id, {
           name,
           description,
@@ -3643,9 +3681,6 @@ export function ToolWizard({
       setTesting(false);
     }
   };
-
-  // Track the created tool ID for new tools that get auto-saved during analysis
-  const [createdToolId, setCreatedToolId] = useState<string | null>(null);
 
   useEffect(() => {
     setAccessPolicy((current) => ({
@@ -3805,6 +3840,7 @@ export function ToolWizard({
           max_results: maxResults,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
+          ...(remotePairingId && { enabled: true }),
         });
       } else {
         const request: CreateToolConfigRequest = {
@@ -4122,7 +4158,9 @@ export function ToolWizard({
         )
           return false;
         return Boolean(odooConfig.container);
-      case 'ssh_shell': {
+      case 'ssh_shell':
+      case 'windows_shell': {
+        if (connectionMode === 'quick') return remotePairingStatus === 'paired';
         const hasSshAuth = Boolean(
           sshConfig.key_content || sshConfig.key_path || sshConfig.password,
         );
@@ -4149,9 +4187,13 @@ export function ToolWizard({
   const renderTypeSelection = () => {
     const isSqlTool = (type: ToolType) => ['postgres', 'mysql', 'mssql', 'influxdb'].includes(type);
     const toolEntries = Object.entries(TOOL_TYPE_INFO) as ToolTypeInfoEntry[];
-    const primaryTools = toolEntries.filter(([type]) => type === 'ssh_shell');
+    const primaryTools = toolEntries.filter(
+      ([type]) => type === 'ssh_shell' || type === 'windows_shell',
+    );
     const sqlTools = toolEntries.filter(([type]) => isSqlTool(type));
-    const remainingTools = toolEntries.filter(([type]) => type !== 'ssh_shell' && !isSqlTool(type));
+    const remainingTools = toolEntries.filter(
+      ([type]) => type !== 'ssh_shell' && type !== 'windows_shell' && !isSqlTool(type),
+    );
 
     // Check if any SQL tool is currently selected
     const sqlToolSelected = isSqlTool(toolType);
@@ -4172,6 +4214,15 @@ export function ToolWizard({
     const handleToolTypeSelect = (type: ToolType) => {
       clearSqlToolsExpandTimeout();
       setToolType(type);
+      if (type === 'ssh_shell' || type === 'windows_shell') {
+        setConnectionMode('quick');
+        setRemotePairingId(null);
+        setRemotePairingStatus(null);
+        setSshConfig((current) => ({
+          ...current,
+          shell: type === 'windows_shell' ? 'powershell' : 'posix',
+        }));
+      }
     };
     const renderToolTypeOption = ([type, info]: ToolTypeInfoEntry, nested = false) => (
       <button
@@ -6223,87 +6274,138 @@ export function ToolWizard({
     );
   };
 
+  const applyRemotePairing = useCallback((pairing: RemotePairingResponse) => {
+    setRemotePairingId(pairing.id);
+    setRemotePairingStatus(pairing.status);
+    setSshConfig((current) => ({
+      ...current,
+      ...pairing.connection_config,
+      pairing_id: pairing.id,
+      transport: pairing.transport ?? current.transport,
+    }));
+  }, []);
+
+  const handleRemotePairingCreated = useCallback(
+    (pairing: RemotePairingCreatedResponse) => {
+      setCreatedToolId(pairing.tool_id);
+      applyRemotePairing(pairing);
+    },
+    [applyRemotePairing],
+  );
+
   const renderSSHConnection = () => (
     <div className="wizard-content">
       <p className="wizard-help">Connect to a remote server via SSH to run shell commands.</p>
-
-      {/* SSH Connection using reusable component with host/port */}
-      <div className="form-row">
-        <div className="form-group" style={{ flex: 2 }}>
-          <label>SSH Host</label>
-          <input
-            type="text"
-            value={sshConfig.host}
-            onChange={(e) => setSshConfig({ ...sshConfig, host: e.target.value })}
-            placeholder="server.example.com"
-          />
-        </div>
-        <div className="form-group" style={{ flex: 1 }}>
-          <label>Port</label>
-          <input
-            type="number"
-            value={sshConfig.port || 22}
-            onChange={(e) => setSshConfig({ ...sshConfig, port: parseInt(e.target.value) || 22 })}
-            min={1}
-            max={65535}
-          />
-        </div>
+      <div className="connection-tabs" role="group" aria-label="Connection method">
+        <button
+          type="button"
+          className={`connection-tab ${connectionMode === 'quick' ? 'active' : ''}`}
+          aria-pressed={connectionMode === 'quick'}
+          onClick={() => setConnectionMode('quick')}
+        >
+          Quick Connect
+        </button>
+        <button
+          type="button"
+          className={`connection-tab ${connectionMode === 'manual' ? 'active' : ''}`}
+          aria-pressed={connectionMode === 'manual'}
+          onClick={() => setConnectionMode('manual')}
+        >
+          Manual (SSH)
+        </button>
       </div>
 
-      <div className="form-group">
-        <label>SSH User</label>
-        <input
-          type="text"
-          value={sshConfig.user}
-          onChange={(e) => setSshConfig({ ...sshConfig, user: e.target.value })}
-          placeholder="ubuntu"
+      {connectionMode === 'quick' ? (
+        <RemoteClientPairingPanel
+          toolType={toolType as 'ssh_shell' | 'windows_shell'}
+          pairingId={remotePairingId}
+          toolId={existingTool?.id}
+          onPairingCreated={handleRemotePairingCreated}
+          onPairingUpdated={applyRemotePairing}
         />
-      </div>
+      ) : (
+        <>
+          {/* SSH Connection using reusable component with host/port */}
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 2 }}>
+              <label>SSH Host</label>
+              <input
+                type="text"
+                value={sshConfig.host}
+                onChange={(e) => setSshConfig({ ...sshConfig, host: e.target.value })}
+                placeholder="server.example.com"
+              />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Port</label>
+              <input
+                type="number"
+                value={sshConfig.port || 22}
+                onChange={(e) =>
+                  setSshConfig({ ...sshConfig, port: parseInt(e.target.value) || 22 })
+                }
+                min={1}
+                max={65535}
+              />
+            </div>
+          </div>
 
-      {/* SSH Authentication - using reusable component */}
-      <SSHAuthPanel
-        config={{
-          host: sshConfig.host,
-          port: sshConfig.port || 22,
-          user: sshConfig.user,
-          key_path: sshConfig.key_path,
-          key_content: sshConfig.key_content,
-          public_key: sshConfig.public_key,
-          key_passphrase: sshConfig.key_passphrase,
-          password: sshConfig.password,
-        }}
-        onConfigChange={(sshAuthConfig) =>
-          setSshConfig({
-            ...sshConfig,
-            key_path: sshAuthConfig.key_path || '',
-            key_content: sshAuthConfig.key_content || '',
-            public_key: sshAuthConfig.public_key || '',
-            key_passphrase: sshAuthConfig.key_passphrase || '',
-            password: sshAuthConfig.password || '',
-          })
-        }
-        authMode={sshKeyMode}
-        onAuthModeChange={setSshKeyMode}
-        generatingKey={generatingKey}
-        onGenerateKey={handleGenerateSSHKey}
-        keyCopied={keyCopied}
-        onCopyPublicKey={handleCopyPublicKey}
-        toolName={name || 'ssh'}
-        showHostPort={false}
-      />
+          <div className="form-group">
+            <label>SSH User</label>
+            <input
+              type="text"
+              value={sshConfig.user}
+              onChange={(e) => setSshConfig({ ...sshConfig, user: e.target.value })}
+              placeholder="ubuntu"
+            />
+          </div>
 
-      <div className="form-group" style={{ marginTop: '1rem' }}>
-        <label>Command Prefix (optional)</label>
-        <input
-          type="text"
-          value={sshConfig.command_prefix || ''}
-          onChange={(e) => setSshConfig({ ...sshConfig, command_prefix: e.target.value })}
-          placeholder="cd /app && source venv/bin/activate && "
-        />
-        <p className="field-help">
-          Commands to run before each tool command (e.g., activate virtualenv).
-        </p>
-      </div>
+          {/* SSH Authentication - using reusable component */}
+          <SSHAuthPanel
+            config={{
+              host: sshConfig.host,
+              port: sshConfig.port || 22,
+              user: sshConfig.user,
+              key_path: sshConfig.key_path,
+              key_content: sshConfig.key_content,
+              public_key: sshConfig.public_key,
+              key_passphrase: sshConfig.key_passphrase,
+              password: sshConfig.password,
+            }}
+            onConfigChange={(sshAuthConfig) =>
+              setSshConfig({
+                ...sshConfig,
+                key_path: sshAuthConfig.key_path || '',
+                key_content: sshAuthConfig.key_content || '',
+                public_key: sshAuthConfig.public_key || '',
+                key_passphrase: sshAuthConfig.key_passphrase || '',
+                password: sshAuthConfig.password || '',
+              })
+            }
+            authMode={sshKeyMode}
+            onAuthModeChange={setSshKeyMode}
+            generatingKey={generatingKey}
+            onGenerateKey={handleGenerateSSHKey}
+            keyCopied={keyCopied}
+            onCopyPublicKey={handleCopyPublicKey}
+            toolName={name || 'ssh'}
+            showHostPort={false}
+          />
+
+          <div className="form-group" style={{ marginTop: '1rem' }}>
+            <label>Command Prefix (optional)</label>
+            <input
+              type="text"
+              value={sshConfig.command_prefix || ''}
+              onChange={(e) => setSshConfig({ ...sshConfig, command_prefix: e.target.value })}
+              placeholder="cd /app && source venv/bin/activate && "
+            />
+            <p className="field-help">
+              Commands to run before each tool command (e.g., activate virtualenv).
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
 
@@ -6780,6 +6882,7 @@ export function ToolWizard({
         case 'odoo_shell':
           return renderOdooConnection();
         case 'ssh_shell':
+        case 'windows_shell':
           return renderSSHConnection();
         case 'filesystem_indexer':
           return renderFilesystemConnection();
@@ -6792,58 +6895,64 @@ export function ToolWizard({
       <>
         {content}
         {/* Only show test button for tools that need connection testing (not filesystem) */}
-        {toolType !== 'filesystem_indexer' && toolType !== 'http_api' && (
-          <div className="wizard-test-section">
-            <button
-              type="button"
-              className={`btn ${testResult?.success ? 'btn-connected' : ''}`}
-              onClick={handleTestConnection}
-              disabled={testing || !validateConnection()}
-            >
-              {testing ? 'Testing...' : testResult?.success ? 'Connected' : 'Test Connection'}
-            </button>
-            {testResult && (
-              <div className={`test-result-container ${testResult.success ? 'success' : 'error'}`}>
-                <span className={`test-result ${testResult.success ? 'success' : 'error'}`}>
-                  {testResult.message}
-                </span>
-                {!testResult.success &&
-                  testResult.details !== undefined &&
-                  testResult.details !== null && (
-                    <details className="test-error-details" style={{ marginTop: '0.5rem' }}>
-                      <summary
-                        style={{
-                          cursor: 'pointer',
-                          fontSize: '0.85rem',
-                          color: 'var(--color-text-muted)',
-                        }}
-                      >
-                        Show error details
-                      </summary>
-                      <pre
-                        style={{
-                          marginTop: '0.5rem',
-                          padding: '0.75rem',
-                          backgroundColor: '#1e1e1e',
-                          color: '#f8f8f2',
-                          borderRadius: '4px',
-                          fontSize: '0.75rem',
-                          overflow: 'auto',
-                          maxHeight: '200px',
-                          whiteSpace: 'pre-wrap',
-                          wordBreak: 'break-word',
-                        }}
-                      >
-                        {typeof testResult.details === 'string'
-                          ? testResult.details
-                          : String(JSON.stringify(testResult.details, null, 2))}
-                      </pre>
-                    </details>
-                  )}
-              </div>
-            )}
-          </div>
-        )}
+        {toolType !== 'filesystem_indexer' &&
+          toolType !== 'http_api' &&
+          ((toolType !== 'ssh_shell' && toolType !== 'windows_shell') ||
+            connectionMode !== 'quick' ||
+            remotePairingStatus === 'paired') && (
+            <div className="wizard-test-section">
+              <button
+                type="button"
+                className={`btn ${testResult?.success ? 'btn-connected' : ''}`}
+                onClick={handleTestConnection}
+                disabled={testing || !validateConnection()}
+              >
+                {testing ? 'Testing...' : testResult?.success ? 'Connected' : 'Test Connection'}
+              </button>
+              {testResult && (
+                <div
+                  className={`test-result-container ${testResult.success ? 'success' : 'error'}`}
+                >
+                  <span className={`test-result ${testResult.success ? 'success' : 'error'}`}>
+                    {testResult.message}
+                  </span>
+                  {!testResult.success &&
+                    testResult.details !== undefined &&
+                    testResult.details !== null && (
+                      <details className="test-error-details" style={{ marginTop: '0.5rem' }}>
+                        <summary
+                          style={{
+                            cursor: 'pointer',
+                            fontSize: '0.85rem',
+                            color: 'var(--color-text-muted)',
+                          }}
+                        >
+                          Show error details
+                        </summary>
+                        <pre
+                          style={{
+                            marginTop: '0.5rem',
+                            padding: '0.75rem',
+                            backgroundColor: '#1e1e1e',
+                            color: '#f8f8f2',
+                            borderRadius: '4px',
+                            fontSize: '0.75rem',
+                            overflow: 'auto',
+                            maxHeight: '200px',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {typeof testResult.details === 'string'
+                            ? testResult.details
+                            : String(JSON.stringify(testResult.details, null, 2))}
+                        </pre>
+                      </details>
+                    )}
+                </div>
+              )}
+            </div>
+          )}
       </>
     );
   };
@@ -6893,10 +7002,11 @@ export function ToolWizard({
   );
 
   const renderExecutionConstraints = () => {
-    if (toolType !== 'ssh_shell') return null;
+    if (toolType !== 'ssh_shell' && toolType !== 'windows_shell') return null;
 
     // Check if we have enough config to connect
     const canConnect =
+      connectionMode === 'manual' &&
       sshConfig.host &&
       sshConfig.user &&
       (sshConfig.password || sshConfig.key_content || sshConfig.key_path);
@@ -6960,11 +7070,14 @@ export function ToolWizard({
                 type="text"
                 value={sshConfig.working_directory || ''}
                 onChange={(e) => setSshConfig({ ...sshConfig, working_directory: e.target.value })}
-                placeholder="/var/www/html"
+                placeholder={toolType === 'windows_shell' ? 'C:\\work' : '/var/www/html'}
               />
               <p className="field-help warning" style={{ color: 'var(--color-warning)' }}>
-                Enter directory manually. Configure authentication in the previous step to enable
-                file browsing.
+                {connectionMode === 'quick' && remotePairingStatus === 'paired'
+                  ? 'Enter a directory manually. Paired credentials remain on the server and are not sent to this browser.'
+                  : connectionMode === 'quick'
+                    ? 'Enter a directory manually after pairing completes. Credentials are not exposed to this browser.'
+                    : 'Enter directory manually. Configure authentication in the previous step to enable file browsing.'}
               </p>
             </>
           ) : (
@@ -6975,8 +7088,8 @@ export function ToolWizard({
                 sshConfig={sshConfig}
               />
               <p className="field-help">
-                Constrain the AI agent to a specific directory. It will not be able to interact with
-                files outside this path.
+                Use this as the starting directory for tool commands. It is not a security boundary;
+                use least-privileged accounts and filesystem permissions for containment.
               </p>
             </>
           )}

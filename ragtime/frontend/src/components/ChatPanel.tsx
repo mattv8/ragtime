@@ -4265,7 +4265,7 @@ interface ParsedTerminalOutput {
 }
 
 const TERMINAL_TOOL_NAMES = new Set(['run_terminal_command', CHAT_DIAGNOSTIC_COMMAND_TOOL_ID]);
-const TERMINAL_TOOL_CONNECTION_TYPES = new Set(['ssh_shell']);
+const TERMINAL_TOOL_CONNECTION_TYPES = new Set(['ssh_shell', 'windows_shell']);
 const SQL_TOOL_CONNECTION_TYPES = new Set(['postgres', 'mysql', 'mssql', 'influxdb']);
 const TERMINAL_PRESENTATION_KIND = 'terminal';
 const USERSPACE_EXEC_RERUN_KIND = 'userspace_exec';

@@ -72,7 +72,11 @@ function hasSchemaIndexingEnabled(tool: ToolConfig): boolean {
 }
 
 function getToolWorkingDirectory(tool: ToolConfig): string | null {
-  if (tool.tool_type !== 'ssh_shell' && tool.tool_type !== 'odoo_shell') {
+  if (
+    tool.tool_type !== 'ssh_shell' &&
+    tool.tool_type !== 'windows_shell' &&
+    tool.tool_type !== 'odoo_shell'
+  ) {
     return null;
   }
 
@@ -222,6 +226,7 @@ function getToolConnectionSummary(tool: ToolConfig): string {
       }
       return `Container: ${'container' in config ? config.container : 'N/A'}`;
     case 'ssh_shell':
+    case 'windows_shell':
       if ('host' in config && 'user' in config) {
         const port = 'port' in config ? config.port : 22;
         return `${config.user}@${config.host}:${port}`;
@@ -310,7 +315,10 @@ function ToolCard({
   const hasActiveIndexingJob = Boolean(
     activeSchemaJob && ['pending', 'processing', 'indexing'].includes(activeSchemaJob.status),
   );
-  const toolSupportsWorkingDir = tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell';
+  const toolSupportsWorkingDir =
+    tool.tool_type === 'ssh_shell' ||
+    tool.tool_type === 'windows_shell' ||
+    tool.tool_type === 'odoo_shell';
   const pdmSchedule = formatPdmSchedule(tool);
 
   // Inline editing state
