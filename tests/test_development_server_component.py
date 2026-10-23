@@ -230,11 +230,11 @@ class DevelopmentServerComponentTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(normalized.request, expected)
 
-        for payload in ({"code": "code", "unknown": "x"}, {"code": 1}, {"code": "code", "timeout": True}):
-            with self.subTest(invalid_payload=payload):
+        for invalid_payload in ({"code": "code", "unknown": "x"}, {"code": 1}, {"code": "code", "timeout": True}):
+            with self.subTest(invalid_payload=invalid_payload):
                 with self.assertRaises(HTTPException) as raised:
                     service_module.UserSpaceService._normalize_development_server_lane_request(
-                        development_module.ExecuteComponentRequest(component_id="tool-1", request=payload),
+                        development_module.ExecuteComponentRequest(component_id="tool-1", request=invalid_payload),
                         30,
                     )
                 self.assertEqual(raised.exception.status_code, 422)
