@@ -519,6 +519,8 @@ Configure tools in the Ragtime web UI before connecting MCP clients. Enabled too
 4. Fill in connection details (hostnames, credentials, database names, paths) for each tool.
 5. Use the built-in test button to verify each tool connection.
 
+For Linux, macOS, or Windows shell access, see [Connect a remote machine](REMOTE_CLIENT.md) for quick pairing, manual SSH, HTTPS tunnels, and offline setup.
+
 Once the required tools are healthy, continue with [MCP Integration](#model-context-protocol-mcp-integration).
 
 ### Creating Indexes
@@ -733,7 +735,7 @@ from the registry. Pull requests run validation only and do not publish images.
 **Do not use `DEBUG_MODE=true` outside local development.** When enabled, the `/auth/status` endpoint exposes your admin username and password in plaintext (including unauthenticated callers). This is intentional for self-hosted debugging but dangerous if the server is accessible to untrusted users.
 
 #### SSH Connections
-The SSH tool uses Paramiko with `AutoAddPolicy`, which accepts any host key without verification. This makes SSH connections vulnerable to man-in-the-middle attacks on first connect. Only use the SSH tool on trusted networks or with hosts you have verified out-of-band.
+Quick-paired SSH connections pin the target's enrolled host keys before authentication. A changed key requires verifying the host and re-pairing. Legacy manual connections without configured host-key pins retain Paramiko's `AutoAddPolicy`, which accepts unknown host keys; verify those hosts out-of-band and use trusted networks.
 
 #### Tool Read-Only Mode
 Tool read-only mode is a guardrail, not complete isolation. Validators reduce common write paths, but they cannot make broad database, SSH, shell, or Odoo credentials safe against every bypass or misconfiguration. Use least-privileged credentials, read-only database roles and transactions, OS/container sandboxing, restricted SSH users, timeouts, audit logs, and network/firewall boundaries for any tool reachable by agents.
