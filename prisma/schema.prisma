@@ -457,6 +457,7 @@ enum ToolType {
   influxdb
   odoo_shell
   ssh_shell
+  windows_shell
   filesystem_indexer
   solidworks_pdm
   http_api
@@ -592,9 +593,45 @@ model ToolConfig {
   mountSources UserspaceMountSource[]
   accessPolicy ToolAccessPolicy?
   pdmAutomationState PdmAutomationState?
+  remotePairings RemotePairing[]
 
   @@index([groupId])
   @@map("tool_configs")
+}
+
+enum RemotePairingStatus {
+  pending
+  consumed
+  paired
+  failed
+  expired
+  revoked
+}
+
+model RemotePairing {
+  id                    String              @id @default(uuid())
+  toolId                String              @map("tool_id")
+  tool                  ToolConfig          @relation(fields: [toolId], references: [id], onDelete: Cascade)
+  status                RemotePairingStatus @default(pending)
+  enrollmentTokenHash   String              @unique @map("enrollment_token_hash")
+  enrollmentExpiresAt   DateTime            @map("enrollment_expires_at")
+  enrollmentNonce       String?             @map("enrollment_nonce")
+  encryptedPrivateKey   String              @map("encrypted_private_key")
+  publicKey             String              @map("public_key")
+  tunnelCredentialHash  String              @unique @map("tunnel_credential_hash")
+  encryptedEnrollmentResponse String?       @map("encrypted_enrollment_response")
+  recoveryExpiresAt     DateTime?           @map("recovery_expires_at")
+  isDraft               Boolean             @default(true) @map("is_draft")
+  facts                 Json?               @map("facts")
+  transport             String?             @map("transport")
+  error                 String?
+  lastActivityAt        DateTime            @default(now()) @map("last_activity_at")
+  createdAt             DateTime            @default(now()) @map("created_at")
+  updatedAt             DateTime            @default(now()) @updatedAt @map("updated_at")
+
+  @@index([toolId])
+  @@index([status, lastActivityAt])
+  @@map("remote_pairings")
 }
 
 model ToolAccessPolicy {

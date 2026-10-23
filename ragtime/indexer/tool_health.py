@@ -55,7 +55,7 @@ def get_heartbeat_timeout_seconds(
     has_ssh_tunnel = bool(config.get("ssh_tunnel_enabled", False))
     has_remote_docker = bool(config.get("docker_ssh_enabled", False))
     tool_type_value = getattr(tool_type, "value", tool_type)
-    if tool_type_value == "ssh_shell":
+    if tool_type_value in {"ssh_shell", "windows_shell"}:
         return 15.0
     return 15.0 if has_ssh_tunnel or has_remote_docker else 5.0
 
