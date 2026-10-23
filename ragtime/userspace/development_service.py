@@ -20,6 +20,7 @@ from pydantic import ValidationError
 from ragtime.content_protection import service as content_protection_service
 from ragtime.content_protection.external import authorize_external_content, context_for_principal, external_protection_context, public_error_detail
 from ragtime.core.database import get_db
+from ragtime.core.http_timeouts import get_http_proxy_safe_timeout_seconds
 from ragtime.core.tool_access import resolve_tool_access
 from ragtime.http_api.models import HttpApiConnectionConfig, HttpApiRequest
 from ragtime.http_api.openapi import search_openapi_catalog
@@ -37,6 +38,8 @@ from ragtime.userspace.instruction_facts import build_env_var_turn_hint, build_r
 from ragtime.userspace.models import ExecuteComponentRequest, UpsertWorkspaceFileRequest
 from ragtime.userspace.planning_service import planning_service
 from ragtime.userspace.service import (
+    _DEVELOPMENT_SERVER_LANE_TIMEOUT_MARGIN_SECONDS,
+    _USPACE_DEVELOPMENT_SERVER_LANE_TOOL_TYPES,
     _USPACE_EXEC_BROWSER_SUPPORTED_TOOL_TYPES,
     _USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES,
     userspace_service,
@@ -141,7 +144,7 @@ _OPERATIONS: tuple[tuple[str, str, str, dict[str, Any]], ...] = (
     ),
     (
         "execute_component",
-        "Execute a caller-authorized selected tool read-only.",
+        "Execute caller-authorized SQL/HTTP tools read-only. Server-lane tools such as Odoo require exec scope and an editor role; see the resource contract.",
         "read",
         _schema({"component_id": {"type": "string"}, "request": {}}, ["component_id", "request"]),
     ),
@@ -402,7 +405,14 @@ class DevelopmentService:
             ]
         }
 
-    async def _enrich_authorized_tool(self, tool_config: Any, access: str) -> dict[str, Any] | None:
+    async def _enrich_authorized_tool(
+        self,
+        tool_config: Any,
+        access: str,
+        caller_scopes: frozenset[str],
+        caller_has_editor_role: bool,
+        proxy_safe_timeout_seconds: int,
+    ) -> dict[str, Any] | None:
         """Build external metadata from the canonical runtime tool after ACL filtering."""
         tool_type = str(getattr(getattr(tool_config, "tool_type", None), "value", getattr(tool_config, "tool_type", "")))
         runtime_config = userspace_service._tool_config_runtime_dict(tool_config, allow_write=False)
@@ -416,6 +426,7 @@ class DevelopmentService:
         canonical_description = str(getattr(runtime_tool, "description", "") or "")
         browser_supported = tool_type in _USPACE_EXEC_BROWSER_SUPPORTED_TOOL_TYPES
         server_supported = tool_type in _USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES
+        development_server_supported = tool_type in _USPACE_DEVELOPMENT_SERVER_LANE_TOOL_TYPES and "exec" in caller_scopes and caller_has_editor_role
         browser_lane: dict[str, Any] = {
             "supported": browser_supported,
             "mode": "browser_read_only",
@@ -428,6 +439,55 @@ class DevelopmentService:
         else:
             browser_lane["reason"] = "This tool type is not supported on the browser/external read-only execute_component surface."
 
+        server_direct_lane: dict[str, Any] | None = None
+        if tool_type in _USPACE_DEVELOPMENT_SERVER_LANE_TOOL_TYPES:
+            server_direct_lane = {
+                "supported": development_server_supported,
+                "mode": "server_direct",
+                "write_policy": (
+                    "Server code execution. Read access uses best-effort read-only validation, not a sandbox. "
+                    "Writes require tool allow_write, workspace write opt-in, owner Read+Write, caller Workspace Read+Write, and write scope."
+                ),
+            }
+            if development_server_supported:
+                server_direct_lane.update(
+                    {
+                        "request_schema": {
+                            "oneOf": [
+                                {"type": "string", "description": "Odoo shell code."},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {"type": "string"},
+                                        "reason": {"type": "string"},
+                                        "timeout": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "maximum": min(
+                                                int(getattr(tool_config, "timeout_max_seconds", 300) or 300),
+                                                max(1, proxy_safe_timeout_seconds - _DEVELOPMENT_SERVER_LANE_TIMEOUT_MARGIN_SECONDS),
+                                            ),
+                                        },
+                                    },
+                                    "required": ["code"],
+                                    "additionalProperties": False,
+                                },
+                            ]
+                        },
+                        "instructions": canonical_description,
+                        "timeout_max_seconds": min(
+                            int(getattr(tool_config, "timeout_max_seconds", 300) or 300),
+                            max(1, proxy_safe_timeout_seconds - _DEVELOPMENT_SERVER_LANE_TIMEOUT_MARGIN_SECONDS),
+                        ),
+                    }
+                )
+            else:
+                server_direct_lane["reason"] = (
+                    "Direct server execution requires exec scope."
+                    if "exec" not in caller_scopes
+                    else "Direct server execution requires a workspace editor role."
+                )
+
         return {
             "component_id": str(getattr(tool_config, "id", "")),
             "name": str(getattr(tool_config, "name", "") or ""),
@@ -435,9 +495,7 @@ class DevelopmentService:
             "description": str(getattr(tool_config, "description", "") or ""),
             "canonical_description": canonical_description,
             "access": access,
-            # Retained for planning-contract compatibility. Only the browser
-            # lane is callable through this external operation.
-            "execute_component": browser_lane,
+            "execute_component": server_direct_lane if server_direct_lane is not None else browser_lane,
             "execution_lanes": {
                 "browser": browser_lane,
                 "server_runtime_bridge": {
@@ -445,11 +503,15 @@ class DevelopmentService:
                     "mode": "server_runtime_bridge",
                     "write_policy": "Server execution applies workspace owner opt-in and tool access policy.",
                 },
+                **({"server_direct": server_direct_lane} if server_direct_lane is not None else {}),
             },
         }
 
     async def _resources(self, principal: DevelopmentPrincipal, workspace_id: str) -> dict[str, Any]:
         workspace = await self._workspace(principal, workspace_id, "read")
+        proxy_safe_timeout_seconds = int(await get_http_proxy_safe_timeout_seconds())
+        caller_role = userspace_service._workspace_role_for_user(workspace, principal.user_id, is_admin=principal.is_admin)
+        caller_has_editor_role = userspace_service._workspace_role_allows(caller_role, "editor")
         selected_ids = await planning_service._selected_tool_ids(workspace)
         levels = await resolve_tool_access(user_id=principal.user_id, is_admin=principal.is_admin, surface="workspace", tool_config_ids=selected_ids)
         allowed_tool_ids = [tool_id for tool_id in selected_ids if levels.get(tool_id, "deny") in {"read", "read_write"}]
@@ -459,7 +521,13 @@ class DevelopmentService:
             tool_config = await repository.get_tool_config(tool_id)
             if tool_config is None or not bool(getattr(tool_config, "enabled", False)):
                 continue
-            enriched = await self._enrich_authorized_tool(tool_config, levels[tool_id])
+            enriched = await self._enrich_authorized_tool(
+                tool_config,
+                levels[tool_id],
+                principal.scopes,
+                caller_has_editor_role,
+                proxy_safe_timeout_seconds,
+            )
             if enriched is None:
                 continue
             if str(getattr(getattr(tool_config, "tool_type", None), "value", getattr(tool_config, "tool_type", ""))) == "ssh_shell":
@@ -849,6 +917,16 @@ class DevelopmentService:
             tool = next((item for item in catalog["tools"] if item["component_id"] == args["component_id"]), None)
             if tool is None:
                 raise HTTPException(status_code=403, detail="Tool is not authorized for this caller")
+            if tool["tool_type"] in _USPACE_DEVELOPMENT_SERVER_LANE_TOOL_TYPES:
+                await self._workspace(principal, workspace_id, "exec")
+                component_result = await userspace_service.execute_component_from_development_server_lane(
+                    workspace_id,
+                    ExecuteComponentRequest(component_id=args["component_id"], request=args["request"]),
+                    user_id=principal.user_id,
+                    credential_id=principal.credential_id,
+                    caller_write_allowed=tool["access"] == "read_write" and "write" in principal.scopes,
+                )
+                return component_result.model_dump()
             component_result = await userspace_service.execute_component(
                 workspace_id, ExecuteComponentRequest(component_id=args["component_id"], request=args["request"]), principal.user_id
             )

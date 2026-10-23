@@ -60,6 +60,8 @@ provider payment classification, and credit monitoring.
 
 ## Agent token surface
 
+- `/agent/w/{token}` is separate from MCP. For `/mcp` BYOH versus
+  `/mcp/<custom_route>`, see `mcp-byoh-vs-custom-routes.md`.
 - The manifest (`GET /agent/w/{token}`) is the machine-read contract external
   agents actually follow — response-shape changes are invisible until it is
   updated. Capability sections must live entirely inside their conditional
