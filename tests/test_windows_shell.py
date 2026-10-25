@@ -5,10 +5,16 @@ import os
 import re
 import shutil
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from prisma import Json
+from prisma.enums import AuthProvider, UserRole
+from prisma.models import User
 
 from ragtime.core.security import validate_powershell_command
 from ragtime.core.ssh import (
@@ -151,9 +157,6 @@ def test_windows_tool_composes_literal_working_directory_before_prefix_and_comma
 
 
 def test_paired_browse_hydrates_server_credentials_for_both_shells():
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
     for shell in ("posix", "powershell"):
         pairing = {"id": "pairing", "toolId": "tool", "status": "paired"}
         saved = SimpleNamespace(
@@ -175,7 +178,18 @@ def test_paired_browse_hydrates_server_credentials_for_both_shells():
         ):
             request = SSHBrowseRequest(pairing_id="pairing", host="attacker", user="attacker", shell="posix")
             config = asyncio.run(_ssh_browse_config(request))
-            response = asyncio.run(browse_ssh_filesystem(request, None))
+            user = User(
+                id="test-user",
+                username="test-user",
+                authProvider=AuthProvider.local,
+                cachedGroups=cast(Json, "[]"),
+                role=UserRole.user,
+                roleManuallySet=False,
+                createdAt=datetime.now(UTC),
+                updatedAt=datetime.now(UTC),
+                securityGeneration=0,
+            )
+            response = asyncio.run(browse_ssh_filesystem(request, user))
         assert response.error is None
         assert execute.call_args.args[0].host == "saved-host"
         assert execute.call_args.args[0].shell == shell

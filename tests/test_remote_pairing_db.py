@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from prisma.enums import ToolAccessLevel
 
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.indexer.models import ToolConfig, ToolType
@@ -113,10 +114,10 @@ async def _assert_saved_tools_survive_abandoned_pairing(created_tool_ids: list[s
             data={
                 "create": {
                     "toolConfig": {"connect": {"id": tool.id}},
-                    "defaultChatAccess": "read",
-                    "defaultWorkspaceAccess": "read_write",
+                    "defaultChatAccess": ToolAccessLevel.read,
+                    "defaultWorkspaceAccess": ToolAccessLevel.read_write,
                 },
-                "update": {"defaultChatAccess": "read", "defaultWorkspaceAccess": "read_write"},
+                "update": {"defaultChatAccess": ToolAccessLevel.read, "defaultWorkspaceAccess": ToolAccessLevel.read_write},
             },
         )
         pairing, _, _ = await remote_pairing_service.create(ToolType.SSH_SHELL, tool.id)
@@ -124,6 +125,7 @@ async def _assert_saved_tools_survive_abandoned_pairing(created_tool_ids: list[s
         persisted = await tool_repository.get_tool_config(tool.id)
         assert persisted is not None and persisted.connection_config == tool.connection_config
         preserved_policy = await db.toolaccesspolicy.find_unique(where={"id": policy.id})
+        assert preserved_policy is not None
         assert preserved_policy.defaultChatAccess == "read"
         assert preserved_policy.defaultWorkspaceAccess == "read_write"
         await db.execute_raw(

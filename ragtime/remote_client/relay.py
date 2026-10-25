@@ -57,9 +57,10 @@ class _Session:
             self.server.close()
 
     def endpoint(self) -> tuple[str, int] | None:
-        if self.closed.is_set() or self.server is None or not self.server.sockets:
+        sockets = getattr(self.server, "sockets", None) if self.server is not None else None
+        if self.closed.is_set() or not sockets:
             return None
-        return HOST, int(self.server.sockets[0].getsockname()[1])
+        return HOST, int(sockets[0].getsockname()[1])
 
     async def run(self) -> None:
         heartbeat = asyncio.create_task(self._heartbeat())

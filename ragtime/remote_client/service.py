@@ -5,11 +5,11 @@ import ipaddress
 import secrets
 import socket
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 
 import psutil
-from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.ssh import SSHConfig, test_ssh_connection
@@ -36,11 +36,11 @@ def _is_terminal_direct_probe_error(error: str) -> bool:
 def _new_keypair() -> tuple[str, str]:
     private_key = Ed25519PrivateKey.generate()
     private_pem = private_key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.OpenSSH,
-        serialization.NoEncryption(),
+        cast(Encoding, Encoding.PEM),
+        cast(PrivateFormat, PrivateFormat.OpenSSH),
+        NoEncryption(),
     ).decode("ascii")
-    public_key = private_key.public_key().public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH).decode("ascii")
+    public_key = private_key.public_key().public_bytes(cast(Encoding, Encoding.OpenSSH), cast(PublicFormat, PublicFormat.OpenSSH)).decode("ascii")
     return private_pem, public_key
 
 
@@ -71,7 +71,10 @@ def _local_addresses() -> set[str]:
     except OSError:
         hostname_addresses = []
     for result in hostname_addresses:
-        address = result[4][0].split("%", 1)[0]
+        raw_address = result[4][0]
+        if not isinstance(raw_address, str):
+            continue
+        address = raw_address.split("%", 1)[0]
         try:
             addresses.add(str(ipaddress.ip_address(address)))
         except ValueError:
@@ -173,9 +176,12 @@ class RemotePairingService:
         """Require pinned-host-key SSH authentication, not just a TCP listener."""
         addresses = facts.get("addresses", [])
         port = int(facts["sshd_port"])
-        candidates = [_safe_probe_address(address) for address in addresses[:MAX_PROBE_TARGETS]]
         local_addresses = _local_addresses()
-        candidates = [address for address in candidates if address and address not in local_addresses]
+        candidates: list[str] = []
+        for raw_address in addresses[:MAX_PROBE_TARGETS]:
+            address = _safe_probe_address(raw_address)
+            if address and address not in local_addresses:
+                candidates.append(address)
         if not candidates:
             return None, "No routable SSH address was provided"
 

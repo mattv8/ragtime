@@ -6,6 +6,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from prisma.enums import ToolAccessLevel
+
 from ragtime.core.database import get_db
 from ragtime.core.encryption import CONNECTION_CONFIG_PASSWORD_FIELDS, decrypt_secret, encrypt_json_passwords, encrypt_secret
 from ragtime.indexer.models import ToolConfig, ToolType
@@ -22,7 +24,7 @@ def credential_hash(value: str) -> str:
 
 def _pairing_row(row: Any) -> dict[str, Any]:
     """Normalize raw SQL column names to the model's stable Python contract."""
-    raw = dict(row)
+    raw: dict[str, Any] = dict(row)
     aliases = {
         "tool_id": "toolId",
         "enrollment_token_hash": "enrollmentTokenHash",
@@ -91,10 +93,10 @@ class RemotePairingRepository:
                         "create": {
                             "id": str(uuid.uuid4()),
                             "toolConfig": {"connect": {"id": tool.id}},
-                            "defaultChatAccess": "deny",
-                            "defaultWorkspaceAccess": "deny",
+                            "defaultChatAccess": ToolAccessLevel.deny,
+                            "defaultWorkspaceAccess": ToolAccessLevel.deny,
                         },
-                        "update": {"defaultChatAccess": "deny", "defaultWorkspaceAccess": "deny"},
+                        "update": {"defaultChatAccess": ToolAccessLevel.deny, "defaultWorkspaceAccess": ToolAccessLevel.deny},
                     },
                 )
         except Exception:

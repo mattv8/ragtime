@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Outbound Ragtime SSH tunnel client; invoke with only a JSON config path."""
 
-from __future__ import print_function
-
 import argparse
 import base64
 import hashlib
@@ -16,12 +14,7 @@ import struct
 import sys
 import threading
 import time
-
-try:
-    from urllib.parse import urlsplit
-except ImportError:  # pragma: no cover - Python 3.8 has urllib.parse
-    from urlparse import urlsplit
-
+from urllib.parse import urlsplit
 
 OPEN, DATA, CLOSE, PING, PONG = range(1, 6)
 HEADER_SIZE = 5

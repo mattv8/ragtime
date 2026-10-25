@@ -37,8 +37,9 @@ def test_relay_forwards_a_multiplexed_stream_and_removes_stale_endpoint() -> Non
             if endpoint:
                 break
             await asyncio.sleep(0.01)
+        assert endpoint is not None
         assert endpoint == ("127.0.0.1", endpoint[1])
-        reader, writer = await asyncio.open_connection(*endpoint)
+        reader, writer = await asyncio.open_connection(endpoint[0], endpoint[1])
         kind, stream_id, payload = await websocket.next_frame()
         assert (kind, payload) == (TunnelMessageType.OPEN, b"")
 
@@ -100,7 +101,8 @@ def test_revoke_aborts_an_active_local_connection_without_waiting_for_peer() -> 
             if endpoint:
                 break
             await asyncio.sleep(0.01)
-        reader, writer = await asyncio.open_connection(*endpoint)
+        assert endpoint is not None
+        reader, writer = await asyncio.open_connection(endpoint[0], endpoint[1])
         await websocket.next_frame()
         await asyncio.wait_for(manager.revoke("pairing"), timeout=1)
         assert await asyncio.wait_for(reader.read(), timeout=1) == b""

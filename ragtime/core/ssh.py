@@ -8,6 +8,7 @@ Supports:
 """
 
 import base64
+import importlib
 import io
 import os as _os
 import re
@@ -38,6 +39,12 @@ SSHSyncMode = Literal["merge", "source_authoritative", "target_authoritative"]
 SSHSyncProgressCallback = Callable[[int, Optional[int], Optional[str]], None]
 SSH_SYNC_PREVIEW_SAMPLE_LIMIT = 200
 SSH_NEGOTIATION_ERROR_GRACE_SECONDS = 1.0
+
+
+def _get_relay_manager() -> Any:
+    """Load the relay only when a tunnel endpoint is needed to avoid its SSH dependency cycle."""
+    return importlib.import_module("ragtime.remote_client.relay").relay_manager
+
 
 # Sentinel written only by the PowerShell deadline supervisor, never inferred
 # from a native program's exit code.
@@ -232,9 +239,7 @@ def _resolve_connection_endpoint(config: SSHConfig) -> tuple[str, int]:
         return config.host, config.port
     if not config.pairing_id:
         raise ValueError("Tunnel SSH connections require a pairing ID")
-    from ragtime.remote_client.relay import relay_manager
-
-    endpoint = relay_manager.endpoint_for(config.pairing_id)
+    endpoint = _get_relay_manager().endpoint_for(config.pairing_id)
     if endpoint is None:
         raise ConnectionError("Remote client tunnel is offline")
     return endpoint
@@ -246,7 +251,8 @@ def _parse_pinned_host_key(value: str) -> paramiko.PKey:
     if len(parts) < 2:
         raise ValueError("Invalid pinned SSH host key")
     try:
-        return paramiko.PKey.from_type_string(parts[0], base64.b64decode(parts[1], validate=True))
+        pkey_class: Any = paramiko.PKey
+        return pkey_class.from_type_string(parts[0], base64.b64decode(parts[1], validate=True))
     except Exception as exc:
         raise ValueError("Invalid pinned SSH host key") from exc
 
@@ -262,7 +268,7 @@ def _configure_host_key_policy(client: paramiko.SSHClient, config: SSHConfig, ho
         host_keys.add(host, key.get_name(), key)
         if port != 22:
             host_keys.add(f"[{host}]:{port}", key.get_name(), key)
-    client._host_keys = host_keys  # Paramiko exposes no public setter for known hosts.
+    client.get_host_keys().update(host_keys)
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
 

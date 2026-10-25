@@ -15,7 +15,15 @@ from ragtime.core.auth import get_external_origin
 from ragtime.core.rate_limit import limiter
 from ragtime.core.security import require_admin
 from ragtime.indexer.repository import repository as tool_repository
-from ragtime.remote_client.models import EnrollmentCompleteRequest, OfflineCompleteRequest, PairingCreatedResponse, PairingCreateRequest, PairingResponse
+from ragtime.remote_client.models import (
+    EnrollmentCompleteRequest,
+    OfflineCompleteRequest,
+    PairingCreatedResponse,
+    PairingCreateRequest,
+    PairingResponse,
+    RemoteFacts,
+)
+from ragtime.remote_client.relay import relay_manager
 from ragtime.remote_client.repository import remote_pairing_repository
 from ragtime.remote_client.service import remote_pairing_service
 
@@ -117,8 +125,6 @@ async def revoke_pairing(pairing_id: str, _user: Any = Depends(require_admin)) -
     pairing = await remote_pairing_repository.revoke(pairing_id)
     if not pairing:
         raise HTTPException(status_code=404, detail="Pairing not found")
-    from ragtime.remote_client.relay import relay_manager
-
     for revoked_pairing_id in pairing.pop("revokedPairingIds", [pairing_id]):
         await relay_manager.revoke(revoked_pairing_id)
     return Response(status_code=204)
@@ -142,7 +148,14 @@ async def complete_offline(pairing_id: str, payload: OfflineCompleteRequest, _us
     if not isinstance(offline_nonce, str) or not offline_nonce:
         raise HTTPException(status_code=400, detail="Offline enrollment nonce is required")
     try:
-        facts = EnrollmentCompleteRequest(nonce=offline_nonce, facts=data.get("facts"), mode="direct").facts.model_dump()
+        offline_facts = data.get("facts")
+        if not isinstance(offline_facts, dict):
+            raise HTTPException(status_code=400, detail="Invalid offline enrollment facts")
+        facts = EnrollmentCompleteRequest(
+            nonce=offline_nonce,
+            facts=RemoteFacts.model_validate(offline_facts),
+            mode="direct",
+        ).facts.model_dump()
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail="Invalid offline enrollment facts") from exc
     result = await remote_pairing_service.complete_offline(pairing_id, offline_nonce, facts)
@@ -207,8 +220,6 @@ async def remote_tunnel(websocket: WebSocket) -> None:
     if websocket.headers.get("sec-websocket-protocol", "") != "ragtime-tunnel-v1":
         await websocket.close(code=4406)
         return
-    from ragtime.remote_client.relay import relay_manager
-
     await websocket.accept(subprotocol="ragtime-tunnel-v1")
     pairing_id = str(pairing["id"])
     relay_task = asyncio.create_task(relay_manager.attach(pairing_id, websocket))

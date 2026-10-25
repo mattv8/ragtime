@@ -405,6 +405,7 @@ from ragtime.indexer.visualization_retry import (
 from ragtime.indexer.workspace_state import build_workspace_chat_state, summary_to_conversation_response
 from ragtime.mcp.server import notify_tools_changed
 from ragtime.rag import rag
+from ragtime.remote_client.repository import remote_pairing_repository
 from ragtime.tools.influxdb import test_influxdb_connection
 from ragtime.tools.mssql import test_mssql_connection
 from ragtime.tools.mysql import test_mysql_connection
@@ -6380,8 +6381,6 @@ async def _ssh_browse_config(request: SSHBrowseRequest) -> SSHConfig:
             host_keys=request.host_keys,
             transport=request.transport,
         )
-
-    from ragtime.remote_client.repository import remote_pairing_repository
 
     pairing = await remote_pairing_repository.get(request.pairing_id)
     if not pairing or str(getattr(pairing.get("status"), "value", pairing.get("status"))) != "paired":
