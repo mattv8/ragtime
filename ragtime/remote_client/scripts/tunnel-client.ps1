@@ -74,7 +74,12 @@ while ($true) {
                     if ($null -ne $_.WriteTask) { $_.WriteTask }
                 }
             })
-            [Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]$waits, 1000) | Out-Null
+            $queuedWriteReady = @($streams.Values | Where-Object {
+                $_.Connected -and $null -eq $_.WriteTask -and $_.Writes.Count -gt 0
+            }).Count -gt 0
+            if (-not $queuedWriteReady) {
+                [Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]$waits, 1000) | Out-Null
+            }
             foreach ($streamId in @($streams.Keys)) {
                 $entry = $streams[$streamId]
                 if (-not $entry.Connected) {
