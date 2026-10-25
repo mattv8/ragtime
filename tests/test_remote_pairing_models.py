@@ -11,10 +11,10 @@ from ragtime.remote_client.service import RemotePairingService, _is_terminal_dir
 
 
 def test_remote_pairing_accepts_only_remote_shell_tool_types():
-    assert PairingCreateRequest(tool_type="ssh_shell").tool_type is ToolType.SSH_SHELL
-    assert PairingCreateRequest(tool_type="windows_shell").tool_type is ToolType.WINDOWS_SHELL
+    assert PairingCreateRequest.model_validate({"tool_type": "ssh_shell"}).tool_type is ToolType.SSH_SHELL
+    assert PairingCreateRequest.model_validate({"tool_type": "windows_shell"}).tool_type is ToolType.WINDOWS_SHELL
     with pytest.raises(ValidationError):
-        PairingCreateRequest(tool_type="postgres")
+        PairingCreateRequest.model_validate({"tool_type": "postgres"})
 
 
 def test_remote_facts_bound_the_untrusted_enrollment_payload():
