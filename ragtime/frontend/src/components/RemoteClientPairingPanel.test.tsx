@@ -106,6 +106,9 @@ describe('RemoteClientPairingPanel', () => {
     );
 
     await screen.findByText('Waiting for installer to run…');
+    expect(
+      document.querySelector('section[aria-label="Installation command"]')?.textContent,
+    ).toContain('Waiting for installer to run…');
     view.unmount();
 
     expect(apiMock.deleteRemotePairing).not.toHaveBeenCalled();
@@ -217,7 +220,7 @@ describe('RemoteClientPairingPanel', () => {
     );
     await screen.findByText('Waiting for installer to run…');
     fireEvent.click(screen.getByLabelText('Linux'));
-    fireEvent.click(screen.getByLabelText('Offline / paste-back'));
+    fireEvent.click(screen.getByLabelText('Offline'));
     expect(screen.getByText('offline-sh')).toBeTruthy();
     const installerOutput = screen.getByLabelText('Installer output') as HTMLTextAreaElement;
     expect(installerOutput.disabled).toBe(false);

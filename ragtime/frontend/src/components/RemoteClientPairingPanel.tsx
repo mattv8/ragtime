@@ -191,8 +191,11 @@ export function RemoteClientPairingPanel({
     );
   }
 
-  const expired = seconds === 0 || pairing.status === 'expired';
+  const awaitingEnrollment =
+    pairing.status === 'pending' || pairing.status === 'consumed' || pairing.status === 'failed';
+  const expired = pairing.status === 'expired' || (awaitingEnrollment && seconds === 0);
   const command = commandFor(pairing, targetOs, connectivityMode);
+  const osOptions = targetOsOptions(toolType);
   const facts = pairing.facts;
   return (
     <section
@@ -200,47 +203,87 @@ export function RemoteClientPairingPanel({
       data-remote-client-pairing="true"
       className="remote-client-pairing"
     >
-      <p className="wizard-help">
-        Run the command on the target machine. The installer uses the target's invoking user.
-      </p>
-      <fieldset id="rc-os-selector">
-        <legend>Target operating system</legend>
-        {targetOsOptions(toolType).map(([value, label]) => (
-          <label key={value} className="radio-label">
-            <input
-              id={`rc-os-${value}`}
-              type="radio"
-              name="rc-target-os"
-              checked={targetOs === value}
-              onChange={() => setTargetOs(value)}
-            />
-            {label}
-          </label>
-        ))}
-      </fieldset>
-      <fieldset id="rc-mode-selector">
-        <legend>Connectivity mode</legend>
-        <label className="radio-label">
-          <input
-            id="rc-mode-online"
-            type="radio"
-            name="rc-mode"
-            checked={connectivityMode === 'online'}
-            onChange={() => setConnectivityMode('online')}
-          />
-          Online
-        </label>
-        <label className="radio-label">
-          <input
-            id="rc-mode-offline"
-            type="radio"
-            name="rc-mode"
-            checked={connectivityMode === 'offline'}
-            onChange={() => setConnectivityMode('offline')}
-          />
-          Offline / paste-back
-        </label>
-      </fieldset>
+      <div className="rc-options">
+        {osOptions.length > 1 ? (
+          <div
+            id="rc-os-selector"
+            role="radiogroup"
+            aria-label="Target operating system"
+            className="rc-option-group"
+          >
+            <span className="rc-option-caption" aria-hidden="true">
+              OS
+            </span>
+            <div className="connection-tabs rc-segmented">
+              {osOptions.map(([value, label]) => (
+                <label
+                  key={value}
+                  className={`connection-tab${targetOs === value ? ' active' : ''}`}
+                >
+                  <input
+                    id={`rc-os-${value}`}
+                    className="rc-visually-hidden"
+                    type="radio"
+                    name="rc-target-os"
+                    checked={targetOs === value}
+                    onChange={() => setTargetOs(value)}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div
+            id="rc-os-selector"
+            role="group"
+            aria-label="Target operating system"
+            className="rc-option-group"
+          >
+            <span className="rc-option-caption" aria-hidden="true">
+              OS
+            </span>
+            <span className="rc-option-static">{osOptions[0][1]}</span>
+          </div>
+        )}
+        <div
+          id="rc-mode-selector"
+          role="radiogroup"
+          aria-label="Connectivity mode"
+          className="rc-option-group"
+        >
+          <span className="rc-option-caption" aria-hidden="true">
+            Mode
+          </span>
+          <div className="connection-tabs rc-segmented">
+            <label className={`connection-tab${connectivityMode === 'online' ? ' active' : ''}`}>
+              <input
+                id="rc-mode-online"
+                className="rc-visually-hidden"
+                type="radio"
+                name="rc-mode"
+                checked={connectivityMode === 'online'}
+                onChange={() => setConnectivityMode('online')}
+              />
+              Online
+            </label>
+            <label
+              className={`connection-tab${connectivityMode === 'offline' ? ' active' : ''}`}
+              title="Run the installer without network access to Ragtime, then paste its output back"
+            >
+              <input
+                id="rc-mode-offline"
+                className="rc-visually-hidden"
+                type="radio"
+                name="rc-mode"
+                checked={connectivityMode === 'offline'}
+                onChange={() => setConnectivityMode('offline')}
+              />
+              Offline
+            </label>
+          </div>
+        </div>
+      </div>
       <section
         className={`rc-command-block${expired ? ' rc-command-expired' : ''}`}
         data-rc-command-os={targetOs}
@@ -248,7 +291,9 @@ export function RemoteClientPairingPanel({
         aria-label="Installation command"
       >
         <div className="rc-command-toolbar">
-          <span className="rc-command-label">Run on target machine</span>
+          <span className="rc-command-label">
+            Run on the target machine as the account Ragtime should use
+          </span>
           <InlineCopyButton
             className="btn btn-secondary"
             copyText={command}
@@ -265,14 +310,35 @@ export function RemoteClientPairingPanel({
               : command || 'Generate a new command to continue this pairing.'}
           </code>
         </pre>
-        <p className="field-help" aria-live="polite">
-          {expired
-            ? 'Token expired. '
-            : `Token expires in ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} — `}
-          <button type="button" className="link-btn" onClick={() => void regenerate()}>
-            {expired ? 'Generate new command' : 'Generate new'}
-          </button>
-        </p>
+        <div className="rc-command-footer field-help">
+          <div id="rc-enrollment-status" role="status" aria-live="polite">
+            {(pairing.status === 'pending' || pairing.status === 'consumed') && (
+              <span
+                aria-label="Polling for enrollment…"
+                role="status"
+                className="rc-polling-indicator"
+              />
+            )}
+            {pairing.status === 'pending' && 'Waiting for installer to run…'}
+            {pairing.status === 'consumed' && 'Installer ran. Probing connection…'}
+            {pairing.status === 'failed' &&
+              (pairing.error ||
+                'The installer could not complete pairing. Generate a new command to try again.')}
+            {pairing.status === 'expired' && 'Generate a new command to continue.'}
+            {pairing.status === 'revoked' &&
+              'This pairing was revoked. Create a new tool to reconnect.'}
+            {pairing.status === 'paired' && `Connected — ${facts?.hostname ?? 'target'}`}
+          </div>
+          {(awaitingEnrollment || expired) && (
+            <span className="rc-command-expiry">
+              {!expired &&
+                `Expires in ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`}
+              <button type="button" className="link-btn" onClick={() => void regenerate()}>
+                {expired ? 'Generate new command' : 'Generate new'}
+              </button>
+            </span>
+          )}
+        </div>
         {expired && (
           <span className="rc-visually-hidden" role="alert">
             Token expired.
@@ -285,24 +351,6 @@ export function RemoteClientPairingPanel({
           {retryCount >= 3 && ` Retry ${retryCount}.`}
         </div>
       )}
-      <div id="rc-enrollment-status" role="status" aria-live="polite">
-        {(pairing.status === 'pending' || pairing.status === 'consumed') && (
-          <span
-            aria-label="Polling for enrollment…"
-            role="status"
-            className="rc-polling-indicator"
-          />
-        )}
-        {pairing.status === 'pending' && 'Waiting for installer to run…'}
-        {pairing.status === 'consumed' && 'Installer ran. Probing connection…'}
-        {pairing.status === 'failed' &&
-          (pairing.error ||
-            'The installer could not complete pairing. Generate a new command to try again.')}
-        {pairing.status === 'expired' && 'Token expired. Generate a new command to continue.'}
-        {pairing.status === 'revoked' &&
-          'This pairing was revoked. Create a new tool to reconnect.'}
-        {pairing.status === 'paired' && `Connected — ${facts?.hostname ?? 'target'}`}
-      </div>
       {(pairing.status === 'paired' ||
         pairing.status === 'expired' ||
         pairing.status === 'revoked') && (
@@ -337,7 +385,7 @@ export function RemoteClientPairingPanel({
                 <span className="badge">{pairing.transport ?? 'direct'}</span>
               </dd>
             </div>
-            <div>
+            <div className="rc-facts-wide">
               <dt>Pinned public host key</dt>
               <dd>
                 <code className="font-mono rc-fingerprint">
@@ -396,7 +444,7 @@ export function RemoteClientPairingPanel({
               aria-describedby="rc-offline-blob-help"
               value={offlineBlob}
               onChange={(event) => setOfflineBlob(event.target.value)}
-              rows={8}
+              rows={5}
             />
             <p id="rc-offline-blob-help" className="field-help">
               The output is a base64-encoded JSON blob. It does not contain private keys.
