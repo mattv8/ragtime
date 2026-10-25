@@ -384,6 +384,21 @@ _SSH_DANGEROUS_SHELL_PATTERN_STRINGS = [
 ]
 SSH_DANGEROUS_SHELL_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _SSH_DANGEROUS_SHELL_PATTERN_STRINGS]
 
+_POWERSHELL_DANGEROUS_PATTERN_STRINGS = [
+    r"\b(?:Remove|Rename|Move|Copy|New|Set|Add|Clear)-Item(?:Property)?\b",
+    r"\b(?:Start|Stop|Restart|Suspend|Resume)-Service\b",
+    r"\b(?:Start|Stop)-Process\b|\b(?:Restart|Stop)-Computer\b",
+    r"\b(?:Out-File|Export-Csv|Tee-Object|Invoke-Expression|Set-Alias|New-Alias|Invoke-Command)\b",
+    r"(?<![A-Za-z0-9_-])(?:ri|rm|del|erase|rd|rmdir|mv|mi|move|cp|cpi|copy|ren|rni|ni|md|mkdir|sc|ac|clc|iex|kill|spps|saps|start)(?![A-Za-z0-9_-])",
+    r"\b(?:Invoke-WebRequest|Invoke-RestMethod|curl|wget)\b[^\r\n]*(?:-OutFile|--output|-o)\b",
+    r"\[\s*(?:IO\.)?(?:File|Directory)\s*\]::(?:Write|Append|Delete|Move|Copy|Create)",
+    r"\b(?:cmd(?:\.exe)?\s+/c|reg(?:\.exe)?\s+(?:add|delete)|sc(?:\.exe)?\s+(?:create|delete|start|stop)|schtasks|icacls|takeown|net\s+(?:user|localgroup)|shutdown|format)\b",
+    r"\[scriptblock\]::Create|(?:^|\s)-EncodedCommand\b",
+    r"(?<![>&])>(?!&1|\$null\b)",
+]
+POWERSHELL_DANGEROUS_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in _POWERSHELL_DANGEROUS_PATTERN_STRINGS]
+_POWERSHELL_QUOTED_TEXT_RE = re.compile(r"'(?:''|[^'])*'|\"(?:`\"|[^\"])*\"")
+
 # SSH directory constraint patterns (precompiled)
 _SSH_DIR_TRAVERSAL_RE = re.compile(r"(?:^|[\s/])\.\.(?:/|[\s]|$)")
 _SSH_HOME_EXPANSION_RE = re.compile(r"(?:^|[\s=:])~(?:\/|[\s]|$)")
@@ -866,6 +881,26 @@ def validate_ssh_command(
                 "Command contains write/modify operation. Enable 'Allow Write Operations' to permit this.",
             )
 
+    return True, "Command is safe"
+
+
+def validate_powershell_command(command: str, allow_write: bool = False) -> Tuple[bool, str]:
+    """Apply read-only guardrails to a PowerShell command.
+
+    This is command validation, not filesystem containment: a configured
+    working directory does not sandbox a Windows SSH session.
+    """
+    if not command or not command.strip():
+        return False, "Empty command"
+    if allow_write:
+        return True, "Command allowed (write mode enabled)"
+    # Single quotes are literal in PowerShell. Double quotes remain inspectable
+    # because they may expand subexpressions such as $(Remove-Item ...).
+    command_for_patterns = re.sub(r"'(?:''|[^'])*'", "''", command)
+    for pattern in POWERSHELL_DANGEROUS_PATTERNS:
+        if pattern.search(command_for_patterns):
+            logger.warning("PowerShell command blocked by pattern: %s", pattern.pattern)
+            return False, "Command contains write/modify operation. Enable 'Allow Write Operations' to permit this."
     return True, "Command is safe"
 
 

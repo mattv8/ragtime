@@ -267,6 +267,10 @@ class CiWorkflowContractTests(unittest.TestCase):
                     if cache_to:
                         self.assertIn("inputs.use_harbor", cache_to)
 
+    def test_frontend_waits_for_scope_and_backend_analysis(self) -> None:
+        quality = _load_workflow("quality.yml")
+        self.assertEqual(quality["jobs"]["frontend"]["needs"], ["scope", "backend-analysis"])
+
     def test_backend_analysis_reads_the_published_python_ci_dependency_cache(self) -> None:
         base = _load_workflow("base-images.yml")
         publisher = next(entry for entry in base["jobs"]["build"]["strategy"]["matrix"]["include"] if entry["kind"] == "python-ci-deps")

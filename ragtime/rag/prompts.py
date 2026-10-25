@@ -1679,6 +1679,7 @@ No tools configured. Answer from indexed knowledge sources only (code, documenta
         "influxdb": "InfluxDB",
         "odoo_shell": "Odoo ORM",
         "ssh_shell": "SSH Shell",
+        "windows_shell": "Windows PowerShell",
         "filesystem_indexer": "File Search",
     }
 

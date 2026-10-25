@@ -168,6 +168,7 @@ from ragtime.core.security import (
     sanitize_output,
     validate_external_url,
     validate_odoo_code,
+    validate_powershell_command,
     validate_sql_query,
     validate_ssh_command,
 )
@@ -183,6 +184,7 @@ from ragtime.core.sql_utils import (
 from ragtime.core.ssh import (
     SSHConfig,
     SSHTunnel,
+    build_powershell_working_directory_command,
     build_ssh_tunnel_config,
     execute_ssh_command,
     expand_env_vars_via_ssh,
@@ -5117,6 +5119,7 @@ class RAGComponents:
             "http_api": self._create_http_api_tool,
             "odoo_shell": self._create_odoo_tool,
             "ssh_shell": self._create_ssh_tool,
+            "windows_shell": self._create_ssh_tool,
             "filesystem_indexer": self._create_filesystem_tool,
             "solidworks_pdm": self._create_pdm_search_tool,
         }
@@ -6755,6 +6758,7 @@ class RAGComponents:
     async def _create_ssh_tool(self, config: dict, tool_name: str, _tool_id: str):
         """Create an SSH shell tool from config."""
         conn_config = config.get("connection_config", {})
+        is_powershell = config.get("tool_type") == "windows_shell"
         timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
@@ -6823,6 +6827,10 @@ class RAGComponents:
                 key_content=key_content,
                 key_passphrase=key_passphrase,
                 timeout=effective_timeout,
+                shell="powershell" if is_powershell else "posix",
+                host_keys=conn_config.get("host_keys"),
+                pairing_id=conn_config.get("pairing_id"),
+                transport=conn_config.get("transport"),
             )
 
             async def run_ssh_blocking(callable_: Callable[[], Any]) -> Any:
@@ -6832,9 +6840,9 @@ class RAGComponents:
                     return await asyncio.wait_for(future, timeout=effective_timeout + 10)
                 return await future
 
-            # If working_directory is set, expand env vars for path validation
+            # POSIX directory constraints need remote environment expansion.
             expanded_command = None
-            if working_directory:
+            if working_directory and not is_powershell:
                 # Check if command contains env vars that need expansion (using precompiled pattern)
                 if _SSH_ENV_VAR_RE.search(command):
                     # Expand env vars on the remote host
@@ -6863,12 +6871,15 @@ class RAGComponents:
 
             # Validate only the user/LLM-supplied command. The prefix is trusted
             # admin configuration used for setup wrappers like cd/source/sudo.
-            is_safe, validation_reason = validate_ssh_command(
-                command,
-                allow_write=allow_write,
-                allowed_directory=working_directory or None,
-                expanded_command=expanded_command,
-            )
+            if is_powershell:
+                is_safe, validation_reason = validate_powershell_command(command, allow_write=allow_write)
+            else:
+                is_safe, validation_reason = validate_ssh_command(
+                    command,
+                    allow_write=allow_write,
+                    allowed_directory=working_directory or None,
+                    expanded_command=expanded_command,
+                )
             if not is_safe:
                 return json.dumps(
                     {
@@ -6883,6 +6894,19 @@ class RAGComponents:
             logger.info(f"[{tool_name}] SSH: {reason}")
 
             full_command = f"{command_prefix}{command}"
+            if is_powershell and working_directory:
+                try:
+                    full_command = build_powershell_working_directory_command(working_directory, full_command)
+                except ValueError as exc:
+                    return json.dumps(
+                        {
+                            "tool": f"ssh_{tool_name}",
+                            "status": "rejected",
+                            "exit_code": -1,
+                            "error": str(exc),
+                        },
+                        indent=2,
+                    )
 
             try:
                 # Run in thread pool to avoid blocking
@@ -9042,7 +9066,7 @@ class RAGComponents:
                 names.add(build_http_api_catalog_search_tool_name(tool_name))
         elif tool_type == "odoo_shell":
             names.add(f"odoo_{tool_name}")
-        elif tool_type == "ssh_shell":
+        elif tool_type in {"ssh_shell", "windows_shell"}:
             names.add(f"ssh_{tool_name}")
         elif tool_type == "solidworks_pdm":
             names.update({f"search_{tool_name}", f"lookup_{tool_name}"})

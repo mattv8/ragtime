@@ -405,6 +405,7 @@ from ragtime.indexer.visualization_retry import (
 from ragtime.indexer.workspace_state import build_workspace_chat_state, summary_to_conversation_response
 from ragtime.mcp.server import notify_tools_changed
 from ragtime.rag import rag
+from ragtime.remote_client.repository import remote_pairing_repository
 from ragtime.tools.influxdb import test_influxdb_connection
 from ragtime.tools.mssql import test_mssql_connection
 from ragtime.tools.mysql import test_mysql_connection
@@ -3558,8 +3559,8 @@ async def test_tool_connection(request: ToolTestRequest, _user: User = Depends(r
         return await _test_influxdb_connection(config)
     elif tool_type == ToolType.ODOO_SHELL:
         return await _test_odoo_connection(config)
-    elif tool_type == ToolType.SSH_SHELL:
-        return await _test_ssh_connection(config)
+    elif tool_type in {ToolType.SSH_SHELL, ToolType.WINDOWS_SHELL}:
+        return await _test_ssh_connection({**config, "shell": "powershell" if tool_type == ToolType.WINDOWS_SHELL else "posix"})
     elif tool_type == ToolType.FILESYSTEM_INDEXER:
         return await _test_filesystem_connection(config)
     elif tool_type == ToolType.SOLIDWORKS_PDM:
@@ -4615,8 +4616,8 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
         return await _heartbeat_influxdb(config)
     elif tool_type_str == "odoo_shell":
         return await _heartbeat_odoo(config)
-    elif tool_type_str == "ssh_shell":
-        return await _heartbeat_ssh(config)
+    elif tool_type_str in {"ssh_shell", "windows_shell"}:
+        return await _heartbeat_ssh({**config, "shell": "powershell" if tool_type_str == "windows_shell" else "posix"})
     elif tool_type_str == "filesystem_indexer":
         return await _heartbeat_filesystem(config)
     elif tool_type_str == "solidworks_pdm":
@@ -4918,11 +4919,11 @@ async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
 
 
 def _get_ssh_cache_key(config: dict) -> str:
-    """Generate a cache key from SSH config (host:port:user)."""
+    """Generate a cache key that keeps relay-backed pairings isolated."""
     host = config.get("host", "")
     port = config.get("port", 22)
     user = config.get("user", "")
-    return f"{host}:{port}:{user}"
+    return f"{host}:{port}:{user}:{config.get('transport', '')}:{config.get('pairing_id', '')}:{config.get('shell', '')}"
 
 
 async def _deep_ssh_credential_check(config: dict) -> ToolTestResponse:
@@ -4952,6 +4953,10 @@ async def _deep_ssh_credential_check(config: dict) -> ToolTestResponse:
         key_content=key_content if key_content else None,
         key_passphrase=key_passphrase if key_passphrase else None,
         timeout=10,  # Shorter timeout for heartbeat check
+        shell=config.get("shell", "posix"),
+        host_keys=config.get("host_keys"),
+        pairing_id=config.get("pairing_id"),
+        transport=config.get("transport"),
     )
 
     try:
@@ -5754,6 +5759,10 @@ async def _test_ssh_connection(config: dict) -> ToolTestResponse:
         key_content=key_content if key_content else None,
         key_passphrase=key_passphrase if key_passphrase else None,
         timeout=15,
+        shell=config.get("shell", "posix"),
+        host_keys=config.get("host_keys"),
+        pairing_id=config.get("pairing_id"),
+        transport=config.get("transport"),
     )
 
     try:
@@ -6343,14 +6352,122 @@ class BrowseResponse(BaseModel):
 class SSHBrowseRequest(BaseModel):
     """Request to browse remote SSH filesystem."""
 
-    host: str
-    user: str
+    host: str = ""
+    user: str = ""
     port: int = 22
     password: Optional[str] = None
     key_path: Optional[str] = None
     key_content: Optional[str] = None
     key_passphrase: Optional[str] = None
     path: str = "/"
+    shell: Literal["posix", "powershell"] = "posix"
+    host_keys: list[str] | None = None
+    pairing_id: str | None = None
+    transport: Literal["direct", "tunnel"] | None = None
+
+
+async def _ssh_browse_config(request: SSHBrowseRequest) -> SSHConfig:
+    """Build browse credentials, hydrating paired keys only from server storage."""
+    if not request.pairing_id:
+        return SSHConfig(
+            host=request.host,
+            user=request.user,
+            port=request.port,
+            password=request.password,
+            key_path=request.key_path,
+            key_content=request.key_content,
+            key_passphrase=request.key_passphrase,
+            shell=request.shell,
+            host_keys=request.host_keys,
+            transport=request.transport,
+        )
+
+    pairing = await remote_pairing_repository.get(request.pairing_id)
+    if not pairing or str(getattr(pairing.get("status"), "value", pairing.get("status"))) != "paired":
+        raise ValueError("Remote pairing is unavailable")
+    tool = await repository.get_tool_config(str(pairing.get("toolId") or ""))
+    connection = dict(tool.connection_config) if tool else {}
+    if connection.get("pairing_id") != request.pairing_id or not connection.get("key_content"):
+        raise ValueError("Remote pairing credentials are unavailable")
+    return SSHConfig(
+        host=str(connection.get("host") or ""),
+        user=str(connection.get("user") or ""),
+        port=coerce_int_metadata(connection.get("port", 22), default=22),
+        key_content=str(connection["key_content"]),
+        key_passphrase=str(connection["key_passphrase"]) if connection.get("key_passphrase") else None,
+        password=str(connection["password"]) if connection.get("password") else None,
+        shell=str(connection.get("shell") or "posix"),  # type: ignore[arg-type]
+        host_keys=list(connection.get("host_keys") or []),
+        pairing_id=request.pairing_id,
+        transport=str(connection.get("transport")) if connection.get("transport") else None,  # type: ignore[arg-type]
+    )
+
+
+def _powershell_path_from_browser_path(path: str) -> str:
+    """Convert browser-safe Windows paths such as ``/C:/Users`` to native paths."""
+    normalized = (path or "/").strip()
+    if "\x00" in normalized:
+        raise ValueError("Path contains a null byte")
+    if normalized == "/":
+        return ""
+    if normalized.startswith("//"):
+        return "\\\\" + normalized[2:].replace("/", "\\")
+    if not re.fullmatch(r"/[A-Za-z]:(?:/[^\\:*?\"<>|]*)*/*", normalized):
+        raise ValueError("Windows paths must use /C:/... or //server/share notation")
+    native = normalized[1:].replace("/", "\\")
+    return f"{native}\\" if re.fullmatch(r"[A-Za-z]:", native) else native
+
+
+def _browser_path_from_powershell_path(path: str) -> str:
+    """Convert a native Windows path to the stable browser representation."""
+    if path.startswith("\\\\"):
+        return "//" + path[2:].replace("\\", "/")
+    return "/" + path.replace("\\", "/")
+
+
+async def _browse_powershell_ssh_filesystem(config: SSHConfig, path: str) -> BrowseResponse:
+    """Browse a Windows host over SSH with structured PowerShell JSON output."""
+    try:
+        native_path = _powershell_path_from_browser_path(path)
+    except ValueError as exc:
+        return BrowseResponse(path=path, entries=[], error=str(exc))
+
+    escaped_path = re.sub(r"['\u2018\u2019\u201a\u201b]", lambda match: match.group(0) * 2, native_path)
+    if not native_path:
+        command = "$ErrorActionPreference='Stop'; @((Get-PSDrive -PSProvider FileSystem | ForEach-Object { [pscustomobject]@{ name=$_.Name; path=$_.Root; is_dir=$true; size=$null } })) | ConvertTo-Json -Compress"
+    else:
+        command = (
+            "$ErrorActionPreference='Stop'; "
+            f"@((Get-ChildItem -LiteralPath '{escaped_path}' -Force | ForEach-Object {{ "
+            "[pscustomobject]@{ name=$_.Name; path=$_.FullName; is_dir=[bool]$_.PSIsContainer; size=if ($_.PSIsContainer) { $null } else { [int64]$_.Length } } "
+            "})) | ConvertTo-Json -Compress"
+        )
+    try:
+        result = await asyncio.to_thread(execute_ssh_command, config, command)
+    except Exception as exc:
+        return BrowseResponse(path=path, entries=[], error=str(exc))
+    if not result.success:
+        return BrowseResponse(path=path, entries=[], error=result.stderr or result.stdout or "Failed to list directory")
+    try:
+        raw_entries = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return BrowseResponse(path=path, entries=[], error="Windows host returned invalid directory data")
+    if isinstance(raw_entries, dict):
+        raw_entries = [raw_entries]
+    if not isinstance(raw_entries, list):
+        return BrowseResponse(path=path, entries=[], error="Windows host returned invalid directory data")
+    entries = [
+        DirectoryEntry(
+            name=str(entry.get("name") or ""),
+            path=_browser_path_from_powershell_path(str(entry.get("path") or "")),
+            is_dir=bool(entry.get("is_dir")),
+            size=entry.get("size") if isinstance(entry.get("size"), int) else None,
+        )
+        for entry in raw_entries
+        if isinstance(entry, dict) and str(entry.get("name") or "") and str(entry.get("path") or "")
+    ]
+    entries.sort(key=lambda entry: (not entry.is_dir, entry.name.lower()))
+    return BrowseResponse(path=path, entries=entries)
 
 
 class MountDiscoveryResponse(BaseModel):
@@ -6507,15 +6624,13 @@ async def browse_ssh_filesystem(request: SSHBrowseRequest, _: User = Depends(req
     """
     Browse a remote directory path via SSH.
     """
-    config = SSHConfig(
-        host=request.host,
-        user=request.user,
-        port=request.port,
-        password=request.password,
-        key_path=request.key_path,
-        key_content=request.key_content,
-        key_passphrase=request.key_passphrase,
-    )
+    try:
+        config = await _ssh_browse_config(request)
+    except ValueError as exc:
+        return BrowseResponse(path=request.path, entries=[], error=str(exc))
+
+    if config.shell == "powershell":
+        return await _browse_powershell_ssh_filesystem(config, request.path)
 
     # Use ls -p1a to list files (append / to dirs, one per line, all files)
     # ls -p appends / indicator to directories
@@ -16002,6 +16117,7 @@ class RetryTerminalToolResponse(BaseModel):
 RERUNNABLE_TOOL_TYPES = frozenset(
     {
         ToolType.SSH_SHELL,
+        ToolType.WINDOWS_SHELL,
         ToolType.ODOO_SHELL,
         ToolType.POSTGRES,
         ToolType.MYSQL,

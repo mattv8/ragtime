@@ -7,8 +7,11 @@ Supports:
 - Key + passphrase authentication
 """
 
+import base64
+import importlib
 import io
 import os as _os
+import re
 import shlex
 import shutil
 import socket
@@ -36,6 +39,16 @@ SSHSyncMode = Literal["merge", "source_authoritative", "target_authoritative"]
 SSHSyncProgressCallback = Callable[[int, Optional[int], Optional[str]], None]
 SSH_SYNC_PREVIEW_SAMPLE_LIMIT = 200
 SSH_NEGOTIATION_ERROR_GRACE_SECONDS = 1.0
+
+
+def _get_relay_manager() -> Any:
+    """Load the relay only when a tunnel endpoint is needed to avoid its SSH dependency cycle."""
+    return importlib.import_module("ragtime.remote_client.relay").relay_manager
+
+
+# Sentinel written only by the PowerShell deadline supervisor, never inferred
+# from a native program's exit code.
+POWERSHELL_TIMEOUT_SENTINEL = "[RAGTIME_REMOTE_TIMEOUT]"
 
 # Default scheduler values for userspace SSH mount auto-sync watch mode.
 USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS = 5.0
@@ -108,6 +121,10 @@ class SSHConfig:
     key_content: Optional[str] = None
     key_passphrase: Optional[str] = None
     timeout: int | float = 30
+    shell: Literal["posix", "powershell"] = "posix"
+    host_keys: list[str] | None = None
+    pairing_id: str | None = None
+    transport: Literal["direct", "tunnel"] | None = None
 
     @property
     def auth_method(self) -> SSHAuthMethod:
@@ -128,6 +145,10 @@ class SSHConfig:
         # Must have at least one auth method
         if not any([self.password, self.key_path, self.key_content]):
             raise ValueError("SSH authentication required: provide password, key_path, or key_content")
+        if self.pairing_id and not self.host_keys:
+            raise ValueError("Paired SSH connections require pinned host keys")
+        if self.shell not in {"posix", "powershell"}:
+            raise ValueError("SSH shell must be 'posix' or 'powershell'")
 
 
 class _RagtimeTransport(paramiko.Transport):
@@ -212,6 +233,45 @@ def _build_connect_kwargs(config: SSHConfig) -> dict:
     return kwargs
 
 
+def _resolve_connection_endpoint(config: SSHConfig) -> tuple[str, int]:
+    """Resolve the endpoint immediately before opening a new SSH connection."""
+    if config.transport != "tunnel":
+        return config.host, config.port
+    if not config.pairing_id:
+        raise ValueError("Tunnel SSH connections require a pairing ID")
+    endpoint = _get_relay_manager().endpoint_for(config.pairing_id)
+    if endpoint is None:
+        raise ConnectionError("Remote client tunnel is offline")
+    return endpoint
+
+
+def _parse_pinned_host_key(value: str) -> paramiko.PKey:
+    """Parse one OpenSSH public-key line into a Paramiko key."""
+    parts = value.strip().split()
+    if len(parts) < 2:
+        raise ValueError("Invalid pinned SSH host key")
+    try:
+        pkey_class: Any = paramiko.PKey
+        return pkey_class.from_type_string(parts[0], base64.b64decode(parts[1], validate=True))
+    except Exception as exc:
+        raise ValueError("Invalid pinned SSH host key") from exc
+
+
+def _configure_host_key_policy(client: paramiko.SSHClient, config: SSHConfig, host: str, port: int) -> None:
+    """Require paired hosts to present one of their enrolled host keys before auth."""
+    if not config.host_keys:
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        return
+    host_keys = paramiko.HostKeys()
+    for encoded_key in config.host_keys:
+        key = _parse_pinned_host_key(encoded_key)
+        host_keys.add(host, key.get_name(), key)
+        if port != 22:
+            host_keys.add(f"[{host}]:{port}", key.get_name(), key)
+    client.get_host_keys().update(host_keys)
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+
+
 def _create_ssh_client(
     config: SSHConfig,
     *,
@@ -219,13 +279,16 @@ def _create_ssh_client(
     tcp_connect_timeout: float | None = None,
 ) -> paramiko.SSHClient:
     """Create and connect an SSH client."""
+    host, port = _resolve_connection_endpoint(config)
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    _configure_host_key_policy(client, config, host, port)
     if on_client_created is not None:
         on_client_created(client)
-    logger.debug(f"SSH connecting to {config.user}@{config.host}:{config.port} using {config.auth_method.value}")
+    logger.debug(f"SSH connecting to {config.user}@{host}:{port} using {config.auth_method.value}")
     try:
         connect_kwargs = _build_connect_kwargs(config)
+        connect_kwargs["hostname"] = host
+        connect_kwargs["port"] = port
         if tcp_connect_timeout is not None:
             connect_kwargs["timeout"] = tcp_connect_timeout
         client.connect(**connect_kwargs)
@@ -273,6 +336,129 @@ def _wrap_command_with_timeout(command: str, timeout_seconds: int | float) -> st
     )
 
 
+def build_powershell_working_directory_command(working_directory: str, command: str) -> str:
+    """Prepend a literal PowerShell location change for a browser-style path.
+
+    This selects an execution location only; it does not sandbox the command.
+    ``Set-Location`` fails before the command runs when the path is missing.
+    """
+    path = (working_directory or "").strip()
+    if "\x00" in path:
+        raise ValueError("Windows working directory contains a null byte")
+    if path.startswith("//"):
+        unc_parts = path[2:].split("/")
+        if len(unc_parts) < 2 or not unc_parts[0] or not unc_parts[1]:
+            raise ValueError("Windows UNC working directory must include server and share")
+        native_path = "\\\\" + path[2:].replace("/", "\\")
+    else:
+        if not re.fullmatch(r"/[A-Za-z]:(?:/[^\\:*?\"<>|]*)*/*", path):
+            raise ValueError("Windows working directory must use /C:/... or //server/share notation")
+        native_path = path[1:].replace("/", "\\")
+        if re.fullmatch(r"[A-Za-z]:", native_path):
+            native_path += "\\"
+    escaped_path = re.sub(r"['\u2018\u2019\u201a\u201b]", lambda match: match.group(0) * 2, native_path)
+    return f"$ErrorActionPreference = 'Stop'; Set-Location -LiteralPath '{escaped_path}'; {command}"
+
+
+def _encode_powershell_payload(command: str) -> str:
+    """Encode the user payload separately so the SSH command stays short."""
+    payload = f"""[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
+$ErrorActionPreference = 'Continue'
+$global:LASTEXITCODE = $null
+$__ragtimeErrorCount = $Error.Count
+$__ragtimePayloadState = [pscustomobject]@{{ Completed = $false; Success = $true; ExitCode = $null }}
+try {{
+    & {{
+{command}
+        $__ragtimePayloadState.Success = $?
+        $__ragtimePayloadState.ExitCode = $LASTEXITCODE
+        $__ragtimePayloadState.Completed = $true
+    }}
+}} catch {{
+    [Console]::Error.WriteLine($_)
+    exit 1
+}}
+if ($Error.Count -gt $__ragtimeErrorCount) {{ exit 1 }}
+if ($__ragtimePayloadState.Completed -and -not $__ragtimePayloadState.Success) {{
+    if ($null -ne $__ragtimePayloadState.ExitCode) {{ exit $__ragtimePayloadState.ExitCode }}
+    exit 1
+}}
+if (-not $__ragtimePayloadState.Completed -and $null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}
+exit 0
+"""
+    return base64.b64encode(payload.encode("utf-16le")).decode("ascii")
+
+
+def _wrap_powershell_command(timeout_seconds: int | float) -> str:
+    """Run an encoded PowerShell payload beneath a deadline-owning supervisor.
+
+    The outer process relays stdin/stdout/stderr, kills the child process tree
+    on Windows, and emits an explicit timeout sentinel. A native exit code of
+    124 is therefore never mistaken for a timeout.
+    """
+    timeout_literal = str(max(0, int(timeout_seconds)))
+    script = f"""$ErrorActionPreference = 'Stop'
+$utf8NoBom = [Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = $utf8NoBom
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
+$payload = [Console]::In.ReadLine()
+if ([string]::IsNullOrWhiteSpace($payload)) {{ [Console]::Error.WriteLine('Missing PowerShell payload'); exit 1 }}
+$deadlineSeconds = {timeout_literal}
+$processInfo = [System.Diagnostics.ProcessStartInfo]::new()
+$processInfo.FileName = 'powershell.exe'
+$processInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + $payload
+$processInfo.UseShellExecute = $false
+$processInfo.RedirectStandardInput = $true
+$processInfo.RedirectStandardOutput = $true
+$processInfo.RedirectStandardError = $true
+$processInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+$processInfo.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
+$stdinPayload = [Console]::In.ReadToEnd()
+$process = [System.Diagnostics.Process]::new()
+$process.StartInfo = $processInfo
+[void]$process.Start()
+$stdoutTask = $process.StandardOutput.ReadToEndAsync()
+$stderrTask = $process.StandardError.ReadToEndAsync()
+if ($stdinPayload.Length -gt 0) {{
+    $stdinBytes = $utf8NoBom.GetBytes($stdinPayload)
+    $stdinStream = $process.StandardInput.BaseStream
+    $stdinStream.Write($stdinBytes, 0, $stdinBytes.Length)
+    $stdinStream.Flush()
+}}
+$process.StandardInput.Close()
+$timedOut = $false
+$deadline = if ($deadlineSeconds -gt 0) {{ [DateTime]::UtcNow.AddSeconds($deadlineSeconds) }} else {{ $null }}
+while (-not $process.HasExited) {{
+    if ($deadline -and [DateTime]::UtcNow -ge $deadline) {{
+        $timedOut = $true
+        break
+    }}
+    Start-Sleep -Milliseconds 25
+}}
+if ($timedOut) {{
+    if ($env:OS -eq 'Windows_NT') {{
+        & "$env:SystemRoot\\System32\\taskkill.exe" /PID $process.Id /T /F 2>$null
+    }} elseif (-not $process.HasExited) {{
+        try {{ $process.Kill($true) }} catch {{ $process.Kill() }}
+    }}
+    $process.WaitForExit()
+}}
+[System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask))
+[Console]::Out.Write($stdoutTask.Result)
+[Console]::Error.Write($stderrTask.Result)
+if ($timedOut) {{
+    [Console]::Error.WriteLine('{POWERSHELL_TIMEOUT_SENTINEL}')
+    exit 1
+}}
+exit $process.ExitCode
+"""
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    return f"powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}"
+
+
 def execute_ssh_command(
     config: SSHConfig,
     command: str,
@@ -295,15 +481,20 @@ def execute_ssh_command(
     try:
         client = _create_ssh_client(config)
 
-        wrapped_command = _wrap_command_with_timeout(command, config.timeout)
+        powershell_payload = _encode_powershell_payload(command) if config.shell == "powershell" else None
+        wrapped_command = _wrap_powershell_command(config.timeout) if powershell_payload else _wrap_command_with_timeout(command, config.timeout)
 
         # Execute command
         stdin, stdout, stderr = client.exec_command(wrapped_command, timeout=config.timeout if config.timeout > 0 else None)
 
-        # Send input data if provided
+        # Always close remote stdin after the optional payload. The PowerShell
+        # supervisor forwards this EOF to its child; leaving it open would keep
+        # the stdin relay alive after otherwise-complete commands.
+        if powershell_payload:
+            stdin.write(f"{powershell_payload}\n")
         if input_data:
             stdin.write(input_data)
-            stdin.channel.shutdown_write()
+        stdin.channel.shutdown_write()
 
         # Read output with total timeout
         channel = stdout.channel
@@ -344,8 +535,12 @@ def execute_ssh_command(
 
         exit_code = -1 if timed_out else channel.recv_exit_status()
 
-        remote_timeout = exit_code in {124, 137}
-        if timed_out or remote_timeout:
+        remote_timeout = config.shell == "posix" and exit_code in {124, 137}
+        powershell_timeout = config.shell == "powershell" and POWERSHELL_TIMEOUT_SENTINEL in stderr_data
+        if powershell_timeout:
+            stderr_data = stderr_data.replace(POWERSHELL_TIMEOUT_SENTINEL, "").strip()
+            exit_code = -1
+        if timed_out or remote_timeout or powershell_timeout:
             timeout_msg = f"[Command execution timed out after {config.timeout} seconds]"
             if timeout_msg not in stderr_data:
                 stderr_data = f"{stderr_data}\n{timeout_msg}" if stderr_data else timeout_msg
@@ -354,7 +549,7 @@ def execute_ssh_command(
             stdout=stdout_data,
             stderr=stderr_data,
             exit_code=exit_code,
-            success=(exit_code == 0) and not timed_out and not remote_timeout,
+            success=(exit_code == 0) and not timed_out and not remote_timeout and not powershell_timeout,
         )
 
     except paramiko.AuthenticationException as e:
@@ -437,6 +632,10 @@ def ssh_config_from_dict(config_dict: dict) -> SSHConfig:
         key_content=str(key_content) if (key_content := get_field("key_content")) else None,
         key_passphrase=str(key_passphrase) if (key_passphrase := get_field("key_passphrase")) else None,
         timeout=timeout,
+        shell=str(get_field("shell", "posix") or "posix"),  # type: ignore[arg-type]
+        host_keys=list(host_keys) if isinstance((host_keys := get_field("host_keys")), list) else None,
+        pairing_id=str(pairing_id) if (pairing_id := get_field("pairing_id")) else None,
+        transport=str(get_field("transport")) if get_field("transport") else None,  # type: ignore[arg-type]
     )
 
 

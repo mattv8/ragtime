@@ -2007,6 +2007,7 @@ class ToolType(str, Enum):
     INFLUXDB = "influxdb"
     ODOO_SHELL = "odoo_shell"
     SSH_SHELL = "ssh_shell"
+    WINDOWS_SHELL = "windows_shell"
     FILESYSTEM_INDEXER = "filesystem_indexer"
     SOLIDWORKS_PDM = "solidworks_pdm"
     HTTP_API = "http_api"
@@ -2014,6 +2015,7 @@ class ToolType(str, Enum):
 
 # Tool types that support schema indexing (use for ToolType enum comparisons)
 SCHEMA_INDEXER_CAPABLE_TOOL_TYPES = frozenset({ToolType.POSTGRES, ToolType.MSSQL, ToolType.MYSQL})
+SHELL_TOOL_TYPES = frozenset({ToolType.ODOO_SHELL, ToolType.SSH_SHELL, ToolType.WINDOWS_SHELL})
 
 
 class FilesystemMountType(str, Enum):
