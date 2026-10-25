@@ -35,7 +35,10 @@ const credential = (overrides = {}) => ({
 });
 
 describe('ConnectYourAgentPanel', () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -50,8 +53,10 @@ describe('ConnectYourAgentPanel', () => {
     });
     render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
 
-    await user.clear(screen.getByLabelText('Credential name'));
-    await user.type(screen.getByLabelText('Credential name'), 'My Agent');
+    const credentialName = screen.getByLabelText('Credential name');
+    await waitFor(() => expect(credentialName.hasAttribute('disabled')).toBe(false));
+    await user.clear(credentialName);
+    await user.type(credentialName, 'My Agent');
     await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
 
     const card = await screen.findByRole('article', { name: 'My Agent credential' });
@@ -74,6 +79,191 @@ describe('ConnectYourAgentPanel', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('Creation failed');
     expect(screen.queryByRole('article')).toBeNull();
     expect(screen.getByRole('button', { name: /create credential and continue/i })).toBeTruthy();
+  });
+
+  it('submits the selected scopes and UTC expiration', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-10-22T12:00:00.000Z').getTime());
+    const user = userEvent.setup();
+    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
+      ...credential(),
+      token: 'token',
+    });
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    await user.click(screen.getByRole('button', { name: /^Read only$/ }));
+    await user.selectOptions(screen.getByLabelText('Expiration'), '30d');
+    await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+    expect(apiMock.createWorkspaceDevelopmentCredential).toHaveBeenCalledWith('workspace-1', {
+      name: 'External agent',
+      scopes: ['read'],
+      expires_at: '2026-11-21T12:00:00.000Z',
+    });
+  });
+
+  it('submits all scopes with no expiration by default', async () => {
+    const user = userEvent.setup();
+    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
+      ...credential(),
+      token: 'token',
+    });
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+
+    expect(apiMock.createWorkspaceDevelopmentCredential).toHaveBeenCalledWith('workspace-1', {
+      name: 'External agent',
+      scopes: ['read', 'write', 'exec'],
+      expires_at: null,
+    });
+  });
+
+  it.each([
+    ['7d', '2026-10-29T12:00:00.000Z'],
+    ['30d', '2026-11-21T12:00:00.000Z'],
+    ['90d', '2027-01-20T12:00:00.000Z'],
+    ['365d', '2027-10-22T12:00:00.000Z'],
+  ])('submits %s expiration from UTC milliseconds', async (expiration, expiresAt) => {
+    vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-10-22T12:00:00.000Z').getTime());
+    const user = userEvent.setup();
+    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
+      ...credential(),
+      token: 'token',
+    });
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    const expirationSelect = screen.getByLabelText('Expiration');
+    await waitFor(() => expect(expirationSelect.hasAttribute('disabled')).toBe(false));
+    await user.selectOptions(expirationSelect, expiration);
+    await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+
+    expect(apiMock.createWorkspaceDevelopmentCredential).toHaveBeenCalledWith(
+      'workspace-1',
+      expect.objectContaining({ expires_at: expiresAt }),
+    );
+  });
+
+  it('places the create action after the name, access, and expiration inputs', () => {
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    const create = screen.getByRole('button', { name: /create credential and continue/i });
+    const precedingInputs = [
+      screen.getByLabelText('Credential name'),
+      screen.getByRole('group', { name: 'Credential access' }),
+      screen.getByLabelText('Expiration'),
+    ];
+    for (const input of precedingInputs) {
+      expect(input.compareDocumentPosition(create) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  });
+
+  it('keeps selected scope and expiration choices after creation fails', async () => {
+    const user = userEvent.setup();
+    apiMock.createWorkspaceDevelopmentCredential.mockRejectedValue(new Error('Creation failed'));
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    await user.click(screen.getByRole('button', { name: /^Read only$/ }));
+    await user.selectOptions(screen.getByLabelText('Expiration'), '90d');
+    await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+
+    await screen.findByRole('alert');
+    expect(screen.getByRole('button', { name: /^Read only$/ }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect((screen.getByLabelText('Expiration') as HTMLSelectElement).value).toBe('90d');
+  });
+
+  it('resets credential choices after a workspace or permission context change', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    await user.click(screen.getByRole('button', { name: /^Read only$/ }));
+    await user.selectOptions(screen.getByLabelText('Expiration'), '7d');
+    rerender(<ConnectYourAgentPanel workspaceId="workspace-2" canManage />);
+
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole('button', { name: /^Read \/ Write \/ Execute$/ })
+          .getAttribute('aria-pressed'),
+      ).toBe('true'),
+    );
+    expect((screen.getByLabelText('Expiration') as HTMLSelectElement).value).toBe('none');
+
+    rerender(<ConnectYourAgentPanel workspaceId="workspace-2" canManage={false} />);
+    rerender(<ConnectYourAgentPanel workspaceId="workspace-2" canManage />);
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole('button', { name: /^Read \/ Write \/ Execute$/ })
+          .getAttribute('aria-pressed'),
+      ).toBe('true'),
+    );
+    expect((screen.getByLabelText('Expiration') as HTMLSelectElement).value).toBe('none');
+  });
+
+  it('locks every create field while loading and prevents a second create request', async () => {
+    const user = userEvent.setup();
+    let resolveList: ((items: ReturnType<typeof credential>[]) => void) | undefined;
+    let resolveCreate:
+      | ((item: ReturnType<typeof credential> & { token: string }) => void)
+      | undefined;
+    apiMock.listWorkspaceDevelopmentCredentials.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveList = resolve;
+        }),
+    );
+    apiMock.createWorkspaceDevelopmentCredential.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    expect((screen.getByLabelText('Credential name') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Expiration') as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: /^Read only$/ }).hasAttribute('disabled')).toBe(true);
+    expect(
+      screen
+        .getByRole('button', { name: /create credential and continue/i })
+        .hasAttribute('disabled'),
+    ).toBe(true);
+    await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+    expect(apiMock.createWorkspaceDevelopmentCredential).not.toHaveBeenCalled();
+
+    resolveList?.([]);
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByRole('button', {
+            name: /create credential and continue/i,
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false),
+    );
+    await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+    await user.click(screen.getByRole('button', { name: /creating credential/i }));
+    expect(apiMock.createWorkspaceDevelopmentCredential).toHaveBeenCalledTimes(1);
+    expect((screen.getByLabelText('Credential name') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Expiration') as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: /^Read only$/ }).hasAttribute('disabled')).toBe(true);
+
+    resolveCreate?.({ ...credential(), token: 'token' });
+  });
+
+  it('copies only the scopes from the credential returned by the API', async () => {
+    const user = userEvent.setup();
+    apiMock.createWorkspaceDevelopmentCredential.mockResolvedValue({
+      ...credential({ scopes: ['read'] }),
+      token: 'fresh-token-value',
+    });
+    render(<ConnectYourAgentPanel workspaceId="workspace-1" canManage />);
+
+    await user.click(screen.getByRole('button', { name: /create credential and continue/i }));
+    await user.click(screen.getByRole('button', { name: /copy setup instructions/i }));
+    expect(await navigator.clipboard.readText()).toContain('Authorized scopes: read');
+    expect(await navigator.clipboard.readText()).not.toContain('edit and run access');
   });
 
   it('does not create a second credential when navigating setup steps', async () => {
@@ -425,7 +615,7 @@ describe('ConnectYourAgentPanel', () => {
     const user = userEvent.setup();
     apiMock.listWorkspaceDevelopmentCredentials.mockResolvedValue([credential()]);
     apiMock.rotateWorkspaceDevelopmentCredential.mockResolvedValue({
-      ...credential(),
+      ...credential({ scopes: ['read', 'write'] }),
       token: 'rotated-token',
     });
     apiMock.revokeWorkspaceDevelopmentCredential.mockResolvedValue(
@@ -439,6 +629,11 @@ describe('ConnectYourAgentPanel', () => {
     await user.click(screen.getByRole('button', { name: /rotate and continue/i }));
     await user.click(screen.getByRole('button', { name: /^copy setup instructions$/i }));
     expect(await navigator.clipboard.readText()).toContain('rotated-token');
+    expect(await navigator.clipboard.readText()).toContain('Authorized scopes: read, write');
+    expect(apiMock.rotateWorkspaceDevelopmentCredential).toHaveBeenCalledWith(
+      'workspace-1',
+      'credential-1',
+    );
 
     // Advance to start step then dismiss so card actions become accessible
     await user.click(within(card).getByRole('button', { name: /^next: start working$/i }));

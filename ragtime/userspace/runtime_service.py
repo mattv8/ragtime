@@ -49,6 +49,7 @@ from ragtime.userspace.models import (
     UserSpacePreviewWarning,
     UserSpaceRuntimeActionResponse,
     UserSpaceRuntimeBridgeStatus,
+    UserSpaceRuntimeObservation,
     UserSpaceRuntimeOperation,
     UserSpaceRuntimeSession,
     UserSpaceRuntimeSessionResponse,
@@ -1530,6 +1531,8 @@ class UserSpaceRuntimeService:
 
     @staticmethod
     def _cache_entry_is_fresh(cached_at: datetime, max_age_seconds: float) -> bool:
+        if max_age_seconds <= 0:
+            return False
         return (datetime.now(timezone.utc) - cached_at).total_seconds() <= max(0.0, max_age_seconds)
 
     async def _cache_preview_upstream_session(
@@ -2946,11 +2949,13 @@ class UserSpaceRuntimeService:
         self,
         workspace_id: str,
         user_id: str,
+        *,
+        allow_recovery: bool = True,
     ) -> UserSpaceRuntimeStatusResponse:
         live_data_warning = userspace_service.get_live_data_execution_warning(workspace_id)
         active = await self._get_active_session_row(workspace_id)
         if not active:
-            return UserSpaceRuntimeStatusResponse(
+            response = UserSpaceRuntimeStatusResponse(
                 workspace_id=workspace_id,
                 session_state="stopped",
                 session_id=None,
@@ -2965,8 +2970,21 @@ class UserSpaceRuntimeService:
                     detail="Runtime session is not active",
                 ),
             )
+            if not allow_recovery:
+                response.observation = UserSpaceRuntimeObservation(
+                    state="not_applicable",
+                    devserver_running=False,
+                )
+            return response
 
         session = self._to_runtime_session(active)
+        if not allow_recovery:
+            return await self._get_nonrecovering_devserver_status(
+                workspace_id,
+                session,
+                live_data_warning,
+            )
+
         provider_status_fetch_failed = False
         try:
             provider_status = await self._runtime_provider_get_status(
@@ -3117,13 +3135,145 @@ class UserSpaceRuntimeService:
             runtime_operation_updated_at=runtime_operation_updated_at,
         )
 
+    async def _get_nonrecovering_devserver_status(
+        self,
+        workspace_id: str,
+        session: UserSpaceRuntimeSession,
+        live_data_warning: str | None,
+    ) -> UserSpaceRuntimeStatusResponse:
+        provider_status: dict[str, Any] | None
+        observation: UserSpaceRuntimeObservation
+        try:
+            provider_status = await self._runtime_provider_get_status(
+                session.provider_session_id,
+                max_age_seconds=0,
+                allow_stale_on_error=False,
+            )
+        except Exception as exc:
+            provider_status = None
+            logger.warning(
+                "Runtime provider status unavailable for workspace %s (%s)",
+                workspace_id,
+                type(exc).__name__,
+            )
+            observation = UserSpaceRuntimeObservation(
+                state="unavailable",
+                warning="Runtime provider status is unavailable; recorded runtime state is not current evidence.",
+            )
+        else:
+            if provider_status is None:
+                observation = UserSpaceRuntimeObservation(
+                    state="not_found",
+                    warning="Runtime provider session was not found; recorded running state is not current evidence.",
+                )
+            elif not isinstance(provider_status, dict) or not provider_status:
+                provider_status = None
+                observation = UserSpaceRuntimeObservation(
+                    state="unavailable",
+                    warning="Runtime provider status is unavailable; recorded runtime state is not current evidence.",
+                )
+            else:
+                observed_liveness = provider_status.get("devserver_running")
+                observation = UserSpaceRuntimeObservation(
+                    state="observed",
+                    observed_at=utc_now(),
+                    provider_updated_at=self._parse_runtime_bridge_datetime(provider_status.get("updated_at")),
+                    devserver_running=observed_liveness if isinstance(observed_liveness, bool) else None,
+                    warning=(
+                        "Runtime provider did not report devserver liveness; recorded running state is not current evidence."
+                        if not isinstance(observed_liveness, bool)
+                        else None
+                    ),
+                )
+
+        runtime_capabilities: dict[str, Any] | None = None
+        runtime_has_cap_sys_admin: bool | None = None
+        runtime_operation_id: str | None = None
+        runtime_operation_phase: RuntimeOperationPhase | None = None
+        runtime_operation_started_at: Any | None = None
+        runtime_operation_updated_at: Any | None = None
+        state_for_response = session.state
+        launch_framework = session.launch_framework
+        launch_command = session.launch_command
+        launch_cwd = session.launch_cwd
+        launch_port = session.launch_port
+        last_error = session.last_error
+        if provider_status:
+            delta = self._merge_provider_status(session, provider_status)
+            state_for_response = cast(RuntimeSessionState, delta.get("state", session.state))
+            launch_framework = delta.get("launchFramework", session.launch_framework)
+            launch_command = delta.get("launchCommand", session.launch_command)
+            launch_cwd = delta.get("launchCwd", session.launch_cwd)
+            launch_port = delta.get("launchPort", session.launch_port)
+            last_error = delta.get("lastError", session.last_error)
+            raw_runtime_capabilities = provider_status.get("runtime_capabilities")
+            if isinstance(raw_runtime_capabilities, dict):
+                runtime_capabilities = raw_runtime_capabilities
+                cap_value = raw_runtime_capabilities.get("has_cap_sys_admin")
+                if isinstance(cap_value, bool):
+                    runtime_has_cap_sys_admin = cap_value
+            runtime_operation_id = str(provider_status.get("runtime_operation_id") or "").strip() or None
+            phase_value = str(provider_status.get("runtime_operation_phase") or "").strip() or None
+            allowed_runtime_phases = {
+                "queued",
+                "provisioning",
+                "bootstrapping",
+                "deps_install",
+                "launching",
+                "probing",
+                "ready",
+                "failed",
+                "stopped",
+            }
+            if phase_value in allowed_runtime_phases:
+                runtime_operation_phase = cast(RuntimeOperationPhase, phase_value)
+            runtime_operation_started_at = self._parse_runtime_bridge_datetime(
+                provider_status.get("runtime_operation_started_at"),
+            )
+            runtime_operation_updated_at = self._parse_runtime_bridge_datetime(
+                provider_status.get("runtime_operation_updated_at"),
+            )
+
+        bridge_session = session.model_copy(update={"state": state_for_response})
+        bridge_status = await self._get_runtime_bridge_status_for_session(bridge_session, provider_status)
+        return UserSpaceRuntimeStatusResponse(
+            workspace_id=workspace_id,
+            session_state=state_for_response,
+            session_id=session.id,
+            devserver_running=observation.devserver_running is True,
+            devserver_port=launch_port or _RUNTIME_DEVSERVER_PORT,
+            launch_framework=launch_framework,
+            launch_command=launch_command,
+            launch_cwd=launch_cwd,
+            runtime_capabilities=runtime_capabilities,
+            runtime_has_cap_sys_admin=runtime_has_cap_sys_admin,
+            preview_url=self._build_preview_origin(workspace_id),
+            last_error=last_error,
+            live_data_warning=live_data_warning,
+            bridge_status=bridge_status,
+            runtime_operation_id=runtime_operation_id,
+            runtime_operation_phase=runtime_operation_phase,
+            runtime_operation_started_at=runtime_operation_started_at,
+            runtime_operation_updated_at=runtime_operation_updated_at,
+            observation=observation,
+            recorded_last_heartbeat_at=session.last_heartbeat_at,
+            recorded_idle_expires_at=session.idle_expires_at,
+            recorded_ttl_expires_at=session.ttl_expires_at,
+        )
+
     async def get_devserver_status(
         self,
         workspace_id: str,
         user_id: str,
+        *,
+        allow_recovery: bool = True,
     ) -> UserSpaceRuntimeStatusResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
-        return await self._get_devserver_status_authorized(workspace_id, user_id)
+        return await self._get_devserver_status_authorized(
+            workspace_id,
+            user_id,
+            allow_recovery=allow_recovery,
+        )
 
     async def get_workspace_tab_state(
         self,

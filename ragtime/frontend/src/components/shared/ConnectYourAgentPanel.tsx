@@ -11,6 +11,7 @@ import {
 } from './codingAgentClients';
 import { CodingAgentClientGuide } from './CodingAgentClientGuide';
 import './CodingAgentSetup.css';
+import './CodingAgentCredentialOptions.css';
 
 interface ConnectYourAgentPanelProps {
   workspaceId: string;
@@ -29,13 +30,14 @@ function buildSetupInstructions(
   workspaceId: string,
   token: string,
   credentialName: string,
+  scopes: string[],
   clientId: CodingAgentClientId,
 ): string {
   const client = CODING_AGENT_CLIENTS.find((item) => item.id === clientId)!;
   return [
     `# Set up ${client.label}`,
     '',
-    `Authenticate with this workspace's development credential. It grants the agent read access to workspace context plus authorized edit and run operations. Use the manifest URL to discover and install required skills, configuration, and rules.`,
+    `Authenticate with this workspace's development credential. Authorized scopes: ${scopes.join(', ') || 'workspace development access'}. Use the manifest URL to discover and install required skills, configuration, and rules.`,
     '',
     '**Manifest URL:**',
     bootstrapManifestUrl,
@@ -71,6 +73,33 @@ function buildSetupInstructions(
   ].join('\n');
 }
 
+const CREDENTIAL_SCOPE_PRESETS = [
+  { label: 'Read only', scopes: ['read'] },
+  { label: 'Read / Write', scopes: ['read', 'write'] },
+  { label: 'Read / Write / Execute', scopes: ['read', 'write', 'exec'] },
+] as const;
+
+const CREDENTIAL_EXPIRATIONS = [
+  { label: 'No expiration', value: 'none', days: null },
+  { label: '7 days', value: '7d', days: 7 },
+  { label: '30 days', value: '30d', days: 30 },
+  { label: '90 days', value: '90d', days: 90 },
+  { label: '1 year', value: '365d', days: 365 },
+] as const;
+
+type CredentialExpirationValue = (typeof CREDENTIAL_EXPIRATIONS)[number]['value'];
+
+function isCredentialExpirationValue(value: string): value is CredentialExpirationValue {
+  return CREDENTIAL_EXPIRATIONS.some((option) => option.value === value);
+}
+
+function getExpiry(value: CredentialExpirationValue): string | null {
+  const option = CREDENTIAL_EXPIRATIONS.find((item) => item.value === value)!;
+  return option.days === null
+    ? null
+    : new Date(Date.now() + option.days * 86_400_000).toISOString();
+}
+
 const NATIVE_MANIFEST_CLIENT_IDS = new Set<CodingAgentClientId>([
   'opencode',
   'claude-code',
@@ -90,6 +119,17 @@ function getScopeDescription(credential: WorkspaceDevelopmentCredential): string
   return credential.scopes.length > 0
     ? `Authorized scopes: ${credential.scopes.join(', ')}`
     : 'Authorized workspace development access';
+}
+
+function getExpiryDescription(credential: WorkspaceDevelopmentCredential): string {
+  if (!credential.expires_at) return 'No expiration';
+  const expiry = new Date(credential.expires_at);
+  if (Number.isNaN(expiry.getTime())) return 'Expiration unavailable';
+  const formatter = new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+  return `Expires ${formatter.format(expiry)} (${formatter.resolvedOptions().timeZone})`;
 }
 
 function buildFirstRequest(workspaceId: string): string {
@@ -161,6 +201,8 @@ export function ConnectYourAgentPanel({
   const [showCreateForm, setShowCreateForm] = useState(true);
   const [pendingRotationId, setPendingRotationId] = useState<string | null>(null);
   const [name, setName] = useState('External agent');
+  const [scopes, setScopes] = useState<string[]>(['read', 'write', 'exec']);
+  const [expiration, setExpiration] = useState<CredentialExpirationValue>('none');
   const [loading, setLoading] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -210,6 +252,8 @@ export function ConnectYourAgentPanel({
     setPendingRotationId(null);
     setIsCreating(false);
     setError(null);
+    setScopes(['read', 'write', 'exec']);
+    setExpiration('none');
     if (!canManage) return;
 
     setLoading(true);
@@ -258,6 +302,8 @@ export function ConnectYourAgentPanel({
     void runWorkspaceAction(async (requestedWorkspaceId) => {
       const created = await api.createWorkspaceDevelopmentCredential(requestedWorkspaceId, {
         name: name.trim() || 'External agent',
+        scopes,
+        expires_at: getExpiry(expiration),
       });
       if (isCurrentContext(requestedWorkspaceId)) {
         setCredentials((items) => [...items, created]);
@@ -460,8 +506,60 @@ export function ConnectYourAgentPanel({
                       id={`workspace-agent-name-${workspaceId}`}
                       type="text"
                       value={name}
+                      disabled={loading}
                       onChange={(event) => setName(event.target.value)}
                     />
+                  </div>
+                  <div
+                    className="userspace-credential-options"
+                    data-userspace-panel="credential-options"
+                  >
+                    <div className="userspace-credential-option-group">
+                      <span className="userspace-connect-agent-field-label">Access</span>
+                      <div
+                        className="userspace-credential-option-buttons"
+                        role="group"
+                        aria-label="Credential access"
+                      >
+                        {CREDENTIAL_SCOPE_PRESETS.map((preset) => (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            aria-pressed={scopes.join(',') === preset.scopes.join(',')}
+                            disabled={loading}
+                            onClick={() => setScopes([...preset.scopes])}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <label
+                      className="userspace-connect-agent-field-label"
+                      htmlFor={`workspace-agent-expiration-${workspaceId}`}
+                    >
+                      Expiration
+                      <select
+                        id={`workspace-agent-expiration-${workspaceId}`}
+                        className="userspace-credential-expiration"
+                        value={expiration}
+                        disabled={loading}
+                        onChange={(event) => {
+                          if (isCredentialExpirationValue(event.target.value)) {
+                            setExpiration(event.target.value);
+                          }
+                        }}
+                      >
+                        {CREDENTIAL_EXPIRATIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <footer className="userspace-connect-agent-footer-actions">
                     <button
                       type="button"
                       className="btn btn-primary"
@@ -470,7 +568,7 @@ export function ConnectYourAgentPanel({
                     >
                       {isCreating ? 'Creating credential…' : 'Create credential and continue'}
                     </button>
-                  </div>
+                  </footer>
                 </div>
               )}
 
@@ -503,8 +601,11 @@ export function ConnectYourAgentPanel({
                                 {status}
                               </span>
                             </div>
-                            <span className="userspace-connect-agent-card-meta muted">
+                            <span className="userspace-connect-agent-card-meta userspace-muted">
                               {getScopeDescription(credential)}
+                            </span>
+                            <span className="userspace-connect-agent-card-meta userspace-muted">
+                              {getExpiryDescription(credential)}
                             </span>
                           </div>
                           {!isActive && status !== 'Revoked' && (
@@ -608,7 +709,7 @@ export function ConnectYourAgentPanel({
                                     <p>
                                       Copy these instructions and paste them into a new conversation
                                       with your trusted coding agent. They include this credential
-                                      and explain the read, edit, and run access it grants.
+                                      and describe this credential&apos;s authorized scopes.
                                     </p>
                                     <InlineCopyButton
                                       copyText={() =>
@@ -617,6 +718,7 @@ export function ConnectYourAgentPanel({
                                           workspaceId,
                                           token,
                                           credential.name,
+                                          credential.scopes,
                                           selectedClientId,
                                         )
                                       }
@@ -633,6 +735,7 @@ export function ConnectYourAgentPanel({
                                           workspaceId,
                                           token,
                                           credential.name,
+                                          credential.scopes,
                                           selectedClientId,
                                         )}
                                       </pre>

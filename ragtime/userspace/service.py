@@ -23,13 +23,14 @@ import time as _time
 import zipfile
 from collections import deque
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any, Callable, Literal, Optional, Protocol, Sequence, TypedDict, cast
 from urllib.parse import quote, urlsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import HTTPException
@@ -309,6 +310,16 @@ from runtime.core.sqlite_recovery import capture_database
 from runtime.core.workspace_ops import is_managed_sqlite_artifact, iter_managed_sqlite_database_paths
 
 logger = get_logger(__name__)
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 _sqlite_history_operation_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("sqlite_history_operation_id", default=None)
 
 
@@ -1141,6 +1152,10 @@ _GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf899d8e13f7beb2c"
 _USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql", "influxdb"}
 _USPACE_EXEC_BROWSER_SUPPORTED_TOOL_TYPES = _USPACE_EXEC_SUPPORTED_SQL_TOOLS | {"http_api"}
 _USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES = _USPACE_EXEC_BROWSER_SUPPORTED_TOOL_TYPES | {"odoo_shell", "ssh_shell"}
+_USPACE_DEVELOPMENT_SERVER_LANE_TOOL_TYPES = frozenset({"odoo_shell"})
+_DEVELOPMENT_SERVER_LANE_USER_CONCURRENCY_LIMIT = 2
+_DEVELOPMENT_SERVER_LANE_TIMEOUT_MARGIN_SECONDS = 10
+_ODOO_TIMEOUT_ERROR_PATTERN = re.compile(r"^Error: Query timed out after (\d+)s$")
 _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
 _DEFAULT_WORKSPACE_DASHBOARD_CONTENT = (
     "export function render(container: HTMLElement) {\n"
@@ -1213,6 +1228,14 @@ _RUNTIME_BRIDGE_SQLITE_RATE_LIMIT_MAX_CALLS = 120
 _RUNTIME_BRIDGE_SQLITE_RATE_LIMIT_WINDOW_SECONDS = 60.0
 _RUNTIME_BRIDGE_SQLITE_RATE_LIMIT_MAX_KEYS = 10_000
 _RUNTIME_BRIDGE_SQLITE_AUDIT_EVENT_TYPE = "runtime_bridge_sqlite"
+
+
+@dataclass(frozen=True)
+class _ComponentExecutionLanePolicy:
+    allowed_tool_types: frozenset[str]
+    caller_write_allowed: bool
+    suppress_workspace_side_effects: bool
+
 
 # ---------------------------------------------------------------------------
 # Node framework detection from command strings
@@ -1532,6 +1555,7 @@ class UserSpaceService:
         self._execution_proofs: dict[str, dict[str, _ExecutionProofRecord]] = {}
         self._live_data_execution_warnings: dict[str, _LiveDataExecutionWarningRecord] = {}
         self._runtime_bridge_sqlite_rate_limits: dict[tuple[str, str], _RuntimeBridgeSqliteRateLimitBucket] = {}
+        self._development_server_lane_user_execution_counts: dict[str, int] = {}
         # TTL-cached entrypoint status per workspace: {workspace_id: (EntrypointStatus, timestamp)}
         self._entrypoint_status_cache: dict[str, tuple[EntrypointStatus, float]] = {}
         # Short-lived file list cache: {workspace_id: (result, include_dirs, timestamp)}
@@ -13305,6 +13329,8 @@ class UserSpaceService:
         offset: int = 0,
         limit: int = 50,
         is_admin: bool = False,
+        *,
+        query: str | None = None,
     ) -> PaginatedWorkspacesResponse:
         db = await get_db()
 
@@ -13316,6 +13342,19 @@ class UserSpaceService:
                     {"members": {"some": {"userId": user_id}}},
                 ]
             }
+        cleaned_query = (query or "").strip()
+        if cleaned_query:
+            matching_clause: dict[str, Any]
+            if _is_uuid(cleaned_query):
+                matching_clause = {"id": str(UUID(cleaned_query))}
+            else:
+                matching_clause = {
+                    "OR": [
+                        {"name": {"contains": cleaned_query, "mode": "insensitive"}},
+                        {"description": {"contains": cleaned_query, "mode": "insensitive"}},
+                    ]
+                }
+            where_clause = {"AND": [where_clause, matching_clause]} if where_clause else matching_clause
 
         rows = await db.workspace.find_many(
             where=cast(Any, where_clause),
@@ -13731,12 +13770,27 @@ class UserSpaceService:
             raise HTTPException(status_code=503, detail="Resolved workspace entitlements exceed the supported header size")
         return resolved_list
 
-    async def create_workspace(self, request: CreateWorkspaceRequest, user_id: str) -> UserSpaceWorkspace:
+    async def create_workspace(
+        self,
+        request: CreateWorkspaceRequest,
+        user_id: str,
+        *,
+        creation_workspace_id: str | None = None,
+        creation_request_id: str | None = None,
+    ) -> UserSpaceWorkspace:
+        if (creation_workspace_id is None) != (creation_request_id is None):
+            raise ValueError("Creation workspace and request IDs must be supplied together")
+        if creation_workspace_id is not None:
+            try:
+                UUID(creation_workspace_id)
+                UUID(cast(str, creation_request_id))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Creation workspace and request IDs must be UUIDs") from exc
         db = await get_db()
         is_admin = await self._is_admin_user(user_id)
 
         now = utc_now()
-        workspace_id = str(uuid4())
+        workspace_id = creation_workspace_id or str(uuid4())
         requested_name = (request.name or "").strip()
 
         if requested_name:
@@ -13827,6 +13881,7 @@ class UserSpaceService:
         storage_provisioning_started = False
         workspace_dir: Path | None = None
         created_workspace_dir = False
+        provisioning_complete = False
         try:
             files_dir = self._workspace_files_dir(workspace_id)
             workspace_dir = files_dir.parent
@@ -13854,16 +13909,34 @@ class UserSpaceService:
             )
             if not refreshed:
                 raise HTTPException(status_code=500, detail="Failed to create workspace")
-            return self._workspace_from_record(refreshed)
+            result = self._workspace_from_record(refreshed)
+            provisioning_complete = True
+            if creation_request_id is not None:
+                from ragtime.userspace.development_creation_receipts import CompletionUnconfirmed, publish_completion_receipt
+
+                try:
+                    await asyncio.to_thread(
+                        publish_completion_receipt,
+                        workspace_dir,
+                        workspace_id=workspace_id,
+                        request_id=creation_request_id,
+                        user_id=user_id,
+                    )
+                except BaseException as exc:
+                    if isinstance(exc, (asyncio.CancelledError, SystemExit, KeyboardInterrupt)):
+                        raise
+                    raise CompletionUnconfirmed("Workspace provisioning completed but completion recording is unconfirmed") from exc
+            return result
         except BaseException:
-            await asyncio.shield(
-                self._cleanup_failed_workspace_creation(
-                    db,
-                    workspace_id,
-                    storage_provisioning_started=storage_provisioning_started,
-                    workspace_dir=workspace_dir if created_workspace_dir else None,
+            if not provisioning_complete:
+                await asyncio.shield(
+                    self._cleanup_failed_workspace_creation(
+                        db,
+                        workspace_id,
+                        storage_provisioning_started=storage_provisioning_started,
+                        workspace_dir=workspace_dir if created_workspace_dir else None,
+                    )
                 )
-            )
             raise
 
     async def _cleanup_failed_workspace_creation(
@@ -22864,6 +22937,190 @@ class UserSpaceService:
         )
         return result.response
 
+    async def execute_component_from_development_server_lane(
+        self,
+        workspace_id: str,
+        request: ExecuteComponentRequest,
+        *,
+        user_id: str,
+        credential_id: str | None,
+        caller_write_allowed: bool,
+    ) -> ExecuteComponentResponse:
+        """Execute Odoo after the caller has verified catalog, exec scope, and editor role."""
+        from ragtime.content_protection.external import authorize_external_content
+
+        proxy_safe_timeout_seconds = int(await get_http_proxy_safe_timeout_seconds())
+        request = self._normalize_development_server_lane_request(request, proxy_safe_timeout_seconds)
+        principal = type("DevelopmentServerComponentPrincipal", (), {"user_id": user_id})()
+        await authorize_external_content(
+            request.model_dump(mode="json"),
+            direction="inbound",
+            principal=principal,
+            surface="component",
+            tool_id=request.component_id,
+            resource_id=workspace_id,
+            operation="development_server_lane",
+        )
+        workspace = await self._load_workspace_for_component_execution(workspace_id, user_id=user_id)
+        query_digest = self._compute_runtime_bridge_query_digest(request.request, tool_type="odoo_shell")
+        execution_count = self._development_server_lane_user_execution_counts.get(user_id, 0)
+        if execution_count >= _DEVELOPMENT_SERVER_LANE_USER_CONCURRENCY_LIMIT:
+            await self._record_development_server_lane_audit(
+                workspace_id=workspace.id,
+                user_id=user_id,
+                credential_id=credential_id,
+                component_id=request.component_id,
+                tool_type="odoo_shell",
+                access_mode=None,
+                query_digest=query_digest,
+                error_present=True,
+                error_kind="concurrency_limited",
+            )
+            raise HTTPException(status_code=429, detail="Too many direct component executions are in progress. Please retry shortly.")
+        self._development_server_lane_user_execution_counts[user_id] = execution_count + 1
+        try:
+            result = await self._execute_component_for_workspace_result(
+                workspace,
+                request,
+                error_log_prefix="Development server component execution failed",
+                lane_policy=_ComponentExecutionLanePolicy(
+                    allowed_tool_types=_USPACE_DEVELOPMENT_SERVER_LANE_TOOL_TYPES,
+                    caller_write_allowed=caller_write_allowed,
+                    suppress_workspace_side_effects=True,
+                ),
+            )
+        except HTTPException as exc:
+            await self._record_development_server_lane_audit(
+                workspace_id=workspace.id,
+                user_id=user_id,
+                credential_id=credential_id,
+                component_id=request.component_id,
+                tool_type="odoo_shell",
+                access_mode=None,
+                query_digest=query_digest,
+                error_present=True,
+                error_kind="http_error",
+            )
+            raise
+        except Exception:
+            await self._record_development_server_lane_audit(
+                workspace_id=workspace.id,
+                user_id=user_id,
+                credential_id=credential_id,
+                component_id=request.component_id,
+                tool_type="odoo_shell",
+                access_mode=None,
+                query_digest=query_digest,
+                error_present=True,
+                error_kind="exception",
+            )
+            raise
+        finally:
+            remaining = self._development_server_lane_user_execution_counts[user_id] - 1
+            if remaining:
+                self._development_server_lane_user_execution_counts[user_id] = remaining
+            else:
+                del self._development_server_lane_user_execution_counts[user_id]
+
+        response = result.response
+        timeout_match = _ODOO_TIMEOUT_ERROR_PATTERN.fullmatch(response.error or "")
+        if response.error_kind == "timeout" or timeout_match is not None:
+            timeout_seconds = response.timeout_seconds
+            if timeout_seconds is None and timeout_match is not None:
+                timeout_seconds = int(timeout_match.group(1))
+            timeout_seconds = max(1, int(timeout_seconds or 1))
+            admin_action = (
+                f"Split the work into smaller calls; each call is capped at the requested or platform time limit of {timeout_seconds}s on every execution lane."
+            )
+            response = response.model_copy(
+                update={
+                    "error": f"Direct component execution exceeded the requested or platform time limit of {timeout_seconds}s. {admin_action}",
+                    "admin_action": admin_action,
+                    "error_kind": "timeout",
+                    "timeout_seconds": timeout_seconds,
+                }
+            )
+        await self._record_development_server_lane_audit(
+            workspace_id=workspace.id,
+            user_id=user_id,
+            credential_id=credential_id,
+            component_id=request.component_id,
+            tool_type=result.tool_type,
+            access_mode=result.access_mode,
+            query_digest=query_digest,
+            error_present=response.error is not None,
+            error_kind=response.error_kind or ("execution_error" if response.error else None),
+        )
+        await authorize_external_content(
+            response.model_dump(mode="json"),
+            direction="outbound",
+            principal=principal,
+            surface="component",
+            tool_id=request.component_id,
+            resource_id=workspace_id,
+            operation="development_server_lane",
+        )
+        return response
+
+    @staticmethod
+    def _normalize_development_server_lane_request(
+        request: ExecuteComponentRequest,
+        proxy_safe_timeout_seconds: int,
+    ) -> ExecuteComponentRequest:
+        payload = request.request
+        if isinstance(payload, str):
+            payload = {"code": payload}
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="Direct Odoo execution request must be a string or object")
+        unknown_keys = set(payload) - {"code", "reason", "timeout"}
+        if unknown_keys:
+            raise HTTPException(status_code=422, detail=f"Unknown direct Odoo request fields: {sorted(unknown_keys)}")
+        code = payload.get("code")
+        reason = payload.get("reason", "")
+        timeout = payload.get("timeout")
+        if not isinstance(code, str) or not isinstance(reason, str):
+            raise HTTPException(status_code=422, detail="Direct Odoo code and reason must be strings")
+        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, int)):
+            raise HTTPException(status_code=422, detail="Direct Odoo timeout must be an integer")
+        inner_timeout_limit = max(1, proxy_safe_timeout_seconds - _DEVELOPMENT_SERVER_LANE_TIMEOUT_MARGIN_SECONDS)
+        effective_timeout = min(timeout, inner_timeout_limit) if isinstance(timeout, int) and timeout > 0 else inner_timeout_limit
+        return request.model_copy(update={"request": {"code": code, "reason": reason, "timeout": effective_timeout}})
+
+    async def _record_development_server_lane_audit(
+        self,
+        *,
+        workspace_id: str,
+        user_id: str,
+        credential_id: str | None,
+        component_id: str,
+        tool_type: str | None,
+        access_mode: str | None,
+        query_digest: str,
+        error_present: bool,
+        error_kind: str | None,
+    ) -> None:
+        try:
+            recorded = await self._record_runtime_audit_event(
+                workspace_id,
+                user_id,
+                "development_component_execute",
+                {
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "credential_id": credential_id,
+                    "component_id": component_id,
+                    "tool_type": tool_type,
+                    "access_mode": access_mode,
+                    "query_digest": query_digest,
+                    "error_present": error_present,
+                    "error_kind": error_kind,
+                },
+            )
+            if not recorded:
+                logger.debug("Failed to persist development server component audit for workspace %s", workspace_id)
+        except Exception:  # noqa: BLE001 - audit must not break execution
+            logger.exception("Failed to record development server component audit for workspace %s", workspace_id)
+
     async def query_runtime_bridge_sqlite(
         self,
         *,
@@ -23238,16 +23495,19 @@ class UserSpaceService:
         error_log_prefix: str,
         record_diagnostics: bool = True,
         allow_workspace_write: bool = False,
+        lane_policy: _ComponentExecutionLanePolicy | None = None,
     ) -> _ExecuteComponentExecutionResult:
         http_timeout_seconds = await get_http_proxy_safe_timeout_seconds()
         selected_tool_ids = await self._resolve_effective_workspace_tool_ids(workspace)
-        owner_access_levels = await self._resolve_workspace_owner_tool_access(workspace, selected_tool_ids) if allow_workspace_write else None
+        allow_server_execution_access = allow_workspace_write or lane_policy is not None
+        owner_access_levels = await self._resolve_workspace_owner_tool_access(workspace, selected_tool_ids) if allow_server_execution_access else None
         resolved_config = await self._resolve_component_execution_config_for_tool_ids(
             selected_tool_ids,
             request.component_id,
             workspace_tool_options=getattr(workspace, "tool_options", {}),
-            allow_runtime_bridge_tools=allow_workspace_write,
+            allow_runtime_bridge_tools=allow_server_execution_access,
             owner_access_levels=owner_access_levels,
+            lane_policy=lane_policy,
         )
         unavailable_reason = tool_health_monitor.get_known_unavailable_reason(resolved_config.resolved_id)
         started_at = _time.monotonic()
@@ -23290,11 +23550,12 @@ class UserSpaceService:
                 request.component_id,
                 timeout_seconds,
             )
-            self.record_live_data_execution_warning(
-                workspace.id,
-                request.component_id,
-                error_message,
-            )
+            if lane_policy is None or not lane_policy.suppress_workspace_side_effects:
+                self.record_live_data_execution_warning(
+                    workspace.id,
+                    request.component_id,
+                    error_message,
+                )
             response = ExecuteComponentResponse(
                 component_id=request.component_id,
                 rows=[],
@@ -23305,7 +23566,7 @@ class UserSpaceService:
                 timeout_seconds=timeout_seconds,
                 admin_action=admin_action,
             )
-            if record_diagnostics:
+            if record_diagnostics and (lane_policy is None or not lane_policy.suppress_workspace_side_effects):
                 await self.record_workspace_preview_diagnostic_events(
                     workspace.id,
                     [
@@ -23370,7 +23631,7 @@ class UserSpaceService:
                 access_mode=result.access_mode,
                 tool_type=result.tool_type,
             )
-        if not response.error:
+        if not response.error and (lane_policy is None or not lane_policy.suppress_workspace_side_effects):
             self.record_execution_proof(
                 workspace.id,
                 request.component_id,
@@ -23378,14 +23639,14 @@ class UserSpaceService:
                 result.proof_input,
             )
             self.clear_live_data_execution_warning(workspace.id)
-        else:
+        elif lane_policy is None or not lane_policy.suppress_workspace_side_effects:
             self.record_live_data_execution_warning(
                 workspace.id,
                 request.component_id,
-                response.error,
+                response.error or "",
             )
 
-        if record_diagnostics:
+        if record_diagnostics and (lane_policy is None or not lane_policy.suppress_workspace_side_effects):
             await self.record_workspace_preview_diagnostic_events(
                 workspace.id,
                 [
@@ -23579,9 +23840,12 @@ class UserSpaceService:
         workspace_tool_options: dict[str, Any] | None = None,
         allow_runtime_bridge_tools: bool = False,
         owner_access_levels: dict[str, ToolAccessLevel] | None = None,
+        lane_policy: _ComponentExecutionLanePolicy | None = None,
     ) -> _ResolvedComponentExecutionConfig:
         resolved_id = component_id
 
+        if lane_policy is not None and resolved_id not in selected_tool_ids:
+            raise HTTPException(status_code=403, detail=f"Component {component_id} is not selected for this request.")
         if resolved_id not in selected_tool_ids:
             # Fallback: try to match by tool name among selected tools.
             matched_id = await self._resolve_component_id_by_name_for_tool_ids(selected_tool_ids, component_id)
@@ -23600,12 +23864,20 @@ class UserSpaceService:
             )
 
         tool_type = tool_config.tool_type.value
-        supported_tool_types = _USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES if allow_runtime_bridge_tools else _USPACE_EXEC_BROWSER_SUPPORTED_TOOL_TYPES
+        supported_tool_types: set[str] | frozenset[str]
+        if lane_policy is not None:
+            supported_tool_types = lane_policy.allowed_tool_types
+        elif allow_runtime_bridge_tools:
+            supported_tool_types = _USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES
+        else:
+            supported_tool_types = _USPACE_EXEC_BROWSER_SUPPORTED_TOOL_TYPES
         if tool_type not in supported_tool_types:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Runtime bridge execution does not support {tool_type} tools."
+                    "Direct server execution supports odoo_shell tools only."
+                    if lane_policy is not None
+                    else f"Runtime bridge execution does not support {tool_type} tools."
                     if allow_runtime_bridge_tools
                     else "Live preview execution supports postgres, mysql, mssql, influxdb, and http_api tools only."
                 ),
@@ -23617,6 +23889,7 @@ class UserSpaceService:
             (
                 resolve_workspace_tool_write_access(bool(getattr(tool_config, "allow_write", False)), options)
                 and (owner_access_levels or {}).get(resolved_id, "deny") == "read_write"
+                and (lane_policy is None or lane_policy.caller_write_allowed)
             )
             if allow_runtime_bridge_tools
             else False

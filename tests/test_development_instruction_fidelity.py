@@ -4,7 +4,7 @@ import unittest
 
 from ragtime.userspace.development_service import development_service
 from ragtime.userspace.instruction_bundle import build_instruction_bundle
-from ragtime.userspace.instruction_content import build_external_guidance_documents
+from ragtime.userspace.instruction_content import GUIDANCE_TOPIC_METADATA, build_external_guidance_documents
 
 
 class DevelopmentInstructionFidelityTests(unittest.TestCase):
@@ -28,6 +28,8 @@ class DevelopmentInstructionFidelityTests(unittest.TestCase):
         self.assertNotIn("search_knowledge", "\n".join(documents.values()))
         self.assertNotIn("{{path}}", "\n".join(documents.values()))
         self.assertNotIn("create_html_component", documents["ui"])
+        self.assertEqual(set(GUIDANCE_TOPIC_METADATA), set(documents))
+        self.assertIn("Environment values are intentionally absent", documents["workspace"])
 
     def test_persistence_lanes_have_independent_applicability(self) -> None:
         persistence = build_external_guidance_documents()["persistence"]

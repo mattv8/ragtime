@@ -42,7 +42,7 @@ describe('CodingAgentClientGuide', () => {
     );
     expect(screen.getByRole('button', { name: /copy oauth mcp endpoint/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /copy safe verification prompt/i })).toBeTruthy();
-    expect(screen.getByText(/Choose Authentication:/)).toBeTruthy();
+    expect(screen.getByText(/create a developer app using OAuth/)).toBeTruthy();
     expect(screen.getByText(/Complete Ragtime sign-in and MFA if prompted/)).toBeTruthy();
     expect(screen.getByText(/No workspace credential is needed/)).toBeTruthy();
     expect(screen.queryByText(/YOUR_WORKSPACE_CREDENTIAL/)).toBeNull();

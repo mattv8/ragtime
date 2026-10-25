@@ -98,6 +98,33 @@ class InstructionBundleTests(unittest.TestCase):
         self.assertNotIn("SQLite local persistence", bundle["turn_instructions"])
         self.assertNotIn("live data execution results", system["workspace"])
 
+    def test_bundle_exports_runtime_observation_without_treating_records_as_liveness(self):
+        context = self._context()
+        context["runtime_status"] = {"devserver_running": True}
+        context["runtime_observation"] = {
+            "state": "unavailable",
+            "devserver_running": None,
+            "warning": "Runtime provider status is unavailable; recorded runtime state is not current evidence.",
+        }
+
+        bundle = build_instruction_bundle(context)
+
+        self.assertEqual(bundle["facts"]["runtime_observation"]["state"], "unavailable")
+        self.assertIn("not current evidence", bundle["turn_instructions"])
+
+    def test_bundle_keeps_recorded_blocker_and_live_data_timeout_guidance_with_unknown_observation(self):
+        context = self._context()
+        context["runtime_observation"] = {"state": "unavailable", "devserver_running": None, "warning": "Provider unavailable."}
+        context["runtime_blocker_line"] = (
+            "- Recorded runtime blocker (not current liveness evidence): Last runtime error: startup failed.\n- WARNING Live data query TIMEOUT: retry after narrowing the query.\n"
+        )
+
+        bundle = build_instruction_bundle(context)
+
+        self.assertIn("Recorded runtime blocker", bundle["turn_instructions"])
+        self.assertIn("Live data query TIMEOUT", bundle["turn_instructions"])
+        self.assertEqual(bundle["facts"]["runtime_blocker"], context["runtime_blocker_line"])
+
 
 if __name__ == "__main__":
     unittest.main()

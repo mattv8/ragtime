@@ -2,6 +2,7 @@ import hashlib
 import json
 import unittest
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import cast
 from unittest import mock
@@ -13,12 +14,20 @@ from ragtime.mcp import server as mcp_server
 from ragtime.userspace.development_access import DevelopmentPrincipal
 from ragtime.userspace.development_bootstrap import MAX_MCP_RESPONSE_BYTES, serialize_mcp_payload
 from ragtime.userspace.development_service import development_service
+from ragtime.userspace.models import UserSpaceWorkspace, WorkspaceToolOptionState
 
 
 class DevelopmentSshBoundaryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.workspace_id = "workspace-1"
-        self.workspace = SimpleNamespace(id=self.workspace_id, tool_options={})
+        now = datetime.now(timezone.utc)
+        self.workspace = UserSpaceWorkspace(
+            id=self.workspace_id,
+            name="Workspace",
+            owner_user_id="owner",
+            created_at=now,
+            updated_at=now,
+        )
         self.principal = DevelopmentPrincipal(
             user_id="caller",
             is_admin=False,
@@ -51,7 +60,7 @@ class DevelopmentSshBoundaryTests(unittest.IsolatedAsyncioTestCase):
         ids = [str(item.id) for item in configs]
         caller = caller if caller is not None else {tool_id: "read_write" for tool_id in ids}
         owner = owner if owner is not None else {tool_id: "read_write" for tool_id in ids}
-        self.workspace.tool_options = {tool_id: {"write_access_enabled": True} for tool_id in ids}
+        self.workspace.tool_options = {tool_id: WorkspaceToolOptionState(write_access_enabled=True) for tool_id in ids}
         enforce = mock.AsyncMock(return_value=self.workspace)
         stack.enter_context(mock.patch("ragtime.userspace.development_service.userspace_service.enforce_workspace_role", new=enforce))
         audit = mock.AsyncMock()
@@ -343,6 +352,7 @@ class DevelopmentSshBoundaryTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(mock.patch("ragtime.userspace.development_service.repository.get_tool_config", new=mock.AsyncMock(return_value=config)))
             stack.enter_context(mock.patch("ragtime.userspace.development_service.get_db", new=mock.AsyncMock(return_value=fake_db)))
             resources = await development_service.execute(principal, self.workspace_id, "resources", {})
+        self.assertEqual(set(resources), {"tools", "indexes", "catalog_revision"})
         resource = resources["tools"][0]
         metadata = resource["ssh_operations"]
         self.assertFalse(metadata["ssh_execute"]["supported"])

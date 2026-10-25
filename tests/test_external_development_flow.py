@@ -2,6 +2,7 @@ import unittest
 
 from fastapi import HTTPException
 
+from ragtime.userspace.development_access import DevelopmentPrincipal
 from ragtime.userspace.development_service import development_service
 
 
@@ -40,6 +41,10 @@ class ExternalDevelopmentOperationContractTests(unittest.TestCase):
                 "exec_cancel",
                 "ssh_execute",
                 "ssh_transfer",
+                "workspace_metadata_update",
+                "env_placeholder_upsert",
+                "workspace_tools_available",
+                "workspace_tools_set",
             },
         )
         for operation in operations.values():
@@ -88,6 +93,22 @@ class ExternalDevelopmentOperationContractTests(unittest.TestCase):
         operations = development_service.list_operations(frozenset({"read"}))
         self.assertTrue(operations)
         self.assertEqual({operation["scope"] for operation in operations}, {"read"})
+
+    def test_workspace_credential_registry_hides_user_only_management_operations(self) -> None:
+        principal = DevelopmentPrincipal(
+            user_id="user-1",
+            is_admin=False,
+            credential_id="credential-1",
+            workspace_id="workspace-1",
+            scopes=frozenset({"read", "write"}),
+            auth_source="workspace_credential",
+        )
+
+        operations = {operation["name"] for operation in development_service.list_operations(principal.scopes, principal=principal)}
+
+        self.assertNotIn("workspace_tools_available", operations)
+        self.assertNotIn("workspace_tools_set", operations)
+        self.assertIn("workspace_metadata_update", operations)
 
     def test_file_write_request_forwards_typed_live_data_contract(self) -> None:
         request = development_service._build_file_write_request(

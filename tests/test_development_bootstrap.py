@@ -218,6 +218,13 @@ class DevelopmentBootstrapTests(unittest.TestCase):
         self.assertEqual(contract["read_arguments"]["revision"], contract["sha256"])
         self.assertLessEqual(len(json.dumps(compact, ensure_ascii=False, separators=(",", ":")).encode()), MAX_MCP_RESPONSE_BYTES)
 
+    def test_compact_guidance_references_include_canonical_metadata(self) -> None:
+        compact = build_compact_context({"workspace": {"id": "workspace-1"}}, guidance=self.guidance)
+
+        reference = next(item for item in compact["guidance_documents"] if item["id"] == "workspace")
+        self.assertEqual(reference["title"], "Workspace workflow")
+        self.assertIn("Workspace and Runtime", compact["guidance_index_note"])
+
     def test_compact_context_and_resources_do_not_truncate_large_descriptions(self) -> None:
         full = {"context_revision": "live", "capabilities": {"authorized_tools": [{"name": "large", "description": "x" * 70000}], "authorized_indexes": []}}
         compact = build_compact_context(full, guidance=self.guidance, operations=[])
@@ -330,6 +337,48 @@ class DevelopmentBootstrapTests(unittest.TestCase):
         second = read_context_facts(second_context, first["sha256"])
         self.assertEqual(first["sha256"], second["sha256"])
         self.assertEqual(first["text"], second["text"])
+
+    def test_fresh_status_preserves_runtime_observation_warning_when_truncated(self) -> None:
+        compact = build_compact_context(
+            {
+                "instruction_bundle": {
+                    "facts": {
+                        "runtime_status": {
+                            "diagnostics": "x" * 5000,
+                            "observation": {
+                                "state": "unavailable",
+                                "devserver_running": None,
+                                "observed_at": "2026-10-22T00:00:00Z",
+                                "warning": "Provider did not return current liveness.",
+                            },
+                        }
+                    }
+                }
+            },
+            guidance=self.guidance,
+        )
+
+        self.assertTrue(compact["fresh_status"]["truncated"])
+        self.assertEqual(compact["fresh_status"]["runtime_observation"]["warning"], "Provider did not return current liveness.")
+
+    def test_fresh_status_truncation_remains_bounded_with_unexpected_observation_values(self) -> None:
+        compact = build_compact_context(
+            {
+                "instruction_bundle": {
+                    "facts": {
+                        "runtime_status": {
+                            "diagnostics": "x" * 5000,
+                            "observation": {"state": "\x00" * 1000, "observed_at": "\x00" * 1000, "warning": "liveness unavailable: " + ("\x00" * 5000)},
+                        }
+                    }
+                }
+            },
+            guidance=self.guidance,
+        )
+
+        fresh_status = compact["fresh_status"]
+        self.assertLessEqual(len(json.dumps(fresh_status, ensure_ascii=False, separators=(",", ":")).encode("utf-8")), 2048)
+        self.assertIn("liveness unavailable", fresh_status["runtime_observation"]["warning"])
 
     def test_resource_page_makes_progress_with_many_long_names(self) -> None:
         full = {

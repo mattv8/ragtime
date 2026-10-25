@@ -3,6 +3,7 @@
 import ast
 import inspect
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest import mock
 
@@ -14,6 +15,18 @@ from ragtime.mcp import server as mcp_server
 from ragtime.userspace import development_service as development_module
 from ragtime.userspace.development_access import DevelopmentPrincipal
 from ragtime.userspace.development_routes import DevelopmentOperationRequest, execute_operation, get_operations
+from ragtime.userspace.models import UserSpaceWorkspace
+
+
+def _workspace(workspace_id: str, owner_user_id: str) -> UserSpaceWorkspace:
+    now = datetime.now(timezone.utc)
+    return UserSpaceWorkspace(
+        id=workspace_id,
+        name="Workspace",
+        owner_user_id=owner_user_id,
+        created_at=now,
+        updated_at=now,
+    )
 
 
 class DevelopmentFinalContractTests(unittest.IsolatedAsyncioTestCase):
@@ -126,7 +139,7 @@ class DevelopmentFinalContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resources_enriches_only_explicitly_acl_allowed_tools_with_canonical_contracts(self) -> None:
         principal = DevelopmentPrincipal(user_id="user", is_admin=False, scopes=frozenset({"read"}))
-        workspace = SimpleNamespace(id="workspace")
+        workspace = _workspace("workspace", owner_user_id="owner")
         postgres = SimpleNamespace(
             id="postgres",
             name="Analytics",

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { forwardRef } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -238,6 +238,10 @@ vi.mock('./shared/ConnectYourAgentPanel', () => ({
       data-selection-client={selectionRequest?.clientId ?? ''}
     />
   ),
+}));
+vi.mock('./shared/AccountCodingAgentConnectModal', () => ({
+  AccountCodingAgentConnectModal: ({ isOpen }: { isOpen: boolean }) =>
+    isOpen ? <div role="dialog" aria-label="Connect your account agent" /> : null,
 }));
 vi.mock('./shared/ShareLinkModal', () => ({
   ShareLinkModal: (props: {
@@ -1204,6 +1208,27 @@ describe('UserSpacePanel workspace tool descriptions', () => {
       expect(previewApiMock.listUserSpaceWorkspaces).toHaveBeenCalled();
     });
     expect(screen.queryByRole('button', { name: 'Connect your agent to build' })).toBeNull();
+  });
+
+  it('opens account agent setup from the zero-workspace CTA', async () => {
+    const user = userEvent.setup();
+    previewApiMock.listUserSpaceWorkspaces.mockResolvedValue({ items: [], total: 0 });
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    const emptyState = await screen.findByRole('region', { name: 'Connect your account agent' });
+    expect(screen.getAllByRole('button', { name: 'Connect account agent' })).toHaveLength(1);
+    await user.click(within(emptyState).getByRole('button', { name: 'Connect account agent' }));
+
+    expect(screen.getByRole('dialog', { name: 'Connect your account agent' })).toBeTruthy();
+  });
+
+  it('opens account agent setup from the active-workspace toolbar', async () => {
+    const user = userEvent.setup();
+    render(<UserSpacePanel currentUser={{ ...CURRENT_USER }} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Connect account agent' }));
+
+    expect(screen.getByRole('dialog', { name: 'Connect your account agent' })).toBeTruthy();
   });
 
   it('returns a rail-opened modal to Workspace Grants for an ordinary toolbar open', async () => {
