@@ -42,37 +42,68 @@ function Get-EnrollmentMaterial {
     if ($CaFile) { Stop-Install 'Custom CA files require installation into the Windows trust store; no TLS bypass is supported.' }
     return Invoke-RestMethod @parameters
 }
+function Get-OpenSshExecutable {
+    $command = Get-Command sshd.exe -ErrorAction SilentlyContinue
+    if ($command) {
+        $path = if ($command.Path) { $command.Path } elseif ($command.Source) { $command.Source } else { $command.Definition }
+        if ($path) { return [pscustomobject]@{ Path = $path } }
+    }
+    $fallbackPath = Join-Path $env:WINDIR 'System32\OpenSSH\sshd.exe'
+    if (Test-Path -LiteralPath $fallbackPath -PathType Leaf) {
+        return [pscustomobject]@{ Path = (Get-Item -LiteralPath $fallbackPath).FullName }
+    }
+    return $null
+}
+function Invoke-OpenSshConfigurationProbe {
+    param([object]$OpenSsh, [string[]]$Arguments)
+    $originalPreference = $ErrorActionPreference
+    $output = @()
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $OpenSsh.Path @Arguments 2>$null)
+        if ($null -ne $LASTEXITCODE) { $exitCode = $LASTEXITCODE }
+    } finally {
+        $ErrorActionPreference = $originalPreference
+    }
+    return [pscustomobject]@{ Output = $output; ExitCode = $exitCode; Succeeded = ($exitCode -eq 0) }
+}
 function Get-OpenSshConfiguration {
-    $sshd = Get-Command sshd.exe -ErrorAction SilentlyContinue
-    if (-not $sshd -and (Test-Path "$env:WINDIR\System32\OpenSSH\sshd.exe")) { $sshd = Get-Item "$env:WINDIR\System32\OpenSSH\sshd.exe" }
-    if (-not $sshd) { return $null }
-    $configuredPort = (& $sshd.Source -T 2>$null | Where-Object { $_ -match '^port ' } | Select-Object -First 1) -replace '^port\s+', ''
+    param([object]$OpenSsh = (Get-OpenSshExecutable))
+    if (-not $OpenSsh) { return $null }
+    $probe = Invoke-OpenSshConfigurationProbe $OpenSsh @('-T')
+    $configuredPort = ($probe.Output | Where-Object { $_ -match '^port ' } | Select-Object -First 1) -replace '^port\s+', ''
     if (-not $configuredPort -or $configuredPort -notmatch '^\d+$') { $configuredPort = 22 }
-    return [pscustomobject]@{ Path = $sshd.Source; Port = [int]$configuredPort }
+    return [pscustomobject]@{ Path = $OpenSsh.Path; Port = [int]$configuredPort }
 }
 function Ensure-OpenSshServer {
     param([object]$OpenSsh)
     if ($OpenSsh) {
         $service = Get-Service sshd -ErrorAction SilentlyContinue
+        if (-not $service) { Stop-Install 'OpenSSH Server executable was found, but the sshd service is unavailable. Repair the Windows OpenSSH Server installation.' }
         if ($service -and $service.Status -ne 'Running') {
-            if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Stop-Install 'OpenSSH Server is installed but stopped; re-run elevated to start it.' }
+            if (-not (Test-Elevated)) { Stop-Install 'OpenSSH Server is installed but stopped; re-run elevated to start it.' }
             Set-Service sshd -StartupType Automatic; Start-Service sshd
         }
         return $OpenSsh
     }
-    if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    if (-not (Test-Elevated)) {
         Stop-Install 'OpenSSH Server is absent. Re-run elevated, or install it through Windows Optional Features.'
     }
     Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
-    Start-Service sshd
+    $OpenSsh = Get-OpenSshExecutable
+    if (-not $OpenSsh) { Stop-Install 'OpenSSH Server installation completed but sshd.exe was not found.' }
+    if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) { Stop-Install 'OpenSSH Server installation completed but the sshd service is unavailable.' }
     Set-Service sshd -StartupType Automatic
-    return Get-OpenSshConfiguration
+    Start-Service sshd
+    return $OpenSsh
 }
 function Get-AuthorizedKeyPath {
     param([object]$Identity, [object]$OpenSsh)
     if (-not $OpenSsh) { Stop-Install 'Cannot determine the effective sshd AuthorizedKeysFile because sshd.exe is unavailable.' }
-    $effectiveConfiguration = @(& $OpenSsh.Path -T -C "user=$($Identity.Name),host=$env:COMPUTERNAME,addr=127.0.0.1" 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $effectiveConfiguration.Count -eq 0) {
+    $probe = Invoke-OpenSshConfigurationProbe $OpenSsh @('-T', '-C', "user=$($Identity.Name),host=$env:COMPUTERNAME,addr=127.0.0.1")
+    $effectiveConfiguration = $probe.Output
+    if (-not $probe.Succeeded -or $effectiveConfiguration.Count -eq 0) {
         if (Test-Elevated) { Stop-Install 'Cannot determine the effective sshd AuthorizedKeysFile. Refusing to select a key path.' }
         return Get-NonElevatedAuthorizedKeyPath $Identity ([Security.Principal.WindowsIdentity]::GetCurrent())
     }
@@ -250,8 +281,9 @@ if ($CaFile -and -not (Test-Path -LiteralPath $CaFile)) { Stop-Install "CA file 
 
 $material = if ($Mode -eq 'offline') { [pscustomobject]@{ pairing_id = $PairingId; public_key = $PublicKey } } else { Get-EnrollmentMaterial }
 if (-not $material.pairing_id -or -not $material.public_key -or $material.public_key -notmatch '^ssh-[^ ]+ [^ ]+') { Stop-Install 'Enrollment material is incomplete or has an invalid public key.' }
-$openSsh = Get-OpenSshConfiguration
+$openSsh = Get-OpenSshExecutable
 if ($Mode -ne 'offline') { $openSsh = Ensure-OpenSshServer $openSsh }
+$openSsh = Get-OpenSshConfiguration $openSsh
 $sshdPort = if ($Port) { $Port } elseif ($openSsh) { $openSsh.Port } else { 22 }
 $keyPath = Get-AuthorizedKeyPath $identity $openSsh
 $keyDirectory = Split-Path -Parent $keyPath

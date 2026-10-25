@@ -151,7 +151,7 @@ def test_windows_acl_helpers_use_set_acl_and_harden_system_owned_directories():
     assert "FileAttributes]::ReparsePoint" in script
     assert "Get-ItemProperty -LiteralPath" in script
     assert "GetFullPath((Join-Path $Identity.Profile '.ssh\\authorized_keys'))" in script
-    assert "-T -C" in script
+    assert "Invoke-OpenSshConfigurationProbe $OpenSsh @('-T', '-C'" in script
 
 
 def test_powershell_runtime_exposes_the_portable_acl_extension_api():
@@ -311,6 +311,80 @@ $configPath = Join-Path $env:ProgramData 'ssh\\sshd_config'
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $configPath) | Out-Null
 Set-Content -LiteralPath $configPath -Value 'AuthorizedKeysFile .ssh/authorized_keys'
 if ((Get-NonElevatedAuthorizedKeyPath $identity $normal) -ne [IO.Path]::GetFullPath($profileKey)) {{ throw 'standard user did not use the configured profile key' }}
+"""
+    )
+    subprocess.run([str(pwsh), "-NoProfile", "-File", str(harness)], check=True, capture_output=True, text=True)
+
+
+def test_windows_openssh_bootstrap_starts_before_refreshing_configuration(tmp_path):
+    pwsh = _pwsh()
+    installer = (SCRIPTS / "install.ps1").read_text()
+    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    sshd = tmp_path / "sshd"
+    sshd.write_text('#!/bin/sh\nif [ "$1" = -T ]; then printf \'port %s\\n\' "${RAGTIME_TEST_PORT:-22}"; fi\n')
+    sshd.chmod(0o755)
+    harness = tmp_path / "bootstrap-test.ps1"
+    harness.write_text(
+        functions
+        + f"""
+$trace = @()
+$env:RAGTIME_TEST_PORT = '22'
+function Get-Service {{ param($Name, $ErrorAction) [pscustomobject]@{{ Status = 'Stopped' }} }}
+function Test-Elevated {{ $true }}
+function Set-Service {{ $script:trace += 'set' }}
+function Start-Service {{ $script:trace += 'start'; $env:RAGTIME_TEST_PORT = '2222' }}
+$openSsh = [pscustomobject]@{{ Path = '{sshd}' }}
+Ensure-OpenSshServer $openSsh | Out-Null
+$configuration = Get-OpenSshConfiguration $openSsh
+if (($trace -join ',') -ne 'set,start') {{ throw "service was not started: $($trace -join ',')" }}
+if ($configuration.Port -ne 2222) {{ throw "configuration was not refreshed after startup: $($configuration.Port)" }}
+"""
+    )
+    subprocess.run([str(pwsh), "-NoProfile", "-File", str(harness)], check=True, capture_output=True, text=True)
+
+
+def test_windows_native_configuration_probe_handles_stderr_without_changing_stop_preference(tmp_path):
+    pwsh = _pwsh()
+    installer = (SCRIPTS / "install.ps1").read_text()
+    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    sshd = tmp_path / "sshd"
+    sshd.write_text("#!/bin/sh\nprintf 'missing sshd_config\\n' >&2\nexit 1\n")
+    sshd.chmod(0o755)
+    harness = tmp_path / "native-error-test.ps1"
+    harness.write_text(
+        functions
+        + f"""
+$ErrorActionPreference = 'Stop'
+$probe = Invoke-OpenSshConfigurationProbe ([pscustomobject]@{{ Path = '{sshd}' }}) @('-T')
+if ($probe.Succeeded -or $probe.Output.Count -ne 0) {{ throw 'native failure was treated as configuration' }}
+if ($ErrorActionPreference -ne 'Stop') {{ throw "caller preference was changed to $ErrorActionPreference" }}
+"""
+    )
+    subprocess.run([str(pwsh), "-NoProfile", "-File", str(harness)], check=True, capture_output=True, text=True)
+
+
+def test_windows_openssh_discovery_uses_system32_fallback_and_running_service_is_unchanged(tmp_path):
+    pwsh = _pwsh()
+    installer = (SCRIPTS / "install.ps1").read_text()
+    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    fallback = tmp_path / "Windows" / "System32" / "OpenSSH" / "sshd.exe"
+    fallback.parent.mkdir(parents=True)
+    fallback.write_text("#!/bin/sh\nexit 0\n")
+    fallback.chmod(0o755)
+    harness = tmp_path / "discovery-test.ps1"
+    harness.write_text(
+        functions
+        + f"""
+$env:WINDIR = '{tmp_path / "Windows"}'
+$trace = @()
+function Get-Command {{ param($Name, $ErrorAction) $null }}
+function Get-Service {{ param($Name, $ErrorAction) [pscustomobject]@{{ Status = 'Running' }} }}
+function Set-Service {{ $script:trace += 'set' }}
+function Start-Service {{ $script:trace += 'start' }}
+$openSsh = Get-OpenSshExecutable
+if ($openSsh.Path -ne '{fallback}') {{ throw "fallback path was not used: $($openSsh.Path)" }}
+Ensure-OpenSshServer $openSsh | Out-Null
+if ($trace.Count -ne 0) {{ throw 'running service was changed' }}
 """
     )
     subprocess.run([str(pwsh), "-NoProfile", "-File", str(harness)], check=True, capture_output=True, text=True)
