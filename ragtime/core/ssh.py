@@ -361,20 +361,25 @@ def _encode_powershell_payload(command: str) -> str:
 $OutputEncoding = [Console]::OutputEncoding
 $ErrorActionPreference = 'Continue'
 $global:LASTEXITCODE = $null
-$errorCount = $Error.Count
+$__ragtimeErrorCount = $Error.Count
+$__ragtimePayloadState = [pscustomobject]@{{ Completed = $false; Success = $true; ExitCode = $null }}
 try {{
     & {{
 {command}
+        $__ragtimePayloadState.Success = $?
+        $__ragtimePayloadState.ExitCode = $LASTEXITCODE
+        $__ragtimePayloadState.Completed = $true
     }}
 }} catch {{
     [Console]::Error.WriteLine($_)
     exit 1
 }}
-if ($Error.Count -gt $errorCount) {{ exit 1 }}
-if (-not $?) {{
-    if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }}
+if ($Error.Count -gt $__ragtimeErrorCount) {{ exit 1 }}
+if ($__ragtimePayloadState.Completed -and -not $__ragtimePayloadState.Success) {{
+    if ($null -ne $__ragtimePayloadState.ExitCode) {{ exit $__ragtimePayloadState.ExitCode }}
     exit 1
 }}
+if (-not $__ragtimePayloadState.Completed -and $null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}
 exit 0
 """
     return base64.b64encode(payload.encode("utf-16le")).decode("ascii")
@@ -389,6 +394,10 @@ def _wrap_powershell_command(timeout_seconds: int | float) -> str:
     """
     timeout_literal = str(max(0, int(timeout_seconds)))
     script = f"""$ErrorActionPreference = 'Stop'
+$utf8NoBom = [Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = $utf8NoBom
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
 $payload = [Console]::In.ReadLine()
 if ([string]::IsNullOrWhiteSpace($payload)) {{ [Console]::Error.WriteLine('Missing PowerShell payload'); exit 1 }}
 $deadlineSeconds = {timeout_literal}
@@ -399,7 +408,6 @@ $processInfo.UseShellExecute = $false
 $processInfo.RedirectStandardInput = $true
 $processInfo.RedirectStandardOutput = $true
 $processInfo.RedirectStandardError = $true
-$processInfo.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
 $processInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
 $processInfo.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
 $stdinPayload = [Console]::In.ReadToEnd()
@@ -408,7 +416,12 @@ $process.StartInfo = $processInfo
 [void]$process.Start()
 $stdoutTask = $process.StandardOutput.ReadToEndAsync()
 $stderrTask = $process.StandardError.ReadToEndAsync()
-if ($stdinPayload.Length -gt 0) {{ $process.StandardInput.Write($stdinPayload) }}
+if ($stdinPayload.Length -gt 0) {{
+    $stdinBytes = $utf8NoBom.GetBytes($stdinPayload)
+    $stdinStream = $process.StandardInput.BaseStream
+    $stdinStream.Write($stdinBytes, 0, $stdinBytes.Length)
+    $stdinStream.Flush()
+}}
 $process.StandardInput.Close()
 $timedOut = $false
 $deadline = if ($deadlineSeconds -gt 0) {{ [DateTime]::UtcNow.AddSeconds($deadlineSeconds) }} else {{ $null }}

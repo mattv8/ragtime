@@ -193,6 +193,7 @@ def test_local_pwsh_parses_outer_wrapper_and_runs_inner_encoded_payload():
     wrapped = _wrap_powershell_command(5)
     outer = base64.b64decode(wrapped.rsplit(" ", 1)[1]).decode("utf-16le")
     payload = _encode_powershell_payload(user_command)
+    assert "StandardInputEncoding" not in outer
     parser_env = {**os.environ, "RAGTIME_TEST_SCRIPT": base64.b64encode(outer.encode("utf-8")).decode("ascii")}
     parsed = subprocess.run(
         [
@@ -231,6 +232,33 @@ def test_local_pwsh_parses_outer_wrapper_and_runs_inner_encoded_payload():
     assert supervised.returncode == 124
     assert "héllo" in supervised.stdout
     assert "stdin:data" in supervised.stdout
+
+    unicode_input = "naïve\n雪\n"
+    native_exit_command = "cmd /c exit 47" if os.name == "nt" else "/bin/sh -c 'exit 47'"
+    unicode_payload = _encode_powershell_payload(
+        f"$inputText = [Console]::In.ReadToEnd(); [Console]::Out.Write('stdin:' + $inputText); [Console]::Error.Write('child-error'); & {native_exit_command}"
+    )
+    unicode_supervised = subprocess.run(
+        [str(pwsh), "-NoProfile", "-NonInteractive", "-EncodedCommand", local_outer_encoded],
+        input=f"{unicode_payload}\n{unicode_input}",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert unicode_supervised.returncode == 47
+    assert unicode_supervised.stdout == f"stdin:{unicode_input}"
+    assert unicode_supervised.stderr == "child-error"
+
+    eof_payload = _encode_powershell_payload("if ([Console]::In.ReadToEnd() -eq '') { Write-Output 'eof' } else { exit 1 }")
+    eof_supervised = subprocess.run(
+        [str(pwsh), "-NoProfile", "-NonInteractive", "-EncodedCommand", local_outer_encoded],
+        input=f"{eof_payload}\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert eof_supervised.returncode == 0
+    assert eof_supervised.stdout == "eof\n"
 
     native_shell = "cmd /c" if os.name == "nt" else "/bin/sh -c"
     missing_path = "$env:TEMP\\missing-ragtime-path" if os.name == "nt" else "/missing-ragtime-path"
@@ -281,3 +309,36 @@ def test_local_pwsh_parses_outer_wrapper_and_runs_inner_encoded_payload():
     )
     assert timed_out.returncode != 0
     assert POWERSHELL_TIMEOUT_SENTINEL in timed_out.stderr
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_exit_code", "expected_stdout"),
+    [
+        ("Write-Error 'boom'; Write-Output ok; return", 1, "ok\n"),
+        ("& {native_shell} 'exit 47'; return", 47, ""),
+        ("$errorCount = 999; Write-Error 'boom'; Write-Output ok", 1, "ok\n"),
+        ("param($value = 'x'); Write-Output $value", 0, "x\n"),
+        ("Write-Output ok; return", 0, "ok\n"),
+        ("throw 'boom'", 1, ""),
+        ("exit 3", 3, ""),
+    ],
+)
+def test_local_pwsh_payload_keeps_user_scope_and_exit_contract(command, expected_exit_code, expected_stdout):
+    configured_pwsh = os.environ.get("RAGTIME_TEST_PWSH") or shutil.which("pwsh")
+    if not configured_pwsh:
+        pytest.skip("PowerShell runtime integration test requires pwsh or RAGTIME_TEST_PWSH")
+    pwsh = Path(configured_pwsh)
+    if not pwsh.is_file():
+        pytest.skip("RAGTIME_TEST_PWSH does not point to an executable")
+
+    native_shell = "cmd /c" if os.name == "nt" else "/bin/sh -c"
+    payload = _encode_powershell_payload(command.format(native_shell=native_shell))
+    result = subprocess.run(
+        [str(pwsh), "-NoProfile", "-NonInteractive", "-EncodedCommand", payload],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == expected_exit_code
+    assert result.stdout == expected_stdout
