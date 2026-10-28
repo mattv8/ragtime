@@ -23,7 +23,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
-from typing import Any, Awaitable, Callable, Coroutine, List, Literal, Optional, Protocol, Union, cast
+from typing import Any, AsyncIterator, Awaitable, Callable, Coroutine, Iterator, List, Literal, Optional, Protocol, Union, cast
 from urllib.parse import quote
 
 import httpx
@@ -264,6 +264,7 @@ from ragtime.rag.prompts import (
     build_workspace_continuity_context,
     dedupe_subagent_model_ids,
 )
+from ragtime.rag.responses_stream import astream_responses, stream_responses
 from ragtime.rag.tool_skills import (
     ToolSkillBindingState,
     ToolSkillDefinition,
@@ -631,6 +632,13 @@ def _format_active_tool_stream_error_output(tool_name: str, exc: BaseException) 
         detail = f"HTTP 524 timeout: {detail}"
     return (
         f"Error: Tool {tool_name} failed before returning a final result: {detail}. "
+        "Treat this as a failed tool result and continue using the available context."
+    )
+
+
+def _format_active_tool_stream_interrupted_output(tool_name: str) -> str:
+    return (
+        f"Error: Tool {tool_name} was interrupted before returning a final result while multiple tool calls were pending. "
         "Treat this as a failed tool result and continue using the available context."
     )
 
@@ -2559,24 +2567,28 @@ class _CopilotChatOpenAI(ChatOpenAI):
                     )
             raise
 
+    async def _astream_attempt(self, *args, **kwargs):
+        async for chunk in super()._astream(*args, **kwargs):
+            yield chunk
+
     async def _astream(self, *args, **kwargs):
         self._refresh_copilot_request_headers()
         request_targets_responses = self._request_targets_responses_api(**kwargs)
         try:
             await require_generation()
-            async for chunk in super()._astream(*args, **kwargs):
+            async for chunk in self._astream_attempt(*args, **kwargs):
                 yield chunk
         except Exception as exc:
             if request_targets_responses and self._is_chat_completions_only_error(exc):
                 self._switch_to_chat_completions_api()
                 await require_generation()
-                async for chunk in super()._astream(*args, **kwargs):
+                async for chunk in self._astream_attempt(*args, **kwargs):
                     yield chunk
                 return
 
             if self._downgrade_reasoning_parameters(exc):
                 await require_generation()
-                async for chunk in super()._astream(*args, **kwargs):
+                async for chunk in self._astream_attempt(*args, **kwargs):
                     yield chunk
                 return
 
@@ -2586,12 +2598,12 @@ class _CopilotChatOpenAI(ChatOpenAI):
                 self._switch_to_responses_api(cache_result=unsupported_api)
                 try:
                     await require_generation()
-                    async for chunk in super()._astream(*args, **kwargs):
+                    async for chunk in self._astream_attempt(*args, **kwargs):
                         yield chunk
                 except Exception as retry_exc:
                     if self.use_responses_api and self._downgrade_reasoning_parameters(retry_exc):
                         await require_generation()
-                        async for chunk in super()._astream(*args, **kwargs):
+                        async for chunk in self._astream_attempt(*args, **kwargs):
                             yield chunk
                     else:
                         raise
@@ -2599,7 +2611,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
                 refreshed = await self._refresh_expired_copilot_token()
                 if refreshed:
                     await require_generation()
-                    async for chunk in super()._astream(*args, **kwargs):
+                    async for chunk in self._astream_attempt(*args, **kwargs):
                         yield chunk
                     return
                 raise
@@ -2693,6 +2705,31 @@ def _build_codex_request(request: httpx.Request, content: bytes) -> httpx.Reques
 
 class _OpenAICodexChatOpenAI(_CopilotChatOpenAI):
     """ChatOpenAI variant that refreshes OpenAI Codex OAuth credentials."""
+
+    def _stream_responses(self, messages: list[BaseMessage], stop: Optional[list[str]] = None, run_manager: Any = None, **kwargs: Any) -> Iterator[Any]:
+        yield from stream_responses(self, messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    async def _astream_responses(
+        self, messages: list[BaseMessage], stop: Optional[list[str]] = None, run_manager: Any = None, **kwargs: Any
+    ) -> AsyncIterator[Any]:
+        async for generation_chunk in astream_responses(self, messages, stop=stop, run_manager=run_manager, **kwargs):
+            yield generation_chunk
+
+    def _stream(self, messages: list[BaseMessage], stop: Optional[list[str]] = None, run_manager: Any = None, **kwargs: Any) -> Iterator[Any]:
+        if self._request_targets_responses_api(**kwargs):
+            yield from self._stream_responses(messages, stop=stop, run_manager=run_manager, **kwargs)
+            return
+        yield from super()._stream(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    async def _astream_attempt(
+        self, messages: list[BaseMessage], stop: Optional[list[str]] = None, run_manager: Any = None, **kwargs: Any
+    ) -> AsyncIterator[Any]:
+        if self._request_targets_responses_api(**kwargs):
+            async for generation_chunk in self._astream_responses(messages, stop=stop, run_manager=run_manager, **kwargs):
+                yield generation_chunk
+            return
+        async for generation_chunk in super()._astream_attempt(messages, stop=stop, run_manager=run_manager, **kwargs):
+            yield generation_chunk
 
     async def _refresh_expired_copilot_token(self) -> bool:
         old_secret = getattr(self, "openai_api_key", None)
@@ -18561,6 +18598,7 @@ class RAGComponents:
                         attempt_replayed_tool_messages: list[BaseMessage] = []
                         attempt_provider_stalled_after_tool = False
                         attempt_provider_stream_failed = False
+                        attempt_had_attributed_tool_error = False
 
                         def _record_synthetic_tool_failure(failed_run_id: str, failure_output: str) -> dict[str, Any]:
                             active_tool_runs.discard(failed_run_id)
@@ -18602,6 +18640,15 @@ class RAGComponents:
                             if presentation_meta:
                                 tool_event["presentation"] = presentation_meta
                             return tool_event
+
+                        def _pending_tool_run_ids() -> list[str]:
+                            # Start payloads are recorded with each active run, so this covers every pending run.
+                            return [run_id for run_id in _tool_start_payloads if run_id in active_tool_runs]
+
+                        def _pending_tool_name(run_id: str) -> str:
+                            start_payload = _tool_start_payloads.get(run_id)
+                            start_info = _tool_start_times.get(run_id)
+                            return str((start_payload or {}).get("tool") or (start_info[1] if start_info else "unknown"))
 
                         async def _close_agent_stream_iter() -> None:
                             try:
@@ -18695,23 +18742,40 @@ class RAGComponents:
                                 break
                             except asyncio.TimeoutError:
                                 if active_tool_runs:
-                                    stalled_run_id = next(iter(active_tool_runs))
-                                    start_payload = _tool_start_payloads.get(stalled_run_id)
-                                    start_info = _tool_start_times.get(stalled_run_id)
-                                    tool_name = str((start_payload or {}).get("tool") or (start_info[1] if start_info else "unknown"))
-                                    logger.warning(
-                                        "Tool %s produced no completion event within %ss (run_id=%s); "
-                                        "closing the stalled stream and continuing with a synthetic tool failure",
-                                        tool_name,
-                                        f"{_current_stream_inactivity_timeout():.2f}".rstrip("0").rstrip("."),
-                                        stalled_run_id[:8],
-                                    )
+                                    pending_run_ids = _pending_tool_run_ids()
+                                    # Capture the duration before closing: the inactivity timeout is the known cause for every pending run.
+                                    inactivity_seconds = _current_stream_inactivity_timeout()
+                                    rendered_inactivity_seconds = f"{inactivity_seconds:.2f}".rstrip("0").rstrip(".")
                                     request_tool_state["active_tool_stream_timed_out"] = True
                                     await _close_agent_stream_iter()
-                                    yield _record_synthetic_tool_failure(
-                                        stalled_run_id,
-                                        _format_active_tool_timeout_output(tool_name, _current_stream_inactivity_timeout()),
-                                    )
+                                    if len(pending_run_ids) == 1:
+                                        stalled_run_id = pending_run_ids[0]
+                                        tool_name = _pending_tool_name(stalled_run_id)
+                                        logger.warning(
+                                            "Tool %s produced no completion event within %ss (run_id=%s); "
+                                            "closing the stalled stream and continuing with a synthetic tool failure",
+                                            tool_name,
+                                            rendered_inactivity_seconds,
+                                            stalled_run_id[:8],
+                                        )
+                                        yield _record_synthetic_tool_failure(
+                                            stalled_run_id,
+                                            _format_active_tool_timeout_output(tool_name, inactivity_seconds),
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "Agent stream became inactive for %ss with %d pending tool calls (run_ids=%s); "
+                                            "closing all with timeout synthetic failures",
+                                            rendered_inactivity_seconds,
+                                            len(pending_run_ids),
+                                            ", ".join(run_id[:8] for run_id in pending_run_ids),
+                                        )
+                                        for stalled_run_id in pending_run_ids:
+                                            tool_name = _pending_tool_name(stalled_run_id)
+                                            yield _record_synthetic_tool_failure(
+                                                stalled_run_id,
+                                                _format_active_tool_timeout_output(tool_name, inactivity_seconds),
+                                            )
                                     break
 
                                 logger.warning(
@@ -18732,22 +18796,34 @@ class RAGComponents:
                                     await _close_agent_stream_iter()
                                     raise
                                 if active_tool_runs:
-                                    failed_run_id = next(iter(active_tool_runs))
-                                    start_payload = _tool_start_payloads.get(failed_run_id)
-                                    start_info = _tool_start_times.get(failed_run_id)
-                                    tool_name = str((start_payload or {}).get("tool") or (start_info[1] if start_info else "unknown"))
-                                    logger.warning(
-                                        "Tool %s stream failed before a completion event (run_id=%s); continuing with a synthetic tool failure",
-                                        tool_name,
-                                        failed_run_id[:8],
-                                        exc_info=True,
-                                    )
+                                    pending_run_ids = _pending_tool_run_ids()
                                     request_tool_state["active_tool_stream_failed"] = True
                                     await _close_agent_stream_iter()
-                                    yield _record_synthetic_tool_failure(
-                                        failed_run_id,
-                                        _format_active_tool_stream_error_output(tool_name, stream_err),
-                                    )
+                                    if len(pending_run_ids) == 1 and not attempt_had_attributed_tool_error:
+                                        failed_run_id = pending_run_ids[0]
+                                        tool_name = _pending_tool_name(failed_run_id)
+                                        logger.warning(
+                                            "Tool %s stream failed before a completion event (run_id=%s); continuing with a synthetic tool failure",
+                                            tool_name,
+                                            failed_run_id[:8],
+                                            exc_info=True,
+                                        )
+                                        yield _record_synthetic_tool_failure(
+                                            failed_run_id,
+                                            _format_active_tool_stream_error_output(tool_name, stream_err),
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "Agent stream failed with %d pending tool calls; closing all with neutral synthetic failures",
+                                            len(pending_run_ids),
+                                            exc_info=True,
+                                        )
+                                        for failed_run_id in pending_run_ids:
+                                            tool_name = _pending_tool_name(failed_run_id)
+                                            yield _record_synthetic_tool_failure(
+                                                failed_run_id,
+                                                _format_active_tool_stream_interrupted_output(tool_name),
+                                            )
                                     break
                                 if self._is_no_image_support_error(stream_err):
                                     retry_content = None
@@ -18948,6 +19024,7 @@ class RAGComponents:
                             elif kind == "on_tool_error":
                                 if run_id not in active_tool_runs:
                                     continue
+                                attempt_had_attributed_tool_error = True
                                 active_tool_runs.discard(run_id)
                                 active_terminal_stream_guards.pop(run_id, None)
                                 attempt_had_tool_activity = True

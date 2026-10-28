@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
+from langchain_core.messages import BaseMessage
+
 import ragtime.indexer.background_tasks as background_tasks
 from tests.content_protection_support import use_disabled_content_protection
 from tests.generation_policy_test_support import enabled_generation_policy
@@ -89,8 +91,104 @@ class _ProviderFailureAfterToolExecutor:
             self.closed.set()
 
 
+class _ProviderFailureWithParallelToolsExecutor:
+    def __init__(self) -> None:
+        self.closed = asyncio.Event()
+        self.tools: list[object] = []
+
+    def astream_events(self, *_args, **_kwargs):
+        return self._stream()
+
+    async def _stream(self):
+        try:
+            yield {
+                "event": "on_tool_start",
+                "run_id": "sql-run",
+                "name": "query_production_infoscan_database",
+                "data": {"input": {"query": "select 1"}},
+            }
+            yield {
+                "event": "on_tool_start",
+                "run_id": "knowledge-run",
+                "name": "search_knowledge",
+                "data": {"input": {"query": "release notes"}},
+            }
+            raise RuntimeError("KnowledgeSearchInput validation failed")
+        finally:
+            self.closed.set()
+
+
+class _ToolErrorThenAggregateFailureExecutor:
+    def __init__(self) -> None:
+        self.closed = asyncio.Event()
+        self.tools: list[object] = []
+
+    def astream_events(self, *_args, **_kwargs):
+        return self._stream()
+
+    async def _stream(self):
+        try:
+            yield {
+                "event": "on_tool_start",
+                "run_id": "sql-run",
+                "name": "query_production_infoscan_database",
+                "data": {"input": {"query": "select 1"}},
+            }
+            yield {
+                "event": "on_tool_start",
+                "run_id": "knowledge-run",
+                "name": "search_knowledge",
+                "data": {"input": {"query": "release notes"}},
+            }
+            yield {
+                "event": "on_tool_error",
+                "run_id": "sql-run",
+                "name": "query_production_infoscan_database",
+                "data": {"error": "KnowledgeSearchInput validation failed"},
+            }
+            raise RuntimeError("KnowledgeSearchInput validation failed")
+        finally:
+            self.closed.set()
+
+
+class _ParallelActiveToolTimeoutExecutor:
+    def __init__(self) -> None:
+        self.closed = asyncio.Event()
+        self.tools: list[object] = []
+
+    def astream_events(self, *_args, **_kwargs):
+        return self._stream()
+
+    async def _stream(self):
+        try:
+            yield {
+                "event": "on_tool_start",
+                "run_id": "sql-run",
+                "name": "query_production_infoscan_database",
+                "data": {"input": {"query": "select pg_sleep(999)"}},
+            }
+            yield {
+                "event": "on_tool_start",
+                "run_id": "knowledge-run",
+                "name": "search_knowledge",
+                "data": {"input": {"query": "release notes"}},
+            }
+            await asyncio.Event().wait()
+        finally:
+            self.closed.set()
+
+
 class _SynthesisLLM:
     async def astream(self, _messages):
+        yield SimpleNamespace(content="Recovered final answer.")
+
+
+class _CapturingSynthesisLLM:
+    def __init__(self) -> None:
+        self.messages: list[list[BaseMessage]] = []
+
+    async def astream(self, messages):
+        self.messages.append(messages)
         yield SimpleNamespace(content="Recovered final answer.")
 
 
@@ -591,6 +689,121 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Recovered final answer.", outputs)
         self.assertTrue(request_tool_state["provider_stream_failed"])
         self.assertEqual(request_tool_state["internal_continue_stop_reason"], "provider_stream_failed")
+
+    async def test_process_query_stream_closes_all_parallel_tools_after_unknown_stream_error(self) -> None:
+        from ragtime.rag import components
+
+        rag_components = components.RAGComponents()
+        executor = _ProviderFailureWithParallelToolsExecutor()
+        rag_components.agent_executor_ui = executor  # type: ignore[assignment]
+        synthesis_llm = _CapturingSynthesisLLM()
+        request_tool_state: dict[str, object] = {}
+        request_context = self._request_context(request_tool_state, is_ui=True)
+        llm_resolution = components.RequestLLMResolution(
+            llm=synthesis_llm,
+            provider="test_provider",
+            model="test-model",
+        )
+
+        outputs = await self._process_query_outputs(
+            components,
+            rag_components,
+            llm_resolution,
+            request_context,
+            is_ui=True,
+            executor=executor,
+            extra_patches=(mock.patch.object(components, "MAX_INTERNAL_AGENT_CONTINUATIONS", 0),),
+        )
+
+        self.assertTrue(executor.closed.is_set())
+        tool_ends = [item for item in outputs if isinstance(item, dict) and item.get("type") == "tool_end"]
+        self.assertEqual([event["run_id"] for event in tool_ends], ["sql-run", "knowledge-run"])
+        self.assertEqual({event["tool"] for event in tool_ends}, {"query_production_infoscan_database", "search_knowledge"})
+        self.assertTrue(all("KnowledgeSearchInput" not in event["output"] for event in tool_ends))
+        self.assertTrue(all("interrupted" in event["output"] for event in tool_ends))
+        self.assertIn("Recovered final answer.", outputs)
+        self.assertEqual(len(synthesis_llm.messages), 1)
+        synthesis_context = "\n".join(str(message.content) for message in synthesis_llm.messages[0])
+        self.assertIn("query_production_infoscan_database", synthesis_context)
+        self.assertIn("search_knowledge", synthesis_context)
+        self.assertNotIn("KnowledgeSearchInput", synthesis_context)
+        self.assertTrue(request_tool_state["active_tool_stream_failed"])
+
+    async def test_process_query_stream_keeps_tool_error_attribution_when_sibling_stream_fails(self) -> None:
+        from ragtime.rag import components
+
+        rag_components = components.RAGComponents()
+        executor = _ToolErrorThenAggregateFailureExecutor()
+        rag_components.agent_executor_ui = executor  # type: ignore[assignment]
+        synthesis_llm = _CapturingSynthesisLLM()
+        request_tool_state: dict[str, object] = {}
+        request_context = self._request_context(request_tool_state, is_ui=True)
+        llm_resolution = components.RequestLLMResolution(
+            llm=synthesis_llm,
+            provider="test_provider",
+            model="test-model",
+        )
+
+        outputs = await self._process_query_outputs(
+            components,
+            rag_components,
+            llm_resolution,
+            request_context,
+            is_ui=True,
+            executor=executor,
+            extra_patches=(mock.patch.object(components, "MAX_INTERNAL_AGENT_CONTINUATIONS", 0),),
+        )
+
+        self.assertTrue(executor.closed.is_set())
+        tool_ends = [item for item in outputs if isinstance(item, dict) and item.get("type") == "tool_end"]
+        self.assertEqual([event["run_id"] for event in tool_ends], ["sql-run", "knowledge-run"])
+        self.assertIn("KnowledgeSearchInput validation failed", tool_ends[0]["output"])
+        self.assertIn("interrupted", tool_ends[1]["output"])
+        self.assertNotIn("KnowledgeSearchInput", tool_ends[1]["output"])
+        synthesis_context = "\n".join(str(message.content) for message in synthesis_llm.messages[0])
+        self.assertIn("query_production_infoscan_database", synthesis_context)
+        self.assertIn("search_knowledge", synthesis_context)
+        self.assertEqual(synthesis_context.count("KnowledgeSearchInput validation failed"), 1)
+
+    async def test_process_query_stream_closes_all_parallel_tools_after_inactivity_timeout(self) -> None:
+        from ragtime.rag import components
+
+        rag_components = components.RAGComponents()
+        executor = _ParallelActiveToolTimeoutExecutor()
+        rag_components.agent_executor_ui = executor  # type: ignore[assignment]
+        synthesis_llm = _CapturingSynthesisLLM()
+        request_tool_state: dict[str, object] = {}
+        request_context = self._request_context(request_tool_state, is_ui=True)
+        llm_resolution = components.RequestLLMResolution(
+            llm=synthesis_llm,
+            provider="test_provider",
+            model="test-model",
+        )
+
+        outputs = await self._process_query_outputs(
+            components,
+            rag_components,
+            llm_resolution,
+            request_context,
+            is_ui=True,
+            executor=executor,
+            extra_patches=(
+                mock.patch.object(components, "AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS", 0.05),
+                mock.patch.object(components, "MAX_INTERNAL_AGENT_CONTINUATIONS", 0),
+            ),
+        )
+
+        self.assertTrue(executor.closed.is_set())
+        tool_ends = [item for item in outputs if isinstance(item, dict) and item.get("type") == "tool_end"]
+        self.assertEqual([event["run_id"] for event in tool_ends], ["sql-run", "knowledge-run"])
+        timeout_output = "produced no completion event within 0.05 seconds"
+        self.assertTrue(all(timeout_output in event["output"] for event in tool_ends))
+        self.assertTrue(all("interrupted" not in event["output"] for event in tool_ends))
+        synthesis_context = "\n".join(str(message.content) for message in synthesis_llm.messages[0])
+        self.assertIn("query_production_infoscan_database", synthesis_context)
+        self.assertIn("search_knowledge", synthesis_context)
+        self.assertEqual(synthesis_context.count(timeout_output), 2)
+        self.assertTrue(request_tool_state["active_tool_stream_timed_out"])
 
     async def test_direct_stream_retries_first_chunk_openrouter_idle_timeout(self) -> None:
         from ragtime.rag import components

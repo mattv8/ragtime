@@ -4,9 +4,13 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 import httpx
+from langchain_core.messages import AIMessageChunk, HumanMessage
+from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 import ragtime.core.model_limits as model_limits
 from ragtime.core.model_providers import OPENAI_CODEX_RESPONSES_PAYLOAD_KEYS, get_provider
@@ -18,7 +22,8 @@ from ragtime.core.openai_codex_auth import (
 from ragtime.indexer import routes as indexer_routes
 from ragtime.indexer.embedding_errors import EmbeddingOperationError
 from ragtime.indexer.vector_utils import get_embeddings_model
-from ragtime.rag.components import _build_codex_request
+from ragtime.rag.components import _build_codex_request, _OpenAICodexChatOpenAI
+from ragtime.rag.responses_stream import astream_responses, stream_responses
 
 
 def _jwt_with_payload(payload: dict) -> str:
@@ -73,7 +78,252 @@ class FakeRepository:
         return None
 
 
+class _SyncResponse:
+    def __init__(self, chunks: list[SimpleNamespace]) -> None:
+        self._chunks = chunks
+
+    def __enter__(self):
+        return iter(self._chunks)
+
+    def __exit__(self, *args) -> None:
+        return None
+
+
+class _AsyncResponse:
+    def __init__(self, chunks: list[SimpleNamespace]) -> None:
+        self._chunks = chunks
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        return None
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._chunks:
+            raise StopAsyncIteration
+        return self._chunks.pop(0)
+
+
+class _ResponsesModel:
+    include_response_headers = False
+    output_version = "responses/v1"
+
+    def __init__(self, response: object, async_response: object) -> None:
+        self.root_client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: response))
+
+        async def create(**kwargs):
+            return async_response
+
+        self.root_async_client = SimpleNamespace(responses=SimpleNamespace(create=create))
+
+    def _get_request_payload(self, messages, stop=None, **kwargs):
+        return {"input": messages, **kwargs}
+
+
+def _function_call_added(output_index: int, name: str, call_id: str, arguments: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        type="response.output_item.added",
+        output_index=output_index,
+        item=SimpleNamespace(type="function_call", name=name, call_id=call_id, arguments=arguments, id=f"fc_{call_id}"),
+    )
+
+
+def _function_call_delta(output_index: int, delta: str) -> SimpleNamespace:
+    return SimpleNamespace(type="response.function_call_arguments.delta", output_index=output_index, delta=delta)
+
+
+def _codex_adapter(response: object, async_response: object) -> _OpenAICodexChatOpenAI:
+    adapter = _OpenAICodexChatOpenAI(
+        model="gpt-5.6-sol",
+        api_key=SecretStr("test-key"),
+        use_responses_api=True,
+        output_version="responses/v1",
+    )
+    adapter.root_client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: response))
+
+    async def create(**kwargs):
+        return async_response
+
+    adapter.root_async_client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    return adapter
+
+
 class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
+    def test_upstream_responses_stream_corrupts_interleaved_tool_aggregation(self) -> None:
+        chunks = [
+            _function_call_added(0, "query_production_infoscan_database", "call_sql", ""),
+            _function_call_added(1, "knowledge_search", "call_search", ""),
+            _function_call_delta(0, '{"query":"select 1"}'),
+            _function_call_delta(1, '{"query":"docs"}'),
+        ]
+        adapter = _codex_adapter(_SyncResponse(chunks), _AsyncResponse([]))
+
+        with mock.patch.object(_OpenAICodexChatOpenAI, "_stream_responses", ChatOpenAI._stream_responses):
+            messages = list(adapter.stream([HumanMessage(content="test")]))
+
+        merged_message = cast(AIMessageChunk, sum(messages[1:], messages[0]))
+        self.assertTrue(any(not call["name"] for call in merged_message.tool_calls))
+
+    def test_codex_adapter_stream_aggregates_interleaved_tool_calls(self) -> None:
+        chunks = [
+            _function_call_added(0, "query_production_infoscan_database", "call_sql", ""),
+            _function_call_added(1, "knowledge_search", "call_search", ""),
+            _function_call_delta(0, '{"query":"select 1"}'),
+            _function_call_delta(1, '{"query":"docs"}'),
+        ]
+        adapter = _codex_adapter(_SyncResponse(chunks), _AsyncResponse([]))
+
+        messages = list(adapter.stream([HumanMessage(content="test")]))
+
+        merged_message = cast(AIMessageChunk, sum(messages[1:], messages[0]))
+        self.assertEqual(
+            [(call["name"], call["id"], call["args"]) for call in merged_message.tool_calls],
+            [
+                ("query_production_infoscan_database", "call_sql", {"query": "select 1"}),
+                ("knowledge_search", "call_search", {"query": "docs"}),
+            ],
+        )
+        self.assertEqual(merged_message.invalid_tool_calls, [])
+
+    async def test_codex_adapter_astream_aggregates_interleaved_tool_calls(self) -> None:
+        chunks = [
+            _function_call_added(0, "query_production_infoscan_database", "call_sql", ""),
+            _function_call_added(1, "knowledge_search", "call_search", ""),
+            _function_call_delta(0, '{"query":"select 1"}'),
+            _function_call_delta(1, '{"query":"docs"}'),
+        ]
+        adapter = _codex_adapter(_SyncResponse([]), _AsyncResponse(chunks))
+
+        with mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()):
+            messages = [message async for message in adapter.astream([HumanMessage(content="test")])]
+
+        merged_message = cast(AIMessageChunk, sum(messages[1:], messages[0]))
+        self.assertEqual(
+            [(call["name"], call["id"], call["args"]) for call in merged_message.tool_calls],
+            [
+                ("query_production_infoscan_database", "call_sql", {"query": "select 1"}),
+                ("knowledge_search", "call_search", {"query": "docs"}),
+            ],
+        )
+        self.assertEqual(merged_message.invalid_tool_calls, [])
+
+    async def test_codex_adapter_astream_retries_expired_token_with_stable_tool_calls(self) -> None:
+        chunks = [
+            _function_call_added(0, "query_production_infoscan_database", "call_sql", ""),
+            _function_call_added(1, "knowledge_search", "call_search", ""),
+            _function_call_delta(0, '{"query":"select 1"}'),
+            _function_call_delta(1, '{"query":"docs"}'),
+        ]
+        adapter = _codex_adapter(_SyncResponse([]), _AsyncResponse([]))
+        adapter.root_async_client = SimpleNamespace(
+            responses=SimpleNamespace(create=mock.AsyncMock(side_effect=[RuntimeError("token expired"), _AsyncResponse(chunks)]))
+        )
+
+        with (
+            mock.patch("ragtime.rag.components.require_generation", new=mock.AsyncMock()),
+            mock.patch.object(adapter, "_refresh_expired_copilot_token", new=mock.AsyncMock(return_value=True)) as refresh,
+        ):
+            messages = [message async for message in adapter.astream([HumanMessage(content="test")])]
+
+        refresh.assert_awaited_once()
+        merged_message = cast(AIMessageChunk, sum(messages[1:], messages[0]))
+        self.assertEqual(
+            [(call["name"], call["id"], call["args"]) for call in merged_message.tool_calls],
+            [
+                ("query_production_infoscan_database", "call_sql", {"query": "select 1"}),
+                ("knowledge_search", "call_search", {"query": "docs"}),
+            ],
+        )
+
+    def test_responses_stream_keeps_parallel_tool_chunk_indices_stable(self) -> None:
+        chunks = [
+            _function_call_added(0, "query_production_infoscan_database", "call_sql", ""),
+            _function_call_added(1, "knowledge_search", "call_search", ""),
+            _function_call_delta(0, '{"query":"select '),
+            _function_call_delta(1, '{"query":"docs"}'),
+            _function_call_delta(0, '1"}'),
+        ]
+        model = _ResponsesModel(_SyncResponse(chunks), _AsyncResponse([]))
+
+        generations = list(stream_responses(model, [HumanMessage(content="test")]))
+        tool_chunks = [tool for generation in generations for tool in cast(AIMessageChunk, generation.message).tool_call_chunks]
+
+        self.assertEqual(
+            [(chunk["name"], chunk["id"], chunk["args"], chunk["index"]) for chunk in tool_chunks if chunk.get("name")],
+            [
+                ("query_production_infoscan_database", "call_sql", "", 0),
+                ("knowledge_search", "call_search", "", 1),
+            ],
+        )
+        self.assertEqual(
+            [(chunk["args"], chunk["index"]) for chunk in tool_chunks if not chunk.get("name")],
+            [('{"query":"select ', 0), ('{"query":"docs"}', 1), ('1"}', 0)],
+        )
+        merged_message = cast(AIMessageChunk, sum((generation.message for generation in generations[1:]), generations[0].message))
+        self.assertEqual(
+            [(call["name"], call["id"], call["args"]) for call in merged_message.tool_calls],
+            [
+                ("query_production_infoscan_database", "call_sql", {"query": "select 1"}),
+                ("knowledge_search", "call_search", {"query": "docs"}),
+            ],
+        )
+        self.assertEqual(merged_message.invalid_tool_calls, [])
+
+    def test_responses_stream_gives_unseen_text_done_a_fresh_content_index(self) -> None:
+        chunks = [
+            _function_call_added(0, "query_production_infoscan_database", "call_sql", '{"query":"select 1"}'),
+            SimpleNamespace(type="response.output_item.added", output_index=1, item=SimpleNamespace(type="message", id="msg_1")),
+            SimpleNamespace(type="response.output_text.done", output_index=1, content_index=0, item_id="msg_1"),
+        ]
+        model = _ResponsesModel(_SyncResponse(chunks), _AsyncResponse([]))
+
+        generations = list(stream_responses(model, [HumanMessage(content="test")]))
+
+        self.assertEqual(generations[-1].message.content, [{"id": "msg_1", "index": 1}])
+        merged_message = cast(AIMessageChunk, sum((generation.message for generation in generations[1:]), generations[0].message))
+        self.assertEqual(merged_message.tool_calls[0]["id"], "call_sql")
+        assert isinstance(merged_message.content, list)
+        text_block = merged_message.content[1]
+        assert isinstance(text_block, dict)
+        self.assertEqual(text_block["id"], "msg_1")
+
+    async def test_async_responses_stream_keeps_parallel_tool_chunk_indices_stable(self) -> None:
+        chunks = [
+            _function_call_added(0, "query_production_infoscan_database", "call_sql", ""),
+            _function_call_added(1, "knowledge_search", "call_search", ""),
+            _function_call_delta(0, '{"query":"select 1"}'),
+            _function_call_delta(1, '{"query":"docs"}'),
+        ]
+        model = _ResponsesModel(_SyncResponse([]), _AsyncResponse(chunks))
+
+        generations = [generation async for generation in astream_responses(model, [HumanMessage(content="test")])]
+        tool_chunks = [tool for generation in generations for tool in cast(AIMessageChunk, generation.message).tool_call_chunks]
+
+        self.assertEqual(
+            [(chunk["name"], chunk["id"], chunk["index"]) for chunk in tool_chunks if chunk.get("name")],
+            [
+                ("query_production_infoscan_database", "call_sql", 0),
+                ("knowledge_search", "call_search", 1),
+            ],
+        )
+        self.assertEqual(
+            [(chunk["args"], chunk["index"]) for chunk in tool_chunks if not chunk.get("name")],
+            [('{"query":"select 1"}', 0), ('{"query":"docs"}', 1)],
+        )
+        merged_message = cast(AIMessageChunk, sum((generation.message for generation in generations[1:]), generations[0].message))
+        self.assertEqual(
+            [(call["name"], call["id"], call["args"]) for call in merged_message.tool_calls],
+            [
+                ("query_production_infoscan_database", "call_sql", {"query": "select 1"}),
+                ("knowledge_search", "call_search", {"query": "docs"}),
+            ],
+        )
+        self.assertEqual(merged_message.invalid_tool_calls, [])
+
     def test_extract_account_id_prefers_chatgpt_claim(self) -> None:
         token = _jwt_with_payload(
             {
