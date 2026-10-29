@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import base64
+import threading
 import time
 from types import SimpleNamespace
 
 import pytest
 
+from ragtime.core.ssh import SSHConfig, _wrap_powershell_command, execute_ssh_command
+
 
 @pytest.mark.parametrize("timeout,total_timeout,delay,want_writes", [(0, None, 0, ["data"]), (30, 0.01, 0.03, [])])
 def test_unlimited_legacy_calls_and_late_exec_payload(monkeypatch, timeout, total_timeout, delay, want_writes) -> None:
-    from ragtime.core.ssh import SSHConfig, execute_ssh_command
-
     writes: list[str] = []
     channel = SimpleNamespace(
         shutdown_write=lambda: None,
@@ -35,10 +37,6 @@ def test_unlimited_legacy_calls_and_late_exec_payload(monkeypatch, timeout, tota
 
 
 def test_fractional_powershell_deadline_is_not_unlimited() -> None:
-    import base64
-
-    from ragtime.core.ssh import _wrap_powershell_command
-
     command = _wrap_powershell_command(0.25)
     wrapper = base64.b64decode(command.split()[-1]).decode("utf-16le")
     assert "$deadlineSeconds = 0.25" in wrapper
@@ -46,8 +44,6 @@ def test_fractional_powershell_deadline_is_not_unlimited() -> None:
 
 
 def test_deadline_rechecked_before_script_write_after_slow_payload_write(monkeypatch) -> None:
-    from ragtime.core.ssh import SSHConfig, execute_ssh_command
-
     writes: list[str] = []
 
     def write(data):
@@ -69,10 +65,6 @@ def test_deadline_rechecked_before_script_write_after_slow_payload_write(monkeyp
 
 
 def test_missing_exec_ack_is_interrupted_by_transport_deadline(monkeypatch) -> None:
-    import threading
-
-    from ragtime.core.ssh import SSHConfig, execute_ssh_command
-
     closed = threading.Event()
     wrote_payload: list[str] = []
 
@@ -93,8 +85,6 @@ def test_missing_exec_ack_is_interrupted_by_transport_deadline(monkeypatch) -> N
 
 
 def test_total_timeout_prevents_command_after_connection_uses_budget(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from ragtime.core.ssh import SSHConfig, execute_ssh_command
-
     executed = False
 
     class Client:
@@ -120,8 +110,6 @@ def test_total_timeout_prevents_command_after_connection_uses_budget(monkeypatch
 
 
 def test_total_timeout_bounds_command_after_successful_connection(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from ragtime.core.ssh import SSHConfig, execute_ssh_command
-
     class Channel:
         def shutdown_write(self) -> None:
             return None

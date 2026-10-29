@@ -561,7 +561,7 @@ def execute_ssh_command(
         while True:
             # check timeout
             timeout_reached = deadline is not None and time.monotonic() >= deadline
-            timeout_reached = timeout_reached or (deadline is None and command_config.timeout and time.time() - start_time > command_config.timeout)
+            timeout_reached = bool(timeout_reached or (deadline is None and command_config.timeout and time.time() - start_time > command_config.timeout))
             if timeout_reached:
                 logger.warning(f"SSH command execution timed out after {command_config.timeout}s")
                 timed_out = True

@@ -11,24 +11,23 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
+from ragtime.core.ssh import SSHConfig, SSHResult
+from ragtime.indexer import routes
+from ragtime.indexer.repository import IndexerRepository
+from ragtime.remote_client.removal import CleanupResult, execute_windows_cleanup, is_windows_pairing_tool, local_removal_command, validate_cleanup_request
+
 
 def test_cleanup_request_rejects_unconfirmed_machine_wide_removal() -> None:
-    from ragtime.remote_client.removal import validate_cleanup_request
-
     with pytest.raises(ValueError, match="confirm_machine_wide"):
         validate_cleanup_request("disable_ssh", False)
 
 
 def test_cleanup_request_rejects_confirmation_without_disable_mode() -> None:
-    from ragtime.remote_client.removal import validate_cleanup_request
-
     with pytest.raises(ValueError, match="only valid"):
         validate_cleanup_request("pairing_only", True)
 
 
 def test_windows_pairing_requires_windows_type_and_uuid_pairing_id() -> None:
-    from ragtime.remote_client.removal import is_windows_pairing_tool
-
     pairing_id = "e57fa6ec-0f30-4323-a12f-9f4c2b3a98fd"
     assert is_windows_pairing_tool("windows_shell", {"pairing_id": pairing_id})
     assert not is_windows_pairing_tool("ssh_shell", {"pairing_id": pairing_id})
@@ -36,8 +35,6 @@ def test_windows_pairing_requires_windows_type_and_uuid_pairing_id() -> None:
 
 
 def test_local_recovery_command_encodes_ssh_user_and_requires_https() -> None:
-    from ragtime.remote_client.removal import local_removal_command
-
     pairing_id = "e57fa6ec-0f30-4323-a12f-9f4c2b3a98fd"
     target_user = "DOMAIN\\O'Brien"
     command = local_removal_command("https://ragtime.example", pairing_id, "pairing_only", target_user)
@@ -55,18 +52,12 @@ def test_local_recovery_command_encodes_ssh_user_and_requires_https() -> None:
     "bad_config,stdout", [({"port": "bad"}, ""), ({}, 'RAGTIME_REMOVAL_RESULT:{"steps":{"pairing_cleanup":[],"ssh_service":"confirmed"}}')]
 )
 def test_cleanup_malformed_config_or_output_returns_unconfirmed(monkeypatch, bad_config, stdout) -> None:
-    from ragtime.core.ssh import SSHResult
-    from ragtime.remote_client.removal import execute_windows_cleanup
-
     monkeypatch.setattr("ragtime.remote_client.removal.execute_ssh_command", lambda *_args: SSHResult(stdout, "", 0, True))
     result = asyncio.run(execute_windows_cleanup({"host": "host", "user": "user", **bad_config}, "e57fa6ec-0f30-4323-a12f-9f4c2b3a98fd", "pairing_only", False))
     assert result.steps["pairing_cleanup"] == "unconfirmed"
 
 
 def test_http_recovery_provides_trusted_transfer_and_exact_local_invocation(monkeypatch) -> None:
-    from ragtime.core.ssh import SSHResult
-    from ragtime.remote_client.removal import execute_windows_cleanup
-
     monkeypatch.setattr("ragtime.remote_client.removal.execute_ssh_command", lambda *_args: SSHResult("", "offline", -1, False))
     result = asyncio.run(
         execute_windows_cleanup(
@@ -84,9 +75,6 @@ def test_http_recovery_provides_trusted_transfer_and_exact_local_invocation(monk
 
 
 def test_remote_cleanup_parses_only_a_valid_final_removal_result(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ragtime.core.ssh import SSHConfig, SSHResult
-    from ragtime.remote_client.removal import execute_windows_cleanup
-
     captured: dict[str, object] = {}
 
     def fake_execute(config, command, input_data):  # type: ignore[no-untyped-def]
@@ -118,9 +106,6 @@ def test_remote_cleanup_parses_only_a_valid_final_removal_result(monkeypatch: py
 
 
 def test_remote_cleanup_does_not_treat_disconnect_as_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ragtime.core.ssh import SSHResult
-    from ragtime.remote_client.removal import execute_windows_cleanup
-
     monkeypatch.setattr(
         "ragtime.remote_client.removal.execute_ssh_command",
         lambda *_args: SSHResult(stdout="", stderr="connection closed", exit_code=-1, success=False),
@@ -139,8 +124,6 @@ def test_remote_cleanup_does_not_treat_disconnect_as_success(monkeypatch: pytest
 
 
 def test_shared_tool_deletion_revokes_all_live_pairing_relays(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ragtime.indexer.repository import IndexerRepository
-
     class FakeDatabase:
         class ToolConfig:
             async def delete(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -169,9 +152,6 @@ async def _return(value):  # type: ignore[no-untyped-def]
 
 
 def test_delete_route_attempts_cleanup_before_revocation_and_database_delete(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ragtime.indexer import routes
-    from ragtime.remote_client.removal import CleanupResult
-
     events: list[str] = []
     tool = _windows_tool()
 
@@ -198,9 +178,6 @@ def test_delete_route_attempts_cleanup_before_revocation_and_database_delete(mon
 
 
 def test_delete_route_deletes_after_unconfirmed_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ragtime.indexer import routes
-    from ragtime.remote_client.removal import CleanupResult
-
     events: list[str] = []
 
     async def get_tool_config(_tool_id: str):
@@ -226,8 +203,6 @@ def test_delete_route_deletes_after_unconfirmed_cleanup(monkeypatch: pytest.Monk
 
 
 def test_delete_route_without_cleanup_does_not_mutate_host_and_revokes_pairing(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ragtime.indexer import routes
-
     events: list[str] = []
 
     async def get_tool_config(_tool_id: str):
@@ -252,8 +227,6 @@ def test_delete_route_without_cleanup_does_not_mutate_host_and_revokes_pairing(m
     "mode,confirm", [("disable_ssh", False), ("disable_ssh", None), (None, True), (None, False), ("pairing_only", True), ("pairing_only", False)]
 )
 def test_delete_route_rejects_invalid_cleanup_before_host_or_database_actions(monkeypatch: pytest.MonkeyPatch, mode, confirm) -> None:
-    from ragtime.indexer import routes
-
     actions: list[str] = []
 
     async def get_tool_config(_tool_id: str):
@@ -273,8 +246,6 @@ def test_delete_route_rejects_invalid_cleanup_before_host_or_database_actions(mo
 
 @pytest.mark.parametrize("pairing", [{"toolId": "other-tool", "status": "paired"}, {"toolId": "tool-id", "status": "pending"}, None])
 def test_delete_route_rejects_foreign_or_unpaired_pairing_before_host_actions(monkeypatch: pytest.MonkeyPatch, pairing) -> None:
-    from ragtime.indexer import routes
-
     actions: list[str] = []
 
     async def get_tool_config(_tool_id: str):
@@ -297,10 +268,6 @@ def test_delete_route_rejects_foreign_or_unpaired_pairing_before_host_actions(mo
 
 @pytest.mark.parametrize("bad_port,stdout", [("bad", ""), (22, 'RAGTIME_REMOVAL_RESULT:{"steps":{"pairing_cleanup":[],"ssh_service":"confirmed"}}')])
 def test_route_still_deletes_after_real_coordinator_handles_bad_inputs(monkeypatch, bad_port, stdout) -> None:
-    from ragtime.core.ssh import SSHResult
-    from ragtime.indexer import routes
-    from ragtime.remote_client.removal import execute_windows_cleanup
-
     tool = _windows_tool()
     tool.connection_config["port"] = bad_port
     deleted: list[str] = []
@@ -323,9 +290,6 @@ def test_route_still_deletes_after_real_coordinator_handles_bad_inputs(monkeypat
 
 
 def test_delete_route_includes_cleanup_details_when_database_delete_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ragtime.indexer import routes
-    from ragtime.remote_client.removal import CleanupResult
-
     async def get_tool_config(_tool_id: str):
         return _windows_tool()
 
