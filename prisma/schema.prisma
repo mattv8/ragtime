@@ -76,6 +76,7 @@ model IndexConfig {
   chunkSize       Int      @default(1000)
   chunkOverlap    Int      @default(200)
   embeddingModel  String   @default("text-embedding-3-small")
+  configSnapshot  Json?    @map("config_snapshot")
 
   // Relation to job
   job   IndexJob?

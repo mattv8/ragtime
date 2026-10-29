@@ -803,11 +803,13 @@ class IndexerRepository:
         # First create the config
         config_data = {
             "name": job.config.name,
+            "description": job.config.description,
             "filePatterns": job.config.file_patterns,
             "excludePatterns": job.config.exclude_patterns,
             "chunkSize": job.config.chunk_size,
             "chunkOverlap": job.config.chunk_overlap,
             "embeddingModel": job.config.embedding_model,
+            "configSnapshot": Json(job.config.model_dump(mode="json")),
         }
 
         # Create job with nested config
@@ -957,14 +959,19 @@ class IndexerRepository:
         if prisma_job.config is None:
             raise ValueError(f"Job {prisma_job.id} has no config")
 
-        config = IndexConfig(
-            name=prisma_job.config.name,
-            file_patterns=prisma_job.config.filePatterns,
-            exclude_patterns=prisma_job.config.excludePatterns,
-            chunk_size=prisma_job.config.chunkSize,
-            chunk_overlap=prisma_job.config.chunkOverlap,
-            embedding_model=prisma_job.config.embeddingModel,
-        )
+        config_snapshot = getattr(prisma_job.config, "configSnapshot", None)
+        if config_snapshot is not None:
+            config = IndexConfig.model_validate(config_snapshot)
+        else:
+            config = IndexConfig(
+                name=prisma_job.config.name,
+                description=prisma_job.config.description,
+                file_patterns=prisma_job.config.filePatterns,
+                exclude_patterns=prisma_job.config.excludePatterns,
+                chunk_size=prisma_job.config.chunkSize,
+                chunk_overlap=prisma_job.config.chunkOverlap,
+                embedding_model=prisma_job.config.embeddingModel,
+            )
 
         git_token_raw = getattr(prisma_job, "gitToken", None)
 

@@ -1311,15 +1311,16 @@ async def retry_failed_job(
             raise HTTPException(status_code=400, detail="Git URL not found in job. Cannot retry.")
 
         try:
-            await _validate_vision_ocr_target(failed_job.config)
+            config = await indexer.restore_retry_job_config(failed_job)
+            await _validate_vision_ocr_target(config)
             new_job = await indexer.create_index_from_git(
                 git_url=failed_job.git_url,
                 branch=failed_job.git_branch,
-                config=failed_job.config,
+                config=config,
                 git_token=git_token,
             )
             return _job_to_response(new_job)
-        except OcrTargetError as e:
+        except (OcrTargetError, ValueError) as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
             logger.exception("Failed to retry indexing job")
@@ -1327,7 +1328,8 @@ async def retry_failed_job(
     elif failed_job.source_type == "upload":
         try:
             # A retry creates a new job. An in-place resume keeps its frozen target.
-            await _validate_vision_ocr_target(failed_job.config)
+            config = await indexer.restore_retry_job_config(failed_job)
+            await _validate_vision_ocr_target(config)
             new_job = await indexer.retry_upload_job(failed_job)
             return _job_to_response(new_job)
         except ValueError as e:
