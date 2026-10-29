@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest import IsolatedAsyncioTestCase, mock
 
+import httpx
+
 from ragtime.core.ocr_contract import _ocr_pipeline_fingerprint_from_vision_source, ocr_pipeline_fingerprint
 from ragtime.indexer.chunking import chunk_semantic_segments
 from ragtime.indexer.document_parser import VisionOcrError, extract_image_structured_async, extract_text_from_file_async
@@ -68,6 +70,68 @@ class VisionOcrIngestionTests(IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(VisionOcrError, "Structured vision OCR failed"):
                 await extract_image_structured_async(Path("scan.png"), content=b"image", ocr_provider="openai", ocr_vision_model="gpt-4o")
+
+    async def test_structured_http_failure_reports_provider_and_status_without_leaking_response(self) -> None:
+        request = httpx.Request("POST", "http://ocr-user:hunter2@192.168.10.19:11434/api/generate")
+        response = httpx.Response(500, request=request, content=b'{"error": "model crashed SECRET_OCR_TEXT"}')
+        cause = httpx.HTTPStatusError("server error", request=request, response=response)
+
+        message, raised = await self._structured_failure_message(cause)
+
+        assert message.startswith("Structured vision OCR failed for source page-000275.png")
+        assert "provider=ollama" in message
+        assert "category=http_status" in message
+        assert "status=500" in message
+        assert raised.__cause__ is cause
+        for leaked in ("hunter2", "ocr-user", "192.168.10.19", "api/generate", "SECRET_OCR_TEXT"):
+            assert leaked not in message
+
+    async def test_structured_value_error_reports_neutral_category_without_leaking_content(self) -> None:
+        cause = ValueError("Vision OCR image could not be decoded. SECRET_RAW_OCR")
+
+        message, raised = await self._structured_failure_message(cause)
+
+        assert "provider=ollama" in message
+        assert "category=extraction_failed" in message
+        assert "error_type=ValueError" in message
+        assert "category=malformed_response" not in message
+        assert raised.__cause__ is cause
+        assert "SECRET_RAW_OCR" not in message
+
+    async def test_structured_timeout_reports_category_without_leaking_url_credentials(self) -> None:
+        cause = httpx.ReadTimeout("read timed out for http://ocr-user:hunter2@192.168.10.19:11434/api/generate")
+
+        message, raised = await self._structured_failure_message(cause)
+
+        assert "category=timeout" in message
+        assert raised.__cause__ is cause
+        for leaked in ("hunter2", "ocr-user", "192.168.10.19"):
+            assert leaked not in message
+
+    async def test_structured_other_failure_reports_error_type_without_message(self) -> None:
+        cause = httpx.ConnectError("connect failed for http://ocr-user:hunter2@192.168.10.19:11434/api/generate")
+
+        message, raised = await self._structured_failure_message(cause)
+
+        assert "category=extraction_failed" in message
+        assert "error_type=ConnectError" in message
+        assert raised.__cause__ is cause
+        for leaked in ("hunter2", "ocr-user", "192.168.10.19"):
+            assert leaked not in message
+
+    async def _structured_failure_message(self, cause: BaseException) -> tuple[str, VisionOcrError]:
+        with mock.patch(
+            "ragtime.core.vision_models.extract_text_with_vision_structured",
+            new=mock.AsyncMock(side_effect=cause),
+        ):
+            with self.assertRaises(VisionOcrError) as caught:
+                await extract_image_structured_async(
+                    Path("page-000275.png"),
+                    content=b"image",
+                    ocr_provider="ollama",
+                    ocr_vision_model="llama3.2-vision",
+                )
+        return str(caught.exception), caught.exception
 
     async def test_structured_source_read_error_is_not_converted_to_none(self) -> None:
         missing = Path("missing-scan.png")

@@ -24,6 +24,8 @@ from email.policy import default
 from pathlib import Path
 from typing import Any, Literal, Optional
 
+import httpx
+
 from ragtime.core.document_conversion import convert_document_bytes
 from ragtime.core.file_constants import ANYDOC_DOCUMENT_EXTENSIONS, DOCUMENT_EXTENSIONS, OCR_EXTENSIONS, RAW_CAMERA_EXTENSIONS
 from ragtime.core.logging import get_logger
@@ -195,7 +197,17 @@ async def extract_image_structured_async(
             include_classification=True,
         )
     except Exception as exc:
-        raise VisionOcrError(f"Structured vision OCR failed for source {file_path.name}") from exc
+        detail = _structured_vision_failure_detail(exc, effective_provider)
+        raise VisionOcrError(f"Structured vision OCR failed for source {file_path.name} ({detail})") from exc
+
+
+def _structured_vision_failure_detail(exc: Exception, provider: str) -> str:
+    """Describe a provider failure without response bodies, URLs, credentials, or OCR content."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"provider={provider}, category=http_status, status={exc.response.status_code}"
+    if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+        return f"provider={provider}, category=timeout"
+    return f"provider={provider}, category=extraction_failed, error_type={type(exc).__name__}"
 
 
 async def extract_text_from_file_async(
