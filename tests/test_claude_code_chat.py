@@ -214,7 +214,7 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
             self.assertNotIn("secret", str(error.exception))
 
     async def test_actual_request_limit_codes_have_safe_reduce_request_category(self) -> None:
-        cases = [
+        cases: list[dict[str, object]] = [
             {"terminal_reason": "prompt_too_long", "subtype": "error"},
             {"terminal_reason": "max_turns", "subtype": "error_max_turns"},
             {"terminal_reason": "budget_exhausted", "subtype": "error_max_budget_usd"},
@@ -281,7 +281,7 @@ class ClaudeCodeChatModelTests(IsolatedAsyncioTestCase):
 
     async def test_ocr_schema_rejects_missing_refused_and_truncated_structured_output(self) -> None:
         schema = {"type": "object"}
-        cases = [
+        cases: list[tuple[dict[str, object], str]] = [
             ({"result": "Structured output provided successfully"}, "invalid structured output"),
             (
                 {"result": "Structured output provided successfully", "structured_output": {"text": "partial"}, "stop_reason": "max_tokens"},

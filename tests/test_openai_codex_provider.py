@@ -886,10 +886,12 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
             settings.openai_codex_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
             return False
 
-        repository.rotate_openai_codex_tokens_if_refresh_token_matches = reject_stale_rotation
-        with mock.patch(
-            "ragtime.core.openai_codex_auth.refresh_openai_codex_tokens",
-            new=mock.AsyncMock(return_value={"access_token": "unpersisted-token", "refresh_token": "unpersisted-refresh-token"}),
+        with (
+            mock.patch.object(repository, "rotate_openai_codex_tokens_if_refresh_token_matches", new=reject_stale_rotation),
+            mock.patch(
+                "ragtime.core.openai_codex_auth.refresh_openai_codex_tokens",
+                new=mock.AsyncMock(return_value={"access_token": "unpersisted-token", "refresh_token": "unpersisted-refresh-token"}),
+            ),
         ):
             token = await ensure_openai_codex_token_fresh(repository=repository)
 

@@ -1147,7 +1147,7 @@ def _chunk_document_batch_sync(
     Note: Text extraction from documents (PDF, DOCX, images) happens in
     document_parser.py before this function is called. We only chunk text here.
     """
-    all_chunks = []
+    all_chunks: List[Tuple[str, dict]] = []
     splitter_counts: Dict[str, int] = {}
 
     for content, metadata in batch_data:

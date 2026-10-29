@@ -149,12 +149,11 @@ class ReplacementPublicationTests(IsolatedAsyncioTestCase):
         database = MagicMock()
         database.execute_raw = AsyncMock()
 
+        backend = PgVectorBackend()
         with (
             patch("ragtime.indexer.vector_backends.get_db", new=AsyncMock(return_value=database)),
-            patch.object(PgVectorBackend(), "_ensure_dimension", new=AsyncMock()),
+            patch.object(backend, "_ensure_dimension", new=AsyncMock()),
         ):
-            backend = PgVectorBackend()
-            backend._ensure_dimension = AsyncMock()
             await backend.store_embeddings(
                 "manuals",
                 "scan.png",

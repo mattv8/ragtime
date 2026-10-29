@@ -29,6 +29,7 @@ from prisma.enums import ToolType as PrismaToolType
 from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
+from prisma.types import AppSettingsUpdateInput
 
 from ragtime.chat_runtime.presets import CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.content_protection.hosted import authorize_persistence
@@ -2145,12 +2146,17 @@ class IndexerRepository:
             if not hmac.compare_digest(stored_refresh_token, expected_refresh_token):
                 return False
 
-            update_data: dict[str, Any] = {}
-            for snake_key, camel_key in allowed_fields.items():
-                if snake_key not in updates:
-                    continue
-                value = updates[snake_key]
-                update_data[camel_key] = encrypt_secret(value) if snake_key.endswith(("access_token", "refresh_token")) and value else value
+            update_data = AppSettingsUpdateInput()
+            if "openai_codex_access_token" in updates:
+                value = updates["openai_codex_access_token"]
+                update_data["openaiCodexAccessToken"] = encrypt_secret(value) if value else value
+            if "openai_codex_refresh_token" in updates:
+                value = updates["openai_codex_refresh_token"]
+                update_data["openaiCodexRefreshToken"] = encrypt_secret(value) if value else value
+            if "openai_codex_token_expires_at" in updates:
+                update_data["openaiCodexTokenExpiresAt"] = updates["openai_codex_token_expires_at"]
+            if "openai_codex_account_id" in updates:
+                update_data["openaiCodexAccountId"] = updates["openai_codex_account_id"]
             await tx.appsettings.update(where={"id": "default"}, data=update_data)
         return True
 

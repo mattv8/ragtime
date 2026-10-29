@@ -47,7 +47,7 @@ def _index_value(index_config: Mapping[str, Any] | object | None, field: str) ->
         return False, None
     if isinstance(index_config, Mapping):
         return field in index_config, index_config.get(field)
-    fields_set = getattr(index_config, "model_fields_set", set())
+    fields_set: set[str] = getattr(index_config, "model_fields_set", set())
     return field in fields_set, getattr(index_config, field, None)
 
 

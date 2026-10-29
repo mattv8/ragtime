@@ -1,6 +1,7 @@
 """Filesystem OCR replacement jobs must preserve serving data until promotion."""
 
 import asyncio
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, contextmanager
 from functools import wraps
 from pathlib import Path
@@ -56,7 +57,7 @@ def run_async(test):
 
 
 @pytest.fixture
-def filesystem_job(tmp_path: Path):
+def filesystem_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (tmp_path / "a.txt").write_text("a")
     (tmp_path / "b.txt").write_text("b")
     service = FilesystemIndexerService()
@@ -64,14 +65,14 @@ def filesystem_job(tmp_path: Path):
     job = FilesystemIndexJob(id="job-1", tool_config_id="tool-1", index_name="serving")
 
     @asynccontextmanager
-    async def mount(_config, _tool_id):
+    async def mount(_config: FilesystemConnectionConfig, _tool_id: str | None) -> AsyncIterator[Path]:
         yield tmp_path
 
-    service._mount_filesystem = mount  # type: ignore[method-assign]
-    service._collect_files = lambda *_args: [tmp_path / "a.txt", tmp_path / "b.txt"]  # type: ignore[method-assign]
-    service._update_job = AsyncMock()  # type: ignore[method-assign]
-    service._upsert_file_metadata_batch = AsyncMock(return_value=2)  # type: ignore[method-assign]
-    service._update_tool_config_last_indexed = AsyncMock()  # type: ignore[method-assign]
+    monkeypatch.setattr(service, "_mount_filesystem", mount)
+    monkeypatch.setattr(service, "_collect_files", lambda *_args: [tmp_path / "a.txt", tmp_path / "b.txt"])
+    monkeypatch.setattr(service, "_update_job", AsyncMock())
+    monkeypatch.setattr(service, "_upsert_file_metadata_batch", AsyncMock(return_value=2))
+    monkeypatch.setattr(service, "_update_tool_config_last_indexed", AsyncMock())
     return service, job, config
 
 

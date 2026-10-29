@@ -3,7 +3,7 @@ import json
 import time
 import unittest
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 from PIL import Image
@@ -13,7 +13,7 @@ from ragtime.core import vision_models
 
 class VisionOcrTransportTests(unittest.TestCase):
     def test_native_schemas_are_strict_and_require_each_object_field(self) -> None:
-        schema = vision_models.OCR_WITH_CLASSIFICATION_SCHEMA
+        schema = cast(dict[str, Any], vision_models.OCR_WITH_CLASSIFICATION_SCHEMA)
         self.assertFalse(schema["additionalProperties"])
         self.assertFalse(schema["properties"]["extracted_text"]["items"]["additionalProperties"])
         self.assertIn("objects", schema["required"])

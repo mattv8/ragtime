@@ -395,6 +395,7 @@ class ClaudeCodeChatModel(BaseChatModel):
         }
 
     def _response_message(self, response: dict[str, Any], stop: list[str] | None) -> AIMessage:
+        raw_result: str | dict[str, Any] | None
         if self.ocr_json_schema is not None:
             raw_result = self._ocr_structured_output(response)
         else:
