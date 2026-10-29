@@ -260,10 +260,16 @@ def _pwsh() -> Path:
     return pwsh
 
 
+def _installer_functions() -> str:
+    installer = (SCRIPTS / "install.ps1").read_text()
+    functions, marker, _ = installer.partition("# RAGTIME_INSTALLER_ENTRYPOINT")
+    assert marker, "install.ps1 must delimit its function library from its entrypoint"
+    return functions
+
+
 def test_powershell_key_replacement_function_preserves_unrelated_key_layouts(tmp_path):
     pwsh = _pwsh()
-    installer = (SCRIPTS / "install.ps1").read_text()
-    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    functions = _installer_functions()
     target = tmp_path / "authorized_keys"
     harness = tmp_path / "key-test.ps1"
     for initial, expected in [
@@ -283,8 +289,7 @@ def test_powershell_key_replacement_function_preserves_unrelated_key_layouts(tmp
 
 def test_powershell_admin_membership_handles_deny_only_sid_and_blocks_profile_fallback(tmp_path):
     pwsh = _pwsh()
-    installer = (SCRIPTS / "install.ps1").read_text()
-    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    functions = _installer_functions()
     profile = tmp_path / "profile"
     program_data = tmp_path / "program-data"
     harness = tmp_path / "deny-only-test.ps1"
@@ -318,8 +323,7 @@ if ((Get-NonElevatedAuthorizedKeyPath $identity $normal) -ne [IO.Path]::GetFullP
 
 def test_windows_openssh_bootstrap_starts_before_refreshing_configuration(tmp_path):
     pwsh = _pwsh()
-    installer = (SCRIPTS / "install.ps1").read_text()
-    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    functions = _installer_functions()
     sshd = tmp_path / "sshd"
     sshd.write_text('#!/bin/sh\nif [ "$1" = -T ]; then printf \'port %s\\n\' "${RAGTIME_TEST_PORT:-22}"; fi\n')
     sshd.chmod(0o755)
@@ -345,8 +349,7 @@ if ($configuration.Port -ne 2222) {{ throw "configuration was not refreshed afte
 
 def test_windows_native_configuration_probe_handles_stderr_without_changing_stop_preference(tmp_path):
     pwsh = _pwsh()
-    installer = (SCRIPTS / "install.ps1").read_text()
-    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    functions = _installer_functions()
     sshd = tmp_path / "sshd"
     sshd.write_text("#!/bin/sh\nprintf 'missing sshd_config\\n' >&2\nexit 1\n")
     sshd.chmod(0o755)
@@ -365,8 +368,7 @@ if ($ErrorActionPreference -ne 'Stop') {{ throw "caller preference was changed t
 
 def test_windows_openssh_discovery_uses_system32_fallback_and_running_service_is_unchanged(tmp_path):
     pwsh = _pwsh()
-    installer = (SCRIPTS / "install.ps1").read_text()
-    functions = installer.split("$identity = Get-OriginalIdentity", 1)[0]
+    functions = _installer_functions()
     fallback = tmp_path / "Windows" / "System32" / "OpenSSH" / "sshd.exe"
     fallback.parent.mkdir(parents=True)
     fallback.write_text("#!/bin/sh\nexit 0\n")
